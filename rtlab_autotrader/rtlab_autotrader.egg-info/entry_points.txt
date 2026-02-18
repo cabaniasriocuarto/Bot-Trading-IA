@@ -1,0 +1,2 @@
+[console_scripts]
+rtbot = rtlab_core.cli.main:app

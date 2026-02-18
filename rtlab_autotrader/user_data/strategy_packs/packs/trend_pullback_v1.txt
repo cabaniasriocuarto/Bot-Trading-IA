@@ -1,0 +1,23 @@
+﻿---
+metadata:
+  name: trend_pullback
+  version: v1
+  market: crypto_perps
+  timeframes: ["1h", "15m", "5m", "1m"]
+universe:
+  min_volume_24h_usd: 20000000
+  max_spread_bps: 12
+microstructure:
+  enable_vpin: true
+  enable_obi: true
+  enable_cvd: true
+params:
+  tvalue_threshold: 2.0
+  adx_min: 18
+  pb_atr: 0.7
+---
+rule environment: LIQUIDITY_OK() and SPREAD_BPS() <= 12 and VPIN_PCTL() <= 80
+rule direction_long: TSCAN_TMAX() >= 2 and EMA(20) > EMA(50) and CLOSE() > EMA(200) and ADX(14) >= 18
+rule direction_short: TSCAN_TMAX() <= -2 and EMA(20) < EMA(50) and CLOSE() < EMA(200) and ADX(14) >= 18
+rule trigger_long: ABS(DIST_TO_EMA(20)) <= 0.7 * ATR(14) and RSI(14) >= 45 and RSI(14) <= 70 and IF_ORDERFLOW_ENABLED(OBI_TOPN() >= 0.55 and CVD(20) > 0)
+rule trigger_short: ABS(DIST_TO_EMA(20)) <= 0.7 * ATR(14) and RSI(14) >= 30 and RSI(14) <= 55 and IF_ORDERFLOW_ENABLED(OBI_TOPN() <= 0.45 and CVD(20) < 0)

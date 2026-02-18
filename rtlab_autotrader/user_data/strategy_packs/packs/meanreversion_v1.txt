@@ -1,0 +1,19 @@
+﻿---
+metadata:
+  name: meanreversion
+  version: v1
+  market: crypto_spot
+  timeframes: ["1h", "15m", "5m"]
+universe:
+  min_volume_24h_usd: 10000000
+  max_spread_bps: 10
+microstructure:
+  enable_vpin: false
+  enable_obi: false
+  enable_cvd: false
+params:
+  zscore_entry: 2.0
+---
+rule environment: LIQUIDITY_OK() and SPREAD_BPS() <= 10
+rule long: RSI(14) <= 30 and CLOSE() < EMA(20)
+rule short: RSI(14) >= 70 and CLOSE() > EMA(20)

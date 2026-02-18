@@ -1,0 +1,13 @@
+﻿services:
+  rtbot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: rtlab-autotrader
+    working_dir: /app
+    env_file:
+      - ../.env
+    volumes:
+      - ..:/app
+    command: ["rtbot", "status"]
+    restart: unless-stopped

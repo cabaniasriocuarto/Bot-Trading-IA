@@ -1,0 +1,20 @@
+﻿{
+  "exchange": {
+    "name": "bybit",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {
+      "options": {
+        "defaultType": "swap"
+      }
+    },
+    "ccxt_async_config": {},
+    "pair_whitelist": ["BTC/USDT:USDT", "ETH/USDT:USDT"],
+    "pair_blacklist": []
+  },
+  "stake_currency": "USDT",
+  "stake_amount": "unlimited",
+  "dry_run": true,
+  "dry_run_wallet": 10000,
+  "timeframe": "5m"
+}

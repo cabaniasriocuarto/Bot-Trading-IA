@@ -1,0 +1,12 @@
+﻿.env
+rtlab_config.yaml
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+
+user_data/data/
+user_data/logs/
+user_data/strategy_packs/results/
+user_data/strategy_packs/*.sqlite3
