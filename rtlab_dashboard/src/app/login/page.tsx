@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,14 @@ import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/c
 import { Input } from "@/components/ui/input";
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <LoginPageContent />
+    </Suspense>
+  );
+}
+
+function LoginPageContent() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -52,13 +60,7 @@ export default function LoginPage() {
             </div>
             <div className="space-y-1">
               <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Password</label>
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-              />
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="********" required />
             </div>
             {error ? <p className="text-sm text-rose-300">{error}</p> : null}
             <Button className="w-full" disabled={loading}>
@@ -69,6 +71,17 @@ export default function LoginPage() {
             Default fallback users: <code>admin/admin123!</code> and <code>viewer/viewer123!</code>.
           </p>
         </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function LoginFallback() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),transparent_35%),#020617] p-4">
+      <Card className="w-full max-w-md">
+        <CardTitle className="text-2xl">RTLab Control Login</CardTitle>
+        <CardDescription className="mt-1">Loading login...</CardDescription>
       </Card>
     </div>
   );
