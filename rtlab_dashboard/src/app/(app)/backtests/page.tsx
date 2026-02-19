@@ -48,7 +48,10 @@ export default function BacktestsPage() {
   });
 
   const refresh = useCallback(async () => {
-    const [stg, bt] = await Promise.all([apiGet<Strategy[]>("/api/strategies"), apiGet<BacktestRun[]>("/api/backtests")]);
+    const [stg, bt] = await Promise.all([
+      apiGet<Strategy[]>("/api/v1/strategies"),
+      apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
+    ]);
     setStrategies(stg);
     setRuns(bt);
     if (!form.strategy_id && stg[0]) {
@@ -64,7 +67,7 @@ export default function BacktestsPage() {
     event.preventDefault();
     setRunning(true);
     try {
-      await apiPost("/api/backtests/run", {
+      await apiPost("/api/v1/backtests/run", {
         strategy_id: form.strategy_id,
         period: { start: form.start, end: form.end },
         universe: form.symbols.split(",").map((x) => x.trim()),
@@ -138,12 +141,12 @@ export default function BacktestsPage() {
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>Strategy Lab</CardTitle>
-        <CardDescription>Launch backtests and compare 2-5 runs under identical windows/universe/cost models.</CardDescription>
+        <CardTitle>Laboratorio de Estrategias</CardTitle>
+        <CardDescription>Corre backtests y compara 2 a 5 corridas con misma ventana/universo/costos.</CardDescription>
         <CardContent>
           <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" onSubmit={launchRun}>
             <div className="space-y-1">
-              <label className="text-xs uppercase tracking-wide text-slate-400">Strategy</label>
+              <label className="text-xs uppercase tracking-wide text-slate-400">Estrategia</label>
               <Select value={form.strategy_id} onChange={(e) => setForm((prev) => ({ ...prev, strategy_id: e.target.value }))}>
                 {strategies.map((row) => (
                   <option key={row.id} value={row.id}>
@@ -153,15 +156,15 @@ export default function BacktestsPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs uppercase tracking-wide text-slate-400">Start</label>
+              <label className="text-xs uppercase tracking-wide text-slate-400">Desde</label>
               <Input type="date" value={form.start} onChange={(e) => setForm((prev) => ({ ...prev, start: e.target.value }))} />
             </div>
             <div className="space-y-1">
-              <label className="text-xs uppercase tracking-wide text-slate-400">End</label>
+              <label className="text-xs uppercase tracking-wide text-slate-400">Hasta</label>
               <Input type="date" value={form.end} onChange={(e) => setForm((prev) => ({ ...prev, end: e.target.value }))} />
             </div>
             <div className="space-y-1">
-              <label className="text-xs uppercase tracking-wide text-slate-400">Universe</label>
+              <label className="text-xs uppercase tracking-wide text-slate-400">Universo</label>
               <Input value={form.symbols} onChange={(e) => setForm((prev) => ({ ...prev, symbols: e.target.value }))} />
             </div>
 
@@ -183,7 +186,7 @@ export default function BacktestsPage() {
             </div>
 
             <div className="space-y-1 xl:col-span-2">
-              <label className="text-xs uppercase tracking-wide text-slate-400">Validation</label>
+              <label className="text-xs uppercase tracking-wide text-slate-400">Validacion</label>
               <Select
                 value={form.validation_mode}
                 onChange={(e) => setForm((prev) => ({ ...prev, validation_mode: e.target.value as RunForm["validation_mode"] }))}
@@ -194,27 +197,27 @@ export default function BacktestsPage() {
               </Select>
             </div>
             <div className="xl:col-span-2 flex items-end">
-              <Button disabled={role !== "admin" || running}>{running ? "Launching..." : "Run Backtest"}</Button>
+              <Button disabled={role !== "admin" || running}>{running ? "Corriendo..." : "Correr Backtest"}</Button>
             </div>
           </form>
         </CardContent>
       </Card>
 
       <Card>
-        <CardTitle>Backtest Runs</CardTitle>
-        <CardDescription>Status, duration, dataset hash, commit and artifacts export.</CardDescription>
+        <CardTitle>Corridas de Backtest</CardTitle>
+        <CardDescription>Estado, duracion, hash de dataset, commit y export de artefactos.</CardDescription>
         <CardContent className="overflow-x-auto">
           <Table>
             <THead>
               <TR>
-                <TH>Compare</TH>
+                <TH>Comparar</TH>
                 <TH>ID</TH>
-                <TH>Status</TH>
-                <TH>Duration</TH>
+                <TH>Estado</TH>
+                <TH>Duracion</TH>
                 <TH>Dataset Hash</TH>
                 <TH>Commit</TH>
-                <TH>Metrics</TH>
-                <TH>Export</TH>
+                <TH>Metricas</TH>
+                <TH>Exportar</TH>
               </TR>
             </THead>
             <TBody>
@@ -255,8 +258,8 @@ export default function BacktestsPage() {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardTitle>Equity Overlay</CardTitle>
-          <CardDescription>Selected backtests (2-5) superimposed.</CardDescription>
+          <CardTitle>Overlay de Equity</CardTitle>
+          <CardDescription>Superposicion de corridas seleccionadas (2 a 5).</CardDescription>
           <CardContent>
             <div className="h-72 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -275,8 +278,8 @@ export default function BacktestsPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardTitle>Drawdown Overlay</CardTitle>
-          <CardDescription>Compare risk profile across selected runs.</CardDescription>
+          <CardTitle>Overlay de Drawdown</CardTitle>
+          <CardDescription>Comparacion del perfil de riesgo entre corridas.</CardDescription>
           <CardContent>
             <div className="h-72 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -297,23 +300,17 @@ export default function BacktestsPage() {
       </div>
 
       <Card>
-        <CardTitle>Comparator Metrics</CardTitle>
-        <CardDescription>Run-level KPI comparison with robustness and consistency checks.</CardDescription>
+        <CardTitle>Comparador de Metricas</CardTitle>
+        <CardDescription>KPIs por corrida con chequeo de robustez y consistencia.</CardDescription>
         <CardContent className="space-y-3">
           {consistency ? (
             <div className="flex flex-wrap gap-2">
-              <Badge variant={consistency.samePeriod ? "success" : "warn"}>
-                Period {consistency.samePeriod ? "aligned" : "mismatch"}
-              </Badge>
-              <Badge variant={consistency.sameUniverse ? "success" : "warn"}>
-                Universe {consistency.sameUniverse ? "aligned" : "mismatch"}
-              </Badge>
-              <Badge variant={consistency.sameCosts ? "success" : "warn"}>
-                Costs {consistency.sameCosts ? "aligned" : "mismatch"}
-              </Badge>
+              <Badge variant={consistency.samePeriod ? "success" : "warn"}>Periodo {consistency.samePeriod ? "alineado" : "diferente"}</Badge>
+              <Badge variant={consistency.sameUniverse ? "success" : "warn"}>Universo {consistency.sameUniverse ? "alineado" : "diferente"}</Badge>
+              <Badge variant={consistency.sameCosts ? "success" : "warn"}>Costos {consistency.sameCosts ? "alineado" : "diferente"}</Badge>
             </div>
           ) : (
-            <p className="text-sm text-slate-400">Select at least 2 runs to activate consistency checks and metric comparison.</p>
+            <p className="text-sm text-slate-400">Selecciona al menos 2 corridas para activar comparacion.</p>
           )}
           <Table>
             <THead>
@@ -328,7 +325,7 @@ export default function BacktestsPage() {
                 <TH>Expectancy</TH>
                 <TH>Avg Trade</TH>
                 <TH>Turnover</TH>
-                <TH>Robustness</TH>
+                <TH>Robustez</TH>
               </TR>
             </THead>
             <TBody>
@@ -354,4 +351,3 @@ export default function BacktestsPage() {
     </div>
   );
 }
-

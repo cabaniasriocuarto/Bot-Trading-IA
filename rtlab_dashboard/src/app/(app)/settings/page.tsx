@@ -8,24 +8,35 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { apiGet, apiPost } from "@/lib/client-api";
-
-interface SettingsResponse {
-  active_profile: "PAPER" | "TESTNET" | "LIVE";
-  feature_flags: Record<string, boolean>;
-  exchange_default: string;
-}
+import { apiGet } from "@/lib/client-api";
+import type { HealthResponse, SettingsResponse } from "@/lib/types";
 
 export default function SettingsPage() {
   const { role } = useSession();
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [liveCooldownUntil, setLiveCooldownUntil] = useState(0);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [diag, setDiag] = useState({
+    backend: "sin probar",
+    ws: "sin probar",
+    exchange: "sin probar",
+  });
 
   useEffect(() => {
     const load = async () => {
-      const data = await apiGet<SettingsResponse>("/api/settings");
-      setSettings(data);
+      setLoading(true);
+      setError("");
+      try {
+        const data = await apiGet<SettingsResponse>("/api/v1/settings");
+        setSettings(data);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "No se pudo cargar configuracion.";
+        setError(msg);
+      } finally {
+        setLoading(false);
+      }
     };
     void load();
   }, []);
@@ -33,128 +44,315 @@ export default function SettingsPage() {
   const save = async () => {
     if (!settings) return;
     setSaving(true);
+    setError("");
+    setMessage("");
     try {
-      await apiPost("/api/settings", {
-        active_profile: settings.active_profile,
-        feature_flags: settings.feature_flags,
+      const res = await fetch("/api/v1/settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
       });
+      const body = (await res.json().catch(() => ({}))) as { error?: string; settings?: SettingsResponse };
+      if (!res.ok) {
+        setError(body.error || "No se pudo guardar.");
+        return;
+      }
+      if (body.settings) setSettings(body.settings);
+      setMessage("Guardado OK");
     } finally {
       setSaving(false);
     }
   };
 
-  if (!settings) return <p className="text-sm text-slate-400">Loading settings...</p>;
-  const liveOnCooldown = Date.now() < liveCooldownUntil;
+  const testBackend = async () => {
+    setDiag((prev) => ({ ...prev, backend: "probando..." }));
+    try {
+      const health = await apiGet<HealthResponse>("/api/v1/health");
+      setDiag((prev) => ({ ...prev, backend: health.ok ? `ok (${health.exchange.mode}/${health.exchange.name})` : "fallo" }));
+    } catch {
+      setDiag((prev) => ({ ...prev, backend: "fallo" }));
+    }
+  };
+
+  const testWs = async () => {
+    setDiag((prev) => ({ ...prev, ws: "probando..." }));
+    await new Promise<void>((resolve) => {
+      const es = new EventSource("/ws/v1/events", { withCredentials: true });
+      const timeout = setTimeout(() => {
+        es.close();
+        setDiag((prev) => ({ ...prev, ws: "timeout" }));
+        resolve();
+      }, 5000);
+      const markOk = () => {
+        clearTimeout(timeout);
+        es.close();
+        setDiag((prev) => ({ ...prev, ws: "ok" }));
+        resolve();
+      };
+      es.addEventListener("health", markOk);
+      es.onerror = () => {
+        clearTimeout(timeout);
+        es.close();
+        setDiag((prev) => ({ ...prev, ws: "fallo" }));
+        resolve();
+      };
+    });
+  };
+
+  const testExchange = async () => {
+    setDiag((prev) => ({ ...prev, exchange: "probando..." }));
+    try {
+      const res = await fetch("/api/v1/settings/test-exchange", {
+        method: "POST",
+        credentials: "include",
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; mode?: string };
+      if (!res.ok || !body.ok) {
+        setDiag((prev) => ({ ...prev, exchange: body.message || "fallo" }));
+        return;
+      }
+      setDiag((prev) => ({ ...prev, exchange: `ok (${body.mode || ""})` }));
+    } catch {
+      setDiag((prev) => ({ ...prev, exchange: "fallo" }));
+    }
+  };
+
+  const testAlert = async () => {
+    try {
+      const res = await fetch("/api/v1/settings/test-alert", {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("error");
+      setMessage("Alerta de prueba enviada");
+    } catch {
+      setError("No se pudo enviar alerta de prueba.");
+    }
+  };
+
+  if (loading) return <p className="text-sm text-slate-400">Cargando configuracion...</p>;
+  if (!settings) return <p className="text-sm text-rose-300">No se pudo cargar configuracion: {error || "sin respuesta"}</p>;
+
+  const liveLocked = settings.mode === "LIVE" && settings.gate_checklist.some((item) => !item.done);
 
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>Settings (Admin)</CardTitle>
-        <CardDescription>Profiles, exchange preferences, feature flags and secret placeholders.</CardDescription>
+        <CardTitle>Configuracion (Admin)</CardTitle>
+        <CardDescription>Perfiles, exchange, estado de credenciales, telegram, riesgo y ejecucion.</CardDescription>
+        <CardContent className="space-y-2">
+          {message ? <p className="text-sm text-emerald-300">{message}</p> : null}
+          {error ? <p className="text-sm text-rose-300">{error}</p> : null}
+        </CardContent>
       </Card>
 
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardTitle>Profile Management</CardTitle>
-          <CardDescription>PAPER / TESTNET / LIVE with safety lock before LIVE.</CardDescription>
+          <CardTitle>Modo y Exchange</CardTitle>
+          <CardDescription>MOCK / PAPER / TESTNET / LIVE (LIVE con bloqueo por checklist).</CardDescription>
           <CardContent className="space-y-3">
-            <Select
-              value={settings.active_profile}
-              onChange={(e) => {
-                const next = e.target.value as SettingsResponse["active_profile"];
-                if (next === "LIVE") {
-                  if (liveOnCooldown) {
-                    window.alert("LIVE action is in cooldown. Wait a few seconds and retry.");
-                    return;
-                  }
-                  const ok = window.confirm("Enable LIVE profile? This is a critical action.");
-                  if (!ok) return;
-                  const ok2 = window.confirm("Second confirmation: switch to LIVE now?");
-                  if (!ok2) return;
-                  setLiveCooldownUntil(Date.now() + 10_000);
-                }
-                setSettings((prev) => (prev ? { ...prev, active_profile: next } : prev));
-              }}
-              disabled={role !== "admin"}
-            >
-              <option value="PAPER">PAPER</option>
-              <option value="TESTNET">TESTNET</option>
-              <option value="LIVE">LIVE</option>
-            </Select>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">
-              Active profile:{" "}
-              <Badge variant={settings.active_profile === "LIVE" ? "danger" : settings.active_profile === "TESTNET" ? "warn" : "success"}>
-                {settings.active_profile}
-              </Badge>
+            <div className="space-y-1">
+              <label className="text-xs uppercase tracking-wide text-slate-400">Modo</label>
+              <Select value={settings.mode} onChange={(e) => setSettings((prev) => (prev ? { ...prev, mode: e.target.value as SettingsResponse["mode"] } : prev))} disabled={role !== "admin"}>
+                <option value="MOCK">MOCK</option>
+                <option value="PAPER">PAPER</option>
+                <option value="TESTNET">TESTNET</option>
+                <option value="LIVE">LIVE</option>
+              </Select>
             </div>
-            {liveOnCooldown ? <p className="text-xs text-amber-300">Critical action cooldown active for LIVE profile controls.</p> : null}
-            <Button disabled={role !== "admin" || saving || liveOnCooldown} onClick={save}>
-              {saving ? "Saving..." : "Save Profile"}
-            </Button>
+            <div className="space-y-1">
+              <label className="text-xs uppercase tracking-wide text-slate-400">Exchange</label>
+              <Select value={settings.exchange} onChange={(e) => setSettings((prev) => (prev ? { ...prev, exchange: e.target.value as SettingsResponse["exchange"] } : prev))} disabled={role !== "admin"}>
+                {settings.exchange_plugin_options.map((row) => (
+                  <option key={row} value={row}>
+                    {row}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">
+              Estado: <Badge variant={settings.mode === "LIVE" ? "danger" : settings.mode === "TESTNET" ? "warn" : "success"}>{settings.mode}</Badge>
+              {liveLocked ? <p className="mt-2 text-xs text-amber-300">LIVE bloqueado: checklist incompleto.</p> : null}
+            </div>
           </CardContent>
         </Card>
 
         <Card>
-          <CardTitle>Exchange Config</CardTitle>
-          <CardDescription>Binance default + Bybit plugin selection by config.</CardDescription>
+          <CardTitle>Credenciales y Telegram</CardTitle>
+          <CardDescription>Solo estado de credenciales, nunca secretos.</CardDescription>
           <CardContent className="space-y-3">
-            <Select defaultValue={settings.exchange_default} disabled={role !== "admin"}>
-              <option value="binance">Binance (default)</option>
-              <option value="bybit">Bybit plugin</option>
-              <option value="okx">OKX plugin</option>
-            </Select>
-            <p className="text-sm text-slate-400">
-              Exchange API keys never appear in this UI. Credentials are managed only in backend secret manager / env vars.
-            </p>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">
+              Exchange keys: <strong>{settings.credentials.exchange_configured ? "configuradas" : "faltan"}</strong>
+              <br />
+              Telegram token/chat: <strong>{settings.credentials.telegram_configured ? "configurado" : "faltan"}</strong>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={settings.telegram.enabled}
+                  onChange={(e) => setSettings((prev) => (prev ? { ...prev, telegram: { ...prev.telegram, enabled: e.target.checked } } : prev))}
+                  disabled={role !== "admin"}
+                />
+                Telegram habilitado
+              </label>
+              <Input
+                value={settings.telegram.chat_id}
+                onChange={(e) =>
+                  setSettings((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          telegram: { ...prev.telegram, chat_id: e.target.value },
+                          credentials: { ...prev.credentials, telegram_chat_id: e.target.value },
+                        }
+                      : prev,
+                  )
+                }
+                placeholder="Chat ID"
+                disabled={role !== "admin"}
+              />
+            </div>
+            <Button onClick={testAlert} variant="outline" disabled={role !== "admin"}>
+              Probar alerta
+            </Button>
           </CardContent>
         </Card>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardTitle>Credential Placeholders</CardTitle>
-          <CardDescription>UI accepts placeholders only. No real secrets are shown or persisted here.</CardDescription>
-          <CardContent className="space-y-2">
-            <Input placeholder="EXCHANGE_KEY (placeholder only)" disabled />
-            <Input placeholder="EXCHANGE_SECRET (placeholder only)" disabled />
-            <Input placeholder="TELEGRAM_BOT_TOKEN (placeholder only)" disabled />
-            <Input placeholder="TELEGRAM_CHAT_ID (placeholder only)" disabled />
+          <CardTitle>Riesgo por defecto</CardTitle>
+          <CardContent className="grid gap-2 sm:grid-cols-2">
+            <Input
+              type="number"
+              value={settings.risk_defaults.max_daily_loss}
+              onChange={(e) =>
+                setSettings((prev) => (prev ? { ...prev, risk_defaults: { ...prev.risk_defaults, max_daily_loss: Number(e.target.value) } } : prev))
+              }
+              placeholder="Max perdida diaria %"
+              disabled={role !== "admin"}
+            />
+            <Input
+              type="number"
+              value={settings.risk_defaults.max_dd}
+              onChange={(e) =>
+                setSettings((prev) => (prev ? { ...prev, risk_defaults: { ...prev.risk_defaults, max_dd: Number(e.target.value) } } : prev))
+              }
+              placeholder="Max DD %"
+              disabled={role !== "admin"}
+            />
+            <Input
+              type="number"
+              value={settings.risk_defaults.max_positions}
+              onChange={(e) =>
+                setSettings((prev) => (prev ? { ...prev, risk_defaults: { ...prev.risk_defaults, max_positions: Number(e.target.value) } } : prev))
+              }
+              placeholder="Max posiciones"
+              disabled={role !== "admin"}
+            />
+            <Input
+              type="number"
+              value={settings.risk_defaults.risk_per_trade}
+              onChange={(e) =>
+                setSettings((prev) => (prev ? { ...prev, risk_defaults: { ...prev.risk_defaults, risk_per_trade: Number(e.target.value) } } : prev))
+              }
+              placeholder="Riesgo por trade %"
+              disabled={role !== "admin"}
+            />
           </CardContent>
         </Card>
 
         <Card>
-          <CardTitle>Feature Flags</CardTitle>
-          <CardDescription>Enable/disable optional modules.</CardDescription>
+          <CardTitle>Ejecucion</CardTitle>
           <CardContent className="space-y-2">
-            {Object.entries(settings.feature_flags).map(([key, value]) => (
-              <div key={key} className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
-                <span className="text-sm text-slate-200">{key}</span>
-                <button
-                  disabled={role !== "admin"}
-                  onClick={() =>
-                    setSettings((prev) =>
-                      prev
-                        ? {
-                            ...prev,
-                            feature_flags: { ...prev.feature_flags, [key]: !prev.feature_flags[key] },
-                          }
-                        : prev,
-                    )
-                  }
-                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                    value ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700 text-slate-300"
-                  }`}
-                >
-                  {value ? "ON" : "OFF"}
-                </button>
-              </div>
-            ))}
-            <Button disabled={role !== "admin" || saving} onClick={save}>
-              Save Feature Flags
-            </Button>
+            <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.execution.post_only_default}
+                onChange={(e) =>
+                  setSettings((prev) => (prev ? { ...prev, execution: { ...prev.execution, post_only_default: e.target.checked } } : prev))
+                }
+                disabled={role !== "admin"}
+              />
+              Post-only por defecto
+            </label>
+            <Input
+              type="number"
+              value={settings.execution.slippage_max_bps}
+              onChange={(e) =>
+                setSettings((prev) => (prev ? { ...prev, execution: { ...prev.execution, slippage_max_bps: Number(e.target.value) } } : prev))
+              }
+              placeholder="Slippage max bps"
+              disabled={role !== "admin"}
+            />
+            <Input
+              type="number"
+              value={settings.execution.request_timeout_ms}
+              onChange={(e) =>
+                setSettings((prev) => (prev ? { ...prev, execution: { ...prev.execution, request_timeout_ms: Number(e.target.value) } } : prev))
+              }
+              placeholder="Timeout ms"
+              disabled={role !== "admin"}
+            />
           </CardContent>
         </Card>
       </section>
+
+      <Card>
+        <CardTitle>Feature Flags</CardTitle>
+        <CardContent className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {Object.entries(settings.feature_flags).map(([key, value]) => (
+            <label key={key} className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
+              <span>{key}</span>
+              <input
+                type="checkbox"
+                checked={Boolean(value)}
+                onChange={(e) =>
+                  setSettings((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          feature_flags: { ...prev.feature_flags, [key]: e.target.checked },
+                        }
+                      : prev,
+                  )
+                }
+                disabled={role !== "admin"}
+              />
+            </label>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardTitle>Diagnostico</CardTitle>
+        <CardDescription>Probar backend (/health), WS (/ws/v1/events) y exchange (paper/testnet/mock).</CardDescription>
+        <CardContent className="grid gap-3 md:grid-cols-3">
+          <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-400">Backend</p>
+            <p className="text-sm text-slate-200">{diag.backend}</p>
+            <Button variant="outline" onClick={testBackend}>Probar /health</Button>
+          </div>
+          <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-400">WS</p>
+            <p className="text-sm text-slate-200">{diag.ws}</p>
+            <Button variant="outline" onClick={testWs}>Probar WS</Button>
+          </div>
+          <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-400">Exchange</p>
+            <p className="text-sm text-slate-200">{diag.exchange}</p>
+            <Button variant="outline" onClick={testExchange}>Probar exchange</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="flex justify-end gap-2">
+        <Button disabled={role !== "admin" || saving} onClick={save}>
+          {saving ? "Guardando..." : "Guardar"}
+        </Button>
+      </div>
     </div>
   );
 }

@@ -5,50 +5,65 @@ import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Too
 
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { apiGet } from "@/lib/client-api";
-import type { ExecutionStats, Trade } from "@/lib/types";
+import type { ExecutionStats } from "@/lib/types";
 import { fmtNum, fmtPct } from "@/lib/utils";
 
 export default function ExecutionPage() {
   const [stats, setStats] = useState<ExecutionStats | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const load = async () => {
-      const [exec, rows] = await Promise.all([apiGet<ExecutionStats>("/api/execution"), apiGet<Trade[]>("/api/trades")]);
-      setStats(exec);
-      setTrades(rows.slice(0, 60));
+      try {
+        const exec = await apiGet<ExecutionStats>("/api/v1/execution/metrics");
+        setStats(exec);
+        setError("");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "No se pudo cargar ejecucion.";
+        setError(message);
+      }
     };
     void load();
   }, []);
 
   const latencySeries = useMemo(
     () =>
-      trades.slice(0, 30).map((row, idx) => ({
-        label: idx,
-        latency: Number((85 + Math.sin(idx / 4) * 30 + (idx % 6)).toFixed(1)),
-        spread: Number((3.2 + Math.cos(idx / 5) * 1.7).toFixed(2)),
+      (stats?.series || []).map((row, idx) => ({
+        label: idx % 8 === 0 ? new Date(row.ts).toLocaleTimeString() : "",
+        latency: row.latency_ms_p95,
+        spread: row.spread_bps,
       })),
-    [trades],
+    [stats],
   );
 
   const qualityBars = useMemo(
     () => [
       { metric: "maker_ratio", value: (stats?.maker_ratio || 0) * 100 },
       { metric: "fill_ratio", value: (stats?.fill_ratio || 0) * 100 },
-      { metric: "avg_slippage", value: stats?.avg_slippage || 0 },
       { metric: "p95_slippage", value: stats?.p95_slippage || 0 },
-      { metric: "avg_spread", value: stats?.avg_spread || 0 },
       { metric: "p95_spread", value: stats?.p95_spread || 0 },
     ],
     [stats],
   );
 
+  const hasData = Boolean(stats && stats.series.length > 0);
+
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>Execution / Microstructure</CardTitle>
-        <CardDescription>Fill quality, spread/slippage diagnostics, latency and API health.</CardDescription>
+        <CardTitle>Ejecucion / Microestructura</CardTitle>
+        <CardDescription>Calidad de fills, spread/slippage, latencia y salud operativa.</CardDescription>
       </Card>
+
+      {error ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">{error}</p> : null}
+
+      {!hasData ? (
+        <Card>
+          <CardContent>
+            <p className="text-sm text-slate-300">Sin datos aun (ejecuta paper/testnet o backtest).</p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Maker Ratio" value={stats ? fmtPct(stats.maker_ratio) : "--"} />
@@ -59,7 +74,7 @@ export default function ExecutionPage() {
 
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardTitle>Execution Quality Snapshot</CardTitle>
+          <CardTitle>Snapshot de Calidad de Ejecucion</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -76,7 +91,7 @@ export default function ExecutionPage() {
         </Card>
 
         <Card>
-          <CardTitle>Latency & Spread Trace</CardTitle>
+          <CardTitle>Traza de Latencia y Spread</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -96,7 +111,7 @@ export default function ExecutionPage() {
       </section>
 
       <Card>
-        <CardTitle>Operational Notes</CardTitle>
+        <CardTitle>Notas Operativas</CardTitle>
         <CardContent className="space-y-2 text-sm text-slate-300">
           <p>
             Slippage real vs estimada: <strong>{stats ? `${fmtNum(stats.avg_slippage)} / ${fmtNum(stats.p95_slippage)} bps (avg/p95)` : "--"}</strong>
@@ -105,9 +120,11 @@ export default function ExecutionPage() {
             Spread promedio y p95: <strong>{stats ? `${fmtNum(stats.avg_spread)} / ${fmtNum(stats.p95_spread)} bps` : "--"}</strong>
           </p>
           <p>
-            Errores por endpoint/rate-limit:{" "}
-            <strong>{stats ? `${stats.api_errors} API errors, ${stats.rate_limit_hits} rate-limit hits` : "--"}</strong>
+            Errores por endpoint/rate-limit: <strong>{stats ? `${stats.api_errors} errores API, ${stats.rate_limit_hits} rate-limit hits` : "--"}</strong>
           </p>
+          {stats?.notes?.map((row, idx) => (
+            <p key={`${row}-${idx}`}>- {row}</p>
+          ))}
         </CardContent>
       </Card>
     </div>
@@ -122,5 +139,3 @@ function Metric({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
-
-

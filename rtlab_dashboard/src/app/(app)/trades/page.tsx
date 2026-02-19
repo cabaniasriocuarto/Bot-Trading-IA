@@ -38,8 +38,8 @@ export default function TradesPage() {
     if (filters.date_from) params.set("date_from", filters.date_from);
     if (filters.date_to) params.set("date_to", filters.date_to);
     const [tradesRows, stgRows] = await Promise.all([
-      apiGet<Trade[]>(`/api/trades?${params.toString()}`),
-      apiGet<Strategy[]>("/api/strategies"),
+      apiGet<Trade[]>(`/api/v1/trades?${params.toString()}`),
+      apiGet<Strategy[]>("/api/v1/strategies"),
     ]);
     setTrades(tradesRows);
     setStrategies(stgRows);
@@ -56,13 +56,13 @@ export default function TradesPage() {
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>Trades</CardTitle>
-        <CardDescription>Advanced filters by strategy, symbol, side, result, reason, and date range with trade drill-down.</CardDescription>
+        <CardTitle>Operaciones</CardTitle>
+        <CardDescription>Filtros por estrategia, simbolo, lado, resultado, motivo y rango de fechas.</CardDescription>
         <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Strategy</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Estrategia</label>
             <Select value={filters.strategy_id} onChange={(e) => setFilters((prev) => ({ ...prev, strategy_id: e.target.value }))}>
-              <option value="">All</option>
+              <option value="">Todas</option>
               {strategies.map((row) => (
                 <option key={row.id} value={row.id}>
                   {row.name} v{row.version}
@@ -71,9 +71,9 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Symbol</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Simbolo</label>
             <Select value={filters.symbol} onChange={(e) => setFilters((prev) => ({ ...prev, symbol: e.target.value }))}>
-              <option value="">All</option>
+              <option value="">Todos</option>
               {uniqueSymbols.map((row) => (
                 <option key={row} value={row}>
                   {row}
@@ -82,26 +82,26 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Side</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Lado</label>
             <Select value={filters.side} onChange={(e) => setFilters((prev) => ({ ...prev, side: e.target.value }))}>
-              <option value="">All</option>
+              <option value="">Todos</option>
               <option value="long">Long</option>
               <option value="short">Short</option>
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Result</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Resultado</label>
             <Select value={filters.result} onChange={(e) => setFilters((prev) => ({ ...prev, result: e.target.value }))}>
-              <option value="">All</option>
-              <option value="win">Win</option>
-              <option value="loss">Loss</option>
-              <option value="breakeven">Breakeven</option>
+              <option value="">Todos</option>
+              <option value="win">Ganadora</option>
+              <option value="loss">Perdedora</option>
+              <option value="breakeven">Neutra</option>
             </Select>
           </div>
           <div>
             <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Reason code</label>
             <Select value={filters.reason_code} onChange={(e) => setFilters((prev) => ({ ...prev, reason_code: e.target.value }))}>
-              <option value="">All</option>
+              <option value="">Todos</option>
               {uniqueReasons.map((row) => (
                 <option key={row} value={row}>
                   {row}
@@ -112,7 +112,7 @@ export default function TradesPage() {
           <div>
             <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Exit reason</label>
             <Select value={filters.exit_reason} onChange={(e) => setFilters((prev) => ({ ...prev, exit_reason: e.target.value }))}>
-              <option value="">All</option>
+              <option value="">Todos</option>
               {uniqueExits.map((row) => (
                 <option key={row} value={row}>
                   {row}
@@ -121,17 +121,17 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Date from</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Desde</label>
             <Input type="date" value={filters.date_from} onChange={(e) => setFilters((prev) => ({ ...prev, date_from: e.target.value }))} />
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Date to</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Hasta</label>
             <Input type="date" value={filters.date_to} onChange={(e) => setFilters((prev) => ({ ...prev, date_to: e.target.value }))} />
           </div>
           <div className="md:col-span-2 xl:col-span-2">
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Quick symbol search</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Busqueda rapida de simbolo</label>
             <Input
-              placeholder="Type symbol and press enter (e.g., BTC/USDT)"
+              placeholder="Escribe simbolo y presiona Enter (ej: BTC/USDT)"
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -157,7 +157,7 @@ export default function TradesPage() {
                 })
               }
             >
-              Reset Filters
+              Limpiar filtros
             </Button>
           </div>
         </CardContent>
@@ -169,26 +169,24 @@ export default function TradesPage() {
             <THead>
               <TR>
                 <TH>ID</TH>
-                <TH>Strategy</TH>
-                <TH>Symbol</TH>
-                <TH>Side</TH>
-                <TH>Result</TH>
-                <TH>Entry / Exit</TH>
-                <TH>Qty</TH>
+                <TH>Estrategia</TH>
+                <TH>Simbolo</TH>
+                <TH>Lado</TH>
+                <TH>Resultado</TH>
+                <TH>Entrada / Salida</TH>
+                <TH>Cantidad</TH>
                 <TH>Fees</TH>
                 <TH>Slippage</TH>
                 <TH>Holding</TH>
                 <TH>MFE/MAE</TH>
-                <TH>PnL Net</TH>
-                <TH>Reason</TH>
-                <TH>Detail</TH>
+                <TH>PnL Neto</TH>
+                <TH>Motivo</TH>
+                <TH>Detalle</TH>
               </TR>
             </THead>
             <TBody>
               {trades.map((row) => {
-                const holdMins = Math.abs(
-                  Math.round((new Date(row.exit_time).getTime() - new Date(row.entry_time).getTime()) / 60_000),
-                );
+                const holdMins = Math.abs(Math.round((new Date(row.exit_time).getTime() - new Date(row.entry_time).getTime()) / 60_000));
                 return (
                   <TR key={row.id}>
                     <TD>{row.id}</TD>
@@ -219,7 +217,7 @@ export default function TradesPage() {
                     </TD>
                     <TD>
                       <Link href={`/trades/${row.id}`} className="text-cyan-300 underline">
-                        Open
+                        Abrir
                       </Link>
                     </TD>
                   </TR>

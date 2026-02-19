@@ -13,11 +13,11 @@ async function proxyToBackend(
 ) {
   const backend = process.env.BACKEND_API_URL;
   if (!backend) {
-    return NextResponse.json({ error: "BACKEND_API_URL is not set." }, { status: 500 });
+    return NextResponse.json({ error: "BACKEND_API_URL no está configurado." }, { status: 500 });
   }
 
   const target = `${backend.replace(/\/$/, "")}/api/${path.join("/")}${req.nextUrl.search}`;
-  const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
+  const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
 
   const headers = new Headers(req.headers);
   headers.set("x-rtlab-role", session.role);
@@ -42,13 +42,21 @@ async function proxyToBackend(
 async function handle(req: NextRequest, path: string[]) {
   const session = await getSessionFromRequest(req);
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
 
   if (shouldUseMockApi()) {
     return handleMockApi(req, path, session.role);
   }
-  return proxyToBackend(req, path, session);
+
+  try {
+    return await proxyToBackend(req, path, session);
+  } catch {
+    if (process.env.ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR !== "false") {
+      return handleMockApi(req, path, session.role);
+    }
+    return NextResponse.json({ error: "Backend no disponible." }, { status: 502 });
+  }
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
@@ -57,6 +65,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ path
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
+  const { path } = await params;
+  return handle(req, path);
+}
+
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   const { path } = await params;
   return handle(req, path);
 }

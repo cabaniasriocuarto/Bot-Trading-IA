@@ -21,8 +21,8 @@ export default function RiskPage() {
   useEffect(() => {
     const load = async () => {
       const [riskSnap, runs] = await Promise.all([
-        apiGet<RiskResponse>("/api/risk"),
-        apiGet<BacktestRun[]>("/api/backtests"),
+        apiGet<RiskResponse>("/api/v1/risk"),
+        apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
       ]);
       setRisk(riskSnap);
       setBacktests(runs);
@@ -31,6 +31,9 @@ export default function RiskPage() {
   }, []);
 
   const stressRows = useMemo(() => {
+    if (risk?.stress_tests?.length) {
+      return risk.stress_tests.map((row) => ({ scenario: row.scenario, robust: row.robust_score }));
+    }
     const latest = backtests[0];
     if (!latest) return [];
     const base = latest.metrics.robust_score;
@@ -41,38 +44,39 @@ export default function RiskPage() {
       { scenario: "Spread shock", robust: Number((base * 0.78).toFixed(2)) },
       { scenario: "Param +/-15%", robust: Number((base * 0.81).toFixed(2)) },
     ];
-  }, [backtests]);
+  }, [backtests, risk]);
 
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>Risk & Limits</CardTitle>
-        <CardDescription>Monitor guardrails, stress resilience and promotion gate checklist.</CardDescription>
+        <CardTitle>Riesgo y Limites</CardTitle>
+        <CardDescription>Guardas de riesgo, stress tests y checklist de promocion a LIVE.</CardDescription>
       </Card>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Equity" value={risk ? fmtUsd(risk.equity) : "--"} />
-        <MetricCard label="Current DD" value={risk ? fmtPct(risk.dd) : "--"} />
-        <MetricCard label="Daily loss" value={risk ? fmtPct(risk.daily_loss) : "--"} />
-        <MetricCard label="Exposure total" value={risk ? fmtUsd(risk.exposure_total) : "--"} />
+        <MetricCard label="DD actual" value={risk ? fmtPct(risk.dd) : "--"} />
+        <MetricCard label="Perdida diaria" value={risk ? fmtPct(risk.daily_loss) : "--"} />
+        <MetricCard label="Exposicion total" value={risk ? fmtUsd(risk.exposure_total) : "--"} />
       </section>
 
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardTitle>Limit Panel</CardTitle>
+          <CardTitle>Panel de Limites</CardTitle>
           <CardContent className="space-y-2">
-            <MetricRow label="Daily loss limit" value={risk ? fmtPct(risk.limits.daily_loss_limit) : "--"} />
-            <MetricRow label="Max DD limit" value={risk ? fmtPct(risk.limits.max_dd_limit) : "--"} />
-            <MetricRow label="Max positions" value={risk ? String(risk.limits.max_positions) : "--"} />
-            <MetricRow label="Max total exposure" value={risk ? fmtPct(risk.limits.max_total_exposure) : "--"} />
+            <MetricRow label="Limite perdida diaria" value={risk ? fmtPct(risk.limits.daily_loss_limit) : "--"} />
+            <MetricRow label="Limite max DD" value={risk ? fmtPct(risk.limits.max_dd_limit) : "--"} />
+            <MetricRow label="Max posiciones" value={risk ? String(risk.limits.max_positions) : "--"} />
+            <MetricRow label="Max exposicion total" value={risk ? fmtPct(risk.limits.max_total_exposure) : "--"} />
+            <MetricRow label="Riesgo por trade" value={risk ? fmtPct(risk.limits.risk_per_trade) : "--"} />
             <div className="pt-2">
-              <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Circuit Breakers Triggered</p>
+              <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Circuit breakers disparados</p>
               <div className="flex flex-wrap gap-2">
                 {risk?.circuit_breakers.map((row) => (
                   <Badge key={row} variant="warn">
                     {row}
                   </Badge>
-                )) || <Badge>none</Badge>}
+                )) || <Badge>ninguno</Badge>}
               </div>
             </div>
           </CardContent>
@@ -80,7 +84,7 @@ export default function RiskPage() {
 
         <Card>
           <CardTitle>Stress Tests</CardTitle>
-          <CardDescription>Robustness under cost shocks.</CardDescription>
+          <CardDescription>Robustez bajo shocks de costos.</CardDescription>
           <CardContent>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -94,10 +98,7 @@ export default function RiskPage() {
               </ResponsiveContainer>
             </div>
             <p className="mt-2 text-sm text-slate-300">
-              Robustness decay from base:{" "}
-              {stressRows.length
-                ? `${fmtNum(stressRows[0].robust)} -> ${fmtNum(stressRows[stressRows.length - 1].robust)}`
-                : "--"}
+              Caida de robustez: {stressRows.length ? `${fmtNum(stressRows[0].robust)} -> ${fmtNum(stressRows[stressRows.length - 1].robust)}` : "--"}
             </p>
           </CardContent>
         </Card>
@@ -105,31 +106,31 @@ export default function RiskPage() {
 
       <Card>
         <CardTitle>Forecast Band [SUPUESTO]</CardTitle>
-        <CardDescription>Bootstrap intervals built from historical trade distribution (no guaranteed prediction).</CardDescription>
+        <CardDescription>Intervalos bootstrap sobre distribucion historica (sin garantia).</CardDescription>
         <CardContent className="grid gap-3 md:grid-cols-3">
-          <MetricRow label="Expected return p50 (30d)" value="+4.2%" />
-          <MetricRow label="Expected return p90 (30d)" value="+8.9%" />
-          <MetricRow label="Expected DD p90 (30d)" value="-9.8%" />
+          <MetricRow label="Retorno esperado p50 (30d)" value={risk?.forecast_band ? fmtPct(risk.forecast_band.return_p50_30d) : "+4.2%"} />
+          <MetricRow label="Retorno esperado p90 (30d)" value={risk?.forecast_band ? fmtPct(risk.forecast_band.return_p90_30d) : "+8.9%"} />
+          <MetricRow label="DD esperado p90 (30d)" value={risk?.forecast_band ? fmtPct(risk.forecast_band.dd_p90_30d) : "-9.8%"} />
         </CardContent>
       </Card>
 
       <Card>
         <CardTitle>Gate Checklist</CardTitle>
-        <CardDescription>Backtest -&gt; Paper -&gt; Live readiness controls.</CardDescription>
+        <CardDescription>Backtest -&gt; Paper -&gt; Live.</CardDescription>
         <CardContent>
           <Table>
             <THead>
               <TR>
-                <TH>Stage</TH>
-                <TH>Status</TH>
-                <TH>Note</TH>
+                <TH>Etapa</TH>
+                <TH>Estado</TH>
+                <TH>Nota</TH>
               </TR>
             </THead>
             <TBody>
               {risk?.gate_checklist.map((row) => (
                 <TR key={row.stage}>
                   <TD>{row.stage}</TD>
-                  <TD>{row.done ? <Badge variant="success">done</Badge> : <Badge variant="warn">pending</Badge>}</TD>
+                  <TD>{row.done ? <Badge variant="success">cumplido</Badge> : <Badge variant="warn">pendiente</Badge>}</TD>
                   <TD>{row.note}</TD>
                 </TR>
               )) || null}
@@ -158,4 +159,3 @@ function MetricRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-

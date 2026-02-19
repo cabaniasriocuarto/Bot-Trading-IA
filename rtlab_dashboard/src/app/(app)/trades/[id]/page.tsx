@@ -64,7 +64,7 @@ export default function TradeDetailPage() {
 
   useEffect(() => {
     const load = async () => {
-      const row = await apiGet<Trade>(`/api/trades/${tradeId}`);
+      const row = await apiGet<Trade>(`/api/v1/trades/${tradeId}`);
       setTrade(row);
     };
     void load();
@@ -73,34 +73,34 @@ export default function TradeDetailPage() {
   const candles = useMemo(() => (trade ? buildCandles(trade) : []), [trade]);
   const micro = useMemo(() => buildMicrostructure(candles), [candles]);
 
-  if (!trade) return <p className="text-sm text-slate-400">Loading trade...</p>;
+  if (!trade) return <p className="text-sm text-slate-400">Cargando operacion...</p>;
 
   return (
     <div className="space-y-4">
       <Card>
         <CardTitle className="flex flex-wrap items-center gap-2">
-          Trade {trade.id}
+          Operacion {trade.id}
           <Badge variant={trade.side === "long" ? "success" : "warn"}>{trade.side}</Badge>
           <Badge>{trade.symbol}</Badge>
         </CardTitle>
-        <CardDescription>Entry/exit markers, signals timeline, and explain-this checklist.</CardDescription>
+        <CardDescription>Markers de entrada/salida, timeline de eventos y checklist explicativo.</CardDescription>
       </Card>
 
       <Card>
-        <CardTitle>Candle + Markers</CardTitle>
+        <CardTitle>Velas + Markers</CardTitle>
         <CardContent>
           <CandlestickChart
             candles={candles}
             markers={[
               {
                 time: new Date(trade.entry_time).toISOString().slice(0, 19),
-                text: "Entry",
+                text: "Entrada",
                 position: "belowBar",
                 color: "#22d3ee",
               },
               {
                 time: new Date(trade.exit_time).toISOString().slice(0, 19),
-                text: "Exit",
+                text: "Salida",
                 position: "aboveBar",
                 color: "#f97316",
               },
@@ -110,8 +110,8 @@ export default function TradeDetailPage() {
       </Card>
 
       <Card>
-        <CardTitle>Orderflow / Microstructure</CardTitle>
-        <CardDescription>OBI, CVD, VPIN and spread around this trade window.</CardDescription>
+        <CardTitle>Orderflow / Microestructura</CardTitle>
+        <CardDescription>OBI, CVD, VPIN y spread en la ventana de esta operacion.</CardDescription>
         <CardContent>
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -129,29 +129,28 @@ export default function TradeDetailPage() {
             </ResponsiveContainer>
           </div>
           <p className="mt-2 text-sm text-slate-300">
-            VPIN peak: <strong>{Math.max(...micro.map((x) => x.vpin)).toFixed(3)}</strong> | Spread p95:{" "}
-            <strong>{micro.slice().sort((a, b) => a.spread - b.spread)[Math.floor(micro.length * 0.95)]?.spread ?? "--"} bps</strong>
+            VPIN pico: <strong>{Math.max(...micro.map((x) => x.vpin)).toFixed(3)}</strong> | Spread p95: <strong>{micro.slice().sort((a, b) => a.spread - b.spread)[Math.floor(micro.length * 0.95)]?.spread ?? "--"} bps</strong>
           </p>
         </CardContent>
       </Card>
 
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardTitle>Trade Metrics</CardTitle>
+          <CardTitle>Metricas de la Operacion</CardTitle>
           <CardContent className="grid grid-cols-2 gap-3">
-            <Metric label="Entry" value={trade.entry_px.toFixed(2)} />
-            <Metric label="Exit" value={trade.exit_px.toFixed(2)} />
-            <Metric label="Qty" value={String(trade.qty)} />
+            <Metric label="Entrada" value={trade.entry_px.toFixed(2)} />
+            <Metric label="Salida" value={trade.exit_px.toFixed(2)} />
+            <Metric label="Cantidad" value={String(trade.qty)} />
             <Metric label="Fees" value={fmtUsd(trade.fees)} />
             <Metric label="Slippage" value={fmtUsd(trade.slippage)} />
-            <Metric label="PnL net" value={fmtUsd(trade.pnl_net)} color={trade.pnl_net >= 0 ? "text-emerald-300" : "text-rose-300"} />
+            <Metric label="PnL neto" value={fmtUsd(trade.pnl_net)} color={trade.pnl_net >= 0 ? "text-emerald-300" : "text-rose-300"} />
             <Metric label="MFE" value={trade.mfe.toFixed(2)} />
             <Metric label="MAE" value={trade.mae.toFixed(2)} />
           </CardContent>
         </Card>
         <Card>
-          <CardTitle>Explain This</CardTitle>
-          <CardDescription>Decision checklist at entry time.</CardDescription>
+          <CardTitle>Explicame esto</CardTitle>
+          <CardDescription>Checklist de decision al momento de entrada.</CardDescription>
           <CardContent>
             <ul className="space-y-2 text-sm">
               <Checklist label="Whitelist ok" value={trade.explain.whitelist_ok} />
@@ -166,14 +165,14 @@ export default function TradeDetailPage() {
       </section>
 
       <Card>
-        <CardTitle>Trade Timeline (fills/cancel/requote)</CardTitle>
+        <CardTitle>Timeline de la operacion (fills/cancel/requote)</CardTitle>
         <CardContent>
           <Table>
             <THead>
               <TR>
                 <TH>Timestamp</TH>
-                <TH>Type</TH>
-                <TH>Detail</TH>
+                <TH>Tipo</TH>
+                <TH>Detalle</TH>
               </TR>
             </THead>
             <TBody>

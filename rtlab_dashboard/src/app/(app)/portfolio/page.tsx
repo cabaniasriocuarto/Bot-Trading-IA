@@ -21,9 +21,9 @@ export default function PortfolioPage() {
 
   const refresh = async () => {
     const [pos, pf, tr] = await Promise.all([
-      apiGet<Position[]>("/api/positions"),
-      apiGet<PortfolioSnapshot>("/api/portfolio"),
-      apiGet<Trade[]>("/api/trades"),
+      apiGet<Position[]>("/api/v1/positions"),
+      apiGet<PortfolioSnapshot>("/api/v1/portfolio"),
+      apiGet<Trade[]>("/api/v1/trades"),
     ]);
     setPositions(pos);
     setPortfolio(pf);
@@ -53,39 +53,39 @@ export default function PortfolioPage() {
     <div className="space-y-4">
       <Card>
         <CardTitle className="flex items-center justify-between">
-          Positions / Portfolio
+          Posiciones / Portafolio
           <Button
             variant="danger"
             disabled={role !== "admin" || onCooldown}
             onClick={async () => {
-              const ok = window.confirm("Close all positions?");
+              const ok = window.confirm("Cerrar todas las posiciones?");
               if (!ok) return;
-              const ok2 = window.confirm("Second confirmation: execute close-all now?");
+              const ok2 = window.confirm("Segunda confirmacion: ejecutar cierre total ahora?");
               if (!ok2) return;
-              await apiPost("/api/control/close-all");
+              await apiPost("/api/v1/control/close-all");
               setCooldownUntil(Date.now() + 10_000);
               await refresh();
             }}
           >
-            Close All Positions
+            Cerrar todas
           </Button>
         </CardTitle>
-        <CardDescription>Live exposure, portfolio concentration and recent position history.</CardDescription>
-        {onCooldown ? <p className="mt-2 text-xs text-amber-300">Close-all cooldown active.</p> : null}
+        <CardDescription>Exposicion en vivo, concentracion del portafolio e historial reciente.</CardDescription>
+        {onCooldown ? <p className="mt-2 text-xs text-amber-300">Cooldown de cierre total activo.</p> : null}
       </Card>
 
       <section className="grid gap-4 xl:grid-cols-3">
         <Card>
-          <CardTitle>Exposure Summary</CardTitle>
+          <CardTitle>Resumen de Exposicion</CardTitle>
           <CardContent className="space-y-2">
             <Metric label="Equity" value={portfolio ? fmtUsd(portfolio.equity) : "--"} />
-            <Metric label="Daily PnL" value={portfolio ? fmtUsd(portfolio.pnl_daily) : "--"} />
-            <Metric label="Total Exposure" value={portfolio ? fmtUsd(portfolio.exposure_total) : "--"} />
+            <Metric label="PnL diario" value={portfolio ? fmtUsd(portfolio.pnl_daily) : "--"} />
+            <Metric label="Exposicion total" value={portfolio ? fmtUsd(portfolio.exposure_total) : "--"} />
           </CardContent>
         </Card>
 
         <Card className="xl:col-span-2">
-          <CardTitle>Exposure by Symbol</CardTitle>
+          <CardTitle>Exposicion por simbolo</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -103,19 +103,19 @@ export default function PortfolioPage() {
       </section>
 
       <Card>
-        <CardTitle>Open Positions</CardTitle>
+        <CardTitle>Posiciones Abiertas</CardTitle>
         <CardContent className="overflow-x-auto">
           <Table>
             <THead>
               <TR>
-                <TH>Symbol</TH>
-                <TH>Side</TH>
-                <TH>Qty</TH>
-                <TH>Entry</TH>
+                <TH>Simbolo</TH>
+                <TH>Lado</TH>
+                <TH>Cantidad</TH>
+                <TH>Entrada</TH>
                 <TH>Mark</TH>
-                <TH>Unrealized</TH>
-                <TH>Exposure</TH>
-                <TH>Strategy</TH>
+                <TH>No realizado</TH>
+                <TH>Exposicion</TH>
+                <TH>Estrategia</TH>
               </TR>
             </THead>
             <TBody>
@@ -137,17 +137,17 @@ export default function PortfolioPage() {
       </Card>
 
       <Card>
-        <CardTitle>Position History Snapshot</CardTitle>
-        <CardDescription>Latest closed trades as position history.</CardDescription>
+        <CardTitle>Snapshot de Historial</CardTitle>
+        <CardDescription>Ultimas operaciones cerradas como historial de posiciones.</CardDescription>
         <CardContent className="overflow-x-auto">
           <Table>
             <THead>
               <TR>
                 <TH>Trade</TH>
-                <TH>Symbol</TH>
-                <TH>Side</TH>
-                <TH>Exit reason</TH>
-                <TH>PnL net</TH>
+                <TH>Simbolo</TH>
+                <TH>Lado</TH>
+                <TH>Motivo de salida</TH>
+                <TH>PnL neto</TH>
                 <TH>Holding</TH>
               </TR>
             </THead>
@@ -170,8 +170,8 @@ export default function PortfolioPage() {
       </Card>
 
       <Card>
-        <CardTitle>Correlation Matrix (Simple)</CardTitle>
-        <CardDescription>Approximate portfolio correlation heatmap.</CardDescription>
+        <CardTitle>Matriz de Correlacion (Simple)</CardTitle>
+        <CardDescription>Heatmap aproximado de correlacion del portafolio.</CardDescription>
         <CardContent className="space-y-2">
           {corr.map((row, idx) => (
             <div key={`corr-row-${idx}`} className="flex flex-wrap gap-1">
@@ -206,4 +206,5 @@ function Metric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
 

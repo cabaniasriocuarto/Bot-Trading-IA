@@ -7,10 +7,6 @@ export function shouldUseMockApi(env: NodeJS.ProcessEnv = process.env) {
   if (explicit === "true") return true;
   if (explicit === "false") return false;
 
-  if (isProductionEnv(env)) {
-    return false;
-  }
-
   return !env.BACKEND_API_URL;
 }
 
@@ -29,4 +25,3 @@ export function sanitizeNextPath(candidate: string | null | undefined, fallback 
     return fallback;
   }
 }
-

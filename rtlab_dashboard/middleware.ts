@@ -27,7 +27,7 @@ export async function middleware(req: NextRequest) {
   }
 
   if (pathname.startsWith("/api")) {
-    const res = NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const res = NextResponse.json({ error: "No autorizado" }, { status: 401 });
     if (token) {
       res.cookies.set({
         name: SESSION_COOKIE,

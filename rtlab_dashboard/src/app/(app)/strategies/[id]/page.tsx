@@ -30,10 +30,10 @@ export default function StrategyDetailPage() {
   useEffect(() => {
     const load = async () => {
       const [s, allStrategies, allBacktests, allTrades] = await Promise.all([
-        apiGet<Strategy>(`/api/strategies/${strategyId}`),
-        apiGet<Strategy[]>("/api/strategies"),
-        apiGet<BacktestRun[]>("/api/backtests"),
-        apiGet<Trade[]>(`/api/trades?strategy_id=${strategyId}`),
+        apiGet<Strategy>(`/api/v1/strategies/${strategyId}`),
+        apiGet<Strategy[]>("/api/v1/strategies"),
+        apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
+        apiGet<Trade[]>(`/api/v1/trades?strategy_id=${strategyId}`),
       ]);
       setStrategy(s);
       setStrategies(allStrategies);
@@ -131,7 +131,7 @@ export default function StrategyDetailPage() {
   }, [latestCompareBacktest, latestCurrentBacktest]);
 
   if (!strategy) {
-    return <p className="text-sm text-slate-400">Loading strategy...</p>;
+    return <p className="text-sm text-slate-400">Cargando estrategia...</p>;
   }
 
   return (
@@ -139,10 +139,10 @@ export default function StrategyDetailPage() {
       <Card>
         <CardTitle className="flex flex-wrap items-center gap-2">
           {strategy.name} <span className="text-cyan-300">v{strategy.version}</span>
-          {strategy.primary ? <Badge variant="info">Primary</Badge> : null}
-          {strategy.enabled ? <Badge variant="success">Enabled</Badge> : <Badge>Disabled</Badge>}
+          {strategy.primary ? <Badge variant="info">Primaria</Badge> : null}
+          {strategy.enabled ? <Badge variant="success">Habilitada</Badge> : <Badge>Deshabilitada</Badge>}
         </CardTitle>
-        <CardDescription>Strategy detail with KPI diagnostics and A/B version comparison.</CardDescription>
+        <CardDescription>Detalle de estrategia con KPIs y comparacion A/B de versiones.</CardDescription>
       </Card>
 
       {kpis ? (
@@ -157,7 +157,7 @@ export default function StrategyDetailPage() {
 
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardTitle>Equity & Drawdown</CardTitle>
+          <CardTitle>Equity y Drawdown</CardTitle>
           <CardContent>
             <EquityDrawdownChart
               data={(backtests[0]?.equity_curve || []).map((x) => ({
@@ -168,7 +168,7 @@ export default function StrategyDetailPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardTitle>Rolling Sharpe / Sortino</CardTitle>
+          <CardTitle>Sharpe / Sortino Rolling</CardTitle>
           <CardContent>
             <div className="h-72 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -189,19 +189,19 @@ export default function StrategyDetailPage() {
 
       <section className="grid gap-4 xl:grid-cols-3">
         <Card>
-          <CardTitle>Returns Histogram</CardTitle>
+          <CardTitle>Histograma de Retornos</CardTitle>
           <CardContent>
             <ReturnsHistogram data={histogram} />
           </CardContent>
         </Card>
         <Card>
-          <CardTitle>Fees + Slippage (stacked)</CardTitle>
+          <CardTitle>Fees + Slippage (apilado)</CardTitle>
           <CardContent>
             <StackedCostChart data={costs} />
           </CardContent>
         </Card>
         <Card>
-          <CardTitle>Exposure Trend</CardTitle>
+          <CardTitle>Tendencia de Exposicion</CardTitle>
           <CardContent>
             <div className="h-56 w-full">
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
@@ -229,13 +229,13 @@ export default function StrategyDetailPage() {
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardTitle>Playbook</CardTitle>
-          <CardDescription>Rules summary + active parameters + recent versions.</CardDescription>
+          <CardDescription>Resumen de reglas + parametros activos + versiones recientes.</CardDescription>
           <CardContent className="space-y-3">
             <pre className="whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-200">
               {getPlaybook(strategy.name)}
             </pre>
             <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
-              <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Active Params</p>
+              <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Parametros activos</p>
               <pre className="text-xs text-slate-200">{JSON.stringify(strategy.params, null, 2)}</pre>
             </div>
             <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
@@ -245,7 +245,7 @@ export default function StrategyDetailPage() {
                   .filter((row) => row.name === strategy.name)
                   .map((row) => (
                     <li key={row.id}>
-                      {row.version} - updated {new Date(row.updated_at).toLocaleDateString()}
+                      {row.version} - actualizado {new Date(row.updated_at).toLocaleDateString()}
                     </li>
                   ))}
               </ul>
@@ -254,11 +254,11 @@ export default function StrategyDetailPage() {
         </Card>
 
         <Card>
-          <CardTitle>What Changed? (A/B)</CardTitle>
-          <CardDescription>Compare params and top metrics against another version.</CardDescription>
+          <CardTitle>Que cambio? (A/B)</CardTitle>
+          <CardDescription>Compara parametros y metricas contra otra version.</CardDescription>
           <CardContent className="space-y-3">
             <Select value={compareId} onChange={(e) => setCompareId(e.target.value)}>
-              <option value="">Select version</option>
+              <option value="">Seleccionar version</option>
               {strategies
                 .filter((row) => row.id !== strategy.id)
                 .map((row) => (
@@ -270,17 +270,17 @@ export default function StrategyDetailPage() {
             {compare ? (
               <>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
-                  <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Changed keys</p>
+                  <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Claves cambiadas</p>
                   <div className="flex flex-wrap gap-2">
-                    {changedKeys.length ? changedKeys.map((key) => <Badge key={key}>{key}</Badge>) : <Badge variant="success">No differences</Badge>}
+                    {changedKeys.length ? changedKeys.map((key) => <Badge key={key}>{key}</Badge>) : <Badge variant="success">Sin diferencias</Badge>}
                   </div>
                 </div>
                 <Table>
                   <THead>
                     <TR>
-                      <TH>Param</TH>
-                      <TH>Current</TH>
-                      <TH>Compare</TH>
+                      <TH>Parametro</TH>
+                      <TH>Actual</TH>
+                      <TH>Comparado</TH>
                     </TR>
                   </THead>
                   <TBody>
@@ -296,9 +296,9 @@ export default function StrategyDetailPage() {
                 <Table>
                   <THead>
                     <TR>
-                      <TH>Metric</TH>
-                      <TH>Current</TH>
-                      <TH>Compare</TH>
+                      <TH>Metrica</TH>
+                      <TH>Actual</TH>
+                      <TH>Comparado</TH>
                     </TR>
                   </THead>
                   <TBody>
@@ -313,7 +313,7 @@ export default function StrategyDetailPage() {
                 </Table>
               </>
             ) : (
-              <p className="text-sm text-slate-400">Select a strategy version to compare.</p>
+              <p className="text-sm text-slate-400">Selecciona una version para comparar.</p>
             )}
           </CardContent>
         </Card>
@@ -330,5 +330,6 @@ function Kpi({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
+
 
 

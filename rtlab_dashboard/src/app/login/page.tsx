@@ -39,7 +39,7 @@ function LoginPageContent() {
 
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error || "Login failed");
+      setError(body.error || "No se pudo iniciar sesión.");
       setLoading(false);
       return;
     }
@@ -51,24 +51,24 @@ function LoginPageContent() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),transparent_35%),#020617] p-4">
       <Card className="w-full max-w-md fade-in-up">
-        <CardTitle className="text-2xl">RTLab Control Login</CardTitle>
-        <CardDescription className="mt-1">Use viewer/admin credentials configured in environment variables.</CardDescription>
+        <CardTitle className="text-2xl">Ingreso RTLab Control</CardTitle>
+        <CardDescription className="mt-1">Usá credenciales viewer/admin definidas en variables de entorno.</CardDescription>
         <CardContent>
           <form className="space-y-3" onSubmit={onSubmit}>
             <div className="space-y-1">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Username</label>
-              <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin or viewer" required />
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Usuario</label>
+              <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin o viewer" required />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Password</label>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Contraseña</label>
               <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="********" required />
             </div>
             {error ? <p className="text-sm text-rose-300">{error}</p> : null}
             <Button className="w-full" disabled={loading}>
-              {loading ? "Signing in..." : "Sign in"}
+              {loading ? "Ingresando..." : "Ingresar"}
             </Button>
           </form>
-          <p className="mt-4 text-xs text-slate-500">Use your configured credentials.</p>
+          <p className="mt-4 text-xs text-slate-500">Usá las credenciales configuradas.</p>
         </CardContent>
       </Card>
     </div>
@@ -79,8 +79,8 @@ function LoginFallback() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),transparent_35%),#020617] p-4">
       <Card className="w-full max-w-md">
-        <CardTitle className="text-2xl">RTLab Control Login</CardTitle>
-        <CardDescription className="mt-1">Loading login...</CardDescription>
+        <CardTitle className="text-2xl">Ingreso RTLab Control</CardTitle>
+        <CardDescription className="mt-1">Cargando acceso...</CardDescription>
       </Card>
     </div>
   );

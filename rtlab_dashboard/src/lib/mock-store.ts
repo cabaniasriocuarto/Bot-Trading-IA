@@ -1,18 +1,28 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import type {
   AlertEvent,
   BacktestRun,
   BotStatusResponse,
   ExecutionStats,
+  HealthResponse,
   LogEvent,
   PortfolioSnapshot,
   Position,
   RiskSnapshot,
+  SettingsResponse,
   Strategy,
+  StrategyManifest,
   Trade,
+  TradingMode,
 } from "@/lib/types";
 
 export interface MockStore {
+  version: string;
   status: BotStatusResponse;
+  health: HealthResponse;
+  settings: SettingsResponse;
   strategies: Strategy[];
   backtests: BacktestRun[];
   trades: Trade[];
@@ -22,234 +32,217 @@ export interface MockStore {
   execution: ExecutionStats;
   alerts: AlertEvent[];
   logs: LogEvent[];
-  gateChecklist: Array<{ stage: string; done: boolean; note: string }>;
-  featureFlags: Record<string, boolean>;
-  activeProfile: "PAPER" | "TESTNET" | "LIVE";
 }
+
+const STORE_VERSION = "2.0.0";
+const DATA_DIR = path.join(process.cwd(), ".rtlab_data");
+const STORE_FILE = path.join(DATA_DIR, "mock_store.json");
+const LOGS_JSONL = path.join(DATA_DIR, "logs.jsonl");
 
 function isoMinutesAgo(minutes: number) {
   return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
+function isoHoursAgo(hours: number) {
+  return new Date(Date.now() - hours * 60 * 60_000).toISOString();
 }
 
 function isoDaysAgo(days: number) {
   return new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
 }
 
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
 function makeCurve(base: number, drift = 15) {
   const points: Array<{ time: string; equity: number; drawdown: number }> = [];
   let equity = base;
   let peak = base;
-  for (let i = 0; i < 120; i += 1) {
-    const shock = Math.sin(i / 6) * 30 + (Math.cos(i / 11) * 15 + drift);
+  for (let i = 0; i < 140; i += 1) {
+    const shock = Math.sin(i / 7) * 28 + (Math.cos(i / 11) * 10 + drift);
     equity += shock;
     peak = Math.max(peak, equity);
     const dd = Math.min(0, (equity - peak) / peak);
-    points.push({ time: isoDaysAgo(120 - i), equity: Number(equity.toFixed(2)), drawdown: Number(dd.toFixed(4)) });
+    points.push({ time: isoDaysAgo(140 - i), equity: Number(equity.toFixed(2)), drawdown: Number(dd.toFixed(4)) });
   }
   return points;
 }
 
+function defaultManifest(): StrategyManifest {
+  return {
+    id: "trend_pullback_orderflow",
+    name: "Tendencia + Pullback + Confirmación Order Flow",
+    version: "1.0.0",
+    author: "RTLAB",
+    engine: "rtbot",
+    timeframes: { primary: "15m", entry: "5m", execution: "1m" },
+    supports: { long: true, short: true },
+    inputs: ["ohlcv", "l2_book_topN", "trades_stream", "funding", "open_interest"],
+    tags: ["trend", "pullback", "orderflow"],
+  };
+}
+
+function defaultSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      adx_threshold: { type: "number", minimum: 10, maximum: 60 },
+      rsi_long_min: { type: "number", minimum: 20, maximum: 80 },
+      rsi_long_max: { type: "number", minimum: 20, maximum: 90 },
+      rsi_short_min: { type: "number", minimum: 10, maximum: 70 },
+      rsi_short_max: { type: "number", minimum: 20, maximum: 80 },
+      obi_long_min: { type: "number", minimum: 0, maximum: 1 },
+      obi_short_max: { type: "number", minimum: 0, maximum: 1 },
+      cvd_window_min: { type: "number", minimum: 1, maximum: 120 },
+      risk_per_trade_pct: { type: "number", minimum: 0.1, maximum: 2.0 },
+      max_daily_loss_pct: { type: "number", minimum: 0.5, maximum: 10 },
+      max_dd_pct: { type: "number", minimum: 5, maximum: 50 },
+      max_positions: { type: "number", minimum: 1, maximum: 50 },
+      atr_stop_mult: { type: "number", minimum: 0.5, maximum: 6 },
+      atr_take_mult: { type: "number", minimum: 1, maximum: 8 },
+      trailing_activation_atr: { type: "number", minimum: 0.5, maximum: 6 },
+      trailing_distance_atr: { type: "number", minimum: 0.5, maximum: 6 },
+      time_stop_bars: { type: "number", minimum: 1, maximum: 120 },
+      max_spread_bps: { type: "number", minimum: 1, maximum: 100 },
+      max_slippage_bps: { type: "number", minimum: 1, maximum: 100 },
+    },
+    required: [
+      "adx_threshold",
+      "risk_per_trade_pct",
+      "max_daily_loss_pct",
+      "max_dd_pct",
+      "max_positions",
+      "atr_stop_mult",
+      "atr_take_mult",
+      "max_spread_bps",
+      "max_slippage_bps",
+    ],
+  };
+}
+
+function defaultParams() {
+  return {
+    adx_threshold: 18,
+    rsi_long_min: 45,
+    rsi_long_max: 70,
+    rsi_short_min: 30,
+    rsi_short_max: 55,
+    obi_long_min: 0.55,
+    obi_short_max: 0.45,
+    cvd_window_min: 8,
+    risk_per_trade_pct: 0.75,
+    max_daily_loss_pct: 5,
+    max_dd_pct: 22,
+    max_positions: 20,
+    atr_stop_mult: 2,
+    atr_take_mult: 3,
+    trailing_activation_atr: 1.5,
+    trailing_distance_atr: 2,
+    time_stop_bars: 18,
+    max_spread_bps: 12,
+    max_slippage_bps: 10,
+  };
+}
+
+function toYaml(params: Record<string, unknown>) {
+  return Object.entries(params)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+}
+
 function makeStrategies(): Strategy[] {
+  const manifest = defaultManifest();
+  const params = defaultParams();
+  const defaultsYaml = toYaml(params);
   return [
     {
-      id: "stg_001",
-      name: "trend-pullback",
-      version: "1.3.2",
+      id: manifest.id,
+      name: manifest.name,
+      version: manifest.version,
       enabled: true,
       primary: true,
-      params: { adx_min: 18, pb_atr: 0.7, vpin_limit: 70, slippage_guard_bps: 8 },
-      created_at: isoDaysAgo(90),
-      updated_at: isoDaysAgo(2),
-      notes: "Primary paper profile strategy.",
-      tags: ["trend", "orderflow", "paper"],
-    },
-    {
-      id: "stg_002",
-      name: "trend-pullback",
-      version: "1.4.0-beta",
-      enabled: false,
-      primary: false,
-      params: { adx_min: 20, pb_atr: 0.6, vpin_limit: 65, slippage_guard_bps: 7 },
-      created_at: isoDaysAgo(21),
+      params,
+      created_at: isoDaysAgo(160),
       updated_at: isoDaysAgo(1),
-      notes: "Candidate version under validation.",
-      tags: ["candidate", "ab-test"],
+      last_run_at: isoHoursAgo(2),
+      notes: "Estrategia default de consola. Tendencia + pullback + order flow con guardas de costos.",
+      tags: manifest.tags,
+      manifest,
+      defaults_yaml: defaultsYaml,
+      schema: defaultSchema(),
+      pack_source: "default",
     },
     {
-      id: "stg_003",
-      name: "mean-reversion",
-      version: "0.9.7",
-      enabled: true,
-      primary: false,
-      params: { z_entry: 2.1, z_exit: 0.6, stop_atr: 1.5, hold_bars: 18 },
-      created_at: isoDaysAgo(74),
-      updated_at: isoDaysAgo(4),
-      notes: "Lower turnover fallback.",
-      tags: ["mean-reversion"],
-    },
-    {
-      id: "stg_004",
-      name: "momentum",
-      version: "2.0.1",
+      id: "trend_pullback_orderflow_v101",
+      name: manifest.name,
+      version: "1.0.1",
       enabled: false,
       primary: false,
-      params: { lookback: 48, rebalance_hours: 4, risk_cap: 0.14, turnover_cap: 0.25 },
-      created_at: isoDaysAgo(120),
-      updated_at: isoDaysAgo(20),
-      notes: "Cross-sectional momentum sleeve.",
-      tags: ["momentum", "portfolio"],
+      params: { ...params, adx_threshold: 20, max_slippage_bps: 9 },
+      created_at: isoDaysAgo(45),
+      updated_at: isoDaysAgo(2),
+      last_run_at: isoHoursAgo(26),
+      notes: "Versión candidata para comparador A/B.",
+      tags: [...manifest.tags, "candidate"],
+      manifest: { ...manifest, version: "1.0.1", id: "trend_pullback_orderflow_v101" },
+      defaults_yaml: toYaml({ ...params, adx_threshold: 20, max_slippage_bps: 9 }),
+      schema: defaultSchema(),
+      pack_source: "default",
+    },
+    {
+      id: "mean_reversion_liquidity",
+      name: "Mean Reversion + Liquidez",
+      version: "0.9.2",
+      enabled: false,
+      primary: false,
+      params: { z_entry: 2.2, z_exit: 0.8, hold_bars: 20, max_spread_bps: 8 },
+      created_at: isoDaysAgo(70),
+      updated_at: isoDaysAgo(4),
+      last_run_at: isoHoursAgo(72),
+      notes: "Estrategia secundaria, menor turnover.",
+      tags: ["mean-reversion", "liquidity"],
+      defaults_yaml: toYaml({ z_entry: 2.2, z_exit: 0.8, hold_bars: 20, max_spread_bps: 8 }),
+      schema: {
+        type: "object",
+        properties: {
+          z_entry: { type: "number" },
+          z_exit: { type: "number" },
+          hold_bars: { type: "number" },
+          max_spread_bps: { type: "number" },
+        },
+      },
+      pack_source: "default",
     },
   ];
 }
 
-function makeBacktests(): BacktestRun[] {
-  const curves = [makeCurve(10000, 13), makeCurve(10000, 11), makeCurve(10000, 7), makeCurve(10000, 9)];
-  return [
-    {
-      id: "bt_1001",
-      strategy_id: "stg_001",
-      period: { start: "2024-01-01", end: "2024-12-31" },
-      universe: ["BTC/USDT", "ETH/USDT"],
-      costs_model: { fees_bps: 5.5, spread_bps: 4.0, slippage_bps: 3.2, funding_bps: 1.0 },
-      dataset_hash: "5f5e9f8f7d11dca2",
-      git_commit: "136a5b7",
-      metrics: {
-        cagr: 0.42,
-        max_dd: -0.14,
-        sharpe: 1.8,
-        sortino: 2.4,
-        calmar: 2.9,
-        winrate: 0.56,
-        expectancy: 18.4,
-        avg_trade: 12.6,
-        turnover: 3.1,
-        robust_score: 84.2,
-      },
-      status: "completed",
-      artifacts_links: {
-        report_json: "/api/backtests/bt_1001/report?format=report_json",
-        trades_csv: "/api/backtests/bt_1001/report?format=trades_csv",
-        equity_curve_csv: "/api/backtests/bt_1001/report?format=equity_curve_csv",
-      },
-      created_at: isoDaysAgo(8),
-      duration_sec: 112,
-      equity_curve: curves[0],
-    },
-    {
-      id: "bt_1002",
-      strategy_id: "stg_002",
-      period: { start: "2024-01-01", end: "2024-12-31" },
-      universe: ["BTC/USDT", "ETH/USDT"],
-      costs_model: { fees_bps: 5.5, spread_bps: 4.4, slippage_bps: 3.5, funding_bps: 1.0 },
-      dataset_hash: "8ca591f5e7cf5f91",
-      git_commit: "136a5b7",
-      metrics: {
-        cagr: 0.38,
-        max_dd: -0.12,
-        sharpe: 1.73,
-        sortino: 2.33,
-        calmar: 3.1,
-        winrate: 0.59,
-        expectancy: 17.2,
-        avg_trade: 11.4,
-        turnover: 3.8,
-        robust_score: 80.5,
-      },
-      status: "completed",
-      artifacts_links: {
-        report_json: "/api/backtests/bt_1002/report?format=report_json",
-        trades_csv: "/api/backtests/bt_1002/report?format=trades_csv",
-        equity_curve_csv: "/api/backtests/bt_1002/report?format=equity_curve_csv",
-      },
-      created_at: isoDaysAgo(5),
-      duration_sec: 118,
-      equity_curve: curves[1],
-    },
-    {
-      id: "bt_1003",
-      strategy_id: "stg_003",
-      period: { start: "2024-06-01", end: "2025-01-31" },
-      universe: ["BTC/USDT", "SOL/USDT", "ETH/USDT"],
-      costs_model: { fees_bps: 5.5, spread_bps: 3.2, slippage_bps: 2.8, funding_bps: 1.0 },
-      dataset_hash: "9a68fa2e5db32a71",
-      git_commit: "136a5b7",
-      metrics: {
-        cagr: 0.29,
-        max_dd: -0.1,
-        sharpe: 1.42,
-        sortino: 2.01,
-        calmar: 2.8,
-        winrate: 0.53,
-        expectancy: 12.1,
-        avg_trade: 9.1,
-        turnover: 2.2,
-        robust_score: 72.8,
-      },
-      status: "completed",
-      artifacts_links: {
-        report_json: "/api/backtests/bt_1003/report?format=report_json",
-        trades_csv: "/api/backtests/bt_1003/report?format=trades_csv",
-        equity_curve_csv: "/api/backtests/bt_1003/report?format=equity_curve_csv",
-      },
-      created_at: isoDaysAgo(12),
-      duration_sec: 96,
-      equity_curve: curves[2],
-    },
-    {
-      id: "bt_1004",
-      strategy_id: "stg_004",
-      period: { start: "2024-01-01", end: "2025-01-31" },
-      universe: ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"],
-      costs_model: { fees_bps: 5.5, spread_bps: 4.8, slippage_bps: 4.2, funding_bps: 1.1 },
-      dataset_hash: "4ac8ec72f8c5e6d2",
-      git_commit: "136a5b7",
-      metrics: {
-        cagr: 0.24,
-        max_dd: -0.18,
-        sharpe: 1.1,
-        sortino: 1.7,
-        calmar: 1.33,
-        winrate: 0.51,
-        expectancy: 8.2,
-        avg_trade: 6.8,
-        turnover: 4.9,
-        robust_score: 60.4,
-      },
-      status: "completed",
-      artifacts_links: {
-        report_json: "/api/backtests/bt_1004/report?format=report_json",
-        trades_csv: "/api/backtests/bt_1004/report?format=trades_csv",
-        equity_curve_csv: "/api/backtests/bt_1004/report?format=equity_curve_csv",
-      },
-      created_at: isoDaysAgo(16),
-      duration_sec: 134,
-      equity_curve: curves[3],
-    },
-  ];
-}
-
-function makeTrades(): Trade[] {
+function makeTrades(strategies: Strategy[]): Trade[] {
   const rows: Trade[] = [];
+  const strategyIds = strategies.map((s) => s.id);
   const symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT"];
-  const reasons = ["trend_pullback", "mean_revert", "breakout_confirm"];
-  const exits = ["tp", "sl", "time_stop", "risk_cut"];
-  for (let i = 0; i < 40; i += 1) {
+  const reasons = ["trend_pullback", "of_confirm", "risk_reentry"];
+  const exits = ["tp", "sl", "time_stop", "trail_stop"];
+  for (let i = 0; i < 80; i += 1) {
     const side = i % 3 === 0 ? "short" : "long";
-    const base = 25000 + i * 75;
-    const entry = side === "long" ? base : base + 120;
-    const move = (Math.sin(i / 3) + 0.3) * 220;
+    const base = 25000 + i * 70;
+    const entry = side === "long" ? base : base + 130;
+    const move = (Math.sin(i / 3) + 0.25) * 210;
     const exit = side === "long" ? entry + move : entry - move;
     const pnl = (exit - entry) * 0.03 * (side === "long" ? 1 : -1);
-    const fees = Math.abs(pnl) * 0.12;
-    const slippage = Math.abs(pnl) * 0.08;
+    const fees = Math.abs(pnl) * 0.09 + 1.8;
+    const slippage = Math.abs(pnl) * 0.07 + 1.2;
     rows.push({
-      id: `tr_${1000 + i}`,
-      strategy_id: i % 2 === 0 ? "stg_001" : "stg_003",
+      id: `tr_${1100 + i}`,
+      strategy_id: strategyIds[i % strategyIds.length],
       symbol: symbols[i % symbols.length],
       side,
       timeframe: "5m",
-      entry_time: isoMinutesAgo(60 * 24 - i * 37),
-      exit_time: isoMinutesAgo(60 * 24 - i * 37 - 28),
+      entry_time: isoMinutesAgo(60 * 24 * 3 - i * 43),
+      exit_time: isoMinutesAgo(60 * 24 * 3 - i * 43 - 31),
       entry_px: Number(entry.toFixed(2)),
       exit_px: Number(exit.toFixed(2)),
       qty: Number((0.08 + (i % 4) * 0.03).toFixed(3)),
@@ -257,31 +250,82 @@ function makeTrades(): Trade[] {
       slippage: Number(slippage.toFixed(2)),
       pnl: Number(pnl.toFixed(2)),
       pnl_net: Number((pnl - fees - slippage).toFixed(2)),
-      mae: Number((-Math.abs(move) * 0.5).toFixed(2)),
-      mfe: Number((Math.abs(move) * 0.7).toFixed(2)),
+      mae: Number((-Math.abs(move) * 0.48).toFixed(2)),
+      mfe: Number((Math.abs(move) * 0.66).toFixed(2)),
       reason_code: reasons[i % reasons.length],
       exit_reason: exits[i % exits.length],
       events: [
-        { ts: isoMinutesAgo(60 * 24 - i * 37), type: "signal", detail: "Signal generated from consensus filter." },
-        { ts: isoMinutesAgo(60 * 24 - i * 37 - 2), type: "fill", detail: "Entry order filled." },
-        { ts: isoMinutesAgo(60 * 24 - i * 37 - 15), type: "requote", detail: "Requote accepted by guard." },
-        { ts: isoMinutesAgo(60 * 24 - i * 37 - 28), type: "exit", detail: `Exit by ${exits[i % exits.length]}.` },
+        { ts: isoMinutesAgo(60 * 24 * 3 - i * 43), type: "signal", detail: "Señal generada por consenso técnico + order flow." },
+        { ts: isoMinutesAgo(60 * 24 * 3 - i * 43 - 2), type: "fill", detail: "Orden de entrada ejecutada." },
+        { ts: isoMinutesAgo(60 * 24 * 3 - i * 43 - 17), type: "requote", detail: "Requote aceptado por guardas de spread." },
+        { ts: isoMinutesAgo(60 * 24 * 3 - i * 43 - 31), type: "exit", detail: `Salida por ${exits[i % exits.length]}.` },
       ],
       explain: {
         whitelist_ok: true,
-        trend_ok: i % 7 !== 0,
-        pullback_ok: i % 9 !== 0,
-        orderflow_ok: i % 5 !== 0,
+        trend_ok: i % 9 !== 0,
+        pullback_ok: i % 8 !== 0,
+        orderflow_ok: i % 6 !== 0,
         vpin_ok: i % 11 !== 0,
-        spread_ok: i % 8 !== 0,
+        spread_ok: i % 10 !== 0,
       },
     });
   }
   return rows;
 }
 
+function makeBacktests(strategies: Strategy[]): BacktestRun[] {
+  const curves = [makeCurve(10000, 13), makeCurve(10000, 11), makeCurve(10000, 9)];
+  return strategies.slice(0, 3).map((strategy, idx) => ({
+    id: `bt_${2000 + idx}`,
+    strategy_id: strategy.id,
+    period: { start: "2024-01-01", end: "2025-01-31" },
+    universe: ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+    costs_model: {
+      fees_bps: 5.5 + idx * 0.4,
+      spread_bps: 4 + idx * 0.6,
+      slippage_bps: 3 + idx * 0.5,
+      funding_bps: 1 + idx * 0.2,
+    },
+    dataset_hash: `${Date.now().toString(16).slice(0, 10)}${idx}`,
+    git_commit: "785ef1f",
+    metrics: {
+      cagr: Number((0.28 + (3 - idx) * 0.05).toFixed(2)),
+      max_dd: Number((-0.09 - idx * 0.02).toFixed(4)),
+      sharpe: Number((1.75 - idx * 0.22).toFixed(2)),
+      sortino: Number((2.25 - idx * 0.24).toFixed(2)),
+      calmar: Number((2.6 - idx * 0.25).toFixed(2)),
+      winrate: Number((0.58 - idx * 0.03).toFixed(2)),
+      expectancy: Number((15.2 - idx * 2.1).toFixed(2)),
+      avg_trade: Number((10.6 - idx * 1.4).toFixed(2)),
+      turnover: Number((3.2 + idx * 0.9).toFixed(2)),
+      robust_score: Number((84.2 - idx * 8.4).toFixed(2)),
+    },
+    status: "completed",
+    artifacts_links: {
+      report_json: `/api/v1/backtests/runs/bt_${2000 + idx}?format=report_json`,
+      trades_csv: `/api/v1/backtests/runs/bt_${2000 + idx}?format=trades_csv`,
+      equity_curve_csv: `/api/v1/backtests/runs/bt_${2000 + idx}?format=equity_curve_csv`,
+    },
+    created_at: isoDaysAgo(10 - idx * 2),
+    duration_sec: 110 + idx * 14,
+    equity_curve: curves[idx],
+    drawdown_curve: curves[idx].map((x) => ({ time: x.time, value: x.drawdown })),
+  }));
+}
+
+function makeExecutionSeries() {
+  return Array.from({ length: 80 }).map((_, idx) => ({
+    ts: isoMinutesAgo(80 - idx),
+    latency_ms_p95: Number((108 + Math.sin(idx / 7) * 26 + (idx % 4) * 3).toFixed(1)),
+    spread_bps: Number((4.2 + Math.abs(Math.sin(idx / 9)) * 3.1).toFixed(2)),
+    slippage_bps: Number((3.1 + Math.abs(Math.cos(idx / 8)) * 2.4).toFixed(2)),
+  }));
+}
+
 function createInitialStore(): MockStore {
-  const trades = makeTrades();
+  const strategies = makeStrategies();
+  const trades = makeTrades(strategies);
+  const backtests = makeBacktests(strategies);
   const positions: Position[] = [
     {
       symbol: "BTC/USDT",
@@ -291,7 +335,7 @@ function createInitialStore(): MockStore {
       mark_px: 103120,
       pnl_unrealized: 93.8,
       exposure_usd: 14436.8,
-      strategy_id: "stg_001",
+      strategy_id: strategies[0].id,
     },
     {
       symbol: "ETH/USDT",
@@ -301,125 +345,308 @@ function createInitialStore(): MockStore {
       mark_px: 3978,
       pnl_unrealized: -100.8,
       exposure_usd: 9547.2,
-      strategy_id: "stg_003",
-    },
-    {
-      symbol: "SOL/USDT",
-      side: "short",
-      qty: 28,
-      entry_px: 220,
-      mark_px: 214,
-      pnl_unrealized: 168,
-      exposure_usd: 5992,
-      strategy_id: "stg_001",
+      strategy_id: strategies[0].id,
     },
   ];
 
-  const exposure = positions.map((p) => ({ symbol: p.symbol, exposure: p.exposure_usd }));
-  const exposureTotal = exposure.reduce((acc, x) => acc + x.exposure, 0);
+  const exposureBySymbol = positions.map((p) => ({ symbol: p.symbol, exposure: p.exposure_usd }));
+  const exposureTotal = Number(exposureBySymbol.reduce((acc, x) => acc + x.exposure, 0).toFixed(2));
 
-  return {
-    status: {
-      bot_status: "RUNNING",
-      risk_mode: "NORMAL",
-      paused: false,
-      killed: false,
-      equity: 11892.4,
-      pnl: { daily: 142.7, weekly: 512.9, monthly: 1101.2 },
-      max_dd: { value: -0.084, limit: -0.22 },
-      daily_loss: { value: -0.012, limit: -0.05 },
-      health: {
-        api_latency_ms: 112,
-        ws_connected: true,
-        ws_lag_ms: 41,
-        errors_5m: 0,
-        rate_limits_5m: 1,
-      },
-      updated_at: new Date().toISOString(),
+  const mode: TradingMode = "MOCK";
+  const settings: SettingsResponse = {
+    mode,
+    exchange: "binance",
+    exchange_plugin_options: ["binance", "bybit", "oanda", "alpaca"],
+    credentials: {
+      exchange_configured: false,
+      telegram_configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
+      telegram_chat_id: process.env.TELEGRAM_CHAT_ID || "",
     },
-    strategies: makeStrategies(),
-    backtests: makeBacktests(),
-    trades,
-    positions,
-    portfolio: {
-      equity: 11892.4,
-      pnl_daily: 142.7,
-      pnl_weekly: 512.9,
-      pnl_monthly: 1101.2,
-      exposure_total: exposureTotal,
-      exposure_by_symbol: exposure,
+    telegram: {
+      enabled: process.env.TELEGRAM_ENABLED === "true",
+      chat_id: process.env.TELEGRAM_CHAT_ID || "",
     },
-    risk: {
-      equity: 11892.4,
-      dd: -0.084,
-      daily_loss: -0.012,
-      exposure_total: exposureTotal,
-      exposure_by_symbol: exposure,
-      circuit_breakers: ["spread_guard_warn", "vpin_guard_warn"],
-      limits: {
-        daily_loss_limit: -0.05,
-        max_dd_limit: -0.22,
-        max_positions: 20,
-        max_total_exposure: 1.0,
-      },
+    risk_defaults: {
+      max_daily_loss: 5,
+      max_dd: 22,
+      max_positions: 20,
+      risk_per_trade: 0.75,
     },
     execution: {
-      maker_ratio: 0.63,
-      fill_ratio: 0.91,
-      requotes: 14,
-      cancels: 9,
-      avg_spread: 4.6,
-      p95_spread: 8.9,
-      avg_slippage: 3.2,
-      p95_slippage: 7.4,
-      rate_limit_hits: 3,
-      api_errors: 1,
+      post_only_default: true,
+      slippage_max_bps: 10,
+      request_timeout_ms: 12000,
     },
-    alerts: [
-      { id: "alt_1", ts: isoMinutesAgo(8), severity: "warn", message: "VPIN entered amber zone on ETH/USDT.", related_id: "tr_1017" },
-      {
-        id: "alt_2",
-        ts: isoMinutesAgo(20),
-        severity: "warn",
-        message: "Fees + slippage reached 62% of expected edge on trend-pullback.",
-        related_id: "stg_001",
-      },
-      {
-        id: "alt_3",
-        ts: isoMinutesAgo(27),
-        severity: "info",
-        message: "Backtest bt_1002 completed with robust score 80.5.",
-        related_id: "bt_1002",
-      },
-      { id: "alt_4", ts: isoMinutesAgo(40), severity: "error", message: "Temporary requote burst detected on BTC/USDT.", related_id: "tr_1008" },
-      {
-        id: "alt_5",
-        ts: isoMinutesAgo(55),
-        severity: "warn",
-        message: "Daily loss reached 80% of limit. Consider SAFE_MODE.",
-        related_id: "tr_1022",
-      },
-    ],
-    logs: [
-      { id: "log_1", ts: isoMinutesAgo(2), severity: "info", module: "execution", message: "Order accepted by policy engine.", related_id: "tr_1031" },
-      { id: "log_2", ts: isoMinutesAgo(6), severity: "warn", module: "risk", message: "Spread near configured limit.", related_id: "tr_1017" },
-      { id: "log_3", ts: isoMinutesAgo(14), severity: "debug", module: "signals", message: "Consensus score 0.71 for BTC/USDT.", related_id: "tr_1031" },
-      { id: "log_4", ts: isoMinutesAgo(25), severity: "error", module: "exchange", message: "429 received from ticker endpoint.", related_id: "bt_1001" },
-    ],
-    gateChecklist: [
-      { stage: "Backtest completed", done: true, note: "Latest primary has robust_score > 80" },
-      { stage: "Paper run >= 14 days", done: true, note: "17 days with stable DD" },
-      { stage: "Live guardrails approved", done: false, note: "Pending admin signoff" },
-    ],
-    featureFlags: {
+    feature_flags: {
       orderflow: true,
       vpin: true,
       ml: false,
       stress_tests: true,
       alerts_smart: true,
     },
-    activeProfile: "PAPER",
+    gate_checklist: [
+      { stage: "Backtest completado", done: true, note: "Score robustez > 80 en estrategia primaria." },
+      { stage: "Paper >= 14 días", done: true, note: "17 días estables, DD bajo control." },
+      { stage: "Aprobación LIVE", done: false, note: "Pendiente validación manual." },
+    ],
   };
+
+  const executionSeries = makeExecutionSeries();
+  const execution: ExecutionStats = {
+    maker_ratio: 0.63,
+    fill_ratio: 0.91,
+    requotes: 14,
+    cancels: 9,
+    avg_spread: 4.6,
+    p95_spread: 8.9,
+    avg_slippage: 3.2,
+    p95_slippage: 7.4,
+    rate_limit_hits: 3,
+    api_errors: 1,
+    latency_ms_p95: 142,
+    series: executionSeries,
+    endpoint_errors: [
+      { endpoint: "/fapi/v1/depth", errors: 1, rate_limits: 2 },
+      { endpoint: "/fapi/v1/order", errors: 0, rate_limits: 1 },
+    ],
+    notes: [
+      "Slippage real cercana a estimada en ventana reciente.",
+      "Spread p95 dentro de umbral configurado.",
+      "Requotes concentrados en apertura de sesión US.",
+    ],
+  };
+
+  const logs: LogEvent[] = [
+    {
+      id: "log_1001",
+      ts: isoMinutesAgo(3),
+      type: "order_update",
+      severity: "info",
+      module: "execution",
+      message: "Orden limitada confirmada por exchange.",
+      related_ids: ["tr_1128"],
+      payload: { symbol: "BTC/USDT", order_type: "limit", status: "filled" },
+    },
+    {
+      id: "log_1002",
+      ts: isoMinutesAgo(9),
+      type: "breaker_triggered",
+      severity: "warn",
+      module: "risk",
+      message: "Guardia de spread en zona ámbar.",
+      related_ids: ["tr_1122"],
+      payload: { spread_bps: 9.2, threshold_bps: 10 },
+    },
+    {
+      id: "log_1003",
+      ts: isoMinutesAgo(16),
+      type: "api_error",
+      severity: "error",
+      module: "exchange",
+      message: "Rate limit temporal en endpoint de orderbook.",
+      related_ids: ["bt_2000"],
+      payload: { endpoint: "/fapi/v1/depth", status: 429 },
+    },
+  ];
+
+  const alerts: AlertEvent[] = [
+    {
+      id: "alt_1001",
+      ts: isoMinutesAgo(7),
+      type: "breaker_triggered",
+      severity: "warn",
+      module: "risk",
+      message: "Fees + slippage consumen 61% del edge esperado.",
+      related_id: "tr_1120",
+      data: { fees_bps: 5.9, slippage_bps: 4.1 },
+    },
+    {
+      id: "alt_1002",
+      ts: isoMinutesAgo(22),
+      type: "backtest_finished",
+      severity: "info",
+      module: "backtest",
+      message: "Backtest bt_2001 finalizado con robustez 75.8.",
+      related_id: "bt_2001",
+      data: { robust_score: 75.8 },
+    },
+    {
+      id: "alt_1003",
+      ts: isoMinutesAgo(37),
+      type: "api_error",
+      severity: "error",
+      module: "exchange",
+      message: "Burst de requotes detectado en BTC/USDT.",
+      related_id: "tr_1119",
+      data: { requotes_5m: 5 },
+    },
+  ];
+
+  const status: BotStatusResponse = {
+    state: "RUNNING",
+    daily_pnl: 142.7,
+    max_dd_value: -0.084,
+    daily_loss_value: -0.012,
+    last_heartbeat: new Date().toISOString(),
+    bot_status: "RUNNING",
+    risk_mode: "NORMAL",
+    paused: false,
+    killed: false,
+    equity: 11892.4,
+    pnl: { daily: 142.7, weekly: 512.9, monthly: 1101.2 },
+    max_dd: { value: -0.084, limit: -0.22 },
+    daily_loss: { value: -0.012, limit: -0.05 },
+    health: {
+      api_latency_ms: 96,
+      ws_connected: true,
+      ws_lag_ms: 34,
+      errors_5m: 0,
+      rate_limits_5m: 1,
+    },
+    updated_at: new Date().toISOString(),
+  };
+
+  const health: HealthResponse = {
+    ok: true,
+    time: new Date().toISOString(),
+    version: STORE_VERSION,
+    ws: {
+      connected: true,
+      transport: "sse",
+      url: "/ws/v1/events",
+      last_event_at: new Date().toISOString(),
+    },
+    exchange: {
+      mode,
+      name: "binance",
+    },
+    db: { ok: true, driver: "jsonl" },
+  };
+
+  const portfolio: PortfolioSnapshot = {
+    equity: status.equity,
+    pnl_daily: status.pnl.daily,
+    pnl_weekly: status.pnl.weekly,
+    pnl_monthly: status.pnl.monthly,
+    exposure_total: exposureTotal,
+    exposure_by_symbol: exposureBySymbol,
+    open_positions: positions,
+    history: Array.from({ length: 45 }).map((_, i) => ({
+      ts: isoDaysAgo(45 - i),
+      equity: Number((10000 + i * 38 + Math.sin(i / 6) * 120).toFixed(2)),
+      pnl_daily: Number((Math.sin(i / 4) * 90).toFixed(2)),
+    })),
+    corr_matrix: [
+      [1, 0.72, 0.58],
+      [0.72, 1, 0.54],
+      [0.58, 0.54, 1],
+    ],
+  };
+
+  const risk: RiskSnapshot = {
+    equity: status.equity,
+    dd: status.max_dd.value,
+    daily_loss: status.daily_loss.value,
+    exposure_total: exposureTotal,
+    exposure_by_symbol: exposureBySymbol,
+    circuit_breakers: ["spread_guard_warn", "vpin_guard_warn"],
+    limits: {
+      daily_loss_limit: -settings.risk_defaults.max_daily_loss / 100,
+      max_dd_limit: -settings.risk_defaults.max_dd / 100,
+      max_positions: settings.risk_defaults.max_positions,
+      max_total_exposure: 1.0,
+      risk_per_trade: settings.risk_defaults.risk_per_trade / 100,
+      close_all_enabled: true,
+    },
+    stress_tests: [
+      { scenario: "Base", robust_score: 84.2 },
+      { scenario: "Fees x2", robust_score: 74.1 },
+      { scenario: "Slippage x2", robust_score: 69.4 },
+      { scenario: "Spread shock", robust_score: 66.7 },
+    ],
+    forecast_band: {
+      return_p50_30d: 0.042,
+      return_p90_30d: 0.089,
+      dd_p90_30d: -0.098,
+    },
+  };
+
+  return {
+    version: STORE_VERSION,
+    status,
+    health,
+    settings,
+    strategies,
+    backtests,
+    trades,
+    positions,
+    portfolio,
+    risk,
+    execution,
+    alerts,
+    logs,
+  };
+}
+
+function syncDerived(store: MockStore) {
+  const exposureBySymbol = store.positions.map((p) => ({ symbol: p.symbol, exposure: p.exposure_usd }));
+  const exposureTotal = Number(exposureBySymbol.reduce((acc, x) => acc + x.exposure, 0).toFixed(2));
+  const mode = store.settings.mode;
+
+  store.status.state = store.status.bot_status;
+  store.status.daily_pnl = store.status.pnl.daily;
+  store.status.max_dd_value = store.status.max_dd.value;
+  store.status.daily_loss_value = store.status.daily_loss.value;
+  store.status.last_heartbeat = store.status.updated_at;
+  store.status.health.ws_connected = store.health.ws.connected;
+
+  store.health.time = new Date().toISOString();
+  store.health.exchange.mode = mode;
+  store.health.exchange.name = store.settings.exchange;
+  store.health.ws.last_event_at = store.status.updated_at;
+
+  store.portfolio.equity = store.status.equity;
+  store.portfolio.pnl_daily = store.status.pnl.daily;
+  store.portfolio.pnl_weekly = store.status.pnl.weekly;
+  store.portfolio.pnl_monthly = store.status.pnl.monthly;
+  store.portfolio.exposure_total = exposureTotal;
+  store.portfolio.exposure_by_symbol = exposureBySymbol;
+  store.portfolio.open_positions = store.positions;
+
+  store.risk.equity = store.status.equity;
+  store.risk.dd = store.status.max_dd.value;
+  store.risk.daily_loss = store.status.daily_loss.value;
+  store.risk.exposure_total = exposureTotal;
+  store.risk.exposure_by_symbol = exposureBySymbol;
+  store.risk.limits.daily_loss_limit = -store.settings.risk_defaults.max_daily_loss / 100;
+  store.risk.limits.max_dd_limit = -store.settings.risk_defaults.max_dd / 100;
+  store.risk.limits.max_positions = store.settings.risk_defaults.max_positions;
+  store.risk.limits.risk_per_trade = store.settings.risk_defaults.risk_per_trade / 100;
+
+  store.execution.series = store.execution.series.slice(-120);
+}
+
+function saveStore(store: MockStore) {
+  ensureDataDir();
+  syncDerived(store);
+  fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), "utf8");
+}
+
+function appendJsonl(log: LogEvent) {
+  ensureDataDir();
+  fs.appendFileSync(LOGS_JSONL, `${JSON.stringify(log)}\n`, "utf8");
+}
+
+function loadStoreFromDisk(): MockStore | null {
+  try {
+    if (!fs.existsSync(STORE_FILE)) return null;
+    const raw = fs.readFileSync(STORE_FILE, "utf8");
+    const parsed = JSON.parse(raw) as MockStore;
+    if (!parsed || typeof parsed !== "object" || !parsed.status || !parsed.settings) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 declare global {
@@ -428,25 +655,66 @@ declare global {
 
 export function getMockStore() {
   if (!globalThis.__rtlabMockStore) {
-    globalThis.__rtlabMockStore = createInitialStore();
+    const restored = loadStoreFromDisk();
+    globalThis.__rtlabMockStore = restored || createInitialStore();
+    saveStore(globalThis.__rtlabMockStore);
   }
   return globalThis.__rtlabMockStore;
 }
 
+export function saveMockStore() {
+  const store = getMockStore();
+  saveStore(store);
+}
+
 export function pushLog(log: Omit<LogEvent, "id" | "ts">) {
   const store = getMockStore();
-  store.logs.unshift({
-    id: `log_${Date.now()}`,
+  const entry: LogEvent = {
+    id: `log_${Date.now()}_${Math.floor(Math.random() * 999)}`,
     ts: new Date().toISOString(),
     ...log,
-  });
+  };
+  store.logs.unshift(entry);
+  appendJsonl(entry);
+  saveStore(store);
+  return entry;
 }
 
 export function pushAlert(alert: Omit<AlertEvent, "id" | "ts">) {
   const store = getMockStore();
-  store.alerts.unshift({
-    id: `alt_${Date.now()}`,
+  const entry: AlertEvent = {
+    id: `alt_${Date.now()}_${Math.floor(Math.random() * 999)}`,
     ts: new Date().toISOString(),
     ...alert,
-  });
+  };
+  store.alerts.unshift(entry);
+  saveStore(store);
+  return entry;
+}
+
+export function rotateExecutionSeries() {
+  const store = getMockStore();
+  const last = store.execution.series[store.execution.series.length - 1];
+  const idx = store.execution.series.length;
+  const next = {
+    ts: new Date().toISOString(),
+    latency_ms_p95: Number(((last?.latency_ms_p95 || 110) + Math.sin(idx / 7) * 1.6).toFixed(2)),
+    spread_bps: Number(((last?.spread_bps || 4.2) + Math.sin(idx / 6) * 0.2).toFixed(2)),
+    slippage_bps: Number(((last?.slippage_bps || 3.1) + Math.cos(idx / 6) * 0.2).toFixed(2)),
+  };
+  store.execution.series.push(next);
+  store.execution.series = store.execution.series.slice(-120);
+  store.execution.latency_ms_p95 = next.latency_ms_p95;
+  store.execution.avg_spread = Number(
+    (store.execution.series.reduce((acc, row) => acc + row.spread_bps, 0) / store.execution.series.length).toFixed(2),
+  );
+  store.execution.avg_slippage = Number(
+    (store.execution.series.reduce((acc, row) => acc + row.slippage_bps, 0) / store.execution.series.length).toFixed(2),
+  );
+  store.execution.p95_spread = [...store.execution.series]
+    .sort((a, b) => a.spread_bps - b.spread_bps)[Math.floor(store.execution.series.length * 0.95)]!.spread_bps;
+  store.execution.p95_slippage = [...store.execution.series]
+    .sort((a, b) => a.slippage_bps - b.slippage_bps)[Math.floor(store.execution.series.length * 0.95)]!.slippage_bps;
+  store.status.updated_at = new Date().toISOString();
+  saveStore(store);
 }
