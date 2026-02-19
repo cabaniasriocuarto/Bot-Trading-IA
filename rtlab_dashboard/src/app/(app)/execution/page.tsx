@@ -62,7 +62,7 @@ export default function ExecutionPage() {
           <CardTitle>Execution Quality Snapshot</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <BarChart data={qualityBars}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="metric" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -79,7 +79,7 @@ export default function ExecutionPage() {
           <CardTitle>Latency & Spread Trace</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={latencySeries}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -122,4 +122,5 @@ function Metric({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
+
 

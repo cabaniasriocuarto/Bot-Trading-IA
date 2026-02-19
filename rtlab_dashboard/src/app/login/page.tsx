@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { sanitizeNextPath } from "@/lib/security";
 
 export default function LoginPage() {
   return (
@@ -43,8 +44,8 @@ function LoginPageContent() {
       return;
     }
 
-    const next = search.get("next") || "/";
-    router.push(next);
+    const next = sanitizeNextPath(search.get("next"));
+    router.replace(next);
   };
 
   return (
@@ -67,9 +68,7 @@ function LoginPageContent() {
               {loading ? "Signing in..." : "Sign in"}
             </Button>
           </form>
-          <p className="mt-4 text-xs text-slate-500">
-            Default fallback users: <code>admin/admin123!</code> and <code>viewer/viewer123!</code>.
-          </p>
+          <p className="mt-4 text-xs text-slate-500">Use your configured credentials.</p>
         </CardContent>
       </Card>
     </div>
@@ -86,4 +85,3 @@ function LoginFallback() {
     </div>
   );
 }
-

@@ -9,7 +9,7 @@ export function StackedCostChart({
 }) {
   return (
     <div className="h-64 w-full">
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
         <BarChart data={data}>
           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
           <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -24,4 +24,5 @@ export function StackedCostChart({
     </div>
   );
 }
+
 

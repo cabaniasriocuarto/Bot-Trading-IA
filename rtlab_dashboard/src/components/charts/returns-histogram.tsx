@@ -5,7 +5,7 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 export function ReturnsHistogram({ data }: { data: Array<{ bucket: string; count: number }> }) {
   return (
     <div className="h-56 w-full">
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
         <BarChart data={data}>
           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
           <XAxis dataKey="bucket" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -17,4 +17,5 @@ export function ReturnsHistogram({ data }: { data: Array<{ bucket: string; count
     </div>
   );
 }
+
 

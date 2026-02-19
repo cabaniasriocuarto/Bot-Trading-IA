@@ -83,7 +83,7 @@ export default function RiskPage() {
           <CardDescription>Robustness under cost shocks.</CardDescription>
           <CardContent>
             <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <BarChart data={stressRows}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="scenario" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -158,3 +158,4 @@ function MetricRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+

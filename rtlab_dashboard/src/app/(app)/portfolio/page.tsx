@@ -88,7 +88,7 @@ export default function PortfolioPage() {
           <CardTitle>Exposure by Symbol</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <BarChart data={portfolio?.exposure_by_symbol || []}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="symbol" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -206,3 +206,4 @@ function Metric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+

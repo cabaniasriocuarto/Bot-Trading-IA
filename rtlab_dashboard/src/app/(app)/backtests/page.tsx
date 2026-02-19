@@ -242,7 +242,7 @@ export default function BacktestsPage() {
           <CardDescription>Selected backtests (2-5) superimposed.</CardDescription>
           <CardContent>
             <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={overlayData}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -262,7 +262,7 @@ export default function BacktestsPage() {
           <CardDescription>Compare risk profile across selected runs.</CardDescription>
           <CardContent>
             <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={overlayDDData}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -281,3 +281,4 @@ export default function BacktestsPage() {
     </div>
   );
 }
+

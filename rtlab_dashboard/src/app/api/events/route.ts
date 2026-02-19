@@ -2,25 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getSessionFromRequest } from "@/lib/auth";
 import { getMockStore } from "@/lib/mock-store";
+import { shouldUseMockApi } from "@/lib/security";
 
 export const dynamic = "force-dynamic";
 
-function isMockMode() {
-  const explicit = process.env.USE_MOCK_API;
-  if (explicit === "false") return false;
-  if (explicit === "true") return true;
-  return !process.env.BACKEND_API_URL;
-}
-
-async function proxyEvents(req: NextRequest) {
+async function proxyEvents(req: NextRequest, session: { role: "admin" | "viewer"; username: string }) {
   const backend = process.env.BACKEND_API_URL;
   if (!backend) {
     return NextResponse.json({ error: "BACKEND_API_URL is not set." }, { status: 500 });
   }
   const target = `${backend.replace(/\/$/, "")}/api/events${req.nextUrl.search}`;
+  const headers = new Headers(req.headers);
+  headers.set("Accept", "text/event-stream");
+  headers.set("x-rtlab-role", session.role);
+  headers.set("x-rtlab-user", session.username);
+  headers.delete("host");
+  headers.delete("content-length");
+
   const upstream = await fetch(target, {
     method: "GET",
-    headers: { Accept: "text/event-stream" },
+    headers,
     cache: "no-store",
   });
   return new NextResponse(upstream.body, {
@@ -79,8 +80,8 @@ export async function GET(req: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (isMockMode()) {
+  if (shouldUseMockApi()) {
     return createMockEventStream(req);
   }
-  return proxyEvents(req);
+  return proxyEvents(req, session);
 }

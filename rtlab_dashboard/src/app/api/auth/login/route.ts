@@ -11,12 +11,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Username and password are required." }, { status: 400 });
   }
 
-  const role = resolveRole(username, password);
+  let role = null;
+  try {
+    role = resolveRole(username, password);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid auth configuration.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
   if (!role) {
     return NextResponse.json({ error: "Invalid credentials." }, { status: 401 });
   }
 
-  const token = await signSessionToken({ username, role });
+  let token = "";
+  try {
+    token = await signSessionToken({ username, role });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not create session.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
   const res = NextResponse.json({ ok: true, user: { username, role } });
   res.cookies.set({
     name: SESSION_COOKIE,
@@ -29,4 +41,3 @@ export async function POST(req: NextRequest) {
   });
   return res;
 }
-

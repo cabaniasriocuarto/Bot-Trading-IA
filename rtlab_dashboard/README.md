@@ -20,12 +20,9 @@ npm run dev
 
 Abrir: `http://localhost:3000`
 
-## 2) Credenciales de login (por defecto)
+## 2) Credenciales de login
 
-- admin: `admin` / `admin123!`
-- viewer: `viewer` / `viewer123!`
-
-Cambialas en `.env.local`:
+Define credenciales propias en `.env.local` (no usar valores de ejemplo en produccion):
 
 ```env
 ADMIN_USERNAME=...
@@ -37,13 +34,14 @@ AUTH_SECRET=...
 
 ## 3) Modos de datos
 
-### Modo mock (default)
+### Modo mock (solo desarrollo)
 
 ```env
 USE_MOCK_API=true
 ```
 
 Toda la UI funciona con datos simulados para demo/desarrollo.
+En produccion deja `USE_MOCK_API=false`.
 
 ### Modo real (backend VPS)
 
@@ -87,7 +85,7 @@ Auth:
 - `POST /api/auth/logout`
 - `GET /api/auth/me`
 
-## 5) Páginas incluidas
+## 5) Paginas incluidas
 
 - Overview (Home)
 - Strategies (Registry)
@@ -110,7 +108,7 @@ Auth:
    - `ADMIN_PASSWORD`
    - `VIEWER_USERNAME`
    - `VIEWER_PASSWORD`
-   - `USE_MOCK_API` (`true` o `false`)
+   - `USE_MOCK_API` (recomendado: `false` en produccion)
    - `BACKEND_API_URL` (si `USE_MOCK_API=false`)
 4. Deploy.
 
@@ -118,4 +116,7 @@ Auth:
 
 - No guardar API keys de exchange en el front.
 - Toda accion sensible va por backend autenticado.
-- Si usas `USE_MOCK_API=false`, mantener RBAC activo tambien del lado backend.
+- Mantener `USE_MOCK_API=false` en produccion.
+- Mantener RBAC activo tambien del lado backend.
+- Configurar `AUTH_SECRET` fuerte (minimo 32 caracteres) y credenciales no triviales.
+

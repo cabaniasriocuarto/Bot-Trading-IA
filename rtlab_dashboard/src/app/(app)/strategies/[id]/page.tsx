@@ -128,7 +128,7 @@ export default function StrategyDetailPage() {
           <CardTitle>Rolling Sharpe / Sortino</CardTitle>
           <CardContent>
             <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={rolling}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
@@ -161,7 +161,7 @@ export default function StrategyDetailPage() {
           <CardTitle>Exposure Trend</CardTitle>
           <CardContent>
             <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart
                   data={(backtests[0]?.equity_curve || []).map((x, idx) => ({
                     label: idx % 12 === 0 ? x.time.slice(5, 10) : "",
@@ -269,4 +269,5 @@ function Kpi({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
+
 
