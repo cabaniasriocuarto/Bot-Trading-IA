@@ -92,6 +92,23 @@ export default function BacktestsPage() {
 
   const selectedRuns = runs.filter((run) => selected.includes(run.id)).slice(0, 5);
 
+  const consistency = useMemo(() => {
+    if (selectedRuns.length < 2) return null;
+    const periods = new Set(selectedRuns.map((run) => `${run.period.start}|${run.period.end}`));
+    const universes = new Set(selectedRuns.map((run) => [...run.universe].sort().join(",")));
+    const costs = new Set(
+      selectedRuns.map(
+        (run) =>
+          `${run.costs_model.fees_bps}|${run.costs_model.spread_bps}|${run.costs_model.slippage_bps}|${run.costs_model.funding_bps}`,
+      ),
+    );
+    return {
+      samePeriod: periods.size === 1,
+      sameUniverse: universes.size === 1,
+      sameCosts: costs.size === 1,
+    };
+  }, [selectedRuns]);
+
   const overlayData = useMemo(() => {
     if (!selectedRuns.length) return [];
     const map = new Map<number, Record<string, number | string>>();
@@ -278,6 +295,62 @@ export default function BacktestsPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardTitle>Comparator Metrics</CardTitle>
+        <CardDescription>Run-level KPI comparison with robustness and consistency checks.</CardDescription>
+        <CardContent className="space-y-3">
+          {consistency ? (
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={consistency.samePeriod ? "success" : "warn"}>
+                Period {consistency.samePeriod ? "aligned" : "mismatch"}
+              </Badge>
+              <Badge variant={consistency.sameUniverse ? "success" : "warn"}>
+                Universe {consistency.sameUniverse ? "aligned" : "mismatch"}
+              </Badge>
+              <Badge variant={consistency.sameCosts ? "success" : "warn"}>
+                Costs {consistency.sameCosts ? "aligned" : "mismatch"}
+              </Badge>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">Select at least 2 runs to activate consistency checks and metric comparison.</p>
+          )}
+          <Table>
+            <THead>
+              <TR>
+                <TH>Run</TH>
+                <TH>CAGR</TH>
+                <TH>Max DD</TH>
+                <TH>Sharpe</TH>
+                <TH>Sortino</TH>
+                <TH>Calmar</TH>
+                <TH>Winrate</TH>
+                <TH>Expectancy</TH>
+                <TH>Avg Trade</TH>
+                <TH>Turnover</TH>
+                <TH>Robustness</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {selectedRuns.map((run) => (
+                <TR key={`cmp-${run.id}`}>
+                  <TD>{run.id}</TD>
+                  <TD>{fmtPct(run.metrics.cagr)}</TD>
+                  <TD>{fmtPct(run.metrics.max_dd)}</TD>
+                  <TD>{fmtNum(run.metrics.sharpe)}</TD>
+                  <TD>{fmtNum(run.metrics.sortino)}</TD>
+                  <TD>{fmtNum(run.metrics.calmar)}</TD>
+                  <TD>{fmtPct(run.metrics.winrate)}</TD>
+                  <TD>{fmtNum(run.metrics.expectancy)}</TD>
+                  <TD>{fmtNum(run.metrics.avg_trade)}</TD>
+                  <TD>{fmtNum(run.metrics.turnover)}</TD>
+                  <TD>{fmtNum(run.metrics.robust_score)}</TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }

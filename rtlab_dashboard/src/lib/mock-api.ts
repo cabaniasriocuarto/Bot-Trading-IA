@@ -15,42 +15,79 @@ function ensureAdmin(method: string, role: "admin" | "viewer") {
   return null;
 }
 
-function withQueryFilter<T extends { ts: string }>(rows: T[], searchParams: URLSearchParams) {
-  const since = searchParams.get("since");
-  if (!since) return rows;
-  const sinceMs = new Date(since).getTime();
-  if (Number.isNaN(sinceMs)) return rows;
-  return rows.filter((row) => new Date(row.ts).getTime() >= sinceMs);
+function parseDateMs(value: string | null) {
+  if (!value) return null;
+  const ms = new Date(value).getTime();
+  if (Number.isNaN(ms)) return null;
+  return ms;
 }
 
-function buildBacktestRun() {
+function withTimeRangeFilter<T extends { ts: string }>(rows: T[], searchParams: URLSearchParams) {
+  const since = searchParams.get("since");
+  const until = searchParams.get("until");
+  const sinceMs = parseDateMs(since);
+  const untilMs = parseDateMs(until);
+  return rows.filter((row) => {
+    const ts = new Date(row.ts).getTime();
+    if (sinceMs !== null && ts < sinceMs) return false;
+    if (untilMs !== null && ts > untilMs) return false;
+    return true;
+  });
+}
+
+function buildBacktestRun(
+  payload: Partial<{
+    strategy_id: string;
+    period: { start?: string; end?: string };
+    universe: string[];
+    costs_model: { fees_bps?: number; spread_bps?: number; slippage_bps?: number; funding_bps?: number };
+  }>,
+) {
   const store = getMockStore();
   const id = `bt_${Date.now()}`;
   const now = new Date();
+  const strategyId = payload.strategy_id || "stg_001";
+  const period = {
+    start: payload.period?.start || "2025-01-01",
+    end: payload.period?.end || "2025-12-31",
+  };
+  const universe = Array.isArray(payload.universe) && payload.universe.length ? payload.universe : ["BTC/USDT", "ETH/USDT"];
+  const costsModel = {
+    fees_bps: Number(payload.costs_model?.fees_bps ?? 5.5),
+    spread_bps: Number(payload.costs_model?.spread_bps ?? 4.0),
+    slippage_bps: Number(payload.costs_model?.slippage_bps ?? 3.1),
+    funding_bps: Number(payload.costs_model?.funding_bps ?? 1.0),
+  };
+
+  const costPenalty = costsModel.fees_bps + costsModel.spread_bps + costsModel.slippage_bps * 0.8 + costsModel.funding_bps * 0.5;
+  const robustScore = Math.max(35, Math.min(92, Number((88 - costPenalty * 1.2 + Math.random() * 3).toFixed(2))));
+  const sharpe = Number((0.9 + robustScore / 100).toFixed(2));
+  const maxDd = Number((-0.08 - (95 - robustScore) / 600).toFixed(4));
+
   const points = Array.from({ length: 90 }).map((_, idx) => ({
     time: new Date(now.getTime() - (90 - idx) * 24 * 60 * 60_000).toISOString(),
-    equity: Number((10000 + idx * 18 + Math.sin(idx / 7) * 140).toFixed(2)),
-    drawdown: Number((-Math.abs(Math.cos(idx / 11) * 0.08)).toFixed(4)),
+    equity: Number((10000 + idx * (12 + sharpe * 2.2) + Math.sin(idx / 7) * 140).toFixed(2)),
+    drawdown: Number((maxDd * Math.abs(Math.cos(idx / 11))).toFixed(4)),
   }));
   const run = {
     id,
-    strategy_id: "stg_001",
-    period: { start: "2025-01-01", end: "2025-12-31" },
-    universe: ["BTC/USDT", "ETH/USDT"],
-    costs_model: { fees_bps: 5.5, spread_bps: 4.0, slippage_bps: 3.1, funding_bps: 1.0 },
+    strategy_id: strategyId,
+    period,
+    universe,
+    costs_model: costsModel,
     dataset_hash: `${Date.now().toString(16)}a9`,
-    git_commit: "136a5b7",
+    git_commit: "0f0d11e",
     metrics: {
-      cagr: 0.33,
-      max_dd: -0.11,
-      sharpe: 1.55,
-      sortino: 2.09,
-      calmar: 3.0,
-      winrate: 0.57,
-      expectancy: 14.4,
-      avg_trade: 10.2,
-      turnover: 2.9,
-      robust_score: 77.8,
+      cagr: Number((0.18 + robustScore / 220).toFixed(2)),
+      max_dd: maxDd,
+      sharpe,
+      sortino: Number((sharpe * 1.28).toFixed(2)),
+      calmar: Number((Math.abs((0.18 + robustScore / 220) / maxDd)).toFixed(2)),
+      winrate: Number((0.45 + robustScore / 500).toFixed(2)),
+      expectancy: Number((8 + robustScore / 4).toFixed(2)),
+      avg_trade: Number((6 + robustScore / 9).toFixed(2)),
+      turnover: Number((2.2 + (95 - robustScore) / 20).toFixed(2)),
+      robust_score: robustScore,
     },
     status: "completed" as const,
     artifacts_links: {
@@ -100,12 +137,24 @@ export async function handleMockApi(req: NextRequest, path: string[], role: "adm
     const strategyId = q.get("strategy_id");
     const symbol = q.get("symbol");
     const side = q.get("side");
+    const timeframe = q.get("timeframe");
+    const reasonCode = q.get("reason_code");
     const exitReason = q.get("exit_reason");
+    const result = q.get("result");
+    const dateFrom = parseDateMs(q.get("date_from"));
+    const dateTo = parseDateMs(q.get("date_to"));
     let rows = [...store.trades];
     if (strategyId) rows = rows.filter((row) => row.strategy_id === strategyId);
     if (symbol) rows = rows.filter((row) => row.symbol === symbol);
     if (side) rows = rows.filter((row) => row.side === side);
+    if (timeframe) rows = rows.filter((row) => row.timeframe === timeframe);
+    if (reasonCode) rows = rows.filter((row) => row.reason_code === reasonCode);
     if (exitReason) rows = rows.filter((row) => row.exit_reason === exitReason);
+    if (result === "win") rows = rows.filter((row) => row.pnl_net > 0);
+    if (result === "loss") rows = rows.filter((row) => row.pnl_net < 0);
+    if (result === "breakeven") rows = rows.filter((row) => row.pnl_net === 0);
+    if (dateFrom !== null) rows = rows.filter((row) => new Date(row.entry_time).getTime() >= dateFrom);
+    if (dateTo !== null) rows = rows.filter((row) => new Date(row.entry_time).getTime() <= dateTo);
     return NextResponse.json(rows);
   }
 
@@ -130,14 +179,14 @@ export async function handleMockApi(req: NextRequest, path: string[], role: "adm
     if (action === "enable") {
       strategy.enabled = true;
       strategy.updated_at = new Date().toISOString();
-      pushAlert({ severity: "info", message: `Strategy ${strategy.name}:${strategy.version} enabled.` });
+      pushAlert({ severity: "info", message: `Strategy ${strategy.name}:${strategy.version} enabled.`, related_id: strategy.id });
       return NextResponse.json({ ok: true, strategy });
     }
 
     if (action === "disable") {
       strategy.enabled = false;
       strategy.updated_at = new Date().toISOString();
-      pushAlert({ severity: "warn", message: `Strategy ${strategy.name}:${strategy.version} disabled.` });
+      pushAlert({ severity: "warn", message: `Strategy ${strategy.name}:${strategy.version} disabled.`, related_id: strategy.id });
       return NextResponse.json({ ok: true, strategy });
     }
 
@@ -148,7 +197,7 @@ export async function handleMockApi(req: NextRequest, path: string[], role: "adm
       strategy.primary = true;
       strategy.enabled = true;
       strategy.updated_at = new Date().toISOString();
-      pushLog({ severity: "info", module: "registry", message: `Primary strategy set to ${strategy.id}` });
+      pushLog({ severity: "info", module: "registry", message: `Primary strategy set to ${strategy.id}`, related_id: strategy.id });
       return NextResponse.json({ ok: true, strategy });
     }
 
@@ -173,15 +222,21 @@ export async function handleMockApi(req: NextRequest, path: string[], role: "adm
       }
       strategy.params = payload.params;
       strategy.updated_at = new Date().toISOString();
-      pushLog({ severity: "info", module: "registry", message: `Params updated for ${strategy.id}` });
+      pushLog({ severity: "info", module: "registry", message: `Params updated for ${strategy.id}`, related_id: strategy.id });
       return NextResponse.json({ ok: true, strategy });
     }
   }
 
   if (resource === "backtests") {
     if (id === "run" && req.method === "POST") {
-      const run = buildBacktestRun();
-      pushAlert({ severity: "info", message: `Backtest ${run.id} launched.` });
+      const payload = (await req.json().catch(() => ({}))) as Partial<{
+        strategy_id: string;
+        period: { start?: string; end?: string };
+        universe: string[];
+        costs_model: { fees_bps?: number; spread_bps?: number; slippage_bps?: number; funding_bps?: number };
+      }>;
+      const run = buildBacktestRun(payload);
+      pushAlert({ severity: "info", message: `Backtest ${run.id} launched.`, related_id: run.id });
       return NextResponse.json({ ok: true, run });
     }
 
@@ -278,7 +333,7 @@ export async function handleMockApi(req: NextRequest, path: string[], role: "adm
     const q = req.nextUrl.searchParams;
     const severity = q.get("severity");
     const moduleName = q.get("module");
-    let rows = withQueryFilter([...store.logs], q);
+    let rows = withTimeRangeFilter([...store.logs], q);
     if (severity) rows = rows.filter((row) => row.severity === severity);
     if (moduleName) rows = rows.filter((row) => row.module === moduleName);
     return NextResponse.json(rows);
@@ -287,7 +342,7 @@ export async function handleMockApi(req: NextRequest, path: string[], role: "adm
   if (resource === "alerts" && req.method === "GET") {
     const q = req.nextUrl.searchParams;
     const severity = q.get("severity");
-    let rows = withQueryFilter([...store.alerts], q);
+    let rows = withTimeRangeFilter([...store.alerts], q);
     if (severity) rows = rows.filter((row) => row.severity === severity);
     return NextResponse.json(rows);
   }

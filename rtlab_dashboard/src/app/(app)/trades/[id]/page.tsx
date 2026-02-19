@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { CandlestickChart } from "@/components/charts/candlestick-chart";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +46,17 @@ function buildCandles(trade: Trade): CandleRow[] {
   return rows;
 }
 
+function buildMicrostructure(candles: CandleRow[]) {
+  return candles.map((row, idx) => ({
+    idx,
+    label: idx % 12 === 0 ? row.time.slice(11, 16) : "",
+    obi: Number((Math.sin(idx / 9) * 0.42).toFixed(3)),
+    cvd: Number((Math.sin(idx / 7) * 18 + idx * 0.9).toFixed(2)),
+    vpin: Number((0.35 + Math.abs(Math.cos(idx / 8)) * 0.6).toFixed(3)),
+    spread: Number((3 + Math.abs(Math.sin(idx / 11)) * 4.2).toFixed(2)),
+  }));
+}
+
 export default function TradeDetailPage() {
   const params = useParams<{ id: string }>();
   const tradeId = String(params.id);
@@ -59,6 +71,7 @@ export default function TradeDetailPage() {
   }, [tradeId]);
 
   const candles = useMemo(() => (trade ? buildCandles(trade) : []), [trade]);
+  const micro = useMemo(() => buildMicrostructure(candles), [candles]);
 
   if (!trade) return <p className="text-sm text-slate-400">Loading trade...</p>;
 
@@ -93,6 +106,32 @@ export default function TradeDetailPage() {
               },
             ]}
           />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardTitle>Orderflow / Microstructure</CardTitle>
+        <CardDescription>OBI, CVD, VPIN and spread around this trade window.</CardDescription>
+        <CardContent>
+          <div className="h-72 w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
+              <LineChart data={micro}>
+                <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                <YAxis yAxisId="left" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
+                <Line yAxisId="left" type="monotone" dataKey="obi" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                <Line yAxisId="left" type="monotone" dataKey="cvd" stroke="#facc15" strokeWidth={2} dot={false} />
+                <Line yAxisId="right" type="monotone" dataKey="vpin" stroke="#f97316" strokeWidth={2} dot={false} />
+                <Line yAxisId="right" type="monotone" dataKey="spread" stroke="#a78bfa" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="mt-2 text-sm text-slate-300">
+            VPIN peak: <strong>{Math.max(...micro.map((x) => x.vpin)).toFixed(3)}</strong> | Spread p95:{" "}
+            <strong>{micro.slice().sort((a, b) => a.spread - b.spread)[Math.floor(micro.length * 0.95)]?.spread ?? "--"} bps</strong>
+          </p>
         </CardContent>
       </Card>
 
@@ -170,4 +209,3 @@ function Checklist({ label, value }: { label: string; value: boolean }) {
     </li>
   );
 }
-

@@ -20,6 +20,7 @@ export default function SettingsPage() {
   const { role } = useSession();
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [saving, setSaving] = useState(false);
+  const [liveCooldownUntil, setLiveCooldownUntil] = useState(0);
 
   useEffect(() => {
     const load = async () => {
@@ -43,6 +44,7 @@ export default function SettingsPage() {
   };
 
   if (!settings) return <p className="text-sm text-slate-400">Loading settings...</p>;
+  const liveOnCooldown = Date.now() < liveCooldownUntil;
 
   return (
     <div className="space-y-4">
@@ -61,10 +63,15 @@ export default function SettingsPage() {
               onChange={(e) => {
                 const next = e.target.value as SettingsResponse["active_profile"];
                 if (next === "LIVE") {
+                  if (liveOnCooldown) {
+                    window.alert("LIVE action is in cooldown. Wait a few seconds and retry.");
+                    return;
+                  }
                   const ok = window.confirm("Enable LIVE profile? This is a critical action.");
                   if (!ok) return;
                   const ok2 = window.confirm("Second confirmation: switch to LIVE now?");
                   if (!ok2) return;
+                  setLiveCooldownUntil(Date.now() + 10_000);
                 }
                 setSettings((prev) => (prev ? { ...prev, active_profile: next } : prev));
               }}
@@ -80,7 +87,8 @@ export default function SettingsPage() {
                 {settings.active_profile}
               </Badge>
             </div>
-            <Button disabled={role !== "admin" || saving} onClick={save}>
+            {liveOnCooldown ? <p className="text-xs text-amber-300">Critical action cooldown active for LIVE profile controls.</p> : null}
+            <Button disabled={role !== "admin" || saving || liveOnCooldown} onClick={save}>
               {saving ? "Saving..." : "Save Profile"}
             </Button>
           </CardContent>
@@ -150,4 +158,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-

@@ -23,6 +23,7 @@ export default function StrategyDetailPage() {
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [backtests, setBacktests] = useState<BacktestRun[]>([]);
+  const [allBacktests, setAllBacktests] = useState<BacktestRun[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [compareId, setCompareId] = useState("");
 
@@ -36,6 +37,7 @@ export default function StrategyDetailPage() {
       ]);
       setStrategy(s);
       setStrategies(allStrategies);
+      setAllBacktests(allBacktests);
       setBacktests(allBacktests.filter((row) => row.strategy_id === strategyId));
       setTrades(allTrades);
       const compareCandidate = allStrategies.find((row) => row.id !== strategyId && row.name === s.name) || allStrategies.find((row) => row.id !== strategyId);
@@ -86,6 +88,47 @@ export default function StrategyDetailPage() {
     const keys = new Set([...Object.keys(strategy.params), ...Object.keys(compare.params)]);
     return [...keys].filter((key) => strategy.params[key] !== compare.params[key]);
   }, [strategy, compare]);
+
+  const latestCurrentBacktest = useMemo(
+    () =>
+      [...allBacktests]
+        .filter((row) => row.strategy_id === strategyId)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] || null,
+    [allBacktests, strategyId],
+  );
+
+  const latestCompareBacktest = useMemo(
+    () =>
+      compare
+        ? [...allBacktests]
+            .filter((row) => row.strategy_id === compare.id)
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] || null
+        : null,
+    [allBacktests, compare],
+  );
+
+  const metricComparisonRows = useMemo(() => {
+    if (!latestCurrentBacktest || !latestCompareBacktest) return [];
+    return [
+      { label: "CAGR", current: fmtPct(latestCurrentBacktest.metrics.cagr), compare: fmtPct(latestCompareBacktest.metrics.cagr) },
+      { label: "Max DD", current: fmtPct(latestCurrentBacktest.metrics.max_dd), compare: fmtPct(latestCompareBacktest.metrics.max_dd) },
+      { label: "Sharpe", current: fmtNum(latestCurrentBacktest.metrics.sharpe), compare: fmtNum(latestCompareBacktest.metrics.sharpe) },
+      { label: "Sortino", current: fmtNum(latestCurrentBacktest.metrics.sortino), compare: fmtNum(latestCompareBacktest.metrics.sortino) },
+      { label: "Calmar", current: fmtNum(latestCurrentBacktest.metrics.calmar), compare: fmtNum(latestCompareBacktest.metrics.calmar) },
+      { label: "Winrate", current: fmtPct(latestCurrentBacktest.metrics.winrate), compare: fmtPct(latestCompareBacktest.metrics.winrate) },
+      {
+        label: "Expectancy / Avg Trade",
+        current: `${fmtNum(latestCurrentBacktest.metrics.expectancy)} / ${fmtNum(latestCurrentBacktest.metrics.avg_trade)}`,
+        compare: `${fmtNum(latestCompareBacktest.metrics.expectancy)} / ${fmtNum(latestCompareBacktest.metrics.avg_trade)}`,
+      },
+      { label: "Turnover", current: fmtNum(latestCurrentBacktest.metrics.turnover), compare: fmtNum(latestCompareBacktest.metrics.turnover) },
+      {
+        label: "Robustness Score",
+        current: fmtNum(latestCurrentBacktest.metrics.robust_score),
+        compare: fmtNum(latestCompareBacktest.metrics.robust_score),
+      },
+    ];
+  }, [latestCompareBacktest, latestCurrentBacktest]);
 
   if (!strategy) {
     return <p className="text-sm text-slate-400">Loading strategy...</p>;
@@ -246,6 +289,24 @@ export default function StrategyDetailPage() {
                         <TD>{key}</TD>
                         <TD>{String(strategy.params[key])}</TD>
                         <TD>{String(compare.params[key])}</TD>
+                      </TR>
+                    ))}
+                  </TBody>
+                </Table>
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Metric</TH>
+                      <TH>Current</TH>
+                      <TH>Compare</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {metricComparisonRows.map((row) => (
+                      <TR key={row.label}>
+                        <TD>{row.label}</TD>
+                        <TD>{row.current}</TD>
+                        <TD>{row.compare}</TD>
                       </TR>
                     ))}
                   </TBody>

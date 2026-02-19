@@ -11,7 +11,8 @@ import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/c
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { apiGet, apiPost } from "@/lib/client-api";
-import type { Strategy } from "@/lib/types";
+import type { BacktestRun, Strategy } from "@/lib/types";
+import { fmtNum, fmtPct } from "@/lib/utils";
 
 const paramSchema = z.record(z.string(), z.union([z.number(), z.string(), z.boolean()]));
 
@@ -45,14 +46,16 @@ function parseYaml(input: string) {
 export default function StrategiesPage() {
   const { role } = useSession();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [backtests, setBacktests] = useState<BacktestRun[]>([]);
   const [selected, setSelected] = useState<Strategy | null>(null);
   const [editorText, setEditorText] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(async () => {
-    const rows = await apiGet<Strategy[]>("/api/strategies");
+    const [rows, bt] = await Promise.all([apiGet<Strategy[]>("/api/strategies"), apiGet<BacktestRun[]>("/api/backtests")]);
     setStrategies(rows);
+    setBacktests(bt);
     if (!selected) return;
     const updated = rows.find((row) => row.id === selected.id);
     if (updated) {
@@ -108,6 +111,18 @@ export default function StrategiesPage() {
     return rows;
   }, [selected, editorText]);
 
+  const latestBacktestByStrategy = useMemo(() => {
+    const map = new Map<string, BacktestRun>();
+    [...backtests]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .forEach((run) => {
+        if (!map.has(run.strategy_id)) {
+          map.set(run.strategy_id, run);
+        }
+      });
+    return map;
+  }, [backtests]);
+
   return (
     <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
       <Card>
@@ -121,6 +136,8 @@ export default function StrategiesPage() {
                 <TH>Version</TH>
                 <TH>Status</TH>
                 <TH>Primary</TH>
+                <TH>Last OOS</TH>
+                <TH>Last run</TH>
                 <TH>Notes</TH>
                 <TH>Actions</TH>
               </TR>
@@ -136,6 +153,25 @@ export default function StrategiesPage() {
                   <TD>{row.version}</TD>
                   <TD>{row.enabled ? <Badge variant="success">enabled</Badge> : <Badge variant="neutral">disabled</Badge>}</TD>
                   <TD>{row.primary ? <Badge variant="info">primary</Badge> : "-"}</TD>
+                  <TD>
+                    {latestBacktestByStrategy.get(row.id) ? (
+                      <span className="text-xs text-slate-200">
+                        Sharpe {fmtNum(latestBacktestByStrategy.get(row.id)!.metrics.sharpe)} / Robust{" "}
+                        {fmtNum(latestBacktestByStrategy.get(row.id)!.metrics.robust_score)}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-500">N/A</span>
+                    )}
+                  </TD>
+                  <TD>
+                    {latestBacktestByStrategy.get(row.id) ? (
+                      <span className="text-xs text-slate-200">
+                        {new Date(latestBacktestByStrategy.get(row.id)!.created_at).toLocaleString()} ({fmtPct(latestBacktestByStrategy.get(row.id)!.metrics.max_dd)})
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-500">N/A</span>
+                    )}
+                  </TD>
                   <TD className="max-w-[220px] truncate text-slate-300">{row.notes}</TD>
                   <TD>
                     <div className="flex flex-wrap gap-1">

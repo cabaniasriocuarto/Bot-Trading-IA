@@ -1,31 +1,60 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet } from "@/lib/client-api";
 import type { AlertEvent, LogEvent } from "@/lib/types";
 import { toCsv } from "@/lib/utils";
 
+function toLocalInput(date: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function parseLocalInput(value: string) {
+  const ms = new Date(value).getTime();
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
+function relatedHref(relatedId: string) {
+  if (relatedId.startsWith("tr_")) return `/trades/${relatedId}`;
+  if (relatedId.startsWith("stg_")) return `/strategies/${relatedId}`;
+  if (relatedId.startsWith("bt_")) return `/backtests?run=${relatedId}`;
+  return "";
+}
+
 export default function AlertsLogsPage() {
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [severity, setSeverity] = useState("");
+  const [moduleName, setModuleName] = useState("");
+  const [sinceInput, setSinceInput] = useState(() => toLocalInput(new Date(Date.now() - 24 * 60 * 60_000)));
+  const [untilInput, setUntilInput] = useState(() => toLocalInput(new Date()));
 
   const refresh = useCallback(async () => {
-    const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
-    const sev = severity ? `&severity=${severity}` : "";
+    const since = parseLocalInput(sinceInput);
+    const until = parseLocalInput(untilInput);
+    const params = new URLSearchParams();
+    if (since) params.set("since", since);
+    if (until) params.set("until", until);
+    if (severity) params.set("severity", severity);
+    if (moduleName) params.set("module", moduleName);
+    const query = params.toString();
     const [alertsRows, logsRows] = await Promise.all([
-      apiGet<AlertEvent[]>(`/api/alerts?since=${encodeURIComponent(since)}${sev}`),
-      apiGet<LogEvent[]>(`/api/logs?since=${encodeURIComponent(since)}${sev}`),
+      apiGet<AlertEvent[]>(`/api/alerts?${query}`),
+      apiGet<LogEvent[]>(`/api/logs?${query}`),
     ]);
     setAlerts(alertsRows);
     setLogs(logsRows);
-  }, [severity]);
+  }, [moduleName, severity, sinceInput, untilInput]);
 
   useEffect(() => {
     void refresh();
@@ -60,25 +89,54 @@ export default function AlertsLogsPage() {
     [alerts, logs],
   );
 
+  const moduleOptions = useMemo(() => [...new Set(logs.map((row) => row.module))].sort(), [logs]);
+
   return (
     <div className="space-y-4">
       <Card>
         <CardTitle className="flex flex-wrap items-center justify-between gap-2">
           Alerts & Logs
-          <div className="flex items-center gap-2">
-            <Select value={severity} onChange={(e) => setSeverity(e.target.value)} className="w-[180px]">
+        </CardTitle>
+        <CardDescription>Structured event stream with filters and drill-down context ids.</CardDescription>
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="space-y-1">
+            <label className="text-xs uppercase tracking-wide text-slate-400">Since</label>
+            <Input type="datetime-local" value={sinceInput} onChange={(e) => setSinceInput(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs uppercase tracking-wide text-slate-400">Until</label>
+            <Input type="datetime-local" value={untilInput} onChange={(e) => setUntilInput(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs uppercase tracking-wide text-slate-400">Severity</label>
+            <Select value={severity} onChange={(e) => setSeverity(e.target.value)} className="w-full">
               <option value="">All severities</option>
               <option value="info">Info</option>
               <option value="warn">Warn</option>
               <option value="error">Error</option>
               <option value="debug">Debug</option>
             </Select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs uppercase tracking-wide text-slate-400">Module</label>
+            <Select value={moduleName} onChange={(e) => setModuleName(e.target.value)} className="w-full">
+              <option value="">All modules</option>
+              {moduleOptions.map((row) => (
+                <option key={row} value={row}>
+                  {row}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="flex items-end gap-2">
+            <Button variant="outline" onClick={() => void refresh()}>
+              Apply Filters
+            </Button>
             <Button variant="outline" onClick={exportLogs}>
               Export Logs
             </Button>
           </div>
-        </CardTitle>
-        <CardDescription>Structured event stream with filters and drill-down context ids.</CardDescription>
+        </CardContent>
       </Card>
 
       <Card>
@@ -103,7 +161,19 @@ export default function AlertsLogsPage() {
                     <Badge variant={row.severity === "error" ? "danger" : row.severity === "warn" ? "warn" : "info"}>{row.severity}</Badge>
                   </TD>
                   <TD>{row.message}</TD>
-                  <TD>{row.related || "-"}</TD>
+                  <TD>
+                    {row.related ? (
+                      relatedHref(row.related) ? (
+                        <Link href={relatedHref(row.related)} className="text-cyan-300 underline">
+                          {row.related}
+                        </Link>
+                      ) : (
+                        row.related
+                      )
+                    ) : (
+                      "-"
+                    )}
+                  </TD>
                   <TD className="font-mono text-xs">{row.id}</TD>
                 </TR>
               ))}
