@@ -43,12 +43,13 @@ function assertProductionConfig(config: AuthConfig) {
 }
 
 export function getAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
+  const read = (value: string | undefined, fallback: string) => (value || fallback).trim();
   const config: AuthConfig = {
-    secret: env.AUTH_SECRET || DEFAULT_AUTH_SECRET,
-    adminUser: env.ADMIN_USERNAME || DEFAULT_ADMIN_USERNAME,
-    adminPass: env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASSWORD,
-    viewerUser: env.VIEWER_USERNAME || DEFAULT_VIEWER_USERNAME,
-    viewerPass: env.VIEWER_PASSWORD || DEFAULT_VIEWER_PASSWORD,
+    secret: read(env.AUTH_SECRET, DEFAULT_AUTH_SECRET),
+    adminUser: read(env.ADMIN_USERNAME, DEFAULT_ADMIN_USERNAME),
+    adminPass: read(env.ADMIN_PASSWORD, DEFAULT_ADMIN_PASSWORD),
+    viewerUser: read(env.VIEWER_USERNAME, DEFAULT_VIEWER_USERNAME),
+    viewerPass: read(env.VIEWER_PASSWORD, DEFAULT_VIEWER_PASSWORD),
   };
 
   if (isProductionEnv(env)) {
