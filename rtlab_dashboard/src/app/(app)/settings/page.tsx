@@ -11,9 +11,20 @@ import { Select } from "@/components/ui/select";
 import { apiGet } from "@/lib/client-api";
 import type { HealthResponse, SettingsResponse } from "@/lib/types";
 
+type GateItem = {
+  id: string;
+  name: string;
+  status: "PASS" | "FAIL" | "WARN";
+  reason: string;
+  details?: Record<string, unknown>;
+};
+
 export default function SettingsPage() {
   const { role } = useSession();
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
+  const [gates, setGates] = useState<GateItem[]>([]);
+  const [gatesOverall, setGatesOverall] = useState<"PASS" | "FAIL" | "WARN" | "UNKNOWN">("UNKNOWN");
+  const [gatesLoading, setGatesLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -31,6 +42,9 @@ export default function SettingsPage() {
       try {
         const data = await apiGet<SettingsResponse>("/api/v1/settings");
         setSettings(data);
+        const gatesPayload = await apiGet<{ gates: GateItem[]; overall_status: "PASS" | "FAIL" | "WARN" }>("/api/v1/gates");
+        setGates(gatesPayload.gates);
+        setGatesOverall(gatesPayload.overall_status);
       } catch (err) {
         const msg = err instanceof Error ? err.message : "No se pudo cargar configuracion.";
         setError(msg);
@@ -41,12 +55,52 @@ export default function SettingsPage() {
     void load();
   }, []);
 
+  const reevaluateGates = async () => {
+    setGatesLoading(true);
+    try {
+      const res = await fetch("/api/v1/gates/reevaluate", {
+        method: "POST",
+        credentials: "include",
+      });
+      const body = (await res.json().catch(() => ({}))) as { gates?: GateItem[]; overall_status?: "PASS" | "FAIL" | "WARN"; detail?: string };
+      if (!res.ok || !body.gates) {
+        setError(body.detail || "No se pudieron reevaluar los gates.");
+        return;
+      }
+      setGates(body.gates);
+      setGatesOverall(body.overall_status || "UNKNOWN");
+      setMessage("Gates reevaluados");
+    } catch {
+      setError("No se pudieron reevaluar los gates.");
+    } finally {
+      setGatesLoading(false);
+    }
+  };
+
   const save = async () => {
     if (!settings) return;
+    if (settings.mode === "LIVE" && gatesOverall !== "PASS") {
+      setError("LIVE bloqueado: reevalua gates y corrige los FAIL antes de guardar.");
+      return;
+    }
     setSaving(true);
     setError("");
     setMessage("");
     try {
+      const runtimeMode = settings.mode.toLowerCase();
+      if (role === "admin" && ["paper", "testnet", "live"].includes(runtimeMode)) {
+        const modeRes = await fetch("/api/v1/bot/mode", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(runtimeMode === "live" ? { mode: "live", confirm: "ENABLE_LIVE" } : { mode: runtimeMode }),
+        });
+        const modeBody = (await modeRes.json().catch(() => ({}))) as { detail?: string; error?: string };
+        if (!modeRes.ok) {
+          setError(modeBody.detail || modeBody.error || "No se pudo cambiar el modo operativo.");
+          return;
+        }
+      }
       const res = await fetch("/api/v1/settings", {
         method: "PUT",
         credentials: "include",
@@ -134,7 +188,7 @@ export default function SettingsPage() {
   if (loading) return <p className="text-sm text-slate-400">Cargando configuracion...</p>;
   if (!settings) return <p className="text-sm text-rose-300">No se pudo cargar configuracion: {error || "sin respuesta"}</p>;
 
-  const liveLocked = settings.mode === "LIVE" && settings.gate_checklist.some((item) => !item.done);
+  const liveLocked = settings.mode === "LIVE" && gatesOverall !== "PASS";
 
   return (
     <div className="space-y-4">
@@ -158,7 +212,9 @@ export default function SettingsPage() {
                 <option value="MOCK">MOCK</option>
                 <option value="PAPER">PAPER</option>
                 <option value="TESTNET">TESTNET</option>
-                <option value="LIVE">LIVE</option>
+                <option value="LIVE" disabled={gatesOverall !== "PASS"}>
+                  LIVE {gatesOverall !== "PASS" ? "(bloqueado)" : ""}
+                </option>
               </Select>
             </div>
             <div className="space-y-1">
@@ -344,6 +400,34 @@ export default function SettingsPage() {
             <p className="text-xs uppercase tracking-wide text-slate-400">Exchange</p>
             <p className="text-sm text-slate-200">{diag.exchange}</p>
             <Button variant="outline" onClick={testExchange}>Probar exchange</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardTitle>Gates LIVE</CardTitle>
+        <CardDescription>LIVE solo habilitable cuando los gates requeridos estan en PASS.</CardDescription>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              Estado general:{" "}
+              <Badge variant={gatesOverall === "PASS" ? "success" : gatesOverall === "WARN" ? "warn" : "danger"}>{gatesOverall}</Badge>
+            </div>
+            <Button variant="outline" disabled={role !== "admin" || gatesLoading} onClick={reevaluateGates}>
+              {gatesLoading ? "Reevaluando..." : "Reevaluar gates"}
+            </Button>
+          </div>
+          <div className="space-y-2">
+            {gates.map((gate) => (
+              <div key={gate.id} className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold">{gate.id}</span>
+                  <Badge variant={gate.status === "PASS" ? "success" : gate.status === "WARN" ? "warn" : "danger"}>{gate.status}</Badge>
+                </div>
+                <p className="text-slate-300">{gate.reason}</p>
+              </div>
+            ))}
+            {!gates.length ? <p className="text-sm text-slate-400">Sin gates disponibles.</p> : null}
           </div>
         </CardContent>
       </Card>

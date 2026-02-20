@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { apiGet, apiPost } from "@/lib/client-api";
-import type { BacktestRun, Strategy } from "@/lib/types";
+import type { BacktestRun, Strategy, TradingMode } from "@/lib/types";
 import { fmtNum, fmtPct } from "@/lib/utils";
 
 const paramSchema = z.record(z.string(), z.union([z.number(), z.string(), z.boolean()]));
@@ -81,9 +81,24 @@ export default function StrategiesPage() {
     setError("");
   };
 
-  const runAction = async (id: string, action: "enable" | "disable" | "primary" | "duplicate") => {
-    await apiPost(`/api/v1/strategies/${id}/${action}`);
-    await refresh();
+  const runAction = async (id: string, action: "enable" | "disable" | "duplicate") => {
+    setError("");
+    try {
+      await apiPost(`/api/v1/strategies/${id}/${action}`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo ejecutar la accion.");
+    }
+  };
+
+  const setPrimary = async (id: string, mode: TradingMode) => {
+    setError("");
+    try {
+      await apiPost(`/api/v1/strategies/${id}/primary`, { mode: mode.toLowerCase() });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo definir la estrategia primaria.");
+    }
   };
 
   const saveParams = async () => {
@@ -92,12 +107,16 @@ export default function StrategiesPage() {
     setError("");
     try {
       const parsed = parseYaml(editorText);
-      await fetch(`/api/v1/strategies/${selected.id}/params`, {
+      const res = await fetch(`/api/v1/strategies/${selected.id}/params`, {
         method: "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ params: parsed }),
       });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
+        throw new Error(body.error || body.detail || "No se pudo guardar parametros.");
+      }
       await refresh();
       setUploadMsg("Parametros guardados correctamente.");
     } catch (err) {
@@ -195,7 +214,7 @@ export default function StrategiesPage() {
                   <TH>Nombre</TH>
                   <TH>Version</TH>
                   <TH>Estado</TH>
-                  <TH>Primaria</TH>
+                  <TH>Primaria por modo</TH>
                   <TH>Ultima corrida</TH>
                   <TH>Ultimo OOS</TH>
                   <TH>Notas</TH>
@@ -212,7 +231,13 @@ export default function StrategiesPage() {
                     </TD>
                     <TD>{row.version}</TD>
                     <TD>{row.enabled ? <Badge variant="success">habilitada</Badge> : <Badge variant="neutral">deshabilitada</Badge>}</TD>
-                    <TD>{row.primary ? <Badge variant="info">primaria</Badge> : "-"}</TD>
+                    <TD>
+                      {row.primary_for_modes?.length ? (
+                        <span className="text-xs text-slate-200">{row.primary_for_modes.join(" / ").toUpperCase()}</span>
+                      ) : (
+                        "-"
+                      )}
+                    </TD>
                     <TD>{row.last_run_at ? new Date(row.last_run_at).toLocaleString() : "sin corridas"}</TD>
                     <TD>
                       {latestBacktestByStrategy.get(row.id) ? (
@@ -229,8 +254,14 @@ export default function StrategiesPage() {
                         <Button size="sm" variant="secondary" disabled={role !== "admin"} onClick={() => runAction(row.id, row.enabled ? "disable" : "enable")}>
                           {row.enabled ? "Deshabilitar" : "Habilitar"}
                         </Button>
-                        <Button size="sm" variant="outline" disabled={role !== "admin"} onClick={() => runAction(row.id, "primary")}>
-                          Set Primaria
+                        <Button size="sm" variant="outline" disabled={role !== "admin"} onClick={() => setPrimary(row.id, "PAPER")}>
+                          Primaria PAPER
+                        </Button>
+                        <Button size="sm" variant="outline" disabled={role !== "admin"} onClick={() => setPrimary(row.id, "TESTNET")}>
+                          Primaria TESTNET
+                        </Button>
+                        <Button size="sm" variant="outline" disabled={role !== "admin"} onClick={() => setPrimary(row.id, "LIVE")}>
+                          Primaria LIVE
                         </Button>
                         <Button size="sm" variant="ghost" disabled={role !== "admin"} onClick={() => runAction(row.id, "duplicate")}>
                           Duplicar

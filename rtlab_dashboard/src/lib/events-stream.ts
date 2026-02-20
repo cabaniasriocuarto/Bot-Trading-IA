@@ -36,7 +36,7 @@ function toSseEvent(event: RtlabEvent) {
 async function proxyEventStream(req: NextRequest, session: SessionInfo, upstreamPath: string) {
   const backend = process.env.BACKEND_API_URL;
   if (!backend) {
-    return NextResponse.json({ error: "BACKEND_API_URL no está configurado." }, { status: 500 });
+    return NextResponse.json({ error: "BACKEND_API_URL no esta configurado." }, { status: 500 });
   }
   const target = `${backend.replace(/\/$/, "")}${upstreamPath}${req.nextUrl.search}`;
   const headers = new Headers(req.headers);
@@ -220,10 +220,9 @@ export async function createEventsResponse(
   try {
     return await proxyEventStream(req, session, options.upstreamPath);
   } catch {
-    if (process.env.ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR !== "false") {
+    if (process.env.ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR === "true") {
       return createMockEventStream(req);
     }
     return NextResponse.json({ error: "No se pudo conectar al stream del backend." }, { status: 502 });
   }
 }
-

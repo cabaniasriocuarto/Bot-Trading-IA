@@ -9,5 +9,7 @@
       - ../.env
     volumes:
       - ..:/app
-    command: ["rtbot", "status"]
+    ports:
+      - "8080:8080"
+    command: []
     restart: unless-stopped

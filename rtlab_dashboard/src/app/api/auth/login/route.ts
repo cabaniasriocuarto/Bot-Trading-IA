@@ -8,14 +8,14 @@ export async function POST(req: NextRequest) {
   const password = body.password || "";
 
   if (!username || !password) {
-    return NextResponse.json({ error: "Usuario y contraseña son obligatorios." }, { status: 400 });
+    return NextResponse.json({ error: "Usuario y contrasena son obligatorios." }, { status: 400 });
   }
 
   let role = null;
   try {
     role = resolveRole(username, password);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Configuración de autenticación inválida.";
+    const message = error instanceof Error ? error.message : "Configuracion de autenticacion invalida.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
   if (!role) {
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   try {
     token = await signSessionToken({ username, role });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "No se pudo crear la sesión.";
+    const message = error instanceof Error ? error.message : "No se pudo crear la sesion.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
   const res = NextResponse.json({ ok: true, user: { username, role } });

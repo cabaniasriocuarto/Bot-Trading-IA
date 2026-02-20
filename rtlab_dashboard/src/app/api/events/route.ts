@@ -10,5 +10,5 @@ export async function GET(req: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
-  return createEventsResponse(req, session, { upstreamPath: "/api/v1/events" });
+  return createEventsResponse(req, session, { upstreamPath: "/api/v1/stream" });
 }

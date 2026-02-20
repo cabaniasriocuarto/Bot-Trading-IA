@@ -28,9 +28,9 @@ const navItems = [
   { href: "/trades", label: "Operaciones", icon: CandlestickChart },
   { href: "/portfolio", label: "Portafolio", icon: Wallet },
   { href: "/risk", label: "Riesgo", icon: Shield },
-  { href: "/execution", label: "Ejecución", icon: Activity },
+  { href: "/execution", label: "Ejecucion", icon: Activity },
   { href: "/alerts", label: "Alertas y Logs", icon: AlertTriangle },
-  { href: "/settings", label: "Configuración", icon: Cog },
+  { href: "/settings", label: "Configuracion", icon: Cog },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -98,7 +98,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-sm text-slate-400">
-                {user?.username || (loading ? "cargando sesión..." : "desconocido (sin sesión)")}
+                {user?.username || (loading ? "cargando sesion..." : "desconocido (sin sesion)")}
                 {!user && healthCause ? ` - ${healthCause}` : ""}
               </span>
               <Button variant="outline" size="sm" onClick={logout}>

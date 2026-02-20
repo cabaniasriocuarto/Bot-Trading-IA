@@ -39,7 +39,7 @@ function LoginPageContent() {
 
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error || "No se pudo iniciar sesión.");
+      setError(body.error || "No se pudo iniciar sesion.");
       setLoading(false);
       return;
     }
@@ -52,7 +52,7 @@ function LoginPageContent() {
     <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.2),transparent_35%),#020617] p-4">
       <Card className="w-full max-w-md fade-in-up">
         <CardTitle className="text-2xl">Ingreso RTLab Control</CardTitle>
-        <CardDescription className="mt-1">Usá credenciales viewer/admin definidas en variables de entorno.</CardDescription>
+        <CardDescription className="mt-1">Usa credenciales viewer/admin definidas en variables de entorno.</CardDescription>
         <CardContent>
           <form className="space-y-3" onSubmit={onSubmit}>
             <div className="space-y-1">
@@ -60,7 +60,7 @@ function LoginPageContent() {
               <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin o viewer" required />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Contraseña</label>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-400">Contrasena</label>
               <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="********" required />
             </div>
             {error ? <p className="text-sm text-rose-300">{error}</p> : null}

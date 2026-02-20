@@ -10,5 +10,4 @@ COPY rtlab_config.yaml.example /app/rtlab_config.yaml.example
 
 RUN pip install --no-cache-dir .
 
-ENTRYPOINT ["rtbot"]
-CMD ["status"]
+ENTRYPOINT ["python", "-m", "rtlab_core.web.main"]

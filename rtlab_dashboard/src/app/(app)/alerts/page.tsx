@@ -41,6 +41,13 @@ type Row = {
   payload?: Record<string, unknown>;
 };
 
+type LogsResponse = {
+  items: LogEvent[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
 export default function AlertsLogsPage() {
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
   const [logs, setLogs] = useState<LogEvent[]>([]);
@@ -64,10 +71,11 @@ export default function AlertsLogsPage() {
   const refresh = useCallback(async () => {
     const params = buildQuery();
     const query = params.toString();
-    const [alertsRows, logsRows] = await Promise.all([
+    const [alertsRows, logsPayload] = await Promise.all([
       apiGet<AlertEvent[]>(`/api/v1/alerts?${query}`),
-      apiGet<LogEvent[]>(`/api/v1/logs?${query}`),
+      apiGet<LogEvent[] | LogsResponse>(`/api/v1/logs?${query}`),
     ]);
+    const logsRows = Array.isArray(logsPayload) ? logsPayload : logsPayload.items;
     setAlerts(alertsRows);
     setLogs(logsRows);
   }, [buildQuery]);

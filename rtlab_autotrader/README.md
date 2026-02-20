@@ -37,6 +37,32 @@ Variables minimas en `.env`:
 - `TELEGRAM_BOT_TOKEN=...`
 - `TELEGRAM_CHAT_ID=...`
 
+Variables recomendadas para API/BFF en Railway:
+
+- `AUTH_SECRET=<32+ chars>`
+- `ADMIN_USERNAME=Wadmin`
+- `ADMIN_PASSWORD=moroco123`
+- `VIEWER_USERNAME=viewer`
+- `VIEWER_PASSWORD=<tu-pass>`
+- `MODE=paper|testnet|live`
+- `EXCHANGE_NAME=binance|bybit`
+- `PORT` (Railway lo inyecta automaticamente)
+
+## API Web (Railway)
+
+El backend HTTP de consola expone:
+
+- REST: `/api/v1/*`
+- Stream SSE: `/api/v1/stream`
+
+Ejecutar local:
+
+```bash
+python -m rtlab_core.web.main
+```
+
+Debe escuchar en `0.0.0.0:$PORT`.
+
 ## 4) Setup de `user_data/` (Freqtrade userdir)
 
 ```bash

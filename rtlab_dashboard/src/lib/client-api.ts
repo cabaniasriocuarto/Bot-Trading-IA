@@ -13,8 +13,9 @@ async function parseResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as { error?: string; detail?: string };
       if (body.error) message = body.error;
+      else if (body.detail) message = body.detail;
     } catch {
       // ignore parse errors
     }
@@ -41,4 +42,3 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   });
   return parseResponse<T>(res);
 }
-

@@ -19,7 +19,7 @@ export interface HealthResponse {
   };
   db: {
     ok: boolean;
-    driver: "jsonl";
+    driver: "jsonl" | "sqlite";
   };
   cause?: string;
 }
@@ -55,6 +55,8 @@ export interface Strategy {
   notes: string;
   tags: string[];
   last_run_at?: string | null;
+  last_oos?: BacktestRun["metrics"] | null;
+  primary_for_modes?: Array<"paper" | "testnet" | "live">;
   manifest?: StrategyManifest;
   defaults_yaml?: string;
   schema?: Record<string, unknown>;

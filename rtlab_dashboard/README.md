@@ -14,9 +14,9 @@ Dashboard web en Next.js para operar y observar `Bot-Trading-IA`.
 
 - UI en espanol:
   - Resumen, Estrategias, Backtests, Operaciones, Portafolio, Riesgo, Ejecucion, Alertas y Logs, Configuracion.
-- API versionada `/api/v1/*` con proxy al backend y fallback mock.
+- API versionada `/api/v1/*` por BFF (mismo origin), sin llamadas directas browser->Railway.
 - Estrategias:
-  - Registro, habilitar/deshabilitar, primaria, duplicar, editor YAML, subir Strategy Pack ZIP.
+  - Registro, habilitar/deshabilitar, primaria por modo (paper/testnet/live), duplicar, editor YAML, subir Strategy Pack ZIP.
   - Estrategia default `trend_pullback_orderflow` cargada por defecto en mock.
 - Backtests:
   - Correr run, listar runs, comparar 2-5 corridas, overlays equity/drawdown, export artefactos.
@@ -40,11 +40,11 @@ Variables clave:
 - `ADMIN_PASSWORD`
 - `VIEWER_USERNAME`
 - `VIEWER_PASSWORD`
-- `USE_MOCK_API=true|false`
+- `USE_MOCK_API=false`
 - `BACKEND_API_URL=https://<servicio>.up.railway.app`
-- `ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR=true|false`
+- `ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR=false` (recomendado)
 
-## Modo MOCK (demo inmediata)
+## MOCK vs REAL
 
 ```env
 USE_MOCK_API=true
@@ -52,7 +52,7 @@ USE_MOCK_API=true
 
 La app queda funcional sin backend real y muestra datos coherentes.
 
-## Modo REAL (Vercel -> Railway)
+Para backend real:
 
 ```env
 USE_MOCK_API=false
@@ -74,7 +74,7 @@ npm run dev
 
 Login por defecto (si no lo cambiaste):
 
-- admin: `admin` / `admin123!`
+- admin: `Wadmin` / `moroco123`
 - viewer: `viewer` / `viewer123!`
 
 ## Contrato de API usado por el front
@@ -82,6 +82,9 @@ Login por defecto (si no lo cambiaste):
 Minimo esperado:
 
 - `GET /api/v1/health`
+- `POST /api/v1/auth/login`
+- `GET /api/v1/me`
+- `GET /api/v1/gates`
 - `GET /api/v1/bot/status`
 - `GET /api/v1/strategies`
 - `POST /api/v1/strategies/upload`
@@ -101,11 +104,16 @@ Minimo esperado:
 - `GET /api/v1/alerts`
 - `GET /api/v1/settings`
 - `PUT /api/v1/settings`
+- `POST /api/v1/gates/reevaluate`
+- `POST /api/v1/bot/mode`
+- `POST /api/v1/bot/start`
+- `POST /api/v1/bot/stop`
+- `POST /api/v1/bot/killswitch`
 - `POST /api/v1/control/pause`
 - `POST /api/v1/control/resume`
 - `POST /api/v1/control/safe-mode`
 - `POST /api/v1/control/kill`
-- stream: `/api/events` y `/ws/v1/events`
+- stream: `/api/v1/stream` (SSE), proxied por `/api/events` y `/ws/v1/events`
 
 ## Deploy en Vercel (importante para evitar 404)
 
@@ -125,3 +133,24 @@ Si el `Root Directory` apunta al repo raiz, Vercel puede mostrar `404: NOT_FOUND
    - `/api/v1/settings`
    - stream `/ws/v1/events` (o `/api/v1/events`)
 4. Copiar esa URL en `BACKEND_API_URL` del front (Vercel).
+
+## Pasos MOCK -> BACKEND REAL (checklist rapido)
+
+1. Railway (backend): cargar envs server-side:
+   - `AUTH_SECRET`
+   - `ADMIN_USERNAME=Wadmin`
+   - `ADMIN_PASSWORD=moroco123`
+   - `VIEWER_USERNAME`, `VIEWER_PASSWORD`
+   - `MODE=paper`
+   - `EXCHANGE_NAME=binance|bybit`
+   - `API_KEY/API_SECRET` y/o `TESTNET_API_KEY/TESTNET_API_SECRET` segun modo.
+2. Deploy backend y verificar:
+   - `GET https://<railway>.up.railway.app/api/v1/health`
+   - `GET https://<railway>.up.railway.app/api/v1/gates` (con auth)
+3. Vercel (frontend): cargar envs:
+   - `USE_MOCK_API=false`
+   - `BACKEND_API_URL=https://<railway>.up.railway.app`
+   - `AUTH_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `VIEWER_USERNAME`, `VIEWER_PASSWORD`
+4. Ingresar al dashboard, ir a Estrategias y definir primaria por modo si hace falta.
+5. Revisar gates en Configuracion y usar "Reevaluar gates".
+6. Operar primero en `PAPER`/`TESTNET`. Habilitar `LIVE` solo cuando gates requeridos esten en PASS.
