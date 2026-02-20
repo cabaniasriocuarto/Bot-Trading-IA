@@ -15,7 +15,7 @@ async function proxyToBackend(
   path: string[],
   session: { role: "admin" | "viewer"; username: string },
 ) {
-  const backend = process.env.BACKEND_API_URL;
+  const backend = (process.env.BACKEND_API_URL || "").trim();
   if (!backend) {
     return NextResponse.json({ error: "BACKEND_API_URL no esta configurado." }, { status: 500 });
   }

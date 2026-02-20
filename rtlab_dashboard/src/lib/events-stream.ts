@@ -34,7 +34,7 @@ function toSseEvent(event: RtlabEvent) {
 }
 
 async function proxyEventStream(req: NextRequest, session: SessionInfo, upstreamPath: string) {
-  const backend = process.env.BACKEND_API_URL;
+  const backend = (process.env.BACKEND_API_URL || "").trim();
   if (!backend) {
     return NextResponse.json({ error: "BACKEND_API_URL no esta configurado." }, { status: 500 });
   }
