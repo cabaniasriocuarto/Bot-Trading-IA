@@ -25,7 +25,25 @@ from rtlab_core.strategy_packs.registry_db import RegistryDB
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
-USER_DATA_DIR = Path(os.getenv("RTLAB_USER_DATA_DIR", str(PROJECT_ROOT / "user_data"))).resolve()
+
+
+def _resolve_user_data_dir() -> Path:
+    explicit = os.getenv("RTLAB_USER_DATA_DIR")
+    if explicit:
+        return Path(explicit).resolve()
+
+    preferred = (PROJECT_ROOT / "user_data").resolve()
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        test_file = preferred / ".write_test"
+        test_file.write_text("ok", encoding="utf-8")
+        test_file.unlink(missing_ok=True)
+        return preferred
+    except Exception:
+        return Path("/tmp/rtlab_user_data").resolve()
+
+
+USER_DATA_DIR = _resolve_user_data_dir()
 STRATEGY_PACKS_DIR = USER_DATA_DIR / "strategy_packs"
 UPLOADS_DIR = STRATEGY_PACKS_DIR / "uploads"
 REGISTRY_DB_PATH = STRATEGY_PACKS_DIR / "registry.sqlite3"

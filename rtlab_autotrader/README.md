@@ -46,6 +46,7 @@ Variables recomendadas para API/BFF en Railway:
 - `VIEWER_PASSWORD=<tu-pass>`
 - `MODE=paper|testnet|live`
 - `EXCHANGE_NAME=binance|bybit`
+- `RTLAB_USER_DATA_DIR=/tmp/rtlab_user_data` (recomendado en Railway)
 - `PORT` (Railway lo inyecta automaticamente)
 
 ## API Web (Railway)
