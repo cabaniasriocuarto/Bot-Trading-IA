@@ -1,8 +1,8 @@
 ﻿{
   "exchange": {
     "name": "binance",
-    "key": "",
-    "secret": "",
+    "key": "QQ1w2liO1Vlk5gdiO5OVDRkgQxZXAV6rcXgYJQPr9zI4oWkDOTRZTpZlli0QWsoI",
+    "secret": "K7hjmHugdMcWSNUajTueNgkt5rr1xPAeg3HEqdAQfXrxfRh101qwrF1gOeSh3Bzg",
     "ccxt_config": {},
     "ccxt_async_config": {},
     "pair_whitelist": ["BTC/USDT", "ETH/USDT"],
