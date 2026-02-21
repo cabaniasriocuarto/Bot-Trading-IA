@@ -84,7 +84,7 @@ backtest:
 """.strip()
 
 
-def _build_app(tmp_path: Path, monkeypatch):
+def _build_app(tmp_path: Path, monkeypatch, mode: str = "paper"):
   data_dir = tmp_path / "user_data"
   config_path = tmp_path / "rtlab_config.yaml"
   config_path.write_text(CONFIG_YAML, encoding="utf-8")
@@ -96,9 +96,15 @@ def _build_app(tmp_path: Path, monkeypatch):
   monkeypatch.setenv("ADMIN_PASSWORD", "moroco123")
   monkeypatch.setenv("VIEWER_USERNAME", "viewer")
   monkeypatch.setenv("VIEWER_PASSWORD", "viewer123")
-  monkeypatch.setenv("MODE", "paper")
+  monkeypatch.setenv("MODE", mode)
   monkeypatch.setenv("EXCHANGE_NAME", "binance")
   monkeypatch.setenv("TELEGRAM_ENABLED", "false")
+  monkeypatch.delenv("BINANCE_TESTNET_API_KEY", raising=False)
+  monkeypatch.delenv("BINANCE_TESTNET_API_SECRET", raising=False)
+  monkeypatch.delenv("BINANCE_SPOT_TESTNET_BASE_URL", raising=False)
+  monkeypatch.delenv("BINANCE_SPOT_TESTNET_WS_URL", raising=False)
+  monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+  monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
   monkeypatch.delenv("API_KEY", raising=False)
   monkeypatch.delenv("API_SECRET", raising=False)
   monkeypatch.delenv("TESTNET_API_KEY", raising=False)
@@ -246,3 +252,109 @@ def risk_hooks(context):
   set_live_primary = client.post("/api/v1/strategies/uploaded_strategy_v1/primary", headers=headers, json={"mode": "live"})
   assert set_live_primary.status_code == 200
   assert "live" in set_live_primary.json()["strategy"]["primary_for_modes"]
+
+
+class _DummyResponse:
+  def __init__(self, status_code: int, payload: dict):
+    self.status_code = status_code
+    self._payload = payload
+    self.text = str(payload)
+
+  @property
+  def ok(self) -> bool:
+    return 200 <= self.status_code < 300
+
+  def json(self):
+    return self._payload
+
+
+class _DummySocket:
+  def __enter__(self):
+    return self
+
+  def __exit__(self, exc_type, exc, tb):
+    return False
+
+
+def _mock_exchange_ok(module, monkeypatch) -> None:
+  def fake_get(url, timeout=0, **kwargs):
+    if "/api/v3/time" in url:
+      return _DummyResponse(200, {"serverTime": 1730000000000})
+    return _DummyResponse(404, {"code": -1, "msg": "not found"})
+
+  def fake_request(method, url, headers=None, timeout=0, **kwargs):
+    if "/api/v3/account" in url:
+      return _DummyResponse(200, {"balances": []})
+    if "/api/v3/order/test" in url:
+      return _DummyResponse(200, {})
+    return _DummyResponse(404, {"code": -1, "msg": "not found"})
+
+  monkeypatch.setattr(module.requests, "get", fake_get)
+  monkeypatch.setattr(module.requests, "request", fake_request)
+  monkeypatch.setattr(module.socket, "create_connection", lambda *args, **kwargs: _DummySocket())
+
+
+def test_exchange_diagnose_reports_missing_env_vars_for_testnet(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  diagnose = client.get("/api/v1/exchange/diagnose?mode=testnet&force=true", headers=headers)
+  assert diagnose.status_code == 200, diagnose.text
+  payload = diagnose.json()
+  assert payload["ok"] is False
+  assert payload["key_source"] == "none"
+  assert "BINANCE_TESTNET_API_KEY" in payload["missing"]
+  assert "BINANCE_TESTNET_API_SECRET" in payload["missing"]
+  assert "Railway" in payload["last_error"]
+
+  gates = module.evaluate_gates("testnet", force_exchange_check=True)
+  gate_by_id = {row["id"]: row for row in gates["gates"]}
+  assert gate_by_id["G4_EXCHANGE_CONNECTOR_READY"]["status"] == "FAIL"
+  assert "BINANCE_TESTNET_API_KEY" in gate_by_id["G4_EXCHANGE_CONNECTOR_READY"]["details"]["missing_env_vars"]
+  assert gate_by_id["G7_ORDER_SIM_OR_PAPER_OK"]["status"] == "FAIL"
+
+
+def test_exchange_diagnose_passes_with_env_keys_and_mocked_exchange(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  diagnose = client.get("/api/v1/exchange/diagnose?mode=testnet&force=true", headers=headers)
+  assert diagnose.status_code == 200, diagnose.text
+  payload = diagnose.json()
+  assert payload["ok"] is True
+  assert payload["key_source"] == "env"
+  assert payload["connector_ok"] is True
+  assert payload["order_ok"] is True
+  assert payload["base_url"] == "https://testnet.binance.vision"
+
+  gates = module.evaluate_gates("testnet", force_exchange_check=True)
+  gate_by_id = {row["id"]: row for row in gates["gates"]}
+  assert gate_by_id["G4_EXCHANGE_CONNECTOR_READY"]["status"] == "PASS"
+  assert gate_by_id["G7_ORDER_SIM_OR_PAPER_OK"]["status"] == "PASS"
+
+
+def test_exchange_diagnose_uses_json_only_in_local_dev(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  cfg_dir = Path(module.USER_DATA_DIR) / "config"
+  cfg_dir.mkdir(parents=True, exist_ok=True)
+  (cfg_dir / "exchange_binance_spot.json").write_text(
+    '{"testnet":{"api_key":"json-key","api_secret":"json-secret"}}',
+    encoding="utf-8",
+  )
+  _mock_exchange_ok(module, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  diagnose = client.get("/api/v1/exchange/diagnose?mode=testnet&force=true", headers=headers)
+  assert diagnose.status_code == 200, diagnose.text
+  payload = diagnose.json()
+  assert payload["has_keys"] is True
+  assert payload["key_source"] == "json"

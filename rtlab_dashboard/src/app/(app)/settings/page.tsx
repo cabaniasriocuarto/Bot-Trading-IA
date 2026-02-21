@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/c
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { apiGet } from "@/lib/client-api";
-import type { HealthResponse, SettingsResponse } from "@/lib/types";
+import type { ExchangeDiagnoseResponse, HealthResponse, SettingsResponse } from "@/lib/types";
 
 type GateItem = {
   id: string;
@@ -18,6 +18,11 @@ type GateItem = {
   reason: string;
   details?: Record<string, unknown>;
 };
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
 
 export default function SettingsPage() {
   const { role } = useSession();
@@ -34,6 +39,7 @@ export default function SettingsPage() {
     ws: "sin probar",
     exchange: "sin probar",
   });
+  const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -130,25 +136,26 @@ export default function SettingsPage() {
   };
 
   const testWs = async () => {
+    const endpoint = "/api/events";
     setDiag((prev) => ({ ...prev, ws: "probando..." }));
     await new Promise<void>((resolve) => {
-      const es = new EventSource("/ws/v1/events", { withCredentials: true });
+      const es = new EventSource(endpoint, { withCredentials: true });
       const timeout = setTimeout(() => {
         es.close();
-        setDiag((prev) => ({ ...prev, ws: "timeout" }));
+        setDiag((prev) => ({ ...prev, ws: `WS timeout (${endpoint})` }));
         resolve();
       }, 5000);
       const markOk = () => {
         clearTimeout(timeout);
         es.close();
-        setDiag((prev) => ({ ...prev, ws: "ok" }));
+        setDiag((prev) => ({ ...prev, ws: `ok (${endpoint})` }));
         resolve();
       };
       es.addEventListener("health", markOk);
       es.onerror = () => {
         clearTimeout(timeout);
         es.close();
-        setDiag((prev) => ({ ...prev, ws: "fallo" }));
+        setDiag((prev) => ({ ...prev, ws: `fallo (${endpoint})` }));
         resolve();
       };
     });
@@ -157,17 +164,29 @@ export default function SettingsPage() {
   const testExchange = async () => {
     setDiag((prev) => ({ ...prev, exchange: "probando..." }));
     try {
-      const res = await fetch("/api/v1/settings/test-exchange", {
-        method: "POST",
+      const mode = settings?.mode?.toLowerCase() || "paper";
+      const res = await fetch(`/api/v1/exchange/diagnose?force=true&mode=${encodeURIComponent(mode)}`, {
+        method: "GET",
         credentials: "include",
       });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; mode?: string };
-      if (!res.ok || !body.ok) {
-        setDiag((prev) => ({ ...prev, exchange: body.message || "fallo" }));
+      const body = (await res.json().catch(() => ({}))) as Partial<ExchangeDiagnoseResponse>;
+      if (!res.ok) {
+        const fail = body as { detail?: string; error?: string };
+        setExchangeDiag(null);
+        setDiag((prev) => ({ ...prev, exchange: fail.detail || fail.error || "fallo" }));
         return;
       }
-      setDiag((prev) => ({ ...prev, exchange: `ok (${body.mode || ""})` }));
+      const parsed = body as ExchangeDiagnoseResponse;
+      setExchangeDiag(parsed);
+      if (!parsed.ok) {
+        const missing = parsed.missing?.length ? ` | faltan: ${parsed.missing.join(", ")}` : "";
+        const reason = parsed.last_error || parsed.order_reason || parsed.connector_reason || "fallo";
+        setDiag((prev) => ({ ...prev, exchange: `${reason}${missing}` }));
+        return;
+      }
+      setDiag((prev) => ({ ...prev, exchange: `ok (${parsed.mode})` }));
     } catch {
+      setExchangeDiag(null);
       setDiag((prev) => ({ ...prev, exchange: "fallo" }));
     }
   };
@@ -384,7 +403,7 @@ export default function SettingsPage() {
 
       <Card>
         <CardTitle>Diagnostico</CardTitle>
-        <CardDescription>Probar backend (/health), WS (/ws/v1/events) y exchange (paper/testnet/mock).</CardDescription>
+        <CardDescription>Probar backend (/health), WS (/api/events) y exchange (/api/v1/exchange/diagnose).</CardDescription>
         <CardContent className="grid gap-3 md:grid-cols-3">
           <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-400">Backend</p>
@@ -399,6 +418,15 @@ export default function SettingsPage() {
           <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-400">Exchange</p>
             <p className="text-sm text-slate-200">{diag.exchange}</p>
+            {exchangeDiag ? (
+              <div className="space-y-1 rounded-md border border-slate-800 bg-slate-950/60 p-2 text-xs text-slate-300">
+                <p>base_url: {exchangeDiag.base_url}</p>
+                <p>ws_url: {exchangeDiag.ws_url}</p>
+                <p>source: {exchangeDiag.key_source}</p>
+                {exchangeDiag.missing.length ? <p>faltan env vars: {exchangeDiag.missing.join(", ")}</p> : null}
+                {exchangeDiag.missing.length ? <p className="text-amber-300">Cargalas en Railway -&gt; Service Variables</p> : null}
+              </div>
+            ) : null}
             <Button variant="outline" onClick={testExchange}>Probar exchange</Button>
           </div>
         </CardContent>
@@ -425,6 +453,20 @@ export default function SettingsPage() {
                   <Badge variant={gate.status === "PASS" ? "success" : gate.status === "WARN" ? "warn" : "danger"}>{gate.status}</Badge>
                 </div>
                 <p className="text-slate-300">{gate.reason}</p>
+                {(gate.id === "G4_EXCHANGE_CONNECTOR_READY" || gate.id === "G7_ORDER_SIM_OR_PAPER_OK") && gate.status !== "PASS" ? (
+                  <div className="mt-2 space-y-1 text-xs text-slate-400">
+                    {toStringArray(gate.details?.missing_env_vars).length ? (
+                      <p>
+                        Variables faltantes: <span className="text-amber-300">{toStringArray(gate.details?.missing_env_vars).join(", ")}</span>
+                      </p>
+                    ) : null}
+                    {toStringArray(gate.details?.missing_env_vars).length ? <p>Cargalas en Railway -&gt; Service Variables.</p> : null}
+                    {typeof gate.details?.base_url === "string" ? <p>base_url: {String(gate.details?.base_url)}</p> : null}
+                    {typeof gate.details?.ws_url === "string" ? <p>ws_url: {String(gate.details?.ws_url)}</p> : null}
+                    {typeof gate.details?.ws_error === "string" && gate.details?.ws_error ? <p>ws_error: {String(gate.details?.ws_error)}</p> : null}
+                    {typeof gate.details?.last_error === "string" && gate.details?.last_error ? <p>error: {String(gate.details?.last_error)}</p> : null}
+                  </div>
+                ) : null}
               </div>
             ))}
             {!gates.length ? <p className="text-sm text-slate-400">Sin gates disponibles.</p> : null}

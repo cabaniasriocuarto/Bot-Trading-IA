@@ -3,18 +3,23 @@ from __future__ import annotations
 import asyncio
 import csv
 import hashlib
+import hmac
 import io
 import json
 import os
 import random
 import re
 import secrets
+import socket
 import sqlite3
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlencode, urlparse
 
+import requests
 import yaml
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -58,6 +63,19 @@ ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
 ALLOWED_ROLES = {ROLE_ADMIN, ROLE_VIEWER}
 ALLOWED_MODES = {"paper", "testnet", "live"}
+BINANCE_TESTNET_BASE_URL_DEFAULT = "https://testnet.binance.vision"
+BINANCE_TESTNET_WS_URL_DEFAULT = "wss://testnet.binance.vision/ws"
+BINANCE_LIVE_BASE_URL_DEFAULT = "https://api.binance.com"
+BINANCE_LIVE_WS_URL_DEFAULT = "wss://stream.binance.com:9443/ws"
+BINANCE_TESTNET_ENV_KEY = "BINANCE_TESTNET_API_KEY"
+BINANCE_TESTNET_ENV_SECRET = "BINANCE_TESTNET_API_SECRET"
+BINANCE_TESTNET_ENV_BASE = "BINANCE_SPOT_TESTNET_BASE_URL"
+BINANCE_TESTNET_ENV_WS = "BINANCE_SPOT_TESTNET_WS_URL"
+BINANCE_LIVE_ENV_KEY = "BINANCE_API_KEY"
+BINANCE_LIVE_ENV_SECRET = "BINANCE_API_SECRET"
+BINANCE_LIVE_ENV_BASE = "BINANCE_SPOT_BASE_URL"
+BINANCE_LIVE_ENV_WS = "BINANCE_SPOT_WS_URL"
+EXCHANGE_DIAG_CACHE_TTL_SEC = 45
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -216,14 +234,436 @@ def default_mode() -> str:
     return mode
 
 
+def running_on_railway() -> bool:
+    return any(
+        [
+            bool(get_env("RAILWAY_PROJECT_ID")),
+            bool(get_env("RAILWAY_SERVICE_ID")),
+            bool(get_env("RAILWAY_ENVIRONMENT")),
+            bool(get_env("RAILWAY_PUBLIC_DOMAIN")),
+        ]
+    )
+
+
+def allow_local_exchange_file_fallback() -> bool:
+    explicit = get_env("ALLOW_LOCAL_EXCHANGE_FILE")
+    if explicit:
+        return explicit.lower() == "true"
+    node_env = get_env("NODE_ENV", "development").lower()
+    return node_env != "production" and not running_on_railway()
+
+
+def exchange_config_file_path() -> Path:
+    return (USER_DATA_DIR / "config" / "exchange_binance_spot.json").resolve()
+
+
+def _pick_string_value(payload: dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _nested_dict(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    value = payload.get(key)
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _build_exchange_env_config(mode: str) -> dict[str, Any]:
+    normalized = mode.lower().strip()
+    if normalized == "testnet":
+        expected = [BINANCE_TESTNET_ENV_KEY, BINANCE_TESTNET_ENV_SECRET]
+        legacy_key = get_env("TESTNET_API_KEY") or get_env("API_KEY")
+        legacy_secret = get_env("TESTNET_API_SECRET") or get_env("API_SECRET")
+        key = get_env(BINANCE_TESTNET_ENV_KEY) or legacy_key
+        secret = get_env(BINANCE_TESTNET_ENV_SECRET) or legacy_secret
+        base_url = get_env(BINANCE_TESTNET_ENV_BASE, BINANCE_TESTNET_BASE_URL_DEFAULT)
+        ws_url = get_env(BINANCE_TESTNET_ENV_WS, BINANCE_TESTNET_WS_URL_DEFAULT)
+        legacy_used = []
+        if not get_env(BINANCE_TESTNET_ENV_KEY) and legacy_key:
+            legacy_used.extend(["TESTNET_API_KEY", "API_KEY"])
+        if not get_env(BINANCE_TESTNET_ENV_SECRET) and legacy_secret:
+            legacy_used.extend(["TESTNET_API_SECRET", "API_SECRET"])
+    else:
+        expected = [BINANCE_LIVE_ENV_KEY, BINANCE_LIVE_ENV_SECRET]
+        legacy_key = get_env("API_KEY")
+        legacy_secret = get_env("API_SECRET")
+        key = get_env(BINANCE_LIVE_ENV_KEY) or legacy_key
+        secret = get_env(BINANCE_LIVE_ENV_SECRET) or legacy_secret
+        base_url = get_env(BINANCE_LIVE_ENV_BASE, BINANCE_LIVE_BASE_URL_DEFAULT)
+        ws_url = get_env(BINANCE_LIVE_ENV_WS, BINANCE_LIVE_WS_URL_DEFAULT)
+        legacy_used = []
+        if not get_env(BINANCE_LIVE_ENV_KEY) and legacy_key:
+            legacy_used.append("API_KEY")
+        if not get_env(BINANCE_LIVE_ENV_SECRET) and legacy_secret:
+            legacy_used.append("API_SECRET")
+    missing_expected = [name for name in expected if not get_env(name)]
+    return {
+        "mode": normalized,
+        "key": key,
+        "secret": secret,
+        "has_keys": bool(key and secret),
+        "expected_env_vars": expected,
+        "missing_env_vars": missing_expected,
+        "legacy_env_vars_used": sorted(set(legacy_used)),
+        "base_url": base_url.rstrip("/"),
+        "ws_url": ws_url,
+    }
+
+
+def _load_exchange_json_file(mode: str) -> dict[str, Any]:
+    path = exchange_config_file_path()
+    if not path.exists():
+        return {"ok": False, "error": f"JSON no encontrado en contenedor: {path}", "path": str(path), "key": "", "secret": ""}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"ok": False, "error": f"JSON invalido: {exc}", "path": str(path), "key": "", "secret": ""}
+    if not isinstance(raw, dict):
+        return {"ok": False, "error": "JSON invalido: raiz no es objeto", "path": str(path), "key": "", "secret": ""}
+
+    binance = _nested_dict(raw, "binance")
+    testnet = _nested_dict(raw, "testnet")
+    spot_testnet = _nested_dict(raw, "spot_testnet")
+    mode_block = _nested_dict(raw, mode.lower())
+    candidates = [raw, binance, testnet, spot_testnet, mode_block]
+    key = ""
+    secret = ""
+    for candidate in candidates:
+        key = key or _pick_string_value(candidate, ["api_key", "apiKey", "key", "API_KEY"])
+        secret = secret or _pick_string_value(candidate, ["api_secret", "apiSecret", "secret", "API_SECRET"])
+    return {"ok": bool(key and secret), "path": str(path), "key": key, "secret": secret, "error": "" if key and secret else "Faltan api_key/api_secret en JSON"}
+
+
+def load_exchange_credentials(mode: str) -> dict[str, Any]:
+    normalized = mode.lower().strip()
+    cfg = _build_exchange_env_config(normalized)
+    diagnostics: list[str] = []
+    key_source = "env" if cfg["has_keys"] else "none"
+    key = cfg["key"]
+    secret = cfg["secret"]
+    file_payload: dict[str, Any] | None = None
+
+    if not cfg["has_keys"] and allow_local_exchange_file_fallback():
+        file_payload = _load_exchange_json_file(normalized)
+        if file_payload.get("ok"):
+            key = file_payload.get("key", "")
+            secret = file_payload.get("secret", "")
+            key_source = "json"
+            diagnostics.append(f"Credenciales cargadas desde JSON local: {file_payload.get('path')}")
+        else:
+            diagnostics.append(str(file_payload.get("error", "No se pudo leer JSON local")))
+    elif not cfg["has_keys"] and running_on_railway():
+        diagnostics.append("Faltan env vars. Cargarlas en Railway -> Service Variables.")
+
+    if cfg["legacy_env_vars_used"]:
+        diagnostics.append(f"Usando variables legacy: {', '.join(cfg['legacy_env_vars_used'])}")
+
+    return {
+        "mode": normalized,
+        "exchange": exchange_name(),
+        "api_key": key,
+        "api_secret": secret,
+        "has_keys": bool(key and secret),
+        "key_source": key_source,
+        "expected_env_vars": cfg["expected_env_vars"],
+        "missing_env_vars": cfg["missing_env_vars"],
+        "base_url": cfg["base_url"],
+        "ws_url": cfg["ws_url"],
+        "config_file": str(exchange_config_file_path()),
+        "config_file_exists": exchange_config_file_path().exists(),
+        "diagnostics": diagnostics,
+        "json_details": file_payload or {},
+    }
+
+
 def exchange_keys_present(mode: str) -> bool:
-    if mode == "testnet":
-        key = get_env("TESTNET_API_KEY") or get_env("API_KEY")
-        secret = get_env("TESTNET_API_SECRET") or get_env("API_SECRET")
-        return bool(key and secret)
-    key = get_env("API_KEY")
-    secret = get_env("API_SECRET")
-    return bool(key and secret)
+    return bool(load_exchange_credentials(mode).get("has_keys"))
+
+
+def _exchange_timeout_seconds() -> float:
+    settings = json_load(SETTINGS_PATH, {})
+    timeout_ms = settings.get("execution", {}).get("request_timeout_ms", 4000)
+    try:
+        timeout = max(1.0, min(float(timeout_ms) / 1000.0, 15.0))
+    except Exception:
+        timeout = 4.0
+    return timeout
+
+
+def _parse_json_response(response: requests.Response) -> Any:
+    try:
+        return response.json()
+    except Exception:
+        return {"raw": response.text[:500]}
+
+
+def _classify_exchange_error(status_code: int, payload: Any) -> tuple[str, str]:
+    if isinstance(payload, dict):
+        code = payload.get("code")
+        msg = str(payload.get("msg", "")).strip()
+        lower = msg.lower()
+        if code in {-2015, -2014, -1022}:
+            return "auth", f"Keys invalidas/permisos/IP restriction ({code}): {msg}"
+        if code in {-1003} or status_code == 429:
+            return "rate_limit", f"Rate limit ({code}): {msg or 'Too many requests'}"
+        if "sapi" in lower:
+            return "sapi_unsupported", f"sapi unsupported: {msg}"
+        if code in {-2010, -2011, -1013, -1100, -1102}:
+            return "permissions", f"Permisos o parametros invalidos ({code}): {msg}"
+    if status_code >= 500:
+        return "endpoint", f"Endpoint no disponible (HTTP {status_code})"
+    return "endpoint", f"Error de endpoint/auth (HTTP {status_code})"
+
+
+def _probe_ws_endpoint(ws_url: str, timeout_sec: float) -> tuple[bool, str]:
+    parsed = urlparse(ws_url)
+    host = parsed.hostname
+    if not host:
+        return False, f"WS endpoint invalido: {ws_url}"
+    port = parsed.port or (443 if parsed.scheme in {"wss", "https"} else 80)
+    try:
+        with socket.create_connection((host, port), timeout=timeout_sec):
+            return True, ""
+    except socket.timeout:
+        return False, f"WS timeout ({ws_url})"
+    except Exception as exc:
+        return False, f"WS error ({ws_url}): {exc}"
+
+
+def _binance_signed_request(
+    *,
+    method: str,
+    base_url: str,
+    path: str,
+    api_key: str,
+    api_secret: str,
+    params: dict[str, Any],
+    timeout_sec: float,
+) -> tuple[bool, dict[str, Any]]:
+    query_payload: dict[str, Any] = {**params, "timestamp": int(time.time() * 1000), "recvWindow": 5000}
+    query = urlencode(query_payload, doseq=True)
+    signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+    url = f"{base_url.rstrip('/')}{path}?{query}&signature={signature}"
+    response = requests.request(
+        method=method,
+        url=url,
+        headers={"X-MBX-APIKEY": api_key},
+        timeout=timeout_sec,
+    )
+    payload = _parse_json_response(response)
+    return response.ok, {
+        "status_code": response.status_code,
+        "payload": payload,
+        "url": f"{base_url.rstrip('/')}{path}",
+    }
+
+
+_EXCHANGE_DIAG_CACHE: dict[str, Any] = {"mode": "", "checked_at_epoch": 0.0, "result": None}
+
+
+def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -> dict[str, Any]:
+    active_mode = (mode or store.load_bot_state().get("mode") or default_mode()).lower()
+    now_epoch = time.time()
+    cached = _EXCHANGE_DIAG_CACHE.get("result")
+    if (
+        not force_refresh
+        and cached
+        and _EXCHANGE_DIAG_CACHE.get("mode") == active_mode
+        and (now_epoch - float(_EXCHANGE_DIAG_CACHE.get("checked_at_epoch", 0.0))) < EXCHANGE_DIAG_CACHE_TTL_SEC
+    ):
+        return cached
+
+    creds = load_exchange_credentials(active_mode)
+    timeout_sec = _exchange_timeout_seconds()
+    checks: dict[str, Any] = {}
+    last_error = ""
+    connector_ok = False
+    order_ok = False
+    connector_reason = ""
+    order_reason = ""
+
+    if active_mode == "paper":
+        checks["paper"] = {"ok": True, "detail": "Paper broker operativo para place/cancel."}
+        result = {
+            "ok": True,
+            "mode": active_mode,
+            "exchange": creds["exchange"],
+            "base_url": creds["base_url"],
+            "ws_url": creds["ws_url"],
+            "has_keys": creds["has_keys"],
+            "key_source": creds["key_source"],
+            "missing": creds["missing_env_vars"],
+            "expected_env_vars": creds["expected_env_vars"],
+            "last_error": "",
+            "checks": checks,
+            "connector_ok": True,
+            "connector_reason": "Paper connector listo (simulador).",
+            "order_ok": True,
+            "order_reason": "Paper place/cancel operativo.",
+            "diagnostics": creds["diagnostics"],
+        }
+        _EXCHANGE_DIAG_CACHE.update({"mode": active_mode, "checked_at_epoch": now_epoch, "result": result})
+        return result
+
+    if not creds["has_keys"]:
+        if running_on_railway():
+            last_error = f"Faltan env vars {creds['missing_env_vars']}. Cargarlas en Railway -> Service Variables."
+        elif allow_local_exchange_file_fallback() and not creds["config_file_exists"]:
+            last_error = f"JSON no encontrado en contenedor: {creds['config_file']}"
+        else:
+            last_error = f"Faltan credenciales para {active_mode}."
+        checks["credentials"] = {
+            "ok": False,
+            "reason": last_error,
+            "missing_env_vars": creds["missing_env_vars"],
+            "key_source": creds["key_source"],
+        }
+        result = {
+            "ok": False,
+            "mode": active_mode,
+            "exchange": creds["exchange"],
+            "base_url": creds["base_url"],
+            "ws_url": creds["ws_url"],
+            "has_keys": False,
+            "key_source": creds["key_source"],
+            "missing": creds["missing_env_vars"],
+            "expected_env_vars": creds["expected_env_vars"],
+            "last_error": last_error,
+            "checks": checks,
+            "connector_ok": False,
+            "connector_reason": last_error,
+            "order_ok": False,
+            "order_reason": "Cannot place/cancel on testnet: credenciales faltantes.",
+            "diagnostics": creds["diagnostics"],
+        }
+        _EXCHANGE_DIAG_CACHE.update({"mode": active_mode, "checked_at_epoch": now_epoch, "result": result})
+        return result
+
+    time_url = f"{creds['base_url'].rstrip('/')}/api/v3/time"
+    try:
+        response = requests.get(time_url, timeout=timeout_sec)
+        payload = _parse_json_response(response)
+        checks["time"] = {"ok": bool(response.ok), "status_code": response.status_code, "endpoint": time_url}
+        if not response.ok:
+            category, detail = _classify_exchange_error(response.status_code, payload)
+            checks["time"]["error_type"] = category
+            checks["time"]["error"] = detail
+            last_error = detail
+    except requests.Timeout:
+        checks["time"] = {"ok": False, "status_code": 0, "endpoint": time_url, "error_type": "timeout", "error": f"Timeout en {time_url}"}
+        last_error = checks["time"]["error"]
+    except Exception as exc:
+        checks["time"] = {"ok": False, "status_code": 0, "endpoint": time_url, "error_type": "endpoint", "error": str(exc)}
+        last_error = str(exc)
+
+    ws_ok, ws_error = _probe_ws_endpoint(creds["ws_url"], timeout_sec)
+    checks["ws"] = {"ok": ws_ok, "endpoint": creds["ws_url"], "error": ws_error}
+    if not ws_ok and not last_error:
+        last_error = ws_error
+
+    account_ok = False
+    account_result: dict[str, Any] = {}
+    try:
+        account_ok, account_result = _binance_signed_request(
+            method="GET",
+            base_url=creds["base_url"],
+            path="/api/v3/account",
+            api_key=creds["api_key"],
+            api_secret=creds["api_secret"],
+            params={},
+            timeout_sec=timeout_sec,
+        )
+        checks["account"] = {"ok": account_ok, "status_code": account_result["status_code"], "endpoint": account_result["url"]}
+        if not account_ok:
+            category, detail = _classify_exchange_error(account_result["status_code"], account_result["payload"])
+            checks["account"]["error_type"] = category
+            checks["account"]["error"] = detail
+            if not last_error:
+                last_error = detail
+    except requests.Timeout:
+        checks["account"] = {"ok": False, "status_code": 0, "endpoint": f"{creds['base_url']}/api/v3/account", "error_type": "timeout", "error": "Timeout auth account"}
+        if not last_error:
+            last_error = checks["account"]["error"]
+    except Exception as exc:
+        checks["account"] = {"ok": False, "status_code": 0, "endpoint": f"{creds['base_url']}/api/v3/account", "error_type": "auth", "error": str(exc)}
+        if not last_error:
+            last_error = str(exc)
+
+    symbol = get_env("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT")
+    quote_qty = get_env("BINANCE_TESTNET_TEST_QUOTE_QTY", "15")
+    if account_ok:
+        try:
+            order_ok, order_result = _binance_signed_request(
+                method="POST",
+                base_url=creds["base_url"],
+                path="/api/v3/order/test",
+                api_key=creds["api_key"],
+                api_secret=creds["api_secret"],
+                params={"symbol": symbol, "side": "BUY", "type": "MARKET", "quoteOrderQty": quote_qty},
+                timeout_sec=timeout_sec,
+            )
+            checks["order_test"] = {"ok": order_ok, "status_code": order_result["status_code"], "endpoint": order_result["url"], "symbol": symbol}
+            if not order_ok:
+                category, detail = _classify_exchange_error(order_result["status_code"], order_result["payload"])
+                checks["order_test"]["error_type"] = category
+                checks["order_test"]["error"] = detail
+                if not last_error:
+                    last_error = detail
+        except requests.Timeout:
+            checks["order_test"] = {"ok": False, "status_code": 0, "endpoint": f"{creds['base_url']}/api/v3/order/test", "symbol": symbol, "error_type": "timeout", "error": "Timeout order test"}
+            if not last_error:
+                last_error = checks["order_test"]["error"]
+        except Exception as exc:
+            checks["order_test"] = {"ok": False, "status_code": 0, "endpoint": f"{creds['base_url']}/api/v3/order/test", "symbol": symbol, "error_type": "endpoint", "error": str(exc)}
+            if not last_error:
+                last_error = str(exc)
+    else:
+        checks["order_test"] = {
+            "ok": False,
+            "status_code": 0,
+            "endpoint": f"{creds['base_url']}/api/v3/order/test",
+            "symbol": symbol,
+            "error_type": "auth",
+            "error": "Order test omitido por fallo de autenticacion.",
+        }
+
+    connector_ok = bool(checks.get("time", {}).get("ok") and checks.get("ws", {}).get("ok") and checks.get("account", {}).get("ok"))
+    order_ok = bool(checks.get("order_test", {}).get("ok"))
+
+    if connector_ok:
+        connector_reason = "Exchange connector listo."
+    else:
+        connector_reason = last_error or "Exchange connector no listo."
+
+    if order_ok:
+        order_reason = "Place/cancel testnet operativo."
+    else:
+        order_reason = checks.get("order_test", {}).get("error") or "Cannot place/cancel on testnet."
+
+    result = {
+        "ok": bool(connector_ok and (order_ok or active_mode == "paper")),
+        "mode": active_mode,
+        "exchange": creds["exchange"],
+        "base_url": creds["base_url"],
+        "ws_url": creds["ws_url"],
+        "has_keys": True,
+        "key_source": creds["key_source"],
+        "missing": creds["missing_env_vars"],
+        "expected_env_vars": creds["expected_env_vars"],
+        "last_error": last_error,
+        "checks": checks,
+        "connector_ok": connector_ok,
+        "connector_reason": connector_reason,
+        "order_ok": order_ok,
+        "order_reason": order_reason,
+        "diagnostics": creds["diagnostics"],
+    }
+    _EXCHANGE_DIAG_CACHE.update({"mode": active_mode, "checked_at_epoch": now_epoch, "result": result})
+    return result
 
 
 def ensure_paths() -> None:
@@ -991,7 +1431,7 @@ def gate_row(gate_id: str, name: str, status: Literal["PASS", "FAIL", "WARN"], r
     return {"id": gate_id, "name": name, "status": status, "reason": reason, "details": details}
 
 
-def evaluate_gates(mode: str | None = None) -> dict[str, Any]:
+def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = False) -> dict[str, Any]:
     active_mode = (mode or store.load_bot_state().get("mode") or "paper").lower()
     settings = store.load_settings()
     gates: list[dict[str, Any]] = []
@@ -1024,16 +1464,32 @@ def evaluate_gates(mode: str | None = None) -> dict[str, Any]:
         db_error = str(exc)
     gates.append(gate_row("G3_BACKEND_HEALTH", "Backend health", "PASS" if db_ok else "FAIL", "DB ok" if db_ok else "DB unavailable", {"db_error": db_error}))
 
+    exchange_diag = diagnose_exchange(active_mode, force_refresh=force_exchange_check)
     if active_mode == "paper":
         g4_status = "PASS"
         g4_reason = "Paper connector uses simulator"
-    elif active_mode == "testnet":
-        g4_status = "PASS" if exchange_keys_present("testnet") else "FAIL"
-        g4_reason = "Testnet keys present" if g4_status == "PASS" else "Missing testnet keys"
     else:
-        g4_status = "PASS" if exchange_keys_present("live") else "FAIL"
-        g4_reason = "Live keys present" if g4_status == "PASS" else "Missing live keys"
-    gates.append(gate_row("G4_EXCHANGE_CONNECTOR_READY", "Exchange connector", g4_status, g4_reason, {"mode": active_mode, "exchange": exchange_name()}))
+        g4_status = "PASS" if exchange_diag.get("connector_ok") else "FAIL"
+        g4_reason = str(exchange_diag.get("connector_reason") or "Exchange connector not ready")
+    gates.append(
+        gate_row(
+            "G4_EXCHANGE_CONNECTOR_READY",
+            "Exchange connector",
+            g4_status,
+            g4_reason,
+            {
+                "mode": active_mode,
+                "exchange": exchange_name(),
+                "missing_env_vars": exchange_diag.get("missing", []),
+                "expected_env_vars": exchange_diag.get("expected_env_vars", []),
+                "key_source": exchange_diag.get("key_source", "none"),
+                "base_url": exchange_diag.get("base_url"),
+                "ws_url": exchange_diag.get("ws_url"),
+                "last_error": exchange_diag.get("last_error", ""),
+                "ws_error": exchange_diag.get("checks", {}).get("ws", {}).get("error", ""),
+            },
+        )
+    )
 
     principal = store.registry.get_principal(active_mode)
     gates.append(
@@ -1069,13 +1525,26 @@ def evaluate_gates(mode: str | None = None) -> dict[str, Any]:
     if active_mode == "paper":
         g7_status = "PASS"
         g7_reason = "Paper order simulator ready"
-    elif active_mode == "testnet":
-        g7_status = "PASS" if exchange_keys_present("testnet") else "FAIL"
-        g7_reason = "Testnet order routing ready" if g7_status == "PASS" else "Cannot place/cancel on testnet"
     else:
-        g7_status = "PASS" if exchange_keys_present("live") else "FAIL"
-        g7_reason = "Live order routing ready" if g7_status == "PASS" else "Cannot place/cancel on live"
-    gates.append(gate_row("G7_ORDER_SIM_OR_PAPER_OK", "Order pipeline", g7_status, g7_reason, {"mode": active_mode}))
+        g7_status = "PASS" if exchange_diag.get("order_ok") else "FAIL"
+        g7_reason = str(exchange_diag.get("order_reason") or ("Cannot place/cancel on live" if active_mode == "live" else "Cannot place/cancel on testnet"))
+    gates.append(
+        gate_row(
+            "G7_ORDER_SIM_OR_PAPER_OK",
+            "Order pipeline",
+            g7_status,
+            g7_reason,
+            {
+                "mode": active_mode,
+                "missing_env_vars": exchange_diag.get("missing", []),
+                "base_url": exchange_diag.get("base_url"),
+                "ws_url": exchange_diag.get("ws_url"),
+                "last_error": exchange_diag.get("last_error", ""),
+                "ws_error": exchange_diag.get("checks", {}).get("ws", {}).get("error", ""),
+                "order_test": exchange_diag.get("checks", {}).get("order_test", {}),
+            },
+        )
+    )
 
     telegram_enabled = bool(settings.get("telegram", {}).get("enabled"))
     has_telegram = bool(get_env("TELEGRAM_BOT_TOKEN") and settings.get("telegram", {}).get("chat_id"))
@@ -1250,7 +1719,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/gates/reevaluate")
     def gates_reevaluate(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        payload = evaluate_gates()
+        payload = evaluate_gates(force_exchange_check=True)
         store.add_log(
             event_type="gates",
             severity="info",
@@ -1538,24 +2007,22 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/settings/test-exchange")
     def settings_test_exchange(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        mode = store.load_bot_state().get("mode", "paper")
-        ready = mode == "paper" or exchange_keys_present(mode)
-        if not ready:
-            raise HTTPException(status_code=400, detail="Exchange connector not ready for current mode")
-        return {
-            "ok": True,
-            "exchange": exchange_name(),
-            "mode": mode,
-            "latency_ms": 130,
-            "capabilities": {
-                "fetch_ohlcv": True,
-                "stream_trades": True,
-                "stream_orderbook": True,
-                "place_order": ready,
-                "cancel_order": ready,
-                "account_balance": True,
-            },
-        }
+        payload = diagnose_exchange(force_refresh=True)
+        if not payload.get("ok"):
+            raise HTTPException(status_code=400, detail=payload.get("last_error") or "Exchange connector no listo")
+        return payload
+
+    @app.get("/api/v1/exchange/diagnose")
+    def exchange_diagnose(
+        mode: str | None = None,
+        force: bool = Query(default=False),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        selected_mode = (mode or store.load_bot_state().get("mode") or default_mode()).lower()
+        if selected_mode not in ALLOWED_MODES:
+            raise HTTPException(status_code=400, detail=f"Invalid mode: {selected_mode}")
+        payload = diagnose_exchange(selected_mode, force_refresh=force)
+        return payload
 
     @app.post("/api/v1/bot/mode")
     def bot_mode(body: BotModeBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

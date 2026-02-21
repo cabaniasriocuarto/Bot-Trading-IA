@@ -8,5 +8,6 @@ __pycache__/
 
 user_data/data/
 user_data/logs/
+user_data/config/*.json
 user_data/strategy_packs/results/
 user_data/strategy_packs/*.sqlite3

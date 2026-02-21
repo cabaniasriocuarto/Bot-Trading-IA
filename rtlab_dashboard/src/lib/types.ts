@@ -24,6 +24,25 @@ export interface HealthResponse {
   cause?: string;
 }
 
+export interface ExchangeDiagnoseResponse {
+  ok: boolean;
+  mode: "paper" | "testnet" | "live";
+  exchange: string;
+  base_url: string;
+  ws_url: string;
+  has_keys: boolean;
+  key_source: "env" | "json" | "none";
+  missing: string[];
+  expected_env_vars: string[];
+  last_error: string;
+  connector_ok: boolean;
+  connector_reason: string;
+  order_ok: boolean;
+  order_reason: string;
+  diagnostics?: string[];
+  checks: Record<string, unknown>;
+}
+
 export interface StrategyManifest {
   id: string;
   name: string;
