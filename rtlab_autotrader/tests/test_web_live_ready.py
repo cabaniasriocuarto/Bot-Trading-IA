@@ -5,6 +5,8 @@ import io
 import zipfile
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 from fastapi.testclient import TestClient
 
 
@@ -254,6 +256,90 @@ def risk_hooks(context):
   assert "live" in set_live_primary.json()["strategy"]["primary_for_modes"]
 
 
+def test_strategy_yaml_upload_supported(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  yaml_payload = """
+id: yaml_uploaded_strategy
+name: YAML Uploaded Strategy
+version: 1.2.3
+description: Strategy uploaded as YAML only
+parameters_schema:
+  type: object
+defaults:
+  risk_per_trade_pct: 0.5
+tags: [upload, yaml]
+""".strip()
+
+  res = client.post(
+    "/api/v1/strategies/upload",
+    headers=headers,
+    files={"file": ("yaml_uploaded_strategy.yaml", yaml_payload.encode("utf-8"), "application/x-yaml")},
+  )
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is True
+  assert body["strategy"]["id"] == "yaml_uploaded_strategy"
+  assert body["strategy"]["version"] == "1.2.3"
+
+
+def test_learning_research_loop_and_adopt_option_b(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  settings_get = client.get("/api/v1/settings", headers=headers)
+  assert settings_get.status_code == 200, settings_get.text
+  settings = settings_get.json()
+  settings["learning"]["enabled"] = True
+  settings["learning"]["mode"] = "RESEARCH"
+  settings["learning"]["validation"]["enforce_pbo"] = False
+  settings["learning"]["validation"]["enforce_dsr"] = False
+
+  settings_put = client.put("/api/v1/settings", headers=headers, json=settings)
+  assert settings_put.status_code == 200, settings_put.text
+  assert settings_put.json()["settings"]["learning"]["promotion"]["allow_live"] is False
+  assert settings_put.json()["settings"]["learning"]["promotion"]["allow_auto_apply"] is False
+
+  status_res = client.get("/api/v1/learning/status", headers=headers)
+  assert status_res.status_code == 200, status_res.text
+  status_payload = status_res.json()
+  assert status_payload["option_b"]["allow_live"] is False
+  assert "selector" in status_payload
+  assert "drift" in status_payload
+
+  drift_res = client.get("/api/v1/learning/drift", headers=headers)
+  assert drift_res.status_code == 200, drift_res.text
+  assert drift_res.json()["algo"] in {"adwin", "page_hinkley"}
+
+  run_res = client.post("/api/v1/learning/run-now", headers=headers)
+  assert run_res.status_code == 200, run_res.text
+  run_payload = run_res.json()
+  assert run_payload["ok"] is True
+  assert run_payload["option_b"]["allow_live"] is False
+
+  recs_res = client.get("/api/v1/learning/recommendations", headers=headers)
+  assert recs_res.status_code == 200, recs_res.text
+  recs = recs_res.json()
+  assert isinstance(recs, list) and recs
+  rec = recs[0]
+  assert rec["adoptable_modes"] == ["paper", "testnet"]
+  assert rec["option_b"]["requires_admin_adoption"] is True
+
+  rec_detail = client.get(f"/api/v1/learning/recommendations/{rec['id']}", headers=headers)
+  assert rec_detail.status_code == 200, rec_detail.text
+  assert rec_detail.json()["id"] == rec["id"]
+
+  adopt = client.post("/api/v1/learning/adopt", headers=headers, json={"candidate_id": rec["id"], "mode": "paper"})
+  assert adopt.status_code == 200, adopt.text
+  adopt_body = adopt.json()
+  assert adopt_body["ok"] is True
+  assert adopt_body["mode"] == "paper"
+  assert adopt_body["applied_live"] is False
+
+
 class _DummyResponse:
   def __init__(self, status_code: int, payload: dict):
     self.status_code = status_code
@@ -358,3 +444,158 @@ def test_exchange_diagnose_uses_json_only_in_local_dev(tmp_path: Path, monkeypat
   payload = diagnose.json()
   assert payload["has_keys"] is True
   assert payload["key_source"] == "json"
+
+
+def test_backtest_costs_and_entry_metrics_are_exposed(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategies = client.get("/api/v1/strategies", headers=headers).json()
+  strategy_id = strategies[0]["id"]
+  payload_common = {
+    "strategy_id": strategy_id,
+    "period": {"start": "2024-01-01", "end": "2024-03-31"},
+    "universe": ["BTC/USDT", "ETH/USDT"],
+    "validation_mode": "walk-forward",
+  }
+
+  low_cost = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**payload_common, "costs_model": {"fees_bps": 0.0, "spread_bps": 0.0, "slippage_bps": 0.0, "funding_bps": 0.0}},
+  )
+  assert low_cost.status_code == 200, low_cost.text
+  low_run = low_cost.json()["run"]
+
+  high_cost = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**payload_common, "costs_model": {"fees_bps": 20.0, "spread_bps": 20.0, "slippage_bps": 20.0, "funding_bps": 20.0}},
+  )
+  assert high_cost.status_code == 200, high_cost.text
+  high_run = high_cost.json()["run"]
+
+  for field in ["total_entries", "total_exits", "total_roundtrips", "trade_count"]:
+    assert field in high_run["metrics"]
+    assert isinstance(high_run["metrics"][field], int)
+    assert high_run["metrics"][field] >= 0
+
+  for field in ["fees_total", "spread_total", "slippage_total", "funding_total", "total_cost"]:
+    assert field in high_run["costs_breakdown"]
+
+  assert high_run["costs_breakdown"]["total_cost"] > low_run["costs_breakdown"]["total_cost"]
+  assert high_run["metrics"]["expectancy"] < low_run["metrics"]["expectancy"]
+
+
+def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, *, source: str, include_bid_ask: bool = False) -> None:
+  import json
+
+  data_root = user_data_dir / "data" / market
+  processed_dir = data_root / "processed"
+  manifests_dir = data_root / "manifests"
+  processed_dir.mkdir(parents=True, exist_ok=True)
+  manifests_dir.mkdir(parents=True, exist_ok=True)
+
+  idx = pd.date_range("2024-01-01T00:00:00Z", periods=12000, freq="1min")
+  # Deterministic synthetic-realistic path for integration tests (not production dataset).
+  base = 100 + np.linspace(0, 8, len(idx)) + np.sin(np.linspace(0, 40, len(idx))) * 1.5
+  close = pd.Series(base, index=idx)
+  open_ = close.shift(1).fillna(close.iloc[0])
+  spread = 0.15 + (np.sin(np.linspace(0, 70, len(idx))) + 1) * 0.02
+  high = np.maximum(open_.to_numpy(), close.to_numpy()) + spread
+  low = np.minimum(open_.to_numpy(), close.to_numpy()) - spread
+  volume = 1000 + (np.cos(np.linspace(0, 20, len(idx))) + 1) * 250
+  df = pd.DataFrame(
+    {
+      "timestamp": idx,
+      "open": open_.to_numpy(),
+      "high": high,
+      "low": low,
+      "close": close.to_numpy(),
+      "volume": volume,
+    }
+  )
+  if include_bid_ask:
+    # Small spread around mid to let forex cost model derive dynamic spread.
+    df["bid_open"] = df["open"] - 0.00015
+    df["bid_high"] = df["high"] - 0.00010
+    df["bid_low"] = df["low"] - 0.00020
+    df["bid_close"] = df["close"] - 0.00015
+    df["ask_open"] = df["open"] + 0.00015
+    df["ask_high"] = df["high"] + 0.00020
+    df["ask_low"] = df["low"] + 0.00010
+    df["ask_close"] = df["close"] + 0.00015
+
+  csv_path = processed_dir / f"{symbol}_1m.csv"
+  df.to_csv(csv_path, index=False)
+
+  import hashlib
+  digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+  manifest_path = manifests_dir / f"{symbol}_1m.json"
+  manifest = {
+    "market": market,
+    "symbol": symbol,
+    "timeframe": "1m",
+    "source": source,
+    "start": str(df["timestamp"].min().isoformat()),
+    "end": str(df["timestamp"].max().isoformat()),
+    "files": [str(csv_path.resolve())],
+    "processed_path": str(csv_path.resolve()),
+    "dataset_hash": digest,
+  }
+  manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def test_event_backtest_engine_runs_for_crypto_forex_equities(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+  _seed_local_backtest_dataset(user_data_dir, "forex", "EURUSD", source="dukascopy", include_bid_ask=True)
+  _seed_local_backtest_dataset(user_data_dir, "equities", "AAPL", source="alpaca")
+
+  runs_to_launch = [
+    {"market": "crypto", "symbol": "BTCUSDT", "timeframe": "5m"},
+    {"market": "forex", "symbol": "EURUSD", "timeframe": "10m"},
+    {"market": "equities", "symbol": "AAPL", "timeframe": "15m"},
+  ]
+
+  for cfg in runs_to_launch:
+    res = client.post(
+      "/api/v1/backtests/run",
+      headers=headers,
+      json={
+        "strategy_id": "trend_pullback_orderflow_confirm_v1",
+        "market": cfg["market"],
+        "symbol": cfg["symbol"],
+        "timeframe": cfg["timeframe"],
+        "start": "2024-01-01",
+        "end": "2024-01-06",
+        "costs": {
+          "fees_bps": 5.0,
+          "spread_bps": 4.0,
+          "slippage_bps": 2.0,
+          "funding_bps": 1.0,
+          "rollover_bps": 0.5,
+        },
+        "validation_mode": "walk-forward",
+      },
+    )
+    assert res.status_code == 200, res.text
+    run = res.json()["run"]
+    assert run["market"] == cfg["market"]
+    assert run["symbol"] == cfg["symbol"]
+    assert run["timeframe"] == cfg["timeframe"]
+    assert run["data_source"] in {"binance_public", "dukascopy", "alpaca"}
+    assert run["dataset_hash"]
+    assert "costs_breakdown" in run
+    assert "total_entries" in run["metrics"]
+    assert run["artifacts_local"]["report_json_local"].endswith(".json")
+
+  status = client.get("/api/v1/data/status", headers=headers)
+  assert status.status_code == 200
+  payload = status.json()
+  assert "available" in payload and "missing" in payload

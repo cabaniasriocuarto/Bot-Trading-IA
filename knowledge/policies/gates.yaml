@@ -1,0 +1,30 @@
+version: 1
+gates:
+  pbo:
+    enabled: true
+    max_allowed: 0.55
+    reject_reason: "PBO alto (riesgo de sobreajuste)."
+  dsr:
+    enabled: true
+    min_allowed: 0.10
+    reject_reason: "DSR bajo (Sharpe no robusto tras correccion)."
+  live_auto_apply:
+    enabled: false
+    reject_reason: "No permitido por Opcion B (solo recomendaciones)."
+  cpcv:
+    enabled: false
+    enforce: false
+    note: "Hook listo; implementacion parcial permitida."
+
+offline_rollout:
+  min_trades_oos: 150
+  min_winrate: 0.45
+  min_profit_factor: 1.20
+  min_sharpe_oos: 1.20
+  min_sortino_oos: 1.50
+  min_calmar_oos: 1.00
+  max_drawdown_oos_pct: 18
+  max_dd_duration_days: 30
+  costs_ratio_max: 0.55
+  pbo_max: 0.20
+  dsr_min: 1.00

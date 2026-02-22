@@ -377,6 +377,33 @@ function createInitialStore(): MockStore {
       slippage_max_bps: 10,
       request_timeout_ms: 12000,
     },
+    learning: {
+      enabled: false,
+      mode: "OFF",
+      selector_algo: "thompson",
+      drift_algo: "adwin",
+      max_candidates: 30,
+      top_n: 5,
+      validation: {
+        walk_forward: true,
+        train_days: 252,
+        test_days: 126,
+        enforce_pbo: true,
+        enforce_dsr: true,
+        enforce_cpcv: false,
+      },
+      promotion: {
+        allow_auto_apply: false,
+        allow_live: false,
+      },
+      risk_profile: {
+        risk_profile: "medium",
+        max_positions: 10,
+        correlation_penalty_threshold: 0.75,
+        paper: { risk_per_trade_pct: 0.5, max_daily_loss_pct: 3, max_drawdown_pct: 15 },
+        live_initial: { risk_per_trade_pct: 0.25, max_daily_loss_pct: 2, max_drawdown_pct: 10 },
+      },
+    },
     feature_flags: {
       orderflow: true,
       vpin: true,

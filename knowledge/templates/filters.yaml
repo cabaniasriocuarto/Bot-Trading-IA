@@ -1,0 +1,23 @@
+version: 1
+filters:
+  - id: spread_guard
+    name: Spread Guard
+    description: Bloquea candidatos cuando el spread esperado supera el maximo permitido.
+    kind: cost
+    enabled: true
+  - id: slippage_guard
+    name: Slippage Guard
+    description: Penaliza estrategias sensibles al slippage en microestructura toxica.
+    kind: cost
+    enabled: true
+  - id: correlation_guard
+    name: Correlation Guard
+    description: Penaliza señales con correlacion mayor a 0.75 entre activos.
+    kind: risk
+    enabled: true
+  - id: regime_gate
+    name: Regime Gate
+    description: Exige compatibilidad entre plantilla y regimen detectado.
+    kind: regime
+    enabled: true
+

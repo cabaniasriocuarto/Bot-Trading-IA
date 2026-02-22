@@ -91,7 +91,15 @@ export interface StrategyComparison {
 export interface BacktestRun {
   id: string;
   strategy_id: string;
+  market?: "crypto" | "forex" | "equities";
+  symbol?: string;
+  timeframe?: "5m" | "10m" | "15m";
+  data_source?: string;
   period: {
+    start: string;
+    end: string;
+  };
+  dataset_range?: {
     start: string;
     end: string;
   };
@@ -101,20 +109,60 @@ export interface BacktestRun {
     spread_bps: number;
     slippage_bps: number;
     funding_bps: number;
+    rollover_bps?: number;
   };
   dataset_hash: string;
+  dataset_manifest?: Record<string, unknown>;
   git_commit: string;
   metrics: {
+    return_total?: number;
     cagr: number;
     max_dd: number;
+    max_dd_duration_bars?: number;
     sharpe: number;
     sortino: number;
     calmar: number;
     winrate: number;
     expectancy: number;
+    expectancy_usd_per_trade?: number;
+    expectancy_pct_per_trade?: number;
+    expectancy_unit?: string;
+    expectancy_pct_unit?: string;
     avg_trade: number;
+    avg_holding_time?: number;
+    avg_holding_time_minutes?: number;
+    profit_factor?: number;
+    max_consecutive_losses?: number;
+    exposure_time_pct?: number;
     turnover: number;
+    exposure_avg?: number;
     robust_score: number;
+    robustness_score?: number;
+    total_entries?: number;
+    total_exits?: number;
+    total_roundtrips?: number;
+    roundtrips?: number;
+    trade_count?: number;
+    pbo?: number | null;
+    dsr?: number | null;
+  };
+  costs_breakdown?: {
+    gross_pnl_total: number;
+    gross_pnl?: number;
+    fees_total: number;
+    spread_total: number;
+    slippage_total: number;
+    funding_total: number;
+    rollover_total?: number;
+    total_cost: number;
+    net_pnl?: number;
+    net_pnl_total?: number;
+    fees_pct_of_gross_pnl: number;
+    spread_pct_of_gross_pnl: number;
+    slippage_pct_of_gross_pnl: number;
+    funding_pct_of_gross_pnl: number;
+    rollover_pct_of_gross_pnl?: number;
+    total_cost_pct_of_gross_pnl: number;
   };
   status: "queued" | "running" | "completed" | "failed";
   artifacts_links: {
@@ -313,6 +361,41 @@ export interface SettingsResponse {
     post_only_default: boolean;
     slippage_max_bps: number;
     request_timeout_ms: number;
+  };
+  learning: {
+    enabled: boolean;
+    mode: "OFF" | "RESEARCH";
+    selector_algo: "thompson" | "ucb1" | "regime_rules";
+    drift_algo: "adwin" | "page_hinkley";
+    max_candidates: number;
+    top_n: number;
+    validation: {
+      walk_forward: boolean;
+      train_days: number;
+      test_days: number;
+      enforce_pbo: boolean;
+      enforce_dsr: boolean;
+      enforce_cpcv?: boolean;
+    };
+    promotion: {
+      allow_auto_apply: boolean;
+      allow_live: boolean;
+    };
+    risk_profile?: {
+      risk_profile?: string;
+      max_positions?: number;
+      correlation_penalty_threshold?: number;
+      paper?: {
+        risk_per_trade_pct?: number;
+        max_daily_loss_pct?: number;
+        max_drawdown_pct?: number;
+      };
+      live_initial?: {
+        risk_per_trade_pct?: number;
+        max_daily_loss_pct?: number;
+        max_drawdown_pct?: number;
+      };
+    };
   };
   feature_flags: Record<string, boolean>;
   gate_checklist: Array<{ stage: string; done: boolean; note: string }>;

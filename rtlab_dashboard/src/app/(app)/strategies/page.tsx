@@ -191,11 +191,11 @@ export default function StrategiesPage() {
         <CardDescription>Subir, habilitar, versionar, setear primaria y editar parametros.</CardDescription>
         <CardContent className="space-y-4">
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Subir Estrategia (Strategy Pack ZIP)</p>
+            <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Subir Estrategia (ZIP o YAML)</p>
             <div className="flex flex-wrap items-center gap-2">
               <Input
                 type="file"
-                accept=".zip"
+                accept=".zip,.yaml,.yml"
                 disabled={role !== "admin" || uploading}
                 onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
               />

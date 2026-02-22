@@ -126,6 +126,42 @@ class BacktestConfig(BaseModel):
     reports_dir: str = "user_data/logs/reports"
 
 
+class LearningValidationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    walk_forward: bool = True
+    train_days: int = Field(default=252, ge=30)
+    test_days: int = Field(default=126, ge=30)
+    enforce_pbo: bool = True
+    enforce_dsr: bool = True
+
+
+class LearningPromotionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allow_auto_apply: bool = False
+    allow_live: bool = False
+
+
+class LearningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: Literal["OFF", "RESEARCH"] = "OFF"
+    selector_algo: Literal["thompson", "ucb1", "regime_rules"] = "thompson"
+    drift_algo: Literal["adwin", "page_hinkley"] = "adwin"
+    max_candidates: int = Field(default=30, ge=1, le=500)
+    top_n: int = Field(default=5, ge=1, le=50)
+    validation: LearningValidationConfig = Field(default_factory=LearningValidationConfig)
+    promotion: LearningPromotionConfig = Field(default_factory=LearningPromotionConfig)
+
+    @model_validator(mode="after")
+    def enforce_option_b(self) -> "LearningConfig":
+        self.promotion.allow_auto_apply = False
+        self.promotion.allow_live = False
+        return self
+
+
 class RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -141,6 +177,7 @@ class RuntimeConfig(BaseModel):
     safety: SafetyConfig
     notifications: NotificationsConfig
     backtest: BacktestConfig
+    learning: LearningConfig = Field(default_factory=LearningConfig)
 
     @model_validator(mode="after")
     def validate_guardrails(self) -> "RuntimeConfig":

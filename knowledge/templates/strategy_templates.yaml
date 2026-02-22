@@ -1,0 +1,27 @@
+version: 1
+templates:
+  - id: trend_pullback
+    name: Trend Pullback
+    category: trend
+    base_strategy_id: trend_pullback_orderflow_confirm_v1
+    description: Sigue tendencia y entra en retrocesos con confirmacion.
+    allowed_markets: [crypto, forex, equities]
+    allowed_timeframes: [5m, 10m, 15m]
+    tags: [trend, pullback, momentum]
+  - id: mean_reversion_range
+    name: Mean Reversion Range
+    category: range
+    base_strategy_id: trend_pullback_orderflow_confirm_v1
+    description: Opera reversions en regimen lateral con filtro de volatilidad.
+    allowed_markets: [crypto, forex, equities]
+    allowed_timeframes: [5m, 10m, 15m]
+    tags: [range, mean_reversion]
+  - id: breakout_volatility
+    name: Breakout Volatility
+    category: high_vol
+    base_strategy_id: trend_pullback_orderflow_confirm_v1
+    description: Busca rupturas con expansion de rango y control de costos.
+    allowed_markets: [crypto, forex]
+    allowed_timeframes: [5m, 10m, 15m]
+    tags: [breakout, volatility]
+

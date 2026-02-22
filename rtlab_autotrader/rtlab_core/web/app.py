@@ -26,10 +26,18 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from rtlab_core.config import load_config
+from rtlab_core.learning import LearningService
+from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
+from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
+from rtlab_core.src.data.catalog import DataCatalog
+from rtlab_core.src.data.loader import DataLoader
+from rtlab_core.src.data.universes import MARKET_UNIVERSES, SUPPORTED_TIMEFRAMES, normalize_market, normalize_symbol, normalize_timeframe
+from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngine
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
+MONOREPO_ROOT = (PROJECT_ROOT.parent if (PROJECT_ROOT.parent / "knowledge").exists() else PROJECT_ROOT).resolve()
 
 
 def _resolve_user_data_dir() -> Path:
@@ -154,6 +162,41 @@ class BotModeBody(BaseModel):
 
 class StrategyEnableBody(BaseModel):
     enabled: bool = True
+
+
+class LearningAdoptBody(BaseModel):
+    candidate_id: str
+    mode: Literal["paper", "testnet"]
+
+
+class RolloutStartBody(BaseModel):
+    candidate_run_id: str
+    baseline_run_id: str | None = None
+    note: str | None = None
+
+
+class RolloutAdvanceBody(BaseModel):
+    note: str | None = None
+
+
+class RolloutDecisionBody(BaseModel):
+    reason: str | None = None
+
+
+class RolloutEvaluatePhaseBody(BaseModel):
+    phase: Literal["paper_soak", "testnet_soak", "shadow", "canary05", "canary15", "canary35", "canary60"] = "paper_soak"
+    auto_abort: bool = True
+    auto_advance: bool = False
+    override_started_at: str | None = None
+    baseline_live_kpis: dict[str, Any] | None = None
+
+
+class RolloutBlendPreviewBody(BaseModel):
+    baseline_signal: dict[str, Any]
+    candidate_signal: dict[str, Any]
+    symbol: str | None = None
+    timeframe: str | None = None
+    record_telemetry: bool = True
 
 
 def utc_now() -> datetime:
@@ -706,6 +749,9 @@ class ConsoleStore:
 
     def _ensure_default_settings(self) -> None:
         settings = json_load(SETTINGS_PATH, {})
+        learning_defaults = LearningService.default_learning_settings()
+        rollout_defaults = RolloutManager.default_rollout_config()
+        blending_defaults = RolloutManager.default_blending_config()
         if not settings:
             settings = {
                 "mode": default_mode().upper(),
@@ -737,8 +783,52 @@ class ConsoleStore:
                     "ml": False,
                     "alerts": True,
                 },
+                "learning": learning_defaults,
+                "rollout": rollout_defaults,
+                "blending": blending_defaults,
                 "gate_checklist": [],
             }
+        if not isinstance(settings.get("learning"), dict):
+            settings["learning"] = learning_defaults
+        else:
+            settings["learning"] = {
+                **learning_defaults,
+                **settings["learning"],
+                "validation": {
+                    **learning_defaults["validation"],
+                    **(settings["learning"].get("validation") if isinstance(settings["learning"].get("validation"), dict) else {}),
+                },
+                "promotion": {
+                    **learning_defaults["promotion"],
+                    **(settings["learning"].get("promotion") if isinstance(settings["learning"].get("promotion"), dict) else {}),
+                },
+                "risk_profile": {
+                    **learning_defaults["risk_profile"],
+                    **(settings["learning"].get("risk_profile") if isinstance(settings["learning"].get("risk_profile"), dict) else {}),
+                },
+            }
+        settings["learning"]["promotion"]["allow_auto_apply"] = False
+        settings["learning"]["promotion"]["allow_live"] = False
+        if not isinstance(settings.get("rollout"), dict):
+            settings["rollout"] = rollout_defaults
+        else:
+            settings["rollout"] = {
+                **rollout_defaults,
+                **settings["rollout"],
+                "phases": settings["rollout"].get("phases") if isinstance(settings["rollout"].get("phases"), list) else rollout_defaults["phases"],
+                "abort_thresholds": {
+                    **rollout_defaults["abort_thresholds"],
+                    **(settings["rollout"].get("abort_thresholds") if isinstance(settings["rollout"].get("abort_thresholds"), dict) else {}),
+                },
+                "improve_vs_baseline": {
+                    **rollout_defaults["improve_vs_baseline"],
+                    **(settings["rollout"].get("improve_vs_baseline") if isinstance(settings["rollout"].get("improve_vs_baseline"), dict) else {}),
+                },
+            }
+        if not isinstance(settings.get("blending"), dict):
+            settings["blending"] = blending_defaults
+        else:
+            settings["blending"] = {**blending_defaults, **settings["blending"]}
         settings["credentials"]["exchange_configured"] = exchange_keys_present(default_mode())
         settings["credentials"]["telegram_configured"] = bool(get_env("TELEGRAM_BOT_TOKEN") and get_env("TELEGRAM_CHAT_ID"))
         settings["credentials"]["telegram_chat_id"] = get_env("TELEGRAM_CHAT_ID")
@@ -878,6 +968,32 @@ def risk_hooks(context):
     def save_settings(self, settings: dict[str, Any]) -> None:
         settings["credentials"]["exchange_configured"] = exchange_keys_present(settings.get("mode", default_mode()).lower())
         settings["credentials"]["telegram_configured"] = bool(get_env("TELEGRAM_BOT_TOKEN") and (settings.get("telegram", {}).get("chat_id") or get_env("TELEGRAM_CHAT_ID")))
+        learning_defaults = LearningService.default_learning_settings()
+        rollout_defaults = RolloutManager.default_rollout_config()
+        blending_defaults = RolloutManager.default_blending_config()
+        learning = settings.get("learning") if isinstance(settings.get("learning"), dict) else {}
+        settings["learning"] = {
+            **learning_defaults,
+            **learning,
+            "validation": {**learning_defaults["validation"], **(learning.get("validation") if isinstance(learning.get("validation"), dict) else {})},
+            "promotion": {**learning_defaults["promotion"], **(learning.get("promotion") if isinstance(learning.get("promotion"), dict) else {})},
+            "risk_profile": {**learning_defaults["risk_profile"], **(learning.get("risk_profile") if isinstance(learning.get("risk_profile"), dict) else {})},
+        }
+        settings["learning"]["promotion"]["allow_auto_apply"] = False
+        settings["learning"]["promotion"]["allow_live"] = False
+        rollout = settings.get("rollout") if isinstance(settings.get("rollout"), dict) else {}
+        settings["rollout"] = {
+            **rollout_defaults,
+            **rollout,
+            "phases": rollout.get("phases") if isinstance(rollout.get("phases"), list) else rollout_defaults["phases"],
+            "abort_thresholds": {**rollout_defaults["abort_thresholds"], **(rollout.get("abort_thresholds") if isinstance(rollout.get("abort_thresholds"), dict) else {})},
+            "improve_vs_baseline": {
+                **rollout_defaults["improve_vs_baseline"],
+                **(rollout.get("improve_vs_baseline") if isinstance(rollout.get("improve_vs_baseline"), dict) else {}),
+            },
+        }
+        blending = settings.get("blending") if isinstance(settings.get("blending"), dict) else {}
+        settings["blending"] = {**blending_defaults, **blending}
         json_save(SETTINGS_PATH, settings)
 
     def load_bot_state(self) -> dict[str, Any]:
@@ -1068,11 +1184,16 @@ def risk_hooks(context):
         schema: dict[str, Any],
         params_yaml: str,
         package_bytes: bytes,
+        *,
+        package_ext: str = ".zip",
+        tags: list[str] | None = None,
+        notes: str | None = None,
     ) -> dict[str, Any]:
         metadata = self.load_strategy_meta()
         if strategy_id in metadata:
             raise HTTPException(status_code=409, detail="Strategy id already exists")
-        path = UPLOADS_DIR / strategy_id / f"{version}.zip"
+        ext = package_ext if package_ext.startswith(".") else f".{package_ext}"
+        path = UPLOADS_DIR / strategy_id / f"{version}{ext}"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(package_bytes)
         db_strategy_id = self.registry.upsert_strategy(
@@ -1081,7 +1202,7 @@ def risk_hooks(context):
             path=str(path),
             sha256=hashlib.sha256(package_bytes).hexdigest(),
             status="disabled",
-            notes="Uploaded via API",
+            notes=notes or "Uploaded via API",
         )
         metadata[strategy_id] = {
             "id": strategy_id,
@@ -1089,8 +1210,8 @@ def risk_hooks(context):
             "version": version,
             "description": description,
             "enabled": False,
-            "notes": "Uploaded via dashboard",
-            "tags": ["upload"],
+            "notes": notes or "Uploaded via dashboard",
+            "tags": tags or ["upload"],
             "params_yaml": params_yaml,
             "parameters_schema": schema,
             "created_at": utc_now_iso(),
@@ -1105,7 +1226,7 @@ def risk_hooks(context):
             module="registry",
             message=f"Strategy uploaded: {strategy_id} v{version}.",
             related_ids=[strategy_id],
-            payload={"path": str(path)},
+            payload={"path": str(path), "ext": ext},
         )
         return self.strategy_or_404(strategy_id)
 
@@ -1149,6 +1270,11 @@ def risk_hooks(context):
         rng = random.Random(seed)
         points: list[dict[str, Any]] = []
         trades: list[dict[str, Any]] = []
+        total_fees = 0.0
+        total_spread = 0.0
+        total_slippage = 0.0
+        total_funding = 0.0
+        total_gross_pnl = 0.0
         equity = 10000.0
         max_equity = equity
         for i in range(120):
@@ -1166,27 +1292,55 @@ def risk_hooks(context):
             if i % 3 == 0:
                 entry = 99000 + rng.uniform(-4000, 4000)
                 exit_px = entry + rng.uniform(-700, 900)
-                pnl = (exit_px - entry) * 0.01
+                side = "long" if rng.random() > 0.45 else "short"
+                qty = 0.01
+                entry_time_dt = utc_now() - timedelta(days=(120 - i), minutes=15)
+                exit_time_dt = utc_now() - timedelta(days=(120 - i))
+
+                gross_pnl = (exit_px - entry) * qty if side == "long" else (entry - exit_px) * qty
+                entry_notional = abs(entry * qty)
+                exit_notional = abs(exit_px * qty)
+                roundtrip_notional = entry_notional + exit_notional
+
+                # Cost model from backtest form: fees/slippage/spread per side and funding by holding period.
+                fees_cost = roundtrip_notional * (fees_bps / 10000.0)
+                spread_cost = roundtrip_notional * ((spread_bps / 2.0) / 10000.0)
+                slippage_cost = roundtrip_notional * (slippage_bps / 10000.0)
+                holding_minutes = max(1.0, (exit_time_dt - entry_time_dt).total_seconds() / 60.0)
+                funding_periods = holding_minutes / 480.0
+                funding_cost = ((entry_notional + exit_notional) / 2.0) * (funding_bps / 10000.0) * funding_periods
+                total_cost = fees_cost + spread_cost + slippage_cost + funding_cost
+                net_pnl = gross_pnl - total_cost
+
+                total_fees += fees_cost
+                total_spread += spread_cost
+                total_slippage += slippage_cost
+                total_funding += funding_cost
+                total_gross_pnl += gross_pnl
                 trades.append(
                     {
                         "id": f"tr_{secrets.token_hex(4)}",
                         "strategy_id": strategy_id,
                         "symbol": universe[i % len(universe)] if universe else "BTC/USDT",
-                        "side": "long" if rng.random() > 0.45 else "short",
+                        "side": side,
                         "timeframe": "5m",
-                        "entry_time": (utc_now() - timedelta(days=(120 - i), minutes=15)).isoformat(),
-                        "exit_time": (utc_now() - timedelta(days=(120 - i))).isoformat(),
+                        "entry_time": entry_time_dt.isoformat(),
+                        "exit_time": exit_time_dt.isoformat(),
                         "entry_px": round(entry, 2),
                         "exit_px": round(exit_px, 2),
-                        "qty": 0.01,
-                        "fees": round(abs(pnl) * 0.08, 4),
-                        "slippage": round(abs(pnl) * 0.05, 4),
-                        "pnl": round(pnl, 4),
-                        "pnl_net": round(pnl * 0.87, 4),
-                        "mae": round(abs(pnl) * 0.7, 4),
-                        "mfe": round(abs(pnl) * 1.2, 4),
+                        "qty": qty,
+                        "fees": round(fees_cost, 4),
+                        "spread_cost": round(spread_cost, 4),
+                        "slippage_cost": round(slippage_cost, 4),
+                        "funding_cost": round(funding_cost, 4),
+                        "cost_total": round(total_cost, 4),
+                        "slippage": round(spread_cost + slippage_cost, 4),
+                        "pnl": round(gross_pnl, 4),
+                        "pnl_net": round(net_pnl, 4),
+                        "mae": round(abs(gross_pnl) * 0.7, 4),
+                        "mfe": round(abs(gross_pnl) * 1.2, 4),
                         "reason_code": "pullback+flow",
-                        "exit_reason": "tp" if pnl > 0 else "sl",
+                        "exit_reason": "tp" if net_pnl > 0 else "sl",
                         "events": [
                             {
                                 "ts": (utc_now() - timedelta(days=(120 - i), minutes=14)).isoformat(),
@@ -1224,7 +1378,35 @@ def risk_hooks(context):
         wins = [trade for trade in trades if trade["pnl_net"] > 0]
         winrate = round(len(wins) / max(1, len(trades)), 4)
         expectancy = round(sum(trade["pnl_net"] for trade in trades) / max(1, len(trades)), 4)
+        total_entries = len(trades)
+        total_exits = sum(1 for trade in trades if trade.get("exit_time"))
+        total_roundtrips = min(total_entries, total_exits)
+        trade_count = len(trades)
+        gross_abs = abs(total_gross_pnl)
+        total_costs = total_fees + total_spread + total_slippage + total_funding
         robust_score = round(max(35.0, min(95.0, 70 + sharpe * 5 - abs(max_dd) * 90)), 2)
+        avg_holding_time_min = round(
+            sum(
+                max(
+                    0.0,
+                    (datetime.fromisoformat(str(t["exit_time"])) - datetime.fromisoformat(str(t["entry_time"]))).total_seconds() / 60.0,
+                )
+                for t in trades
+            )
+            / max(1, len(trades)),
+            4,
+        )
+        gross_profit_net = sum(t["pnl_net"] for t in trades if t["pnl_net"] > 0)
+        gross_loss_net = abs(sum(t["pnl_net"] for t in trades if t["pnl_net"] < 0))
+        profit_factor = round((gross_profit_net / gross_loss_net) if gross_loss_net else 0.0, 6)
+        max_consecutive_losses = 0
+        loss_streak = 0
+        for trade in trades:
+            if float(trade.get("pnl_net", 0.0)) < 0:
+                loss_streak += 1
+                max_consecutive_losses = max(max_consecutive_losses, loss_streak)
+            else:
+                loss_streak = 0
         run_id = f"run_{secrets.token_hex(5)}"
         run = {
             "id": run_id,
@@ -1242,15 +1424,44 @@ def risk_hooks(context):
             "git_commit": get_env("GIT_COMMIT", "local"),
             "metrics": {
                 "cagr": cagr,
-                "max_dd": round(max_dd, 4),
+                "max_dd": round(abs(max_dd), 4),
                 "sharpe": sharpe,
                 "sortino": round(sharpe * 1.22, 2),
                 "calmar": round((cagr / abs(max_dd)) if max_dd else 0.0, 2),
                 "winrate": winrate,
                 "expectancy": expectancy,
+                "expectancy_usd_per_trade": expectancy,
                 "avg_trade": expectancy,
                 "turnover": round(1.5 + random.random(), 2),
                 "robust_score": robust_score,
+                "robustness_score": robust_score,
+                "total_entries": total_entries,
+                "total_exits": total_exits,
+                "total_roundtrips": total_roundtrips,
+                "roundtrips": total_roundtrips,
+                "trade_count": trade_count,
+                "avg_holding_time": avg_holding_time_min,
+                "profit_factor": profit_factor,
+                "max_consecutive_losses": max_consecutive_losses,
+                "exposure_time_pct": round(min(1.0, max(0.0, len(trades) * 0.02)), 6),
+                "pbo": None,
+                "dsr": None,
+            },
+            "costs_breakdown": {
+                "gross_pnl_total": round(total_gross_pnl, 4),
+                "gross_pnl": round(total_gross_pnl, 4),
+                "fees_total": round(total_fees, 4),
+                "spread_total": round(total_spread, 4),
+                "slippage_total": round(total_slippage, 4),
+                "funding_total": round(total_funding, 4),
+                "total_cost": round(total_costs, 4),
+                "net_pnl_total": round(total_gross_pnl - total_costs, 4),
+                "net_pnl": round(total_gross_pnl - total_costs, 4),
+                "fees_pct_of_gross_pnl": 0.0 if gross_abs == 0 else round(total_fees / gross_abs, 6),
+                "spread_pct_of_gross_pnl": 0.0 if gross_abs == 0 else round(total_spread / gross_abs, 6),
+                "slippage_pct_of_gross_pnl": 0.0 if gross_abs == 0 else round(total_slippage / gross_abs, 6),
+                "funding_pct_of_gross_pnl": 0.0 if gross_abs == 0 else round(total_funding / gross_abs, 6),
+                "total_cost_pct_of_gross_pnl": 0.0 if gross_abs == 0 else round(total_costs / gross_abs, 6),
             },
             "status": "completed",
             "created_at": utc_now_iso(),
@@ -1287,6 +1498,140 @@ def risk_hooks(context):
             message=f"Backtest finished: {run_id}",
             related_ids=[strategy_id, run_id],
             payload={"metrics": run["metrics"]},
+        )
+        return run
+
+    def create_event_backtest_run(
+        self,
+        *,
+        strategy_id: str,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        start: str,
+        end: str,
+        fees_bps: float,
+        spread_bps: float,
+        slippage_bps: float,
+        funding_bps: float,
+        rollover_bps: float,
+        validation_mode: str,
+    ) -> dict[str, Any]:
+        strategy = self.strategy_or_404(strategy_id)
+        market_n = normalize_market(market)
+        symbol_n = normalize_symbol(symbol)
+        timeframe_n = normalize_timeframe(timeframe)
+
+        loader = DataLoader(USER_DATA_DIR)
+        loaded = loader.load_resampled(market_n, symbol_n, timeframe_n, start, end)
+        engine = BacktestEngine()
+        engine_result = engine.run(
+            BacktestRequest(
+                market=market_n,
+                symbol=symbol_n,
+                timeframe=timeframe_n,
+                start=start,
+                end=end,
+                strategy_id=strategy_id,
+                validation_mode=validation_mode,
+                costs=BacktestCosts(
+                    fees_bps=fees_bps,
+                    spread_bps=spread_bps,
+                    slippage_bps=slippage_bps,
+                    funding_bps=funding_bps,
+                    rollover_bps=rollover_bps,
+                ),
+            ),
+            MarketDataset(
+                market=market_n,
+                symbol=symbol_n,
+                timeframe=timeframe_n,
+                source=loaded.source,
+                dataset_hash=loaded.dataset_hash,
+                df=loaded.df,
+                manifest=loaded.manifest,
+            ),
+        )
+        run_id = f"run_{secrets.token_hex(5)}"
+        metrics = dict(engine_result["metrics"])
+        metrics["expectancy_unit"] = "usd_per_trade"
+        metrics["expectancy_pct_unit"] = "pct_per_trade"
+        run = {
+            "id": run_id,
+            "strategy_id": strategy_id,
+            "market": market_n,
+            "symbol": symbol_n,
+            "timeframe": timeframe_n,
+            "period": {"start": start, "end": end},
+            "universe": [symbol_n],
+            "validation_mode": validation_mode,
+            "validation_summary": engine_result.get("validation_summary"),
+            "data_source": loaded.source,
+            "dataset_hash": loaded.dataset_hash,
+            "dataset_manifest": loaded.manifest,
+            "dataset_range": {"start": loaded.start, "end": loaded.end},
+            "costs_model": {
+                "fees_bps": fees_bps,
+                "spread_bps": spread_bps,
+                "slippage_bps": slippage_bps,
+                "funding_bps": funding_bps,
+                "rollover_bps": rollover_bps,
+            },
+            "git_commit": get_env("GIT_COMMIT", "local"),
+            "metrics": metrics,
+            "costs_breakdown": engine_result["costs_breakdown"],
+            "status": "completed",
+            "created_at": utc_now_iso(),
+            "duration_sec": random.randint(2, 30),
+            "equity_curve": engine_result["equity_curve"],
+            "drawdown_curve": engine_result["drawdown_curve"],
+            "trades": engine_result["trades"],
+            "artifacts_links": {
+                "report_json": f"/api/v1/backtests/runs/{run_id}?format=report_json",
+                "trades_csv": f"/api/v1/backtests/runs/{run_id}?format=trades_csv",
+                "equity_curve_csv": f"/api/v1/backtests/runs/{run_id}?format=equity_curve_csv",
+            },
+        }
+        artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
+        run["artifacts_local"] = artifact_local
+
+        runs = self.load_runs()
+        runs.insert(0, run)
+        self.save_runs(runs)
+        meta = self.load_strategy_meta()
+        if strategy_id in meta:
+            meta[strategy_id]["last_run_at"] = utc_now_iso()
+            meta[strategy_id]["updated_at"] = utc_now_iso()
+            self.save_strategy_meta(meta)
+        self.registry.add_backtest(
+            strategy_id=strategy["db_strategy_id"],
+            timerange=f"{start}:{end}",
+            exchange=f"{market_n}:{exchange_name()}",
+            pairs=[symbol_n],
+            metrics={
+                "metrics": run["metrics"],
+                "costs_breakdown": run["costs_breakdown"],
+                "data_source": loaded.source,
+                "dataset_hash": loaded.dataset_hash,
+                "timeframe": timeframe_n,
+            },
+            artifacts_path=f"/api/v1/backtests/runs/{run_id}",
+        )
+        self.add_log(
+            event_type="backtest_finished",
+            severity="info",
+            module="backtest",
+            message=f"Backtest finished: {run_id}",
+            related_ids=[strategy_id, run_id, symbol_n],
+            payload={
+                "market": market_n,
+                "symbol": symbol_n,
+                "timeframe": timeframe_n,
+                "metrics": run["metrics"],
+                "costs_breakdown": run["costs_breakdown"],
+                "dataset_hash": loaded.dataset_hash,
+                "data_source": loaded.source,
+            },
         )
         return run
 
@@ -1404,6 +1749,132 @@ def risk_hooks(context):
 
 
 store = ConsoleStore()
+learning_service = LearningService(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT)
+rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
+rollout_gates = GateEvaluator(repo_root=MONOREPO_ROOT)
+
+
+def _learning_reference_run() -> dict[str, Any] | None:
+    for run in store.load_runs():
+        if run.get("market") and run.get("symbol") and run.get("timeframe"):
+            return run
+    runs = store.load_runs()
+    return runs[0] if runs else None
+
+
+def _learning_eval_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    ref = _learning_reference_run()
+    market = str((ref or {}).get("market") or "crypto")
+    symbol = str((ref or {}).get("symbol") or "BTCUSDT")
+    timeframe = str((ref or {}).get("timeframe") or "5m")
+    period = (ref or {}).get("period") or {}
+    start = str(period.get("start") or "2024-01-01")
+    end = str(period.get("end") or "2024-12-31")
+    ref_costs = (ref or {}).get("costs_model") or {}
+    costs = {
+        "fees_bps": float(ref_costs.get("fees_bps", 5.5)),
+        "spread_bps": float(ref_costs.get("spread_bps", 4.0)),
+        "slippage_bps": float(ref_costs.get("slippage_bps", 3.0)),
+        "funding_bps": float(ref_costs.get("funding_bps", 1.0)),
+        "rollover_bps": float(ref_costs.get("rollover_bps", 0.0)),
+    }
+
+    try:
+        loader = DataLoader(USER_DATA_DIR)
+        loaded = loader.load_resampled(market, symbol, timeframe, start, end)
+        engine = BacktestEngine()
+        result = engine.run(
+            BacktestRequest(
+                market=loaded.market,
+                symbol=loaded.symbol,
+                timeframe=loaded.timeframe,
+                start=start,
+                end=end,
+                strategy_id=str(candidate.get("base_strategy_id") or DEFAULT_STRATEGY_ID),
+                validation_mode="walk-forward",
+                costs=BacktestCosts(
+                    fees_bps=costs["fees_bps"],
+                    spread_bps=costs["spread_bps"],
+                    slippage_bps=costs["slippage_bps"],
+                    funding_bps=costs["funding_bps"],
+                    rollover_bps=costs["rollover_bps"],
+                ),
+            ),
+            MarketDataset(
+                market=loaded.market,
+                symbol=loaded.symbol,
+                timeframe=loaded.timeframe,
+                source=loaded.source,
+                dataset_hash=loaded.dataset_hash,
+                df=loaded.df,
+                manifest=loaded.manifest,
+            ),
+        )
+        result["costs_model"] = costs
+        return result
+    except Exception:
+        if ref:
+            return {
+                "metrics": dict(ref.get("metrics") or {}),
+                "costs_breakdown": dict(ref.get("costs_breakdown") or {}),
+                "equity_curve": list(ref.get("equity_curve") or []),
+                "data_source": str(ref.get("data_source") or "runs_cache_fallback"),
+                "dataset_hash": str(ref.get("dataset_hash") or ""),
+                "costs_model": costs,
+            }
+        return {
+            "metrics": {"max_dd": 0.0, "sortino": 0.0, "expectancy": 0.0, "sharpe": 0.0},
+            "costs_breakdown": {"gross_pnl_total": 0.0, "total_cost": 0.0},
+            "equity_curve": [],
+            "data_source": "none",
+            "dataset_hash": "",
+            "costs_model": costs,
+        }
+
+
+def _find_run_or_404(run_id: str) -> dict[str, Any]:
+    run = next((row for row in store.load_runs() if str(row.get("id")) == run_id), None)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    return run
+
+
+def _pick_baseline_run(candidate_run: dict[str, Any], explicit_run_id: str | None = None) -> dict[str, Any]:
+    if explicit_run_id:
+        baseline = _find_run_or_404(explicit_run_id)
+        return baseline
+
+    runs = store.load_runs()
+    candidate_id = str(candidate_run.get("id") or "")
+    candidate_strategy_id = str(candidate_run.get("strategy_id") or "")
+    dataset_hash = str(candidate_run.get("dataset_hash") or "")
+    period = candidate_run.get("period") or {}
+
+    # Prefer same dataset hash + period and different strategy (strict compare).
+    for row in runs:
+        if str(row.get("id")) == candidate_id:
+            continue
+        if dataset_hash and str(row.get("dataset_hash") or "") != dataset_hash:
+            continue
+        if period and (row.get("period") or {}) != period:
+            continue
+        if str(row.get("strategy_id") or "") != candidate_strategy_id:
+            return row
+
+    # Fallback: latest run of current primary strategy for active mode (even if dataset differs; compare will fail explicitly).
+    bot_mode = str(store.load_bot_state().get("mode") or "paper")
+    principal = store.registry.get_principal(bot_mode)
+    if principal:
+        principal_name = str(principal.get("name") or "")
+        for row in runs:
+            if str(row.get("strategy_id") or "") == principal_name and str(row.get("id") or "") != candidate_id:
+                return row
+
+    # Last fallback: any other run.
+    for row in runs:
+        if str(row.get("id") or "") != candidate_id:
+            return row
+    raise HTTPException(status_code=400, detail="No baseline run available to compare against candidate")
 
 
 def current_user(request: Request) -> dict[str, str]:
@@ -1626,6 +2097,41 @@ def build_status_payload() -> dict[str, Any]:
     }
 
 
+def build_execution_metrics_payload() -> dict[str, Any]:
+    now = utc_now()
+    series = []
+    for idx in range(40):
+        series.append(
+            {
+                "ts": (now - timedelta(minutes=(40 - idx))).isoformat(),
+                "latency_ms_p95": 120 + (idx % 5) * 8,
+                "spread_bps": 7.0 + ((idx % 6) * 0.7),
+                "slippage_bps": 4.0 + ((idx % 4) * 0.6),
+                "maker_ratio": 0.58 + ((idx % 3) * 0.01),
+                "fill_ratio": 0.91 - ((idx % 3) * 0.01),
+            }
+        )
+    return {
+        "maker_ratio": 0.61,
+        "fill_ratio": 0.92,
+        "requotes": 2,
+        "cancels": 4,
+        "rate_limit_hits": 1,
+        "api_errors": 0,
+        "avg_spread": 8.1,
+        "p95_spread": 12.2,
+        "avg_slippage": 4.3,
+        "p95_slippage": 7.4,
+        "latency_ms_p95": 146.0,
+        "series": series,
+        "notes": [
+            "Maker ratio stable in the last hour.",
+            "No severe API errors observed.",
+            "Spread remains under configured guardrails.",
+        ],
+    }
+
+
 def parse_strategy_package(payload: bytes) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
@@ -1666,6 +2172,44 @@ def parse_strategy_package(payload: bytes) -> dict[str, Any]:
             }
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=400, detail="Invalid zip package") from exc
+
+
+def parse_strategy_yaml_upload(payload: bytes) -> dict[str, Any]:
+    try:
+        metadata = yaml.safe_load(payload.decode("utf-8")) or {}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML strategy file: {exc}") from exc
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=400, detail="Strategy YAML must be a map")
+    strategy_id = str(metadata.get("id", "")).strip()
+    name = str(metadata.get("name", strategy_id)).strip()
+    version = str(metadata.get("version", "")).strip()
+    description = str(metadata.get("description", "")).strip()
+    schema = metadata.get("parameters_schema") or metadata.get("schema") or {}
+    defaults = metadata.get("defaults") or metadata.get("params") or {}
+    tags = metadata.get("tags") or ["upload", "yaml"]
+    notes = str(metadata.get("notes", "Uploaded YAML strategy"))[:300]
+    if not strategy_id:
+        raise HTTPException(status_code=400, detail="strategy.id is required")
+    if not version or not SEMVER.match(version):
+        raise HTTPException(status_code=400, detail="strategy.version must be semver")
+    if schema and not isinstance(schema, dict):
+        raise HTTPException(status_code=400, detail="parameters_schema must be an object")
+    if defaults and not isinstance(defaults, dict):
+        raise HTTPException(status_code=400, detail="defaults/params must be an object")
+    if not isinstance(tags, list):
+        tags = ["upload", "yaml"]
+    params_yaml = yaml.safe_dump(defaults if defaults else {}, sort_keys=False) if defaults else DEFAULT_PARAMS_YAML
+    return {
+        "id": strategy_id,
+        "name": name or strategy_id,
+        "version": version,
+        "description": description or f"Uploaded YAML strategy {strategy_id}",
+        "parameters_schema": schema if isinstance(schema, dict) else {},
+        "params_yaml": params_yaml,
+        "tags": [str(tag) for tag in tags if str(tag).strip()],
+        "notes": notes,
+    }
 
 def create_app() -> FastAPI:
     app = FastAPI(title="RTLAB API", version=APP_VERSION)
@@ -1730,6 +2274,15 @@ def create_app() -> FastAPI:
         )
         return payload
 
+    @app.get("/api/v1/data/catalog")
+    def data_catalog(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        catalog = DataCatalog(USER_DATA_DIR)
+        return {"items": [row.to_dict() for row in catalog.list_entries()], "timeframes": list(SUPPORTED_TIMEFRAMES), "universes": MARKET_UNIVERSES}
+
+    @app.get("/api/v1/data/status")
+    def data_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return DataCatalog(USER_DATA_DIR).status()
+
     @app.get("/api/v1/strategies")
     def list_strategies(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:
         return store.list_strategies()
@@ -1748,10 +2301,18 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/strategies/upload")
     async def strategy_upload(file: UploadFile = File(...), _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        if not file.filename or not file.filename.lower().endswith(".zip"):
-            raise HTTPException(status_code=400, detail="Only .zip strategy packages are supported")
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        filename = file.filename.lower()
         content = await file.read()
-        parsed = parse_strategy_package(content)
+        if filename.endswith(".zip"):
+            parsed = parse_strategy_package(content)
+            package_ext = ".zip"
+        elif filename.endswith(".yaml") or filename.endswith(".yml"):
+            parsed = parse_strategy_yaml_upload(content)
+            package_ext = ".yaml"
+        else:
+            raise HTTPException(status_code=400, detail="Only .zip, .yaml, .yml strategy uploads are supported")
         strategy = store.save_uploaded_strategy(
             strategy_id=parsed["id"],
             name=parsed["name"],
@@ -1760,6 +2321,9 @@ def create_app() -> FastAPI:
             schema=parsed["parameters_schema"],
             params_yaml=parsed["params_yaml"],
             package_bytes=content,
+            package_ext=package_ext,
+            tags=parsed.get("tags"),
+            notes=parsed.get("notes"),
         )
         return {"ok": True, "strategy": strategy}
 
@@ -1793,22 +2357,424 @@ def create_app() -> FastAPI:
         strategy = store.update_strategy_params(strategy_id, params_yaml)
         return {"ok": True, "strategy": strategy}
 
+    @app.get("/api/v1/learning/status")
+    def learning_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        settings_payload = learning_service.ensure_settings_shape(store.load_settings())
+        return learning_service.build_status(
+            settings=settings_payload,
+            strategies=store.list_strategies(),
+            runs=store.load_runs(),
+        )
+
+    @app.post("/api/v1/learning/run-now")
+    def learning_run_now(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        settings_payload = learning_service.ensure_settings_shape(store.load_settings())
+        try:
+            result = learning_service.run_research(
+                settings=settings_payload,
+                strategies=store.list_strategies(),
+                runs=store.load_runs(),
+                backtest_eval=_learning_eval_candidate,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="learning_run",
+            severity="info",
+            module="learning",
+            message="Research loop executed (Option B)",
+            related_ids=[],
+            payload={"result": result, "allow_live": False},
+        )
+        return result
+
+    @app.get("/api/v1/learning/drift")
+    def learning_drift(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        settings_payload = learning_service.ensure_settings_shape(store.load_settings())
+        return learning_service.compute_drift(settings=settings_payload, runs=store.load_runs())
+
+    @app.get("/api/v1/learning/recommendations")
+    def learning_recommendations(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:
+        return learning_service.load_recommendations()
+
+    @app.get("/api/v1/learning/recommendations/{candidate_id}")
+    def learning_recommendation_detail(candidate_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        row = learning_service.get_recommendation(candidate_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        return row
+
+    @app.post("/api/v1/learning/adopt")
+    def learning_adopt(body: LearningAdoptBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        candidate = learning_service.get_recommendation(body.candidate_id)
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        if str(candidate.get("status", "")).upper() != "APPROVED":
+            raise HTTPException(status_code=400, detail=f"Recommendation not adoptable: {candidate.get('status_reason') or candidate.get('status')}")
+        if body.mode == "live":
+            raise HTTPException(status_code=400, detail="LIVE adoption is blocked by Option B")
+
+        base_strategy_id = str(candidate.get("base_strategy_id") or DEFAULT_STRATEGY_ID)
+        clone = store.duplicate_strategy(base_strategy_id)
+        params_yaml = str(candidate.get("generated_params_yaml") or yaml.safe_dump(candidate.get("params") or {}, sort_keys=False))
+        updated = store.update_strategy_params(clone["id"], params_yaml)
+        enabled = store.set_strategy_enabled(updated["id"], True)
+        primary = store.set_primary(enabled["id"], body.mode)
+
+        meta = store.load_strategy_meta()
+        if primary["id"] in meta:
+            meta[primary["id"]]["name"] = str(candidate.get("name") or meta[primary["id"]].get("name") or primary["id"])
+            meta[primary["id"]]["notes"] = f"Adopted from recommendation {body.candidate_id} (mode={body.mode})"
+            tags = set(str(x) for x in (meta[primary["id"]].get("tags") or []))
+            tags.update({"learning", "adopted", "option_b"})
+            meta[primary["id"]]["tags"] = sorted(tags)
+            meta[primary["id"]]["updated_at"] = utc_now_iso()
+            store.save_strategy_meta(meta)
+
+        store.add_log(
+            event_type="learning_adopt",
+            severity="info",
+            module="learning",
+            message=f"Recommendation {body.candidate_id} adopted to {body.mode}",
+            related_ids=[body.candidate_id, primary["id"]],
+            payload={"mode": body.mode, "allow_live": False},
+        )
+        return {
+            "ok": True,
+            "candidate_id": body.candidate_id,
+            "mode": body.mode,
+            "strategy": store.strategy_or_404(primary["id"]),
+            "applied_live": False,
+            "allow_auto_apply": False,
+        }
+
+    @app.get("/api/v1/rollout/status")
+    def rollout_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        state = rollout_manager.status()
+        settings_payload = store.load_settings()
+        return {
+            **state,
+            "config": settings_payload.get("rollout", RolloutManager.default_rollout_config()),
+            "blending_config": settings_payload.get("blending", RolloutManager.default_blending_config()),
+            "live_stable_100_requires_approve": bool(
+                (settings_payload.get("rollout") or {}).get("require_manual_approval_for_live", True)
+            ),
+        }
+
+    @app.post("/api/v1/rollout/blending/preview")
+    def rollout_blending_preview(body: RolloutBlendPreviewBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        try:
+            result = rollout_manager.route_live_signal(
+                settings=store.load_settings(),
+                baseline_signal=body.baseline_signal,
+                candidate_signal=body.candidate_signal,
+                symbol=body.symbol,
+                timeframe=body.timeframe,
+                record_telemetry=bool(body.record_telemetry),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        event = result.get("event", {}) if isinstance(result, dict) else {}
+        store.add_log(
+            event_type="rollout_blending_preview",
+            severity="info",
+            module="rollout",
+            message=f"Blending preview ({event.get('phase', '-')})",
+            related_ids=[str((result.get('state') or {}).get("rollout_id") or "")] if isinstance(result.get("state"), dict) else [],
+            payload={
+                "symbol": body.symbol or "",
+                "timeframe": body.timeframe or "",
+                "record_telemetry": bool(body.record_telemetry),
+                "event": event,
+                "actor": user.get("username", "admin"),
+            },
+        )
+        return {"ok": True, **result}
+
+    @app.post("/api/v1/rollout/start")
+    def rollout_start(body: RolloutStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        candidate_run = _find_run_or_404(body.candidate_run_id)
+        baseline_run = _pick_baseline_run(candidate_run, explicit_run_id=body.baseline_run_id)
+        candidate_strategy = store.strategy_or_404(str(candidate_run.get("strategy_id")))
+        baseline_strategy = store.strategy_or_404(str(baseline_run.get("strategy_id")))
+
+        candidate_report = dict(candidate_run)
+        baseline_report = dict(baseline_run)
+        candidate_report["version"] = candidate_strategy.get("version")
+        candidate_report["params"] = candidate_strategy.get("params")
+        baseline_report["version"] = baseline_strategy.get("version")
+        baseline_report["params"] = baseline_strategy.get("params")
+
+        gates_result = rollout_gates.evaluate(candidate_report)
+        compare_thresholds = ((store.load_settings().get("rollout") or {}).get("improve_vs_baseline") or {})
+        compare_engine = CompareEngine(compare_thresholds if isinstance(compare_thresholds, dict) else {})
+        compare_result = compare_engine.compare(baseline_report, candidate_report)
+
+        state = rollout_manager.start_offline(
+            baseline_run=baseline_report,
+            candidate_run=candidate_report,
+            baseline_strategy=baseline_strategy,
+            candidate_strategy=candidate_strategy,
+            gates_result=gates_result,
+            compare_result=compare_result,
+            actor=user.get("username", "admin"),
+        )
+        current = str(state.get("state") or "IDLE")
+        if current == "ABORTED":
+            status_code = 400
+            ok = False
+        else:
+            status_code = 200
+            ok = True
+        payload = {
+            "ok": ok,
+            "state": state,
+            "offline_gates": gates_result,
+            "compare_vs_baseline": compare_result,
+            "baseline_run_id": baseline_report.get("id"),
+            "candidate_run_id": candidate_report.get("id"),
+            "note": body.note or "",
+        }
+        if status_code != 200:
+            return JSONResponse(status_code=status_code, content=payload)
+        store.add_log(
+            event_type="rollout_start",
+            severity="info" if ok else "warn",
+            module="rollout",
+            message=f"Rollout start ({current})",
+            related_ids=[str(candidate_report.get("id")), str(baseline_report.get("id"))],
+            payload={"state": current, "offline_gates": gates_result, "compare": compare_result},
+        )
+        return payload
+
+    @app.post("/api/v1/rollout/advance")
+    def rollout_advance(body: RolloutAdvanceBody | None = None, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        try:
+            state = rollout_manager.advance(
+                actor=user.get("username", "admin"),
+                note=(body.note if body else None),
+                settings=store.load_settings(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="rollout_advance",
+            severity="info",
+            module="rollout",
+            message=f"Rollout advanced to {state.get('state')}",
+            related_ids=[str(state.get("rollout_id") or "")],
+            payload={"state": state.get("state"), "current_phase": state.get("current_phase"), "note": body.note if body else ""},
+        )
+        return {"ok": True, "state": state}
+
+    @app.post("/api/v1/rollout/evaluate-phase")
+    def rollout_evaluate_phase(body: RolloutEvaluatePhaseBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        state_before = rollout_manager.status()
+        current_state = str(state_before.get("state") or "IDLE")
+        expected_state_by_phase = {
+            "paper_soak": "PAPER_SOAK",
+            "testnet_soak": "TESTNET_SOAK",
+            "shadow": "LIVE_SHADOW",
+            "canary05": "LIVE_CANARY_05",
+            "canary15": "LIVE_CANARY_15",
+            "canary35": "LIVE_CANARY_35",
+            "canary60": "LIVE_CANARY_60",
+        }
+        expected_state = expected_state_by_phase[str(body.phase)]
+        if current_state != expected_state:
+            raise HTTPException(status_code=400, detail=f"Rollout state must be {expected_state} (current={current_state})")
+        if body.override_started_at:
+            rollout_manager.set_phase_started_at(body.phase, body.override_started_at)
+
+        settings_payload = store.load_settings()
+        execution_payload = build_execution_metrics_payload()
+        logs_payload = store.list_logs(severity=None, module=None, since=None, until=None, page=1, page_size=250)
+        logs_items = logs_payload.get("items", []) if isinstance(logs_payload, dict) else []
+        logs_items = logs_items if isinstance(logs_items, list) else []
+
+        try:
+            if body.phase == "paper_soak":
+                status_payload = build_status_payload()
+                new_state = rollout_manager.evaluate_paper_soak(
+                    settings=settings_payload,
+                    status_payload=status_payload,
+                    execution_payload=execution_payload,
+                    logs=logs_items,
+                    auto_abort=bool(body.auto_abort),
+                )
+            elif body.phase == "testnet_soak":
+                diagnose_payload = diagnose_exchange("testnet", force_refresh=True)
+                new_state = rollout_manager.evaluate_testnet_soak(
+                    settings=settings_payload,
+                    execution_payload=execution_payload,
+                    diagnose_payload=diagnose_payload,
+                    logs=logs_items,
+                    auto_abort=bool(body.auto_abort),
+                )
+            else:
+                status_payload = build_status_payload()
+                new_state = rollout_manager.evaluate_live_phase(
+                    settings=settings_payload,
+                    status_payload=status_payload,
+                    execution_payload=execution_payload,
+                    logs=logs_items,
+                    baseline_live_kpis=body.baseline_live_kpis,
+                    auto_rollback=bool(body.auto_abort),
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        phase_eval = ((new_state.get("phase_evaluations") or {}).get(body.phase) or {}) if isinstance(new_state.get("phase_evaluations"), dict) else {}
+        advanced = False
+        if bool(body.auto_advance) and bool(phase_eval.get("passed")) and str(new_state.get("state")) == expected_state:
+            new_state = rollout_manager.advance(
+                actor=user.get("username", "admin"),
+                note=f"Auto-advance after {body.phase.upper()} PASS",
+                settings=settings_payload,
+            )
+            advanced = True
+
+        severity = "info" if phase_eval.get("passed") else ("error" if phase_eval.get("hard_fail") else "warn")
+        store.add_log(
+            event_type="rollout_phase_eval",
+            severity=severity,
+            module="rollout",
+            message=f"{body.phase.upper()} evaluation: {phase_eval.get('status', 'UNKNOWN')}",
+            related_ids=[str(new_state.get("rollout_id") or "")],
+            payload={"phase": body.phase, "evaluation": phase_eval, "advanced": advanced},
+        )
+        return {"ok": True, "phase": body.phase, "advanced": advanced, "evaluation": phase_eval, "state": new_state}
+
+    @app.post("/api/v1/rollout/approve")
+    def rollout_approve(body: RolloutDecisionBody | None = None, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        try:
+            state = rollout_manager.approve(actor=user.get("username", "admin"), settings=store.load_settings())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="rollout_approve",
+            severity="warn",
+            module="rollout",
+            message="Rollout approved for live progression",
+            related_ids=[str(state.get("rollout_id") or "")],
+            payload={"note": (body.reason if body else "") or ""},
+        )
+        return {"ok": True, "state": state}
+
+    @app.post("/api/v1/rollout/reject")
+    def rollout_reject(body: RolloutDecisionBody | None = None, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        reason = (body.reason if body else None) or "Rejected by admin"
+        try:
+            state = rollout_manager.reject(reason=reason, actor=user.get("username", "admin"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="rollout_reject",
+            severity="warn",
+            module="rollout",
+            message="Rollout rejected by admin",
+            related_ids=[str(state.get("rollout_id") or "")],
+            payload={"reason": reason},
+        )
+        return {"ok": True, "state": state}
+
+    @app.post("/api/v1/rollout/rollback")
+    def rollout_rollback(body: RolloutDecisionBody | None = None, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        reason = (body.reason if body else None) or "Manual rollback requested"
+        try:
+            state = rollout_manager.rollback(reason=reason, actor=user.get("username", "admin"), auto=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="rollout_rollback",
+            severity="error",
+            module="rollout",
+            message="Rollout rolled back to baseline",
+            related_ids=[str(state.get("rollout_id") or "")],
+            payload={"reason": reason, "weights": state.get("weights")},
+        )
+        return {"ok": True, "state": state}
+
     @app.post("/api/v1/backtests/run")
     async def backtests_run(request: Request, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         body = await request.json()
         strategy_id = body.get("strategy_id") or DEFAULT_STRATEGY_ID
         period = body.get("period") or {}
-        run = store.create_backtest_run(
-            strategy_id=strategy_id,
-            start=body.get("start") or period.get("start") or "2024-01-01",
-            end=body.get("end") or period.get("end") or "2024-12-31",
-            universe=body.get("universe") or ["BTC/USDT", "ETH/USDT"],
-            fees_bps=float(body.get("fees_bps") or body.get("costs_model", {}).get("fees_bps") or 5.5),
-            spread_bps=float(body.get("spread_bps") or body.get("costs_model", {}).get("spread_bps") or 4.0),
-            slippage_bps=float(body.get("slippage_bps") or body.get("costs_model", {}).get("slippage_bps") or 3.0),
-            funding_bps=float(body.get("funding_bps") or body.get("costs_model", {}).get("funding_bps") or 1.0),
-            validation_mode=body.get("validation_mode") or "walk-forward",
-        )
+        start = body.get("start") or period.get("start") or "2024-01-01"
+        end = body.get("end") or period.get("end") or "2024-12-31"
+        costs_input = body.get("costs") or body.get("costs_model") or {}
+        fees_bps = float(body.get("fees_bps") or costs_input.get("fees_bps") or 5.5)
+        spread_bps = float(body.get("spread_bps") or costs_input.get("spread_bps") or 4.0)
+        slippage_bps = float(body.get("slippage_bps") or costs_input.get("slippage_bps") or 3.0)
+        funding_bps = float(body.get("funding_bps") or costs_input.get("funding_bps") or 1.0)
+        rollover_bps = float(body.get("rollover_bps") or costs_input.get("rollover_bps") or 0.0)
+        validation_mode = body.get("validation_mode") or "walk-forward"
+
+        market = body.get("market")
+        symbol = body.get("symbol")
+        timeframe = body.get("timeframe")
+        data_source = str(body.get("data_source") or "auto").lower()
+        if market and symbol and timeframe:
+            if data_source == "synthetic":
+                run = store.create_backtest_run(
+                    strategy_id=strategy_id,
+                    start=start,
+                    end=end,
+                    universe=[normalize_symbol(str(symbol))],
+                    fees_bps=fees_bps,
+                    spread_bps=spread_bps,
+                    slippage_bps=slippage_bps,
+                    funding_bps=funding_bps,
+                    validation_mode=validation_mode,
+                )
+                run["market"] = normalize_market(str(market))
+                run["symbol"] = normalize_symbol(str(symbol))
+                run["timeframe"] = normalize_timeframe(str(timeframe))
+                run["data_source"] = "synthetic"
+            else:
+                try:
+                    run = store.create_event_backtest_run(
+                        strategy_id=strategy_id,
+                        market=str(market),
+                        symbol=str(symbol),
+                        timeframe=str(timeframe),
+                        start=start,
+                        end=end,
+                        fees_bps=fees_bps,
+                        spread_bps=spread_bps,
+                        slippage_bps=slippage_bps,
+                        funding_bps=funding_bps,
+                        rollover_bps=rollover_bps,
+                        validation_mode=validation_mode,
+                    )
+                except FileNotFoundError as exc:
+                    mk = str(market).strip().lower()
+                    script_name = (
+                        "scripts/download_crypto_binance_public.py"
+                        if mk == "crypto"
+                        else "scripts/download_forex_dukascopy.py"
+                        if mk == "forex"
+                        else "scripts/download_equities_alpaca.py"
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Faltan datos para {mk}/{str(symbol).upper()}/{str(timeframe).lower()}. Descarga con {script_name} y reintenta. Detalle: {exc}",
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            run = store.create_backtest_run(
+                strategy_id=strategy_id,
+                start=start,
+                end=end,
+                universe=body.get("universe") or ["BTC/USDT", "ETH/USDT"],
+                fees_bps=fees_bps,
+                spread_bps=spread_bps,
+                slippage_bps=slippage_bps,
+                funding_bps=funding_bps,
+                validation_mode=validation_mode,
+            )
         return {"ok": True, "run_id": run["id"], "run": run}
 
     @app.get("/api/v1/backtests/runs")
@@ -1932,42 +2898,14 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/execution/metrics")
     def execution_metrics(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        now = utc_now()
-        series = []
-        for idx in range(40):
-            series.append(
-                {
-                    "ts": (now - timedelta(minutes=(40 - idx))).isoformat(),
-                    "latency_ms_p95": 120 + (idx % 5) * 8,
-                    "spread_bps": 7.0 + ((idx % 6) * 0.7),
-                    "slippage_bps": 4.0 + ((idx % 4) * 0.6),
-                    "maker_ratio": 0.58 + ((idx % 3) * 0.01),
-                    "fill_ratio": 0.91 - ((idx % 3) * 0.01),
-                }
-            )
-        return {
-            "maker_ratio": 0.61,
-            "fill_ratio": 0.92,
-            "requotes": 2,
-            "cancels": 4,
-            "rate_limit_hits": 1,
-            "api_errors": 0,
-            "avg_spread": 8.1,
-            "p95_spread": 12.2,
-            "avg_slippage": 4.3,
-            "p95_slippage": 7.4,
-            "latency_ms_p95": 146.0,
-            "series": series,
-            "notes": [
-                "Maker ratio stable in the last hour.",
-                "No severe API errors observed.",
-                "Spread remains under configured guardrails.",
-            ],
-        }
+        return build_execution_metrics_payload()
 
     @app.get("/api/v1/settings")
     def settings(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        return store.load_settings()
+        current = store.load_settings()
+        merged = learning_service.ensure_settings_shape(current)
+        store.save_settings(merged)
+        return merged
 
     @app.put("/api/v1/settings")
     async def settings_update(request: Request, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -1981,7 +2919,40 @@ def create_app() -> FastAPI:
             "risk_defaults": {**current.get("risk_defaults", {}), **body.get("risk_defaults", {})},
             "execution": {**current.get("execution", {}), **body.get("execution", {})},
             "feature_flags": {**current.get("feature_flags", {}), **body.get("feature_flags", {})},
+            "learning": {
+                **(current.get("learning", {}) if isinstance(current.get("learning"), dict) else {}),
+                **(body.get("learning", {}) if isinstance(body.get("learning"), dict) else {}),
+            },
+            "rollout": {
+                **(current.get("rollout", {}) if isinstance(current.get("rollout"), dict) else {}),
+                **(body.get("rollout", {}) if isinstance(body.get("rollout"), dict) else {}),
+            },
+            "blending": {
+                **(current.get("blending", {}) if isinstance(current.get("blending"), dict) else {}),
+                **(body.get("blending", {}) if isinstance(body.get("blending"), dict) else {}),
+            },
         }
+        if isinstance(merged.get("learning"), dict):
+            current_learning = current.get("learning", {}) if isinstance(current.get("learning"), dict) else {}
+            body_learning = body.get("learning", {}) if isinstance(body.get("learning"), dict) else {}
+            merged["learning"] = {
+                **current_learning,
+                **body_learning,
+                "validation": {**(current_learning.get("validation", {}) if isinstance(current_learning.get("validation"), dict) else {}), **(body_learning.get("validation", {}) if isinstance(body_learning.get("validation"), dict) else {})},
+                "promotion": {**(current_learning.get("promotion", {}) if isinstance(current_learning.get("promotion"), dict) else {}), **(body_learning.get("promotion", {}) if isinstance(body_learning.get("promotion"), dict) else {})},
+                "risk_profile": {**(current_learning.get("risk_profile", {}) if isinstance(current_learning.get("risk_profile"), dict) else {}), **(body_learning.get("risk_profile", {}) if isinstance(body_learning.get("risk_profile"), dict) else {})},
+            }
+        if isinstance(merged.get("rollout"), dict):
+            current_rollout = current.get("rollout", {}) if isinstance(current.get("rollout"), dict) else {}
+            body_rollout = body.get("rollout", {}) if isinstance(body.get("rollout"), dict) else {}
+            merged["rollout"] = {
+                **current_rollout,
+                **body_rollout,
+                "abort_thresholds": {**(current_rollout.get("abort_thresholds", {}) if isinstance(current_rollout.get("abort_thresholds"), dict) else {}), **(body_rollout.get("abort_thresholds", {}) if isinstance(body_rollout.get("abort_thresholds"), dict) else {})},
+                "improve_vs_baseline": {**(current_rollout.get("improve_vs_baseline", {}) if isinstance(current_rollout.get("improve_vs_baseline"), dict) else {}), **(body_rollout.get("improve_vs_baseline", {}) if isinstance(body_rollout.get("improve_vs_baseline"), dict) else {})},
+                "phases": body_rollout.get("phases") if isinstance(body_rollout.get("phases"), list) else current_rollout.get("phases"),
+            }
+        merged = learning_service.ensure_settings_shape(merged)
         store.save_settings(merged)
         store.add_log(
             event_type="settings_changed",

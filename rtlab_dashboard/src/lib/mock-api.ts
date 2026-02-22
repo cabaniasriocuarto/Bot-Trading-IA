@@ -280,8 +280,38 @@ async function handleStrategyUpload(req: NextRequest) {
   }
 
   const fileName = upload.name || "";
-  if (!fileName.toLowerCase().endsWith(".zip")) {
+  if (!fileName.toLowerCase().endsWith(".zip") && !fileName.toLowerCase().endsWith(".yaml") && !fileName.toLowerCase().endsWith(".yml")) {
     return NextResponse.json({ error: "Archivo inválido. Debe ser .zip." }, { status: 400 });
+  }
+
+  if (fileName.toLowerCase().endsWith(".yaml") || fileName.toLowerCase().endsWith(".yml")) {
+    const text = await upload.text();
+    const parsed = parseSimpleYaml(text);
+    const idBase = String(parsed.id || `yaml_strategy_${Date.now().toString(16)}`);
+    const version = String(parsed.version || "1.0.0");
+    if (!/^\d+\.\d+\.\d+([+-].+)?$/.test(version)) {
+      return NextResponse.json({ error: "version debe ser semver (ej: 1.0.0)." }, { status: 400 });
+    }
+    const id = store.strategies.some((row) => row.id === idBase) ? `${idBase}_${Date.now().toString(16).slice(-4)}` : idBase;
+    const strategy: Strategy = {
+      id,
+      name: String(parsed.name || id),
+      version,
+      enabled: false,
+      primary: false,
+      params: {},
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_run_at: null,
+      notes: `Estrategia subida por YAML (${fileName}).`,
+      tags: ["upload", "yaml"],
+      defaults_yaml: text,
+      schema: {},
+      pack_source: "upload",
+    };
+    store.strategies.unshift(strategy);
+    saveMockStore();
+    return NextResponse.json({ ok: true, strategy, validation: { structure_ok: true, format: "yaml" } });
   }
 
   let zip: JSZip;
@@ -702,8 +732,17 @@ async function handleV1(req: NextRequest, path: string[]) {
         telegram: { ...store.settings.telegram, ...(payload.telegram || {}) },
         execution: { ...store.settings.execution, ...(payload.execution || {}) },
         credentials: { ...store.settings.credentials, ...(payload.credentials || {}) },
+        learning: {
+          ...store.settings.learning,
+          ...(payload.learning || {}),
+          validation: { ...store.settings.learning.validation, ...((payload.learning as { validation?: object } | undefined)?.validation || {}) },
+          promotion: { ...store.settings.learning.promotion, ...((payload.learning as { promotion?: object } | undefined)?.promotion || {}) },
+          risk_profile: { ...store.settings.learning.risk_profile, ...((payload.learning as { risk_profile?: object } | undefined)?.risk_profile || {}) },
+        },
         feature_flags: { ...store.settings.feature_flags, ...(payload.feature_flags || {}) },
       };
+      store.settings.learning.promotion.allow_auto_apply = false;
+      store.settings.learning.promotion.allow_live = false;
       store.settings.mode = nextMode;
       store.status.updated_at = new Date().toISOString();
       saveMockStore();

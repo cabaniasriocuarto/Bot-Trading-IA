@@ -1,0 +1,21 @@
+version: 1
+ranges:
+  trend_pullback:
+    adx_threshold: {min: 14, max: 35, step: 1}
+    atr_stop_mult: {min: 1.2, max: 3.0, step: 0.1}
+    atr_take_mult: {min: 1.8, max: 4.5, step: 0.1}
+    trail_distance_atr: {min: 0.8, max: 3.0, step: 0.1}
+    time_stop_bars: {min: 6, max: 30, step: 1}
+  mean_reversion_range:
+    rsi_buy_threshold: {min: 22, max: 40, step: 1}
+    rsi_sell_threshold: {min: 60, max: 78, step: 1}
+    atr_stop_mult: {min: 0.8, max: 2.0, step: 0.1}
+    atr_take_mult: {min: 1.0, max: 2.8, step: 0.1}
+    time_stop_bars: {min: 4, max: 18, step: 1}
+  breakout_volatility:
+    breakout_window: {min: 10, max: 60, step: 1}
+    volume_zscore_min: {min: 0.5, max: 3.0, step: 0.1}
+    atr_stop_mult: {min: 1.0, max: 3.5, step: 0.1}
+    atr_take_mult: {min: 1.5, max: 5.0, step: 0.1}
+    trail_activate_atr: {min: 0.8, max: 2.5, step: 0.1}
+
