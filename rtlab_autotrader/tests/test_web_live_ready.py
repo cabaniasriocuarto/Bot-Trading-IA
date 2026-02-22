@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -86,10 +87,13 @@ backtest:
 """.strip()
 
 
-def _build_app(tmp_path: Path, monkeypatch, mode: str = "paper"):
+def _build_app(tmp_path: Path, monkeypatch, mode: str = "paper", seed_settings: dict | None = None):
   data_dir = tmp_path / "user_data"
   config_path = tmp_path / "rtlab_config.yaml"
   config_path.write_text(CONFIG_YAML, encoding="utf-8")
+  if seed_settings is not None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "console_settings.json").write_text(json.dumps(seed_settings), encoding="utf-8")
 
   monkeypatch.setenv("RTLAB_USER_DATA_DIR", str(data_dir))
   monkeypatch.setenv("RTLAB_CONFIG_PATH", str(config_path))
@@ -283,6 +287,30 @@ tags: [upload, yaml]
   assert body["ok"] is True
   assert body["strategy"]["id"] == "yaml_uploaded_strategy"
   assert body["strategy"]["version"] == "1.2.3"
+
+
+def test_settings_endpoint_recovers_legacy_settings_shape(tmp_path: Path, monkeypatch) -> None:
+  legacy_settings = {
+    "mode": "PAPER",
+    "exchange": "binance",
+    "learning": {"enabled": True, "mode": "RESEARCH"},
+  }
+  _, client = _build_app(tmp_path, monkeypatch, seed_settings=legacy_settings)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/settings", headers=headers)
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["mode"] == "PAPER"
+  assert isinstance(body.get("credentials"), dict)
+  assert isinstance(body.get("telegram"), dict)
+  assert isinstance(body.get("risk_defaults"), dict)
+  assert isinstance(body.get("execution"), dict)
+  assert isinstance(body.get("feature_flags"), dict)
+  assert isinstance(body.get("rollout"), dict)
+  assert isinstance(body.get("blending"), dict)
+  assert isinstance(body["rollout"].get("testnet_checks"), dict)
 
 
 def test_learning_research_loop_and_adopt_option_b(tmp_path: Path, monkeypatch) -> None:

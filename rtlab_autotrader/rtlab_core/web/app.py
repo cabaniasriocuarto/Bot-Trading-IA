@@ -749,9 +749,28 @@ class ConsoleStore:
 
     def _ensure_default_settings(self) -> None:
         settings = json_load(SETTINGS_PATH, {})
+        if not isinstance(settings, dict):
+            settings = {}
         learning_defaults = LearningService.default_learning_settings()
         rollout_defaults = RolloutManager.default_rollout_config()
         blending_defaults = RolloutManager.default_blending_config()
+        risk_defaults = {
+            "max_daily_loss": 5.0,
+            "max_dd": 22.0,
+            "max_positions": 20,
+            "risk_per_trade": 0.75,
+        }
+        execution_defaults = {
+            "post_only_default": True,
+            "slippage_max_bps": 12,
+            "request_timeout_ms": 4000,
+        }
+        feature_flag_defaults = {
+            "orderflow": True,
+            "vpin": True,
+            "ml": False,
+            "alerts": True,
+        }
         if not settings:
             settings = {
                 "mode": default_mode().upper(),
@@ -766,28 +785,43 @@ class ConsoleStore:
                     "enabled": get_env("TELEGRAM_ENABLED", "false").lower() == "true",
                     "chat_id": get_env("TELEGRAM_CHAT_ID"),
                 },
-                "risk_defaults": {
-                    "max_daily_loss": 5.0,
-                    "max_dd": 22.0,
-                    "max_positions": 20,
-                    "risk_per_trade": 0.75,
-                },
-                "execution": {
-                    "post_only_default": True,
-                    "slippage_max_bps": 12,
-                    "request_timeout_ms": 4000,
-                },
-                "feature_flags": {
-                    "orderflow": True,
-                    "vpin": True,
-                    "ml": False,
-                    "alerts": True,
-                },
+                "risk_defaults": risk_defaults,
+                "execution": execution_defaults,
+                "feature_flags": feature_flag_defaults,
                 "learning": learning_defaults,
                 "rollout": rollout_defaults,
                 "blending": blending_defaults,
                 "gate_checklist": [],
             }
+        if not isinstance(settings.get("mode"), str) or not str(settings.get("mode") or "").strip():
+            settings["mode"] = default_mode().upper()
+        if not isinstance(settings.get("exchange"), str) or not str(settings.get("exchange") or "").strip():
+            settings["exchange"] = exchange_name()
+        if not isinstance(settings.get("exchange_plugin_options"), list):
+            settings["exchange_plugin_options"] = ["binance", "bybit", "oanda", "alpaca"]
+        if not isinstance(settings.get("credentials"), dict):
+            settings["credentials"] = {}
+        if not isinstance(settings.get("telegram"), dict):
+            settings["telegram"] = {"enabled": get_env("TELEGRAM_ENABLED", "false").lower() == "true", "chat_id": get_env("TELEGRAM_CHAT_ID")}
+        else:
+            settings["telegram"] = {
+                "enabled": bool(settings["telegram"].get("enabled", get_env("TELEGRAM_ENABLED", "false").lower() == "true")),
+                "chat_id": str(settings["telegram"].get("chat_id") or get_env("TELEGRAM_CHAT_ID")),
+            }
+        if not isinstance(settings.get("risk_defaults"), dict):
+            settings["risk_defaults"] = risk_defaults
+        else:
+            settings["risk_defaults"] = {**risk_defaults, **settings["risk_defaults"]}
+        if not isinstance(settings.get("execution"), dict):
+            settings["execution"] = execution_defaults
+        else:
+            settings["execution"] = {**execution_defaults, **settings["execution"]}
+        if not isinstance(settings.get("feature_flags"), dict):
+            settings["feature_flags"] = feature_flag_defaults
+        else:
+            settings["feature_flags"] = {**feature_flag_defaults, **settings["feature_flags"]}
+        if not isinstance(settings.get("gate_checklist"), list):
+            settings["gate_checklist"] = []
         if not isinstance(settings.get("learning"), dict):
             settings["learning"] = learning_defaults
         else:
@@ -823,6 +857,10 @@ class ConsoleStore:
                 "improve_vs_baseline": {
                     **rollout_defaults["improve_vs_baseline"],
                     **(settings["rollout"].get("improve_vs_baseline") if isinstance(settings["rollout"].get("improve_vs_baseline"), dict) else {}),
+                },
+                "testnet_checks": {
+                    **rollout_defaults["testnet_checks"],
+                    **(settings["rollout"].get("testnet_checks") if isinstance(settings["rollout"].get("testnet_checks"), dict) else {}),
                 },
             }
         if not isinstance(settings.get("blending"), dict):
@@ -960,12 +998,42 @@ def risk_hooks(context):
 
     def load_settings(self) -> dict[str, Any]:
         settings = json_load(SETTINGS_PATH, {})
-        if not settings:
+        if not isinstance(settings, dict) or not settings:
             self._ensure_default_settings()
             settings = json_load(SETTINGS_PATH, {})
+        if not isinstance(settings, dict):
+            self._ensure_default_settings()
+            settings = json_load(SETTINGS_PATH, {})
+        if not isinstance(settings, dict):
+            return {}
         return settings
 
     def save_settings(self, settings: dict[str, Any]) -> None:
+        if not isinstance(settings, dict):
+            settings = {}
+        if not isinstance(settings.get("credentials"), dict):
+            settings["credentials"] = {}
+        if not isinstance(settings.get("telegram"), dict):
+            settings["telegram"] = {"enabled": False, "chat_id": ""}
+        else:
+            settings["telegram"] = {
+                "enabled": bool(settings["telegram"].get("enabled", False)),
+                "chat_id": str(settings["telegram"].get("chat_id") or ""),
+            }
+        if not isinstance(settings.get("risk_defaults"), dict):
+            settings["risk_defaults"] = {}
+        if not isinstance(settings.get("execution"), dict):
+            settings["execution"] = {}
+        if not isinstance(settings.get("feature_flags"), dict):
+            settings["feature_flags"] = {}
+        if not isinstance(settings.get("exchange_plugin_options"), list):
+            settings["exchange_plugin_options"] = ["binance", "bybit", "oanda", "alpaca"]
+        if not isinstance(settings.get("gate_checklist"), list):
+            settings["gate_checklist"] = []
+        if not isinstance(settings.get("mode"), str) or not str(settings.get("mode") or "").strip():
+            settings["mode"] = default_mode().upper()
+        if not isinstance(settings.get("exchange"), str) or not str(settings.get("exchange") or "").strip():
+            settings["exchange"] = exchange_name()
         settings["credentials"]["exchange_configured"] = exchange_keys_present(settings.get("mode", default_mode()).lower())
         settings["credentials"]["telegram_configured"] = bool(get_env("TELEGRAM_BOT_TOKEN") and (settings.get("telegram", {}).get("chat_id") or get_env("TELEGRAM_CHAT_ID")))
         learning_defaults = LearningService.default_learning_settings()
@@ -991,6 +1059,7 @@ def risk_hooks(context):
                 **rollout_defaults["improve_vs_baseline"],
                 **(rollout.get("improve_vs_baseline") if isinstance(rollout.get("improve_vs_baseline"), dict) else {}),
             },
+            "testnet_checks": {**rollout_defaults["testnet_checks"], **(rollout.get("testnet_checks") if isinstance(rollout.get("testnet_checks"), dict) else {})},
         }
         blending = settings.get("blending") if isinstance(settings.get("blending"), dict) else {}
         settings["blending"] = {**blending_defaults, **blending}
