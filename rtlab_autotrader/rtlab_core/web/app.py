@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from rtlab_core.config import load_config
 from rtlab_core.learning import LearningService
+from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
 from rtlab_core.src.data.catalog import DataCatalog
@@ -164,9 +165,27 @@ class StrategyEnableBody(BaseModel):
     enabled: bool = True
 
 
+class StrategyPatchBody(BaseModel):
+    enabled_for_trading: bool | None = None
+    allow_learning: bool | None = None
+    is_primary: bool | None = None
+    status: Literal["active", "disabled", "archived"] | None = None
+
+
 class LearningAdoptBody(BaseModel):
     candidate_id: str
     mode: Literal["paper", "testnet"]
+
+
+class LearningRecommendBody(BaseModel):
+    mode: Literal["backtest", "paper", "testnet", "live"] = "paper"
+    from_ts: str | None = None
+    to_ts: str | None = None
+
+
+class LearningDecisionBody(BaseModel):
+    recommendation_id: str
+    note: str | None = None
 
 
 class RolloutStartBody(BaseModel):
@@ -494,6 +513,8 @@ def _classify_exchange_error(status_code: int, payload: Any) -> tuple[str, str]:
             return "sapi_unsupported", f"sapi unsupported: {msg}"
         if code in {-2010, -2011, -1013, -1100, -1102}:
             return "permissions", f"Permisos o parametros invalidos ({code}): {msg}"
+    if status_code == 451:
+        return "provider_restriction", "Proveedor/exchange restringe la region o red de salida (HTTP 451). Probá otro despliegue/VPS/proxy permitido."
     if status_code >= 500:
         return "endpoint", f"Endpoint no disponible (HTTP {status_code})"
     return "endpoint", f"Error de endpoint/auth (HTTP {status_code})"
@@ -774,6 +795,8 @@ class ConsoleStore:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
         self._ensure_default_strategy()
+        self._ensure_knowledge_strategies_registry()
+        self._ensure_strategy_registry_invariants()
         self._ensure_seed_backtest()
         self.add_log(
             event_type="health",
@@ -1017,21 +1040,552 @@ def risk_hooks(context):
                 payload={"mode": "testnet"},
             )
 
+    def _knowledge_loader(self) -> KnowledgeLoader:
+        return KnowledgeLoader(repo_root=MONOREPO_ROOT)
+
+    def _build_knowledge_default_params(self, base_strategy_id: str) -> dict[str, Any]:
+        try:
+            knowledge = self._knowledge_loader().load()
+        except Exception:
+            return {}
+        template = next((t for t in knowledge.templates if str(t.get("base_strategy_id")) == base_strategy_id), None)
+        if not template:
+            return {}
+        ranges = knowledge.ranges.get(str(template.get("id")), {})
+        if not isinstance(ranges, dict):
+            return {}
+        out: dict[str, Any] = {}
+        for key, spec in ranges.items():
+            if isinstance(spec, dict) and isinstance(spec.get("min"), (int, float)) and isinstance(spec.get("max"), (int, float)):
+                vmin = float(spec["min"])
+                vmax = float(spec["max"])
+                mid = (vmin + vmax) / 2.0
+                step = spec.get("step")
+                if isinstance(step, (int, float)) and float(step) > 0:
+                    steps = round((mid - vmin) / float(step))
+                    mid = vmin + steps * float(step)
+                out[str(key)] = int(mid) if float(mid).is_integer() else round(mid, 6)
+        return out
+
+    def _ensure_knowledge_strategies_registry(self) -> None:
+        try:
+            knowledge = self._knowledge_loader().get_strategies_v2()
+        except Exception:
+            return
+        strategies = knowledge.get("strategies") if isinstance(knowledge, dict) else []
+        if not isinstance(strategies, list):
+            return
+        metadata = self.load_strategy_meta()
+        for idx, spec in enumerate(strategies):
+            if not isinstance(spec, dict):
+                continue
+            strategy_id = str(spec.get("id") or "").strip()
+            if not strategy_id:
+                continue
+            name = str(spec.get("name") or strategy_id)
+            version = "2.0.0"
+            tags = [str(x) for x in (spec.get("inputs", {}) or {}).get("indicators", [])] if isinstance(spec.get("inputs"), dict) else []
+            tags = [str(x) for x in (spec.get("inputs", []) if isinstance(spec.get("inputs"), list) else tags)] if not tags else tags
+            tags = [str(x) for x in (spec.get("tags") or [])] or [str(spec.get("intent") or "knowledge"), "knowledge"]
+            description = str(spec.get("intent") or spec.get("description") or "Knowledge Pack v2 strategy")
+            pseudo_path = f"knowledge/strategies/{strategy_id}.yaml"
+            pseudo_bytes = json.dumps(spec, sort_keys=True).encode("utf-8")
+            db_strategy_id = None
+            if strategy_id in metadata:
+                db_strategy_id = int(metadata[strategy_id].get("db_strategy_id") or 0) or None
+            if not db_strategy_id:
+                db_strategy_id = self.registry.upsert_strategy(
+                    name=strategy_id,
+                    version=version,
+                    path=pseudo_path,
+                    sha256=hashlib.sha256(pseudo_bytes).hexdigest(),
+                    status="enabled",
+                    notes="Seeded from knowledge pack v2",
+                )
+            defaults = self._build_knowledge_default_params(strategy_id)
+            metadata[strategy_id] = {
+                **metadata.get(strategy_id, {}),
+                "id": strategy_id,
+                "name": name,
+                "version": metadata.get(strategy_id, {}).get("version", version),
+                "description": description,
+                "enabled": bool(metadata.get(strategy_id, {}).get("enabled", True)),
+                "notes": str(metadata.get(strategy_id, {}).get("notes") or "Knowledge Pack v2"),
+                "tags": list({*([str(x) for x in metadata.get(strategy_id, {}).get("tags", [])]), *[str(x) for x in tags], "knowledge"}),
+                "params_yaml": metadata.get(strategy_id, {}).get("params_yaml") or (yaml.safe_dump(defaults, sort_keys=False) if defaults else DEFAULT_PARAMS_YAML),
+                "parameters_schema": metadata.get(strategy_id, {}).get("parameters_schema") or {"type": "object", "properties": {}},
+                "created_at": metadata.get(strategy_id, {}).get("created_at") or utc_now_iso(),
+                "updated_at": utc_now_iso(),
+                "last_run_at": metadata.get(strategy_id, {}).get("last_run_at"),
+                "db_strategy_id": db_strategy_id,
+                "source": "knowledge",
+            }
+            self.registry.upsert_strategy_registry(
+                strategy_key=strategy_id,
+                name=name,
+                version=str(metadata[strategy_id].get("version") or version),
+                source="knowledge",
+                status="active",
+                enabled_for_trading=bool(metadata[strategy_id].get("enabled", True)),
+                allow_learning=bool(metadata[strategy_id].get("allow_learning", True)),
+                is_primary=bool(metadata[strategy_id].get("is_primary", idx == 0)),
+                tags=[str(x) for x in metadata[strategy_id].get("tags", [])],
+            )
+            reg_row = self.registry.get_strategy_registry(strategy_id) or {}
+            metadata[strategy_id]["allow_learning"] = bool(reg_row.get("allow_learning", True))
+            metadata[strategy_id]["is_primary"] = bool(reg_row.get("is_primary", False))
+            metadata[strategy_id]["status"] = str(reg_row.get("status", "active"))
+        # Ensure bootstrap/default strategy is also represented in the persistent registry.
+        default_meta = metadata.get(DEFAULT_STRATEGY_ID)
+        if isinstance(default_meta, dict):
+            self.registry.upsert_strategy_registry(
+                strategy_key=DEFAULT_STRATEGY_ID,
+                name=str(default_meta.get("name") or DEFAULT_STRATEGY_ID),
+                version=str(default_meta.get("version") or DEFAULT_STRATEGY_VERSION),
+                source=str(default_meta.get("source") or "uploaded"),
+                status="active" if bool(default_meta.get("enabled", True)) else "disabled",
+                enabled_for_trading=bool(default_meta.get("enabled", True)),
+                allow_learning=bool(default_meta.get("allow_learning", True)),
+                is_primary=bool(default_meta.get("is_primary", False)),
+                tags=[str(x) for x in default_meta.get("tags", [])],
+            )
+        self.save_strategy_meta(metadata)
+
+    def _ensure_strategy_registry_invariants(self) -> None:
+        self.registry.ensure_registry_primary()
+        rows = self.registry.list_strategy_registry()
+        metadata = self.load_strategy_meta()
+        if not rows:
+            return
+        if self.registry.enabled_for_trading_count() == 0:
+            first = rows[0]
+            self.registry.patch_strategy_registry(first["id"], enabled_for_trading=True, status="active")
+        self.registry.ensure_registry_primary()
+        rows = self.registry.list_strategy_registry()
+        for row in rows:
+            meta = metadata.get(str(row["id"]))
+            if not isinstance(meta, dict):
+                continue
+            meta["enabled"] = bool(row.get("enabled_for_trading", meta.get("enabled", False)))
+            meta["allow_learning"] = bool(row.get("allow_learning", meta.get("allow_learning", True)))
+            meta["is_primary"] = bool(row.get("is_primary", meta.get("is_primary", False)))
+            meta["status"] = str(row.get("status") or meta.get("status") or ("active" if meta.get("enabled") else "disabled"))
+            meta["source"] = str(row.get("source") or meta.get("source") or "uploaded")
+            meta["updated_at"] = utc_now_iso()
+            metadata[str(row["id"])] = meta
+        self.save_strategy_meta(metadata)
+
+    def patch_strategy_registry_flags(
+        self,
+        strategy_id: str,
+        *,
+        enabled_for_trading: bool | None = None,
+        allow_learning: bool | None = None,
+        is_primary: bool | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        if strategy_id not in self.load_strategy_meta():
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        current = self.registry.get_strategy_registry(strategy_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="Strategy registry row not found")
+        target_enabled = current["enabled_for_trading"] if enabled_for_trading is None else bool(enabled_for_trading)
+        target_status = current["status"] if status is None else str(status)
+        if target_status not in {"active", "disabled", "archived"}:
+            raise HTTPException(status_code=400, detail="Invalid status")
+        if target_status == "archived":
+            target_enabled = False
+        if current["enabled_for_trading"] and not target_enabled and self.registry.enabled_for_trading_count() <= 1:
+            raise HTTPException(status_code=400, detail="Debe existir al menos 1 estrategia activa para trading")
+        patched = self.registry.patch_strategy_registry(
+            strategy_id,
+            status=target_status,
+            enabled_for_trading=target_enabled,
+            allow_learning=allow_learning,
+            is_primary=is_primary,
+        )
+        if not patched:
+            raise HTTPException(status_code=404, detail="Strategy registry row not found")
+        self._ensure_strategy_registry_invariants()
+        self.add_log(
+            event_type="strategy_changed",
+            severity="info",
+            module="registry",
+            message=f"Registry flags actualizados para {strategy_id}.",
+            related_ids=[strategy_id],
+            payload={
+                "enabled_for_trading": patched.get("enabled_for_trading"),
+                "allow_learning": patched.get("allow_learning"),
+                "is_primary": patched.get("is_primary"),
+                "status": patched.get("status"),
+            },
+        )
+        return self.strategy_or_404(strategy_id)
+
+    def _parse_iso_dt(self, value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                parsed = datetime.fromisoformat(f"{value}T00:00:00+00:00")
+            except Exception:
+                return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _run_matches_filters(self, run: dict[str, Any], *, from_ts: str | None, to_ts: str | None, mode: str | None) -> bool:
+        run_mode = str(run.get("mode") or "backtest").lower()
+        if mode and run_mode != mode.lower():
+            return False
+        created = self._parse_iso_dt(str(run.get("created_at") or "")) or self._parse_iso_dt(str((run.get("period") or {}).get("end") or ""))
+        start_bound = self._parse_iso_dt(from_ts)
+        end_bound = self._parse_iso_dt(to_ts)
+        if created and start_bound and created < start_bound:
+            return False
+        if created and end_bound and created > end_bound:
+            return False
+        return True
+
+    def _aggregate_strategy_kpis(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
+        all_trades: list[dict[str, Any]] = []
+        gross_pnl = 0.0
+        net_pnl = 0.0
+        costs_total = 0.0
+        fees_total = 0.0
+        spread_total = 0.0
+        slippage_total = 0.0
+        funding_total = 0.0
+        trade_weight = 0
+        sharpe_acc = 0.0
+        sortino_acc = 0.0
+        calmar_acc = 0.0
+        max_dd = 0.0
+        avg_holding_minutes = 0.0
+        turnover_acc = 0.0
+        exposure_acc = 0.0
+        run_count = 0
+        slippage_bps_samples: list[float] = []
+        dataset_hashes: set[str] = set()
+        for run in runs:
+            run_count += 1
+            metrics = run.get("metrics") or {}
+            costs = run.get("costs_breakdown") or {}
+            trades = run.get("trades") or []
+            if isinstance(trades, list):
+                all_trades.extend([t for t in trades if isinstance(t, dict)])
+            gross_pnl += float(costs.get("gross_pnl_total", costs.get("gross_pnl", 0.0)) or 0.0)
+            net_pnl += float(costs.get("net_pnl_total", costs.get("net_pnl", 0.0)) or 0.0)
+            fees_total += float(costs.get("fees_total", 0.0) or 0.0)
+            spread_total += float(costs.get("spread_total", 0.0) or 0.0)
+            slippage_total += float(costs.get("slippage_total", 0.0) or 0.0)
+            funding_total += float(costs.get("funding_total", 0.0) or 0.0)
+            costs_total += float(costs.get("total_cost", 0.0) or 0.0)
+            tc = int(metrics.get("trade_count") or metrics.get("roundtrips") or len(trades) or 0)
+            w = max(1, tc)
+            trade_weight += w
+            sharpe_acc += float(metrics.get("sharpe", 0.0) or 0.0) * w
+            sortino_acc += float(metrics.get("sortino", 0.0) or 0.0) * w
+            calmar_acc += float(metrics.get("calmar", 0.0) or 0.0) * w
+            max_dd = max(max_dd, float(metrics.get("max_dd", 0.0) or 0.0))
+            avg_holding_minutes += float(metrics.get("avg_holding_time_minutes", metrics.get("avg_holding_time", 0.0)) or 0.0) * w
+            turnover_acc += float(metrics.get("turnover", 0.0) or 0.0) * w
+            exposure_acc += float(metrics.get("exposure_time_pct", 0.0) or 0.0) * w
+            if run.get("dataset_hash"):
+                dataset_hashes.add(str(run.get("dataset_hash")))
+            if isinstance(trades, list):
+                for trade in trades:
+                    try:
+                        entry_px = float(trade.get("entry_px", 0.0) or 0.0)
+                        qty = abs(float(trade.get("qty", 0.0) or 0.0))
+                        notional = abs(entry_px * qty)
+                        if notional > 0:
+                            slippage_cost = float(trade.get("slippage_cost", trade.get("slippage", 0.0)) or 0.0)
+                            slippage_bps_samples.append((slippage_cost / notional) * 10000.0)
+                    except Exception:
+                        continue
+        trade_count = len(all_trades)
+        wins = [t for t in all_trades if float(t.get("pnl_net", t.get("pnl", 0.0)) or 0.0) > 0]
+        winrate = (len(wins) / trade_count) if trade_count else 0.0
+        expectancy = (
+            sum(float(t.get("pnl_net", t.get("pnl", 0.0)) or 0.0) for t in all_trades) / trade_count
+            if trade_count
+            else (net_pnl / max(1, trade_weight))
+        )
+        avg_trade = expectancy
+        mae_avg = (
+            sum(float(t.get("mae", 0.0) or 0.0) for t in all_trades) / trade_count
+            if trade_count and any("mae" in t for t in all_trades)
+            else None
+        )
+        mfe_avg = (
+            sum(float(t.get("mfe", 0.0) or 0.0) for t in all_trades) / trade_count
+            if trade_count and any("mfe" in t for t in all_trades)
+            else None
+        )
+        slippage_p95 = None
+        if slippage_bps_samples:
+            sorted_vals = sorted(slippage_bps_samples)
+            idx = min(len(sorted_vals) - 1, max(0, int(round((len(sorted_vals) - 1) * 0.95))))
+            slippage_p95 = round(sorted_vals[idx], 6)
+        gross_abs = abs(gross_pnl)
+        costs_ratio = (costs_total / gross_abs) if gross_abs else 0.0
+        return {
+            "run_count": run_count,
+            "trade_count": trade_count,
+            "total_entries": trade_count,
+            "total_exits": sum(1 for t in all_trades if t.get("exit_time")),
+            "roundtrips": sum(1 for t in all_trades if t.get("entry_time") and t.get("exit_time")),
+            "winrate": round(winrate, 6),
+            "expectancy_value": round(expectancy, 6),
+            "expectancy_unit": "usd_por_trade",
+            "avg_trade": round(avg_trade, 6),
+            "max_dd": round(max_dd, 6),
+            "sharpe": round(sharpe_acc / max(1, trade_weight), 6),
+            "sortino": round(sortino_acc / max(1, trade_weight), 6),
+            "calmar": round(calmar_acc / max(1, trade_weight), 6),
+            "gross_pnl": round(gross_pnl, 6),
+            "net_pnl": round(net_pnl, 6),
+            "costs_total": round(costs_total, 6),
+            "fees_total": round(fees_total, 6),
+            "spread_total": round(spread_total, 6),
+            "slippage_total": round(slippage_total, 6),
+            "funding_total": round(funding_total, 6),
+            "costs_ratio": round(costs_ratio, 6),
+            "avg_holding_time": round(avg_holding_minutes / max(1, trade_weight), 6),
+            "time_in_market": round(exposure_acc / max(1, trade_weight), 6),
+            "turnover": round(turnover_acc / max(1, trade_weight), 6),
+            "mfe_avg": round(mfe_avg, 6) if isinstance(mfe_avg, (int, float)) else None,
+            "mae_avg": round(mae_avg, 6) if isinstance(mae_avg, (int, float)) else None,
+            "slippage_p95_bps": slippage_p95,
+            "maker_ratio": None,
+            "fill_ratio": None,
+            "dataset_hashes": sorted(dataset_hashes),
+            "dataset_hash_warning": len(dataset_hashes) > 1,
+        }
+
+    def _infer_trade_regime_label(self, trade: dict[str, Any], run: dict[str, Any], strategy: dict[str, Any] | None = None) -> str:
+        explicit = str(trade.get("regime_label") or "").strip().lower()
+        if explicit in {"trend", "range", "high_vol", "toxic"}:
+            return explicit
+        explain = trade.get("explain") if isinstance(trade.get("explain"), dict) else {}
+        costs_model = run.get("costs_model") if isinstance(run.get("costs_model"), dict) else {}
+        metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+        spread_bps = float(costs_model.get("spread_bps", 0.0) or 0.0)
+        if explain and (not bool(explain.get("vpin_ok", True)) or not bool(explain.get("spread_ok", True))):
+            return "toxic"
+        if spread_bps >= 10:
+            return "toxic"
+        if float(metrics.get("turnover", 0.0) or 0.0) >= 2.4 or float(metrics.get("max_dd", 0.0) or 0.0) >= 0.18:
+            return "high_vol"
+        tags = {str(t).lower() for t in (strategy.get("tags") or [])} if isinstance(strategy, dict) else set()
+        if {"range", "mean_reversion", "meanrev"} & tags:
+            return "range"
+        if {"trend", "breakout", "momentum", "orderflow"} & tags:
+            return "trend"
+        if explain and bool(explain.get("trend_ok", False)):
+            return "trend"
+        return "range"
+
+    def strategy_kpis_table(self, *, from_ts: str | None = None, to_ts: str | None = None, mode: str | None = None) -> list[dict[str, Any]]:
+        strategies = self.list_strategies()
+        runs = self.load_runs()
+        out: list[dict[str, Any]] = []
+        for strategy in strategies:
+            selected_runs = [
+                run
+                for run in runs
+                if str(run.get("strategy_id")) == str(strategy.get("id"))
+                and self._run_matches_filters(run, from_ts=from_ts, to_ts=to_ts, mode=mode)
+            ]
+            kpis = self._aggregate_strategy_kpis(selected_runs)
+            out.append(
+                {
+                    "strategy_id": strategy["id"],
+                    "name": strategy.get("name"),
+                    "mode": (mode or "backtest").lower(),
+                    "from": from_ts,
+                    "to": to_ts,
+                    "kpis": kpis,
+                    "status": strategy.get("status"),
+                    "enabled_for_trading": bool(strategy.get("enabled_for_trading", strategy.get("enabled"))),
+                    "allow_learning": bool(strategy.get("allow_learning", True)),
+                    "is_primary": bool(strategy.get("is_primary", False)),
+                    "source": strategy.get("source", "uploaded"),
+                }
+            )
+        return out
+
+    def strategy_kpis(self, strategy_id: str, *, from_ts: str | None = None, to_ts: str | None = None, mode: str | None = None) -> dict[str, Any]:
+        strategy = self.strategy_or_404(strategy_id)
+        runs = [
+            run
+            for run in self.load_runs()
+            if str(run.get("strategy_id")) == strategy_id and self._run_matches_filters(run, from_ts=from_ts, to_ts=to_ts, mode=mode)
+        ]
+        return {
+            "strategy_id": strategy_id,
+            "name": strategy.get("name"),
+            "mode": (mode or "backtest").lower(),
+            "from": from_ts,
+            "to": to_ts,
+            "kpis": self._aggregate_strategy_kpis(runs),
+        }
+
+    def strategy_kpis_by_regime(self, strategy_id: str, *, from_ts: str | None = None, to_ts: str | None = None, mode: str | None = None) -> dict[str, Any]:
+        strategy = self.strategy_or_404(strategy_id)
+        runs = [
+            run
+            for run in self.load_runs()
+            if str(run.get("strategy_id")) == strategy_id and self._run_matches_filters(run, from_ts=from_ts, to_ts=to_ts, mode=mode)
+        ]
+        buckets: dict[str, list[dict[str, Any]]] = {"trend": [], "range": [], "high_vol": [], "toxic": []}
+        for run in runs:
+            trades = run.get("trades") or []
+            if not isinstance(trades, list) or not trades:
+                continue
+            for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
+                label = self._infer_trade_regime_label(trade, run, strategy=strategy)
+                trade_copy = dict(trade)
+                trade_copy["regime_label"] = label
+                # Regime aggregation uses pseudo-run per trade to preserve pnl/costs/trade-level stats.
+                pseudo_run = {
+                    "id": str(run.get("id")),
+                    "strategy_id": strategy_id,
+                    "mode": str(run.get("mode") or "backtest"),
+                    "created_at": run.get("created_at"),
+                    "dataset_hash": run.get("dataset_hash"),
+                    "costs_model": run.get("costs_model") or {},
+                    "metrics": {
+                        "trade_count": 1,
+                        "max_dd": float((run.get("metrics") or {}).get("max_dd", 0.0) or 0.0),
+                        "sharpe": float((run.get("metrics") or {}).get("sharpe", 0.0) or 0.0),
+                        "sortino": float((run.get("metrics") or {}).get("sortino", 0.0) or 0.0),
+                        "calmar": float((run.get("metrics") or {}).get("calmar", 0.0) or 0.0),
+                        "avg_holding_time": float((run.get("metrics") or {}).get("avg_holding_time", 0.0) or 0.0),
+                        "turnover": float((run.get("metrics") or {}).get("turnover", 0.0) or 0.0),
+                        "exposure_time_pct": float((run.get("metrics") or {}).get("exposure_time_pct", 0.0) or 0.0),
+                    },
+                    "costs_breakdown": {
+                        "gross_pnl_total": float(trade.get("pnl", 0.0) or 0.0),
+                        "net_pnl_total": float(trade.get("pnl_net", trade.get("pnl", 0.0)) or 0.0),
+                        "fees_total": float(trade.get("fees", 0.0) or 0.0),
+                        "spread_total": float(trade.get("spread_cost", 0.0) or 0.0),
+                        "slippage_total": float(trade.get("slippage_cost", 0.0) or 0.0),
+                        "funding_total": float(trade.get("funding_cost", 0.0) or 0.0),
+                        "total_cost": float(trade.get("cost_total", 0.0) or 0.0),
+                    },
+                    "trades": [trade_copy],
+                }
+                buckets.setdefault(label, []).append(pseudo_run)
+        return {
+            "strategy_id": strategy_id,
+            "name": strategy.get("name"),
+            "mode": (mode or "backtest").lower(),
+            "from": from_ts,
+            "to": to_ts,
+            "regimes": {
+                label: {"regime_label": label, "kpis": self._aggregate_strategy_kpis(rows)}
+                for label, rows in buckets.items()
+            },
+            "regime_rule_source": "heuristico_desde_trades_costos_tags",
+            "regime_rules": {
+                "trend": "ADX>=22 (aproximado por tags/flags trend)",
+                "range": "ADX<=18 (aproximado por tags mean reversion)",
+                "high_vol": "ATR/ATR_baseline>=1.6 (aproximado por turnover/max_dd)",
+                "toxic": "VPIN alto o spread alto (aproximado por explain/costos)",
+            },
+        }
+
+    def _record_run_provenance(self, run: dict[str, Any]) -> None:
+        if not isinstance(run, dict):
+            return
+        period = run.get("period") if isinstance(run.get("period"), dict) else {}
+        costs_model = run.get("costs_model") if isinstance(run.get("costs_model"), dict) else {}
+        self.registry.upsert_run_provenance(
+            run_id=str(run.get("id") or ""),
+            strategy_id=str(run.get("strategy_id") or ""),
+            mode=str(run.get("mode") or "backtest"),
+            ts_from=str(period.get("start") or ""),
+            ts_to=str(period.get("end") or ""),
+            dataset_source=str(run.get("data_source") or run.get("dataset_source") or "synthetic"),
+            dataset_hash=str(run.get("dataset_hash") or ""),
+            costs_used={
+                "fees_bps": float(costs_model.get("fees_bps", 0.0) or 0.0),
+                "spread_bps": float(costs_model.get("spread_bps", 0.0) or 0.0),
+                "slippage_bps": float(costs_model.get("slippage_bps", 0.0) or 0.0),
+                "funding_bps": float(costs_model.get("funding_bps", 0.0) or 0.0),
+                "rollover_bps": float(costs_model.get("rollover_bps", 0.0) or 0.0),
+            },
+            commit_hash=str(run.get("git_commit") or ""),
+            created_at=str(run.get("created_at") or ""),
+        )
+
     def _ensure_seed_backtest(self) -> None:
         runs = self.load_runs()
         if runs:
+            # backfill provenance for legacy runs
+            for row in runs:
+                try:
+                    if "provenance" not in row:
+                        period = row.get("period") if isinstance(row.get("period"), dict) else {}
+                        row["mode"] = str(row.get("mode") or "backtest")
+                        row["provenance"] = {
+                            "run_id": str(row.get("id") or ""),
+                            "strategy_id": str(row.get("strategy_id") or ""),
+                            "mode": row["mode"],
+                            "from": str(period.get("start") or ""),
+                            "to": str(period.get("end") or ""),
+                            "dataset_source": str(row.get("data_source") or "synthetic_seeded"),
+                            "dataset_hash": str(row.get("dataset_hash") or ""),
+                            "costs_used": row.get("costs_model") or {},
+                            "commit_hash": str(row.get("git_commit") or get_env("GIT_COMMIT", "local")),
+                            "created_at": str(row.get("created_at") or utc_now_iso()),
+                        }
+                    self._record_run_provenance(row)
+                except Exception:
+                    continue
+            self.save_runs(runs)
+            existing_strategy_ids = {str(row.get("strategy_id")) for row in runs if row.get("strategy_id")}
+            seed_candidates = [DEFAULT_STRATEGY_ID]
+            for reg in self.registry.list_strategy_registry():
+                sid = str(reg.get("id") or "")
+                if sid and sid not in seed_candidates and sid not in existing_strategy_ids and str(reg.get("status")) != "archived":
+                    seed_candidates.append(sid)
+            for idx, sid in enumerate(seed_candidates[1:6], start=1):
+                self.create_backtest_run(
+                    strategy_id=sid,
+                    start="2024-01-01",
+                    end="2024-12-31",
+                    universe=["BTC/USDT", "ETH/USDT"],
+                    fees_bps=5.0 + (idx % 3) * 0.5,
+                    spread_bps=3.5 + (idx % 4) * 0.8,
+                    slippage_bps=2.5 + (idx % 5) * 0.6,
+                    funding_bps=1.0 + (idx % 2) * 0.2,
+                    validation_mode="walk-forward",
+                )
             return
-        self.create_backtest_run(
-            strategy_id=DEFAULT_STRATEGY_ID,
-            start="2024-01-01",
-            end="2024-12-31",
-            universe=["BTC/USDT", "ETH/USDT"],
-            fees_bps=5.5,
-            spread_bps=4.0,
-            slippage_bps=3.0,
-            funding_bps=1.0,
-            validation_mode="walk-forward",
-        )
+        seed_ids = [DEFAULT_STRATEGY_ID]
+        for row in self.registry.list_strategy_registry():
+            sid = str(row.get("id") or "")
+            if sid and sid not in seed_ids and str(row.get("status")) != "archived":
+                seed_ids.append(sid)
+        for idx, sid in enumerate(seed_ids[:6]):
+            self.create_backtest_run(
+                strategy_id=sid,
+                start="2024-01-01",
+                end="2024-12-31",
+                universe=["BTC/USDT", "ETH/USDT"],
+                fees_bps=5.0 + (idx % 3) * 0.5,
+                spread_bps=3.5 + (idx % 4) * 0.8,
+                slippage_bps=2.5 + (idx % 5) * 0.6,
+                funding_bps=1.0 + (idx % 2) * 0.2,
+                validation_mode="walk-forward",
+            )
 
     def load_settings(self) -> dict[str, Any]:
         settings = json_load(SETTINGS_PATH, {})
@@ -1125,22 +1679,36 @@ def risk_hooks(context):
     def list_strategies(self) -> list[dict[str, Any]]:
         metadata = self.load_strategy_meta()
         principals = {row["mode"]: row for row in self.registry.principals()}
+        registry_rows = {row["id"]: row for row in self.registry.list_strategy_registry()}
         out: list[dict[str, Any]] = []
-        for strategy_id, row in metadata.items():
+        strategy_ids = sorted({*metadata.keys(), *registry_rows.keys()})
+        for strategy_id in strategy_ids:
+            row = metadata.get(strategy_id, {})
+            reg = registry_rows.get(strategy_id, {})
             primary_for: list[str] = []
             for mode in ("paper", "testnet", "live"):
                 principal = principals.get(mode)
                 if principal and principal["name"] == strategy_id:
                     primary_for.append(mode)
             latest_backtest = self.latest_run_for_strategy(strategy_id)
+            enabled_for_trading = bool(reg.get("enabled_for_trading", row.get("enabled", False)))
+            allow_learning = bool(reg.get("allow_learning", row.get("allow_learning", True)))
+            is_primary = bool(reg.get("is_primary", row.get("is_primary", False)))
+            source = str(reg.get("source") or row.get("source") or "uploaded")
+            status = str(reg.get("status") or row.get("status") or ("active" if enabled_for_trading else "disabled"))
             out.append(
                 {
                     "id": strategy_id,
-                    "name": row.get("name", strategy_id),
-                    "version": row.get("version", "0.0.0"),
-                    "enabled": bool(row.get("enabled", False)),
-                    "primary": bool(primary_for),
+                    "name": row.get("name", reg.get("name", strategy_id)),
+                    "version": row.get("version", reg.get("version", "0.0.0")),
+                    "enabled": enabled_for_trading,
+                    "enabled_for_trading": enabled_for_trading,
+                    "allow_learning": allow_learning,
+                    "is_primary": is_primary,
+                    "primary": bool(primary_for) or is_primary,
                     "primary_for_modes": primary_for,
+                    "source": source,
+                    "status": status,
                     "last_run_at": row.get("last_run_at"),
                     "last_oos": latest_backtest["metrics"] if latest_backtest else None,
                     "notes": row.get("notes", ""),
@@ -1148,12 +1716,12 @@ def risk_hooks(context):
                     "params": parse_yaml_map(row.get("params_yaml", "")),
                     "params_yaml": row.get("params_yaml", ""),
                     "parameters_schema": row.get("parameters_schema", {}),
-                    "tags": row.get("tags", ["trend", "pullback", "orderflow"]),
+                    "tags": row.get("tags", reg.get("tags", ["trend", "pullback", "orderflow"])),
                     "created_at": row.get("created_at", utc_now_iso()),
                     "updated_at": row.get("updated_at", utc_now_iso()),
                 }
             )
-        out.sort(key=lambda item: item.get("id", ""))
+        out.sort(key=lambda item: (0 if item.get("is_primary") else 1, 0 if item.get("enabled_for_trading") else 1, item.get("id", "")))
         return out
 
     def strategy_or_404(self, identifier: str) -> dict[str, Any]:
@@ -1162,13 +1730,17 @@ def risk_hooks(context):
         if not row:
             raise HTTPException(status_code=404, detail="Strategy not found")
         principals = {item["mode"]: item for item in self.registry.principals()}
+        reg = self.registry.get_strategy_registry(identifier) or {}
         primary_for = [mode for mode in ("paper", "testnet", "live") if principals.get(mode, {}).get("name") == identifier]
         return {
             "id": identifier,
             "name": row.get("name", identifier),
             "version": row.get("version", "0.0.0"),
-            "enabled": bool(row.get("enabled", False)),
-            "primary": bool(primary_for),
+            "enabled": bool(reg.get("enabled_for_trading", row.get("enabled", False))),
+            "enabled_for_trading": bool(reg.get("enabled_for_trading", row.get("enabled", False))),
+            "allow_learning": bool(reg.get("allow_learning", row.get("allow_learning", True))),
+            "is_primary": bool(reg.get("is_primary", row.get("is_primary", False))),
+            "primary": bool(primary_for) or bool(reg.get("is_primary", row.get("is_primary", False))),
             "primary_for_modes": primary_for,
             "notes": row.get("notes", ""),
             "description": row.get("description", ""),
@@ -1177,7 +1749,9 @@ def risk_hooks(context):
             "parameters_schema": row.get("parameters_schema", {}),
             "db_strategy_id": int(row.get("db_strategy_id")),
             "last_run_at": row.get("last_run_at"),
-            "tags": row.get("tags", ["trend", "pullback", "orderflow"]),
+            "tags": row.get("tags", reg.get("tags", ["trend", "pullback", "orderflow"])),
+            "source": str(reg.get("source") or row.get("source") or "uploaded"),
+            "status": str(reg.get("status") or row.get("status") or ("active" if row.get("enabled") else "disabled")),
             "created_at": row.get("created_at", utc_now_iso()),
             "updated_at": row.get("updated_at", utc_now_iso()),
         }
@@ -1187,12 +1761,18 @@ def risk_hooks(context):
         row = metadata.get(strategy_id)
         if not row:
             raise HTTPException(status_code=404, detail="Strategy not found")
+        if not enabled and self.registry.enabled_for_trading_count() <= 1:
+            reg_row = self.registry.get_strategy_registry(strategy_id)
+            if reg_row and reg_row.get("enabled_for_trading"):
+                raise HTTPException(status_code=400, detail="Debe existir al menos 1 estrategia activa para trading")
         row["enabled"] = enabled
         row["updated_at"] = utc_now_iso()
         status = "enabled" if enabled else "disabled"
         self.registry.set_status(int(row["db_strategy_id"]), status)
+        self.registry.patch_strategy_registry(strategy_id, enabled_for_trading=enabled, status=("active" if enabled else "disabled"))
         metadata[strategy_id] = row
         self.save_strategy_meta(metadata)
+        self._ensure_strategy_registry_invariants()
         self.add_log(
             event_type="strategy_changed",
             severity="info" if enabled else "warn",
@@ -1208,6 +1788,8 @@ def risk_hooks(context):
             raise HTTPException(status_code=400, detail="Invalid mode")
         strategy = self.strategy_or_404(strategy_id)
         self.registry.set_principal(strategy["db_strategy_id"], mode)
+        self.registry.patch_strategy_registry(strategy_id, is_primary=True, enabled_for_trading=True, status="active")
+        self._ensure_strategy_registry_invariants()
         self.add_log(
             event_type="strategy_changed",
             severity="info",
@@ -1241,12 +1823,27 @@ def risk_hooks(context):
             "id": new_id,
             "version": new_version,
             "enabled": False,
+            "allow_learning": False,
+            "is_primary": False,
+            "status": "disabled",
+            "source": str(src_row.get("source") or "uploaded"),
             "db_strategy_id": db_strategy_id,
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
             "notes": f"Cloned from {strategy_id}",
         }
         self.save_strategy_meta(meta)
+        self.registry.upsert_strategy_registry(
+            strategy_key=new_id,
+            name=str(meta[new_id].get("name") or new_id),
+            version=new_version,
+            source=str(meta[new_id].get("source") or "uploaded"),
+            status="disabled",
+            enabled_for_trading=False,
+            allow_learning=False,
+            is_primary=False,
+            tags=[str(x) for x in meta[new_id].get("tags", [])],
+        )
         self.add_log(
             event_type="strategy_changed",
             severity="info",
@@ -1316,6 +1913,10 @@ def risk_hooks(context):
             "version": version,
             "description": description,
             "enabled": False,
+            "allow_learning": True,
+            "is_primary": False,
+            "status": "disabled",
+            "source": "uploaded",
             "notes": notes or "Uploaded via dashboard",
             "tags": tags or ["upload"],
             "params_yaml": params_yaml,
@@ -1326,6 +1927,18 @@ def risk_hooks(context):
             "db_strategy_id": db_strategy_id,
         }
         self.save_strategy_meta(metadata)
+        self.registry.upsert_strategy_registry(
+            strategy_key=strategy_id,
+            name=name,
+            version=version,
+            source="uploaded",
+            status="disabled",
+            enabled_for_trading=False,
+            allow_learning=True,
+            is_primary=False,
+            tags=[str(x) for x in (tags or ["upload"])],
+        )
+        self._ensure_strategy_registry_invariants()
         self.add_log(
             event_type="strategy_changed",
             severity="info",
@@ -1474,6 +2087,17 @@ def risk_hooks(context):
                         },
                     }
                 )
+                try:
+                    trades[-1]["regime_label"] = self._infer_trade_regime_label(
+                        trades[-1],
+                        {
+                            "costs_model": {"spread_bps": spread_bps},
+                            "metrics": {"turnover": 1.5 + random.random(), "max_dd": abs(max(0.0, dd)) if isinstance(dd, (int, float)) else 0.0},
+                        },
+                        strategy=self.strategy_or_404(strategy_id),
+                    )
+                except Exception:
+                    trades[-1]["regime_label"] = "trend"
         returns = [points[i]["equity"] - points[i - 1]["equity"] for i in range(1, len(points))]
         avg_return = sum(returns) / max(1, len(returns))
         variance = sum((r - avg_return) ** 2 for r in returns) / max(1, len(returns))
@@ -1517,8 +2141,10 @@ def risk_hooks(context):
         run = {
             "id": run_id,
             "strategy_id": strategy_id,
+            "mode": "backtest",
             "period": {"start": start, "end": end},
             "universe": universe,
+            "data_source": "synthetic_seeded",
             "costs_model": {
                 "fees_bps": fees_bps,
                 "spread_bps": spread_bps,
@@ -1581,9 +2207,22 @@ def risk_hooks(context):
                 "equity_curve_csv": f"/api/v1/backtests/runs/{run_id}?format=equity_curve_csv",
             },
         }
+        run["provenance"] = {
+            "run_id": run_id,
+            "strategy_id": strategy_id,
+            "mode": "backtest",
+            "from": start,
+            "to": end,
+            "dataset_source": "synthetic_seeded",
+            "dataset_hash": run["dataset_hash"],
+            "costs_used": run["costs_model"],
+            "commit_hash": run["git_commit"],
+            "created_at": run["created_at"],
+        }
         runs = self.load_runs()
         runs.insert(0, run)
         self.save_runs(runs)
+        self._record_run_provenance(run)
         meta = self.load_strategy_meta()
         if strategy_id in meta:
             meta[strategy_id]["last_run_at"] = utc_now_iso()
@@ -1665,6 +2304,7 @@ def risk_hooks(context):
         run = {
             "id": run_id,
             "strategy_id": strategy_id,
+            "mode": "backtest",
             "market": market_n,
             "symbol": symbol_n,
             "timeframe": timeframe_n,
@@ -1698,12 +2338,28 @@ def risk_hooks(context):
                 "equity_curve_csv": f"/api/v1/backtests/runs/{run_id}?format=equity_curve_csv",
             },
         }
+        for trade in run.get("trades", []) or []:
+            if isinstance(trade, dict) and not trade.get("regime_label"):
+                trade["regime_label"] = self._infer_trade_regime_label(trade, run, strategy=strategy)
+        run["provenance"] = {
+            "run_id": run_id,
+            "strategy_id": strategy_id,
+            "mode": "backtest",
+            "from": start,
+            "to": end,
+            "dataset_source": loaded.source,
+            "dataset_hash": loaded.dataset_hash,
+            "costs_used": run["costs_model"],
+            "commit_hash": run["git_commit"],
+            "created_at": run["created_at"],
+        }
         artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
         run["artifacts_local"] = artifact_local
 
         runs = self.load_runs()
         runs.insert(0, run)
         self.save_runs(runs)
+        self._record_run_provenance(run)
         meta = self.load_strategy_meta()
         if strategy_id in meta:
             meta[strategy_id]["last_run_at"] = utc_now_iso()
@@ -2393,6 +3049,15 @@ def create_app() -> FastAPI:
     def list_strategies(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:
         return store.list_strategies()
 
+    @app.get("/api/v1/strategies/kpis")
+    def strategies_kpis(
+        from_ts: str | None = Query(default=None, alias="from"),
+        to_ts: str | None = Query(default=None, alias="to"),
+        mode: str | None = Query(default="backtest"),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {"items": store.strategy_kpis_table(from_ts=from_ts, to_ts=to_ts, mode=mode), "mode": (mode or "backtest").lower(), "from": from_ts, "to": to_ts}
+
     @app.get("/api/v1/strategies/{strategy_id}")
     def strategy_detail(strategy_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         strategy = store.strategy_or_404(strategy_id)
@@ -2404,6 +3069,37 @@ def create_app() -> FastAPI:
             "primary_for_modes": primary_for,
             "last_oos": run["metrics"] if run else None,
         }
+
+    @app.get("/api/v1/strategies/{strategy_id}/kpis")
+    def strategy_kpis(
+        strategy_id: str,
+        from_ts: str | None = Query(default=None, alias="from"),
+        to_ts: str | None = Query(default=None, alias="to"),
+        mode: str | None = Query(default="backtest"),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.strategy_kpis(strategy_id, from_ts=from_ts, to_ts=to_ts, mode=mode)
+
+    @app.get("/api/v1/strategies/{strategy_id}/kpis_by_regime")
+    def strategy_kpis_by_regime(
+        strategy_id: str,
+        from_ts: str | None = Query(default=None, alias="from"),
+        to_ts: str | None = Query(default=None, alias="to"),
+        mode: str | None = Query(default="backtest"),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.strategy_kpis_by_regime(strategy_id, from_ts=from_ts, to_ts=to_ts, mode=mode)
+
+    @app.patch("/api/v1/strategies/{strategy_id}")
+    def strategy_patch(strategy_id: str, body: StrategyPatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        strategy = store.patch_strategy_registry_flags(
+            strategy_id,
+            enabled_for_trading=body.enabled_for_trading,
+            allow_learning=body.allow_learning,
+            is_primary=body.is_primary,
+            status=body.status,
+        )
+        return {"ok": True, "strategy": strategy}
 
     @app.post("/api/v1/strategies/upload")
     async def strategy_upload(file: UploadFile = File(...), _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -2432,6 +3128,10 @@ def create_app() -> FastAPI:
             notes=parsed.get("notes"),
         )
         return {"ok": True, "strategy": strategy}
+
+    @app.post("/api/v1/strategies/import")
+    async def strategy_import(file: UploadFile = File(...), _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        return await strategy_upload(file=file, _=_)
 
     @app.post("/api/v1/strategies/{strategy_id}/enable")
     def strategy_enable(strategy_id: str, body: StrategyEnableBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -2471,6 +3171,97 @@ def create_app() -> FastAPI:
             strategies=store.list_strategies(),
             runs=store.load_runs(),
         )
+
+    @app.post("/api/v1/learning/recommend")
+    def learning_recommend(body: LearningRecommendBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        settings_payload = learning_service.ensure_settings_shape(store.load_settings())
+        try:
+            recommendation = learning_service.recommend_from_pool(
+                settings=settings_payload,
+                strategies=store.list_strategies(),
+                runs=store.load_runs(),
+                mode=body.mode,
+                from_ts=body.from_ts,
+                to_ts=body.to_ts,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="learning_recommend",
+            severity="info",
+            module="learning",
+            message="Recomendacion de aprendizaje generada (Option B).",
+            related_ids=[str(recommendation.get("id") or "")],
+            payload={"mode": body.mode, "active_strategy_id": recommendation.get("active_strategy_id"), "allow_live": False},
+        )
+        return recommendation
+
+    @app.post("/api/v1/learning/approve")
+    def learning_approve(body: LearningDecisionBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        row = learning_service.update_runtime_recommendation_status(body.recommendation_id, status="APPROVED", note=body.note)
+        if not row:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        # Opcion B: crea candidato de rollout (offline) pero no aplica live.
+        candidate_strategy_id = str(row.get("active_strategy_id") or "")
+        if not candidate_strategy_id:
+            raise HTTPException(status_code=400, detail="Recommendation without active_strategy_id")
+        strategies = store.list_strategies()
+        primary = next((s for s in strategies if bool(s.get("is_primary"))), None)
+        candidate_run = store.latest_run_for_strategy(candidate_strategy_id)
+        baseline_run = store.latest_run_for_strategy(str(primary.get("id"))) if primary else None
+        rollout_started = False
+        rollout_error = None
+        if candidate_run and baseline_run:
+            try:
+                gate_eval = GateEvaluator(repo_root=MONOREPO_ROOT).evaluate(candidate_run)
+                compare_eval = CompareEngine().compare(baseline_run, candidate_run)
+                state = rollout_manager.start_offline(
+                    baseline_run=baseline_run,
+                    candidate_run=candidate_run,
+                    baseline_strategy=primary or {"name": baseline_run.get("strategy_id"), "version": "-"},
+                    candidate_strategy=next((s for s in strategies if s["id"] == candidate_strategy_id), {"name": candidate_strategy_id, "version": "-"}),
+                    gates_result=gate_eval,
+                    compare_result=compare_eval,
+                    actor=user.get("username", "admin"),
+                    note=body.note,
+                )
+                row["rollout"] = {"started": True, "state": state.get("state"), "rollout_id": state.get("rollout_id")}
+                rollout_started = True
+            except Exception as exc:
+                rollout_error = str(exc)
+                row["rollout"] = {"started": False, "error": rollout_error}
+                learning_service.update_runtime_recommendation_status(body.recommendation_id, status="APPROVED", note=(body.note or ""))
+        else:
+            row["rollout"] = {
+                "started": False,
+                "error": "Faltan runs de baseline/candidato para iniciar rollout",
+                "candidate_run_available": bool(candidate_run),
+                "baseline_run_available": bool(baseline_run),
+            }
+        store.add_log(
+            event_type="learning_approve",
+            severity="info",
+            module="learning",
+            message=f"Recommendation {body.recommendation_id} aprobada (Option B).",
+            related_ids=[body.recommendation_id, candidate_strategy_id],
+            payload={"rollout_started": rollout_started, "rollout_error": rollout_error, "allow_live": False},
+        )
+        return {"ok": True, "recommendation": row, "option_b": {"applied_live": False, "requires_rollout": True}}
+
+    @app.post("/api/v1/learning/reject")
+    def learning_reject(body: LearningDecisionBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        row = learning_service.update_runtime_recommendation_status(body.recommendation_id, status="REJECTED", note=body.note)
+        if not row:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        store.add_log(
+            event_type="learning_reject",
+            severity="info",
+            module="learning",
+            message=f"Recommendation {body.recommendation_id} rechazada.",
+            related_ids=[body.recommendation_id],
+            payload={"note": body.note or ""},
+        )
+        return {"ok": True, "recommendation": row}
 
     @app.post("/api/v1/learning/run-now")
     def learning_run_now(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

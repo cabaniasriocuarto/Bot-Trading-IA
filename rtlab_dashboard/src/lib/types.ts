@@ -67,7 +67,12 @@ export interface Strategy {
   name: string;
   version: string;
   enabled: boolean;
+  enabled_for_trading?: boolean;
+  allow_learning?: boolean;
+  is_primary?: boolean;
   primary: boolean;
+  source?: "knowledge" | "uploaded" | string;
+  status?: "active" | "disabled" | "archived" | string;
   params: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -80,6 +85,65 @@ export interface Strategy {
   defaults_yaml?: string;
   schema?: Record<string, unknown>;
   pack_source?: "default" | "upload";
+}
+
+export interface StrategyKpis {
+  run_count: number;
+  trade_count: number;
+  total_entries: number;
+  total_exits: number;
+  roundtrips: number;
+  winrate: number;
+  expectancy_value: number;
+  expectancy_unit: string;
+  avg_trade: number;
+  max_dd: number;
+  sharpe: number;
+  sortino: number;
+  calmar: number;
+  gross_pnl: number;
+  net_pnl: number;
+  costs_total: number;
+  fees_total: number;
+  spread_total: number;
+  slippage_total: number;
+  funding_total: number;
+  costs_ratio: number;
+  avg_holding_time: number;
+  time_in_market: number;
+  turnover: number;
+  mfe_avg?: number | null;
+  mae_avg?: number | null;
+  slippage_p95_bps?: number | null;
+  maker_ratio?: number | null;
+  fill_ratio?: number | null;
+  dataset_hashes?: string[];
+  dataset_hash_warning?: boolean;
+}
+
+export interface StrategyKpisRow {
+  strategy_id: string;
+  name: string;
+  mode: string;
+  from?: string | null;
+  to?: string | null;
+  kpis: StrategyKpis;
+  status?: string;
+  enabled_for_trading?: boolean;
+  allow_learning?: boolean;
+  is_primary?: boolean;
+  source?: string;
+}
+
+export interface StrategyKpisByRegimeResponse {
+  strategy_id: string;
+  name: string;
+  mode: string;
+  from?: string | null;
+  to?: string | null;
+  regime_rule_source?: string;
+  regime_rules?: Record<string, string>;
+  regimes: Record<string, { regime_label: string; kpis: StrategyKpis }>;
 }
 
 export interface StrategyComparison {

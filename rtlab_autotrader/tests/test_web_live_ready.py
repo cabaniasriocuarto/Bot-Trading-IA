@@ -645,3 +645,119 @@ def test_event_backtest_engine_runs_for_crypto_forex_equities(tmp_path: Path, mo
   assert status.status_code == 200
   payload = status.json()
   assert "available" in payload and "missing" in payload
+
+
+def test_strategy_registry_seeds_knowledge_pack_and_patch_flags(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/strategies", headers=headers)
+  assert res.status_code == 200, res.text
+  rows = res.json()
+  ids = {row["id"] for row in rows}
+  assert {"trend_pullback_orderflow_v2", "breakout_volatility_v2", "meanreversion_range_v2", "trend_scanning_regime_v2", "defensive_liquidity_v2"} <= ids
+
+  krow = next(row for row in rows if row["id"] == "trend_pullback_orderflow_v2")
+  assert krow["source"] == "knowledge"
+  assert isinstance(krow["allow_learning"], bool)
+  assert isinstance(krow["enabled_for_trading"], bool)
+
+  patch_res = client.patch(
+    "/api/v1/strategies/trend_pullback_orderflow_v2",
+    headers=headers,
+    json={"allow_learning": False, "enabled_for_trading": True, "is_primary": True},
+  )
+  assert patch_res.status_code == 200, patch_res.text
+  patched = patch_res.json()["strategy"]
+  assert patched["allow_learning"] is False
+  assert patched["is_primary"] is True
+
+  patch_other = client.patch(
+    "/api/v1/strategies/breakout_volatility_v2",
+    headers=headers,
+    json={"is_primary": True, "enabled_for_trading": True},
+  )
+  assert patch_other.status_code == 200, patch_other.text
+  rows2 = client.get("/api/v1/strategies", headers=headers).json()
+  primary_rows = [row for row in rows2 if row.get("is_primary")]
+  assert len(primary_rows) == 1
+  assert primary_rows[0]["id"] == "breakout_volatility_v2"
+
+  enabled_ids = [row["id"] for row in rows2 if row.get("enabled_for_trading")]
+  assert enabled_ids
+  for sid in enabled_ids[:-1]:
+    r = client.patch(f"/api/v1/strategies/{sid}", headers=headers, json={"enabled_for_trading": False, "status": "disabled"})
+    assert r.status_code == 200, r.text
+  last_disable = client.patch(
+    f"/api/v1/strategies/{enabled_ids[-1]}",
+    headers=headers,
+    json={"enabled_for_trading": False, "status": "disabled"},
+  )
+  assert last_disable.status_code == 400
+  assert "al menos 1 estrategia activa" in last_disable.json()["detail"]
+
+
+def test_strategy_kpis_endpoints_and_run_provenance(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  runs_res = client.get("/api/v1/backtests/runs", headers=headers)
+  assert runs_res.status_code == 200
+  runs = runs_res.json()
+  assert runs
+  first_run = runs[0]
+  assert "provenance" in first_run
+  assert first_run["provenance"]["dataset_hash"]
+  assert "costs_used" in first_run["provenance"]
+  prov_rows = module.store.registry.list_run_provenance(first_run["strategy_id"])
+  assert any(row["run_id"] == first_run["id"] for row in prov_rows)
+
+  table_res = client.get("/api/v1/strategies/kpis?mode=backtest&from=2024-01-01&to=2026-12-31", headers=headers)
+  assert table_res.status_code == 200, table_res.text
+  table = table_res.json()
+  assert table["items"]
+  match = next(item for item in table["items"] if item["strategy_id"] == first_run["strategy_id"])
+  assert "kpis" in match and "trade_count" in match["kpis"]
+  assert "expectancy_unit" in match["kpis"]
+
+  single_res = client.get(f"/api/v1/strategies/{first_run['strategy_id']}/kpis?mode=backtest", headers=headers)
+  assert single_res.status_code == 200, single_res.text
+  assert "kpis" in single_res.json()
+
+  regime_res = client.get(f"/api/v1/strategies/{first_run['strategy_id']}/kpis_by_regime?mode=backtest", headers=headers)
+  assert regime_res.status_code == 200, regime_res.text
+  regimes = regime_res.json()["regimes"]
+  assert {"trend", "range", "high_vol", "toxic"} <= set(regimes.keys())
+
+
+def test_learning_recommend_uses_only_allow_learning_pool(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  settings = module.store.load_settings()
+  settings["learning"]["enabled"] = True
+  module.store.save_settings(settings)
+
+  rows = client.get("/api/v1/strategies", headers=headers).json()
+  target_id = "defensive_liquidity_v2"
+  for row in rows:
+    patch_res = client.patch(
+      f"/api/v1/strategies/{row['id']}",
+      headers=headers,
+      json={"allow_learning": row["id"] == target_id},
+    )
+    assert patch_res.status_code == 200, patch_res.text
+
+  rec_res = client.post("/api/v1/learning/recommend", headers=headers, json={"mode": "paper"})
+  assert rec_res.status_code == 200, rec_res.text
+  rec = rec_res.json()
+  assert rec["active_strategy_id"] == target_id
+
+  empty_pool = client.patch(f"/api/v1/strategies/{target_id}", headers=headers, json={"allow_learning": False})
+  assert empty_pool.status_code == 200, empty_pool.text
+  rec_fail = client.post("/api/v1/learning/recommend", headers=headers, json={"mode": "paper"})
+  assert rec_fail.status_code == 400
+  assert "Pool de aprendizaje vacio" in rec_fail.json()["detail"]

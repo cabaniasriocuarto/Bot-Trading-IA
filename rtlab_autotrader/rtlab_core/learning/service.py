@@ -47,6 +47,7 @@ class LearningService:
         self.status_path = self.root / "status.json"
         self.drift_path = self.root / "drift.json"
         self.recommendations_path = self.root / "recommendations.json"
+        self.recommend_runtime_path = self.root / "recommend_runtime.json"
         self.knowledge = KnowledgeLoader(repo_root=repo_root)
 
     @staticmethod
@@ -101,6 +102,17 @@ class LearningService:
             "expectancy_usd": [float((r.get("metrics") or {}).get("expectancy_usd_per_trade", (r.get("metrics") or {}).get("expectancy", 0.0))) for r in latest],
             "max_dd": [float((r.get("metrics") or {}).get("max_dd", 0.0)) for r in latest],
         }
+
+    def _eligible_learning_pool(self, strategies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for strategy in strategies:
+            if not isinstance(strategy, dict):
+                continue
+            if str(strategy.get("status") or "active") == "archived":
+                continue
+            if bool(strategy.get("allow_learning", True)):
+                out.append(strategy)
+        return out
 
     def compute_drift(self, *, settings: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
         cfg = self.ensure_settings_shape(dict(settings))
@@ -187,9 +199,10 @@ class LearningService:
         learning = cfg["learning"]
         regime = self._infer_regime(runs)
         drift = self.compute_drift(settings=cfg, runs=runs)
+        learning_pool = self._eligible_learning_pool(strategies)
 
         selector_candidates: list[dict[str, Any]] = []
-        for strategy in strategies:
+        for strategy in learning_pool:
             run = next((r for r in runs if r.get("strategy_id") == strategy.get("id")), None)
             metrics = (run or {}).get("metrics") or {}
             costs = (run or {}).get("costs_breakdown") or {}
@@ -229,6 +242,16 @@ class LearningService:
             "selector": decision,
             "drift": drift,
             "option_b": {"allow_auto_apply": False, "allow_live": False},
+            "learning_pool": {
+                "count": len(learning_pool),
+                "strategy_ids": [str(s.get("id")) for s in learning_pool],
+                "empty_block_recommend": len(learning_pool) == 0 and bool(learning.get("enabled", False)),
+            },
+            "warnings": (
+                ["Pool de aprendizaje vacio: marcar estrategias con 'Incluida en Aprendizaje' para recomendar."]
+                if len(learning_pool) == 0 and bool(learning.get("enabled", False))
+                else []
+            ),
             "risk_profile": learning.get("risk_profile") or MEDIUM_RISK_PROFILE,
             "knowledge": {
                 "loaded": True,
@@ -263,6 +286,9 @@ class LearningService:
         learning = cfg["learning"]
         if not bool(learning.get("enabled")) or str(learning.get("mode", "OFF")).upper() != "RESEARCH":
             raise ValueError("Learning disabled or mode != RESEARCH")
+        strategies = self._eligible_learning_pool(strategies)
+        if not strategies:
+            raise ValueError("Pool de aprendizaje vacio (allow_learning=false en todas las estrategias)")
 
         drift = self.compute_drift(settings=cfg, runs=runs)
         regime = self._infer_regime(runs)
@@ -375,3 +401,120 @@ class LearningService:
         }
         _json_save(self.status_path, {"last_run": status_payload, "mode": str(learning.get("mode", "OFF")).upper()})
         return status_payload
+
+    def load_runtime_recommendations(self) -> list[dict[str, Any]]:
+        rows = _json_load(self.recommend_runtime_path, [])
+        return rows if isinstance(rows, list) else []
+
+    def _save_runtime_recommendations(self, rows: list[dict[str, Any]]) -> None:
+        _json_save(self.recommend_runtime_path, rows[-200:])
+
+    def recommend_from_pool(
+        self,
+        *,
+        settings: dict[str, Any],
+        strategies: list[dict[str, Any]],
+        runs: list[dict[str, Any]],
+        mode: str = "paper",
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = self.ensure_settings_shape(dict(settings))
+        learning = cfg["learning"]
+        if not bool(learning.get("enabled")):
+            raise ValueError("Aprendizaje deshabilitado")
+        pool = self._eligible_learning_pool(strategies)
+        if not pool:
+            raise ValueError("Pool de aprendizaje vacio (tildá 'Incluida en Aprendizaje')")
+        regime = self._infer_regime(runs)
+        selector_candidates: list[dict[str, Any]] = []
+        ranking: list[dict[str, Any]] = []
+        for strategy in pool:
+            strategy_id = str(strategy.get("id"))
+            strat_runs = [r for r in runs if str(r.get("strategy_id")) == strategy_id and str(r.get("mode") or "backtest").lower() in {"backtest", mode.lower()}]
+            latest = strat_runs[0] if strat_runs else None
+            metrics = (latest or {}).get("metrics") or {}
+            costs = (latest or {}).get("costs_breakdown") or {}
+            reward = compute_normalized_reward(
+                pnl_net=float(costs.get("net_pnl_total", costs.get("net_pnl", 0.0)) or 0.0),
+                total_costs=float(costs.get("total_cost", 0.0) or 0.0),
+                drawdown_increment=abs(float(metrics.get("max_dd", 0.0) or 0.0)) * 100.0,
+                atr=abs(float(metrics.get("avg_trade", metrics.get("expectancy", 0.0)) or 0.0)) / 100.0 + 0.001,
+                realized_vol=abs(float(metrics.get("sortino", 0.0) or 0.0)) / 10.0 + 0.001,
+            )
+            regime_fit = 1.0 if regime in {str(x) for x in (strategy.get("tags") or [])} else 0.4
+            candidate = {
+                "id": strategy_id,
+                "reward": reward,
+                "tags": list(strategy.get("tags") or []),
+                "stats": {
+                    "wins": max(1, int(round(float(metrics.get("winrate", 0.5)) * 10))),
+                    "losses": max(1, int(round((1.0 - float(metrics.get("winrate", 0.5))) * 10))),
+                    "pulls": max(2, int(metrics.get("trade_count", metrics.get("roundtrips", 2)) or 2)),
+                    "reward_mean": reward,
+                    "regime_fit": regime_fit,
+                    "cost_penalty": float(((latest or {}).get("costs_model") or {}).get("spread_bps", 0.0)) / 10.0,
+                    "risk_penalty": abs(float(metrics.get("max_dd", 0.0) or 0.0)) * 4.0,
+                },
+            }
+            selector_candidates.append(candidate)
+            ranking.append(
+                {
+                    "strategy_id": strategy_id,
+                    "name": strategy.get("name", strategy_id),
+                    "reward": round(float(reward), 6),
+                    "winrate": float(metrics.get("winrate", 0.0) or 0.0),
+                    "trade_count": int(metrics.get("trade_count", metrics.get("roundtrips", 0)) or 0),
+                    "expectancy": float(metrics.get("expectancy_usd_per_trade", metrics.get("expectancy", 0.0)) or 0.0),
+                    "expectancy_unit": str(metrics.get("expectancy_unit") or "usd_por_trade"),
+                    "max_dd": float(metrics.get("max_dd", 0.0) or 0.0),
+                    "sharpe": float(metrics.get("sharpe", 0.0) or 0.0),
+                    "sortino": float(metrics.get("sortino", 0.0) or 0.0),
+                    "calmar": float(metrics.get("calmar", 0.0) or 0.0),
+                }
+            )
+        selector = StrategySelector(str(learning.get("selector_algo", "thompson")))
+        decision = selector.select(selector_candidates, context={"regime": regime})
+        ranking.sort(key=lambda r: r["reward"], reverse=True)
+        top = ranking[: max(1, int(learning.get("top_n", 5) or 5))]
+        if decision.get("active_strategy_id"):
+            total_positive = sum(max(0.0, float(r["reward"])) for r in top) or 1.0
+            weights = {
+                r["strategy_id"]: round(max(0.0, float(r["reward"])) / total_positive, 4)
+                for r in top
+            }
+        else:
+            weights = {}
+        recommendation = {
+            "id": f"rec_{hashlib.sha256(f'{mode}:{regime}:{_utc_iso()}'.encode('utf-8')).hexdigest()[:10]}",
+            "status": "PENDING_REVIEW",
+            "mode": str(mode).lower(),
+            "from_ts": from_ts,
+            "to_ts": to_ts,
+            "regime": regime,
+            "selector_algo": str(learning.get("selector_algo", "thompson")),
+            "active_strategy_id": decision.get("active_strategy_id"),
+            "weights_sugeridos": weights,
+            "ranking": top,
+            "option_b": {"allow_auto_apply": False, "allow_live": False, "requires_human_approval": True},
+            "created_at": _utc_iso(),
+        }
+        rows = self.load_runtime_recommendations()
+        rows.append(recommendation)
+        self._save_runtime_recommendations(rows)
+        return recommendation
+
+    def update_runtime_recommendation_status(self, recommendation_id: str, *, status: str, note: str | None = None) -> dict[str, Any] | None:
+        rows = self.load_runtime_recommendations()
+        found: dict[str, Any] | None = None
+        for row in rows:
+            if str(row.get("id")) == recommendation_id:
+                row["status"] = status
+                row["reviewed_at"] = _utc_iso()
+                if note:
+                    row["note"] = note
+                found = row
+                break
+        if found is not None:
+            self._save_runtime_recommendations(rows)
+        return found
