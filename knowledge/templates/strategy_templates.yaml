@@ -1,27 +1,46 @@
-version: 1
+﻿version: 2
 templates:
-  - id: trend_pullback
-    name: Trend Pullback
+  - id: trend_pullback_of
+    name: "Tendencia + Pullback + Order Flow"
     category: trend
-    base_strategy_id: trend_pullback_orderflow_confirm_v1
-    description: Sigue tendencia y entra en retrocesos con confirmacion.
+    base_strategy_id: trend_pullback_orderflow_v2
+    description: "Sigue tendencia (15m/10m/5m) y entra en retroceso con confirmación de order flow y costos."
     allowed_markets: [crypto, forex, equities]
     allowed_timeframes: [5m, 10m, 15m]
-    tags: [trend, pullback, momentum]
-  - id: mean_reversion_range
-    name: Mean Reversion Range
-    category: range
-    base_strategy_id: trend_pullback_orderflow_confirm_v1
-    description: Opera reversions en regimen lateral con filtro de volatilidad.
-    allowed_markets: [crypto, forex, equities]
-    allowed_timeframes: [5m, 10m, 15m]
-    tags: [range, mean_reversion]
-  - id: breakout_volatility
-    name: Breakout Volatility
-    category: high_vol
-    base_strategy_id: trend_pullback_orderflow_confirm_v1
-    description: Busca rupturas con expansion de rango y control de costos.
-    allowed_markets: [crypto, forex]
-    allowed_timeframes: [5m, 10m, 15m]
-    tags: [breakout, volatility]
+    tags: [trend, pullback, orderflow, robust]
 
+  - id: breakout_vol_exp
+    name: "Breakout + Expansión de Volatilidad"
+    category: breakout
+    base_strategy_id: breakout_volatility_v2
+    description: "Rupturas con expansión de rango + filtro de volumen/volatilidad y control de spread/slippage."
+    allowed_markets: [crypto, forex, equities]
+    allowed_timeframes: [5m, 10m, 15m]
+    tags: [breakout, volatility, momentum]
+
+  - id: meanrev_range_costaware
+    name: "Reversión a la Media (Rango) + Cost Aware"
+    category: range
+    base_strategy_id: meanreversion_range_v2
+    description: "Opera rango con RSI/ATR y filtro de ADX bajo; evita microestructura tóxica."
+    allowed_markets: [crypto, forex, equities]
+    allowed_timeframes: [5m, 10m, 15m]
+    tags: [range, mean_reversion, cost_control]
+
+  - id: trend_scan_regime
+    name: "Trend Scanning + Regímenes"
+    category: regime
+    base_strategy_id: trend_scanning_regime_v2
+    description: "Detecta fuerza de tendencia y cambia reglas según régimen (tendencia/rango/alta vol)."
+    allowed_markets: [crypto, forex, equities]
+    allowed_timeframes: [5m, 10m, 15m]
+    tags: [regime, trend_scanning, adaptive]
+
+  - id: defensive_quality
+    name: "Defensiva: Calidad de Ejecución + Liquidez"
+    category: defensive
+    base_strategy_id: defensive_liquidity_v2
+    description: "Estrategia conservadora de supervivencia: opera poco, solo cuando costos/liq son favorables."
+    allowed_markets: [crypto, forex, equities]
+    allowed_timeframes: [5m, 10m, 15m]
+    tags: [defensive, liquidity, low_cost]

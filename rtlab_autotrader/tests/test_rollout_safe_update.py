@@ -24,7 +24,7 @@ def _sample_run(*, run_id: str, strategy_id: str, dataset_hash: str = "abc123", 
     "validation_mode": "walk-forward",
     "validation_summary": {"mode": "walk-forward", "implemented": True},
     "metrics": {
-      "trade_count": 180,
+      "trade_count": 200,
       "winrate": 0.53,
       "profit_factor": 1.35,
       "sharpe": 1.55,

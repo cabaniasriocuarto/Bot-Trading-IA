@@ -54,7 +54,19 @@ class GateEvaluator:
             if isinstance(raw, dict):
                 payload = raw
         offline = payload.get("offline_rollout") if isinstance(payload.get("offline_rollout"), dict) else {}
-        merged = {**DEFAULT_OFFLINE_GATES, **{k: _safe_float(v, DEFAULT_OFFLINE_GATES.get(k, 0.0)) for k, v in offline.items()}}
+        offline_numeric = {
+            key: _safe_float(offline[key], DEFAULT_OFFLINE_GATES[key])
+            for key in DEFAULT_OFFLINE_GATES
+            if key in offline
+        }
+        gates_cfg = payload.get("gates") if isinstance(payload.get("gates"), dict) else {}
+        pbo_cfg = gates_cfg.get("pbo") if isinstance(gates_cfg.get("pbo"), dict) else {}
+        dsr_cfg = gates_cfg.get("dsr") if isinstance(gates_cfg.get("dsr"), dict) else {}
+        merged = {**DEFAULT_OFFLINE_GATES, **offline_numeric}
+        if "pbo_max" not in offline_numeric and isinstance(pbo_cfg.get("max_allowed"), (int, float)):
+            merged["pbo_max"] = _safe_float(pbo_cfg.get("max_allowed"), merged["pbo_max"])
+        if "dsr_min" not in offline_numeric and isinstance(dsr_cfg.get("min_allowed"), (int, float)):
+            merged["dsr_min"] = _safe_float(dsr_cfg.get("min_allowed"), merged["dsr_min"])
         return merged
 
     def evaluate(self, candidate_report: dict[str, Any]) -> dict[str, Any]:

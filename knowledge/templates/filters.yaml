@@ -1,23 +1,37 @@
-version: 1
+﻿version: 2
 filters:
   - id: spread_guard
-    name: Spread Guard
-    description: Bloquea candidatos cuando el spread esperado supera el maximo permitido.
+    name: "Guardia de Spread"
+    description: "Bloquea entradas si SPREAD_BPS supera el máximo por activo/timeframe."
     kind: cost
-    enabled: true
-  - id: slippage_guard
-    name: Slippage Guard
-    description: Penaliza estrategias sensibles al slippage en microestructura toxica.
-    kind: cost
-    enabled: true
-  - id: correlation_guard
-    name: Correlation Guard
-    description: Penaliza señales con correlacion mayor a 0.75 entre activos.
-    kind: risk
-    enabled: true
-  - id: regime_gate
-    name: Regime Gate
-    description: Exige compatibilidad entre plantilla y regimen detectado.
-    kind: regime
     enabled: true
 
+  - id: slippage_guard
+    name: "Guardia de Slippage"
+    description: "Bloquea o penaliza si slippage esperado supera umbral."
+    kind: cost
+    enabled: true
+
+  - id: vpin_toxicity_guard
+    name: "Guardia de Toxicidad (VPIN)"
+    description: "Si VPIN percentil está alto (mercado tóxico), no operar (o reducir tamaño)."
+    kind: microstructure
+    enabled: true
+
+  - id: liquidity_guard
+    name: "Guardia de Liquidez"
+    description: "Exige liquidez mínima (volumen/market depth) antes de habilitar activo."
+    kind: risk
+    enabled: true
+
+  - id: correlation_guard
+    name: "Guardia de Correlación"
+    description: "Evita concentración: penaliza señales si correlación > 0.70 en ventana corta."
+    kind: risk
+    enabled: true
+
+  - id: regime_gate
+    name: "Gate de Régimen"
+    description: "Solo permite estrategias compatibles con el régimen (tendencia/rango/alta vol)."
+    kind: regime
+    enabled: true

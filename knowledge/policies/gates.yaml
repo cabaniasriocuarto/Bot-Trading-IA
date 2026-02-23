@@ -1,30 +1,72 @@
-version: 1
+﻿version: 2
+
+# Filosofía:
+# - Opción B: el bot RECOMIENDA cambios, NO autopromueve a LIVE sin aprobación.
+# - Se testea fuerte (walk-forward + costos) antes de testnet/live.
+
 gates:
-  pbo:
-    enabled: true
-    max_allowed: 0.55
-    reject_reason: "PBO alto (riesgo de sobreajuste)."
-  dsr:
-    enabled: true
-    min_allowed: 0.10
-    reject_reason: "DSR bajo (Sharpe no robusto tras correccion)."
   live_auto_apply:
     enabled: false
-    reject_reason: "No permitido por Opcion B (solo recomendaciones)."
-  cpcv:
+    reject_reason: "Opción B: requiere aprobación humana para promover a LIVE."
+
+  # Sobreajuste
+  pbo:
+    enabled: true
+    max_allowed: 0.30
+    reject_reason: "PBO alto: riesgo de overfitting."
+
+  dsr:
+    enabled: true
+    min_allowed: 1.20
+    reject_reason: "DSR bajo: Sharpe no robusto tras corrección."
+
+  # Si tu backend ya calcula PSR, activalo
+  psr:
     enabled: false
-    enforce: false
-    note: "Hook listo; implementacion parcial permitida."
+    min_allowed: 0.75
+    reject_reason: "PSR bajo: baja probabilidad de Sharpe real positivo."
 
 offline_rollout:
-  min_trades_oos: 150
+  # Calidad mínima fuera de muestra (OOS)
+  min_trades_oos: 200
   min_winrate: 0.45
   min_profit_factor: 1.20
-  min_sharpe_oos: 1.20
-  min_sortino_oos: 1.50
-  min_calmar_oos: 1.00
-  max_drawdown_oos_pct: 18
-  max_dd_duration_days: 30
-  costs_ratio_max: 0.55
-  pbo_max: 0.20
-  dsr_min: 1.00
+
+  # Perfil riesgo/retorno (equilibrado)
+  min_sharpe_oos: 1.10
+  min_sortino_oos: 1.40
+  min_calmar_oos: 0.90
+
+  # Riesgo máximo aceptable
+  max_drawdown_oos_pct: 20
+  max_dd_duration_days: 35
+
+  # Costos
+  costs_ratio_max: 0.60   # (fees+spread+slippage+funding)/gross_pnl
+
+  # Robustez simple
+  param_jitter:
+    enabled: true
+    trials: 20
+    jitter_pct: 8
+    pass_rate_min: 0.70
+
+safe_update_with_gates:
+  enabled: true
+  require_human_approval: true
+
+  canary:
+    enabled: true
+    schedule_pct: [0, 5, 15, 35, 60, 100]  # shadow->...->full
+    min_live_trades_each_stage: 60
+    max_stage_drawdown_pct: 4.0
+    max_stage_costs_ratio: 0.70
+    rollback_on_breach: true
+    blending_mode: "both_must_agree"  # "avg_signals" | "both_must_agree" | "new_only"
+
+  compare_to_baseline:
+    enabled: true
+    # No reemplazar si empeora materialmente vs estable
+    allow_worse_sharpe_pct: 5
+    allow_worse_dd_pct: 5
+    require_better_costs_ratio: false

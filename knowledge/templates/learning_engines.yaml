@@ -1,0 +1,87 @@
+﻿version: 2
+
+learning_mode:
+  option: "B"   # B = recomienda + requiere aprobación humana
+  enabled_default: true
+  auto_apply_live: false
+  require_human_approval: true
+
+drift_detection:
+  enabled: true
+  detectors:
+    - id: cusum_returns
+      name: "CUSUM en retornos"
+      enabled: true
+      params:
+        window_bars: 200
+        threshold_sigma: 5.0
+        cooldown_bars: 200
+
+    - id: volatility_shift
+      name: "Cambio de volatilidad (ATR/realizada)"
+      enabled: true
+      params:
+        window_bars: 200
+        trigger_ratio: 1.6    # vol_actual / vol_base
+        cooldown_bars: 200
+
+    - id: microstructure_toxicity
+      name: "Toxicidad (VPIN/Spread)"
+      enabled: true
+      params:
+        vpin_pctl_trigger: 0.90
+        spread_bps_trigger_mult: 1.5
+        cooldown_bars: 120
+
+engines:
+  - id: fixed_rules
+    name: "Reglas fijas (sin aprendizaje)"
+    enabled_default: true
+    description: "Solo ejecuta estrategias activas; no cambia selección automáticamente."
+    ui_help: "Útil para control total y debugging. Recomendado como baseline."
+
+  - id: bandit_thompson
+    name: "Selector de Estrategias: Bandit (Thompson Sampling)"
+    enabled_default: true
+    description: "Elige estrategia según performance reciente por régimen, con exploración controlada."
+    ui_help: "Balancea explorar vs explotar. Ideal para agresividad media sin saltos bruscos."
+    params:
+      reward_metric: "net_expectancy"   # net_expectancy | sharpe | calmar
+      lookback_trades: 300
+      min_trades_per_arm: 60
+      exploration_floor: 0.10
+      max_switch_per_day: 2
+
+  - id: meta_rf_selector
+    name: "Meta-modelo: Random Forest (offline)"
+    enabled_default: false
+    description: "Entrena offline para predecir cuál estrategia conviene dado el régimen."
+    ui_help: "Más potente, pero requiere pipeline offline bien hecho. Recomendado tras estabilizar data/backtests."
+    params:
+      retrain_freq: "weekly"
+      features:
+        - adx_14
+        - atr_14
+        - realized_vol_14d
+        - vpin_pctl
+        - spread_bps
+        - entropy_lz
+      target: "best_strategy_id"
+      min_samples: 5000
+
+  - id: dqn_offline_experimental
+    name: "RL (DQN offline) [EXPERIMENTAL]"
+    enabled_default: false
+    description: "Aprendizaje por refuerzo offline para seleccionar acciones/estrategias. Alto riesgo de overfitting."
+    ui_help: "NO recomendado para live hasta tener data masiva + validación fuerte."
+    params:
+      train_steps: 200000
+      eval_episodes: 200
+      conservative_q: true
+      behavior_cloning_weight: 0.30
+
+safe_update:
+  enabled: true
+  gates_file: "knowledge/policies/gates.yaml"
+  canary_schedule_pct: [0, 5, 15, 35, 60, 100]
+  rollback_auto: true

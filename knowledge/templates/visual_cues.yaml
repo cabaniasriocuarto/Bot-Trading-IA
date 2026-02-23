@@ -1,0 +1,65 @@
+﻿version: 2
+
+palette:
+  muy_malo:  "#7C3AED"   # violeta
+  malo:      "#EF4444"   # rojo
+  aceptable: "#F97316"   # naranja
+  bueno:     "#FACC15"   # amarillo
+  excelente: "#22C55E"   # verde
+
+# Umbrales “equilibrados” para scoring visual en UI.
+# Nota: Para DD, valores MÁS NEGATIVOS son peores.
+thresholds:
+  CAGR_pct:
+    muy_malo: 0
+    malo: 10
+    aceptable: 20
+    bueno: 35
+    excelente: 50
+
+  MAX_DD_pct:   # usar positivo en UI (ej: 12.3%)
+    excelente: 8
+    bueno: 15
+    aceptable: 25
+    malo: 35
+    muy_malo: 50
+
+  Sharpe:
+    muy_malo: 0.0
+    malo: 0.5
+    aceptable: 1.0
+    bueno: 1.5
+    excelente: 2.0
+
+  Sortino:
+    muy_malo: 0.0
+    malo: 0.7
+    aceptable: 1.3
+    bueno: 2.0
+    excelente: 3.0
+
+  Calmar:
+    muy_malo: 0.0
+    malo: 0.5
+    aceptable: 1.0
+    bueno: 1.5
+    excelente: 2.5
+
+  Winrate_pct:
+    muy_malo: 35
+    malo: 45
+    aceptable: 55
+    bueno: 62
+    excelente: 68
+
+  Costs_ratio:   # cuanto más alto peor
+    excelente: 0.35
+    bueno: 0.50
+    aceptable: 0.65
+    malo: 0.80
+    muy_malo: 0.95
+
+ui:
+  apply_to_backtest_kpi_cards: true
+  apply_to_table_cells: true
+  show_grade_label: true
