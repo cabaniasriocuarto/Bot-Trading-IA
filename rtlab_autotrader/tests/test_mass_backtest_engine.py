@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from rtlab_core.learning.knowledge import KnowledgeLoader
+from rtlab_core.src.data.catalog import DataCatalog
+from rtlab_core.src.research.data_provider import build_data_provider
 from rtlab_core.src.research.mass_backtest_engine import FoldWindow, MassBacktestEngine
 
 
@@ -114,3 +116,14 @@ def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> N
   assert results["query_backend"]["engine"] in {"duckdb", "python"}
   artifacts = engine.artifacts(run_id)
   assert any(item["name"] == "index.html" for item in artifacts["items"])
+
+
+def test_dataset_mode_provider_no_api_keys_required_and_returns_hints_when_missing(tmp_path: Path) -> None:
+  provider = build_data_provider(mode="dataset", user_data_dir=tmp_path, catalog=DataCatalog(tmp_path))
+  resolved = provider.resolve(market="crypto", symbol="BTCUSDT", timeframe="5m", start="2024-01-01", end="2024-03-31")
+  payload = resolved.to_dict()
+  assert payload["mode"] == "dataset"
+  assert payload["api_keys_required"] is False
+  assert payload["public_downloadable"] is True
+  assert payload["ready"] is False
+  assert payload["hints"]

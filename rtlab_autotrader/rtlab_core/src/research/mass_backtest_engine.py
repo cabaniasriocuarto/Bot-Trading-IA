@@ -13,6 +13,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from rtlab_core.src.data.catalog import DataCatalog
+from .data_provider import build_data_provider
+
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -92,6 +95,7 @@ class MassBacktestEngine:
         self.user_data_dir = Path(user_data_dir).resolve()
         self.repo_root = Path(repo_root).resolve()
         self.knowledge_loader = knowledge_loader
+        self.catalog = DataCatalog(self.user_data_dir)
         self.root = (self.user_data_dir / "research" / "mass_backtests").resolve()
         self.db_path = self.root / "metadata.sqlite3"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -547,6 +551,16 @@ class MassBacktestEngine:
         kp = self.load_knowledge_pack()
         universe = self.build_universe(config=cfg, historical_runs=historical_runs)
         cfg["resolved_universe"] = universe
+        data_mode = str(cfg.get("data_mode") or "dataset").lower()
+        provider = build_data_provider(mode=data_mode, user_data_dir=self.user_data_dir, catalog=self.catalog)
+        dataset_info = provider.resolve(
+            market=str(cfg.get("market") or "crypto"),
+            symbol=str(cfg.get("symbol") or (universe[0] if universe else "BTCUSDT")),
+            timeframe=str(cfg.get("timeframe") or "5m"),
+            start=str(cfg.get("start") or "2024-01-01"),
+            end=str(cfg.get("end") or "2024-12-31"),
+        )
+        cfg["data_provider"] = dataset_info.to_dict()
         folds = self.walk_forward_runner(
             start=str(cfg.get("start") or "2024-01-01"),
             end=str(cfg.get("end") or "2024-12-31"),
@@ -648,14 +662,15 @@ class MassBacktestEngine:
         _json_dump(self._results_path(run_id), payload)
         manifest = {
             "run_id": run_id,
-            "dataset_source": str(cfg.get("dataset_source") or cfg.get("data_source") or "synthetic"),
-            "dataset_hashes": sorted({h for row in ranked for h in (row.get("summary") or {}).get("dataset_hashes", []) if h}),
+            "dataset_source": str(cfg.get("dataset_source") or cfg.get("data_source") or dataset_info.dataset_source or "synthetic"),
+            "dataset_hashes": sorted({h for row in ranked for h in (row.get("summary") or {}).get("dataset_hashes", []) if h} | ({dataset_info.dataset_hash} if dataset_info.dataset_hash else set())),
             "period": {"start": cfg.get("start"), "end": cfg.get("end")},
             "timeframe": cfg.get("timeframe"),
             "universe": universe,
             "costs_used": cfg.get("costs") or {},
             "commit_hash": str(cfg.get("commit_hash") or "local"),
             "results_parquet": parquet_info,
+            "data_provider": dataset_info.to_dict(),
         }
         _json_dump(self._manifest_path(run_id), manifest)
         artifacts = self._write_artifacts(run_id, top_rows)

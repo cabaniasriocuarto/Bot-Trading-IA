@@ -237,6 +237,7 @@ class ResearchMassBacktestStartBody(BaseModel):
     start: str = "2024-01-01"
     end: str = "2024-12-31"
     dataset_source: str = "synthetic"
+    data_mode: Literal["dataset", "api"] = "dataset"
     validation_mode: Literal["walk-forward", "purged-cv", "cpcv"] = "walk-forward"
     max_variants_per_strategy: int = 8
     train_days: int = 180
