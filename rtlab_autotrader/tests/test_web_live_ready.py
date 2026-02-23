@@ -455,6 +455,24 @@ def test_exchange_diagnose_passes_with_env_keys_and_mocked_exchange(tmp_path: Pa
   assert gate_by_id["G7_ORDER_SIM_OR_PAPER_OK"]["status"] == "PASS"
 
 
+def test_exchange_diagnose_autocorrects_common_binance_testnet_url_typo(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.visio")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  diagnose = client.get("/api/v1/exchange/diagnose?mode=testnet&force=true", headers=headers)
+  assert diagnose.status_code == 200, diagnose.text
+  payload = diagnose.json()
+  assert payload["ok"] is True
+  assert payload["base_url"] == "https://testnet.binance.vision"
+  assert any("corregida automáticamente" in msg for msg in (payload.get("diagnostics") or []))
+
+
 def test_exchange_diagnose_uses_json_only_in_local_dev(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
   cfg_dir = Path(module.USER_DATA_DIR) / "config"

@@ -315,6 +315,39 @@ def _nested_dict(payload: dict[str, Any], key: str) -> dict[str, Any]:
     return {}
 
 
+def _normalize_binance_endpoint_url(url: str, *, mode: str, kind: str) -> tuple[str, list[str]]:
+    raw = str(url or "").strip()
+    if not raw:
+        return raw, []
+    normalized = raw
+    warnings: list[str] = []
+    parsed_initial = urlparse(normalized)
+    if not parsed_initial.scheme and parsed_initial.path:
+        guessed_scheme = "wss" if kind == "ws" else "https"
+        normalized = f"{guessed_scheme}://{normalized}"
+        warnings.append(f"URL de Binance sin esquema corregida automáticamente ({kind}/{mode}): se agregó {guessed_scheme}://")
+    parsed = urlparse(normalized)
+    replacements = {
+        "testnet.binance.visio": "testnet.binance.vision",
+        "api.binance.visio": "api.binance.com",
+        "stream.binance.visio": "stream.binance.com",
+    }
+    host = parsed.hostname or ""
+    if host in replacements:
+        good_host = replacements[host]
+        netloc = parsed.netloc
+        if "@" in netloc:
+            creds_prefix, host_port = netloc.rsplit("@", 1)
+            if host_port.startswith(host):
+                host_port = good_host + host_port[len(host):]
+            netloc = f"{creds_prefix}@{host_port}"
+        elif netloc.startswith(host):
+            netloc = good_host + netloc[len(host):]
+        normalized = parsed._replace(netloc=netloc).geturl()
+        warnings.append(f"URL de Binance corregida automáticamente ({kind}/{mode}): {host} -> {good_host}")
+    return normalized, warnings
+
+
 def _build_exchange_env_config(mode: str) -> dict[str, Any]:
     normalized = mode.lower().strip()
     if normalized == "testnet":
@@ -343,6 +376,8 @@ def _build_exchange_env_config(mode: str) -> dict[str, Any]:
             legacy_used.append("API_KEY")
         if not get_env(BINANCE_LIVE_ENV_SECRET) and legacy_secret:
             legacy_used.append("API_SECRET")
+    base_url, base_warnings = _normalize_binance_endpoint_url(base_url, mode=normalized, kind="rest")
+    ws_url, ws_warnings = _normalize_binance_endpoint_url(ws_url, mode=normalized, kind="ws")
     missing_expected = [name for name in expected if not get_env(name)]
     return {
         "mode": normalized,
@@ -354,6 +389,7 @@ def _build_exchange_env_config(mode: str) -> dict[str, Any]:
         "legacy_env_vars_used": sorted(set(legacy_used)),
         "base_url": base_url.rstrip("/"),
         "ws_url": ws_url,
+        "url_warnings": [*base_warnings, *ws_warnings],
     }
 
 
@@ -404,6 +440,7 @@ def load_exchange_credentials(mode: str) -> dict[str, Any]:
 
     if cfg["legacy_env_vars_used"]:
         diagnostics.append(f"Usando variables legacy: {', '.join(cfg['legacy_env_vars_used'])}")
+    diagnostics.extend([str(msg) for msg in (cfg.get("url_warnings") or []) if str(msg).strip()])
 
     return {
         "mode": normalized,
