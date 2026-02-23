@@ -11,7 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet, apiPost } from "@/lib/client-api";
-import type { BacktestRun, Strategy } from "@/lib/types";
+import type {
+  BacktestRun,
+  MassBacktestArtifactsResponse,
+  MassBacktestResultRow,
+  MassBacktestResultsResponse,
+  MassBacktestStatusResponse,
+  Strategy,
+} from "@/lib/types";
 import { fmtNum, fmtPct } from "@/lib/utils";
 
 type RunForm = {
@@ -114,6 +121,25 @@ export default function BacktestsPage() {
   const [runs, setRuns] = useState<BacktestRun[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [massRunning, setMassRunning] = useState(false);
+  const [massError, setMassError] = useState("");
+  const [massMessage, setMassMessage] = useState("");
+  const [massSelectedStrategies, setMassSelectedStrategies] = useState<string[]>([]);
+  const [massRunId, setMassRunId] = useState("");
+  const [massStatus, setMassStatus] = useState<MassBacktestStatusResponse | null>(null);
+  const [massResults, setMassResults] = useState<MassBacktestResultRow[]>([]);
+  const [massArtifacts, setMassArtifacts] = useState<MassBacktestArtifactsResponse["items"]>([]);
+  const [massOnlyPass, setMassOnlyPass] = useState(true);
+  const [massSelectedRow, setMassSelectedRow] = useState<MassBacktestResultRow | null>(null);
+  const [massForm, setMassForm] = useState({
+    max_variants_per_strategy: "4",
+    max_folds: "3",
+    train_days: "180",
+    test_days: "60",
+    top_n: "10",
+    seed: "42",
+    dataset_source: "synthetic",
+  });
 
   const [form, setForm] = useState<RunForm>({
     strategy_id: "",
@@ -140,6 +166,9 @@ export default function BacktestsPage() {
     if (!form.strategy_id && stg[0]) {
       setForm((prev) => ({ ...prev, strategy_id: stg[0].id }));
     }
+    if (!massSelectedStrategies.length && stg.length) {
+      setMassSelectedStrategies(stg.slice(0, Math.min(5, stg.length)).map((row) => row.id));
+    }
   }, [form.strategy_id]);
 
   useEffect(() => {
@@ -152,6 +181,50 @@ export default function BacktestsPage() {
       setForm((prev) => ({ ...prev, symbol: symbols[0] }));
     }
   }, [form.market, form.symbol]);
+
+  const refreshMassPayload = useCallback(
+    async (runId: string, onlyPass = massOnlyPass) => {
+      if (!runId) return;
+      const [status, results, artifacts] = await Promise.all([
+        apiGet<MassBacktestStatusResponse>(`/api/v1/research/mass-backtest/status?run_id=${encodeURIComponent(runId)}`),
+        apiGet<MassBacktestResultsResponse>(
+          `/api/v1/research/mass-backtest/results?run_id=${encodeURIComponent(runId)}&limit=100${onlyPass ? "&only_pass=true" : ""}`,
+        ),
+        apiGet<MassBacktestArtifactsResponse>(`/api/v1/research/mass-backtest/artifacts?run_id=${encodeURIComponent(runId)}`),
+      ]);
+      setMassStatus(status);
+      setMassResults(results.results || []);
+      setMassArtifacts(artifacts.items || []);
+      setMassSelectedRow((prev) => {
+        if (!prev) return results.results?.[0] ?? null;
+        return (results.results || []).find((row) => row.variant_id === prev.variant_id) || results.results?.[0] || null;
+      });
+    },
+    [massOnlyPass],
+  );
+
+  useEffect(() => {
+    if (!massRunId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const status = await apiGet<MassBacktestStatusResponse>(`/api/v1/research/mass-backtest/status?run_id=${encodeURIComponent(massRunId)}`);
+        if (cancelled) return;
+        setMassStatus(status);
+        if (status.state === "COMPLETED" || status.state === "FAILED") {
+          await refreshMassPayload(massRunId, massOnlyPass);
+          return;
+        }
+      } catch {
+        // best effort polling
+      }
+      if (!cancelled) window.setTimeout(() => void tick(), 1200);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [massRunId, massOnlyPass, refreshMassPayload]);
 
   const launchRun = async (event: FormEvent) => {
     event.preventDefault();
@@ -187,6 +260,74 @@ export default function BacktestsPage() {
       if (prev.length >= 5) return prev;
       return [...prev, id];
     });
+  };
+
+  const toggleMassStrategy = (id: string) => {
+    setMassSelectedStrategies((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const startMassBacktests = async () => {
+    if (!massSelectedStrategies.length) {
+      setMassError("Seleccioná al menos una estrategia para research masivo.");
+      return;
+    }
+    setMassRunning(true);
+    setMassError("");
+    setMassMessage("");
+    try {
+      const res = await apiPost<{ ok: boolean; run_id: string; state: string }>("/api/v1/research/mass-backtest/start", {
+        strategy_ids: massSelectedStrategies,
+        market: form.market,
+        symbol: form.symbol,
+        timeframe: form.timeframe,
+        start: form.start,
+        end: form.end,
+        dataset_source: massForm.dataset_source,
+        validation_mode: form.validation_mode,
+        max_variants_per_strategy: Number(massForm.max_variants_per_strategy),
+        max_folds: Number(massForm.max_folds),
+        train_days: Number(massForm.train_days),
+        test_days: Number(massForm.test_days),
+        top_n: Number(massForm.top_n),
+        seed: Number(massForm.seed),
+        costs: {
+          fees_bps: Number(form.fees_bps),
+          spread_bps: Number(form.spread_bps),
+          slippage_bps: Number(form.slippage_bps),
+          funding_bps: Number(form.funding_bps),
+          rollover_bps: Number(form.rollover_bps),
+        },
+      });
+      setMassRunId(res.run_id);
+      setMassMessage(`Research masivo iniciado: ${res.run_id}`);
+      await refreshMassPayload(res.run_id, massOnlyPass).catch(() => undefined);
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo iniciar research masivo.");
+    } finally {
+      setMassRunning(false);
+    }
+  };
+
+  const refreshMass = async () => {
+    if (!massRunId) return;
+    try {
+      await refreshMassPayload(massRunId, massOnlyPass);
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo refrescar research masivo.");
+    }
+  };
+
+  const markMassCandidate = async (row: MassBacktestResultRow) => {
+    try {
+      const res = await apiPost<{ ok: boolean; recommendation_draft: { id: string } }>("/api/v1/research/mass-backtest/mark-candidate", {
+        run_id: massRunId,
+        variant_id: row.variant_id,
+        note: "Marcado desde Backtests / Research Masivo",
+      });
+      setMassMessage(`Draft Opción B creado: ${res.recommendation_draft.id}`);
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo marcar candidato.");
+    }
   };
 
   const selectedRuns = runs.filter((run) => selected.includes(run.id)).slice(0, 5);
@@ -402,6 +543,209 @@ export default function BacktestsPage() {
               ))}
             </TBody>
           </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardTitle>Research Masivo (Backtests Automáticos)</CardTitle>
+        <CardDescription>
+          Ejecuta variantes por estrategia con walk-forward, score robusto y evidencia por régimen. Opción B: genera drafts, no toca LIVE.
+        </CardDescription>
+        <CardContent className="space-y-4">
+          {massMessage ? <p className="text-sm text-emerald-300">{massMessage}</p> : null}
+          {massError ? <p className="text-sm text-rose-300">{massError}</p> : null}
+
+          <div className="grid gap-4 xl:grid-cols-3">
+            <div className="space-y-3 xl:col-span-2">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Pool de estrategias (research)</p>
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  {strategies.map((st) => (
+                    <label key={`mass-st-${st.id}`} className="flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950/40 px-2 py-1 text-xs">
+                      <span className="truncate">{st.name}</span>
+                      <input type="checkbox" checked={massSelectedStrategies.includes(st.id)} onChange={() => toggleMassStrategy(st.id)} disabled={role !== "admin"} />
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Variantes/estrategia</label>
+                  <Input value={massForm.max_variants_per_strategy} onChange={(e) => setMassForm((p) => ({ ...p, max_variants_per_strategy: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Folds max</label>
+                  <Input value={massForm.max_folds} onChange={(e) => setMassForm((p) => ({ ...p, max_folds: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Train días</label>
+                  <Input value={massForm.train_days} onChange={(e) => setMassForm((p) => ({ ...p, train_days: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Test días</label>
+                  <Input value={massForm.test_days} onChange={(e) => setMassForm((p) => ({ ...p, test_days: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Top N</label>
+                  <Input value={massForm.top_n} onChange={(e) => setMassForm((p) => ({ ...p, top_n: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Seed</label>
+                  <Input value={massForm.seed} onChange={(e) => setMassForm((p) => ({ ...p, seed: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Dataset source</label>
+                  <Select value={massForm.dataset_source} onChange={(e) => setMassForm((p) => ({ ...p, dataset_source: e.target.value }))}>
+                    <option value="synthetic">synthetic (rápido)</option>
+                    <option value="auto">auto (real si existe)</option>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Filtro ranking</label>
+                  <label className="flex h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 text-sm">
+                    <input type="checkbox" checked={massOnlyPass} onChange={(e) => setMassOnlyPass(e.target.checked)} />
+                    Solo hard-pass
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button disabled={role !== "admin" || massRunning} onClick={startMassBacktests}>
+                  {massRunning ? "Iniciando..." : "Ejecutar Backtests Masivos"}
+                </Button>
+                <Button variant="outline" disabled={!massRunId} onClick={refreshMass}>
+                  Refresh Research
+                </Button>
+                {massRunId ? <Badge variant="warn">run_id: {massRunId}</Badge> : null}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Estado</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <Badge variant={massStatus?.state === "COMPLETED" ? "success" : massStatus?.state === "FAILED" ? "danger" : "warn"}>
+                    {massStatus?.state || "IDLE"}
+                  </Badge>
+                  {typeof massStatus?.progress?.pct === "number" ? <span className="text-sm text-slate-300">{fmtNum(massStatus.progress.pct)}%</span> : null}
+                </div>
+                <p className="mt-2 text-xs text-slate-400">
+                  {massStatus?.progress?.completed_tasks ?? 0}/{massStatus?.progress?.total_tasks ?? 0} tareas
+                </p>
+                {massStatus?.error ? <p className="mt-2 text-xs text-rose-300 whitespace-pre-wrap">{String(massStatus.error)}</p> : null}
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Logs (últimos)</p>
+                <div className="mt-2 max-h-40 space-y-1 overflow-auto text-xs text-slate-300">
+                  {(massStatus?.logs || []).slice(-12).map((line, idx) => (
+                    <p key={`mass-log-${idx}`} className="break-words">{line}</p>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Artifacts</p>
+                <div className="mt-2 space-y-1 text-xs">
+                  {massArtifacts.length ? (
+                    massArtifacts.map((item) => (
+                      <p key={item.name} className="text-slate-300">{item.name} ({item.size} bytes)</p>
+                    ))
+                  ) : (
+                    <p className="text-slate-400">Sin artifacts todavía.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-3">
+            <div className="xl:col-span-2 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/50 p-2">
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>Rank</TH>
+                    <TH>Variante</TH>
+                    <TH>Estrategia</TH>
+                    <TH>Score</TH>
+                    <TH>Trades OOS</TH>
+                    <TH>Sharpe</TH>
+                    <TH>Calmar</TH>
+                    <TH>Expectancy</TH>
+                    <TH>MaxDD%</TH>
+                    <TH>CostsRatio</TH>
+                    <TH>Regímenes</TH>
+                    <TH>Acción</TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {massResults.map((row) => (
+                    <TR key={row.variant_id} onClick={() => setMassSelectedRow(row)} className="cursor-pointer">
+                      <TD>{row.rank ?? "-"}</TD>
+                      <TD className="font-mono text-xs">{row.variant_id}</TD>
+                      <TD>{row.strategy_name || row.strategy_id}</TD>
+                      <TD>{fmtNum(row.score)}</TD>
+                      <TD>{row.summary?.trade_count_oos ?? "-"}</TD>
+                      <TD>{fmtNum(row.summary?.sharpe_oos ?? 0)}</TD>
+                      <TD>{fmtNum(row.summary?.calmar_oos ?? 0)}</TD>
+                      <TD>{fmtNum(row.summary?.expectancy_net_usd ?? 0)}</TD>
+                      <TD>{fmtNum(row.summary?.max_dd_oos_pct ?? 0)}</TD>
+                      <TD>{fmtNum(row.summary?.costs_ratio ?? 0)}</TD>
+                      <TD>{Object.keys(row.regime_metrics || {}).join(", ") || "-"}</TD>
+                      <TD>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={role !== "admin" || !massRunId}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void markMassCandidate(row);
+                          }}
+                        >
+                          Marcar candidato
+                        </Button>
+                      </TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Drilldown (variante seleccionada)</p>
+              {massSelectedRow ? (
+                <>
+                  <p className="text-sm text-slate-200">{massSelectedRow.strategy_name || massSelectedRow.strategy_id}</p>
+                  <p className="text-xs font-mono text-slate-400">{massSelectedRow.variant_id}</p>
+                  <div className="grid gap-2 grid-cols-2 text-xs">
+                    <div className="rounded border border-slate-800 p-2">Score: {fmtNum(massSelectedRow.score)}</div>
+                    <div className="rounded border border-slate-800 p-2">Promotable: {massSelectedRow.promotable ? "Sí" : "No"}</div>
+                    <div className="rounded border border-slate-800 p-2">Trades OOS: {massSelectedRow.summary?.trade_count_oos ?? 0}</div>
+                    <div className="rounded border border-slate-800 p-2">Stability: {fmtNum(massSelectedRow.summary?.stability ?? 0)}</div>
+                  </div>
+                  <div className="space-y-1 text-xs">
+                    <p className="font-semibold text-slate-300">Por régimen</p>
+                    {Object.entries(massSelectedRow.regime_metrics || {}).map(([regime, vals]) => (
+                      <div key={regime} className="rounded border border-slate-800 p-2">
+                        <p className="font-semibold text-slate-200">{regime}</p>
+                        <p className="text-slate-400">
+                          trades {vals.trade_count ?? 0} | sharpe {fmtNum(vals.sharpe_oos ?? 0)} | net {fmtNum(vals.net_pnl ?? 0)} | costs {fmtNum(vals.costs_ratio ?? 0)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  {massSelectedRow.hard_filter_reasons?.length ? (
+                    <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200">
+                      Filtros duros: {massSelectedRow.hard_filter_reasons.join(" | ")}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">Sin selección.</p>
+              )}
+            </div>
+          </div>
         </CardContent>
       </Card>
 

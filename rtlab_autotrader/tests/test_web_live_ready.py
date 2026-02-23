@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import time
 import zipfile
 from pathlib import Path
 
@@ -926,3 +927,69 @@ def test_thompson_respects_max_switch_per_day_and_weights_history(tmp_path: Path
   items = hist.json()["items"]
   assert items
   assert all("strategy_id" in row and "weight" in row for row in items)
+
+
+def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategies = client.get("/api/v1/strategies", headers=headers).json()
+  strategy_ids = [row["id"] for row in strategies[:2]]
+  start = client.post(
+    "/api/v1/research/mass-backtest/start",
+    headers=headers,
+    json={
+      "strategy_ids": strategy_ids,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-06-30",
+      "dataset_source": "synthetic",
+      "max_variants_per_strategy": 1,
+      "max_folds": 1,
+      "train_days": 30,
+      "test_days": 30,
+      "top_n": 3,
+      "seed": 11,
+    },
+  )
+  assert start.status_code == 200, start.text
+  run_id = start.json()["run_id"]
+
+  status_payload = None
+  for _ in range(40):
+    st = client.get(f"/api/v1/research/mass-backtest/status?run_id={run_id}", headers=headers)
+    assert st.status_code == 200, st.text
+    status_payload = st.json()
+    if status_payload["state"] in {"COMPLETED", "FAILED"}:
+      break
+    time.sleep(0.1)
+  assert status_payload is not None
+  assert status_payload["state"] == "COMPLETED", status_payload.get("error")
+
+  results = client.get(f"/api/v1/research/mass-backtest/results?run_id={run_id}&limit=20", headers=headers)
+  assert results.status_code == 200, results.text
+  results_payload = results.json()
+  assert isinstance(results_payload.get("results"), list) and results_payload["results"]
+  top = results_payload["results"][0]
+  assert "score" in top and "regime_metrics" in top and "summary" in top
+
+  artifacts = client.get(f"/api/v1/research/mass-backtest/artifacts?run_id={run_id}", headers=headers)
+  assert artifacts.status_code == 200, artifacts.text
+  assert any(item["name"] == "index.html" for item in artifacts.json()["items"])
+
+  mark = client.post(
+    "/api/v1/research/mass-backtest/mark-candidate",
+    headers=headers,
+    json={"run_id": run_id, "variant_id": top["variant_id"], "note": "draft desde e2e"},
+  )
+  assert mark.status_code == 200, mark.text
+  draft = mark.json()["recommendation_draft"]
+  assert draft["status"] == "DRAFT_MASS_BACKTEST"
+  assert draft["option_b"]["allow_live"] is False
+
+  recs = client.get("/api/v1/learning/recommendations", headers=headers)
+  assert recs.status_code == 200, recs.text
+  assert any(row["id"] == draft["id"] for row in recs.json())

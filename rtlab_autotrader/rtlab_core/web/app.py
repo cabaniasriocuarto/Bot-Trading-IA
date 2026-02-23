@@ -34,6 +34,7 @@ from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, Backte
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.data.loader import DataLoader
 from rtlab_core.src.data.universes import MARKET_UNIVERSES, SUPPORTED_TIMEFRAMES, normalize_market, normalize_symbol, normalize_timeframe
+from rtlab_core.src.research import MassBacktestCoordinator, MassBacktestEngine
 from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngine
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 
@@ -226,6 +227,30 @@ class ResearchChangePointsBody(BaseModel):
     model: Literal["l1", "l2", "rbf"] = "l2"
     max_breakpoints: int = 5
     penalty: float | None = None
+
+
+class ResearchMassBacktestStartBody(BaseModel):
+    strategy_ids: list[str] | None = None
+    market: Literal["crypto", "forex", "equities"] = "crypto"
+    symbol: str = "BTCUSDT"
+    timeframe: Literal["5m", "10m", "15m"] = "5m"
+    start: str = "2024-01-01"
+    end: str = "2024-12-31"
+    dataset_source: str = "synthetic"
+    validation_mode: Literal["walk-forward", "purged-cv", "cpcv"] = "walk-forward"
+    max_variants_per_strategy: int = 8
+    train_days: int = 180
+    test_days: int = 60
+    max_folds: int = 8
+    top_n: int = 10
+    seed: int = 42
+    costs: dict[str, float] | None = None
+
+
+class ResearchMassBacktestMarkCandidateBody(BaseModel):
+    run_id: str
+    variant_id: str
+    note: str | None = None
 
 
 def utc_now() -> datetime:
@@ -2768,6 +2793,8 @@ def risk_hooks(context):
 store = ConsoleStore()
 learning_service = LearningService(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT)
 rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
+mass_backtest_engine = MassBacktestEngine(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT, knowledge_loader=KnowledgeLoader(repo_root=MONOREPO_ROOT))
+mass_backtest_coordinator = MassBacktestCoordinator(engine=mass_backtest_engine)
 rollout_gates = GateEvaluator(repo_root=MONOREPO_ROOT)
 
 
@@ -2847,6 +2874,65 @@ def _learning_eval_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
             "dataset_hash": "",
             "costs_model": costs,
         }
+
+
+def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str, Any], base_cfg: dict[str, Any]) -> dict[str, Any]:
+    strategy_id = str(variant.get("strategy_id") or DEFAULT_STRATEGY_ID)
+    market = str(base_cfg.get("market") or "crypto")
+    symbol = str(base_cfg.get("symbol") or "BTCUSDT")
+    timeframe = str(base_cfg.get("timeframe") or "5m")
+    data_source = str(base_cfg.get("dataset_source") or "synthetic").lower()
+    validation_mode = str(base_cfg.get("validation_mode") or "walk-forward")
+    try:
+        if data_source == "synthetic":
+            run = store.create_backtest_run(
+                strategy_id=strategy_id,
+                start=str(fold.test_start),
+                end=str(fold.test_end),
+                universe=[normalize_symbol(symbol)],
+                fees_bps=float(costs.get("fees_bps", 5.5)),
+                spread_bps=float(costs.get("spread_bps", 4.0)),
+                slippage_bps=float(costs.get("slippage_bps", 3.0)),
+                funding_bps=float(costs.get("funding_bps", 1.0)),
+                validation_mode=validation_mode,
+            )
+            run["market"] = normalize_market(market)
+            run["symbol"] = normalize_symbol(symbol)
+            run["timeframe"] = normalize_timeframe(timeframe)
+            run["data_source"] = "synthetic"
+            return run
+        return store.create_event_backtest_run(
+            strategy_id=strategy_id,
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            start=str(fold.test_start),
+            end=str(fold.test_end),
+            fees_bps=float(costs.get("fees_bps", 5.5)),
+            spread_bps=float(costs.get("spread_bps", 4.0)),
+            slippage_bps=float(costs.get("slippage_bps", 3.0)),
+            funding_bps=float(costs.get("funding_bps", 1.0)),
+            rollover_bps=float(costs.get("rollover_bps", 0.0)),
+            validation_mode=validation_mode,
+        )
+    except Exception:
+        # Fallback seguro a corridas sintéticas para no romper research offline.
+        run = store.create_backtest_run(
+            strategy_id=strategy_id,
+            start=str(fold.test_start),
+            end=str(fold.test_end),
+            universe=[normalize_symbol(symbol)],
+            fees_bps=float(costs.get("fees_bps", 5.5)),
+            spread_bps=float(costs.get("spread_bps", 4.0)),
+            slippage_bps=float(costs.get("slippage_bps", 3.0)),
+            funding_bps=float(costs.get("funding_bps", 1.0)),
+            validation_mode=validation_mode,
+        )
+        run["market"] = normalize_market(market)
+        run["symbol"] = normalize_symbol(symbol)
+        run["timeframe"] = normalize_timeframe(timeframe)
+        run["data_source"] = "synthetic_fallback"
+        return run
 
 
 def _find_run_or_404(run_id: str) -> dict[str, Any]:
@@ -3745,6 +3831,112 @@ def create_app() -> FastAPI:
                 "runs": [],
                 "error": str(exc),
             }
+
+    @app.post("/api/v1/research/mass-backtest/start")
+    def research_mass_backtest_start(body: ResearchMassBacktestStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        cfg = body.model_dump()
+        if not isinstance(cfg.get("costs"), dict):
+            cfg["costs"] = {
+                "fees_bps": 5.5,
+                "spread_bps": 4.0,
+                "slippage_bps": 3.0,
+                "funding_bps": 1.0,
+                "rollover_bps": 0.0,
+            }
+        cfg["commit_hash"] = get_env("GIT_COMMIT", "local")
+        cfg["requested_by"] = user.get("username", "admin")
+        started = mass_backtest_coordinator.start_async(
+            config=cfg,
+            strategies=store.list_strategies(),
+            historical_runs=store.load_runs(),
+            backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
+        )
+        store.add_log(
+            event_type="research_mass_backtest_start",
+            severity="info",
+            module="research",
+            message="Mass backtests iniciados",
+            related_ids=[str(started.get("run_id") or "")],
+            payload={"config": cfg, "no_auto_live": True},
+        )
+        return started
+
+    @app.get("/api/v1/research/mass-backtest/status")
+    def research_mass_backtest_status(run_id: str = Query(...), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return mass_backtest_coordinator.status(run_id)
+
+    @app.get("/api/v1/research/mass-backtest/results")
+    def research_mass_backtest_results(
+        run_id: str = Query(...),
+        limit: int = Query(default=100, ge=1, le=1000),
+        strategy_id: str | None = Query(default=None),
+        only_pass: bool = Query(default=False),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return mass_backtest_coordinator.results(run_id, limit=limit, strategy_id=strategy_id, only_pass=only_pass)
+
+    @app.get("/api/v1/research/mass-backtest/artifacts")
+    def research_mass_backtest_artifacts(run_id: str = Query(...), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return mass_backtest_coordinator.artifacts(run_id)
+
+    @app.post("/api/v1/research/mass-backtest/mark-candidate")
+    def research_mass_backtest_mark_candidate(body: ResearchMassBacktestMarkCandidateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        results_payload = mass_backtest_coordinator.results(body.run_id, limit=5000)
+        rows = results_payload.get("results") if isinstance(results_payload, dict) else []
+        row = next((r for r in rows if isinstance(r, dict) and str(r.get("variant_id") or "") == body.variant_id), None)
+        if not row:
+            raise HTTPException(status_code=404, detail="Variant not found in mass-backtest results")
+        runtime_rows = learning_service.load_runtime_recommendations()
+        draft_id = f"rec_mass_{hashlib.sha256(f'{body.run_id}:{body.variant_id}:{utc_now_iso()}'.encode('utf-8')).hexdigest()[:10]}"
+        draft = {
+            "id": draft_id,
+            "status": "DRAFT_MASS_BACKTEST",
+            "mode": "backtest",
+            "engine_id": "mass_backtest_engine",
+            "selector_algo": "regime_rules",
+            "active_strategy_id": str(row.get("strategy_id") or ""),
+            "weights_sugeridos": {str(row.get("strategy_id") or ""): 1.0},
+            "ranking": [
+                {
+                    "strategy_id": str(row.get("strategy_id") or ""),
+                    "reward": float(row.get("score") or 0.0),
+                    "score": float(row.get("score") or 0.0),
+                    "trade_count": int(((row.get("summary") or {}).get("trade_count_oos")) if isinstance(row.get("summary"), dict) else 0),
+                    "expectancy": float(((row.get("summary") or {}).get("expectancy_net_usd")) if isinstance(row.get("summary"), dict) else 0.0),
+                    "expectancy_unit": "usd_per_trade",
+                    "sharpe": float(((row.get("summary") or {}).get("sharpe_oos")) if isinstance(row.get("summary"), dict) else 0.0),
+                    "calmar": float(((row.get("summary") or {}).get("calmar_oos")) if isinstance(row.get("summary"), dict) else 0.0),
+                    "max_dd": float(((row.get("summary") or {}).get("max_dd_oos_pct")) if isinstance(row.get("summary"), dict) else 0.0) / 100.0,
+                }
+            ],
+            "mass_backtest": {
+                "run_id": body.run_id,
+                "variant_id": body.variant_id,
+                "params": row.get("params") or {},
+                "summary": row.get("summary") or {},
+                "regime_metrics": row.get("regime_metrics") or {},
+                "hard_filters_pass": bool(row.get("hard_filters_pass")),
+                "anti_overfitting": row.get("anti_overfitting") or {},
+            },
+            "guardrails": {
+                "warnings": ["Draft de research masivo. Opcion B: no auto-live; requiere gates + canary + approve humano."],
+            },
+            "option_b": {"allow_auto_apply": False, "allow_live": False, "requires_human_approval": True},
+            "created_at": utc_now_iso(),
+            "created_by": user.get("username", "admin"),
+            "note": body.note or "",
+        }
+        runtime_rows.append(draft)
+        learning_service._save_runtime_recommendations(runtime_rows)  # internal use within backend
+        store.add_log(
+            event_type="research_mass_backtest_mark_candidate",
+            severity="info",
+            module="research",
+            message="Variante marcada como candidato (draft Opcion B)",
+            related_ids=[body.run_id, body.variant_id, draft_id],
+            payload={"strategy_id": row.get("strategy_id"), "score": row.get("score"), "allow_live": False},
+        )
+        return {"ok": True, "recommendation_draft": draft}
 
     @app.post("/api/v1/learning/adopt")
     def learning_adopt(body: LearningAdoptBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

@@ -519,3 +519,70 @@ export interface SessionUser {
   username: string;
   role: Role;
 }
+
+export interface MassBacktestStatusResponse {
+  run_id: string;
+  state: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "NOT_FOUND" | string;
+  created_at?: string;
+  updated_at?: string;
+  config?: Record<string, unknown>;
+  progress?: {
+    pct?: number;
+    total_tasks?: number;
+    completed_tasks?: number;
+    current_variant?: number;
+  };
+  summary?: Record<string, unknown>;
+  error?: string | null;
+  logs?: string[];
+  thread_alive?: boolean;
+}
+
+export interface MassBacktestResultRow {
+  variant_id: string;
+  strategy_id: string;
+  strategy_name?: string;
+  template_id?: string | null;
+  params?: Record<string, unknown>;
+  score: number;
+  rank?: number;
+  hard_filters_pass?: boolean;
+  promotable?: boolean;
+  hard_filter_reasons?: string[];
+  summary?: {
+    trade_count_oos?: number;
+    sharpe_oos?: number;
+    sortino_oos?: number;
+    calmar_oos?: number;
+    max_dd_oos_pct?: number;
+    expectancy_net_usd?: number;
+    net_pnl_oos?: number;
+    costs_ratio?: number;
+    stability?: number;
+    consistency_folds?: number;
+    jitter_pass_rate?: number;
+    dataset_hashes?: string[];
+  };
+  regime_metrics?: Record<string, {
+    folds?: number;
+    trade_count?: number;
+    net_pnl?: number;
+    expectancy_net_usd?: number;
+    sharpe_oos?: number;
+    max_dd_oos_pct?: number;
+    costs_ratio?: number;
+  }>;
+  anti_overfitting?: Record<string, unknown>;
+}
+
+export interface MassBacktestResultsResponse {
+  run_id: string;
+  summary: Record<string, unknown>;
+  results: MassBacktestResultRow[];
+  query_backend?: { engine?: string } & Record<string, unknown>;
+}
+
+export interface MassBacktestArtifactsResponse {
+  run_id: string;
+  items: Array<{ name: string; path: string; size: number }>;
+}
