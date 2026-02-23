@@ -1,0 +1,20 @@
+# Research / offline stack (NO runtime live)
+-r requirements-runtime.txt
+
+scikit-learn==1.5.2
+statsmodels==0.14.4
+optuna==4.1.0
+quantstats==0.0.64
+empyrical-reloaded==0.5.11
+arch==7.2.0
+ruptures==1.1.9
+mlflow-skinny==2.19.0
+vectorbt==0.26.2
+PyPortfolioOpt==1.5.6
+riskfolio-lib==7.0.1
+cvxpy==1.6.0
+
+# Opcionales offline (activar si se usan realmente en research)
+# xgboost==2.1.3
+# lightgbm==4.5.0
+# shap==0.46.0

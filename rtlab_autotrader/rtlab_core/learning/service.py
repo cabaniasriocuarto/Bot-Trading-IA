@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -55,6 +55,7 @@ class LearningService:
         return {
             "enabled": False,
             "mode": "OFF",
+            "engine_id": "bandit_thompson",
             "selector_algo": "thompson",
             "drift_algo": "adwin",
             "max_candidates": 30,
@@ -89,7 +90,33 @@ class LearningService:
         }
         settings["learning"]["promotion"]["allow_auto_apply"] = False
         settings["learning"]["promotion"]["allow_live"] = False
+        if not settings["learning"].get("engine_id"):
+            settings["learning"]["engine_id"] = {
+                "thompson": "bandit_thompson",
+                "ucb1": "bandit_ucb1",
+                "regime_rules": "fixed_rules",
+            }.get(str(settings["learning"].get("selector_algo", "thompson")), "bandit_thompson")
         return settings
+
+    def _load_engine_catalog(self) -> list[dict[str, Any]]:
+        payload = self.knowledge.get_learning_engines()
+        engines = payload.get("engines") if isinstance(payload, dict) else []
+        return [row for row in engines if isinstance(row, dict) and row.get("id")] if isinstance(engines, list) else []
+
+    def _selected_engine(self, settings: dict[str, Any]) -> dict[str, Any] | None:
+        cfg = self.ensure_settings_shape(dict(settings))
+        engine_id = str((cfg.get("learning") or {}).get("engine_id") or "")
+        engines = self._load_engine_catalog()
+        selected = next((row for row in engines if str(row.get("id")) == engine_id), None)
+        if selected:
+            return selected
+        selector_algo = str((cfg.get("learning") or {}).get("selector_algo") or "thompson")
+        fallback_id = {
+            "thompson": "bandit_thompson",
+            "ucb1": "bandit_ucb1",
+            "regime_rules": "fixed_rules",
+        }.get(selector_algo, "bandit_thompson")
+        return next((row for row in engines if str(row.get("id")) == fallback_id), None)
 
     def _streams_from_runs(self, runs: list[dict[str, Any]]) -> dict[str, list[float]]:
         latest = runs[:50]
@@ -431,6 +458,31 @@ class LearningService:
     def _save_runtime_recommendations(self, rows: list[dict[str, Any]]) -> None:
         _json_save(self.recommend_runtime_path, rows[-200:])
 
+    def weights_history(self, *, from_ts: str | None = None, to_ts: str | None = None, mode: str | None = None) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for row in self.load_runtime_recommendations():
+            ts = str(row.get("created_at") or "")
+            if mode and str(row.get("mode") or "").lower() != str(mode).lower():
+                continue
+            if from_ts and ts and ts < from_ts:
+                continue
+            if to_ts and ts and ts > to_ts:
+                continue
+            weights = row.get("weights_sugeridos") if isinstance(row.get("weights_sugeridos"), dict) else {}
+            for strategy_id, weight in weights.items():
+                out.append(
+                    {
+                        "ts": ts,
+                        "recommendation_id": str(row.get("id") or ""),
+                        "mode": str(row.get("mode") or ""),
+                        "strategy_id": str(strategy_id),
+                        "weight": float(weight or 0.0),
+                        "regime": str(row.get("regime") or ""),
+                    }
+                )
+        out.sort(key=lambda x: (x["ts"], x["strategy_id"]))
+        return out
+
     def recommend_from_pool(
         self,
         *,
@@ -445,6 +497,9 @@ class LearningService:
         learning = cfg["learning"]
         if not bool(learning.get("enabled")):
             raise ValueError("Aprendizaje deshabilitado")
+        selected_engine = self._selected_engine(cfg)
+        engine_params = selected_engine.get("params") if isinstance(selected_engine, dict) and isinstance(selected_engine.get("params"), dict) else {}
+        engine_id = str(selected_engine.get("id")) if isinstance(selected_engine, dict) else str(learning.get("engine_id") or "")
         pool = self._eligible_learning_pool(strategies)
         if not pool:
             raise ValueError("Pool de aprendizaje vacio (tildá 'Incluida en Aprendizaje')")
@@ -495,6 +550,25 @@ class LearningService:
                     "calmar": float(metrics.get("calmar", 0.0) or 0.0),
                 }
             )
+        runtime_rows = self.load_runtime_recommendations()
+        guardrail_warnings: list[str] = []
+        min_trades_per_arm = int(engine_params.get("min_trades_per_arm", 0) or 0)
+        if min_trades_per_arm > 0:
+            filtered = [row for row in ranking if int(row.get("trade_count", 0) or 0) >= min_trades_per_arm]
+            if not filtered:
+                # Bootstrap seguro: si no hay evidencia suficiente todavía, permitimos recomendar
+                # pero dejamos warning explícito para que no se interprete como señal fuerte.
+                bootstrap_ok = (len(selector_candidates) <= 1) or (len(runtime_rows) == 0)
+                if not bootstrap_ok:
+                    raise ValueError(f"Bloqueado (anti performance-chasing): ninguna estrategia cumple min_trades_per_arm={min_trades_per_arm}")
+                guardrail_warnings.append(
+                    f"Bootstrap sin evidencia suficiente: ninguna estrategia cumple min_trades_per_arm={min_trades_per_arm}. "
+                    "La recomendacion es de baja confianza (Opcion B, requiere aprobacion)."
+                )
+            else:
+                allowed_ids = {row["strategy_id"] for row in filtered}
+                selector_candidates = [row for row in selector_candidates if str(row.get("id")) in allowed_ids]
+                ranking = filtered
         selector = StrategySelector(str(learning.get("selector_algo", "thompson")))
         decision = selector.select(selector_candidates, context={"regime": regime})
         ranking.sort(key=lambda r: r["reward"], reverse=True)
@@ -507,6 +581,46 @@ class LearningService:
             }
         else:
             weights = {}
+        max_switch_per_day = int(engine_params.get("max_switch_per_day", 0) or 0)
+        if max_switch_per_day > 0:
+            now_dt = datetime.now(timezone.utc)
+            start_day = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            daily_rows = []
+            for row in runtime_rows:
+                try:
+                    ts = datetime.fromisoformat(str(row.get("created_at")).replace("Z", "+00:00"))
+                except Exception:
+                    continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.astimezone(timezone.utc)
+                if ts >= start_day and str(row.get("mode") or "").lower() == str(mode).lower():
+                    daily_rows.append(row)
+            switches = 0
+            last_active = None
+            for row in sorted(daily_rows, key=lambda x: str(x.get("created_at") or "")):
+                active = str(row.get("active_strategy_id") or "")
+                if active and last_active and active != last_active:
+                    switches += 1
+                if active:
+                    last_active = active
+            proposed_active = str(decision.get("active_strategy_id") or "")
+            if last_active and proposed_active and proposed_active != last_active and switches >= max_switch_per_day:
+                raise ValueError(f"Bloqueado por cooldown: max_switch_per_day={max_switch_per_day} alcanzado")
+        max_weight_change_pct = float(engine_params.get("max_weight_change_pct", 0.0) or 0.0)
+        if max_weight_change_pct > 0 and runtime_rows and weights:
+            prev = next((row for row in reversed(runtime_rows) if str(row.get("mode") or "").lower() == str(mode).lower()), None)
+            prev_weights = prev.get("weights_sugeridos") if isinstance(prev, dict) and isinstance(prev.get("weights_sugeridos"), dict) else {}
+            if prev_weights:
+                clamped: dict[str, float] = {}
+                keys = set(prev_weights.keys()) | set(weights.keys())
+                for key in keys:
+                    prev_w = float(prev_weights.get(key, 0.0) or 0.0)
+                    cur_w = float(weights.get(key, 0.0) or 0.0)
+                    delta = max(-max_weight_change_pct, min(max_weight_change_pct, cur_w - prev_w))
+                    clamped[key] = max(0.0, round(prev_w + delta, 4))
+                total = sum(clamped.values()) or 1.0
+                weights = {k: round(v / total, 4) for k, v in clamped.items()}
         recommendation = {
             "id": f"rec_{hashlib.sha256(f'{mode}:{regime}:{_utc_iso()}'.encode('utf-8')).hexdigest()[:10]}",
             "status": "PENDING_REVIEW",
@@ -515,10 +629,17 @@ class LearningService:
             "to_ts": to_ts,
             "regime": regime,
             "selector_algo": str(learning.get("selector_algo", "thompson")),
+            "engine_id": engine_id,
             "active_strategy_id": decision.get("active_strategy_id"),
             "weights_sugeridos": weights,
             "ranking": top,
             "option_b": {"allow_auto_apply": False, "allow_live": False, "requires_human_approval": True},
+            "guardrails": {
+                "warnings": guardrail_warnings,
+                "min_trades_per_arm": min_trades_per_arm,
+                "max_switch_per_day": max_switch_per_day,
+                "max_weight_change_pct": max_weight_change_pct,
+            },
             "created_at": _utc_iso(),
         }
         rows = self.load_runtime_recommendations()

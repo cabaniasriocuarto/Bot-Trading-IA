@@ -1,0 +1,15 @@
+# Runtime (LIVE/PAPER/TESTNET) liviano y estable - Python 3.11+
+fastapi==0.115.11
+uvicorn[standard]==0.30.6
+pydantic==2.10.6
+python-multipart==0.0.20
+requests==2.32.3
+httpx==0.28.1
+websockets==14.2
+PyYAML==6.0.2
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.14.1
+lark==1.2.2
+typer==0.15.1
+rich==13.9.4

@@ -4,6 +4,7 @@ import asyncio
 import csv
 import hashlib
 import hmac
+import importlib.util
 import io
 import json
 import os
@@ -218,6 +219,15 @@ class RolloutBlendPreviewBody(BaseModel):
     record_telemetry: bool = True
 
 
+class ResearchChangePointsBody(BaseModel):
+    series: list[float]
+    signal_name: str = "returns"
+    period: dict[str, str] | None = None
+    model: Literal["l1", "l2", "rbf"] = "l2"
+    max_breakpoints: int = 5
+    penalty: float | None = None
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -259,6 +269,190 @@ def parse_yaml_map(text: str) -> dict[str, Any]:
     if isinstance(parsed, dict):
         return parsed
     return {}
+
+
+def _json_file_or_default(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _yaml_file_or_default(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return payload if payload is not None else default
+    except Exception:
+        return default
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+def _build_learning_capabilities_registry() -> dict[str, dict[str, Any]]:
+    # capability -> deps + availability. UI usa esto para habilitar widgets sin hardcode.
+    deps_map: dict[str, list[str]] = {
+        "bandit_weights_history": [],
+        "explain_recommendation": [],
+        "offline_change_points": ["ruptures"],
+        "mlflow_runs": ["mlflow"],
+        "portfolio_alloc_preview": ["riskfolio", "pypfopt", "cvxpy"],
+    }
+    registry: dict[str, dict[str, Any]] = {}
+    for cap, deps in deps_map.items():
+        missing = [dep for dep in deps if not _module_available(dep)]
+        registry[cap] = {
+            "id": cap,
+            "requires": deps,
+            "available": len(missing) == 0,
+            "missing": missing,
+            "tier": "research" if deps else "runtime",
+            "reason": "" if not missing else f"Faltan librerias: {', '.join(missing)}",
+        }
+    return registry
+
+
+def _default_engine_capabilities(engine_id: str) -> list[str]:
+    mapping = {
+        "fixed_rules": ["explain_recommendation"],
+        "bandit_thompson": ["bandit_weights_history", "explain_recommendation"],
+        "bandit_ucb1": ["bandit_weights_history", "explain_recommendation"],
+        "meta_rf_selector": ["explain_recommendation", "mlflow_runs"],
+        "dqn_offline_experimental": ["explain_recommendation", "mlflow_runs"],
+    }
+    return mapping.get(engine_id, ["explain_recommendation"])
+
+
+def _selector_algo_to_engine_id(selector_algo: str) -> str:
+    algo = str(selector_algo or "thompson").strip().lower()
+    return {
+        "thompson": "bandit_thompson",
+        "ucb1": "bandit_ucb1",
+        "regime_rules": "fixed_rules",
+    }.get(algo, "bandit_thompson")
+
+
+def _engine_id_to_selector_algo(engine_id: str) -> str:
+    eid = str(engine_id or "").strip().lower()
+    return {
+        "bandit_thompson": "thompson",
+        "bandit_ucb1": "ucb1",
+        "fixed_rules": "regime_rules",
+    }.get(eid, "thompson")
+
+
+def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
+    settings = learning_service.ensure_settings_shape(dict(settings or {}))
+    capabilities_registry = _build_learning_capabilities_registry()
+    warnings: list[str] = []
+    yaml_valid = True
+    source_mode = "knowledge_loader"
+    tiers_payload: dict[str, Any] | None = None
+    try:
+        engines_payload = learning_service.knowledge.get_learning_engines()
+        gates_payload = learning_service.knowledge.get_gates()
+        # optional tiers file (no rompe si no existe)
+        tiers_path = (MONOREPO_ROOT / "knowledge" / "policies" / "tiers.yaml").resolve()
+        tiers_payload = _yaml_file_or_default(tiers_path, {"tiers": []}) if tiers_path.exists() else {"tiers": []}
+    except Exception as exc:
+        yaml_valid = False
+        source_mode = "fallback_safe"
+        warnings.append(f"YAML inválido o no disponible: {exc}. Fallback seguro: learning OFF.")
+        engines_payload = {
+            "learning_mode": {"option": "B", "enabled_default": False, "auto_apply_live": False, "require_human_approval": True},
+            "drift_detection": {"enabled": True, "detectors": []},
+            "engines": [],
+            "safe_update": {"enabled": True, "canary_schedule_pct": [0, 5, 15, 35, 60, 100], "rollback_auto": True},
+        }
+        gates_payload = {}
+        tiers_payload = {"tiers": []}
+
+    raw_engines = engines_payload.get("engines") if isinstance(engines_payload, dict) else []
+    engines_out: list[dict[str, Any]] = []
+    for row in raw_engines if isinstance(raw_engines, list) else []:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        caps = row.get("capabilities") if isinstance(row.get("capabilities"), list) else _default_engine_capabilities(str(row.get("id")))
+        caps = [str(c) for c in caps]
+        engine_caps = []
+        for cap_id in caps:
+            cap = capabilities_registry.get(cap_id, {"id": cap_id, "available": True, "requires": [], "missing": [], "tier": "runtime", "reason": ""})
+            engine_caps.append(cap)
+        engines_out.append(
+            {
+                "id": str(row.get("id")),
+                "name": str(row.get("name") or row.get("id")),
+                "enabled_default": bool(row.get("enabled_default", False)),
+                "description": str(row.get("description") or ""),
+                "ui_help": str(row.get("ui_help") or ""),
+                "params": row.get("params") if isinstance(row.get("params"), dict) else {},
+                "capabilities": caps,
+                "capabilities_detail": engine_caps,
+            }
+        )
+
+    learning_cfg = settings.get("learning") if isinstance(settings.get("learning"), dict) else {}
+    selected_engine_id = str(learning_cfg.get("engine_id") or _selector_algo_to_engine_id(str(learning_cfg.get("selector_algo") or "thompson")))
+    available_engine_ids = {row["id"] for row in engines_out}
+    if selected_engine_id and selected_engine_id not in available_engine_ids and engines_out:
+        warnings.append(f"engine_id '{selected_engine_id}' no existe en YAML. Se usa fallback seguro.")
+        selected_engine_id = str(next((e["id"] for e in engines_out if e.get("enabled_default")), engines_out[0]["id"]))
+
+    safe_update_cfg = (engines_payload.get("safe_update") if isinstance(engines_payload, dict) and isinstance(engines_payload.get("safe_update"), dict) else {}) or {}
+    rollout_cfg = settings.get("rollout") if isinstance(settings.get("rollout"), dict) else {}
+    require_approve = bool(rollout_cfg.get("require_manual_approval_for_live", True))
+    canary_schedule = safe_update_cfg.get("canary_schedule_pct")
+    if not isinstance(canary_schedule, list):
+        canary_schedule = [int(row.get("capital_pct", 0) or 0) for row in (rollout_cfg.get("phases") or []) if isinstance(row, dict) and row.get("type") in {"shadow", "canary", "stable"}]
+        if canary_schedule and canary_schedule[0] != 0:
+            canary_schedule = [0] + canary_schedule
+    canary_schedule = [int(x) for x in canary_schedule] if isinstance(canary_schedule, list) else [0, 5, 15, 35, 60, 100]
+
+    drift_detection = engines_payload.get("drift_detection") if isinstance(engines_payload, dict) and isinstance(engines_payload.get("drift_detection"), dict) else {"enabled": True, "detectors": []}
+    detector_options = [
+        {"id": "adwin", "name": "ADWIN", "description": "Detecta cambio de distribución en streams (online)."},
+        {"id": "page_hinkley", "name": "Page-Hinkley", "description": "Detecta cambio de media acumulada (CUSUM)."},
+    ]
+    # Heurístico de selectors compatibles con runtime actual.
+    runtime_selector_compatible = [e["id"] for e in engines_out if e["id"] in {"fixed_rules", "bandit_thompson", "bandit_ucb1"}]
+    if not yaml_valid:
+        settings["learning"]["enabled"] = False
+    return {
+        "ok": True,
+        "yaml_valid": yaml_valid,
+        "source_mode": source_mode,
+        "warnings": warnings,
+        "learning_mode": engines_payload.get("learning_mode") if isinstance(engines_payload, dict) else {},
+        "drift_detection": {
+            **(drift_detection if isinstance(drift_detection, dict) else {}),
+            "runtime_detector_options": detector_options,
+        },
+        "engines": engines_out,
+        "selected_engine_id": selected_engine_id,
+        "selector_algo_compat": _engine_id_to_selector_algo(selected_engine_id),
+        "runtime_selector_compatible_engine_ids": runtime_selector_compatible,
+        "safe_update": {
+            "enabled": bool(safe_update_cfg.get("enabled", True)),
+            "gates_file": str(safe_update_cfg.get("gates_file") or "knowledge/policies/gates.yaml"),
+            "canary_schedule_pct": canary_schedule,
+            "rollback_auto": bool(safe_update_cfg.get("rollback_auto", True)),
+            "approve_required": require_approve,
+        },
+        "gates_summary": {
+            "pbo_enabled": bool(((gates_payload.get("pbo") or {}).get("enabled")) if isinstance(gates_payload, dict) else False),
+            "dsr_enabled": bool(((gates_payload.get("dsr") or {}).get("enabled")) if isinstance(gates_payload, dict) else False),
+        },
+        "tiers": tiers_payload if isinstance(tiers_payload, dict) else {"tiers": []},
+        "capabilities_registry": capabilities_registry,
+    }
 
 
 def get_env(name: str, default: str = "") -> str:
@@ -3263,6 +3457,20 @@ def create_app() -> FastAPI:
         )
         return recommendation
 
+    @app.get("/api/v1/learning/weights-history")
+    def learning_weights_history(
+        from_ts: str | None = Query(default=None, alias="from"),
+        to_ts: str | None = Query(default=None, alias="to"),
+        mode: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {
+            "items": learning_service.weights_history(from_ts=from_ts, to_ts=to_ts, mode=mode),
+            "from": from_ts,
+            "to": to_ts,
+            "mode": mode,
+        }
+
     @app.post("/api/v1/learning/approve")
     def learning_approve(body: LearningDecisionBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         row = learning_service.update_runtime_recommendation_status(body.recommendation_id, status="APPROVED", note=body.note)
@@ -3367,6 +3575,176 @@ def create_app() -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="Recommendation not found")
         return row
+
+    @app.post("/api/v1/research/change-points")
+    def research_change_points(body: ResearchChangePointsBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        values = [float(x) for x in (body.series or [])]
+        if len(values) < 10:
+            raise HTTPException(status_code=400, detail="series requiere al menos 10 puntos")
+        max_breakpoints = max(1, min(int(body.max_breakpoints or 5), 20))
+        caps = _build_learning_capabilities_registry()
+        cap = caps.get("offline_change_points", {"id": "offline_change_points", "available": False, "missing": ["ruptures"]})
+        warnings: list[str] = []
+
+        def _heuristic_breakpoints(series: list[float]) -> list[int]:
+            diffs = []
+            for idx in range(1, len(series)):
+                diffs.append((idx, abs(series[idx] - series[idx - 1])))
+            if not diffs:
+                return []
+            vals = [d for _, d in diffs]
+            mean_d = sum(vals) / len(vals)
+            var_d = sum((d - mean_d) ** 2 for d in vals) / max(1, len(vals))
+            std_d = var_d ** 0.5
+            threshold = mean_d + (2.0 * std_d if std_d > 0 else max(mean_d * 0.75, 1e-9))
+            ranked = sorted((row for row in diffs if row[1] >= threshold), key=lambda x: x[1], reverse=True)
+            min_gap = max(5, len(series) // (max_breakpoints + 1))
+            picked: list[int] = []
+            for idx, _score in ranked:
+                if any(abs(idx - prev) < min_gap for prev in picked):
+                    continue
+                picked.append(idx)
+                if len(picked) >= max_breakpoints:
+                    break
+            return sorted(picked)
+
+        method = "heuristic"
+        breakpoint_idx: list[int] = []
+        score = None
+        if bool(cap.get("available")):
+            try:
+                import numpy as np  # local import: research capability optional
+                import ruptures as rpt  # type: ignore
+
+                arr = np.asarray(values, dtype=float).reshape(-1, 1)
+                algo = rpt.Pelt(model=body.model).fit(arr)
+                pen = float(body.penalty) if body.penalty is not None else max(3.0, len(values) * 0.01)
+                raw = [int(x) for x in algo.predict(pen=pen)]
+                breakpoint_idx = [x for x in raw if 0 < x < len(values)]
+                if len(breakpoint_idx) > max_breakpoints:
+                    breakpoint_idx = breakpoint_idx[:max_breakpoints]
+                method = "ruptures_pelt"
+                score = {"penalty": pen}
+            except Exception as exc:
+                warnings.append(f"ruptures no disponible/operativo, se usa fallback heuristico: {exc}")
+                breakpoint_idx = _heuristic_breakpoints(values)
+        else:
+            warnings.append("Capability offline_change_points no disponible (falta ruptures); se usa fallback heuristico.")
+            breakpoint_idx = _heuristic_breakpoints(values)
+
+        global_abs_mean = sum(abs(v) for v in values) / max(1, len(values))
+        global_mean = sum(values) / max(1, len(values))
+        global_var = sum((v - global_mean) ** 2 for v in values) / max(1, len(values))
+        global_std = global_var ** 0.5
+
+        boundaries = [0] + sorted(set(int(x) for x in breakpoint_idx if 0 < int(x) < len(values))) + [len(values)]
+        segments: list[dict[str, Any]] = []
+        for idx in range(len(boundaries) - 1):
+            start_i = boundaries[idx]
+            end_i = boundaries[idx + 1]
+            seg = values[start_i:end_i]
+            if not seg:
+                continue
+            seg_mean = sum(seg) / len(seg)
+            seg_var = sum((v - seg_mean) ** 2 for v in seg) / max(1, len(seg))
+            seg_std = seg_var ** 0.5
+            seg_abs = sum(abs(v) for v in seg) / len(seg)
+            signal_name = str(body.signal_name or "returns").lower()
+            if signal_name in {"vpin", "spread", "slippage"} and (seg_abs >= max(global_abs_mean * 1.5, 0.9 if signal_name == "vpin" else 1.0)):
+                regime_label = "toxic"
+            elif seg_std >= max(global_std * 1.6, 1e-9):
+                regime_label = "high_vol"
+            elif signal_name in {"returns", "pnl", "expectancy"} and abs(seg_mean) >= max(global_std * 0.8, 1e-9):
+                regime_label = "trend"
+            else:
+                regime_label = "range"
+            segments.append(
+                {
+                    "segment_id": idx + 1,
+                    "start_idx": start_i,
+                    "end_idx": end_i - 1,
+                    "length": len(seg),
+                    "mean": round(seg_mean, 8),
+                    "std": round(seg_std, 8),
+                    "abs_mean": round(seg_abs, 8),
+                    "regime_sugerido": regime_label,
+                }
+            )
+        return {
+            "ok": True,
+            "signal_name": body.signal_name,
+            "period": body.period or {},
+            "method": method,
+            "breakpoints": breakpoint_idx,
+            "segments": segments,
+            "score": score,
+            "capability": cap,
+            "warnings": warnings,
+        }
+
+    @app.get("/api/v1/research/mlflow/runs")
+    def research_mlflow_runs(
+        experiment: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=200),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        caps = _build_learning_capabilities_registry()
+        cap = caps.get("mlflow_runs", {"id": "mlflow_runs", "available": False})
+        tracking_uri = get_env("MLFLOW_TRACKING_URI", "")
+        if not cap.get("available"):
+            return {
+                "ok": True,
+                "available": False,
+                "configured": bool(tracking_uri),
+                "capability": cap,
+                "runs": [],
+                "message": "Capability mlflow_runs no disponible (instala requirements-research.txt).",
+            }
+        if not tracking_uri:
+            return {
+                "ok": True,
+                "available": True,
+                "configured": False,
+                "capability": cap,
+                "runs": [],
+                "message": "MLFLOW_TRACKING_URI no configurado.",
+            }
+        try:
+            import mlflow  # type: ignore
+
+            mlflow.set_tracking_uri(tracking_uri)
+            experiments = mlflow.search_experiments()
+            exp_map = {str(getattr(e, "name", "")): str(getattr(e, "experiment_id", "")) for e in experiments}
+            experiment_ids = None
+            if experiment:
+                exp_id = exp_map.get(experiment)
+                if not exp_id:
+                    return {"ok": True, "available": True, "configured": True, "capability": cap, "runs": [], "message": f"Experiment '{experiment}' no encontrado."}
+                experiment_ids = [exp_id]
+            runs_df = mlflow.search_runs(experiment_ids=experiment_ids, max_results=int(limit))
+            runs: list[dict[str, Any]] = []
+            for _, row in runs_df.iterrows():
+                runs.append(
+                    {
+                        "run_id": str(row.get("run_id") or row.get("run_id", "")),
+                        "experiment_id": str(row.get("experiment_id") or ""),
+                        "status": str(row.get("status") or ""),
+                        "start_time": str(row.get("start_time") or ""),
+                        "end_time": str(row.get("end_time") or ""),
+                        "metrics": {str(k)[8:]: v for k, v in row.items() if str(k).startswith("metrics.")},
+                        "params": {str(k)[7:]: v for k, v in row.items() if str(k).startswith("params.")},
+                    }
+                )
+            return {"ok": True, "available": True, "configured": True, "capability": cap, "runs": runs}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "available": True,
+                "configured": True,
+                "capability": cap,
+                "runs": [],
+                "error": str(exc),
+            }
 
     @app.post("/api/v1/learning/adopt")
     def learning_adopt(body: LearningAdoptBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -3871,6 +4249,10 @@ def create_app() -> FastAPI:
         store.save_settings(merged)
         return merged
 
+    @app.get("/api/v1/config/learning")
+    def config_learning(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return build_learning_config_payload(store.load_settings())
+
     @app.put("/api/v1/settings")
     async def settings_update(request: Request, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         body = await request.json()
@@ -3916,6 +4298,10 @@ def create_app() -> FastAPI:
                 "improve_vs_baseline": {**(current_rollout.get("improve_vs_baseline", {}) if isinstance(current_rollout.get("improve_vs_baseline"), dict) else {}), **(body_rollout.get("improve_vs_baseline", {}) if isinstance(body_rollout.get("improve_vs_baseline"), dict) else {})},
                 "phases": body_rollout.get("phases") if isinstance(body_rollout.get("phases"), list) else current_rollout.get("phases"),
             }
+        if isinstance(merged.get("learning"), dict):
+            engine_id = str(merged["learning"].get("engine_id") or "").strip()
+            if engine_id:
+                merged["learning"]["selector_algo"] = _engine_id_to_selector_algo(engine_id)
         merged = learning_service.ensure_settings_shape(merged)
         store.save_settings(merged)
         store.add_log(

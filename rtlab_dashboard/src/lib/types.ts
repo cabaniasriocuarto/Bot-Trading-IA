@@ -429,6 +429,7 @@ export interface SettingsResponse {
   learning: {
     enabled: boolean;
     mode: "OFF" | "RESEARCH";
+    engine_id?: string;
     selector_algo: "thompson" | "ucb1" | "regime_rules";
     drift_algo: "adwin" | "page_hinkley";
     max_candidates: number;
@@ -463,6 +464,55 @@ export interface SettingsResponse {
   };
   feature_flags: Record<string, boolean>;
   gate_checklist: Array<{ stage: string; done: boolean; note: string }>;
+}
+
+export interface LearningEngineConfigItem {
+  id: string;
+  name: string;
+  enabled_default: boolean;
+  description: string;
+  ui_help: string;
+  params: Record<string, unknown>;
+  capabilities: string[];
+  capabilities_detail?: Array<{
+    id: string;
+    requires?: string[];
+    available?: boolean;
+    missing?: string[];
+    tier?: "runtime" | "research" | string;
+    reason?: string;
+  }>;
+}
+
+export interface LearningConfigResponse {
+  ok: boolean;
+  yaml_valid: boolean;
+  source_mode: string;
+  warnings: string[];
+  learning_mode: {
+    option?: string;
+    enabled_default?: boolean;
+    auto_apply_live?: boolean;
+    require_human_approval?: boolean;
+  };
+  drift_detection: {
+    enabled?: boolean;
+    detectors?: Array<Record<string, unknown>>;
+    runtime_detector_options?: Array<{ id: string; name: string; description: string }>;
+  };
+  engines: LearningEngineConfigItem[];
+  selected_engine_id: string;
+  selector_algo_compat?: "thompson" | "ucb1" | "regime_rules" | string;
+  runtime_selector_compatible_engine_ids?: string[];
+  safe_update: {
+    enabled: boolean;
+    gates_file: string;
+    canary_schedule_pct: number[];
+    rollback_auto: boolean;
+    approve_required: boolean;
+  };
+  tiers?: Record<string, unknown>;
+  capabilities_registry?: Record<string, { available?: boolean; missing?: string[]; tier?: string; reason?: string }>;
 }
 
 export interface SessionUser {

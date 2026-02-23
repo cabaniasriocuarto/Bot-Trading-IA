@@ -39,24 +39,50 @@ engines:
     enabled_default: true
     description: "Solo ejecuta estrategias activas; no cambia selección automáticamente."
     ui_help: "Útil para control total y debugging. Recomendado como baseline."
+    capabilities:
+      - explain_recommendation
 
   - id: bandit_thompson
     name: "Selector de Estrategias: Bandit (Thompson Sampling)"
     enabled_default: true
     description: "Elige estrategia según performance reciente por régimen, con exploración controlada."
     ui_help: "Balancea explorar vs explotar. Ideal para agresividad media sin saltos bruscos."
+    capabilities:
+      - bandit_weights_history
+      - explain_recommendation
     params:
       reward_metric: "net_expectancy"   # net_expectancy | sharpe | calmar
       lookback_trades: 300
       min_trades_per_arm: 60
       exploration_floor: 0.10
       max_switch_per_day: 2
+      max_weight_change_pct: 0.25
+      min_window_days: 14
+
+  - id: bandit_ucb1
+    name: "Selector de Estrategias: Bandit (UCB1)"
+    enabled_default: false
+    description: "Usa cota superior de confianza para explorar cuando hay incertidumbre y explotar cuando hay evidencia."
+    ui_help: "Más determinista que Thompson; útil para comparar decisiones del selector."
+    capabilities:
+      - bandit_weights_history
+      - explain_recommendation
+    params:
+      reward_metric: "net_expectancy"
+      lookback_trades: 300
+      min_trades_per_arm: 60
+      max_switch_per_day: 2
+      max_weight_change_pct: 0.25
+      min_window_days: 14
 
   - id: meta_rf_selector
     name: "Meta-modelo: Random Forest (offline)"
     enabled_default: false
     description: "Entrena offline para predecir cuál estrategia conviene dado el régimen."
     ui_help: "Más potente, pero requiere pipeline offline bien hecho. Recomendado tras estabilizar data/backtests."
+    capabilities:
+      - explain_recommendation
+      - mlflow_runs
     params:
       retrain_freq: "weekly"
       features:
@@ -74,6 +100,9 @@ engines:
     enabled_default: false
     description: "Aprendizaje por refuerzo offline para seleccionar acciones/estrategias. Alto riesgo de overfitting."
     ui_help: "NO recomendado para live hasta tener data masiva + validación fuerte."
+    capabilities:
+      - explain_recommendation
+      - mlflow_runs
     params:
       train_steps: 200000
       eval_episodes: 200
@@ -85,3 +114,6 @@ safe_update:
   gates_file: "knowledge/policies/gates.yaml"
   canary_schedule_pct: [0, 5, 15, 35, 60, 100]
   rollback_auto: true
+  capabilities:
+    - portfolio_alloc_preview
+    - offline_change_points

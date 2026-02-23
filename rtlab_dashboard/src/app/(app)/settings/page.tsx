@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/c
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { apiGet, apiPost } from "@/lib/client-api";
-import type { BacktestRun, ExchangeDiagnoseResponse, HealthResponse, SettingsResponse } from "@/lib/types";
+import type { BacktestRun, ExchangeDiagnoseResponse, HealthResponse, LearningConfigResponse, SettingsResponse } from "@/lib/types";
 
 type GateItem = {
   id: string;
@@ -184,17 +184,27 @@ export default function SettingsPage() {
   const [rolloutCandidateRunId, setRolloutCandidateRunId] = useState("");
   const [rolloutBaselineRunId, setRolloutBaselineRunId] = useState("");
   const [rolloutReason, setRolloutReason] = useState("");
+  const [learningConfig, setLearningConfig] = useState<LearningConfigResponse | null>(null);
+  const [learningConfigError, setLearningConfigError] = useState("");
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       setError("");
       try {
-        const data = await apiGet<SettingsResponse>("/api/v1/settings");
+        const [data, gatesPayload, cfgLearning] = await Promise.all([
+          apiGet<SettingsResponse>("/api/v1/settings"),
+          apiGet<{ gates: GateItem[]; overall_status: "PASS" | "FAIL" | "WARN" }>("/api/v1/gates"),
+          apiGet<LearningConfigResponse>("/api/v1/config/learning"),
+        ]);
         setSettings(data);
-        const gatesPayload = await apiGet<{ gates: GateItem[]; overall_status: "PASS" | "FAIL" | "WARN" }>("/api/v1/gates");
         setGates(gatesPayload.gates);
         setGatesOverall(gatesPayload.overall_status);
+        setLearningConfig(cfgLearning);
+        setLearningConfigError("");
+        if (!data.learning.engine_id && cfgLearning.selected_engine_id) {
+          setSettings((prev) => (prev ? { ...prev, learning: { ...prev.learning, engine_id: cfgLearning.selected_engine_id } } : prev));
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : "No se pudo cargar configuracion.";
         setError(msg);
@@ -488,6 +498,15 @@ export default function SettingsPage() {
 
   const liveLocked = settings.mode === "LIVE" && gatesOverall !== "PASS";
   const learning = settings.learning;
+  const engineOptions = learningConfig?.engines ?? [];
+  const selectedEngine =
+    engineOptions.find((row) => row.id === (learning.engine_id || learningConfig?.selected_engine_id)) ||
+    engineOptions.find((row) => row.id === learningConfig?.selected_engine_id) ||
+    null;
+  const driftOptions = learningConfig?.drift_detection?.runtime_detector_options ?? [
+    { id: "adwin", name: "ADWIN", description: "Detecta cambio de distribución en streams." },
+    { id: "page_hinkley", name: "Page-Hinkley", description: "Detecta cambio de media (CUSUM)." },
+  ];
   const rolloutCurrentEvalKey =
     (rollout?.state && ROLLOUT_STATE_TO_EVAL_PHASE[rollout.state]) || (typeof rollout?.current_phase === "string" ? rollout.current_phase : undefined);
   const rolloutCurrentEval = rolloutCurrentEvalKey ? rollout?.phase_evaluations?.[rolloutCurrentEvalKey] : undefined;
@@ -665,8 +684,17 @@ export default function SettingsPage() {
 
       <Card>
         <CardTitle>Cerebro / Aprendizaje</CardTitle>
-        <CardDescription>Opcion B: genera recomendaciones y nunca aplica a LIVE automaticamente.</CardDescription>
+        <CardDescription>Opcion B: genera recomendaciones y nunca aplica a LIVE automaticamente. Config-driven desde Knowledge Pack.</CardDescription>
         <CardContent className="space-y-3">
+          {learningConfig && !learningConfig.yaml_valid ? (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+              YAML de learning inválido/no disponible. Fallback seguro: learning en OFF.
+              {learningConfig.warnings?.length ? <div className="mt-2">{learningConfig.warnings.join(" | ")}</div> : null}
+            </div>
+          ) : null}
+          {learningConfig?.warnings?.length ? (
+            <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-2 text-xs text-slate-300">{learningConfig.warnings.join(" | ")}</div>
+          ) : null}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <label className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
               <span className="flex items-center gap-2">
@@ -704,30 +732,49 @@ export default function SettingsPage() {
 
             <div className="space-y-1">
               <label className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
-                Selector
-                <InfoTip text={"Thompson: explora/explota entre estrategias segun resultados.\nUCB1: usa cota superior e incertidumbre.\nRegime Rules: elige por reglas de mercado."} />
+                Engine (config-driven)
+                <InfoTip text={selectedEngine ? `${selectedEngine.description}\n${selectedEngine.ui_help}` : "Engines cargados desde learning_engines.yaml"} />
               </label>
               <Select
-                value={learning.selector_algo}
+                value={(learning.engine_id || learningConfig?.selected_engine_id || selectedEngine?.id || "") as string}
                 onChange={(e) =>
                   setSettings((prev) =>
                     prev
-                      ? { ...prev, learning: { ...prev.learning, selector_algo: e.target.value as "thompson" | "ucb1" | "regime_rules" } }
+                      ? {
+                          ...prev,
+                          learning: {
+                            ...prev.learning,
+                            engine_id: e.target.value,
+                            selector_algo:
+                              e.target.value === "bandit_ucb1"
+                                ? "ucb1"
+                                : e.target.value === "fixed_rules"
+                                ? "regime_rules"
+                                : "thompson",
+                          },
+                        }
                       : prev,
                   )
                 }
                 disabled={role !== "admin"}
               >
-                <option value="thompson">Thompson</option>
-                <option value="ucb1">UCB1</option>
-                <option value="regime_rules">Regime Rules</option>
+                {engineOptions.map((engine) => (
+                  <option key={engine.id} value={engine.id}>
+                    {engine.name}
+                  </option>
+                ))}
               </Select>
+              {selectedEngine ? (
+                <p className="text-xs text-slate-400">
+                  {selectedEngine.ui_help}
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-1">
               <label className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
                 Drift
-                <InfoTip text={"ADWIN: detecta cambio de distribucion en streams.\nPage-Hinkley: detecta cambio de media (CUSUM)."} />
+                <InfoTip text={"Opciones runtime (online) servidas por /api/v1/config/learning."} />
               </label>
               <Select
                 value={learning.drift_algo}
@@ -738,9 +785,15 @@ export default function SettingsPage() {
                 }
                 disabled={role !== "admin"}
               >
-                <option value="adwin">ADWIN</option>
-                <option value="page_hinkley">Page-Hinkley</option>
+                {driftOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.name}
+                  </option>
+                ))}
               </Select>
+              {driftOptions.find((d) => d.id === learning.drift_algo)?.description ? (
+                <p className="text-xs text-slate-400">{driftOptions.find((d) => d.id === learning.drift_algo)?.description}</p>
+              ) : null}
             </div>
 
             <label className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
@@ -781,6 +834,33 @@ export default function SettingsPage() {
               />
             </label>
           </div>
+
+          {selectedEngine ? (
+            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Capabilities ({selectedEngine.id})</p>
+                {selectedEngine.capabilities?.map((capId) => {
+                  const detail = selectedEngine.capabilities_detail?.find((row) => row.id === capId);
+                  const ok = detail?.available !== false;
+                  return (
+                    <Badge key={capId} variant={ok ? "success" : "warn"} title={detail?.reason || ""}>
+                      {capId}
+                    </Badge>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs text-slate-400">{selectedEngine.description}</p>
+            </div>
+          ) : null}
+
+          {learningConfig?.safe_update ? (
+            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+              <p className="font-semibold uppercase tracking-wide text-slate-400">Safe Update (config-driven)</p>
+              <p className="mt-1">
+                Canary schedule: {(learningConfig.safe_update.canary_schedule_pct || []).join(" → ")} | rollback auto: {learningConfig.safe_update.rollback_auto ? "Sí" : "No"} | approve required: {learningConfig.safe_update.approve_required ? "Sí" : "No"}
+              </p>
+            </div>
+          ) : null}
 
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-300">
             <p className="font-semibold text-slate-200">Perfil de riesgo: {learning.risk_profile?.risk_profile || "medium"}</p>

@@ -844,3 +844,85 @@ def test_patch_strategy_backfills_missing_strategy_registry_row(tmp_path: Path, 
   sqlite_row = module.store.registry.get_strategy_registry("trend_pullback_orderflow_confirm_v1")
   assert sqlite_row is not None
   assert sqlite_row["allow_learning"] is False
+
+
+def test_config_learning_endpoint_reads_yaml_and_exposes_capabilities(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/config/learning", headers=headers)
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is True
+  assert "engines" in body and isinstance(body["engines"], list) and body["engines"]
+  assert any(engine["id"] == "bandit_thompson" for engine in body["engines"])
+  bandit = next(engine for engine in body["engines"] if engine["id"] == "bandit_thompson")
+  assert "capabilities" in bandit and "bandit_weights_history" in bandit["capabilities"]
+  assert "capabilities_registry" in body and "offline_change_points" in body["capabilities_registry"]
+  assert "safe_update" in body and isinstance(body["safe_update"].get("canary_schedule_pct"), list)
+
+
+def test_change_points_smoke_endpoint_returns_breakpoints_or_segments(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  series = ([0.01] * 40) + ([0.20] * 40) + ([0.03] * 40)
+  res = client.post(
+    "/api/v1/research/change-points",
+    headers=headers,
+    json={
+      "signal_name": "returns",
+      "series": series,
+      "max_breakpoints": 4,
+      "period": {"from": "2024-01-01", "to": "2024-03-31"},
+    },
+  )
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is True
+  assert "capability" in body
+  assert isinstance(body.get("segments"), list) and body["segments"]
+  # Con ruptures o con fallback heuristico debe detectar al menos un corte en una serie con saltos.
+  assert isinstance(body.get("breakpoints"), list)
+  assert body["breakpoints"] or len(body["segments"]) >= 2
+
+
+def test_thompson_respects_max_switch_per_day_and_weights_history(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  settings = module.store.load_settings()
+  settings["learning"]["enabled"] = True
+  settings["learning"]["engine_id"] = "bandit_thompson"
+  settings["learning"]["selector_algo"] = "thompson"
+  module.store.save_settings(settings)
+
+  # Force different recommendations by restricting the learning pool to one strategy at a time.
+  strategy_ids = [
+    "trend_pullback_orderflow_v2",
+    "breakout_volatility_v2",
+    "meanreversion_range_v2",
+    "defensive_liquidity_v2",
+  ]
+  for sid in strategy_ids:
+    rows = client.get("/api/v1/strategies", headers=headers).json()
+    for row in rows:
+      pr = client.patch(f"/api/v1/strategies/{row['id']}", headers=headers, json={"allow_learning": row["id"] == sid})
+      assert pr.status_code == 200, pr.text
+    rr = client.post("/api/v1/learning/recommend", headers=headers, json={"mode": "paper"})
+    if sid != strategy_ids[-1]:
+      assert rr.status_code == 200, rr.text
+      assert rr.json()["active_strategy_id"] == sid
+    else:
+      # max_switch_per_day=2 en YAML -> al cuarto cambio en el día debe bloquear.
+      assert rr.status_code == 400
+      assert "max_switch_per_day" in rr.json()["detail"]
+
+  hist = client.get("/api/v1/learning/weights-history?mode=paper", headers=headers)
+  assert hist.status_code == 200, hist.text
+  items = hist.json()["items"]
+  assert items
+  assert all("strategy_id" in row and "weight" in row for row in items)
