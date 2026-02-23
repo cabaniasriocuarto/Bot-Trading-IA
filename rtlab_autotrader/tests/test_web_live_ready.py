@@ -761,3 +761,86 @@ def test_learning_recommend_uses_only_allow_learning_pool(tmp_path: Path, monkey
   rec_fail = client.post("/api/v1/learning/recommend", headers=headers, json={"mode": "paper"})
   assert rec_fail.status_code == 400
   assert "Pool de aprendizaje vacio" in rec_fail.json()["detail"]
+
+
+def test_runtime_recommendations_are_visible_in_listing_endpoint(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  settings = module.store.load_settings()
+  settings["learning"]["enabled"] = True
+  module.store.save_settings(settings)
+
+  rec_res = client.post("/api/v1/learning/recommend", headers=headers, json={"mode": "paper"})
+  assert rec_res.status_code == 200, rec_res.text
+  rec_id = rec_res.json()["id"]
+
+  listing = client.get("/api/v1/learning/recommendations", headers=headers)
+  assert listing.status_code == 200, listing.text
+  items = listing.json()
+  row = next((item for item in items if item["id"] == rec_id), None)
+  assert row is not None
+  assert row.get("recommendation_source") == "runtime"
+
+  detail = client.get(f"/api/v1/learning/recommendations/{rec_id}", headers=headers)
+  assert detail.status_code == 200, detail.text
+  assert detail.json()["id"] == rec_id
+
+
+def test_archiving_primary_reassigns_valid_primary(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  rows = client.get("/api/v1/strategies", headers=headers).json()
+  primary = next((row for row in rows if row.get("is_primary")), None)
+  assert primary is not None
+
+  # Ensure another tradable strategy exists, then archive current primary.
+  backup = next(row for row in rows if row["id"] != primary["id"])
+  res_enable = client.patch(
+    f"/api/v1/strategies/{backup['id']}",
+    headers=headers,
+    json={"enabled_for_trading": True, "status": "active"},
+  )
+  assert res_enable.status_code == 200, res_enable.text
+
+  res_archive = client.patch(
+    f"/api/v1/strategies/{primary['id']}",
+    headers=headers,
+    json={"status": "archived"},
+  )
+  assert res_archive.status_code == 200, res_archive.text
+  assert res_archive.json()["strategy"]["status"] == "archived"
+  assert res_archive.json()["strategy"]["is_primary"] is False
+
+  rows2 = client.get("/api/v1/strategies", headers=headers).json()
+  primaries = [row for row in rows2 if row.get("is_primary")]
+  assert len(primaries) == 1
+  assert primaries[0]["status"] != "archived"
+  assert primaries[0]["enabled_for_trading"] is True
+
+
+def test_patch_strategy_backfills_missing_strategy_registry_row(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  # Simulate legacy row: delete sqlite registry entry but keep strategy_meta.
+  with module.store.registry._connect() as conn:  # test-only use of private helper
+    conn.execute("DELETE FROM strategy_registry WHERE id=?", ("trend_pullback_orderflow_confirm_v1",))
+    conn.commit()
+
+  patch_res = client.patch(
+    "/api/v1/strategies/trend_pullback_orderflow_confirm_v1",
+    headers=headers,
+    json={"allow_learning": False},
+  )
+  assert patch_res.status_code == 200, patch_res.text
+  body = patch_res.json()["strategy"]
+  assert body["allow_learning"] is False
+
+  sqlite_row = module.store.registry.get_strategy_registry("trend_pullback_orderflow_confirm_v1")
+  assert sqlite_row is not None
+  assert sqlite_row["allow_learning"] is False

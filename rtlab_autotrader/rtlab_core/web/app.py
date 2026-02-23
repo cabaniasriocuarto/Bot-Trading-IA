@@ -566,6 +566,18 @@ def _binance_signed_request(
 _EXCHANGE_DIAG_CACHE: dict[str, Any] = {"mode": "", "checked_at_epoch": 0.0, "result": None}
 
 
+def _provider_restriction_action_plan(active_mode: str, exchange: str) -> list[str]:
+    mode_label = (active_mode or "testnet").upper()
+    exch = (exchange or "binance").lower()
+    target = "Binance Spot Testnet" if exch == "binance" and active_mode == "testnet" else f"{exch} ({mode_label})"
+    return [
+        f"No es un bug del bot: {target} está bloqueando la red/región de salida del backend (HTTP 451).",
+        "Probá el backend localmente (tu PC) para validar claves y place/cancel.",
+        "Si en local funciona, mové el backend a otra región/proveedor (VPS/Cloud) con egress permitido.",
+        "Mantené Vercel solo para frontend; el bloqueo es del backend (Railway/egress), no de la UI.",
+    ]
+
+
 def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -> dict[str, Any]:
     active_mode = (mode or store.load_bot_state().get("mode") or default_mode()).lower()
     now_epoch = time.time()
@@ -734,16 +746,29 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
 
     connector_ok = bool(checks.get("time", {}).get("ok") and checks.get("ws", {}).get("ok") and checks.get("account", {}).get("ok"))
     order_ok = bool(checks.get("order_test", {}).get("ok"))
+    provider_restriction_checks = [
+        key for key, value in checks.items() if isinstance(value, dict) and str(value.get("error_type") or "") == "provider_restriction"
+    ]
+    infrastructure_blocked = bool(provider_restriction_checks)
+    action_required = _provider_restriction_action_plan(active_mode, str(creds.get("exchange") or "")) if infrastructure_blocked else []
 
     if connector_ok:
         connector_reason = "Exchange connector listo."
     else:
-        connector_reason = last_error or "Exchange connector no listo."
+        connector_reason = (
+            "Conector bloqueado por restricción del proveedor/región (HTTP 451)."
+            if infrastructure_blocked
+            else (last_error or "Exchange connector no listo.")
+        )
 
     if order_ok:
         order_reason = "Place/cancel testnet operativo."
     else:
-        order_reason = checks.get("order_test", {}).get("error") or "Cannot place/cancel on testnet."
+        order_reason = (
+            "Order test bloqueado por restricción del proveedor/región (HTTP 451)."
+            if infrastructure_blocked
+            else (checks.get("order_test", {}).get("error") or "Cannot place/cancel on testnet.")
+        )
 
     result = {
         "ok": bool(connector_ok and (order_ok or active_mode == "paper")),
@@ -761,6 +786,9 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
         "connector_reason": connector_reason,
         "order_ok": order_ok,
         "order_reason": order_reason,
+        "infrastructure_blocked": infrastructure_blocked,
+        "provider_restriction_checks": provider_restriction_checks,
+        "action_required": action_required,
         "diagnostics": creds["diagnostics"],
     }
     _EXCHANGE_DIAG_CACHE.update({"mode": active_mode, "checked_at_epoch": now_epoch, "result": result})
@@ -1152,9 +1180,26 @@ def risk_hooks(context):
         self.save_strategy_meta(metadata)
 
     def _ensure_strategy_registry_invariants(self) -> None:
+        metadata = self.load_strategy_meta()
+        # Backfill rows for legacy strategies created before strategy_registry table existed.
+        for strategy_id, meta in metadata.items():
+            if not isinstance(meta, dict):
+                continue
+            if self.registry.get_strategy_registry(strategy_id):
+                continue
+            self.registry.upsert_strategy_registry(
+                strategy_key=strategy_id,
+                name=str(meta.get("name") or strategy_id),
+                version=str(meta.get("version") or "0.0.0"),
+                source=str(meta.get("source") or "uploaded"),
+                status=str(meta.get("status") or ("active" if bool(meta.get("enabled", False)) else "disabled")),
+                enabled_for_trading=bool(meta.get("enabled", False)),
+                allow_learning=bool(meta.get("allow_learning", True)),
+                is_primary=bool(meta.get("is_primary", False)),
+                tags=[str(x) for x in meta.get("tags", [])],
+            )
         self.registry.ensure_registry_primary()
         rows = self.registry.list_strategy_registry()
-        metadata = self.load_strategy_meta()
         if not rows:
             return
         if self.registry.enabled_for_trading_count() == 0:
@@ -1184,9 +1229,24 @@ def risk_hooks(context):
         is_primary: bool | None = None,
         status: str | None = None,
     ) -> dict[str, Any]:
-        if strategy_id not in self.load_strategy_meta():
+        metadata = self.load_strategy_meta()
+        meta = metadata.get(strategy_id)
+        if not isinstance(meta, dict):
             raise HTTPException(status_code=404, detail="Strategy not found")
         current = self.registry.get_strategy_registry(strategy_id)
+        if not current:
+            self.registry.upsert_strategy_registry(
+                strategy_key=strategy_id,
+                name=str(meta.get("name") or strategy_id),
+                version=str(meta.get("version") or "0.0.0"),
+                source=str(meta.get("source") or "uploaded"),
+                status=str(meta.get("status") or ("active" if bool(meta.get("enabled", False)) else "disabled")),
+                enabled_for_trading=bool(meta.get("enabled", False)),
+                allow_learning=bool(meta.get("allow_learning", True)),
+                is_primary=bool(meta.get("is_primary", False)),
+                tags=[str(x) for x in meta.get("tags", [])],
+            )
+            current = self.registry.get_strategy_registry(strategy_id)
         if not current:
             raise HTTPException(status_code=404, detail="Strategy registry row not found")
         target_enabled = current["enabled_for_trading"] if enabled_for_trading is None else bool(enabled_for_trading)
@@ -1195,6 +1255,7 @@ def risk_hooks(context):
             raise HTTPException(status_code=400, detail="Invalid status")
         if target_status == "archived":
             target_enabled = False
+            is_primary = False if is_primary is None else is_primary
         if current["enabled_for_trading"] and not target_enabled and self.registry.enabled_for_trading_count() <= 1:
             raise HTTPException(status_code=400, detail="Debe existir al menos 1 estrategia activa para trading")
         patched = self.registry.patch_strategy_registry(
@@ -2720,6 +2781,9 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
                 "ws_url": exchange_diag.get("ws_url"),
                 "last_error": exchange_diag.get("last_error", ""),
                 "ws_error": exchange_diag.get("checks", {}).get("ws", {}).get("error", ""),
+                "infrastructure_blocked": bool(exchange_diag.get("infrastructure_blocked")),
+                "provider_restriction_checks": exchange_diag.get("provider_restriction_checks", []),
+                "action_required": exchange_diag.get("action_required", []),
             },
         )
     )
@@ -2775,6 +2839,9 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
                 "last_error": exchange_diag.get("last_error", ""),
                 "ws_error": exchange_diag.get("checks", {}).get("ws", {}).get("error", ""),
                 "order_test": exchange_diag.get("checks", {}).get("order_test", {}),
+                "infrastructure_blocked": bool(exchange_diag.get("infrastructure_blocked")),
+                "provider_restriction_checks": exchange_diag.get("provider_restriction_checks", []),
+                "action_required": exchange_diag.get("action_required", []),
             },
         )
     )
@@ -3292,11 +3359,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/learning/recommendations")
     def learning_recommendations(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:
-        return learning_service.load_recommendations()
+        return learning_service.load_all_recommendations()
 
     @app.get("/api/v1/learning/recommendations/{candidate_id}")
     def learning_recommendation_detail(candidate_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        row = learning_service.get_recommendation(candidate_id)
+        row = learning_service.get_any_recommendation(candidate_id)
         if not row:
             raise HTTPException(status_code=404, detail="Recommendation not found")
         return row

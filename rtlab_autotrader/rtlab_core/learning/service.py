@@ -274,6 +274,28 @@ class LearningService:
                 return row
         return None
 
+    def load_all_recommendations(self) -> list[dict[str, Any]]:
+        research = [dict(row, recommendation_source="research") for row in self.load_recommendations()]
+        runtime = [dict(row, recommendation_source="runtime") for row in self.load_runtime_recommendations()]
+        merged: dict[str, dict[str, Any]] = {}
+        for row in research:
+            rid = str(row.get("id") or "")
+            if rid:
+                merged[rid] = row
+        for row in runtime:
+            rid = str(row.get("id") or "")
+            if rid:
+                merged[rid] = row
+        def _sort_key(item: dict[str, Any]) -> tuple[str, str]:
+            return (str(item.get("created_at") or item.get("reviewed_at") or ""), str(item.get("id") or ""))
+        return sorted(merged.values(), key=_sort_key, reverse=True)
+
+    def get_any_recommendation(self, recommendation_id: str) -> dict[str, Any] | None:
+        for row in self.load_all_recommendations():
+            if str(row.get("id")) == recommendation_id:
+                return row
+        return None
+
     def run_research(
         self,
         *,

@@ -321,6 +321,9 @@ class RegistryDB:
         if next_status == "archived":
             next_enabled = False
             next_allow_learning = False
+            next_is_primary = False
+        if not next_enabled:
+            next_is_primary = False
         with self._connect() as conn:
             conn.execute(
                 """
@@ -352,9 +355,17 @@ class RegistryDB:
 
     def ensure_registry_primary(self) -> None:
         with self._connect() as conn:
-            row = conn.execute("SELECT id FROM strategy_registry WHERE is_primary=1 LIMIT 1").fetchone()
+            row = conn.execute(
+                """
+                SELECT id FROM strategy_registry
+                WHERE is_primary=1 AND enabled_for_trading=1 AND status <> 'archived'
+                LIMIT 1
+                """
+            ).fetchone()
             if row:
                 return
+            # Clear stale/invalid primary flags (archived/disabled).
+            conn.execute("UPDATE strategy_registry SET is_primary=0 WHERE is_primary=1")
             first = conn.execute(
                 """
                 SELECT id FROM strategy_registry
