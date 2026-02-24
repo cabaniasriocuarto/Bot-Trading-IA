@@ -116,6 +116,13 @@ def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> N
   assert results["query_backend"]["engine"] in {"duckdb", "python"}
   artifacts = engine.artifacts(run_id)
   assert any(item["name"] == "index.html" for item in artifacts["items"])
+  batch_row = engine.backtest_catalog.get_batch(run_id)
+  assert batch_row is not None
+  child_rows = engine.backtest_catalog.batch_children_runs(run_id)
+  assert child_rows
+  assert all(str(row["run_id"]).startswith("BT-") for row in child_rows)
+  assert all(str(row["run_type"]) == "batch_child" for row in child_rows)
+  assert any(str((row.get("kpis") or {}).get("expectancy_unit") or "") == "usd_per_trade" for row in child_rows)
 
 
 def test_dataset_mode_provider_no_api_keys_required_and_returns_hints_when_missing(tmp_path: Path) -> None:

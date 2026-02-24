@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from rtlab_core.config import load_config
+from rtlab_core.backtest import BacktestCatalogDB
 from rtlab_core.learning import LearningService
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
@@ -68,6 +69,7 @@ SETTINGS_PATH = USER_DATA_DIR / "console_settings.json"
 BOT_STATE_PATH = USER_DATA_DIR / "logs" / "bot_state.json"
 STRATEGY_META_PATH = STRATEGY_PACKS_DIR / "strategy_meta.json"
 RUNS_PATH = USER_DATA_DIR / "backtests" / "runs.json"
+BACKTEST_CATALOG_DB_PATH = USER_DATA_DIR / "backtests" / "catalog.sqlite3"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
 ROLE_ADMIN = "admin"
@@ -252,6 +254,39 @@ class ResearchMassBacktestMarkCandidateBody(BaseModel):
     run_id: str
     variant_id: str
     note: str | None = None
+
+
+class RunsPatchBody(BaseModel):
+    alias: str | None = None
+    tags: list[str] | None = None
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
+class BatchCreateBody(BaseModel):
+    objective: str | None = None
+    strategy_ids: list[str] | None = None
+    market: Literal["crypto", "forex", "equities"] = "crypto"
+    symbol: str = "BTCUSDT"
+    timeframe: Literal["5m", "10m", "15m"] = "5m"
+    start: str = "2024-01-01"
+    end: str = "2024-12-31"
+    dataset_source: str = "synthetic"
+    data_mode: Literal["dataset", "api"] = "dataset"
+    validation_mode: Literal["walk-forward", "purged-cv", "cpcv"] = "walk-forward"
+    max_variants_per_strategy: int = 8
+    train_days: int = 180
+    test_days: int = 60
+    max_folds: int = 8
+    top_n: int = 10
+    seed: int = 42
+    costs: dict[str, float] | None = None
+
+
+class RunPromoteBody(BaseModel):
+    baseline_run_id: str | None = None
+    note: str | None = None
+    target_mode: Literal["paper", "testnet", "live"] = "paper"
 
 
 def utc_now() -> datetime:
@@ -1027,6 +1062,7 @@ class ConsoleStore:
     def __init__(self) -> None:
         ensure_paths()
         self.registry = RegistryDB(REGISTRY_DB_PATH)
+        self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self._init_console_db()
         self._ensure_defaults()
 
@@ -1046,6 +1082,7 @@ class ConsoleStore:
         self._ensure_knowledge_strategies_registry()
         self._ensure_strategy_registry_invariants()
         self._ensure_seed_backtest()
+        self._sync_backtest_runs_catalog()
         self.add_log(
             event_type="health",
             severity="info",
@@ -2239,6 +2276,63 @@ def risk_hooks(context):
     def save_runs(self, rows: list[dict[str, Any]]) -> None:
         json_save(RUNS_PATH, rows)
 
+    def _catalog_strategy_structured_id(self, strategy_id: str, strategy_meta: dict[str, Any] | None = None) -> str:
+        meta = strategy_meta or {}
+        db_id = meta.get("db_strategy_id") if isinstance(meta, dict) else None
+        try:
+            if db_id is not None and int(db_id) > 0:
+                return f"ST-{int(db_id):06d}"
+        except Exception:
+            pass
+        return str(strategy_id or "")
+
+    def _record_backtest_catalog(self, run: dict[str, Any], *, strategy_meta: dict[str, Any] | None = None, created_by: str = "system") -> None:
+        if not isinstance(run, dict):
+            return
+        strategy_id = str(run.get("strategy_id") or "")
+        meta = strategy_meta or (self.load_strategy_meta().get(strategy_id) if strategy_id else None)
+        if isinstance(meta, dict) and not run.get("strategy_structured_id"):
+            run["strategy_structured_id"] = self._catalog_strategy_structured_id(strategy_id, meta)
+            run["strategy_name"] = str(run.get("strategy_name") or meta.get("name") or strategy_id)
+            run["strategy_version"] = str(run.get("strategy_version") or meta.get("version") or "0.0.0")
+        catalog_run_id = self.backtest_catalog.record_run_from_payload(run=run, strategy_meta=meta if isinstance(meta, dict) else None, created_by=created_by)
+        artifacts = run.get("artifacts_links") if isinstance(run.get("artifacts_links"), dict) else {}
+        for kind, path in artifacts.items():
+            if not path:
+                continue
+            try:
+                self.backtest_catalog.add_artifact(
+                    run_id=catalog_run_id,
+                    batch_id=str(run.get("batch_id") or "") or None,
+                    kind=str(kind),
+                    path=str(path),
+                    url=str(path),
+                )
+            except Exception:
+                continue
+
+    def _sync_backtest_runs_catalog(self) -> None:
+        runs = self.load_runs()
+        changed = False
+        meta = self.load_strategy_meta()
+        for row in runs:
+            if not isinstance(row, dict):
+                continue
+            before_catalog_id = str(row.get("catalog_run_id") or "")
+            before_structured = str(row.get("strategy_structured_id") or "")
+            try:
+                self._record_backtest_catalog(
+                    row,
+                    strategy_meta=meta.get(str(row.get("strategy_id") or "")) if isinstance(meta, dict) else None,
+                    created_by=str(row.get("created_by") or "system"),
+                )
+            except Exception:
+                continue
+            if str(row.get("catalog_run_id") or "") != before_catalog_id or str(row.get("strategy_structured_id") or "") != before_structured:
+                changed = True
+        if changed:
+            self.save_runs(runs)
+
     def latest_run_for_strategy(self, strategy_id: str) -> dict[str, Any] | None:
         rows = [row for row in self.load_runs() if row.get("strategy_id") == strategy_id]
         if not rows:
@@ -2418,10 +2512,18 @@ def risk_hooks(context):
                 max_consecutive_losses = max(max_consecutive_losses, loss_streak)
             else:
                 loss_streak = 0
-        run_id = f"run_{secrets.token_hex(5)}"
+        run_id = self.backtest_catalog.next_formatted_id("BT")
+        strategy_structured_id = self._catalog_strategy_structured_id(strategy_id, strategy)
         run = {
             "id": run_id,
+            "catalog_run_id": run_id,
+            "run_type": "single",
+            "batch_id": None,
+            "parent_run_id": None,
             "strategy_id": strategy_id,
+            "strategy_structured_id": strategy_structured_id,
+            "strategy_name": str(strategy.get("name") or strategy_id),
+            "strategy_version": str(strategy.get("version") or "1.0.0"),
             "mode": "backtest",
             "period": {"start": start, "end": end},
             "universe": universe,
@@ -2477,7 +2579,10 @@ def risk_hooks(context):
                 "total_cost_pct_of_gross_pnl": 0.0 if gross_abs == 0 else round(total_costs / gross_abs, 6),
             },
             "status": "completed",
+            "created_by": "system",
             "created_at": utc_now_iso(),
+            "started_at": utc_now_iso(),
+            "finished_at": utc_now_iso(),
             "duration_sec": random.randint(20, 90),
             "equity_curve": points,
             "drawdown_curve": [{"time": p["time"], "value": p["drawdown"]} for p in points],
@@ -2504,6 +2609,7 @@ def risk_hooks(context):
         runs.insert(0, run)
         self.save_runs(runs)
         self._record_run_provenance(run)
+        self._record_backtest_catalog(run, strategy_meta=strategy, created_by="system")
         meta = self.load_strategy_meta()
         if strategy_id in meta:
             meta[strategy_id]["last_run_at"] = utc_now_iso()
@@ -2578,13 +2684,21 @@ def risk_hooks(context):
                 manifest=loaded.manifest,
             ),
         )
-        run_id = f"run_{secrets.token_hex(5)}"
+        run_id = self.backtest_catalog.next_formatted_id("BT")
         metrics = dict(engine_result["metrics"])
         metrics["expectancy_unit"] = "usd_per_trade"
         metrics["expectancy_pct_unit"] = "pct_per_trade"
+        strategy_structured_id = self._catalog_strategy_structured_id(strategy_id, strategy)
         run = {
             "id": run_id,
+            "catalog_run_id": run_id,
+            "run_type": "single",
+            "batch_id": None,
+            "parent_run_id": None,
             "strategy_id": strategy_id,
+            "strategy_structured_id": strategy_structured_id,
+            "strategy_name": str(strategy.get("name") or strategy_id),
+            "strategy_version": str(strategy.get("version") or "1.0.0"),
             "mode": "backtest",
             "market": market_n,
             "symbol": symbol_n,
@@ -2608,7 +2722,10 @@ def risk_hooks(context):
             "metrics": metrics,
             "costs_breakdown": engine_result["costs_breakdown"],
             "status": "completed",
+            "created_by": "system",
             "created_at": utc_now_iso(),
+            "started_at": utc_now_iso(),
+            "finished_at": utc_now_iso(),
             "duration_sec": random.randint(2, 30),
             "equity_curve": engine_result["equity_curve"],
             "drawdown_curve": engine_result["drawdown_curve"],
@@ -2641,6 +2758,7 @@ def risk_hooks(context):
         runs.insert(0, run)
         self.save_runs(runs)
         self._record_run_provenance(run)
+        self._record_backtest_catalog(run, strategy_meta=strategy, created_by="system")
         meta = self.load_strategy_meta()
         if strategy_id in meta:
             meta[strategy_id]["last_run_at"] = utc_now_iso()
@@ -3862,6 +3980,37 @@ def create_app() -> FastAPI:
         )
         return started
 
+    @app.post("/api/v1/batches")
+    def create_research_batch(body: BatchCreateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        cfg = body.model_dump()
+        if not isinstance(cfg.get("costs"), dict):
+            cfg["costs"] = {
+                "fees_bps": 5.5,
+                "spread_bps": 4.0,
+                "slippage_bps": 3.0,
+                "funding_bps": 1.0,
+                "rollover_bps": 0.0,
+            }
+        cfg["commit_hash"] = get_env("GIT_COMMIT", "local")
+        cfg["requested_by"] = user.get("username", "admin")
+        cfg["objective"] = str(body.objective or "Research Batch")
+        started = mass_backtest_coordinator.start_async(
+            config=cfg,
+            strategies=store.list_strategies(),
+            historical_runs=store.load_runs(),
+            backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
+        )
+        batch_id = str(started.get("run_id") or "")
+        store.add_log(
+            event_type="batch_created",
+            severity="info",
+            module="research",
+            message="Research Batch creado",
+            related_ids=[batch_id],
+            payload={"config": cfg, "batch_id": batch_id},
+        )
+        return {"ok": True, "batch_id": batch_id, **started}
+
     @app.get("/api/v1/research/mass-backtest/status")
     def research_mass_backtest_status(run_id: str = Query(...), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return mass_backtest_coordinator.status(run_id)
@@ -4341,6 +4490,626 @@ def create_app() -> FastAPI:
         if format == "report_json":
             return JSONResponse(content=run)
         return run
+
+    def _catalog_run_or_404(run_id: str) -> dict[str, Any]:
+        row = store.backtest_catalog.get_run(run_id)
+        if row:
+            return row
+        legacy = store.backtest_catalog.get_run_by_legacy_id(run_id)
+        if legacy:
+            return legacy
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+
+    def _catalog_compare_payload(run_ids: list[str]) -> dict[str, Any]:
+        rows = store.backtest_catalog.compare_runs(run_ids)
+        dataset_hashes = sorted({str(r.get("dataset_hash") or "") for r in rows if str(r.get("dataset_hash") or "")})
+        warnings: list[str] = []
+        if len(dataset_hashes) > 1:
+            warnings.append("datasets_distintos")
+        return {
+            "items": rows,
+            "count": len(rows),
+            "warnings": warnings,
+            "dataset_hashes": dataset_hashes,
+            "same_dataset": len(dataset_hashes) <= 1,
+        }
+
+    def _parse_model_value(raw: Any, default_label: str = "static", *, numeric_default: float = 0.0) -> tuple[str, float]:
+        text = str(raw or "").strip()
+        if ":" not in text:
+            try:
+                return (default_label if text else default_label, float(text or numeric_default))
+            except Exception:
+                return (default_label, float(numeric_default))
+        left, right = text.split(":", 1)
+        try:
+            return (left.strip() or default_label, float(right.strip()))
+        except Exception:
+            return (left.strip() or default_label, float(numeric_default))
+
+    def _mass_result_row_for_catalog_run(catalog_row: dict[str, Any]) -> dict[str, Any] | None:
+        batch_id = str(catalog_row.get("batch_id") or "")
+        if not batch_id:
+            return None
+        artifacts = catalog_row.get("artifacts") if isinstance(catalog_row.get("artifacts"), dict) else {}
+        variant_id = str(artifacts.get("variant_id") or "")
+        if not variant_id:
+            legacy = str(catalog_row.get("legacy_json_id") or "")
+            if ":" in legacy:
+                variant_id = legacy.split(":", 1)[1]
+        if not variant_id:
+            return None
+        try:
+            payload = mass_backtest_coordinator.results(batch_id, limit=5000)
+        except Exception:
+            return None
+        rows = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return None
+        return next((r for r in rows if isinstance(r, dict) and str(r.get("variant_id") or "") == variant_id), None)
+
+    def _build_rollout_report_from_catalog_row(catalog_row: dict[str, Any]) -> dict[str, Any]:
+        # Prefer legacy run payload if exists (richer details and exact costs/trades).
+        legacy_id = str(catalog_row.get("legacy_json_id") or "")
+        if legacy_id and ":" not in legacy_id:
+            try:
+                legacy = _find_run_or_404(legacy_id)
+                payload = dict(legacy)
+                payload["id"] = str(catalog_row.get("run_id") or payload.get("id") or legacy_id)
+                payload["catalog_run_id"] = str(catalog_row.get("run_id") or "")
+                payload["legacy_json_id"] = legacy_id
+                return payload
+            except HTTPException:
+                pass
+
+        k = catalog_row.get("kpis") if isinstance(catalog_row.get("kpis"), dict) else {}
+        flags = catalog_row.get("flags") if isinstance(catalog_row.get("flags"), dict) else {}
+        symbols = catalog_row.get("symbols") if isinstance(catalog_row.get("symbols"), list) else []
+        timeframes = catalog_row.get("timeframes") if isinstance(catalog_row.get("timeframes"), list) else []
+        fee_label, fee_val = _parse_model_value(catalog_row.get("fee_model"), "maker_taker_bps", numeric_default=0.0)
+        spread_label, spread_val = _parse_model_value(catalog_row.get("spread_model"), "static", numeric_default=0.0)
+        slippage_label, slippage_val = _parse_model_value(catalog_row.get("slippage_model"), "static", numeric_default=0.0)
+        funding_label, funding_val = _parse_model_value(catalog_row.get("funding_model"), "static", numeric_default=0.0)
+
+        mass_row = _mass_result_row_for_catalog_run(catalog_row)
+        summary = mass_row.get("summary") if isinstance(mass_row, dict) and isinstance(mass_row.get("summary"), dict) else {}
+        anti = mass_row.get("anti_overfitting") if isinstance(mass_row, dict) and isinstance(mass_row.get("anti_overfitting"), dict) else {}
+
+        trade_count = int(k.get("trade_count") or k.get("roundtrips") or summary.get("trade_count_oos") or 0)
+        winrate = float(k.get("winrate") if k.get("winrate") is not None else summary.get("winrate") or 0.0)
+        sharpe = float(k.get("sharpe") if k.get("sharpe") is not None else summary.get("sharpe_oos") or 0.0)
+        sortino = float(k.get("sortino") if k.get("sortino") is not None else summary.get("sortino_oos") or 0.0)
+        calmar = float(k.get("calmar") if k.get("calmar") is not None else summary.get("calmar_oos") or 0.0)
+        max_dd = float(k.get("max_dd") if k.get("max_dd") is not None else (float(summary.get("max_dd_oos_pct") or 0.0) / 100.0))
+        expectancy = float(
+            (k.get("expectancy_value") if k.get("expectancy_value") is not None else k.get("expectancy"))
+            if (k.get("expectancy_value") is not None or k.get("expectancy") is not None)
+            else (summary.get("expectancy_net_usd") or 0.0)
+        )
+        profit_factor = float(k.get("profit_factor") if k.get("profit_factor") is not None else summary.get("profit_factor") or 0.0)
+        costs_ratio = float(k.get("costs_ratio") if k.get("costs_ratio") is not None else summary.get("costs_ratio") or 0.0)
+        net_pnl = float(k.get("net_pnl") if k.get("net_pnl") is not None else summary.get("net_pnl_oos") or 0.0)
+
+        if net_pnl >= 0:
+            gross_pnl = net_pnl / max(1e-9, (1.0 - min(costs_ratio, 0.99))) if costs_ratio < 0.99 else net_pnl
+            total_cost = abs(gross_pnl) * max(0.0, costs_ratio)
+        else:
+            gross_abs = abs(net_pnl) / max(1e-9, (1.0 + max(0.0, costs_ratio)))
+            gross_pnl = -gross_abs
+            total_cost = gross_abs * max(0.0, costs_ratio)
+        if not net_pnl and expectancy and trade_count:
+            net_pnl = expectancy * trade_count
+        fee_cost = round(total_cost * 0.35, 6)
+        spread_cost = round(total_cost * 0.35, 6)
+        slippage_cost = round(total_cost * 0.25, 6)
+        funding_cost = round(max(0.0, total_cost - fee_cost - spread_cost - slippage_cost), 6)
+        validation_mode = "walk-forward" if bool(flags.get("WFA") or flags.get("OOS")) else "batch"
+        report = {
+            "id": str(catalog_row.get("run_id") or ""),
+            "catalog_run_id": str(catalog_row.get("run_id") or ""),
+            "legacy_json_id": legacy_id or None,
+            "run_type": str(catalog_row.get("run_type") or "single"),
+            "batch_id": catalog_row.get("batch_id"),
+            "status": str(catalog_row.get("status") or "completed"),
+            "created_at": str(catalog_row.get("created_at") or ""),
+            "finished_at": str(catalog_row.get("finished_at") or catalog_row.get("created_at") or ""),
+            "created_by": str(catalog_row.get("created_by") or "system"),
+            "mode": str(catalog_row.get("mode") or "backtest"),
+            "strategy_id": str(catalog_row.get("strategy_id") or ""),
+            "strategy_name": str(catalog_row.get("strategy_name") or catalog_row.get("strategy_id") or ""),
+            "strategy_version": str(catalog_row.get("strategy_version") or "batch"),
+            "strategy_config_hash": str(catalog_row.get("strategy_config_hash") or ""),
+            "market": "crypto",
+            "symbol": str(symbols[0]) if symbols else None,
+            "timeframe": str(timeframes[0]) if timeframes else None,
+            "period": {
+                "start": str(catalog_row.get("timerange_from") or ""),
+                "end": str(catalog_row.get("timerange_to") or ""),
+            },
+            "universe": symbols,
+            "validation_mode": validation_mode,
+            "validation_summary": {"mode": "walk-forward" if validation_mode == "walk-forward" else "batch", "source": "catalog"},
+            "data_source": str(catalog_row.get("dataset_source") or "dataset"),
+            "dataset_hash": str(catalog_row.get("dataset_hash") or ""),
+            "dataset_version": str(catalog_row.get("dataset_version") or ""),
+            "git_commit": str(catalog_row.get("code_commit_hash") or "local"),
+            "costs_model": {
+                "fees_bps": fee_val,
+                "spread_bps": spread_val,
+                "slippage_bps": slippage_val,
+                "funding_bps": funding_val,
+                "fees_model_label": fee_label,
+                "spread_model_label": spread_label,
+                "slippage_model_label": slippage_label,
+                "funding_model_label": funding_label,
+            },
+            "metrics": {
+                "trade_count": trade_count,
+                "roundtrips": int(k.get("roundtrips") or trade_count),
+                "winrate": winrate,
+                "sharpe": sharpe,
+                "sortino": sortino,
+                "calmar": calmar,
+                "max_dd": max_dd,
+                "expectancy": expectancy,
+                "expectancy_usd_per_trade": expectancy,
+                "expectancy_unit": str(k.get("expectancy_unit") or "usd_per_trade"),
+                "profit_factor": profit_factor,
+                "avg_holding_time": float(k.get("avg_holding_time") or 0.0),
+                "time_in_market": float(k.get("time_in_market") or 0.0),
+                "pbo": anti.get("pbo", k.get("pbo")),
+                "dsr": anti.get("dsr", k.get("dsr")),
+                "max_dd_duration_bars": int(k.get("max_dd_duration_bars") or 0),
+                "robustness_score": float(k.get("robustness_score") or 0.0),
+                "costs_ratio": costs_ratio,
+                "net_pnl": net_pnl,
+            },
+            "costs_breakdown": {
+                "gross_pnl_total": round(float(gross_pnl), 6),
+                "gross_pnl": round(float(gross_pnl), 6),
+                "fees_total": fee_cost,
+                "spread_total": spread_cost,
+                "slippage_total": slippage_cost,
+                "funding_total": funding_cost,
+                "total_cost": round(float(total_cost), 6),
+                "net_pnl_total": round(float(net_pnl), 6),
+                "net_pnl": round(float(net_pnl), 6),
+            },
+            "flags": flags,
+            "kpis_by_regime": catalog_row.get("kpis_by_regime") if isinstance(catalog_row.get("kpis_by_regime"), dict) else {},
+            "params_json": catalog_row.get("params_json") if isinstance(catalog_row.get("params_json"), dict) else {},
+            "seed": catalog_row.get("seed"),
+            "hf_model_id": catalog_row.get("hf_model_id"),
+            "hf_revision": catalog_row.get("hf_revision"),
+            "hf_commit_hash": catalog_row.get("hf_commit_hash"),
+            "pipeline_task": catalog_row.get("pipeline_task"),
+            "inference_mode": catalog_row.get("inference_mode"),
+        }
+        return report
+
+    def _resolve_strategy_from_report_or_catalog(report: dict[str, Any], catalog_row: dict[str, Any] | None = None) -> dict[str, Any]:
+        strategy_id = str(report.get("strategy_id") or "")
+        if strategy_id and not strategy_id.startswith("ST-"):
+            try:
+                return store.strategy_or_404(strategy_id)
+            except HTTPException:
+                pass
+        if catalog_row:
+            cat_strategy_id = str(catalog_row.get("strategy_id") or "")
+            if cat_strategy_id and not cat_strategy_id.startswith("ST-"):
+                try:
+                    return store.strategy_or_404(cat_strategy_id)
+                except HTTPException:
+                    pass
+        strategy_name = str(report.get("strategy_name") or (catalog_row or {}).get("strategy_name") or "").strip().lower()
+        if strategy_name:
+            for row in store.list_strategies():
+                if str(row.get("name") or "").strip().lower() == strategy_name:
+                    return store.strategy_or_404(str(row.get("id") or ""))
+        raise HTTPException(status_code=400, detail="No se pudo resolver strategy_id real para el run del catalogo")
+
+    def _resolve_rollout_report_from_any_run_id(run_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        # Legacy runs (runs.json)
+        try:
+            legacy = _find_run_or_404(run_id)
+            return dict(legacy), None
+        except HTTPException:
+            pass
+        catalog_row = _catalog_run_or_404(run_id)
+        report = _build_rollout_report_from_catalog_row(catalog_row)
+        return report, catalog_row
+
+    def _pick_baseline_rollout_report(candidate_report: dict[str, Any], explicit_run_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if explicit_run_id:
+            return _resolve_rollout_report_from_any_run_id(explicit_run_id)
+
+        candidate_catalog = store.backtest_catalog.get_run(str(candidate_report.get("id") or ""))
+        dataset_hash = str(candidate_report.get("dataset_hash") or "")
+        period = candidate_report.get("period") or {}
+        candidate_strategy_name = str(candidate_report.get("strategy_name") or "")
+        candidate_run_id = str(candidate_report.get("id") or "")
+        catalog_rows = store.backtest_catalog.list_runs()
+
+        # Prefer same dataset + period and different strategy, completed and not archived.
+        for row in catalog_rows:
+            if str(row.get("run_id") or "") == candidate_run_id:
+                continue
+            if str(row.get("status") or "") not in {"completed", "completed_warn"}:
+                continue
+            flags = row.get("flags") if isinstance(row.get("flags"), dict) else {}
+            if bool(flags.get("ARCHIVADO")):
+                continue
+            if dataset_hash and str(row.get("dataset_hash") or "") != dataset_hash:
+                continue
+            if period and (
+                str(row.get("timerange_from") or "") != str((period.get("start") if isinstance(period, dict) else "")) or
+                str(row.get("timerange_to") or "") != str((period.get("end") if isinstance(period, dict) else ""))
+            ):
+                continue
+            if str(row.get("strategy_name") or "") == candidate_strategy_name:
+                continue
+            return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
+
+        # Fallback to legacy picker if candidate exists in legacy.
+        try:
+            legacy_candidate = _find_run_or_404(candidate_run_id)
+            baseline = _pick_baseline_run(legacy_candidate, explicit_run_id=None)
+            return dict(baseline), None
+        except HTTPException:
+            pass
+
+        # Last fallback: any completed other catalog run.
+        for row in catalog_rows:
+            if str(row.get("run_id") or "") == candidate_run_id:
+                continue
+            if str(row.get("status") or "") in {"completed", "completed_warn"}:
+                return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
+        raise HTTPException(status_code=400, detail="No baseline run available to compare against candidate")
+
+    def _validate_run_for_promotion(
+        *,
+        candidate_run_id: str,
+        baseline_run_id: str | None,
+        target_mode: str,
+    ) -> dict[str, Any]:
+        candidate_report, candidate_catalog = _resolve_rollout_report_from_any_run_id(candidate_run_id)
+        baseline_report, baseline_catalog = _pick_baseline_rollout_report(candidate_report, baseline_run_id)
+        candidate_strategy = _resolve_strategy_from_report_or_catalog(candidate_report, candidate_catalog)
+        baseline_strategy = _resolve_strategy_from_report_or_catalog(baseline_report, baseline_catalog)
+
+        candidate_report = dict(candidate_report)
+        baseline_report = dict(baseline_report)
+        candidate_report["strategy_id"] = candidate_strategy.get("id")
+        candidate_report["strategy_name"] = candidate_strategy.get("name")
+        candidate_report["version"] = candidate_strategy.get("version")
+        candidate_report["params"] = candidate_strategy.get("params")
+        baseline_report["strategy_id"] = baseline_strategy.get("id")
+        baseline_report["strategy_name"] = baseline_strategy.get("name")
+        baseline_report["version"] = baseline_strategy.get("version")
+        baseline_report["params"] = baseline_strategy.get("params")
+
+        gates_result = rollout_gates.evaluate(candidate_report)
+        compare_thresholds = ((store.load_settings().get("rollout") or {}).get("improve_vs_baseline") or {})
+        compare_engine = CompareEngine(compare_thresholds if isinstance(compare_thresholds, dict) else {})
+        compare_result = compare_engine.compare(baseline_report, candidate_report)
+
+        k = candidate_report.get("metrics") if isinstance(candidate_report.get("metrics"), dict) else {}
+        flags = (candidate_catalog or {}).get("flags") if isinstance((candidate_catalog or {}).get("flags"), dict) else (candidate_report.get("flags") if isinstance(candidate_report.get("flags"), dict) else {})
+        trade_count = int(k.get("trade_count") or k.get("roundtrips") or 0)
+        costs = candidate_report.get("costs_breakdown") if isinstance(candidate_report.get("costs_breakdown"), dict) else {}
+        gross_abs = abs(float(costs.get("gross_pnl_total") or 0.0))
+        total_cost = float(costs.get("total_cost") or 0.0)
+        costs_ratio = (total_cost / gross_abs) if gross_abs > 0 else 0.0
+
+        thresholds = gates_result.get("thresholds") if isinstance(gates_result.get("thresholds"), dict) else {}
+        min_trades_req = int(float(thresholds.get("min_trades_oos") or 0))
+        costs_ratio_max = float(thresholds.get("costs_ratio_max") or 1.0)
+        constraints_checks = [
+            {"id": "run_status_completed", "ok": str(candidate_report.get("status") or "").lower() in {"completed", "completed_warn"}, "reason": "Run debe estar completado", "details": {"status": candidate_report.get("status")}},
+            {"id": "min_trades", "ok": trade_count >= max(1, min_trades_req), "reason": "Trades mínimos", "details": {"actual": trade_count, "threshold": max(1, min_trades_req)}},
+            {"id": "realistic_costs", "ok": costs_ratio <= costs_ratio_max, "reason": "Costos realistas (costs_ratio)", "details": {"actual": round(costs_ratio, 6), "threshold": costs_ratio_max}},
+            {"id": "oos_or_wfa", "ok": bool(flags.get("OOS") or flags.get("WFA")), "reason": "Debe tener evidencia OOS/WFA", "details": {"flags": flags}},
+        ]
+        constraints_ok = all(bool(row["ok"]) for row in constraints_checks)
+        promotion_ok = bool(constraints_ok and gates_result.get("passed") and compare_result.get("passed"))
+        live_direct_ok = False
+
+        return {
+            "ok": True,
+            "promotion_ok": promotion_ok,
+            "live_direct_ok": live_direct_ok,
+            "requires_human_approval": True,
+            "option_b_no_auto_live": True,
+            "target_mode": str(target_mode or "paper"),
+            "candidate": {
+                "run_id": str(candidate_report.get("id") or candidate_run_id),
+                "catalog_run_id": str((candidate_catalog or {}).get("run_id") or candidate_report.get("id") or ""),
+                "legacy_json_id": candidate_report.get("legacy_json_id"),
+                "strategy_id": candidate_strategy.get("id"),
+                "strategy_name": candidate_strategy.get("name"),
+                "dataset_hash": candidate_report.get("dataset_hash"),
+                "period": candidate_report.get("period"),
+                "status": candidate_report.get("status"),
+            },
+            "baseline": {
+                "run_id": str(baseline_report.get("id") or ""),
+                "catalog_run_id": str((baseline_catalog or {}).get("run_id") or baseline_report.get("id") or ""),
+                "legacy_json_id": baseline_report.get("legacy_json_id"),
+                "strategy_id": baseline_strategy.get("id"),
+                "strategy_name": baseline_strategy.get("name"),
+                "dataset_hash": baseline_report.get("dataset_hash"),
+                "period": baseline_report.get("period"),
+                "status": baseline_report.get("status"),
+            },
+            "constraints": {
+                "passed": constraints_ok,
+                "checks": constraints_checks,
+            },
+            "offline_gates": gates_result,
+            "compare_vs_baseline": compare_result,
+            "rollout_ready": promotion_ok,
+            "allowed_targets": {
+                "paper": bool(promotion_ok),
+                "testnet": bool(promotion_ok),
+                "live": False,
+            },
+            "rollout_start_body": {
+                "candidate_run_id": str(candidate_report.get("id") or candidate_run_id),
+                "baseline_run_id": str(baseline_report.get("id") or ""),
+            },
+            "_resolved": {
+                "candidate_report": candidate_report,
+                "baseline_report": baseline_report,
+                "candidate_strategy": candidate_strategy,
+                "baseline_strategy": baseline_strategy,
+                "candidate_catalog": candidate_catalog,
+                "baseline_catalog": baseline_catalog,
+            },
+        }
+
+    @app.get("/api/v1/runs")
+    def runs_list(
+        q: str | None = Query(default=None),
+        run_type: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        timeframe: str | None = Query(default=None),
+        mode: str | None = Query(default=None),
+        date_from: str | None = Query(default=None),
+        date_to: str | None = Query(default=None),
+        min_trades: int | None = Query(default=None, ge=0),
+        max_dd: float | None = Query(default=None, ge=0.0),
+        sharpe: float | None = Query(default=None),
+        flags: str | None = Query(default=None, description="Flags separados por coma. Ej: OOS,PASO_GATES"),
+        sort_by: str = Query(default="created_at"),
+        sort_dir: Literal["asc", "desc"] = Query(default="desc"),
+        limit: int = Query(default=200, ge=1, le=2000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        flags_any = [x.strip().upper() for x in str(flags or "").split(",") if x.strip()]
+        items = store.backtest_catalog.query_runs(
+            q=q,
+            run_type=run_type,
+            status=status,
+            strategy_id=strategy_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            mode=mode,
+            date_from=date_from,
+            date_to=date_to,
+            min_trades=min_trades,
+            max_dd_lte=max_dd,
+            sharpe_gte=sharpe,
+            flags_any=flags_any,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+        )
+        return {"items": items, "count": len(items)}
+
+    @app.get("/api/v1/runs/{run_id}")
+    def runs_detail(run_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        row = _catalog_run_or_404(run_id)
+        row["artifacts_index"] = store.backtest_catalog.get_artifacts_for_run(str(row.get("run_id") or ""))
+        legacy_id = str(row.get("legacy_json_id") or "")
+        if legacy_id:
+            row["legacy_backtest_api"] = {
+                "detail": f"/api/v1/backtests/runs/{legacy_id}",
+                "report_json": f"/api/v1/backtests/runs/{legacy_id}?format=report_json",
+                "trades_csv": f"/api/v1/backtests/runs/{legacy_id}?format=trades_csv",
+                "equity_curve_csv": f"/api/v1/backtests/runs/{legacy_id}?format=equity_curve_csv",
+            }
+        return row
+
+    @app.patch("/api/v1/runs/{run_id}")
+    def runs_patch(run_id: str, body: RunsPatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        resolved = _catalog_run_or_404(run_id)
+        patched = store.backtest_catalog.patch_run(
+            str(resolved.get("run_id") or run_id),
+            alias=body.alias,
+            tags=body.tags,
+            pinned=body.pinned,
+            archived=body.archived,
+        )
+        if not patched:
+            raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+        store.add_log(
+            event_type="run_patched",
+            severity="info",
+            module="backtest",
+            message="Run metadata actualizado",
+            related_ids=[str(patched.get("run_id") or run_id)],
+            payload={"alias": body.alias, "tags": body.tags, "pinned": body.pinned, "archived": body.archived},
+        )
+        return {"ok": True, "run": patched}
+
+    @app.get("/api/v1/batches")
+    def batches_list(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        items = store.backtest_catalog.list_batches()
+        return {"items": items, "count": len(items)}
+
+    @app.get("/api/v1/batches/{batch_id}")
+    def batches_detail(batch_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        batch = store.backtest_catalog.get_batch(batch_id)
+        status_payload = mass_backtest_coordinator.status(batch_id)
+        if not batch and str(status_payload.get("state") or "") == "NOT_FOUND":
+            raise HTTPException(status_code=404, detail=f"Batch not found: {batch_id}")
+        if not batch:
+            batch = {
+                "batch_id": batch_id,
+                "objective": "Research Batch",
+                "status": str(status_payload.get("state") or "queued").lower(),
+                "created_at": str(status_payload.get("created_at") or ""),
+                "updated_at": str(status_payload.get("updated_at") or ""),
+                "universe": {},
+                "variables_explored": {},
+                "run_count_total": 0,
+                "run_count_done": 0,
+                "run_count_failed": 0,
+                "best_runs_cache": [],
+                "config": status_payload.get("config") or {},
+                "summary": status_payload.get("summary") or {},
+            }
+        batch["children_runs"] = store.backtest_catalog.batch_children_runs(batch_id)
+        batch["artifacts_index"] = store.backtest_catalog.get_artifacts_for_batch(batch_id)
+        batch["runtime_status"] = status_payload
+        return batch
+
+    @app.get("/api/v1/compare")
+    def compare_runs(
+        r: list[str] = Query(default=[]),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if not r:
+            raise HTTPException(status_code=400, detail="Debe enviar al menos un run_id (?r=BT-...)")
+        return _catalog_compare_payload(r)
+
+    @app.get("/api/v1/rankings")
+    def rankings(
+        preset: str = Query(default="balanceado"),
+        min_trades: int | None = Query(default=None, ge=0),
+        max_dd: float | None = Query(default=None, ge=0.0),
+        sharpe: float | None = Query(default=None),
+        oos_pass: bool | None = Query(default=None),
+        data_quality: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        constraints: dict[str, Any] = {}
+        if min_trades is not None:
+            constraints["min_trades"] = min_trades
+        if max_dd is not None:
+            constraints["max_dd"] = max_dd
+        if sharpe is not None:
+            constraints["sharpe"] = sharpe
+        if oos_pass is not None:
+            constraints["oos_pass"] = bool(oos_pass)
+        if data_quality:
+            constraints["data_quality"] = data_quality
+        result = store.backtest_catalog.rankings(preset=preset, constraints=constraints, limit=limit)
+        # filtro extra opcional (flags OOS / data warning) en capa API
+        if oos_pass is not None or data_quality:
+            items = []
+            for row in result.get("items", []):
+                flags_payload = row.get("flags") if isinstance(row.get("flags"), dict) else {}
+                if oos_pass is True and not bool(flags_payload.get("OOS") or flags_payload.get("WFA")):
+                    continue
+                if oos_pass is False and bool(flags_payload.get("OOS") or flags_payload.get("WFA")):
+                    continue
+                if data_quality == "ok" and bool(flags_payload.get("DATA_WARNING")):
+                    continue
+                items.append(row)
+            result["items"] = items[:limit]
+            result["total"] = len(items)
+        return result
+
+    @app.post("/api/v1/runs/{run_id}/validate_promotion")
+    def runs_validate_promotion(run_id: str, body: RunPromoteBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        payload = _validate_run_for_promotion(
+            candidate_run_id=run_id,
+            baseline_run_id=(body.baseline_run_id if body else None),
+            target_mode=(body.target_mode if body else "paper"),
+        )
+        # No exponer payloads internos completos por API.
+        payload.pop("_resolved", None)
+        return payload
+
+    @app.post("/api/v1/runs/{run_id}/promote")
+    def runs_promote_to_rollout(run_id: str, body: RunPromoteBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        validation = _validate_run_for_promotion(
+            candidate_run_id=run_id,
+            baseline_run_id=body.baseline_run_id,
+            target_mode=body.target_mode,
+        )
+        resolved = validation.get("_resolved") if isinstance(validation.get("_resolved"), dict) else {}
+        candidate_report = resolved.get("candidate_report") if isinstance(resolved.get("candidate_report"), dict) else None
+        baseline_report = resolved.get("baseline_report") if isinstance(resolved.get("baseline_report"), dict) else None
+        candidate_strategy = resolved.get("candidate_strategy") if isinstance(resolved.get("candidate_strategy"), dict) else None
+        baseline_strategy = resolved.get("baseline_strategy") if isinstance(resolved.get("baseline_strategy"), dict) else None
+        candidate_catalog = resolved.get("candidate_catalog") if isinstance(resolved.get("candidate_catalog"), dict) else None
+        baseline_catalog = resolved.get("baseline_catalog") if isinstance(resolved.get("baseline_catalog"), dict) else None
+        if not validation.get("rollout_ready") or not candidate_report or not baseline_report or not candidate_strategy or not baseline_strategy:
+            sanitized = dict(validation)
+            sanitized.pop("_resolved", None)
+            return JSONResponse(status_code=400, content={**sanitized, "ok": False, "detail": "Run no elegible para promover a rollout (gates/constraints/compare)."})
+
+        state = rollout_manager.start_offline(
+            baseline_run=baseline_report,
+            candidate_run=candidate_report,
+            baseline_strategy=baseline_strategy,
+            candidate_strategy=candidate_strategy,
+            gates_result=validation.get("offline_gates") if isinstance(validation.get("offline_gates"), dict) else {},
+            compare_result=validation.get("compare_vs_baseline") if isinstance(validation.get("compare_vs_baseline"), dict) else {},
+            actor=user.get("username", "admin"),
+        )
+
+        # Reflejar validacion/gates en el catalogo (sin tocar runtimes LIVE).
+        try:
+            cand_catalog_id = str(((validation.get("candidate") or {}).get("catalog_run_id")) or (candidate_catalog or {}).get("run_id") or "")
+            base_catalog_id = str(((validation.get("baseline") or {}).get("catalog_run_id")) or (baseline_catalog or {}).get("run_id") or "")
+            if cand_catalog_id:
+                store.backtest_catalog.patch_run_flags(
+                    cand_catalog_id,
+                    {
+                        "PASO_GATES": bool((validation.get("offline_gates") or {}).get("passed")),
+                        "FAVORITO": True,
+                    },
+                )
+            if base_catalog_id:
+                store.backtest_catalog.patch_run_flags(base_catalog_id, {"BASELINE": True})
+        except Exception:
+            pass
+
+        store.add_log(
+            event_type="run_promoted_to_rollout",
+            severity="info",
+            module="rollout",
+            message="Run promovido a rollout (Opción B, sin auto-live)",
+            related_ids=[str(candidate_report.get("id") or run_id), str(baseline_report.get("id") or "")],
+            payload={
+                "target_mode": body.target_mode,
+                "note": body.note or "",
+                "rollout_state": state.get("state"),
+                "requires_approve": True,
+                "no_auto_live": True,
+            },
+        )
+
+        out = dict(validation)
+        out.pop("_resolved", None)
+        out.update(
+            {
+                "ok": True,
+                "promoted": True,
+                "note": body.note or "",
+                "rollout": {
+                    "state": state,
+                    "next_step": "Ir a Settings -> Rollout / Gates para paper/testnet soak, canary y approve manual",
+                },
+            }
+        )
+        return out
 
     @app.get("/api/v1/trades")
     def trades(

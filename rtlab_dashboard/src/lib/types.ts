@@ -586,3 +586,195 @@ export interface MassBacktestArtifactsResponse {
   run_id: string;
   items: Array<{ name: string; path: string; size: number }>;
 }
+
+export interface CatalogRunKpis {
+  return_total?: number;
+  cagr?: number;
+  max_dd?: number;
+  sharpe?: number;
+  sortino?: number;
+  calmar?: number;
+  profit_factor?: number;
+  winrate?: number;
+  expectancy?: number;
+  expectancy_value?: number;
+  expectancy_unit?: string;
+  trade_count?: number;
+  roundtrips?: number;
+  avg_holding_time?: number;
+  time_in_market?: number;
+  costs_ratio?: number;
+  gross_pnl?: number;
+  net_pnl?: number;
+  fees_total?: number;
+  spread_total?: number;
+  slippage_total?: number;
+  funding_total?: number;
+}
+
+export interface BacktestCatalogRun {
+  run_id: string;
+  legacy_json_id?: string | null;
+  run_type: "single" | "batch_child" | string;
+  batch_id?: string | null;
+  parent_run_id?: string | null;
+  status: "queued" | "preparing" | "running" | "completed" | "completed_warn" | "failed" | "canceled" | "archived" | string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_by: string;
+  mode: "backtest" | "paper" | "testnet" | "live" | string;
+  strategy_id: string;
+  strategy_name: string;
+  strategy_version: string;
+  strategy_config_hash: string;
+  code_commit_hash: string;
+  dataset_source: string;
+  dataset_version: string;
+  dataset_hash: string;
+  symbols: string[];
+  timeframes: string[];
+  timerange_from: string;
+  timerange_to: string;
+  timezone: string;
+  missing_data_policy: string;
+  fee_model: string;
+  spread_model: string;
+  slippage_model: string;
+  funding_model: string;
+  latency_model?: string | null;
+  fill_model: string;
+  initial_capital: number;
+  position_sizing_profile: string;
+  max_open_positions: number;
+  params_json?: Record<string, unknown>;
+  seed?: number | null;
+  hf_model_id?: string | null;
+  hf_revision?: string | null;
+  hf_commit_hash?: string | null;
+  pipeline_task?: string | null;
+  inference_mode?: string | null;
+  alias?: string | null;
+  tags: string[];
+  pinned: boolean;
+  title_structured: string;
+  subtitle_structured: string;
+  kpis: CatalogRunKpis;
+  kpis_by_regime: Record<string, unknown>;
+  flags: Record<string, unknown>;
+  artifacts: Record<string, unknown>;
+  updated_at: string;
+  composite_score?: number;
+  rank?: number;
+}
+
+export interface BacktestCatalogRunsResponse {
+  items: BacktestCatalogRun[];
+  count: number;
+}
+
+export interface BacktestCatalogBatch {
+  batch_id: string;
+  objective: string;
+  universe: Record<string, unknown>;
+  variables_explored: Record<string, unknown>;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  status: string;
+  run_count_total: number;
+  run_count_done: number;
+  run_count_failed: number;
+  best_runs_cache: Array<Record<string, unknown>>;
+  config: Record<string, unknown>;
+  summary: Record<string, unknown>;
+  updated_at: string;
+  children_runs?: BacktestCatalogRun[];
+  artifacts_index?: Array<Record<string, unknown>>;
+  runtime_status?: Record<string, unknown>;
+}
+
+export interface BacktestCatalogBatchesResponse {
+  items: BacktestCatalogBatch[];
+  count: number;
+}
+
+export interface BacktestCompareResponse {
+  items: BacktestCatalogRun[];
+  count: number;
+  warnings: string[];
+  dataset_hashes: string[];
+  same_dataset: boolean;
+}
+
+export interface BacktestRankingsResponse {
+  preset: string;
+  constraints: Record<string, unknown>;
+  total: number;
+  items: BacktestCatalogRun[];
+}
+
+export interface RunPromotionCheck {
+  id: string;
+  ok: boolean;
+  reason: string;
+  details?: Record<string, unknown>;
+}
+
+export interface RunValidatePromotionResponse {
+  ok: boolean;
+  promotion_ok: boolean;
+  live_direct_ok: boolean;
+  requires_human_approval: boolean;
+  option_b_no_auto_live: boolean;
+  target_mode: "paper" | "testnet" | "live" | string;
+  candidate: {
+    run_id: string;
+    catalog_run_id?: string;
+    legacy_json_id?: string | null;
+    strategy_id: string;
+    strategy_name: string;
+    dataset_hash?: string;
+    period?: Record<string, unknown>;
+    status?: string;
+  };
+  baseline: {
+    run_id: string;
+    catalog_run_id?: string;
+    legacy_json_id?: string | null;
+    strategy_id: string;
+    strategy_name: string;
+    dataset_hash?: string;
+    period?: Record<string, unknown>;
+    status?: string;
+  };
+  constraints: {
+    passed: boolean;
+    checks: RunPromotionCheck[];
+  };
+  offline_gates: {
+    passed: boolean;
+    failed_ids?: string[];
+    summary?: string;
+    checks?: RunPromotionCheck[];
+  };
+  compare_vs_baseline: {
+    passed: boolean;
+    failed_ids?: string[];
+    summary?: string;
+    checks?: RunPromotionCheck[];
+  };
+  rollout_ready: boolean;
+  allowed_targets: Record<string, boolean>;
+  rollout_start_body?: {
+    candidate_run_id: string;
+    baseline_run_id?: string;
+  };
+  promoted?: boolean;
+  detail?: string;
+  note?: string;
+  rollout?: {
+    state?: Record<string, unknown>;
+    next_step?: string;
+  };
+}

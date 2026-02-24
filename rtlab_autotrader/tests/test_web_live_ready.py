@@ -733,6 +733,105 @@ def test_strategy_kpis_endpoints_and_run_provenance(tmp_path: Path, monkeypatch)
   assert {"trend", "range", "high_vol", "toxic"} <= set(regimes.keys())
 
 
+def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  runs_list = client.get("/api/v1/runs", headers=headers)
+  assert runs_list.status_code == 200, runs_list.text
+  items = runs_list.json()["items"]
+  assert items
+  first = items[0]
+  assert str(first["run_id"]).startswith("BT-")
+
+  detail = client.get(f"/api/v1/runs/{first['run_id']}", headers=headers)
+  assert detail.status_code == 200, detail.text
+  detail_payload = detail.json()
+  assert detail_payload["run_id"] == first["run_id"]
+  assert "title_structured" in detail_payload
+
+  patched = client.patch(
+    f"/api/v1/runs/{first['run_id']}",
+    headers=headers,
+    json={"alias": "favorito test", "tags": ["test", "wfa"], "pinned": True},
+  )
+  assert patched.status_code == 200, patched.text
+  assert patched.json()["run"]["alias"] == "favorito test"
+
+  compare = client.get(f"/api/v1/compare?r={first['run_id']}", headers=headers)
+  assert compare.status_code == 200, compare.text
+  assert compare.json()["count"] >= 1
+
+  rankings = client.get("/api/v1/rankings?preset=balanceado&min_trades=1&limit=20", headers=headers)
+  assert rankings.status_code == 200, rankings.text
+  assert isinstance(rankings.json()["items"], list)
+
+  batch_create = client.post(
+    "/api/v1/batches",
+    headers=headers,
+    json={
+      "objective": "Smoke batch",
+      "dataset_source": "synthetic",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-06-01",
+      "max_variants_per_strategy": 1,
+      "max_folds": 1,
+      "train_days": 60,
+      "test_days": 30,
+      "top_n": 1,
+      "seed": 7,
+    },
+  )
+  assert batch_create.status_code == 200, batch_create.text
+  batch_id = batch_create.json()["batch_id"]
+  assert str(batch_id).startswith("BX-")
+
+  batch_detail = client.get(f"/api/v1/batches/{batch_id}", headers=headers)
+  assert batch_detail.status_code == 200, batch_detail.text
+  assert batch_detail.json()["batch_id"] == batch_id
+
+
+def test_runs_validate_and_promote_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  runs_res = client.get("/api/v1/runs?limit=20", headers=headers)
+  assert runs_res.status_code == 200, runs_res.text
+  items = runs_res.json()["items"]
+  assert items
+  candidate_id = str(items[0]["run_id"])
+
+  validate_res = client.post(
+    f"/api/v1/runs/{candidate_id}/validate_promotion",
+    headers=headers,
+    json={"target_mode": "paper"},
+  )
+  assert validate_res.status_code == 200, validate_res.text
+  validate_payload = validate_res.json()
+  assert "constraints" in validate_payload
+  assert "offline_gates" in validate_payload
+  assert "compare_vs_baseline" in validate_payload
+  assert "rollout_ready" in validate_payload
+
+  promote_res = client.post(
+    f"/api/v1/runs/{candidate_id}/promote",
+    headers=headers,
+    json={"target_mode": "paper", "note": "smoke"},
+  )
+  assert promote_res.status_code in {200, 400}, promote_res.text
+  promote_payload = promote_res.json()
+  if promote_res.status_code == 200:
+    assert promote_payload.get("promoted") is True
+    assert isinstance((promote_payload.get("rollout") or {}).get("state"), dict)
+  else:
+    assert promote_payload.get("ok") is False
+
+
 def test_learning_recommend_uses_only_allow_learning_pool(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

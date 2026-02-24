@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from rtlab_core.backtest import BacktestCatalogDB
 from rtlab_core.src.data.catalog import DataCatalog
 from .data_provider import build_data_provider
 
@@ -96,6 +97,7 @@ class MassBacktestEngine:
         self.repo_root = Path(repo_root).resolve()
         self.knowledge_loader = knowledge_loader
         self.catalog = DataCatalog(self.user_data_dir)
+        self.backtest_catalog = BacktestCatalogDB(self.user_data_dir / "backtests" / "catalog.sqlite3")
         self.root = (self.user_data_dir / "research" / "mass_backtests").resolve()
         self.db_path = self.root / "metadata.sqlite3"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -538,6 +540,139 @@ class MassBacktestEngine:
         files.append({"name": "top_candidates.json", "path": str(top_json)})
         return files
 
+    def _batch_status_norm(self, state: str) -> str:
+        s = str(state or "").strip().lower()
+        return {
+            "queued": "queued",
+            "running": "running",
+            "completed": "completed",
+            "failed": "failed",
+            "canceled": "canceled",
+            "not_found": "failed",
+        }.get(s, "queued")
+
+    def _upsert_batch_catalog(self, *, batch_id: str, state: str, cfg: dict[str, Any], summary: dict[str, Any] | None = None) -> None:
+        universe_payload = {
+            "symbols": [str(x) for x in (cfg.get("resolved_universe") or cfg.get("universe") or [])],
+            "timeframes": [str(cfg.get("timeframe") or "5m")],
+            "market": str(cfg.get("market") or "crypto"),
+        }
+        variables_explored = {
+            "strategy_ids": [str(x) for x in (cfg.get("strategy_ids") or [])],
+            "max_variants_per_strategy": _i(cfg.get("max_variants_per_strategy"), 0),
+            "max_folds": _i(cfg.get("max_folds"), 0),
+            "train_days": _i(cfg.get("train_days"), 0),
+            "test_days": _i(cfg.get("test_days"), 0),
+            "seed": _i(cfg.get("seed"), 0),
+        }
+        s = summary or {}
+        now = _utc_iso()
+        self.backtest_catalog.upsert_backtest_batch(
+            {
+                "batch_id": batch_id,
+                "objective": str(cfg.get("objective") or "Research Batch (mass backtests)"),
+                "universe_json": json.dumps(universe_payload, ensure_ascii=True, sort_keys=True),
+                "variables_explored_json": json.dumps(variables_explored, ensure_ascii=True, sort_keys=True),
+                "created_at": str(cfg.get("created_at") or now),
+                "started_at": str(cfg.get("started_at") or now) if self._batch_status_norm(state) in {"running", "completed", "failed"} else cfg.get("started_at"),
+                "finished_at": now if self._batch_status_norm(state) in {"completed", "failed", "canceled"} else None,
+                "status": self._batch_status_norm(state),
+                "run_count_total": _i(s.get("variants_total"), 0),
+                "run_count_done": _i(s.get("variants_total"), 0) if self._batch_status_norm(state) == "completed" else _i(s.get("run_count_done"), 0),
+                "run_count_failed": _i(s.get("run_count_failed"), 0),
+                "best_runs_cache_json": json.dumps(s.get("best_runs_cache") or [], ensure_ascii=True, sort_keys=True),
+                "config_json": json.dumps(cfg, ensure_ascii=True, sort_keys=True, default=str),
+                "summary_json": json.dumps(s, ensure_ascii=True, sort_keys=True, default=str),
+            }
+        )
+
+    def _record_batch_children_catalog(self, *, batch_id: str, rows: list[dict[str, Any]], cfg: dict[str, Any]) -> None:
+        for idx, row in enumerate(rows, start=1):
+            summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+            regime = row.get("regime_metrics") if isinstance(row.get("regime_metrics"), dict) else {}
+            params = row.get("params") if isinstance(row.get("params"), dict) else {}
+            run_id = self.backtest_catalog.next_formatted_id("BT")
+            row["backtest_run_id"] = run_id
+            status = "completed" if bool(row.get("hard_filters_pass")) else "completed_warn"
+            symbols = [str(x) for x in (cfg.get("resolved_universe") or cfg.get("universe") or [])]
+            timeframe = str(cfg.get("timeframe") or "5m")
+            record = self.backtest_catalog.upsert_backtest_run(
+                {
+                    "run_id": run_id,
+                    "legacy_json_id": f"{batch_id}:{row.get('variant_id')}",
+                    "run_type": "batch_child",
+                    "batch_id": batch_id,
+                    "status": status,
+                    "created_at": _utc_iso(),
+                    "started_at": _utc_iso(),
+                    "finished_at": _utc_iso(),
+                    "created_by": str(cfg.get("requested_by") or "system"),
+                    "mode": "backtest",
+                    "strategy_id": str(row.get("strategy_id") or ""),
+                    "strategy_name": str(row.get("strategy_name") or row.get("strategy_id") or ""),
+                    "strategy_version": str(cfg.get("strategy_version") or "batch"),
+                    "strategy_config_hash": _sha({"variant_id": row.get("variant_id"), "params": params}),
+                    "code_commit_hash": str(cfg.get("commit_hash") or "local"),
+                    "dataset_source": str((cfg.get("data_provider") or {}).get("dataset_source") or cfg.get("dataset_source") or "dataset"),
+                    "dataset_version": str((cfg.get("data_provider") or {}).get("dataset_version") or "batch_dataset"),
+                    "dataset_hash": str(((summary.get("dataset_hashes") or [None])[0]) or (cfg.get("data_provider") or {}).get("dataset_hash") or ""),
+                    "symbols_json": json.dumps(symbols, ensure_ascii=True, sort_keys=True),
+                    "timeframes_json": json.dumps([timeframe], ensure_ascii=True, sort_keys=True),
+                    "timerange_from": str(cfg.get("start") or ""),
+                    "timerange_to": str(cfg.get("end") or ""),
+                    "timezone": "UTC",
+                    "missing_data_policy": "warn_skip",
+                    "fee_model": f"maker_taker_bps:{_f(((cfg.get('costs') or {}).get('fees_bps')), 0.0):.4f}",
+                    "spread_model": f"static:{_f(((cfg.get('costs') or {}).get('spread_bps')), 0.0):.4f}",
+                    "slippage_model": f"static:{_f(((cfg.get('costs') or {}).get('slippage_bps')), 0.0):.4f}",
+                    "funding_model": f"static:{_f(((cfg.get('costs') or {}).get('funding_bps')), 0.0):.4f}",
+                    "fill_model": "simulated",
+                    "initial_capital": _f(cfg.get("initial_capital"), 10000.0),
+                    "position_sizing_profile": str(cfg.get("position_sizing_profile") or "default"),
+                    "max_open_positions": _i(cfg.get("max_open_positions"), 1),
+                    "params_json": json.dumps({"variant_id": row.get("variant_id"), "params": params, "batch_rank": idx}, ensure_ascii=True, sort_keys=True),
+                    "seed": _i(row.get("seed")) if row.get("seed") is not None else None,
+                    "alias": None,
+                    "tags_json": json.dumps(["batch_child", "research"], ensure_ascii=True),
+                    "kpi_summary_json": json.dumps(
+                        {
+                            "sharpe": summary.get("sharpe_oos"),
+                            "sortino": summary.get("sortino_oos"),
+                            "calmar": summary.get("calmar_oos"),
+                            "max_dd": (_f(summary.get("max_dd_oos_pct")) / 100.0),
+                            "winrate": summary.get("winrate"),
+                            "expectancy": summary.get("expectancy_net_usd"),
+                            "expectancy_unit": "usd_per_trade",
+                            "profit_factor": summary.get("profit_factor"),
+                            "trade_count": summary.get("trade_count_oos"),
+                            "roundtrips": summary.get("trade_count_oos"),
+                            "robustness_score": round((_f(row.get("score"), 0.0) * 10) + 50, 4),
+                            "pbo": (row.get("anti_overfitting") or {}).get("pbo"),
+                            "dsr": (row.get("anti_overfitting") or {}).get("dsr"),
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    ),
+                    "regime_kpis_json": json.dumps(regime, ensure_ascii=True, sort_keys=True),
+                    "flags_json": json.dumps(
+                        {
+                            "OOS": True,
+                            "WFA": True,
+                            "PASO_GATES": bool(row.get("hard_filters_pass")),
+                            "BASELINE": False,
+                            "FAVORITO": idx <= max(1, _i(cfg.get("top_n"), 10)),
+                            "ARCHIVADO": False,
+                            "DATA_WARNING": bool(len(summary.get("dataset_hashes") or []) > 1),
+                            "ROBUSTEZ": "Alta" if bool(row.get("hard_filters_pass")) else "Media",
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    ),
+                    "artifacts_json": json.dumps({"batch_id": batch_id, "variant_id": row.get("variant_id")}, ensure_ascii=True, sort_keys=True),
+                }
+            )
+            row["catalog_run_id"] = record["run_id"]
+
     def run_job(
         self,
         *,
@@ -548,6 +683,8 @@ class MassBacktestEngine:
         backtest_callback: Callable[[dict[str, Any], FoldWindow, dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any]:
         cfg = copy.deepcopy(config)
+        cfg.setdefault("created_at", _utc_iso())
+        cfg.setdefault("started_at", _utc_iso())
         kp = self.load_knowledge_pack()
         universe = self.build_universe(config=cfg, historical_runs=historical_runs)
         cfg["resolved_universe"] = universe
@@ -576,6 +713,7 @@ class MassBacktestEngine:
             selected_strategy_ids=[str(x) for x in (cfg.get("strategy_ids") or [])],
         )
         total_tasks = max(1, len(variants) * len(folds))
+        self._upsert_batch_catalog(batch_id=run_id, state="running", cfg=cfg, summary={"variants_total": len(variants), "run_count_done": 0, "run_count_failed": 0})
         self._write_status(run_id, state="RUNNING", config=cfg, progress={"total_tasks": total_tasks, "completed_tasks": 0, "pct": 0}, logs=[f"Iniciando {len(variants)} variantes x {len(folds)} folds"])
         ranked_input: list[dict[str, Any]] = []
         completed = 0
@@ -637,6 +775,7 @@ class MassBacktestEngine:
         ranked = self.scoring_and_ranking(variants_payload=ranked_input)
         top_n = max(1, _i(cfg.get("top_n"), 10))
         top_rows = ranked[:top_n]
+        self._record_batch_children_catalog(batch_id=run_id, rows=ranked, cfg=cfg)
         payload = {
             "run_id": run_id,
             "created_at": self._status(run_id).get("created_at") or _utc_iso(),
@@ -674,6 +813,17 @@ class MassBacktestEngine:
         }
         _json_dump(self._manifest_path(run_id), manifest)
         artifacts = self._write_artifacts(run_id, top_rows)
+        for art in artifacts:
+            try:
+                self.backtest_catalog.add_artifact(
+                    run_id=None,
+                    batch_id=run_id,
+                    kind=str(art.get("name") or "artifact"),
+                    path=str(art.get("path") or ""),
+                    url=None,
+                )
+            except Exception:
+                pass
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM mass_variants WHERE run_id=?", (run_id,))
             for row in ranked:
@@ -697,13 +847,26 @@ class MassBacktestEngine:
             "hard_pass_count": payload["summary"]["hard_pass_count"],
             "promotable_count": payload["summary"]["promotable_count"],
             "top_variant_id": top_rows[0].get("variant_id") if top_rows else None,
+            "best_runs_cache": [str(r.get("catalog_run_id") or r.get("backtest_run_id") or "") for r in top_rows[: min(10, len(top_rows))]],
+            "run_count_done": len(ranked),
+            "run_count_failed": 0,
             "top_score": _f(top_rows[0].get("score"), 0.0) if top_rows else 0.0,
             "parquet": parquet_info,
         }
+        self._upsert_batch_catalog(batch_id=run_id, state="completed", cfg=cfg, summary=summary)
         self._write_status(run_id, state="COMPLETED", config=cfg, progress={"total_tasks": total_tasks, "completed_tasks": total_tasks, "pct": 100.0}, summary=summary, logs=["Mass backtests completado."])
         return {"run_id": run_id, "summary": summary, "artifacts": artifacts, "top_candidates": top_rows}
 
     def fail(self, run_id: str, *, config: dict[str, Any], err: str) -> None:
+        try:
+            self._upsert_batch_catalog(
+                batch_id=run_id,
+                state="failed",
+                cfg=config,
+                summary={"variants_total": 0, "run_count_done": 0, "run_count_failed": 1, "best_runs_cache": []},
+            )
+        except Exception:
+            pass
         self._write_status(run_id, state="FAILED", config=config, progress={"pct": 0}, error=err, logs=[err])
 
     def status(self, run_id: str) -> dict[str, Any]:
@@ -742,7 +905,7 @@ class MassBacktestCoordinator:
         self._lock = threading.Lock()
 
     def _run_id(self) -> str:
-        return f"mass_{hashlib.sha256(_utc_iso().encode('utf-8')).hexdigest()[:10]}"
+        return self.engine.backtest_catalog.next_formatted_id("BX")
 
     def start_async(self, *, config: dict[str, Any], strategies: list[dict[str, Any]], historical_runs: list[dict[str, Any]], backtest_callback: Callable[[dict[str, Any], FoldWindow, dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
         run_id = self._run_id()
