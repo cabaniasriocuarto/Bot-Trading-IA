@@ -429,19 +429,32 @@ export default function SettingsPage() {
     setDiag((prev) => ({ ...prev, ws: "probando..." }));
     await new Promise<void>((resolve) => {
       const es = new EventSource(endpoint, { withCredentials: true });
+      let settled = false;
       const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
         es.close();
         setDiag((prev) => ({ ...prev, ws: `WS timeout (${endpoint})` }));
         resolve();
       }, 5000);
       const markOk = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         es.close();
         setDiag((prev) => ({ ...prev, ws: `ok (${endpoint})` }));
         resolve();
       };
+      // En producción el backend emite SSE con eventos "status/risk/gates" (no "health").
+      // onopen alcanza para validar conectividad del stream.
+      es.onopen = markOk;
       es.addEventListener("health", markOk);
+      es.addEventListener("status", markOk);
+      es.addEventListener("risk", markOk);
+      es.addEventListener("gates", markOk);
       es.onerror = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         es.close();
         setDiag((prev) => ({ ...prev, ws: `fallo (${endpoint})` }));

@@ -144,8 +144,32 @@ function statusVariant(status: string): "success" | "danger" | "warn" {
   return "warn";
 }
 
+function runStatusLabel(status: string): string {
+  const s = String(status || "").toLowerCase();
+  switch (s) {
+    case "queued":
+      return "En cola";
+    case "preparing":
+      return "Preparando";
+    case "running":
+      return "Corriendo";
+    case "completed":
+      return "Completado";
+    case "completed_warn":
+      return "Completado con avisos";
+    case "failed":
+      return "Fallido";
+    case "canceled":
+      return "Cancelado";
+    case "archived":
+      return "Archivado";
+    default:
+      return status || "-";
+  }
+}
+
 function runTypeLabel(runType: string): string {
-  return String(runType) === "batch_child" ? "Research Batch child" : "Quick Backtest";
+  return String(runType) === "batch_child" ? "Child de Research Batch" : "Quick Backtest";
 }
 
 function shortHash(value: string | null | undefined, size = 10): string {
@@ -157,6 +181,16 @@ function compactDate(value: string | null | undefined): string {
   const v = String(value || "");
   if (!v) return "-";
   return v.replace("T", " ").slice(0, 16);
+}
+
+function utcDateLabel(value: string | null | undefined): string {
+  const v = String(value || "");
+  if (!v) return "-";
+  try {
+    return new Date(v).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  } catch {
+    return v;
+  }
 }
 
 function parseFeePctLabel(feeModel: string | null | undefined): string {
@@ -181,6 +215,9 @@ export default function BacktestsPage() {
   const [catalogRankings, setCatalogRankings] = useState<BacktestRankingsResponse | null>(null);
   const [catalogRankRequireOos, setCatalogRankRequireOos] = useState(false);
   const [catalogRankDataQualityOk, setCatalogRankDataQualityOk] = useState(false);
+  const [catalogPageSize, setCatalogPageSize] = useState<"30" | "60" | "100">("30");
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogPageInput, setCatalogPageInput] = useState("1");
   const [catalogProLimit, setCatalogProLimit] = useState<"50" | "100" | "250" | "500">("100");
   const [catalogTableColumns, setCatalogTableColumns] = useState<Record<string, boolean>>({
     run: true,
@@ -327,6 +364,11 @@ export default function BacktestsPage() {
     void refreshCatalogBatches();
     void refreshCatalogRankings();
   }, [refreshCatalogRuns, refreshCatalogBatches, refreshCatalogRankings]);
+
+  useEffect(() => {
+    setCatalogPage(1);
+    setCatalogPageInput("1");
+  }, [catalogRuns, catalogPageSize]);
 
   useEffect(() => {
     const selectedCatalogRows = (catalogComparePreview?.items || []).slice(0, 4);
@@ -662,7 +704,16 @@ export default function BacktestsPage() {
     return [...map.values()];
   }, [selectedRuns]);
 
-  const catalogShortlist = catalogRuns.slice(0, 10);
+  const catalogTotalPages = Math.max(1, Math.ceil(catalogRuns.length / Number(catalogPageSize)));
+  const catalogPageSafe = Math.min(Math.max(catalogPage, 1), catalogTotalPages);
+  const catalogPageStart = (catalogPageSafe - 1) * Number(catalogPageSize);
+  const catalogPageEnd = Math.min(catalogPageStart + Number(catalogPageSize), catalogRuns.length);
+  const catalogPageRows = catalogRuns.slice(catalogPageStart, catalogPageEnd);
+  const catalogPageNumbers = Array.from({ length: Math.min(catalogTotalPages, 7) }, (_, idx) => {
+    if (catalogTotalPages <= 7) return idx + 1;
+    const windowStart = Math.max(1, Math.min(catalogPageSafe - 3, catalogTotalPages - 6));
+    return windowStart + idx;
+  });
   const recentBatches = catalogBatches.slice(0, 8);
   const batchChildrenCount = catalogRuns.filter((r) => r.run_type === "batch_child").length;
   const quickRunsCount = catalogRuns.filter((r) => r.run_type !== "batch_child").length;
@@ -855,29 +906,29 @@ export default function BacktestsPage() {
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">Tipo</label>
               <Select value={catalogFilters.run_type} onChange={(e) => setCatalogFilters((p) => ({ ...p, run_type: e.target.value as RunsListFilters["run_type"] }))}>
-                <option value="">Todos</option>
+                <option value="">Todos los tipos</option>
                 <option value="single">Quick Backtest</option>
-                <option value="batch_child">Research Batch child</option>
+                <option value="batch_child">Child de Research Batch</option>
               </Select>
             </div>
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">Estado</label>
               <Select value={catalogFilters.status} onChange={(e) => setCatalogFilters((p) => ({ ...p, status: e.target.value }))}>
-                <option value="">Todos</option>
-                <option value="queued">Queued</option>
-                <option value="preparing">Preparing</option>
-                <option value="running">Running</option>
-                <option value="completed">Completed</option>
-                <option value="completed_warn">Completed_warn</option>
-                <option value="failed">Failed</option>
-                <option value="canceled">Canceled</option>
-                <option value="archived">Archived</option>
+                <option value="">Todos los estados</option>
+                <option value="queued">En cola</option>
+                <option value="preparing">Preparando</option>
+                <option value="running">Corriendo</option>
+                <option value="completed">Completado</option>
+                <option value="completed_warn">Completado con avisos</option>
+                <option value="failed">Fallido</option>
+                <option value="canceled">Cancelado</option>
+                <option value="archived">Archivado</option>
               </Select>
             </div>
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">Estrategia</label>
               <Select value={catalogFilters.strategy_id} onChange={(e) => setCatalogFilters((p) => ({ ...p, strategy_id: e.target.value }))}>
-                <option value="">Todas</option>
+                <option value="">Todas las estrategias</option>
                 {strategies.map((row) => (
                   <option key={`cat-filter-st-${row.id}`} value={row.id}>
                     {row.name}
@@ -888,7 +939,7 @@ export default function BacktestsPage() {
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">TF</label>
               <Select value={catalogFilters.timeframe} onChange={(e) => setCatalogFilters((p) => ({ ...p, timeframe: e.target.value }))}>
-                <option value="">Todos</option>
+                <option value="">Todos los timeframes</option>
                 <option value="5m">5m</option>
                 <option value="10m">10m</option>
                 <option value="15m">15m</option>
@@ -969,7 +1020,10 @@ export default function BacktestsPage() {
               <p className="mt-2 text-sm text-slate-200">
                 Total filtrados: <span className="font-semibold">{catalogRunCount}</span>
               </p>
-              <p className="text-xs text-slate-400">Quick Backtest: {quickRunsCount} | Research Batch child: {batchChildrenCount}</p>
+              <p className="text-xs text-slate-400">Quick Backtest: {quickRunsCount} | Child de Research Batch: {batchChildrenCount}</p>
+              <p className="text-xs text-slate-400">
+                Mostrando {catalogRuns.length ? catalogPageStart + 1 : 0}-{catalogPageEnd} de {catalogRuns.length} runs cargados en esta vista.
+              </p>
               <p className="mt-2 text-xs text-slate-400">
                 Comparador catalogo: {catalogCompareIds.length} seleccionados {catalogComparePreview ? `| same_dataset: ${catalogComparePreview.same_dataset ? "si" : "no"}` : ""}
               </p>
@@ -1035,7 +1089,7 @@ export default function BacktestsPage() {
                 </TR>
               </THead>
               <TBody>
-                {catalogShortlist.map((row) => {
+                {catalogPageRows.map((row) => {
                   const symbols = row.symbols?.join(", ") || "-";
                   const tfs = row.timeframes?.join(", ") || "-";
                   const k = row.kpis || {};
@@ -1056,9 +1110,12 @@ export default function BacktestsPage() {
                       </TD>
                       <TD className="text-xs">{runTypeLabel(row.run_type)}</TD>
                       <TD>
-                        <Badge variant={statusVariant(row.status)}>{row.status}</Badge>
+                        <Badge variant={statusVariant(row.status)}>{runStatusLabel(row.status)}</Badge>
                       </TD>
-                      <TD className="text-xs">{compactDate(row.created_at)}</TD>
+                      <TD className="text-xs" title={`Local: ${compactDate(row.created_at)}\nUTC: ${utcDateLabel(row.created_at)}`}>
+                        <p>{compactDate(row.created_at)}</p>
+                        <p className="text-slate-500">{utcDateLabel(row.created_at)}</p>
+                      </TD>
                       <TD className="align-top">
                         <p className="text-xs text-slate-200">{row.strategy_name}</p>
                         <p className="text-xs text-slate-400">{row.strategy_id} · v{row.strategy_version}</p>
@@ -1144,17 +1201,128 @@ export default function BacktestsPage() {
                     </TR>
                   );
                 })}
-                {!catalogShortlist.length ? (
+                {!catalogPageRows.length ? (
                   <TR>
-                    <TD colSpan={13} className="py-6 text-center text-sm text-slate-400">
-                      Sin runs en el catalogo con estos filtros.
+                    <TD colSpan={13} className="py-6">
+                      <div className="mx-auto max-w-2xl rounded-lg border border-slate-800 bg-slate-900/60 p-4 text-left">
+                        <p className="text-sm font-semibold text-slate-100">Todavia no hay datos para esta vista</p>
+                        <p className="mt-1 text-sm text-slate-400">
+                          No hay runs que coincidan con los filtros actuales, o todavia no ejecutaste un Quick Backtest / Research Batch.
+                        </p>
+                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                          <div className="rounded border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+                            <p className="font-semibold text-slate-100">Que hacer ahora (rapido)</p>
+                            <ol className="mt-2 list-decimal space-y-1 pl-4">
+                              <li>Limpiar filtros de Runs.</li>
+                              <li>Ejecutar un Quick Backtest.</li>
+                              <li>O lanzar un Research Batch para generar multiples runs.</li>
+                            </ol>
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <Button type="button" variant="outline" onClick={() => {
+                              setCatalogFilters({
+                                q: "",
+                                run_type: "",
+                                status: "",
+                                strategy_id: "",
+                                symbol: "",
+                                timeframe: "",
+                                min_trades: "",
+                                max_dd: "",
+                                sharpe: "",
+                                sort_by: "created_at",
+                                sort_dir: "desc",
+                              });
+                            }}>
+                              Limpiar filtros de Runs
+                            </Button>
+                            <Button type="button" variant="outline" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+                              Ir a Quick Backtest / Research Batch
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
                     </TD>
                   </TR>
                 ) : null}
               </TBody>
             </Table>
           </div>
-          <p className="text-xs text-slate-400">Vista de shortlist (10 filas) para revisión rápida. Debajo tenés el comparador profesional del Bloque 4.</p>
+          <div className="flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3 md:flex-row md:items-end md:justify-between">
+            <div className="grid gap-2 md:grid-cols-3 md:items-end">
+              <div className="space-y-1">
+                <label className="text-xs uppercase tracking-wide text-slate-400">Runs por pagina</label>
+                <Select value={catalogPageSize} onChange={(e) => setCatalogPageSize(e.target.value as "30" | "60" | "100")}>
+                  <option value="30">30</option>
+                  <option value="60">60</option>
+                  <option value="100">100</option>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs uppercase tracking-wide text-slate-400">Ir a pagina</label>
+                <Input
+                  value={catalogPageInput}
+                  onChange={(e) => setCatalogPageInput(e.target.value.replace(/[^0-9]/g, ""))}
+                  placeholder="1"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    const requested = Number(catalogPageInput || "1");
+                    if (!Number.isFinite(requested)) return;
+                    const next = Math.min(Math.max(Math.trunc(requested), 1), catalogTotalPages);
+                    setCatalogPage(next);
+                    setCatalogPageInput(String(next));
+                  }}
+                >
+                  Ir
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={catalogPageSafe <= 1}
+                onClick={() => {
+                  const next = Math.max(1, catalogPageSafe - 1);
+                  setCatalogPage(next);
+                  setCatalogPageInput(String(next));
+                }}
+              >
+                Anterior
+              </Button>
+              {catalogPageNumbers.map((n) => (
+                <Button
+                  key={`runs-page-${n}`}
+                  type="button"
+                  variant={n === catalogPageSafe ? "default" : "outline"}
+                  onClick={() => {
+                    setCatalogPage(n);
+                    setCatalogPageInput(String(n));
+                  }}
+                >
+                  {n}
+                </Button>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                disabled={catalogPageSafe >= catalogTotalPages}
+                onClick={() => {
+                  const next = Math.min(catalogTotalPages, catalogPageSafe + 1);
+                  setCatalogPage(next);
+                  setCatalogPageInput(String(next));
+                }}
+              >
+                Siguiente
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-slate-400">Runs list paginada para trabajo diario. La shortlist de comparacion rapida esta en el Comparador Profesional (D1).</p>
         </CardContent>
       </Card>
 
