@@ -58,6 +58,8 @@ type RunsListFilters = {
   sort_dir: "asc" | "desc";
 };
 
+type FocusRunTab = "overview" | "performance" | "trades_analysis" | "ratios" | "trades_list" | "artifacts";
+
 const chartColors = ["#22d3ee", "#f97316", "#facc15", "#4ade80", "#f472b6"];
 const MARKET_OPTIONS: Record<RunForm["market"], string[]> = {
   crypto: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT"],
@@ -270,6 +272,7 @@ export default function BacktestsPage() {
     seed: "42",
     dataset_source: "synthetic",
   });
+  const [focusRunTab, setFocusRunTab] = useState<FocusRunTab>("overview");
 
   const [form, setForm] = useState<RunForm>({
     strategy_id: "",
@@ -660,6 +663,75 @@ export default function BacktestsPage() {
   };
 
   const focusTradeStats = tradeStatsForRun(focusRun);
+
+  const focusRunChartData = useMemo(() => {
+    if (!focusRun) return [];
+    return (focusRun.equity_curve || []).map((point, idx) => ({
+      index: idx,
+      equity: point.equity,
+      drawdown: point.drawdown,
+      time: point.time,
+    }));
+  }, [focusRun]);
+
+  const focusTrades = focusRun?.trades || [];
+
+  const focusTradeAnalysis = useMemo(() => {
+    const trades = focusTrades;
+    if (!trades.length) {
+      return {
+        total: 0,
+        wins: 0,
+        losses: 0,
+        breakeven: 0,
+        avgWin: 0,
+        avgLoss: 0,
+        maxWin: 0,
+        maxLoss: 0,
+        longCount: 0,
+        shortCount: 0,
+        topEntryReasons: [] as Array<[string, number]>,
+        topExitReasons: [] as Array<[string, number]>,
+      };
+    }
+    const wins = trades.filter((t) => (t.pnl_net ?? t.pnl) > 0);
+    const losses = trades.filter((t) => (t.pnl_net ?? t.pnl) < 0);
+    const breakeven = trades.length - wins.length - losses.length;
+    const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+    const entryMap = new Map<string, number>();
+    const exitMap = new Map<string, number>();
+    for (const t of trades) {
+      const entry = String(t.reason_code || "sin_motivo");
+      const exit = String(t.exit_reason || "sin_motivo");
+      entryMap.set(entry, (entryMap.get(entry) || 0) + 1);
+      exitMap.set(exit, (exitMap.get(exit) || 0) + 1);
+    }
+    const sortMap = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    return {
+      total: trades.length,
+      wins: wins.length,
+      losses: losses.length,
+      breakeven,
+      avgWin: avg(wins.map((t) => t.pnl_net ?? t.pnl)),
+      avgLoss: avg(losses.map((t) => t.pnl_net ?? t.pnl)),
+      maxWin: Math.max(...trades.map((t) => t.pnl_net ?? t.pnl)),
+      maxLoss: Math.min(...trades.map((t) => t.pnl_net ?? t.pnl)),
+      longCount: trades.filter((t) => t.side === "long").length,
+      shortCount: trades.filter((t) => t.side === "short").length,
+      topEntryReasons: sortMap(entryMap),
+      topExitReasons: sortMap(exitMap),
+    };
+  }, [focusTrades]);
+
+  const focusArtifacts = useMemo(() => {
+    const links = focusRun?.artifacts_links;
+    if (!links) return [] as Array<{ label: string; href: string | null | undefined }>;
+    return [
+      { label: "Reporte JSON", href: links.report_json },
+      { label: "Trades CSV", href: links.trades_csv },
+      { label: "Equity Curve CSV", href: links.equity_curve_csv },
+    ];
+  }, [focusRun]);
 
   const consistency = useMemo(() => {
     if (selectedRuns.length < 2) return null;
@@ -1753,10 +1825,21 @@ export default function BacktestsPage() {
       </Card>
 
       <Card>
-        <CardTitle>Quick Backtest (Legacy Compare)</CardTitle>
-        <CardDescription>Comparador rápido 2-5 corridas del endpoint legacy. El comparador profesional de runs va en el bloque siguiente.</CardDescription>
-        <CardContent className="overflow-x-auto">
-          <Table>
+        <CardTitle className="flex items-center gap-2">
+          Quick Backtest Legacy (Deprecado)
+          <Badge variant="warn">Deprecado</Badge>
+        </CardTitle>
+        <CardDescription>
+          Vista legacy para compatibilidad. El flujo oficial es Quick Backtest / Research Batch -&gt; Backtests / Runs -&gt; Comparador profesional.
+        </CardDescription>
+        <CardContent>
+          <details className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+            <summary className="cursor-pointer list-none text-sm font-semibold text-slate-200">Abrir comparador legacy (compatibilidad)</summary>
+            <p className="mt-2 text-xs text-slate-400">
+              Usalo solo para corridas viejas del endpoint legacy. Para investigacion y decisiones, usa la lista de Runs y el Comparador Profesional.
+            </p>
+            <div className="mt-3 overflow-x-auto">
+              <Table>
             <THead>
               <TR>
                 <TH>Comparar</TH>
@@ -1814,6 +1897,8 @@ export default function BacktestsPage() {
               ))}
             </TBody>
           </Table>
+            </div>
+          </details>
         </CardContent>
       </Card>
 
@@ -2021,48 +2106,343 @@ export default function BacktestsPage() {
       </Card>
 
       <Card>
-        <CardTitle>Detalle de Corrida</CardTitle>
-        <CardDescription>{focusRun ? `Run ${focusRun.id}` : "Sin corridas disponibles."}</CardDescription>
-        <CardContent className="grid gap-3 md:grid-cols-4">
-          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 md:col-span-4">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Dataset</p>
-            <p className="text-sm text-slate-200">
-              {(focusRun?.market || "-")}/{(focusRun?.symbol || focusRun?.universe?.[0] || "-")} @ {focusRun?.timeframe || "-"} | fuente{" "}
-              {focusRun?.data_source || "-"}
-            </p>
-            <p className="text-xs font-mono text-slate-400 break-all">{focusRun?.dataset_hash || "-"}</p>
+        <CardTitle>Detalle de Corrida (Strategy Tester)</CardTitle>
+        <CardDescription>
+          {focusRun
+            ? `${focusRun.id} · ${focusRun.strategy_id} · ${focusRun.symbol || focusRun.universe?.[0] || "-"} · ${focusRun.timeframe || "-"}`
+            : "Sin corridas disponibles."}
+        </CardDescription>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {[
+              ["overview", "Overview"],
+              ["performance", "Performance"],
+              ["trades_analysis", "Trades analysis"],
+              ["ratios", "Risk / ratios"],
+              ["trades_list", "Listado de trades"],
+              ["artifacts", "Artifacts"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setFocusRunTab(id as FocusRunTab)}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  focusRunTab === id
+                    ? "border-cyan-400/50 bg-cyan-500/10 text-cyan-200"
+                    : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Cantidad de entradas</p>
-            <p className="text-xl font-semibold text-slate-100">{focusTradeStats.totalEntries}</p>
-          </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Salidas</p>
-            <p className="text-xl font-semibold text-slate-100">{focusTradeStats.totalExits}</p>
-          </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Roundtrips</p>
-            <p className="text-xl font-semibold text-slate-100">{focusTradeStats.totalRoundtrips}</p>
-          </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Trade Count</p>
-            <p className="text-xl font-semibold text-slate-100">{focusTradeStats.tradeCount}</p>
-          </div>
-          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 md:col-span-4">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Costos (del formulario)</p>
-            <p className="text-sm text-slate-200">
-              Fees {fmtNum(focusRun?.costs_breakdown?.fees_total ?? 0)} | Spread {fmtNum(focusRun?.costs_breakdown?.spread_total ?? 0)} | Slippage{" "}
-              {fmtNum(focusRun?.costs_breakdown?.slippage_total ?? 0)} | Funding {fmtNum(focusRun?.costs_breakdown?.funding_total ?? 0)} | Rollover{" "}
-              {fmtNum(focusRun?.costs_breakdown?.rollover_total ?? 0)}
-            </p>
-            <p className="text-xs text-slate-400">
-              % sobre PnL bruto: fees {fmtPct(focusRun?.costs_breakdown?.fees_pct_of_gross_pnl ?? 0)} | spread{" "}
-              {fmtPct(focusRun?.costs_breakdown?.spread_pct_of_gross_pnl ?? 0)} | slippage{" "}
-              {fmtPct(focusRun?.costs_breakdown?.slippage_pct_of_gross_pnl ?? 0)} | funding{" "}
-              {fmtPct(focusRun?.costs_breakdown?.funding_pct_of_gross_pnl ?? 0)} | rollover{" "}
-              {fmtPct(focusRun?.costs_breakdown?.rollover_pct_of_gross_pnl ?? 0)}
-            </p>
-          </div>
+
+          {!focusRun ? (
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-300">
+              <p className="font-semibold text-slate-100">Todavia no hay una corrida para mostrar</p>
+              <p className="mt-1">Ejecuta un Quick Backtest o selecciona una corrida existente para ver su detalle por pestañas.</p>
+            </div>
+          ) : null}
+
+          {focusRun && focusRunTab === "overview" ? (
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 md:col-span-4">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Metadata y datos</p>
+                <p className="text-sm text-slate-200">
+                  {focusRun.market || "-"} / {focusRun.symbol || focusRun.universe?.[0] || "-"} @ {focusRun.timeframe || "-"} · fuente {focusRun.data_source || "-"}
+                </p>
+                <p className="text-xs text-slate-400">
+                  Rango: {focusRun.period.start} → {focusRun.period.end} · Commit: <span className="font-mono">{shortHash(focusRun.git_commit, 12)}</span>
+                </p>
+                <p className="text-xs font-mono text-slate-400 break-all">Dataset hash: {focusRun.dataset_hash || "-"}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Entradas</p>
+                <p className="text-xl font-semibold text-slate-100">{focusTradeStats.totalEntries}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Salidas</p>
+                <p className="text-xl font-semibold text-slate-100">{focusTradeStats.totalExits}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Roundtrips</p>
+                <p className="text-xl font-semibold text-slate-100">{focusTradeStats.totalRoundtrips}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Trade Count</p>
+                <p className="text-xl font-semibold text-slate-100">{focusTradeStats.tradeCount}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 md:col-span-4">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Modelo de costos (resultado neto)</p>
+                <p className="text-sm text-slate-200">
+                  Fees {fmtNum(focusRun.costs_breakdown?.fees_total ?? 0)} | Spread {fmtNum(focusRun.costs_breakdown?.spread_total ?? 0)} | Slippage{" "}
+                  {fmtNum(focusRun.costs_breakdown?.slippage_total ?? 0)} | Funding {fmtNum(focusRun.costs_breakdown?.funding_total ?? 0)} | Rollover{" "}
+                  {fmtNum(focusRun.costs_breakdown?.rollover_total ?? 0)}
+                </p>
+                <p className="text-xs text-slate-400">
+                  % sobre PnL bruto: fees {fmtPct(focusRun.costs_breakdown?.fees_pct_of_gross_pnl ?? 0)} · spread{" "}
+                  {fmtPct(focusRun.costs_breakdown?.spread_pct_of_gross_pnl ?? 0)} · slippage{" "}
+                  {fmtPct(focusRun.costs_breakdown?.slippage_pct_of_gross_pnl ?? 0)} · funding{" "}
+                  {fmtPct(focusRun.costs_breakdown?.funding_pct_of_gross_pnl ?? 0)} · rollover{" "}
+                  {fmtPct(focusRun.costs_breakdown?.rollover_pct_of_gross_pnl ?? 0)}
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {focusRun && focusRunTab === "performance" ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-4">
+                <MetricTile label="CAGR" value={fmtPct(focusRun.metrics.cagr)} gradeKey="cagr" numericValue={focusRun.metrics.cagr} />
+                <MetricTile label="Max DD" value={fmtPct(focusRun.metrics.max_dd)} gradeKey="max_dd" numericValue={focusRun.metrics.max_dd} />
+                <MetricTile label="PnL neto (aprox)" value={fmtNum(focusRun.costs_breakdown?.net_pnl_total ?? focusRun.costs_breakdown?.net_pnl ?? 0)} />
+                <MetricTile
+                  label={`Expectancy (${focusRun.metrics.expectancy_unit || focusRun.metrics.expectancy_pct_unit || "unidad"})`}
+                  value={fmtNum(focusRun.metrics.expectancy)}
+                />
+              </div>
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Card>
+                  <CardTitle>Equity curve</CardTitle>
+                  <CardDescription>Performance acumulada de la corrida seleccionada.</CardDescription>
+                  <CardContent>
+                    <div className="h-64 w-full">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={250}>
+                        <LineChart data={focusRunChartData}>
+                          <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                          <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
+                          <Line type="monotone" dataKey="equity" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardTitle>Drawdown curve</CardTitle>
+                  <CardDescription>Perfil de riesgo de la corrida seleccionada.</CardDescription>
+                  <CardContent>
+                    <div className="h-64 w-full">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={250}>
+                        <LineChart data={focusRunChartData}>
+                          <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                          <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
+                          <Line type="monotone" dataKey="drawdown" stroke="#f97316" strokeWidth={2} dot={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          ) : null}
+
+          {focusRun && focusRunTab === "trades_analysis" ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-4">
+                <MetricTile label="Trades" value={String(focusTradeAnalysis.total)} />
+                <MetricTile label="W / L / BE" value={`${focusTradeAnalysis.wins} / ${focusTradeAnalysis.losses} / ${focusTradeAnalysis.breakeven}`} />
+                <MetricTile label="Largos / Cortos" value={`${focusTradeAnalysis.longCount} / ${focusTradeAnalysis.shortCount}`} />
+                <MetricTile label="Win rate" value={fmtPct(focusRun.metrics.winrate)} gradeKey="winrate" numericValue={focusRun.metrics.winrate} />
+                <MetricTile label="Avg win (net)" value={fmtNum(focusTradeAnalysis.avgWin)} />
+                <MetricTile label="Avg loss (net)" value={fmtNum(focusTradeAnalysis.avgLoss)} />
+                <MetricTile label="Max win (net)" value={fmtNum(focusTradeAnalysis.maxWin)} />
+                <MetricTile label="Max loss (net)" value={fmtNum(focusTradeAnalysis.maxLoss)} />
+              </div>
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Motivos de entrada (top)</p>
+                  <div className="mt-2 space-y-2">
+                    {focusTradeAnalysis.topEntryReasons.length ? (
+                      focusTradeAnalysis.topEntryReasons.map(([reason, count]) => (
+                        <div key={`entry-${reason}`} className="flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1 text-sm">
+                          <span className="truncate text-slate-200">{reason}</span>
+                          <Badge variant="neutral">{count}</Badge>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-400">Sin datos de motivos de entrada.</p>
+                    )}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Motivos de salida (top)</p>
+                  <div className="mt-2 space-y-2">
+                    {focusTradeAnalysis.topExitReasons.length ? (
+                      focusTradeAnalysis.topExitReasons.map(([reason, count]) => (
+                        <div key={`exit-${reason}`} className="flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1 text-sm">
+                          <span className="truncate text-slate-200">{reason}</span>
+                          <Badge variant="neutral">{count}</Badge>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-slate-400">Sin datos de motivos de salida.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {focusRun && focusRunTab === "ratios" ? (
+            <div className="grid gap-3 xl:grid-cols-2">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Risk / performance ratios</p>
+                <Table>
+                  <TBody>
+                    <TR>
+                      <TD>Sharpe</TD>
+                      <TD className={gradeCellClass("sharpe", focusRun.metrics.sharpe)}>{fmtNum(focusRun.metrics.sharpe)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Sortino</TD>
+                      <TD className={gradeCellClass("sortino", focusRun.metrics.sortino)}>{fmtNum(focusRun.metrics.sortino)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Calmar</TD>
+                      <TD className={gradeCellClass("calmar", focusRun.metrics.calmar)}>{fmtNum(focusRun.metrics.calmar)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Profit Factor</TD>
+                      <TD>{fmtNum(focusRun.metrics.profit_factor ?? 0)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Turnover</TD>
+                      <TD className={gradeCellClass("turnover", focusRun.metrics.turnover)}>{fmtNum(focusRun.metrics.turnover)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Robustez</TD>
+                      <TD className={gradeCellClass("robustness", focusRun.metrics.robustness_score ?? focusRun.metrics.robust_score)}>
+                        {fmtNum(focusRun.metrics.robustness_score ?? focusRun.metrics.robust_score)}
+                      </TD>
+                    </TR>
+                  </TBody>
+                </Table>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Costos y eficiencia</p>
+                <Table>
+                  <TBody>
+                    <TR>
+                      <TD>Gross PnL</TD>
+                      <TD>{fmtNum(focusRun.costs_breakdown?.gross_pnl_total ?? focusRun.costs_breakdown?.gross_pnl ?? 0)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Net PnL</TD>
+                      <TD>{fmtNum(focusRun.costs_breakdown?.net_pnl_total ?? focusRun.costs_breakdown?.net_pnl ?? 0)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Fees total</TD>
+                      <TD>{fmtNum(focusRun.costs_breakdown?.fees_total ?? 0)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Spread total</TD>
+                      <TD>{fmtNum(focusRun.costs_breakdown?.spread_total ?? 0)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Slippage total</TD>
+                      <TD>{fmtNum(focusRun.costs_breakdown?.slippage_total ?? 0)}</TD>
+                    </TR>
+                    <TR>
+                      <TD>Funding + Rollover</TD>
+                      <TD>{fmtNum((focusRun.costs_breakdown?.funding_total ?? 0) + (focusRun.costs_breakdown?.rollover_total ?? 0))}</TD>
+                    </TR>
+                  </TBody>
+                </Table>
+              </div>
+            </div>
+          ) : null}
+
+          {focusRun && focusRunTab === "trades_list" ? (
+            <div className="space-y-3">
+              <p className="text-xs uppercase tracking-wide text-slate-400">
+                Listado de trades ({focusTrades.length}) · se muestran hasta 200 para mantener la UI fluida
+              </p>
+              {focusTrades.length ? (
+                <div className="max-h-[32rem] overflow-auto rounded-lg border border-slate-800">
+                  <Table>
+                    <THead>
+                      <TR>
+                        <TH>Timestamp</TH>
+                        <TH>Simbolo</TH>
+                        <TH>Lado</TH>
+                        <TH>Entrada</TH>
+                        <TH>Salida</TH>
+                        <TH>Qty</TH>
+                        <TH>PnL neto</TH>
+                        <TH>MFE</TH>
+                        <TH>MAE</TH>
+                        <TH>Motivo entrada</TH>
+                        <TH>Motivo salida</TH>
+                      </TR>
+                    </THead>
+                    <TBody>
+                      {focusTrades.slice(0, 200).map((trade) => (
+                        <TR key={`focus-tr-${trade.id}`}>
+                          <TD title={trade.exit_time}>{compactDate(trade.entry_time)}</TD>
+                          <TD>{trade.symbol}</TD>
+                          <TD>{trade.side}</TD>
+                          <TD>{fmtNum(trade.entry_px)}</TD>
+                          <TD>{fmtNum(trade.exit_px)}</TD>
+                          <TD>{fmtNum(trade.qty)}</TD>
+                          <TD className={(trade.pnl_net ?? trade.pnl) >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtNum(trade.pnl_net ?? trade.pnl)}</TD>
+                          <TD>{fmtNum(trade.mfe)}</TD>
+                          <TD>{fmtNum(trade.mae)}</TD>
+                          <TD>{trade.reason_code || "-"}</TD>
+                          <TD>{trade.exit_reason || "-"}</TD>
+                        </TR>
+                      ))}
+                    </TBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-300">
+                  <p className="font-semibold text-slate-100">Todavia no hay listado de trades</p>
+                  <p className="mt-1">Algunas corridas no guardan trades completos. Ejecuta una corrida con export de trades para poblar esta pestaña.</p>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {focusRun && focusRunTab === "artifacts" ? (
+            <div className="space-y-3">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Artifacts del run</p>
+              {focusArtifacts.some((a) => a.href) ? (
+                <div className="grid gap-3 md:grid-cols-3">
+                  {focusArtifacts.map((artifact) => (
+                    <div key={artifact.label} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                      <p className="text-sm font-semibold text-slate-100">{artifact.label}</p>
+                      {artifact.href ? (
+                        <>
+                          <p className="mt-1 break-all text-xs font-mono text-slate-400">{artifact.href}</p>
+                          <div className="mt-2 flex gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => window.open(artifact.href || "", "_blank", "noopener,noreferrer")}
+                            >
+                              Descargar
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <p className="mt-1 text-xs text-slate-400">No disponible en esta corrida.</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-300">
+                  <p className="font-semibold text-slate-100">No hay artifacts exportados</p>
+                  <p className="mt-1">Ejecuta un quick backtest completo o exporta resultados para generar archivos descargables.</p>
+                </div>
+              )}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -2169,6 +2549,26 @@ export default function BacktestsPage() {
           </Table>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  gradeKey,
+  numericValue,
+}: {
+  label: string;
+  value: string;
+  gradeKey?: string;
+  numericValue?: number;
+}) {
+  const gradeClass = gradeKey ? gradeCellClass(gradeKey, numericValue) : "";
+  return (
+    <div className={`rounded-lg border border-slate-800 bg-slate-900/60 p-3 ${gradeClass}`.trim()}>
+      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-slate-100">{value}</p>
     </div>
   );
 }

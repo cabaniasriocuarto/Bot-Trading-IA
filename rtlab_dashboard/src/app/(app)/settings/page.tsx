@@ -1133,7 +1133,7 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-100">Offline Gates</p>
                 <Badge variant={rollout?.offline_gates?.passed ? "success" : rollout?.offline_gates ? "danger" : "neutral"}>
-                  {rollout?.offline_gates ? (rollout.offline_gates.passed ? "PASS" : "FAIL") : "N/A"}
+                  {rollout?.offline_gates ? (rollout.offline_gates.passed ? "PASS" : "FAIL") : "Sin evaluacion"}
                 </Badge>
               </div>
               {rollout?.offline_gates?.failed_ids?.length ? (
@@ -1149,7 +1149,20 @@ export default function SettingsPage() {
                     {check.reason ? <p className="text-slate-400">{check.reason}</p> : null}
                   </div>
                 ))}
-                {!rollout?.offline_gates?.checks?.length ? <p className="text-xs text-slate-400">Sin evaluacion offline (iniciá rollout).</p> : null}
+                {!rollout?.offline_gates?.checks?.length ? (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/40 p-3 text-xs">
+                    <p className="font-semibold text-slate-100">Sin evaluacion offline todavia</p>
+                    <p className="mt-1 text-slate-400">No se generaron checks de gates para este candidato. Primero inicia el rollout offline para construir baseline/candidate y evaluar.</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" onClick={startRollout} disabled={rolloutStartDisabled || rolloutBusy}>
+                        {rolloutBusy ? "Procesando..." : "Iniciar evaluacion offline"}
+                      </Button>
+                      <Button type="button" variant="outline" onClick={refreshRollout} disabled={rolloutBusy}>
+                        Refresh
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -1157,7 +1170,7 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-100">Compare vs Baseline</p>
                 <Badge variant={rollout?.compare_vs_baseline?.passed ? "success" : rollout?.compare_vs_baseline ? "danger" : "neutral"}>
-                  {rollout?.compare_vs_baseline ? (rollout.compare_vs_baseline.passed ? "PASS" : "FAIL") : "N/A"}
+                  {rollout?.compare_vs_baseline ? (rollout.compare_vs_baseline.passed ? "PASS" : "FAIL") : "Sin comparacion"}
                 </Badge>
               </div>
               {rollout?.compare_vs_baseline?.failed_ids?.length ? (
@@ -1173,7 +1186,20 @@ export default function SettingsPage() {
                     {check.reason ? <p className="text-slate-400">{check.reason}</p> : null}
                   </div>
                 ))}
-                {!rollout?.compare_vs_baseline?.checks?.length ? <p className="text-xs text-slate-400">Sin comparacion (iniciá rollout).</p> : null}
+                {!rollout?.compare_vs_baseline?.checks?.length ? (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/40 p-3 text-xs">
+                    <p className="font-semibold text-slate-100">Sin comparacion todavia</p>
+                    <p className="mt-1 text-slate-400">La comparacion contra baseline se genera durante el inicio del rollout offline (mismo dataset y periodo).</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button type="button" variant="outline" onClick={startRollout} disabled={rolloutStartDisabled || rolloutBusy}>
+                        {rolloutBusy ? "Procesando..." : "Iniciar rollout offline"}
+                      </Button>
+                      <Button type="button" variant="outline" onClick={refreshRollout} disabled={rolloutBusy}>
+                        Refresh
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -1182,7 +1208,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-semibold text-slate-100">Fase actual + KPIs</p>
               <Badge variant={rolloutCurrentEval?.passed ? "success" : rolloutCurrentEval?.hard_fail ? "danger" : "warn"}>
-                {rolloutCurrentEval?.status || "SIN_EVAL"}
+                {rolloutCurrentEval?.status || "Sin evaluacion"}
               </Badge>
             </div>
             <div className="grid gap-2 text-xs text-slate-300 sm:grid-cols-2 xl:grid-cols-4">
@@ -1202,7 +1228,20 @@ export default function SettingsPage() {
                 </div>
               ))}
               {!Object.keys(asRecord(rolloutCurrentKpis)).length ? (
-                <p className="text-xs text-slate-400">Sin KPIs de fase todavia. Evaluá la fase actual.</p>
+                <div className="rounded-md border border-slate-800 bg-slate-950/40 p-3 text-xs">
+                  <p className="font-semibold text-slate-100">Sin evaluacion de fase todavia</p>
+                  <p className="mt-1 text-slate-400">
+                    Todavia no hay KPIs de fase para mostrar. {rolloutCanEvaluate ? "Podes evaluar la fase actual desde aca." : "Primero inicia/avanza un rollout hasta una fase evaluable."}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button type="button" variant="outline" onClick={() => void evaluateCurrentRolloutPhase(false)} disabled={role !== "admin" || rolloutBusy || !rolloutCanEvaluate}>
+                      Iniciar evaluacion offline
+                    </Button>
+                    <Button type="button" variant="outline" onClick={startRollout} disabled={rolloutStartDisabled || rolloutBusy}>
+                      Iniciar rollout (Shadow)
+                    </Button>
+                  </div>
+                </div>
               ) : null}
             </div>
             {!!rolloutCurrentEval?.checks?.length ? (
@@ -1249,7 +1288,18 @@ export default function SettingsPage() {
                 </div>
               ))}
               {!Object.keys(rollout?.live_signal_telemetry?.phases || {}).length ? (
-                <p className="text-xs text-slate-400">Sin eventos de blending registrados.</p>
+                <div className="rounded-md border border-slate-800 bg-slate-950/40 p-3 text-xs">
+                  <p className="font-semibold text-slate-100">Todavia no hay telemetria de blending</p>
+                  <p className="mt-1 text-slate-400">La telemetria se genera en fases SHADOW/CANARY cuando el rollout registra decisiones baseline/candidate/blended.</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button type="button" variant="outline" onClick={startRollout} disabled={rolloutStartDisabled || rolloutBusy}>
+                      Iniciar rollout (Shadow)
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => void evaluateCurrentRolloutPhase(true)} disabled={role !== "admin" || rolloutBusy || !rolloutCanEvaluate}>
+                      Evaluar + avanzar fase
+                    </Button>
+                  </div>
+                </div>
               ) : null}
             </div>
           </div>

@@ -57,12 +57,12 @@ export default function TradesPage() {
     <div className="space-y-4">
       <Card>
         <CardTitle>Operaciones</CardTitle>
-        <CardDescription>Filtros por estrategia, simbolo, lado, resultado, motivo y rango de fechas.</CardDescription>
+        <CardDescription>Historial de trades con filtros por estrategia/símbolo/resultado, timestamps y acceso al detalle.</CardDescription>
         <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div>
             <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Estrategia</label>
             <Select value={filters.strategy_id} onChange={(e) => setFilters((prev) => ({ ...prev, strategy_id: e.target.value }))}>
-              <option value="">Todas</option>
+              <option value="">Todas las estrategias</option>
               {strategies.map((row) => (
                 <option key={row.id} value={row.id}>
                   {row.name} v{row.version}
@@ -73,7 +73,7 @@ export default function TradesPage() {
           <div>
             <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Simbolo</label>
             <Select value={filters.symbol} onChange={(e) => setFilters((prev) => ({ ...prev, symbol: e.target.value }))}>
-              <option value="">Todos</option>
+              <option value="">Todos los simbolos</option>
               {uniqueSymbols.map((row) => (
                 <option key={row} value={row}>
                   {row}
@@ -84,7 +84,7 @@ export default function TradesPage() {
           <div>
             <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Lado</label>
             <Select value={filters.side} onChange={(e) => setFilters((prev) => ({ ...prev, side: e.target.value }))}>
-              <option value="">Todos</option>
+              <option value="">Todos los lados</option>
               <option value="long">Long</option>
               <option value="short">Short</option>
             </Select>
@@ -92,16 +92,16 @@ export default function TradesPage() {
           <div>
             <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Resultado</label>
             <Select value={filters.result} onChange={(e) => setFilters((prev) => ({ ...prev, result: e.target.value }))}>
-              <option value="">Todos</option>
+              <option value="">Todos los resultados</option>
               <option value="win">Ganadora</option>
               <option value="loss">Perdedora</option>
               <option value="breakeven">Neutra</option>
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Reason code</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Motivo de entrada</label>
             <Select value={filters.reason_code} onChange={(e) => setFilters((prev) => ({ ...prev, reason_code: e.target.value }))}>
-              <option value="">Todos</option>
+              <option value="">Todos los motivos</option>
               {uniqueReasons.map((row) => (
                 <option key={row} value={row}>
                   {row}
@@ -110,9 +110,9 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Exit reason</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Motivo de salida</label>
             <Select value={filters.exit_reason} onChange={(e) => setFilters((prev) => ({ ...prev, exit_reason: e.target.value }))}>
-              <option value="">Todos</option>
+              <option value="">Todos los motivos</option>
               {uniqueExits.map((row) => (
                 <option key={row} value={row}>
                   {row}
@@ -131,7 +131,7 @@ export default function TradesPage() {
           <div className="md:col-span-2 xl:col-span-2">
             <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Busqueda rapida de simbolo</label>
             <Input
-              placeholder="Escribe simbolo y presiona Enter (ej: BTC/USDT)"
+              placeholder="Escribi un simbolo y presiona Enter (ej: BTC/USDT)"
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -169,6 +169,7 @@ export default function TradesPage() {
             <THead>
               <TR>
                 <TH>ID</TH>
+                <TH>Timestamp</TH>
                 <TH>Estrategia</TH>
                 <TH>Simbolo</TH>
                 <TH>Lado</TH>
@@ -190,6 +191,7 @@ export default function TradesPage() {
                 return (
                   <TR key={row.id}>
                     <TD>{row.id}</TD>
+                    <TD className="text-xs">{new Date(row.exit_time).toLocaleString()}</TD>
                     <TD>{row.strategy_id}</TD>
                     <TD>{row.symbol}</TD>
                     <TD>{row.side}</TD>
@@ -217,12 +219,44 @@ export default function TradesPage() {
                     </TD>
                     <TD>
                       <Link href={`/trades/${row.id}`} className="text-cyan-300 underline">
-                        Abrir
+                        Ver detalle
                       </Link>
                     </TD>
                   </TR>
                 );
               })}
+              {!trades.length ? (
+                <TR>
+                  <TD colSpan={15} className="py-4">
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-left">
+                      <p className="text-sm font-semibold text-slate-100">Todavia no hay operaciones para estos filtros</p>
+                      <p className="mt-1 text-xs text-slate-400">Ajusta filtros o ejecuta Paper/Testnet/Backtest para generar trades y analizarlos aca.</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() =>
+                            setFilters({
+                              strategy_id: "",
+                              symbol: "",
+                              side: "",
+                              reason_code: "",
+                              exit_reason: "",
+                              result: "",
+                              date_from: "",
+                              date_to: "",
+                            })
+                          }
+                        >
+                          Limpiar filtros
+                        </Button>
+                        <Button variant="outline" onClick={() => { window.location.href = "/backtests"; }}>
+                          Ir a Backtests
+                        </Button>
+                      </div>
+                    </div>
+                  </TD>
+                </TR>
+              ) : null}
             </TBody>
           </Table>
         </CardContent>

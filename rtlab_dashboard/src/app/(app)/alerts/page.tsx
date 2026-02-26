@@ -141,7 +141,7 @@ export default function AlertsLogsPage() {
     <div className="space-y-4">
       <Card>
         <CardTitle>Alertas y Logs</CardTitle>
-        <CardDescription>Stream de eventos estructurados con filtros y drill-down por fila.</CardDescription>
+        <CardDescription>Eventos y logs con timestamp, severidad, modulo y drilldown para investigacion operativa.</CardDescription>
         <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-wide text-slate-400">Desde</label>
@@ -154,7 +154,7 @@ export default function AlertsLogsPage() {
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-wide text-slate-400">Severidad</label>
             <Select value={severity} onChange={(e) => setSeverity(e.target.value)} className="w-full">
-              <option value="">Todas</option>
+              <option value="">Todas las severidades</option>
               <option value="info">Info</option>
               <option value="warn">Warn</option>
               <option value="error">Error</option>
@@ -164,7 +164,7 @@ export default function AlertsLogsPage() {
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-wide text-slate-400">Modulo</label>
             <Select value={moduleName} onChange={(e) => setModuleName(e.target.value)} className="w-full">
-              <option value="">Todos</option>
+              <option value="">Todos los modulos</option>
               {moduleOptions.map((row) => (
                 <option key={row} value={row}>
                   {row}
@@ -226,6 +226,26 @@ export default function AlertsLogsPage() {
                   <TD className="font-mono text-xs">{row.id}</TD>
                 </TR>
               ))}
+              {!merged.length ? (
+                <TR>
+                  <TD colSpan={7} className="py-4">
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-left">
+                      <p className="text-sm font-semibold text-slate-100">Todavia no hay eventos para este rango</p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        No se encontraron alertas/logs con los filtros actuales. Proba ampliar fechas o ejecutar una sesion de testnet/backtest.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button variant="outline" onClick={() => void refresh()}>
+                          Reintentar / Refresh
+                        </Button>
+                        <Button variant="outline" onClick={() => { window.location.href = "/settings"; }}>
+                          Ir a Settings (Diagnostico)
+                        </Button>
+                      </div>
+                    </div>
+                  </TD>
+                </TR>
+              ) : null}
             </TBody>
           </Table>
         </CardContent>

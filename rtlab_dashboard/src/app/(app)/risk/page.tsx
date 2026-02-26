@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
-import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet } from "@/lib/client-api";
 import type { BacktestRun, RiskSnapshot } from "@/lib/types";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/utils";
@@ -50,8 +50,27 @@ export default function RiskPage() {
     <div className="space-y-4">
       <Card>
         <CardTitle>Riesgo y Limites</CardTitle>
-        <CardDescription>Guardas de riesgo, stress tests y checklist de promocion a LIVE.</CardDescription>
+        <CardDescription>Limites, exposicion, concentracion y robustez bajo stress. Los gates de rollout se gestionan en Settings.</CardDescription>
       </Card>
+
+      {!risk ? (
+        <Card>
+          <CardContent className="space-y-3">
+            <p className="text-sm font-semibold text-slate-100">Todavia no hay snapshot de riesgo</p>
+            <p className="text-sm text-slate-400">
+              Esta pantalla necesita datos de riesgo/portfolio y, idealmente, corridas recientes para mostrar stress tests y checklist.
+            </p>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-300">
+              <p className="font-semibold text-slate-100">Que hacer ahora</p>
+              <ol className="mt-2 list-decimal space-y-1 pl-4">
+                <li>Ejecuta un Quick Backtest o Research Batch para generar evidencia.</li>
+                <li>Si vas a operar, corre Paper/Testnet para poblar riesgo real.</li>
+                <li>Volve a Riesgo y recarga.</li>
+              </ol>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Equity" value={risk ? fmtUsd(risk.equity) : "--"} />
@@ -86,20 +105,34 @@ export default function RiskPage() {
           <CardTitle>Stress Tests</CardTitle>
           <CardDescription>Robustez bajo shocks de costos.</CardDescription>
           <CardContent>
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
-                <BarChart data={stressRows}>
-                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="scenario" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
-                  <Bar dataKey="robust" fill="#22d3ee" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <p className="mt-2 text-sm text-slate-300">
-              Caida de robustez: {stressRows.length ? `${fmtNum(stressRows[0].robust)} -> ${fmtNum(stressRows[stressRows.length - 1].robust)}` : "--"}
-            </p>
+            {stressRows.length ? (
+              <>
+                <div className="h-64 w-full">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
+                    <BarChart data={stressRows}>
+                      <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                      <XAxis dataKey="scenario" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                      <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                      <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
+                      <Bar dataKey="robust" fill="#22d3ee" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="mt-2 text-sm text-slate-300">
+                  Caida de robustez: {fmtNum(stressRows[0].robust)} {"->"} {fmtNum(stressRows[stressRows.length - 1].robust)}
+                </p>
+              </>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-300">
+                <p className="font-semibold text-slate-100">Todavia no hay stress tests</p>
+                <p className="mt-1 text-slate-400">Necesitas un backtest reciente o snapshot de riesgo con stress tests calculados.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={() => { window.location.href = "/backtests"; }}>
+                    Ir a Backtests
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </section>
@@ -115,27 +148,26 @@ export default function RiskPage() {
       </Card>
 
       <Card>
-        <CardTitle>Gate Checklist</CardTitle>
-        <CardDescription>Backtest -&gt; Paper -&gt; Live.</CardDescription>
-        <CardContent>
-          <Table>
-            <THead>
-              <TR>
-                <TH>Etapa</TH>
-                <TH>Estado</TH>
-                <TH>Nota</TH>
-              </TR>
-            </THead>
-            <TBody>
-              {risk?.gate_checklist.map((row) => (
-                <TR key={row.stage}>
-                  <TD>{row.stage}</TD>
-                  <TD>{row.done ? <Badge variant="success">cumplido</Badge> : <Badge variant="warn">pendiente</Badge>}</TD>
-                  <TD>{row.note}</TD>
-                </TR>
-              )) || null}
-            </TBody>
-          </Table>
+        <CardTitle>Correlacion y concentracion (como usarlo)</CardTitle>
+        <CardDescription>Evita duplicar riesgo entre activos que se mueven juntos.</CardDescription>
+        <CardContent className="space-y-3">
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">
+            <p className="font-semibold text-slate-100">Que significa la matriz de correlacion</p>
+            <p className="mt-1 text-slate-400">
+              Mide cuanto se mueven juntos los activos. Si varias posiciones tienen correlacion alta, la cartera puede quedar concentrada aunque parezca diversificada.
+            </p>
+            <p className="mt-2 text-slate-400">
+              La matriz visual se muestra en <span className="text-slate-200">Portfolio</span>, donde se combina con exposicion y posiciones abiertas.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => { window.location.href = "/portfolio"; }}>
+              Ver matriz de correlacion en Portfolio
+            </Button>
+            <Button type="button" variant="outline" onClick={() => { window.location.href = "/settings"; }}>
+              Ver Rollout / Gates (operativo)
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>
