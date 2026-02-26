@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.src.data.catalog import DataCatalog
@@ -38,6 +39,26 @@ def _dummy_run_factory(strategy_id: str, fold: FoldWindow) -> dict:
 def _engine(tmp_path: Path) -> MassBacktestEngine:
   repo_root = Path(__file__).resolve().parents[2]
   return MassBacktestEngine(user_data_dir=tmp_path, repo_root=repo_root, knowledge_loader=KnowledgeLoader(repo_root=repo_root))
+
+
+def _seed_dataset_manifest(tmp_path: Path, *, market: str = "crypto", symbol: str = "BTCUSDT", timeframe: str = "5m") -> None:
+  provider = "binance_public" if market == "crypto" else "manual"
+  dataset_dir = tmp_path / "datasets" / provider / market / symbol / timeframe
+  dataset_dir.mkdir(parents=True, exist_ok=True)
+  chunk = dataset_dir / "chunk.parquet"
+  chunk.write_bytes(b"stub")
+  manifest = {
+    "provider": provider,
+    "market": market,
+    "symbol": symbol,
+    "timeframe": timeframe,
+    "dataset_source": provider,
+    "dataset_hash": "ds_unit_mass_001",
+    "start": "2024-01-01",
+    "end": "2024-12-31",
+    "files": [str(chunk.resolve())],
+  }
+  (dataset_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def test_load_knowledge_pack_and_generate_variants_reproducible(tmp_path: Path) -> None:
@@ -82,6 +103,7 @@ def test_scoring_and_ranking_applies_hard_filters(tmp_path: Path) -> None:
 
 def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> None:
   engine = _engine(tmp_path)
+  _seed_dataset_manifest(tmp_path, market="crypto", symbol="BTCUSDT", timeframe="5m")
   run_id = "mass_test_001"
   cfg = {
     "market": "crypto",
@@ -89,7 +111,7 @@ def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> N
     "timeframe": "5m",
     "start": "2024-01-01",
     "end": "2024-12-31",
-    "dataset_source": "synthetic",
+    "dataset_source": "auto",
     "validation_mode": "walk-forward",
     "max_variants_per_strategy": 2,
     "max_folds": 2,

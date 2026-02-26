@@ -59,6 +59,20 @@ type RunsListFilters = {
 };
 
 type FocusRunTab = "overview" | "performance" | "trades_analysis" | "ratios" | "trades_list" | "artifacts";
+type MassSortKey =
+  | "rank"
+  | "variant"
+  | "strategy"
+  | "score"
+  | "trades"
+  | "winrate"
+  | "sharpe"
+  | "calmar"
+  | "expectancy"
+  | "maxdd"
+  | "costs";
+
+type MassTopMetric = "score" | "winrate" | "sharpe" | "calmar" | "expectancy" | "trades" | "maxdd" | "costs";
 
 const chartColors = ["#22d3ee", "#f97316", "#facc15", "#4ade80", "#f472b6"];
 const MARKET_OPTIONS: Record<RunForm["market"], string[]> = {
@@ -202,6 +216,33 @@ function parseFeePctLabel(feeModel: string | null | undefined): string {
   return `${fmtNum(num)} bps`;
 }
 
+function massSummaryNum(row: MassBacktestResultRow, key: "trade_count_oos" | "winrate_oos" | "sharpe_oos" | "calmar_oos" | "expectancy_net_usd" | "max_dd_oos_pct" | "costs_ratio"): number {
+  return Number(row.summary?.[key] ?? 0);
+}
+
+function massMetricValue(row: MassBacktestResultRow, metric: MassTopMetric): number {
+  switch (metric) {
+    case "score":
+      return Number(row.score ?? 0);
+    case "winrate":
+      return massSummaryNum(row, "winrate_oos");
+    case "sharpe":
+      return massSummaryNum(row, "sharpe_oos");
+    case "calmar":
+      return massSummaryNum(row, "calmar_oos");
+    case "expectancy":
+      return massSummaryNum(row, "expectancy_net_usd");
+    case "trades":
+      return massSummaryNum(row, "trade_count_oos");
+    case "maxdd":
+      return massSummaryNum(row, "max_dd_oos_pct");
+    case "costs":
+      return massSummaryNum(row, "costs_ratio");
+    default:
+      return Number(row.score ?? 0);
+  }
+}
+
 export default function BacktestsPage() {
   const { role } = useSession();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -213,6 +254,9 @@ export default function BacktestsPage() {
   const [catalogError, setCatalogError] = useState("");
   const [catalogCompareIds, setCatalogCompareIds] = useState<string[]>([]);
   const [catalogComparePreview, setCatalogComparePreview] = useState<BacktestCompareResponse | null>(null);
+  const [catalogBulkBusy, setCatalogBulkBusy] = useState(false);
+  const [catalogBulkMessage, setCatalogBulkMessage] = useState("");
+  const [catalogBulkError, setCatalogBulkError] = useState("");
   const [catalogRankingPreset, setCatalogRankingPreset] = useState("balanceado");
   const [catalogRankings, setCatalogRankings] = useState<BacktestRankingsResponse | null>(null);
   const [catalogRankRequireOos, setCatalogRankRequireOos] = useState(false);
@@ -263,6 +307,15 @@ export default function BacktestsPage() {
   const [massArtifacts, setMassArtifacts] = useState<MassBacktestArtifactsResponse["items"]>([]);
   const [massOnlyPass, setMassOnlyPass] = useState(true);
   const [massSelectedRow, setMassSelectedRow] = useState<MassBacktestResultRow | null>(null);
+  const [massSelectedVariantIds, setMassSelectedVariantIds] = useState<string[]>([]);
+  const [massTopSelectMetric, setMassTopSelectMetric] = useState<MassTopMetric>("winrate");
+  const [massTopSelectN, setMassTopSelectN] = useState("20");
+  const [massAutoShortlistEnabled, setMassAutoShortlistEnabled] = useState(true);
+  const [massSortKey, setMassSortKey] = useState<MassSortKey>("winrate");
+  const [massSortDir, setMassSortDir] = useState<"asc" | "desc">("desc");
+  const [massPageSize, setMassPageSize] = useState<"10" | "20" | "30" | "40" | "50">("20");
+  const [massPage, setMassPage] = useState(1);
+  const [massPageInput, setMassPageInput] = useState("1");
   const [massForm, setMassForm] = useState({
     max_variants_per_strategy: "4",
     max_folds: "3",
@@ -270,7 +323,7 @@ export default function BacktestsPage() {
     test_days: "60",
     top_n: "10",
     seed: "42",
-    dataset_source: "synthetic",
+    dataset_source: "auto",
   });
   const [focusRunTab, setFocusRunTab] = useState<FocusRunTab>("overview");
 
@@ -320,7 +373,7 @@ export default function BacktestsPage() {
       if (catalogFilters.sharpe.trim()) params.set("sharpe", catalogFilters.sharpe.trim());
       params.set("sort_by", catalogFilters.sort_by);
       params.set("sort_dir", catalogFilters.sort_dir);
-      params.set("limit", "500");
+      params.set("limit", "5000");
       const path = `/api/v1/runs?${params.toString()}`;
       const payload = await apiGet<BacktestCatalogRunsResponse>(path);
       setCatalogRuns(payload.items || []);
@@ -358,6 +411,36 @@ export default function BacktestsPage() {
     }
   }, [catalogFilters.max_dd, catalogFilters.min_trades, catalogFilters.sharpe, catalogRankDataQualityOk, catalogRankRequireOos, catalogRankingPreset]);
 
+  const buildCatalogComparePreview = useCallback(
+    (runIds: string[]): BacktestCompareResponse | null => {
+      const normalized = Array.from(new Set((runIds || []).map((x) => String(x || "").trim()).filter(Boolean)));
+      if (!normalized.length) return null;
+      const byId = new Map(catalogRuns.map((row) => [String(row.run_id), row]));
+      const items = normalized.map((id) => byId.get(id)).filter((row): row is BacktestCatalogRun => Boolean(row));
+      if (!items.length) return null;
+      const dataset_hashes = Array.from(new Set(items.map((r) => String(r.dataset_hash || "")).filter(Boolean))).sort();
+      const warnings: string[] = [];
+      if (dataset_hashes.length > 1) warnings.push("datasets_distintos");
+      return {
+        items,
+        count: items.length,
+        warnings,
+        dataset_hashes,
+        same_dataset: dataset_hashes.length <= 1,
+      };
+    },
+    [catalogRuns],
+  );
+
+  const setCatalogCompareSelection = useCallback(
+    (runIds: string[]) => {
+      const normalized = Array.from(new Set((runIds || []).map((x) => String(x || "").trim()).filter(Boolean)));
+      setCatalogCompareIds(normalized);
+      setCatalogComparePreview(buildCatalogComparePreview(normalized));
+    },
+    [buildCatalogComparePreview],
+  );
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -372,6 +455,15 @@ export default function BacktestsPage() {
     setCatalogPage(1);
     setCatalogPageInput("1");
   }, [catalogRuns, catalogPageSize]);
+
+  useEffect(() => {
+    setCatalogComparePreview(buildCatalogComparePreview(catalogCompareIds));
+  }, [buildCatalogComparePreview, catalogCompareIds]);
+
+  useEffect(() => {
+    setMassPage(1);
+    setMassPageInput("1");
+  }, [massResults, massPageSize, massSortKey, massSortDir]);
 
   useEffect(() => {
     const selectedCatalogRows = (catalogComparePreview?.items || []).slice(0, 4);
@@ -419,7 +511,7 @@ export default function BacktestsPage() {
       const [status, results, artifacts] = await Promise.all([
         apiGet<MassBacktestStatusResponse>(`/api/v1/research/mass-backtest/status?run_id=${encodeURIComponent(runId)}`),
         apiGet<MassBacktestResultsResponse>(
-          `/api/v1/research/mass-backtest/results?run_id=${encodeURIComponent(runId)}&limit=100${onlyPass ? "&only_pass=true" : ""}`,
+          `/api/v1/research/mass-backtest/results?run_id=${encodeURIComponent(runId)}&limit=1000${onlyPass ? "&only_pass=true" : ""}`,
         ),
         apiGet<MassBacktestArtifactsResponse>(`/api/v1/research/mass-backtest/artifacts?run_id=${encodeURIComponent(runId)}`),
       ]);
@@ -427,12 +519,20 @@ export default function BacktestsPage() {
       setMassResults(results.results || []);
       setMassArtifacts(artifacts.items || []);
       setMassSelectedRow((prev) => {
-        if (!prev) return results.results?.[0] ?? null;
-        return (results.results || []).find((row) => row.variant_id === prev.variant_id) || results.results?.[0] || null;
+        if (!prev) return null;
+        return (results.results || []).find((row) => row.variant_id === prev.variant_id) || null;
       });
     },
     [massOnlyPass],
   );
+
+  useEffect(() => {
+    if (massRunId) return;
+    const firstBatch = (catalogBatches || []).find((b) => String(b.batch_id || "").startsWith("BX-"));
+    if (!firstBatch) return;
+    setMassRunId(firstBatch.batch_id);
+    void refreshMassPayload(firstBatch.batch_id, massOnlyPass).catch(() => undefined);
+  }, [catalogBatches, massOnlyPass, massRunId, refreshMassPayload]);
 
   useEffect(() => {
     if (!massRunId) return;
@@ -500,19 +600,57 @@ export default function BacktestsPage() {
   const toggleCatalogCompare = async (runId: string) => {
     const next = catalogCompareIds.includes(runId)
       ? catalogCompareIds.filter((x) => x !== runId)
-      : [...catalogCompareIds, runId].slice(0, 10);
-    setCatalogCompareIds(next);
-    if (!next.length) {
-      setCatalogComparePreview(null);
+      : [...catalogCompareIds, runId];
+    setCatalogCompareSelection(next);
+  };
+
+  const selectCatalogPageForCompare = () => setCatalogCompareSelection(catalogPageRows.map((row) => row.run_id));
+  const selectCatalogFilteredForCompare = () => setCatalogCompareSelection(catalogRuns.map((row) => row.run_id));
+  const clearCatalogCompareSelection = () => setCatalogCompareSelection([]);
+
+  const bulkCatalogRunsAction = async (action: "archive" | "unarchive" | "delete", runIds: string[]) => {
+    const ids = Array.from(new Set((runIds || []).map((x) => String(x || "").trim()).filter(Boolean)));
+    if (!ids.length) {
+      setCatalogBulkError("No hay runs seleccionados.");
       return;
     }
+    setCatalogBulkBusy(true);
+    setCatalogBulkError("");
+    setCatalogBulkMessage("");
     try {
-      const qs = next.map((id) => `r=${encodeURIComponent(id)}`).join("&");
-      const payload = await apiGet<BacktestCompareResponse>(`/api/v1/compare?${qs}`);
-      setCatalogComparePreview(payload);
-    } catch {
-      setCatalogComparePreview(null);
+      const res = await apiPost<{ ok: boolean; action: string; count?: number; deleted_count?: number; deleted_run_ids?: string[] }>("/api/v1/runs/bulk", {
+        action,
+        run_ids: ids,
+      });
+      const affectedIds = new Set<string>([
+        ...ids,
+        ...((res.deleted_run_ids || []).map((x) => String(x || ""))),
+      ]);
+      setCatalogBulkMessage(
+        action === "delete"
+          ? `Borrado masivo OK: ${res.deleted_count ?? res.count ?? ids.length} runs`
+          : `${action === "archive" ? "Archivado" : "Desarchivado"} masivo OK: ${res.count ?? ids.length} runs`,
+      );
+      setCatalogCompareSelection(catalogCompareIds.filter((id) => !affectedIds.has(id)));
+      await Promise.all([refreshCatalogRuns(), refreshCatalogRankings(), refreshCatalogBatches()]);
+    } catch (err) {
+      setCatalogBulkError(err instanceof Error ? err.message : "No se pudo ejecutar la acción masiva.");
+    } finally {
+      setCatalogBulkBusy(false);
     }
+  };
+
+  const deleteSyntheticLegacyCatalogRuns = async () => {
+    const syntheticIds = catalogRuns
+      .filter((row) => String(row.dataset_source || "").toLowerCase().includes("synthetic"))
+      .map((row) => row.run_id);
+    if (!syntheticIds.length) {
+      setCatalogBulkError("No hay runs sintéticos en la vista actual.");
+      return;
+    }
+    const ok = window.confirm(`Vas a borrar ${syntheticIds.length} runs sintéticos de la vista actual. ¿Continuar?`);
+    if (!ok) return;
+    await bulkCatalogRunsAction("delete", syntheticIds);
   };
 
   const patchCatalogRun = async (runId: string, patch: { alias?: string | null; tags?: string[]; pinned?: boolean; archived?: boolean }) => {
@@ -631,6 +769,107 @@ export default function BacktestsPage() {
       await refreshMassPayload(massRunId, massOnlyPass);
     } catch (err) {
       setMassError(err instanceof Error ? err.message : "No se pudo refrescar research masivo.");
+    }
+  };
+
+  const selectMassBatch = async (runId: string) => {
+    setMassRunId(runId);
+    setMassSelectedRow(null);
+    setMassError("");
+    setMassMessage("");
+    if (!runId) return;
+    try {
+      await refreshMassPayload(runId, massOnlyPass);
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo cargar el Research Batch seleccionado.");
+    }
+  };
+
+  const toggleMassSort = (key: MassSortKey) => {
+    setMassSortKey((prev) => {
+      if (prev === key) {
+        setMassSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        return prev;
+      }
+      setMassSortDir(key === "maxdd" || key === "costs" ? "asc" : "desc");
+      return key;
+    });
+  };
+
+  const massSortLabel = (key: MassSortKey) => {
+    if (massSortKey !== key) return "";
+    return massSortDir === "asc" ? " ▲" : " ▼";
+  };
+
+  const toggleMassVariantSelection = (variantId: string) => {
+    setMassSelectedVariantIds((prev) => (prev.includes(variantId) ? prev.filter((x) => x !== variantId) : [...prev, variantId]));
+  };
+
+  const selectMassPageVariants = () => setMassSelectedVariantIds(massPageRows.map((row) => row.variant_id));
+  const selectMassAllVariants = () => setMassSelectedVariantIds(massSortedRows.map((row) => row.variant_id));
+  const clearMassVariantSelection = () => setMassSelectedVariantIds([]);
+
+  const compareMassSelectedVariantsInRuns = () => {
+    const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
+    const runIds = selectedRows.map((row) => String(row.catalog_run_id || "")).filter(Boolean);
+    if (!runIds.length) {
+      setMassError("Las variantes seleccionadas no tienen run_id de catálogo para comparar.");
+      return;
+    }
+    setCatalogCompareSelection(runIds);
+    setMassMessage(`Comparador cargado con ${runIds.length} runs desde el batch seleccionado.`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const selectMassTopVariants = (metric: MassTopMetric, nRaw: string, options?: { compareInRuns?: boolean; auto?: boolean }) => {
+    const nParsed = Number(String(nRaw || "0").replace(/[^0-9]/g, ""));
+    const n = Math.min(Math.max(Number.isFinite(nParsed) ? Math.trunc(nParsed) : 0, 1), 500);
+    if (!massSortedRows.length) {
+      setMassError("No hay variantes cargadas para seleccionar top N.");
+      return;
+    }
+    const asc = metric === "maxdd" || metric === "costs";
+    const ranked = [...massSortedRows].sort((a, b) => {
+      const av = massMetricValue(a, metric);
+      const bv = massMetricValue(b, metric);
+      if (av === bv) return String(a.variant_id || "").localeCompare(String(b.variant_id || ""));
+      return asc ? av - bv : bv - av;
+    });
+    const picked = ranked.slice(0, Math.min(n, ranked.length));
+    setMassSelectedVariantIds(picked.map((row) => row.variant_id));
+    if (picked[0]) setMassSelectedRow(picked[0]);
+    setMassMessage(`${options?.auto ? "Auto-shortlist" : "Top N"}: ${picked.length} variantes por ${metric}.`);
+    if (options?.compareInRuns) {
+      const runIds = picked.map((row) => String(row.catalog_run_id || "")).filter(Boolean);
+      if (runIds.length) {
+        setCatalogCompareSelection(runIds);
+        setMassMessage(`${options?.auto ? "Auto-shortlist" : "Top N"} cargado en Comparador de Runs: ${runIds.length} runs (${metric}).`);
+      } else {
+        setMassError("Las variantes top seleccionadas no tienen run BT todavía para comparar.");
+      }
+    }
+  };
+
+  const bulkMassSelectedVariantsAction = async (action: "archive" | "delete") => {
+    const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
+    const runIds = selectedRows.map((row) => String(row.catalog_run_id || "")).filter(Boolean);
+    if (!runIds.length) {
+      setMassError("Seleccioná variantes con run de catálogo para aplicar acción masiva.");
+      return;
+    }
+    if (action === "delete") {
+      const ok = window.confirm(`Vas a borrar ${runIds.length} runs del catálogo (batch actual). ¿Continuar?`);
+      if (!ok) return;
+    }
+    try {
+      setMassError("");
+      setMassMessage("");
+      await apiPost("/api/v1/runs/bulk", { action, run_ids: runIds });
+      setMassMessage(`${action === "delete" ? "Borrado" : "Archivado"} masivo OK: ${runIds.length} runs del batch.`);
+      setMassSelectedVariantIds([]);
+      await Promise.all([refreshMass(), refreshCatalogRuns(), refreshCatalogBatches(), refreshCatalogRankings()]);
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo ejecutar la acción masiva sobre variantes.");
     }
   };
 
@@ -787,9 +1026,111 @@ export default function BacktestsPage() {
     return windowStart + idx;
   });
   const recentBatches = catalogBatches.slice(0, 8);
+  const sortedBatchOptions = useMemo(
+    () =>
+      [...catalogBatches]
+        .filter((b) => String(b.batch_id || "").startsWith("BX-"))
+        .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))),
+    [catalogBatches],
+  );
   const batchChildrenCount = catalogRuns.filter((r) => r.run_type === "batch_child").length;
   const quickRunsCount = catalogRuns.filter((r) => r.run_type !== "batch_child").length;
   const catalogProRows = catalogRuns.slice(0, Number(catalogProLimit));
+
+  const massSortedRows = useMemo(() => {
+    const rows = [...massResults];
+    const dir = massSortDir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      let av = 0;
+      let bv = 0;
+      switch (massSortKey) {
+        case "rank":
+          av = Number(a.rank ?? 0);
+          bv = Number(b.rank ?? 0);
+          break;
+        case "variant":
+          return String(a.variant_id || "").localeCompare(String(b.variant_id || "")) * dir;
+        case "strategy":
+          return String(a.strategy_name || a.strategy_id || "").localeCompare(String(b.strategy_name || b.strategy_id || "")) * dir;
+        case "score":
+          av = Number(a.score ?? 0);
+          bv = Number(b.score ?? 0);
+          break;
+        case "trades":
+          av = massSummaryNum(a, "trade_count_oos");
+          bv = massSummaryNum(b, "trade_count_oos");
+          break;
+        case "winrate":
+          av = massSummaryNum(a, "winrate_oos");
+          bv = massSummaryNum(b, "winrate_oos");
+          break;
+        case "sharpe":
+          av = massSummaryNum(a, "sharpe_oos");
+          bv = massSummaryNum(b, "sharpe_oos");
+          break;
+        case "calmar":
+          av = massSummaryNum(a, "calmar_oos");
+          bv = massSummaryNum(b, "calmar_oos");
+          break;
+        case "expectancy":
+          av = massSummaryNum(a, "expectancy_net_usd");
+          bv = massSummaryNum(b, "expectancy_net_usd");
+          break;
+        case "maxdd":
+          av = massSummaryNum(a, "max_dd_oos_pct");
+          bv = massSummaryNum(b, "max_dd_oos_pct");
+          break;
+        case "costs":
+          av = massSummaryNum(a, "costs_ratio");
+          bv = massSummaryNum(b, "costs_ratio");
+          break;
+      }
+      if (av === bv) return String(a.variant_id || "").localeCompare(String(b.variant_id || "")) * dir;
+      return (av - bv) * dir;
+    });
+    return rows;
+  }, [massResults, massSortDir, massSortKey]);
+
+  const massTotalPages = Math.max(1, Math.ceil(massSortedRows.length / Number(massPageSize)));
+  const massPageSafe = Math.min(Math.max(massPage, 1), massTotalPages);
+  const massPageStart = (massPageSafe - 1) * Number(massPageSize);
+  const massPageEnd = Math.min(massPageStart + Number(massPageSize), massSortedRows.length);
+  const massPageRows = massSortedRows.slice(massPageStart, massPageEnd);
+  const massSelectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
+  const massSelectedRowsWithCatalogRun = massSelectedRows.filter((row) => String(row.catalog_run_id || "").trim());
+  const massPageNumbers = Array.from({ length: Math.min(massTotalPages, 7) }, (_, idx) => {
+    if (massTotalPages <= 7) return idx + 1;
+    const windowStart = Math.max(1, Math.min(massPageSafe - 3, massTotalPages - 6));
+    return windowStart + idx;
+  });
+
+  useEffect(() => {
+    if (!massSortedRows.length) {
+      setMassSelectedRow(null);
+      return;
+    }
+    setMassSelectedRow((prev) => {
+      if (!prev) return massSortedRows[0];
+      return massSortedRows.find((row) => row.variant_id === prev.variant_id) || massSortedRows[0];
+    });
+  }, [massSortedRows]);
+
+  useEffect(() => {
+    const valid = new Set(massSortedRows.map((row) => row.variant_id));
+    setMassSelectedVariantIds((prev) => prev.filter((id) => valid.has(id)));
+  }, [massSortedRows]);
+
+  useEffect(() => {
+    if (!massAutoShortlistEnabled) return;
+    if (!massSortedRows.length) return;
+    if (!massRunId) return;
+    const state = String(massStatus?.state || "");
+    if (state && state !== "COMPLETED") return;
+    // Auto-shortlist solo si todavía no hay selección activa para evitar pisar decisiones manuales.
+    if (massSelectedVariantIds.length > 0) return;
+    selectMassTopVariants(massTopSelectMetric, massTopSelectN, { auto: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [massAutoShortlistEnabled, massRunId, massSortedRows, massStatus?.state]);
 
   const rankingPresets = useMemo(() => {
     const rows = [...catalogRuns];
@@ -843,8 +1184,8 @@ export default function BacktestsPage() {
   return (
     <div className="space-y-4">
       <Card>
-        <CardTitle>Quick Backtest</CardTitle>
-        <CardDescription>Corrida rápida (single) para validar una estrategia y generar un Backtest Run auditable.</CardDescription>
+        <CardTitle>Quick Backtest (opcional)</CardTitle>
+        <CardDescription>Corrida puntual para validar una idea. El flujo principal de investigación es Research Batch + ranking + comparación.</CardDescription>
         <CardContent>
           <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" onSubmit={launchRun}>
             <div className="space-y-1">
@@ -940,7 +1281,7 @@ export default function BacktestsPage() {
             <p className="mt-2 text-sm text-slate-200">Usa el motor de simulacion normal con tus costos/config del formulario. Ideal para iterar rapido y comparar pocos runs.</p>
             <div className="mt-2 space-y-1 text-xs text-slate-400">
               <p>Motor: simulacion del backend actual</p>
-              <p>Datos: fuente configurada (real si existe / fallback)</p>
+              <p>Datos: reales (si faltan, devuelve error; no sintéticos)</p>
               <p>Metricas: KPIs + costos netos + artifacts</p>
               <p>Cuando usarlo: validar una idea puntual o rerun exacto</p>
             </div>
@@ -1099,6 +1440,8 @@ export default function BacktestsPage() {
               <p className="mt-2 text-xs text-slate-400">
                 Comparador catalogo: {catalogCompareIds.length} seleccionados {catalogComparePreview ? `| same_dataset: ${catalogComparePreview.same_dataset ? "si" : "no"}` : ""}
               </p>
+              {catalogBulkMessage ? <p className="mt-2 text-xs text-emerald-300">{catalogBulkMessage}</p> : null}
+              {catalogBulkError ? <p className="mt-2 text-xs text-rose-300">{catalogBulkError}</p> : null}
             </div>
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
               <div className="flex items-center justify-between gap-2">
@@ -1142,6 +1485,53 @@ export default function BacktestsPage() {
           </div>
 
           <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/40">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" variant="outline" onClick={selectCatalogPageForCompare}>
+                  Seleccionar pagina
+                </Button>
+                <Button type="button" variant="outline" onClick={selectCatalogFilteredForCompare}>
+                  Seleccionar filtrados
+                </Button>
+                <Button type="button" variant="outline" onClick={clearCatalogCompareSelection}>
+                  Limpiar seleccion
+                </Button>
+                <Badge variant="warn">{catalogCompareIds.length} seleccionados</Badge>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={role !== "admin" || catalogBulkBusy || !catalogCompareIds.length}
+                  onClick={() => void bulkCatalogRunsAction("archive", catalogCompareIds)}
+                  title="Archiva (soft delete) los runs seleccionados"
+                >
+                  {catalogBulkBusy ? "Procesando..." : "Archivar seleccionados"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={role !== "admin" || catalogBulkBusy || !catalogCompareIds.length}
+                  onClick={() => {
+                    const ok = window.confirm(`Vas a borrar ${catalogCompareIds.length} runs seleccionados. ¿Continuar?`);
+                    if (!ok) return;
+                    void bulkCatalogRunsAction("delete", catalogCompareIds);
+                  }}
+                  title="Borra runs del catalogo y limpia run legacy asociado si existe"
+                >
+                  {catalogBulkBusy ? "Procesando..." : "Borrar seleccionados"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={role !== "admin" || catalogBulkBusy}
+                  onClick={() => void deleteSyntheticLegacyCatalogRuns()}
+                  title="Limpia runs synthetic_seeded / demo de la vista actual"
+                >
+                  Borrar runs sintéticos viejos
+                </Button>
+              </div>
+            </div>
             <Table>
               <THead>
                 <TR>
@@ -1408,7 +1798,7 @@ export default function BacktestsPage() {
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 xl:col-span-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs uppercase tracking-wide text-slate-400">D1 · Shortlist (selección rápida)</p>
-                <Badge variant="warn">{catalogCompareIds.length}/10 seleccionados</Badge>
+                <Badge variant="warn">{catalogCompareIds.length} seleccionados</Badge>
               </div>
               {catalogComparePreview?.warnings?.length ? (
                 <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200">
@@ -1911,6 +2301,37 @@ export default function BacktestsPage() {
           {massMessage ? <p className="text-sm text-emerald-300">{massMessage}</p> : null}
           {massError ? <p className="text-sm text-rose-300">{massError}</p> : null}
 
+          <div className="grid gap-3 xl:grid-cols-4">
+            <div className="space-y-1 xl:col-span-2">
+              <label className="text-xs uppercase tracking-wide text-slate-400">Grupo de backtests (Research Batch / BX)</label>
+              <Select
+                value={massRunId}
+                onChange={(e) => {
+                  void selectMassBatch(e.target.value);
+                }}
+              >
+                <option value="">Seleccionar batch...</option>
+                {sortedBatchOptions.map((bx) => (
+                  <option key={bx.batch_id} value={bx.batch_id}>
+                    {bx.batch_id} · {compactDate(bx.created_at)} · {bx.status} · runs {bx.run_count_done}/{bx.run_count_total}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs uppercase tracking-wide text-slate-400">Orden por defecto</label>
+              <div className="h-10 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                WinRate OOS (desc) {massSortLabel("winrate").trim() || "▼"}
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs uppercase tracking-wide text-slate-400">Vista</label>
+              <div className="h-10 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                Primero elegís el batch (BX), luego ordenás y comparás variantes.
+              </div>
+            </div>
+          </div>
+
           <div className="grid gap-4 xl:grid-cols-3">
             <div className="space-y-3 xl:col-span-2">
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
@@ -1953,9 +2374,15 @@ export default function BacktestsPage() {
                 <div className="space-y-1">
                   <label className="text-xs uppercase tracking-wide text-slate-400">Dataset source</label>
                   <Select value={massForm.dataset_source} onChange={(e) => setMassForm((p) => ({ ...p, dataset_source: e.target.value }))}>
-                    <option value="synthetic">synthetic (rápido)</option>
-                    <option value="auto">auto (real si existe)</option>
+                    <option value="auto">auto (real; falla si no existe)</option>
+                    <option value="dataset">dataset (local reproducible)</option>
                   </Select>
+                </div>
+                <div className="space-y-1 md:col-span-2">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Politica de datos</label>
+                  <div className="h-10 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                    Sin sinteticos: usa datos reales o devuelve error con la accion recomendada.
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs uppercase tracking-wide text-slate-400">Filtro ranking</label>
@@ -2018,31 +2445,152 @@ export default function BacktestsPage() {
 
           <div className="grid gap-4 xl:grid-cols-3">
             <div className="xl:col-span-2 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/50 p-2">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-300">
+                <div>
+                  {massRunId ? (
+                    <>
+                      <span className="font-semibold text-slate-100">{massRunId}</span>
+                      {" · "}
+                      Mostrando {massSortedRows.length ? massPageStart + 1 : 0}-{massPageEnd} de {massSortedRows.length} variantes
+                    </>
+                  ) : (
+                    "Seleccioná un Research Batch (BX-...) para ver resultados."
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-slate-400">Filas</label>
+                  <Select
+                    value={massPageSize}
+                    onChange={(e) => setMassPageSize(e.target.value as typeof massPageSize)}
+                    className="h-8 min-w-[84px]"
+                  >
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="30">30</option>
+                    <option value="40">40</option>
+                    <option value="50">50</option>
+                  </Select>
+                </div>
+              </div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="outline" onClick={selectMassPageVariants} disabled={!massPageRows.length}>
+                    Seleccionar página (variantes)
+                  </Button>
+                  <Button type="button" variant="outline" onClick={selectMassAllVariants} disabled={!massSortedRows.length}>
+                    Seleccionar todas (filtradas)
+                  </Button>
+                  <Button type="button" variant="outline" onClick={clearMassVariantSelection} disabled={!massSelectedVariantIds.length}>
+                    Limpiar selección
+                  </Button>
+                  <Badge variant="warn">{massSelectedVariantIds.length} variantes</Badge>
+                  <Badge variant="warn">{massSelectedRowsWithCatalogRun.length} con run BT</Badge>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={massTopSelectMetric} onChange={(e) => setMassTopSelectMetric(e.target.value as MassTopMetric)} className="h-8 min-w-[150px]">
+                    <option value="winrate">Top por WinRate</option>
+                    <option value="score">Top por Score</option>
+                    <option value="sharpe">Top por Sharpe</option>
+                    <option value="calmar">Top por Calmar</option>
+                    <option value="expectancy">Top por Expectancy</option>
+                    <option value="trades">Top por Trades</option>
+                    <option value="maxdd">Top por MaxDD (menor mejor)</option>
+                    <option value="costs">Top por CostsRatio (menor mejor)</option>
+                  </Select>
+                  <Input
+                    className="h-8 w-20"
+                    value={massTopSelectN}
+                    onChange={(e) => setMassTopSelectN(e.target.value.replace(/[^0-9]/g, ""))}
+                    placeholder="20"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!massSortedRows.length}
+                    onClick={() => selectMassTopVariants(massTopSelectMetric, massTopSelectN)}
+                    title="Selecciona automáticamente el Top N por la métrica elegida"
+                  >
+                    Seleccionar Top N
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!massSortedRows.length}
+                    onClick={() => selectMassTopVariants(massTopSelectMetric, massTopSelectN, { compareInRuns: true })}
+                    title="Selecciona Top N y los carga en el Comparador de Runs"
+                  >
+                    Auto-shortlist → Comparar
+                  </Button>
+                  <label className="flex items-center gap-2 rounded border border-slate-800 bg-slate-950/40 px-2 py-1">
+                    <input type="checkbox" checked={massAutoShortlistEnabled} onChange={(e) => setMassAutoShortlistEnabled(e.target.checked)} />
+                    Auto-shortlist al cargar
+                  </label>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={!massSelectedRowsWithCatalogRun.length}
+                    onClick={compareMassSelectedVariantsInRuns}
+                    title="Carga los BT seleccionados en el Comparador Profesional de Runs"
+                  >
+                    Comparar seleccionadas en Runs
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={role !== "admin" || !massSelectedRowsWithCatalogRun.length}
+                    onClick={() => void bulkMassSelectedVariantsAction("archive")}
+                    title="Archiva (soft delete) los runs BT generados por estas variantes"
+                  >
+                    Archivar seleccionadas
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={role !== "admin" || !massSelectedRowsWithCatalogRun.length}
+                    onClick={() => void bulkMassSelectedVariantsAction("delete")}
+                    title="Borra runs BT del catálogo para estas variantes"
+                  >
+                    Borrar seleccionadas
+                  </Button>
+                </div>
+              </div>
               <Table>
                 <THead>
                   <TR>
-                    <TH>Rank</TH>
-                    <TH>Variante</TH>
-                    <TH>Estrategia</TH>
-                    <TH>Score</TH>
-                    <TH>Trades OOS</TH>
-                    <TH>Sharpe</TH>
-                    <TH>Calmar</TH>
-                    <TH>Expectancy</TH>
-                    <TH>MaxDD%</TH>
-                    <TH>CostsRatio</TH>
+                    <TH>Sel</TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("rank")}>Rank{massSortLabel("rank")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("variant")}>Variante{massSortLabel("variant")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("strategy")}>Estrategia{massSortLabel("strategy")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("score")}>Score{massSortLabel("score")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("trades")}>Trades OOS{massSortLabel("trades")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("winrate")}>WinRate{massSortLabel("winrate")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("sharpe")}>Sharpe{massSortLabel("sharpe")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("calmar")}>Calmar{massSortLabel("calmar")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("expectancy")}>Expectancy{massSortLabel("expectancy")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("maxdd")}>MaxDD%{massSortLabel("maxdd")}</button></TH>
+                    <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("costs")}>CostsRatio{massSortLabel("costs")}</button></TH>
                     <TH>Regímenes</TH>
                     <TH>Acción</TH>
                   </TR>
                 </THead>
                 <TBody>
-                  {massResults.map((row) => (
+                  {massPageRows.map((row) => (
                     <TR key={row.variant_id} onClick={() => setMassSelectedRow(row)} className="cursor-pointer">
+                      <TD onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={massSelectedVariantIds.includes(row.variant_id)}
+                          onChange={() => toggleMassVariantSelection(row.variant_id)}
+                        />
+                      </TD>
                       <TD>{row.rank ?? "-"}</TD>
                       <TD className="font-mono text-xs">{row.variant_id}</TD>
                       <TD>{row.strategy_name || row.strategy_id}</TD>
                       <TD>{fmtNum(row.score)}</TD>
                       <TD>{row.summary?.trade_count_oos ?? "-"}</TD>
+                      <TD>{fmtPct(row.summary?.winrate_oos ?? 0)}</TD>
                       <TD>{fmtNum(row.summary?.sharpe_oos ?? 0)}</TD>
                       <TD>{fmtNum(row.summary?.calmar_oos ?? 0)}</TD>
                       <TD>{fmtNum(row.summary?.expectancy_net_usd ?? 0)}</TD>
@@ -2066,6 +2614,64 @@ export default function BacktestsPage() {
                   ))}
                 </TBody>
               </Table>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+                <div className="text-slate-400">
+                  Página {massPageSafe}/{massTotalPages}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    type="button"
+                    className="h-8 px-2"
+                    disabled={massPageSafe <= 1}
+                    onClick={() => setMassPage((p) => Math.max(1, p - 1))}
+                  >
+                    Anterior
+                  </Button>
+                  {massPageNumbers.map((p) => (
+                    <Button
+                      key={`mass-page-${p}`}
+                      type="button"
+                      variant={p === massPageSafe ? "default" : "outline"}
+                      className="h-8 px-2"
+                      onClick={() => {
+                        setMassPage(p);
+                        setMassPageInput(String(p));
+                      }}
+                    >
+                      {p}
+                    </Button>
+                  ))}
+                  <Button
+                    variant="outline"
+                    type="button"
+                    className="h-8 px-2"
+                    disabled={massPageSafe >= massTotalPages}
+                    onClick={() => setMassPage((p) => Math.min(massTotalPages, p + 1))}
+                  >
+                    Siguiente
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2 text-slate-300">
+                  <span>Ir a</span>
+                  <Input
+                    className="h-8 w-16"
+                    value={massPageInput}
+                    onChange={(e) => setMassPageInput(e.target.value.replace(/[^0-9]/g, ""))}
+                    onBlur={() => {
+                      const next = Number(massPageInput || "1");
+                      if (Number.isFinite(next)) setMassPage(Math.min(massTotalPages, Math.max(1, next)));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const next = Number(massPageInput || "1");
+                        if (Number.isFinite(next)) setMassPage(Math.min(massTotalPages, Math.max(1, next)));
+                      }
+                    }}
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3">

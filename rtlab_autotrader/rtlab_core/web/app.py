@@ -238,7 +238,7 @@ class ResearchMassBacktestStartBody(BaseModel):
     timeframe: Literal["5m", "10m", "15m"] = "5m"
     start: str = "2024-01-01"
     end: str = "2024-12-31"
-    dataset_source: str = "synthetic"
+    dataset_source: str = "auto"
     data_mode: Literal["dataset", "api"] = "dataset"
     validation_mode: Literal["walk-forward", "purged-cv", "cpcv"] = "walk-forward"
     max_variants_per_strategy: int = 8
@@ -263,6 +263,11 @@ class RunsPatchBody(BaseModel):
     archived: bool | None = None
 
 
+class RunsBulkBody(BaseModel):
+    run_ids: list[str]
+    action: Literal["archive", "unarchive", "delete"]
+
+
 class BatchCreateBody(BaseModel):
     objective: str | None = None
     strategy_ids: list[str] | None = None
@@ -271,7 +276,7 @@ class BatchCreateBody(BaseModel):
     timeframe: Literal["5m", "10m", "15m"] = "5m"
     start: str = "2024-01-01"
     end: str = "2024-12-31"
-    dataset_source: str = "synthetic"
+    dataset_source: str = "auto"
     data_mode: Literal["dataset", "api"] = "dataset"
     validation_mode: Literal["walk-forward", "purged-cv", "cpcv"] = "walk-forward"
     max_variants_per_strategy: int = 8
@@ -2276,6 +2281,50 @@ def risk_hooks(context):
     def save_runs(self, rows: list[dict[str, Any]]) -> None:
         json_save(RUNS_PATH, rows)
 
+    def delete_catalog_runs(self, run_ids: list[str]) -> dict[str, Any]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in run_ids:
+            rid = str(raw or "").strip()
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            normalized.append(rid)
+        if not normalized:
+            return {"deleted_count": 0, "deleted_run_ids": [], "deleted_legacy_count": 0}
+
+        existing = [self.backtest_catalog.get_run(rid) for rid in normalized]
+        existing_rows = [row for row in existing if isinstance(row, dict)]
+        legacy_ids = {
+            str(row.get("legacy_json_id") or "").strip()
+            for row in existing_rows
+            if str(row.get("legacy_json_id") or "").strip()
+        }
+        removed_legacy = 0
+        if legacy_ids:
+            before = self.load_runs()
+            after = []
+            for row in before:
+                if not isinstance(row, dict):
+                    after.append(row)
+                    continue
+                catalog_run_id = str(row.get("catalog_run_id") or "").strip()
+                legacy_id = str(row.get("id") or "").strip()
+                if catalog_run_id in seen or legacy_id in legacy_ids:
+                    removed_legacy += 1
+                    continue
+                after.append(row)
+            if len(after) != len(before):
+                self.save_runs(after)
+
+        result = self.backtest_catalog.delete_runs(normalized)
+        return {
+            "deleted_count": int(result.get("deleted_count") or 0),
+            "deleted_run_ids": [str((row or {}).get("run_id") or "") for row in (result.get("deleted") or []) if isinstance(row, dict)],
+            "deleted_legacy_count": removed_legacy,
+            "affected_batches": result.get("affected_batches") or [],
+        }
+
     def _catalog_strategy_structured_id(self, strategy_id: str, strategy_meta: dict[str, Any] | None = None) -> str:
         meta = strategy_meta or {}
         db_id = meta.get("db_strategy_id") if isinstance(meta, dict) else None
@@ -3000,58 +3049,26 @@ def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str
     market = str(base_cfg.get("market") or "crypto")
     symbol = str(base_cfg.get("symbol") or "BTCUSDT")
     timeframe = str(base_cfg.get("timeframe") or "5m")
-    data_source = str(base_cfg.get("dataset_source") or "synthetic").lower()
+    data_source = str(base_cfg.get("dataset_source") or "auto").lower()
     validation_mode = str(base_cfg.get("validation_mode") or "walk-forward")
-    try:
-        if data_source == "synthetic":
-            run = store.create_backtest_run(
-                strategy_id=strategy_id,
-                start=str(fold.test_start),
-                end=str(fold.test_end),
-                universe=[normalize_symbol(symbol)],
-                fees_bps=float(costs.get("fees_bps", 5.5)),
-                spread_bps=float(costs.get("spread_bps", 4.0)),
-                slippage_bps=float(costs.get("slippage_bps", 3.0)),
-                funding_bps=float(costs.get("funding_bps", 1.0)),
-                validation_mode=validation_mode,
-            )
-            run["market"] = normalize_market(market)
-            run["symbol"] = normalize_symbol(symbol)
-            run["timeframe"] = normalize_timeframe(timeframe)
-            run["data_source"] = "synthetic"
-            return run
-        return store.create_event_backtest_run(
-            strategy_id=strategy_id,
-            market=market,
-            symbol=symbol,
-            timeframe=timeframe,
-            start=str(fold.test_start),
-            end=str(fold.test_end),
-            fees_bps=float(costs.get("fees_bps", 5.5)),
-            spread_bps=float(costs.get("spread_bps", 4.0)),
-            slippage_bps=float(costs.get("slippage_bps", 3.0)),
-            funding_bps=float(costs.get("funding_bps", 1.0)),
-            rollover_bps=float(costs.get("rollover_bps", 0.0)),
-            validation_mode=validation_mode,
+    if data_source in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
+        raise ValueError(
+            "Backtests masivos solo permiten datos reales. Usa dataset_source='auto' o 'dataset' y descarga el dataset."
         )
-    except Exception:
-        # Fallback seguro a corridas sintéticas para no romper research offline.
-        run = store.create_backtest_run(
-            strategy_id=strategy_id,
-            start=str(fold.test_start),
-            end=str(fold.test_end),
-            universe=[normalize_symbol(symbol)],
-            fees_bps=float(costs.get("fees_bps", 5.5)),
-            spread_bps=float(costs.get("spread_bps", 4.0)),
-            slippage_bps=float(costs.get("slippage_bps", 3.0)),
-            funding_bps=float(costs.get("funding_bps", 1.0)),
-            validation_mode=validation_mode,
-        )
-        run["market"] = normalize_market(market)
-        run["symbol"] = normalize_symbol(symbol)
-        run["timeframe"] = normalize_timeframe(timeframe)
-        run["data_source"] = "synthetic_fallback"
-        return run
+    return store.create_event_backtest_run(
+        strategy_id=strategy_id,
+        market=market,
+        symbol=symbol,
+        timeframe=timeframe,
+        start=str(fold.test_start),
+        end=str(fold.test_end),
+        fees_bps=float(costs.get("fees_bps", 5.5)),
+        spread_bps=float(costs.get("spread_bps", 4.0)),
+        slippage_bps=float(costs.get("slippage_bps", 3.0)),
+        funding_bps=float(costs.get("funding_bps", 1.0)),
+        rollover_bps=float(costs.get("rollover_bps", 0.0)),
+        validation_mode=validation_mode,
+    )
 
 
 def _find_run_or_404(run_id: str) -> dict[str, Any]:
@@ -3954,6 +3971,11 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/research/mass-backtest/start")
     def research_mass_backtest_start(body: ResearchMassBacktestStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Research Batch solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'.",
+            )
         if not isinstance(cfg.get("costs"), dict):
             cfg["costs"] = {
                 "fees_bps": 5.5,
@@ -3983,6 +4005,11 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/batches")
     def create_research_batch(body: BatchCreateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Research Batch solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'.",
+            )
         if not isinstance(cfg.get("costs"), dict):
             cfg["costs"] = {
                 "fees_bps": 5.5,
@@ -4399,65 +4426,46 @@ def create_app() -> FastAPI:
         symbol = body.get("symbol")
         timeframe = body.get("timeframe")
         data_source = str(body.get("data_source") or "auto").lower()
+        if data_source in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Quick Backtest ya no permite resultados sintéticos. Configurá mercado/símbolo/timeframe y asegurá dataset real.",
+            )
         if market and symbol and timeframe:
-            if data_source == "synthetic":
-                run = store.create_backtest_run(
+            try:
+                run = store.create_event_backtest_run(
                     strategy_id=strategy_id,
+                    market=str(market),
+                    symbol=str(symbol),
+                    timeframe=str(timeframe),
                     start=start,
                     end=end,
-                    universe=[normalize_symbol(str(symbol))],
                     fees_bps=fees_bps,
                     spread_bps=spread_bps,
                     slippage_bps=slippage_bps,
                     funding_bps=funding_bps,
+                    rollover_bps=rollover_bps,
                     validation_mode=validation_mode,
                 )
-                run["market"] = normalize_market(str(market))
-                run["symbol"] = normalize_symbol(str(symbol))
-                run["timeframe"] = normalize_timeframe(str(timeframe))
-                run["data_source"] = "synthetic"
-            else:
-                try:
-                    run = store.create_event_backtest_run(
-                        strategy_id=strategy_id,
-                        market=str(market),
-                        symbol=str(symbol),
-                        timeframe=str(timeframe),
-                        start=start,
-                        end=end,
-                        fees_bps=fees_bps,
-                        spread_bps=spread_bps,
-                        slippage_bps=slippage_bps,
-                        funding_bps=funding_bps,
-                        rollover_bps=rollover_bps,
-                        validation_mode=validation_mode,
-                    )
-                except FileNotFoundError as exc:
-                    mk = str(market).strip().lower()
-                    script_name = (
-                        "scripts/download_crypto_binance_public.py"
-                        if mk == "crypto"
-                        else "scripts/download_forex_dukascopy.py"
-                        if mk == "forex"
-                        else "scripts/download_equities_alpaca.py"
-                    )
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Faltan datos para {mk}/{str(symbol).upper()}/{str(timeframe).lower()}. Descarga con {script_name} y reintenta. Detalle: {exc}",
-                    ) from exc
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except FileNotFoundError as exc:
+                mk = str(market).strip().lower()
+                script_name = (
+                    "scripts/download_crypto_binance_public.py"
+                    if mk == "crypto"
+                    else "scripts/download_forex_dukascopy.py"
+                    if mk == "forex"
+                    else "scripts/download_equities_alpaca.py"
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Faltan datos para {mk}/{str(symbol).upper()}/{str(timeframe).lower()}. Descarga con {script_name} y reintenta. Detalle: {exc}",
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
-            run = store.create_backtest_run(
-                strategy_id=strategy_id,
-                start=start,
-                end=end,
-                universe=body.get("universe") or ["BTC/USDT", "ETH/USDT"],
-                fees_bps=fees_bps,
-                spread_bps=spread_bps,
-                slippage_bps=slippage_bps,
-                funding_bps=funding_bps,
-                validation_mode=validation_mode,
+            raise HTTPException(
+                status_code=400,
+                detail="Quick Backtest requiere mercado, símbolo y timeframe para usar datos reales. No se generan corridas sintéticas.",
             )
         return {"ok": True, "run_id": run["id"], "run": run}
 
@@ -4943,6 +4951,59 @@ def create_app() -> FastAPI:
             payload={"alias": body.alias, "tags": body.tags, "pinned": body.pinned, "archived": body.archived},
         )
         return {"ok": True, "run": patched}
+
+    @app.post("/api/v1/runs/bulk")
+    def runs_bulk(body: RunsBulkBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        raw_ids = body.run_ids if isinstance(body.run_ids, list) else []
+        run_ids: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_ids:
+            rid = str(raw or "").strip()
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            run_ids.append(rid)
+        if not run_ids:
+            raise HTTPException(status_code=400, detail="Debe enviar al menos un run_id.")
+
+        action = str(body.action or "").strip().lower()
+        affected: list[dict[str, Any]] = []
+        deleted_payload: dict[str, Any] | None = None
+
+        if action in {"archive", "unarchive"}:
+            archived = action == "archive"
+            for rid in run_ids:
+                patched = store.backtest_catalog.patch_run(rid, archived=archived)
+                if patched:
+                    affected.append(patched)
+            if not affected:
+                raise HTTPException(status_code=404, detail="Ninguno de los runs enviados existe en el catálogo.")
+            store.add_log(
+                event_type="runs_bulk_patch",
+                severity="info",
+                module="backtest",
+                message=f"Accion masiva sobre runs: {action}",
+                related_ids=[str(row.get("run_id") or "") for row in affected][:20],
+                payload={"action": action, "count": len(affected)},
+            )
+            return {"ok": True, "action": action, "count": len(affected), "runs": affected}
+
+        if action == "delete":
+            deleted_payload = store.delete_catalog_runs(run_ids)
+            count = int((deleted_payload or {}).get("deleted_count") or 0)
+            if count <= 0:
+                raise HTTPException(status_code=404, detail="Ninguno de los runs enviados existe en el catálogo.")
+            store.add_log(
+                event_type="runs_bulk_delete",
+                severity="warn",
+                module="backtest",
+                message="Borrado masivo de runs del catálogo",
+                related_ids=[str(x) for x in ((deleted_payload or {}).get("deleted_run_ids") or [])][:20],
+                payload=deleted_payload or {},
+            )
+            return {"ok": True, "action": action, **(deleted_payload or {})}
+
+        raise HTTPException(status_code=400, detail=f"Acción no soportada: {body.action}")
 
     @app.get("/api/v1/batches")
     def batches_list(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

@@ -540,6 +540,7 @@ export interface MassBacktestStatusResponse {
 
 export interface MassBacktestResultRow {
   variant_id: string;
+  catalog_run_id?: string;
   strategy_id: string;
   strategy_name?: string;
   template_id?: string | null;
@@ -554,6 +555,8 @@ export interface MassBacktestResultRow {
     sharpe_oos?: number;
     sortino_oos?: number;
     calmar_oos?: number;
+    winrate_oos?: number;
+    profit_factor_oos?: number;
     max_dd_oos_pct?: number;
     expectancy_net_usd?: number;
     net_pnl_oos?: number;

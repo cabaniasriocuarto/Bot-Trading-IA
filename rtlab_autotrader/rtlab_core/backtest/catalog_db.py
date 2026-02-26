@@ -610,6 +610,59 @@ class BacktestCatalogDB:
             conn.commit()
         return self.get_run(run_id)
 
+    def delete_runs(self, run_ids: list[str]) -> dict[str, Any]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in run_ids:
+            rid = str(raw or "").strip()
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            normalized.append(rid)
+        if not normalized:
+            return {"deleted_count": 0, "deleted": [], "affected_batches": []}
+
+        placeholders = ",".join(["?"] * len(normalized))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT run_id, legacy_json_id, batch_id FROM backtest_runs WHERE run_id IN ({placeholders})",
+                normalized,
+            ).fetchall()
+            if not rows:
+                return {"deleted_count": 0, "deleted": [], "affected_batches": []}
+
+            deleted = [dict(r) for r in rows]
+            affected_batches = sorted({str(r["batch_id"]) for r in rows if str(r["batch_id"] or "").strip()})
+
+            conn.execute(f"DELETE FROM artifacts_index WHERE run_id IN ({placeholders})", normalized)
+            conn.execute(f"DELETE FROM backtest_runs WHERE run_id IN ({placeholders})", normalized)
+
+            for batch_id in affected_batches:
+                counts = conn.execute(
+                    """
+                    SELECT
+                      COUNT(*) AS total_count,
+                      SUM(CASE WHEN status IN ('completed','completed_warn') THEN 1 ELSE 0 END) AS done_count,
+                      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+                    FROM backtest_runs
+                    WHERE batch_id = ?
+                    """,
+                    (batch_id,),
+                ).fetchone()
+                total_count = int((counts["total_count"] if counts else 0) or 0)
+                done_count = int((counts["done_count"] if counts else 0) or 0)
+                failed_count = int((counts["failed_count"] if counts else 0) or 0)
+                conn.execute(
+                    """
+                    UPDATE backtest_batches
+                    SET run_count_total = ?, run_count_done = ?, run_count_failed = ?, updated_at = ?
+                    WHERE batch_id = ?
+                    """,
+                    (total_count, done_count, failed_count, _utc_iso(), batch_id),
+                )
+            conn.commit()
+        return {"deleted_count": len(deleted), "deleted": deleted, "affected_batches": affected_batches}
+
     def list_batches(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM backtest_batches ORDER BY created_at DESC, batch_id DESC").fetchall()

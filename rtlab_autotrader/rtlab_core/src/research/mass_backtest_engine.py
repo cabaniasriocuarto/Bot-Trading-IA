@@ -321,6 +321,7 @@ class MassBacktestEngine:
             "costs_total": _f(c.get("total_cost")),
             "costs_ratio": _f(c.get("total_cost_pct_of_gross_pnl")),
             "winrate": _f(m.get("winrate")),
+            "profit_factor": _f(m.get("profit_factor")),
             "dataset_hash": str(run.get("dataset_hash") or ""),
             "provenance": run.get("provenance") if isinstance(run.get("provenance"), dict) else {},
             "run_id": str(run.get("id") or ""),
@@ -698,6 +699,12 @@ class MassBacktestEngine:
             end=str(cfg.get("end") or "2024-12-31"),
         )
         cfg["data_provider"] = dataset_info.to_dict()
+        if not bool(getattr(dataset_info, "ready", False)):
+            hints = [str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()]
+            hint_text = " | ".join(hints) if hints else "Verificá dataset_source, symbol, timeframe y rango."
+            raise ValueError(
+                f"No hay dataset real disponible para {cfg.get('market')}/{cfg.get('symbol')}/{cfg.get('timeframe')} en modo {data_mode}. {hint_text}"
+            )
         folds = self.walk_forward_runner(
             start=str(cfg.get("start") or "2024-01-01"),
             end=str(cfg.get("end") or "2024-12-31"),
@@ -745,6 +752,8 @@ class MassBacktestEngine:
                 "sharpe_oos": round(_avg([_f(x.get("sharpe_oos")) for x in fold_rows]), 6),
                 "sortino_oos": round(_avg([_f(x.get("sortino_oos")) for x in fold_rows]), 6),
                 "calmar_oos": round(_avg([_f(x.get("calmar_oos")) for x in fold_rows]), 6),
+                "winrate_oos": round(_avg([_f(x.get("winrate")) for x in fold_rows]), 6),
+                "profit_factor_oos": round(_avg([_f(x.get("profit_factor")) for x in fold_rows]), 6),
                 "max_dd_oos_pct": round(_avg([_f(x.get("max_dd_oos_pct")) for x in fold_rows]), 6),
                 "expectancy_net_usd": round(_avg([_f(x.get("expectancy_net_usd")) for x in fold_rows]), 6),
                 "stability": robust.get("stability", 0.0),
@@ -801,7 +810,7 @@ class MassBacktestEngine:
         _json_dump(self._results_path(run_id), payload)
         manifest = {
             "run_id": run_id,
-            "dataset_source": str(cfg.get("dataset_source") or cfg.get("data_source") or dataset_info.dataset_source or "synthetic"),
+            "dataset_source": str(cfg.get("dataset_source") or cfg.get("data_source") or dataset_info.dataset_source or "dataset"),
             "dataset_hashes": sorted({h for row in ranked for h in (row.get("summary") or {}).get("dataset_hashes", []) if h} | ({dataset_info.dataset_hash} if dataset_info.dataset_hash else set())),
             "period": {"start": cfg.get("start"), "end": cfg.get("end")},
             "timeframe": cfg.get("timeframe"),

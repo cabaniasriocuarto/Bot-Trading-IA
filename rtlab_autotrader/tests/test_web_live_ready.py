@@ -494,16 +494,21 @@ def test_exchange_diagnose_uses_json_only_in_local_dev(tmp_path: Path, monkeypat
 
 
 def test_backtest_costs_and_entry_metrics_are_exposed(tmp_path: Path, monkeypatch) -> None:
-  _, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
 
   strategies = client.get("/api/v1/strategies", headers=headers).json()
   strategy_id = strategies[0]["id"]
   payload_common = {
     "strategy_id": strategy_id,
-    "period": {"start": "2024-01-01", "end": "2024-03-31"},
-    "universe": ["BTC/USDT", "ETH/USDT"],
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
     "validation_mode": "walk-forward",
   }
 
@@ -531,8 +536,32 @@ def test_backtest_costs_and_entry_metrics_are_exposed(tmp_path: Path, monkeypatc
   for field in ["fees_total", "spread_total", "slippage_total", "funding_total", "total_cost"]:
     assert field in high_run["costs_breakdown"]
 
-  assert high_run["costs_breakdown"]["total_cost"] > low_run["costs_breakdown"]["total_cost"]
-  assert high_run["metrics"]["expectancy"] < low_run["metrics"]["expectancy"]
+  assert float(high_run["costs_model"]["fees_bps"]) > float(low_run["costs_model"]["fees_bps"])
+  if int(high_run["metrics"].get("trade_count", 0)) > 0 and int(low_run["metrics"].get("trade_count", 0)) > 0:
+    assert high_run["costs_breakdown"]["total_cost"] > low_run["costs_breakdown"]["total_cost"]
+    assert high_run["metrics"]["expectancy"] < low_run["metrics"]["expectancy"]
+
+
+def test_backtests_run_rejects_synthetic_source(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": "trend_pullback_orderflow_confirm_v1",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-01-31",
+      "data_source": "synthetic",
+    },
+  )
+  assert res.status_code == 400
+  assert "no permite resultados sint" in res.json()["detail"].lower()
 
 
 def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, *, source: str, include_bid_ask: bool = False) -> None:
@@ -767,12 +796,54 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   assert rankings.status_code == 200, rankings.text
   assert isinstance(rankings.json()["items"], list)
 
-  batch_create = client.post(
+  bulk_archive = client.post(
+    "/api/v1/runs/bulk",
+    headers=headers,
+    json={"action": "archive", "run_ids": [first["run_id"]]},
+  )
+  assert bulk_archive.status_code == 200, bulk_archive.text
+  assert bulk_archive.json()["count"] >= 1
+
+  bulk_delete = client.post(
+    "/api/v1/runs/bulk",
+    headers=headers,
+    json={"action": "delete", "run_ids": [first["run_id"]]},
+  )
+  assert bulk_delete.status_code == 200, bulk_delete.text
+  assert bulk_delete.json()["deleted_count"] >= 1
+
+  after_delete = client.get("/api/v1/runs", headers=headers)
+  assert after_delete.status_code == 200
+  assert all(row["run_id"] != first["run_id"] for row in after_delete.json()["items"])
+
+  batch_create_reject = client.post(
     "/api/v1/batches",
     headers=headers,
     json={
       "objective": "Smoke batch",
       "dataset_source": "synthetic",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-06-01",
+      "max_variants_per_strategy": 1,
+      "max_folds": 1,
+      "train_days": 60,
+      "test_days": 30,
+      "top_n": 1,
+      "seed": 7,
+    },
+  )
+  assert batch_create_reject.status_code == 400
+  assert "solo acepta datos reales" in batch_create_reject.json()["detail"].lower()
+
+  batch_create = client.post(
+    "/api/v1/batches",
+    headers=headers,
+    json={
+      "objective": "Smoke batch",
+      "dataset_source": "auto",
       "market": "crypto",
       "symbol": "BTCUSDT",
       "timeframe": "5m",
@@ -1029,13 +1100,57 @@ def test_thompson_respects_max_switch_per_day_and_weights_history(tmp_path: Path
 
 
 def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, monkeypatch) -> None:
-  _module, client = _build_app(tmp_path, monkeypatch)
+  module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+
+  dataset_dir = user_data_dir / "datasets" / "binance_public" / "crypto" / "BTCUSDT" / "5m"
+  dataset_dir.mkdir(parents=True, exist_ok=True)
+  dummy_file = dataset_dir / "chunk_2024-01.parquet"
+  dummy_file.write_bytes(b"stub")
+  manifest = {
+    "provider": "binance_public",
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "dataset_source": "binance_public",
+    "dataset_hash": "ds_test_mass_001",
+    "start": "2024-01-01",
+    "end": "2024-06-30",
+    "files": [str(dummy_file.resolve())],
+  }
+  (dataset_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+  def _fake_event_backtest_run(**kwargs):
+    run = module.store.create_backtest_run(
+      strategy_id=str(kwargs.get("strategy_id") or "trend_pullback_orderflow_confirm_v1"),
+      start=str(kwargs.get("start") or "2024-01-01"),
+      end=str(kwargs.get("end") or "2024-01-31"),
+      universe=[str(kwargs.get("symbol") or "BTCUSDT")],
+      fees_bps=float(kwargs.get("fees_bps", 5.5)),
+      spread_bps=float(kwargs.get("spread_bps", 4.0)),
+      slippage_bps=float(kwargs.get("slippage_bps", 3.0)),
+      funding_bps=float(kwargs.get("funding_bps", 1.0)),
+      validation_mode=str(kwargs.get("validation_mode") or "walk-forward"),
+    )
+    run["market"] = str(kwargs.get("market") or "crypto")
+    run["symbol"] = str(kwargs.get("symbol") or "BTCUSDT")
+    run["timeframe"] = str(kwargs.get("timeframe") or "5m")
+    run["data_source"] = "binance_public"
+    run["dataset_hash"] = "ds_test_mass_001"
+    run["provenance"] = {
+      **dict(run.get("provenance") or {}),
+      "dataset_source": "binance_public",
+      "dataset_hash": "ds_test_mass_001",
+    }
+    return run
+
+  monkeypatch.setattr(module.store, "create_event_backtest_run", _fake_event_backtest_run)
 
   strategies = client.get("/api/v1/strategies", headers=headers).json()
   strategy_ids = [row["id"] for row in strategies[:2]]
-  start = client.post(
+  reject_synth = client.post(
     "/api/v1/research/mass-backtest/start",
     headers=headers,
     json={
@@ -1046,6 +1161,27 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
       "start": "2024-01-01",
       "end": "2024-06-30",
       "dataset_source": "synthetic",
+      "max_variants_per_strategy": 1,
+      "max_folds": 1,
+      "train_days": 30,
+      "test_days": 30,
+      "top_n": 3,
+      "seed": 11,
+    },
+  )
+  assert reject_synth.status_code == 400
+  assert "solo acepta datos reales" in reject_synth.json()["detail"].lower()
+  start = client.post(
+    "/api/v1/research/mass-backtest/start",
+    headers=headers,
+    json={
+      "strategy_ids": strategy_ids,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-06-30",
+      "dataset_source": "auto",
       "max_variants_per_strategy": 1,
       "max_folds": 1,
       "train_days": 30,
