@@ -1,0 +1,35 @@
+gates:
+  pbo:
+    enabled: true
+    reject_if_gt: 0.05
+    metric: "sharpe"
+    cscv:
+      S: 8
+      bootstrap_iters: 2000
+
+  dsr:
+    enabled: true
+    min_dsr: 0.95
+    require_trials_stats: true
+
+  walk_forward:
+    enabled: true
+    folds: 5
+    pass_if_positive_folds_at_least: 4
+    max_is_to_oos_degradation: 0.30
+
+  holdout_warnings:
+    enabled: true
+    min_observations_for_holdout: 1000
+    weekly_strategy_min_years_for_holdout: 20
+
+  cost_stress:
+    enabled: true
+    multipliers: [1.5, 2.0]
+    must_remain_profitable_at_1_5x: true
+    max_score_drop_at_2_0x: 0.50
+
+  min_trade_quality:
+    enabled: true
+    min_trades_per_run: 150
+    min_trades_per_symbol: 30

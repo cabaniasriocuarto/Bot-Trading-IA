@@ -1,0 +1,15 @@
+beast_mode:
+  enabled: true
+  requires_postgres: true
+  max_trials_per_batch: 5000
+  max_concurrent_jobs: 50
+
+  per_exchange_rate_limit:
+    enabled: true
+    max_requests_per_minute: 1200
+
+  budget_governor:
+    enabled: true
+    daily_job_cap_hobby: 200
+    daily_job_cap_pro: 800
+    stop_at_budget_pct: 80

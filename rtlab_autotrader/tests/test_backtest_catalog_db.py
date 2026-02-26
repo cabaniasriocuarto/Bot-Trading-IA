@@ -7,60 +7,94 @@ from rtlab_core.backtest import BacktestCatalogDB
 
 
 def test_backtest_catalog_ids_and_run_record(tmp_path: Path) -> None:
-    db = BacktestCatalogDB(tmp_path / "catalog.sqlite3")
+  db = BacktestCatalogDB(tmp_path / "catalog.sqlite3")
 
-    bt1 = db.next_formatted_id("BT")
-    bx1 = db.next_formatted_id("BX")
-    assert bt1.startswith("BT-")
-    assert bx1.startswith("BX-")
+  fee_snapshot = db.insert_fee_snapshot(
+    exchange="binance",
+    market="crypto",
+    symbol="BTCUSDT",
+    maker_fee=0.0002,
+    taker_fee=0.0004,
+    commission_rate=None,
+    source="policy_fallback",
+    payload={"ttl": 6},
+    fetched_at="2026-02-26T00:00:00+00:00",
+    expires_at="2026-02-26T06:00:00+00:00",
+  )
+  funding_snapshot = db.insert_funding_snapshot(
+    exchange="binance",
+    market="crypto",
+    symbol="BTCUSDT",
+    funding_rate=0.0,
+    funding_bps=0.0,
+    source="not_applicable_spot",
+    payload={"spot": True},
+    fetched_at="2026-02-26T00:00:00+00:00",
+    expires_at="2026-02-26T01:00:00+00:00",
+  )
 
-    run = {
-        "id": "BT-000999",
-        "strategy_id": "trend_pullback_orderflow_confirm_v1",
-        "strategy_name": "Trend Pullback",
-        "strategy_version": "1.0.0",
-        "mode": "backtest",
-        "period": {"start": "2024-01-01", "end": "2024-12-31"},
-        "symbol": "BTCUSDT",
-        "timeframe": "5m",
-        "universe": ["BTCUSDT"],
-        "data_source": "binance_ohlcv_local",
-        "dataset_version": "ohlcv_v3",
-        "dataset_hash": "abc123",
-        "costs_model": {"fees_bps": 5.5, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 1.0},
-        "metrics": {"sharpe": 1.2, "max_dd": 0.12, "trade_count": 240, "expectancy": 2.5, "expectancy_unit": "usd_per_trade"},
-        "created_at": "2026-02-23T00:00:00+00:00",
-        "git_commit": "deadbeef",
-    }
-    strategy_meta = {"db_strategy_id": 12, "name": "Trend Pullback OF", "version": "2.3.0"}
-    catalog_run_id = db.record_run_from_payload(run=run, strategy_meta=strategy_meta, created_by="admin")
-    assert catalog_run_id == "BT-000999"
-    assert run["catalog_run_id"] == "BT-000999"
-    assert str(run.get("title_structured") or "").startswith("BT-000999")
-    stored = db.get_run("BT-000999")
-    assert stored is not None
-    assert stored["dataset_hash"] == "abc123"
-    assert stored["code_commit_hash"] == "deadbeef"
-    assert stored["fee_model"].startswith("maker_taker_bps:")
-    assert stored["kpis"]["expectancy_unit"] == "usd_per_trade"
+  bt1 = db.next_formatted_id("BT")
+  bx1 = db.next_formatted_id("BX")
+  assert bt1.startswith("BT-")
+  assert bx1.startswith("BX-")
 
-    batch = db.upsert_backtest_batch(
-        {
-            "batch_id": "BX-000038",
-            "objective": "Research Batch prueba",
-            "universe_json": json.dumps({"symbols": ["BTCUSDT", "ETHUSDT"], "timeframes": ["5m"]}),
-            "variables_explored_json": json.dumps({"max_variants_per_strategy": 8}),
-            "status": "running",
-            "run_count_total": 10,
-            "run_count_done": 4,
-            "run_count_failed": 1,
-        }
-    )
-    assert batch["batch_id"] == "BX-000038"
+  run = {
+      "id": "BT-000999",
+      "strategy_id": "trend_pullback_orderflow_confirm_v1",
+      "strategy_name": "Trend Pullback",
+      "strategy_version": "1.0.0",
+      "mode": "backtest",
+      "period": {"start": "2024-01-01", "end": "2024-12-31"},
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "universe": ["BTCUSDT"],
+      "data_source": "binance_ohlcv_local",
+      "dataset_version": "ohlcv_v3",
+      "dataset_hash": "abc123",
+      "costs_model": {"fees_bps": 5.5, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 1.0},
+      "fee_snapshot_id": fee_snapshot["snapshot_id"],
+      "funding_snapshot_id": funding_snapshot["snapshot_id"],
+      "slippage_model_params": {"mode": "dynamic_v2", "used_bps": 3.0, "multiplier": 1.0},
+      "spread_model_params": {"mode": "static", "used_bps": 4.0},
+      "metrics": {"sharpe": 1.2, "max_dd": 0.12, "trade_count": 240, "expectancy": 2.5, "expectancy_unit": "usd_per_trade"},
+      "created_at": "2026-02-23T00:00:00+00:00",
+      "git_commit": "deadbeef",
+  }
+  strategy_meta = {"db_strategy_id": 12, "name": "Trend Pullback OF", "version": "2.3.0"}
+  catalog_run_id = db.record_run_from_payload(run=run, strategy_meta=strategy_meta, created_by="admin")
+  assert catalog_run_id == "BT-000999"
+  assert run["catalog_run_id"] == "BT-000999"
+  assert str(run.get("title_structured") or "").startswith("BT-000999")
+  stored = db.get_run("BT-000999")
+  assert stored is not None
+  assert stored["dataset_hash"] == "abc123"
+  assert stored["code_commit_hash"] == "deadbeef"
+  assert stored["fee_model"].startswith("maker_taker_bps:")
+  assert stored["kpis"]["expectancy_unit"] == "usd_per_trade"
+  assert stored["fee_snapshot_id"] == fee_snapshot["snapshot_id"]
+  assert stored["funding_snapshot_id"] == funding_snapshot["snapshot_id"]
+  assert stored["slippage_model_params"]["mode"] == "dynamic_v2"
+  assert stored["spread_model_params"]["used_bps"] == 4.0
+  assert db.latest_valid_fee_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == fee_snapshot["snapshot_id"]
+  assert db.latest_valid_funding_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == funding_snapshot["snapshot_id"]
 
-    db.add_artifact(run_id="BT-000999", batch_id="BX-000038", kind="report_json", path="/api/v1/backtests/runs/BT-000999?format=report_json")
-    artifacts = db.get_artifacts_for_run("BT-000999")
-    assert any(a["artifact_kind"] == "report_json" for a in artifacts)
+  batch = db.upsert_backtest_batch(
+      {
+          "batch_id": "BX-000038",
+          "objective": "Research Batch prueba",
+          "universe_json": json.dumps({"symbols": ["BTCUSDT", "ETHUSDT"], "timeframes": ["5m"]}),
+          "variables_explored_json": json.dumps({"max_variants_per_strategy": 8}),
+          "status": "running",
+          "run_count_total": 10,
+          "run_count_done": 4,
+          "run_count_failed": 1,
+      }
+  )
+  assert batch["batch_id"] == "BX-000038"
+
+  db.add_artifact(run_id="BT-000999", batch_id="BX-000038", kind="report_json", path="/api/v1/backtests/runs/BT-000999?format=report_json")
+  artifacts = db.get_artifacts_for_run("BT-000999")
+  assert any(a["artifact_kind"] == "report_json" for a in artifacts)
 
 
 def test_backtest_catalog_query_patch_and_rankings(tmp_path: Path) -> None:

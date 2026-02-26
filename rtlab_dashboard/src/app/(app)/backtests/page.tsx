@@ -25,6 +25,8 @@ import type {
   MassBacktestResultRow,
   MassBacktestResultsResponse,
   MassBacktestStatusResponse,
+  BeastModeStatusResponse,
+  BeastModeJobsResponse,
   Strategy,
 } from "@/lib/types";
 import { fmtNum, fmtPct } from "@/lib/utils";
@@ -73,6 +75,7 @@ type MassSortKey =
   | "costs";
 
 type MassTopMetric = "score" | "winrate" | "sharpe" | "calmar" | "expectancy" | "trades" | "maxdd" | "costs";
+type MassLeaderboardTab = "score_neto" | "winrate";
 
 const chartColors = ["#22d3ee", "#f97316", "#facc15", "#4ade80", "#f472b6"];
 const MARKET_OPTIONS: Record<RunForm["market"], string[]> = {
@@ -243,6 +246,18 @@ function massMetricValue(row: MassBacktestResultRow, metric: MassTopMetric): num
   }
 }
 
+function massGatesPassed(row: MassBacktestResultRow): boolean | null {
+  if (!row.gates_eval || typeof row.gates_eval.passed !== "boolean") return null;
+  return !!row.gates_eval.passed;
+}
+
+function massGatesBadgeVariant(row: MassBacktestResultRow): "success" | "danger" | "warn" {
+  const passed = massGatesPassed(row);
+  if (passed === true) return "success";
+  if (passed === false) return "danger";
+  return "warn";
+}
+
 export default function BacktestsPage() {
   const { role } = useSession();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -306,16 +321,24 @@ export default function BacktestsPage() {
   const [massResults, setMassResults] = useState<MassBacktestResultRow[]>([]);
   const [massArtifacts, setMassArtifacts] = useState<MassBacktestArtifactsResponse["items"]>([]);
   const [massOnlyPass, setMassOnlyPass] = useState(true);
+  const [beastTier, setBeastTier] = useState<"hobby" | "pro">("hobby");
+  const [beastStatus, setBeastStatus] = useState<BeastModeStatusResponse | null>(null);
+  const [beastJobs, setBeastJobs] = useState<BeastModeJobsResponse["items"]>([]);
+  const [beastBusy, setBeastBusy] = useState(false);
   const [massSelectedRow, setMassSelectedRow] = useState<MassBacktestResultRow | null>(null);
   const [massSelectedVariantIds, setMassSelectedVariantIds] = useState<string[]>([]);
   const [massTopSelectMetric, setMassTopSelectMetric] = useState<MassTopMetric>("winrate");
   const [massTopSelectN, setMassTopSelectN] = useState("20");
   const [massAutoShortlistEnabled, setMassAutoShortlistEnabled] = useState(true);
+  const [massLeaderboardTab, setMassLeaderboardTab] = useState<MassLeaderboardTab>("winrate");
   const [massSortKey, setMassSortKey] = useState<MassSortKey>("winrate");
   const [massSortDir, setMassSortDir] = useState<"asc" | "desc">("desc");
   const [massPageSize, setMassPageSize] = useState<"10" | "20" | "30" | "40" | "50">("20");
   const [massPage, setMassPage] = useState(1);
   const [massPageInput, setMassPageInput] = useState("1");
+  const [massBatchPageSize, setMassBatchPageSize] = useState<"10" | "20" | "50" | "100" | "200" | "500">("20");
+  const [massBatchPage, setMassBatchPage] = useState(1);
+  const [massBatchPageInput, setMassBatchPageInput] = useState("1");
   const [massForm, setMassForm] = useState({
     max_variants_per_strategy: "4",
     max_folds: "3",
@@ -526,6 +549,19 @@ export default function BacktestsPage() {
     [massOnlyPass],
   );
 
+  const refreshBeastPanel = useCallback(async () => {
+    try {
+      const [status, jobs] = await Promise.all([
+        apiGet<BeastModeStatusResponse>("/api/v1/research/beast/status"),
+        apiGet<BeastModeJobsResponse>("/api/v1/research/beast/jobs?limit=20"),
+      ]);
+      setBeastStatus(status);
+      setBeastJobs(jobs.items || []);
+    } catch {
+      // best effort
+    }
+  }, []);
+
   useEffect(() => {
     if (massRunId) return;
     const firstBatch = (catalogBatches || []).find((b) => String(b.batch_id || "").startsWith("BX-"));
@@ -556,6 +592,22 @@ export default function BacktestsPage() {
       cancelled = true;
     };
   }, [massRunId, massOnlyPass, refreshMassPayload]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        await refreshBeastPanel();
+      } catch {
+        // best effort
+      }
+      if (!cancelled) window.setTimeout(() => void tick(), 2000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshBeastPanel]);
 
   const launchRun = async (event: FormEvent) => {
     event.preventDefault();
@@ -763,6 +815,79 @@ export default function BacktestsPage() {
     }
   };
 
+  const startBeastBatch = async () => {
+    if (!massSelectedStrategies.length) {
+      setMassError("Seleccioná al menos una estrategia para Modo Bestia.");
+      return;
+    }
+    setBeastBusy(true);
+    setMassError("");
+    setMassMessage("");
+    try {
+      const res = await apiPost<{ ok: boolean; run_id: string; state: string; mode?: string; queue_position?: number; estimated_trial_units?: number }>(
+        "/api/v1/research/beast/start",
+        {
+          strategy_ids: massSelectedStrategies,
+          market: form.market,
+          symbol: form.symbol,
+          timeframe: form.timeframe,
+          start: form.start,
+          end: form.end,
+          dataset_source: massForm.dataset_source,
+          validation_mode: form.validation_mode,
+          max_variants_per_strategy: Number(massForm.max_variants_per_strategy),
+          max_folds: Number(massForm.max_folds),
+          train_days: Number(massForm.train_days),
+          test_days: Number(massForm.test_days),
+          top_n: Number(massForm.top_n),
+          seed: Number(massForm.seed),
+          tier: beastTier,
+          costs: {
+            fees_bps: Number(form.fees_bps),
+            spread_bps: Number(form.spread_bps),
+            slippage_bps: Number(form.slippage_bps),
+            funding_bps: Number(form.funding_bps),
+            rollover_bps: Number(form.rollover_bps),
+          },
+        },
+      );
+      setMassRunId(res.run_id);
+      setMassMessage(`Modo Bestia encolado: ${res.run_id} (cola ${res.queue_position ?? "?"}, units ${res.estimated_trial_units ?? "?"})`);
+      await Promise.all([refreshBeastPanel(), refreshMassPayload(res.run_id, massOnlyPass).catch(() => undefined)]);
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo encolar el batch en Modo Bestia.");
+    } finally {
+      setBeastBusy(false);
+    }
+  };
+
+  const beastStopAll = async () => {
+    if (!confirm("¿Stop All de Modo Bestia? Se cancela la cola y no se despachan nuevos jobs. Los jobs ya corriendo terminan.")) return;
+    setBeastBusy(true);
+    try {
+      const res = await apiPost<{ note?: string }>("/api/v1/research/beast/stop-all", { reason: "ui_stop_all" });
+      setMassMessage(res.note || "Modo Bestia Stop All aplicado.");
+      await refreshBeastPanel();
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo ejecutar Stop All.");
+    } finally {
+      setBeastBusy(false);
+    }
+  };
+
+  const beastResume = async () => {
+    setBeastBusy(true);
+    try {
+      await apiPost("/api/v1/research/beast/resume", {});
+      setMassMessage("Modo Bestia reanudado.");
+      await refreshBeastPanel();
+    } catch (err) {
+      setMassError(err instanceof Error ? err.message : "No se pudo reanudar Modo Bestia.");
+    } finally {
+      setBeastBusy(false);
+    }
+  };
+
   const refreshMass = async () => {
     if (!massRunId) return;
     try {
@@ -801,6 +926,14 @@ export default function BacktestsPage() {
     return massSortDir === "asc" ? " ▲" : " ▼";
   };
 
+  const applyMassLeaderboardTab = (tab: MassLeaderboardTab) => {
+    setMassLeaderboardTab(tab);
+    setMassSortKey(tab === "score_neto" ? "score" : "winrate");
+    setMassSortDir("desc");
+    setMassPage(1);
+    setMassPageInput("1");
+  };
+
   const toggleMassVariantSelection = (variantId: string) => {
     setMassSelectedVariantIds((prev) => (prev.includes(variantId) ? prev.filter((x) => x !== variantId) : [...prev, variantId]));
   };
@@ -808,6 +941,15 @@ export default function BacktestsPage() {
   const selectMassPageVariants = () => setMassSelectedVariantIds(massPageRows.map((row) => row.variant_id));
   const selectMassAllVariants = () => setMassSelectedVariantIds(massSortedRows.map((row) => row.variant_id));
   const clearMassVariantSelection = () => setMassSelectedVariantIds([]);
+
+  const batchChildRunIds = (batch: BacktestCatalogBatch): string[] =>
+    Array.from(
+      new Set(
+        (batch.children_runs || [])
+          .map((row) => String(row.run_id || "").trim())
+          .filter(Boolean),
+      ),
+    );
 
   const compareMassSelectedVariantsInRuns = () => {
     const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
@@ -1033,6 +1175,16 @@ export default function BacktestsPage() {
         .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))),
     [catalogBatches],
   );
+  const massBatchTotalPages = Math.max(1, Math.ceil(sortedBatchOptions.length / Number(massBatchPageSize)));
+  const massBatchPageSafe = Math.min(Math.max(massBatchPage, 1), massBatchTotalPages);
+  const massBatchPageStart = (massBatchPageSafe - 1) * Number(massBatchPageSize);
+  const massBatchPageEnd = Math.min(massBatchPageStart + Number(massBatchPageSize), sortedBatchOptions.length);
+  const massBatchPageRows = sortedBatchOptions.slice(massBatchPageStart, massBatchPageEnd);
+  const massBatchPageNumbers = Array.from({ length: Math.min(massBatchTotalPages, 7) }, (_, idx) => {
+    if (massBatchTotalPages <= 7) return idx + 1;
+    const windowStart = Math.max(1, Math.min(massBatchPageSafe - 3, massBatchTotalPages - 6));
+    return windowStart + idx;
+  });
   const batchChildrenCount = catalogRuns.filter((r) => r.run_type === "batch_child").length;
   const quickRunsCount = catalogRuns.filter((r) => r.run_type !== "batch_child").length;
   const catalogProRows = catalogRuns.slice(0, Number(catalogProLimit));
@@ -1119,6 +1271,19 @@ export default function BacktestsPage() {
     const valid = new Set(massSortedRows.map((row) => row.variant_id));
     setMassSelectedVariantIds((prev) => prev.filter((id) => valid.has(id)));
   }, [massSortedRows]);
+
+  useEffect(() => {
+    setMassBatchPage(1);
+    setMassBatchPageInput("1");
+  }, [massBatchPageSize]);
+
+  useEffect(() => {
+    setMassBatchPage((prev) => Math.min(Math.max(prev, 1), massBatchTotalPages));
+  }, [massBatchTotalPages]);
+
+  useEffect(() => {
+    setMassBatchPageInput(String(massBatchPageSafe));
+  }, [massBatchPageSafe]);
 
   useEffect(() => {
     if (!massAutoShortlistEnabled) return;
@@ -2301,6 +2466,17 @@ export default function BacktestsPage() {
           {massMessage ? <p className="text-sm text-emerald-300">{massMessage}</p> : null}
           {massError ? <p className="text-sm text-rose-300">{massError}</p> : null}
 
+          <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 1 · Crear Batch</p>
+                <p className="text-xs text-slate-400">Configura parametros, estrategia y costos para lanzar un Research Batch reproducible.</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                Flujo oficial: Crear Batch -&gt; Batches (BX) -&gt; Leaderboards -&gt; Comparar -&gt; Marcar candidato
+              </div>
+            </div>
+
           <div className="grid gap-3 xl:grid-cols-4">
             <div className="space-y-1 xl:col-span-2">
               <label className="text-xs uppercase tracking-wide text-slate-400">Grupo de backtests (Research Batch / BX)</label>
@@ -2329,6 +2505,190 @@ export default function BacktestsPage() {
               <div className="h-10 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
                 Primero elegís el batch (BX), luego ordenás y comparás variantes.
               </div>
+            </div>
+          </div>
+          </div>
+
+          <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 2 · Batches</p>
+                <p className="text-xs text-slate-400">Lista paginada de grupos BX para elegir rapido el experimento correcto y operar sus runs hijos.</p>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-slate-300">
+                <span>{sortedBatchOptions.length} batches</span>
+                <Select value={massBatchPageSize} onChange={(e) => setMassBatchPageSize(e.target.value as typeof massBatchPageSize)} className="h-8 min-w-[90px]">
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                  <option value="500">500</option>
+                </Select>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/50 p-2">
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>Batch (BX)</TH>
+                    <TH>Creado</TH>
+                    <TH>Estado</TH>
+                    <TH>Progreso</TH>
+                    <TH>Objetivo</TH>
+                    <TH>Runs BT</TH>
+                    <TH>Acciones</TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {massBatchPageRows.length ? (
+                    massBatchPageRows.map((bx) => {
+                      const childIds = batchChildRunIds(bx);
+                      const isSelected = bx.batch_id === massRunId;
+                      return (
+                        <TR key={bx.batch_id} className={isSelected ? "bg-cyan-500/5" : ""}>
+                          <TD className="font-mono text-xs">
+                            <div className="flex items-center gap-2">
+                              <span>{bx.batch_id}</span>
+                              {isSelected ? <Badge variant="success">activo</Badge> : null}
+                            </div>
+                          </TD>
+                          <TD className="text-xs" title={utcDateLabel(bx.created_at)}>{compactDate(bx.created_at)}</TD>
+                          <TD><Badge variant={statusVariant(String(bx.status || ""))}>{runStatusLabel(String(bx.status || ""))}</Badge></TD>
+                          <TD className="text-xs text-slate-300">{bx.run_count_done}/{bx.run_count_total} (fail {bx.run_count_failed})</TD>
+                          <TD className="max-w-[280px] truncate text-xs text-slate-300" title={String(bx.objective || "-")}>
+                            {String(bx.objective || "-")}
+                          </TD>
+                          <TD className="text-xs text-slate-300">{childIds.length || "-"}</TD>
+                          <TD>
+                            <div className="flex flex-wrap gap-1">
+                              <Button type="button" variant="outline" className="h-8 px-2" onClick={() => void selectMassBatch(bx.batch_id)}>
+                                Ver
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 px-2"
+                                disabled={role !== "admin" || !childIds.length}
+                                onClick={() => void bulkCatalogRunsAction("archive", childIds)}
+                                title="Archiva runs BT hijos del batch"
+                              >
+                                Archivar runs
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 px-2"
+                                disabled={role !== "admin" || !childIds.length}
+                                onClick={() => {
+                                  const ok = window.confirm(`Vas a borrar ${childIds.length} runs BT del batch ${bx.batch_id}. ¿Continuar?`);
+                                  if (!ok) return;
+                                  void bulkCatalogRunsAction("delete", childIds);
+                                }}
+                                title="Borra runs BT del catalogo (no elimina el artifact BX)"
+                              >
+                                Borrar runs
+                              </Button>
+                            </div>
+                          </TD>
+                        </TR>
+                      );
+                    })
+                  ) : (
+                    <TR>
+                      <TD colSpan={7} className="text-center text-sm text-slate-400">
+                        Todavia no hay batches. Crea uno arriba para empezar el research.
+                      </TD>
+                    </TR>
+                  )}
+                </TBody>
+              </Table>
+
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+                <div className="text-slate-400">
+                  Pagina {massBatchPageSafe}/{massBatchTotalPages} · Mostrando {sortedBatchOptions.length ? massBatchPageStart + 1 : 0}-{massBatchPageEnd} de {sortedBatchOptions.length}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button type="button" variant="outline" className="h-8 px-2" disabled={massBatchPageSafe <= 1} onClick={() => setMassBatchPage((p) => Math.max(1, p - 1))}>
+                    Anterior
+                  </Button>
+                  {massBatchPageNumbers.map((p) => (
+                    <Button
+                      key={`bx-page-${p}`}
+                      type="button"
+                      variant={p === massBatchPageSafe ? "default" : "outline"}
+                      className="h-8 px-2"
+                      onClick={() => {
+                        setMassBatchPage(p);
+                        setMassBatchPageInput(String(p));
+                      }}
+                    >
+                      {p}
+                    </Button>
+                  ))}
+                  <Button type="button" variant="outline" className="h-8 px-2" disabled={massBatchPageSafe >= massBatchTotalPages} onClick={() => setMassBatchPage((p) => Math.min(massBatchTotalPages, p + 1))}>
+                    Siguiente
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2 text-slate-300">
+                  <span>Ir a</span>
+                  <Input
+                    className="h-8 w-16"
+                    value={massBatchPageInput}
+                    onChange={(e) => setMassBatchPageInput(e.target.value.replace(/[^0-9]/g, ""))}
+                    onBlur={() => {
+                      const next = Number(massBatchPageInput || "1");
+                      if (Number.isFinite(next)) setMassBatchPage(Math.min(massBatchTotalPages, Math.max(1, next)));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const next = Number(massBatchPageInput || "1");
+                        if (Number.isFinite(next)) setMassBatchPage(Math.min(massBatchTotalPages, Math.max(1, next)));
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 3 · Leaderboards</p>
+                <p className="text-xs text-slate-400">Vista principal por Score Neto y secundaria por WinRate, con la misma tabla de variantes para comparar.</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                {massRunId ? `Batch activo: ${massRunId}` : "Primero elegi un batch BX"}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => applyMassLeaderboardTab("score_neto")}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  massLeaderboardTab === "score_neto"
+                    ? "border-cyan-400/50 bg-cyan-500/10 text-cyan-200"
+                    : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                Score Neto (principal)
+              </button>
+              <button
+                type="button"
+                onClick={() => applyMassLeaderboardTab("winrate")}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${
+                  massLeaderboardTab === "winrate"
+                    ? "border-cyan-400/50 bg-cyan-500/10 text-cyan-200"
+                    : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                WinRate (secundario)
+              </button>
+              <Badge variant="warn">Orden activo: {massSortKey}{massSortLabel(massSortKey)}</Badge>
+              <span className="text-xs text-slate-400">Podes seguir ordenando por cualquier columna haciendo click en la tabla.</span>
             </div>
           </div>
 
@@ -2397,6 +2757,14 @@ export default function BacktestsPage() {
                 <Button disabled={role !== "admin" || massRunning} onClick={startMassBacktests}>
                   {massRunning ? "Iniciando..." : "Ejecutar Backtests Masivos"}
                 </Button>
+                <Button
+                  variant="outline"
+                  disabled={role !== "admin" || beastBusy}
+                  onClick={startBeastBatch}
+                  title="Encola el batch en Modo Bestia (scheduler local fase 1, con budget governor y limites de concurrencia)"
+                >
+                  {beastBusy ? "Encolando Bestia..." : "Ejecutar en Modo Bestia"}
+                </Button>
                 <Button variant="outline" disabled={!massRunId} onClick={refreshMass}>
                   Refrescar Research Batch
                 </Button>
@@ -2405,6 +2773,120 @@ export default function BacktestsPage() {
             </div>
 
             <div className="space-y-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-slate-400">Modo Bestia (cola de jobs)</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Scheduler local fase 1 (sin Celery/Redis todavia). Encola batches grandes con limites de concurrencia y budget diario.
+                    </p>
+                  </div>
+                  <Badge variant={beastStatus?.enabled ? "success" : "warn"}>
+                    {beastStatus?.enabled ? "habilitado" : "deshabilitado"}
+                  </Badge>
+                </div>
+
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs uppercase tracking-wide text-slate-400">Tier Bestia</label>
+                    <Select
+                      value={beastTier}
+                      onChange={(e) => setBeastTier(e.target.value as "hobby" | "pro")}
+                      disabled={role !== "admin" || beastBusy}
+                    >
+                      <option value="hobby">Hobby</option>
+                      <option value="pro">Pro</option>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs uppercase tracking-wide text-slate-400">Acciones</label>
+                    <div className="flex h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-2">
+                      <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={() => void refreshBeastPanel()}>
+                        Refrescar
+                      </Button>
+                      <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={beastResume}>
+                        Reanudar
+                      </Button>
+                      <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={beastStopAll}>
+                        Stop All
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
+                    <p className="text-slate-400">Scheduler</p>
+                    <div className="mt-1 space-y-1 text-slate-200">
+                      <p>Thread: {beastStatus?.scheduler?.thread_alive ? "activo" : "inactivo"}</p>
+                      <p>Cola: {beastStatus?.scheduler?.queue_depth ?? 0}</p>
+                      <p>Workers activos: {beastStatus?.scheduler?.workers_active ?? 0}/{beastStatus?.scheduler?.max_concurrent_jobs ?? "-"}</p>
+                      <p>Stop solicitado: {beastStatus?.scheduler?.stop_requested ? "Si" : "No"}</p>
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      {beastStatus?.scheduler?.rate_limit_enabled
+                        ? `Rate limit policy: ${beastStatus?.scheduler?.max_requests_per_minute ?? "-"} req/min (aplica a la planificacion; limiter por exchange completo pendiente).`
+                        : "Rate limit policy deshabilitada en policy snapshot."}
+                    </p>
+                  </div>
+
+                  <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
+                    <p className="text-slate-400">Budget governor</p>
+                    <div className="mt-1 space-y-1 text-slate-200">
+                      <p>Tier: {beastStatus?.budget?.tier || beastTier}</p>
+                      <p>Cap diario: {beastStatus?.budget?.daily_cap ?? "-"}</p>
+                      <p>Stop al: {typeof beastStatus?.budget?.stop_at_budget_pct === "number" ? `${fmtNum(beastStatus.budget.stop_at_budget_pct)}%` : "-"}</p>
+                      <p>
+                        Uso: {beastStatus?.budget?.daily_jobs_started ?? 0}/{beastStatus?.budget?.daily_cap ?? "-"} jobs
+                        {typeof beastStatus?.budget?.usage_pct === "number" ? ` (${fmtNum(beastStatus.budget.usage_pct)}%)` : ""}
+                      </p>
+                      <p>
+                        Done/Fail: {beastStatus?.budget?.daily_jobs_completed ?? 0}/{beastStatus?.budget?.daily_jobs_failed ?? 0}
+                      </p>
+                    </div>
+                    {beastStatus?.requires_postgres ? (
+                      <p className="mt-2 text-[11px] text-amber-300">
+                        Policy marca Postgres como recomendado para Modo Bestia. Esta fase usa scheduler local con persistencia de estado JSON.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded border border-slate-800 bg-slate-950/40 p-2">
+                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                    <p className="uppercase tracking-wide text-slate-400">Jobs recientes</p>
+                    <Badge variant="warn">{beastJobs.length} visibles</Badge>
+                  </div>
+                  {beastJobs.length ? (
+                    <div className="max-h-48 space-y-1 overflow-auto text-xs">
+                      {beastJobs.slice(0, 12).map((job) => (
+                        <div key={`beast-job-${job.run_id}`} className="rounded border border-slate-800 bg-slate-900/60 px-2 py-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-slate-200">{job.run_id}</span>
+                              <Badge variant={statusVariant(String(job.state || ""))}>{runStatusLabel(String(job.state || ""))}</Badge>
+                              <Badge variant="warn">{String(job.tier || "-").toUpperCase()}</Badge>
+                            </div>
+                            <span className="text-slate-400" title={utcDateLabel(job.queued_at || job.started_at || job.finished_at)}>
+                              {compactDate(job.queued_at || job.started_at || job.finished_at)}
+                            </span>
+                          </div>
+                          <div className="mt-1 grid gap-1 md:grid-cols-2 text-slate-300">
+                            <p>{job.market || "-"} / {job.symbol || "-"} / {job.timeframe || "-"}</p>
+                            <p>strategies: {job.strategy_count ?? "-"} · units: {job.estimated_trial_units ?? "-"}</p>
+                          </div>
+                          {job.cancel_reason ? <p className="mt-1 text-rose-300">Cancelado: {job.cancel_reason}</p> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Todavia no hay jobs Beast. Usa “Ejecutar en Modo Bestia” para encolar batches grandes (si la policy lo permite).
+                    </p>
+                  )}
+                </div>
+              </div>
+
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
                 <p className="text-xs uppercase tracking-wide text-slate-400">Estado</p>
                 <div className="mt-2 flex items-center gap-2">
@@ -2571,6 +3053,7 @@ export default function BacktestsPage() {
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("expectancy")}>Expectancy{massSortLabel("expectancy")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("maxdd")}>MaxDD%{massSortLabel("maxdd")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("costs")}>CostsRatio{massSortLabel("costs")}</button></TH>
+                    <TH>Gates</TH>
                     <TH>Regímenes</TH>
                     <TH>Acción</TH>
                   </TR>
@@ -2596,12 +3079,29 @@ export default function BacktestsPage() {
                       <TD>{fmtNum(row.summary?.expectancy_net_usd ?? 0)}</TD>
                       <TD>{fmtNum(row.summary?.max_dd_oos_pct ?? 0)}</TD>
                       <TD>{fmtNum(row.summary?.costs_ratio ?? 0)}</TD>
+                      <TD>
+                        <div className="space-y-1">
+                          <Badge variant={massGatesBadgeVariant(row)}>
+                            {massGatesPassed(row) === true ? "PASS" : massGatesPassed(row) === false ? "FAIL" : "N/A"}
+                          </Badge>
+                          {row.gates_eval?.fail_reasons?.length ? (
+                            <p className="max-w-[180px] truncate text-[10px] text-rose-300" title={row.gates_eval.fail_reasons.join(" | ")}>
+                              {row.gates_eval.fail_reasons.join(" | ")}
+                            </p>
+                          ) : null}
+                        </div>
+                      </TD>
                       <TD>{Object.keys(row.regime_metrics || {}).join(", ") || "-"}</TD>
                       <TD>
                         <Button
                           type="button"
                           variant="outline"
-                          disabled={role !== "admin" || !massRunId}
+                          disabled={role !== "admin" || !massRunId || row.recommendable_option_b === false || massGatesPassed(row) === false}
+                          title={
+                            row.recommendable_option_b === false || massGatesPassed(row) === false
+                              ? `No elegible para sugerencia (gates): ${(row.gates_eval?.fail_reasons || []).join(" | ") || "constraints"}`
+                              : "Crear draft Opcion B desde esta variante"
+                          }
                           onClick={(e) => {
                             e.stopPropagation();
                             void markMassCandidate(row);
@@ -2702,6 +3202,93 @@ export default function BacktestsPage() {
                       Filtros duros: {massSelectedRow.hard_filter_reasons.join(" | ")}
                     </div>
                   ) : null}
+                  <div className="space-y-2 text-xs">
+                    <p className="font-semibold text-slate-300">Gates avanzados (PBO / DSR / WF / Stress)</p>
+                    {massSelectedRow.gates_eval ? (
+                      <>
+                        <div
+                          className={`rounded border p-2 ${
+                            massSelectedRow.gates_eval.passed
+                              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                              : "border-rose-500/40 bg-rose-500/10 text-rose-200"
+                          }`}
+                        >
+                          Estado gates: {massSelectedRow.gates_eval.passed ? "PASS" : "FAIL"}
+                          {massSelectedRow.gates_eval.fail_reasons?.length ? ` ? ${massSelectedRow.gates_eval.fail_reasons.join(" | ")}` : ""}
+                        </div>
+                        <div className="space-y-1">
+                          {Object.entries(massSelectedRow.gates_eval.checks || {}).map(([key, check]) => {
+                            const pass = typeof check?.pass === "boolean" ? check.pass : null;
+                            return (
+                              <div key={`gate-${key}`} className="rounded border border-slate-800 p-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-semibold text-slate-200">{key}</span>
+                                  <Badge variant={pass === true ? "success" : pass === false ? "danger" : "warn"}>
+                                    {pass === true ? "PASS" : pass === false ? "FAIL" : "N/A"}
+                                  </Badge>
+                                </div>
+                                <p className="mt-1 break-words text-slate-400">
+                                  {Object.entries(check || {})
+                                    .filter(([k]) => !["pass"].includes(k))
+                                    .slice(0, 8)
+                                    .map(([k, v]) => `${k}=${typeof v === "number" ? fmtNum(v) : String(v)}`)
+                                    .join(" ? ")}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-slate-400">
+                        Sin evaluacion de gates avanzados para esta variante.
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    <p className="font-semibold text-slate-300">Microestructura (Order Flow L1 / VPIN)</p>
+                    {massSelectedRow.microstructure?.available ? (
+                      <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="rounded border border-slate-800 p-2">VPIN CDF OOS: {fmtNum(massSelectedRow.microstructure.aggregate?.vpin_cdf_oos ?? 0)}</div>
+                          <div className="rounded border border-slate-800 p-2">Soft/Hard folds: {massSelectedRow.microstructure.aggregate?.micro_soft_kill_folds ?? 0}/{massSelectedRow.microstructure.aggregate?.micro_hard_kill_folds ?? 0}</div>
+                          <div className="rounded border border-slate-800 p-2">Ratio soft kill: {fmtPct(massSelectedRow.microstructure.aggregate?.micro_soft_kill_ratio ?? 0)}</div>
+                          <div className="rounded border border-slate-800 p-2">Ratio hard kill: {fmtPct(massSelectedRow.microstructure.aggregate?.micro_hard_kill_ratio ?? 0)}</div>
+                        </div>
+                        <div
+                          className={`rounded border p-2 ${
+                            massSelectedRow.microstructure.symbol_kill?.hard
+                              ? "border-red-500/40 bg-red-500/10 text-red-200"
+                              : massSelectedRow.microstructure.symbol_kill?.soft
+                                ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
+                                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                          }`}
+                        >
+                          Kill s?mbolo: {massSelectedRow.microstructure.symbol_kill?.hard ? "HARD" : massSelectedRow.microstructure.symbol_kill?.soft ? "SOFT" : "Sin kill"}
+                          {massSelectedRow.microstructure.symbol_kill?.reasons?.length
+                            ? ` ? Razones: ${massSelectedRow.microstructure.symbol_kill.reasons.join(", ")}`
+                            : ""}
+                        </div>
+                        {massSelectedRow.microstructure.fold_debug?.length ? (
+                          <div className="space-y-1">
+                            <p className="font-semibold text-slate-300">Debug por fold</p>
+                            {massSelectedRow.microstructure.fold_debug.slice(0, 8).map((fd, idx) => (
+                              <div key={`micro-fold-${fd.fold ?? idx}`} className="rounded border border-slate-800 p-2">
+                                <p className="text-slate-200">Fold {fd.fold ?? "-"} ? {fd.test_start || "-"} ? {fd.test_end || "-"} ? kill {fd.hard_kill_symbol ? "HARD" : fd.soft_kill_symbol ? "SOFT" : "none"}</p>
+                                <p className="text-slate-400">VPIN {fmtNum(fd.vpin ?? 0)} ? CDF max {fmtNum(fd.vpin_cdf ?? 0)} ? spread {fmtNum(fd.spread_bps ?? 0)}bps (x{fmtNum(fd.spread_multiplier ?? 1)}) ? slippage {fmtNum(fd.slippage_bps ?? 0)}bps (x{fmtNum(fd.slippage_multiplier ?? 1)}) ? vol x{fmtNum(fd.vol_multiplier ?? 1)}</p>
+                                {fd.kill_reasons?.length ? <p className="text-amber-300">Razones: {fd.kill_reasons.join(", ")}</p> : null}
+                                {!fd.available && fd.reason ? <p className="text-slate-500">No disponible: {fd.reason}</p> : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-slate-400">
+                        No hay debug de microestructura para esta variante (dataset no legible u Order Flow L1 deshabilitado).
+                      </div>
+                    )}
+                  </div>
                 </>
               ) : (
                 <p className="text-sm text-slate-400">Sin selección.</p>

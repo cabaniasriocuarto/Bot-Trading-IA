@@ -1,0 +1,35 @@
+microstructure:
+  enabled: true
+  order_flow_level: 1
+
+  vpin:
+    enabled: true
+    time_bar_seconds: 60
+    target_draws_per_day: 9
+    bucket_volume_V:
+      mode: "adv_div_target_draws"
+      fallback_fixed_V: 200000
+    window_buckets_n: 50
+
+    bulk_classification:
+      method: "standard_normal_cdf"
+      sigma_price_change_lookback_bars: 390
+
+    thresholds:
+      soft_kill_cdf: 0.90
+      hard_kill_cdf: 0.97
+
+  spread_guard:
+    enabled: true
+    lookback_minutes: 60
+    soft_kill_if_spread_gt_multiplier_of_median: 2.0
+
+  slippage_guard:
+    enabled: true
+    lookback_fills: 30
+    soft_kill_if_slippage_gt_multiplier_of_expected: 2.0
+
+  volatility_guard:
+    enabled: true
+    lookback_minutes: 60
+    soft_kill_if_realized_vol_gt_multiplier: 3.0

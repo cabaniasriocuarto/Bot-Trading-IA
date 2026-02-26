@@ -44,6 +44,32 @@ class BacktestCatalogDB:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _table_columns(self, conn: sqlite3.Connection, table: str) -> set[str]:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        except Exception:
+            return set()
+        return {str(r["name"]) for r in rows if r and r["name"]}
+
+    def _ensure_columns(self, conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+        existing = self._table_columns(conn, table)
+        for name, ddl in columns.items():
+            if name in existing:
+                continue
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        self._ensure_columns(
+            conn,
+            "backtest_runs",
+            {
+                "fee_snapshot_id": "TEXT",
+                "funding_snapshot_id": "TEXT",
+                "slippage_model_params": "TEXT NOT NULL DEFAULT '{}'",
+                "spread_model_params": "TEXT NOT NULL DEFAULT '{}'",
+            },
+        )
+
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(
@@ -86,6 +112,10 @@ class BacktestCatalogDB:
                   spread_model TEXT NOT NULL,
                   slippage_model TEXT NOT NULL,
                   funding_model TEXT NOT NULL,
+                  fee_snapshot_id TEXT,
+                  funding_snapshot_id TEXT,
+                  slippage_model_params TEXT NOT NULL DEFAULT '{}',
+                  spread_model_params TEXT NOT NULL DEFAULT '{}',
                   latency_model TEXT,
                   fill_model TEXT NOT NULL,
                   initial_capital REAL NOT NULL,
@@ -152,8 +182,38 @@ class BacktestCatalogDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts_index(run_id);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_batch_id ON artifacts_index(batch_id);
+
+                CREATE TABLE IF NOT EXISTS fee_snapshots (
+                  snapshot_id TEXT PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  market TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  maker_fee REAL NOT NULL,
+                  taker_fee REAL NOT NULL,
+                  commission_rate REAL,
+                  source TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  fetched_at TEXT NOT NULL,
+                  expires_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_fee_snapshots_lookup ON fee_snapshots(exchange, market, symbol, fetched_at DESC);
+
+                CREATE TABLE IF NOT EXISTS funding_snapshots (
+                  snapshot_id TEXT PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  market TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  funding_rate REAL,
+                  funding_bps REAL NOT NULL,
+                  source TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  fetched_at TEXT NOT NULL,
+                  expires_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_funding_snapshots_lookup ON funding_snapshots(exchange, market, symbol, fetched_at DESC);
                 """
             )
+            self._migrate_schema(conn)
             conn.commit()
 
     def next_formatted_id(self, prefix: str, *, width: int = 6) -> str:
@@ -201,6 +261,10 @@ class BacktestCatalogDB:
             "spread_model": "static",
             "slippage_model": "static",
             "funding_model": "static",
+            "fee_snapshot_id": None,
+            "funding_snapshot_id": None,
+            "slippage_model_params": "{}",
+            "spread_model_params": "{}",
             "latency_model": None,
             "fill_model": "market",
             "initial_capital": 10000.0,
@@ -276,6 +340,9 @@ class BacktestCatalogDB:
     def upsert_backtest_run(self, data: dict[str, Any]) -> dict[str, Any]:
         row = self._default_run_record()
         row.update({k: v for k, v in data.items() if k in row})
+        for json_field in ("slippage_model_params", "spread_model_params"):
+            if not isinstance(row.get(json_field), str):
+                row[json_field] = _to_json(row.get(json_field), {})
         row["updated_at"] = _utc_iso()
         if not row["run_id"]:
             row["run_id"] = self.next_formatted_id("BT")
@@ -337,11 +404,187 @@ class BacktestCatalogDB:
             )
             conn.commit()
 
+    def _row_to_fee_snapshot(self, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        raw = dict(row)
+        try:
+            raw["payload"] = json.loads(str(raw.get("payload_json") or "{}"))
+        except Exception:
+            raw["payload"] = {}
+        return {
+            "snapshot_id": raw.get("snapshot_id"),
+            "exchange": raw.get("exchange"),
+            "market": raw.get("market"),
+            "symbol": raw.get("symbol"),
+            "maker_fee": float(raw.get("maker_fee") or 0.0),
+            "taker_fee": float(raw.get("taker_fee") or 0.0),
+            "commission_rate": None if raw.get("commission_rate") is None else float(raw.get("commission_rate")),
+            "source": raw.get("source"),
+            "payload": raw.get("payload") or {},
+            "fetched_at": raw.get("fetched_at"),
+            "expires_at": raw.get("expires_at"),
+        }
+
+    def _row_to_funding_snapshot(self, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        raw = dict(row)
+        try:
+            raw["payload"] = json.loads(str(raw.get("payload_json") or "{}"))
+        except Exception:
+            raw["payload"] = {}
+        return {
+            "snapshot_id": raw.get("snapshot_id"),
+            "exchange": raw.get("exchange"),
+            "market": raw.get("market"),
+            "symbol": raw.get("symbol"),
+            "funding_rate": None if raw.get("funding_rate") is None else float(raw.get("funding_rate")),
+            "funding_bps": float(raw.get("funding_bps") or 0.0),
+            "source": raw.get("source"),
+            "payload": raw.get("payload") or {},
+            "fetched_at": raw.get("fetched_at"),
+            "expires_at": raw.get("expires_at"),
+        }
+
+    def latest_valid_fee_snapshot(self, *, exchange: str, market: str, symbol: str, as_of: str | None = None) -> dict[str, Any] | None:
+        ref = str(as_of or _utc_iso())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM fee_snapshots
+                WHERE exchange = ? AND market = ? AND symbol = ? AND expires_at > ?
+                ORDER BY fetched_at DESC, snapshot_id DESC
+                LIMIT 1
+                """,
+                (str(exchange).lower(), str(market).lower(), str(symbol).upper(), ref),
+            ).fetchone()
+        return self._row_to_fee_snapshot(row)
+
+    def latest_valid_funding_snapshot(self, *, exchange: str, market: str, symbol: str, as_of: str | None = None) -> dict[str, Any] | None:
+        ref = str(as_of or _utc_iso())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM funding_snapshots
+                WHERE exchange = ? AND market = ? AND symbol = ? AND expires_at > ?
+                ORDER BY fetched_at DESC, snapshot_id DESC
+                LIMIT 1
+                """,
+                (str(exchange).lower(), str(market).lower(), str(symbol).upper(), ref),
+            ).fetchone()
+        return self._row_to_funding_snapshot(row)
+
+    def insert_fee_snapshot(
+        self,
+        *,
+        exchange: str,
+        market: str,
+        symbol: str,
+        maker_fee: float,
+        taker_fee: float,
+        commission_rate: float | None,
+        source: str,
+        payload: dict[str, Any] | None,
+        fetched_at: str,
+        expires_at: str,
+    ) -> dict[str, Any]:
+        snapshot_id = self.next_formatted_id("FS")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fee_snapshots
+                (snapshot_id, exchange, market, symbol, maker_fee, taker_fee, commission_rate, source, payload_json, fetched_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    str(exchange).lower(),
+                    str(market).lower(),
+                    str(symbol).upper(),
+                    float(maker_fee),
+                    float(taker_fee),
+                    None if commission_rate is None else float(commission_rate),
+                    str(source),
+                    _to_json(payload or {}, {}),
+                    str(fetched_at),
+                    str(expires_at),
+                ),
+            )
+            conn.commit()
+        return self._row_to_fee_snapshot(
+            {
+                "snapshot_id": snapshot_id,
+                "exchange": str(exchange).lower(),
+                "market": str(market).lower(),
+                "symbol": str(symbol).upper(),
+                "maker_fee": float(maker_fee),
+                "taker_fee": float(taker_fee),
+                "commission_rate": None if commission_rate is None else float(commission_rate),
+                "source": str(source),
+                "payload_json": _to_json(payload or {}, {}),
+                "fetched_at": str(fetched_at),
+                "expires_at": str(expires_at),
+            }
+        ) or {}
+
+    def insert_funding_snapshot(
+        self,
+        *,
+        exchange: str,
+        market: str,
+        symbol: str,
+        funding_rate: float | None,
+        funding_bps: float,
+        source: str,
+        payload: dict[str, Any] | None,
+        fetched_at: str,
+        expires_at: str,
+    ) -> dict[str, Any]:
+        snapshot_id = self.next_formatted_id("FN")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO funding_snapshots
+                (snapshot_id, exchange, market, symbol, funding_rate, funding_bps, source, payload_json, fetched_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    str(exchange).lower(),
+                    str(market).lower(),
+                    str(symbol).upper(),
+                    None if funding_rate is None else float(funding_rate),
+                    float(funding_bps),
+                    str(source),
+                    _to_json(payload or {}, {}),
+                    str(fetched_at),
+                    str(expires_at),
+                ),
+            )
+            conn.commit()
+        return self._row_to_funding_snapshot(
+            {
+                "snapshot_id": snapshot_id,
+                "exchange": str(exchange).lower(),
+                "market": str(market).lower(),
+                "symbol": str(symbol).upper(),
+                "funding_rate": None if funding_rate is None else float(funding_rate),
+                "funding_bps": float(funding_bps),
+                "source": str(source),
+                "payload_json": _to_json(payload or {}, {}),
+                "fetched_at": str(fetched_at),
+                "expires_at": str(expires_at),
+            }
+        ) or {}
+
     def record_run_from_payload(self, *, run: dict[str, Any], strategy_meta: dict[str, Any] | None = None, created_by: str = "system") -> str:
         strategy = strategy_meta or {}
         costs = run.get("costs_model") if isinstance(run.get("costs_model"), dict) else {}
         metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
         provenance = run.get("provenance") if isinstance(run.get("provenance"), dict) else {}
+        spread_model_params = run.get("spread_model_params")
+        slippage_model_params = run.get("slippage_model_params")
         trades = run.get("trades") if isinstance(run.get("trades"), list) else []
         regime_rows: dict[str, Any] = {}
         for label in ("trend", "range", "high_vol", "toxic"):
@@ -411,10 +654,20 @@ class BacktestCatalogDB:
                 "timerange_to": str(((run.get("period") or {}).get("end")) or provenance.get("to") or ""),
                 "timezone": "UTC",
                 "missing_data_policy": str(run.get("missing_data_policy") or "warn_skip"),
-                "fee_model": f"maker_taker_bps:{float(costs.get('fees_bps', 0.0) or 0.0):.4f}",
-                "spread_model": f"static:{float(costs.get('spread_bps', 0.0) or 0.0):.4f}",
-                "slippage_model": f"static:{float(costs.get('slippage_bps', 0.0) or 0.0):.4f}",
-                "funding_model": f"static:{float(costs.get('funding_bps', 0.0) or 0.0):.4f}",
+                "fee_model": str(run.get("fee_model") or f"maker_taker_bps:{float(costs.get('fees_bps', 0.0) or 0.0):.4f}"),
+                "spread_model": str(run.get("spread_model") or f"static:{float(costs.get('spread_bps', 0.0) or 0.0):.4f}"),
+                "slippage_model": str(run.get("slippage_model") or f"static:{float(costs.get('slippage_bps', 0.0) or 0.0):.4f}"),
+                "funding_model": str(run.get("funding_model") or f"static:{float(costs.get('funding_bps', 0.0) or 0.0):.4f}"),
+                "fee_snapshot_id": run.get("fee_snapshot_id") or provenance.get("fee_snapshot_id"),
+                "funding_snapshot_id": run.get("funding_snapshot_id") or provenance.get("funding_snapshot_id"),
+                "slippage_model_params": _to_json(
+                    slippage_model_params if isinstance(slippage_model_params, dict) else (run.get("slippage_model_params") if isinstance(run.get("slippage_model_params"), dict) else {}),
+                    {},
+                ),
+                "spread_model_params": _to_json(
+                    spread_model_params if isinstance(spread_model_params, dict) else (run.get("spread_model_params") if isinstance(run.get("spread_model_params"), dict) else {}),
+                    {},
+                ),
                 "fill_model": str(run.get("fill_model") or "market"),
                 "initial_capital": float(run.get("initial_capital") or 10000.0),
                 "position_sizing_profile": str(run.get("position_sizing_profile") or "default"),
@@ -466,6 +719,8 @@ class BacktestCatalogDB:
             "regime_kpis_json",
             "flags_json",
             "artifacts_json",
+            "slippage_model_params",
+            "spread_model_params",
         ]:
             try:
                 raw[key] = json.loads(str(raw.get(key) or "null"))
@@ -501,6 +756,10 @@ class BacktestCatalogDB:
             "spread_model": raw.get("spread_model"),
             "slippage_model": raw.get("slippage_model"),
             "funding_model": raw.get("funding_model"),
+            "fee_snapshot_id": raw.get("fee_snapshot_id"),
+            "funding_snapshot_id": raw.get("funding_snapshot_id"),
+            "slippage_model_params": raw.get("slippage_model_params") or {},
+            "spread_model_params": raw.get("spread_model_params") or {},
             "latency_model": raw.get("latency_model"),
             "fill_model": raw.get("fill_model"),
             "initial_capital": raw.get("initial_capital"),

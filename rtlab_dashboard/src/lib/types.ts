@@ -549,6 +549,7 @@ export interface MassBacktestResultRow {
   rank?: number;
   hard_filters_pass?: boolean;
   promotable?: boolean;
+  recommendable_option_b?: boolean;
   hard_filter_reasons?: string[];
   summary?: {
     trade_count_oos?: number;
@@ -576,6 +577,56 @@ export interface MassBacktestResultRow {
     costs_ratio?: number;
   }>;
   anti_overfitting?: Record<string, unknown>;
+  gates_eval?: {
+    passed?: boolean;
+    fail_reasons?: string[];
+    checks?: Record<string, {
+      enabled?: boolean;
+      available?: boolean;
+      pass?: boolean;
+      value?: number | null;
+      min?: number;
+      threshold?: number;
+      [key: string]: unknown;
+    }>;
+    summary?: Record<string, unknown>;
+  };
+  microstructure?: {
+    available?: boolean;
+    policy?: Record<string, unknown>;
+    source?: Record<string, unknown>;
+    aggregate?: {
+      vpin_cdf_oos?: number;
+      micro_soft_kill_folds?: number;
+      micro_hard_kill_folds?: number;
+      micro_soft_kill_ratio?: number;
+      micro_hard_kill_ratio?: number;
+    };
+    symbol_kill?: {
+      soft?: boolean;
+      hard?: boolean;
+      reasons?: string[];
+    };
+    fold_debug?: Array<{
+      fold?: number;
+      test_start?: string;
+      test_end?: string;
+      available?: boolean;
+      reason?: string;
+      vpin?: number;
+      vpin_cdf?: number;
+      vpin_cdf_avg?: number;
+      spread_bps?: number;
+      spread_multiplier?: number;
+      slippage_bps?: number;
+      slippage_multiplier?: number;
+      realized_vol?: number;
+      vol_multiplier?: number;
+      soft_kill_symbol?: boolean;
+      hard_kill_symbol?: boolean;
+      kill_reasons?: string[];
+    }>;
+  };
 }
 
 export interface MassBacktestResultsResponse {
@@ -588,6 +639,56 @@ export interface MassBacktestResultsResponse {
 export interface MassBacktestArtifactsResponse {
   run_id: string;
   items: Array<{ name: string; path: string; size: number }>;
+}
+
+export interface BeastModeStatusResponse {
+  enabled: boolean;
+  scheduler?: {
+    thread_alive?: boolean;
+    stop_requested?: boolean;
+    queue_depth?: number;
+    workers_active?: number;
+    active_run_ids?: string[];
+    max_concurrent_jobs?: number;
+    rate_limit_enabled?: boolean;
+    max_requests_per_minute?: number;
+    rate_limit_note?: string;
+  };
+  budget?: {
+    tier?: string;
+    daily_cap?: number;
+    stop_at_budget_pct?: number;
+    threshold_jobs?: number;
+    daily_jobs_started?: number;
+    daily_jobs_completed?: number;
+    daily_jobs_failed?: number;
+    daily_trial_units_started?: number;
+    usage_pct?: number;
+  };
+  counts?: Record<string, number>;
+  recent_history?: Array<Record<string, unknown>>;
+  requires_postgres?: boolean;
+  mode?: string;
+}
+
+export interface BeastModeJobsResponse {
+  items: Array<{
+    run_id: string;
+    state: string;
+    queued_at?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+    tier?: string;
+    estimated_trial_units?: number;
+    strategy_count?: number;
+    market?: string;
+    symbol?: string;
+    timeframe?: string;
+    max_variants_per_strategy?: number;
+    max_folds?: number;
+    cancel_reason?: string;
+  }>;
+  count: number;
 }
 
 export interface CatalogRunKpis {

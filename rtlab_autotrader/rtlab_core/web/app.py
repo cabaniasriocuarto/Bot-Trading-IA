@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from rtlab_core.config import load_config
-from rtlab_core.backtest import BacktestCatalogDB
+from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver
 from rtlab_core.learning import LearningService
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
@@ -42,6 +42,7 @@ from rtlab_core.strategy_packs.registry_db import RegistryDB
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 MONOREPO_ROOT = (PROJECT_ROOT.parent if (PROJECT_ROOT.parent / "knowledge").exists() else PROJECT_ROOT).resolve()
+CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
 
 
 def _resolve_user_data_dir() -> Path:
@@ -256,6 +257,14 @@ class ResearchMassBacktestMarkCandidateBody(BaseModel):
     note: str | None = None
 
 
+class ResearchBeastStartBody(ResearchMassBacktestStartBody):
+    tier: Literal["hobby", "pro"] = "hobby"
+
+
+class ResearchBeastStopBody(BaseModel):
+    reason: str | None = None
+
+
 class RunsPatchBody(BaseModel):
     alias: str | None = None
     tags: list[str] | None = None
@@ -354,6 +363,87 @@ def _yaml_file_or_default(path: Path, default: Any) -> Any:
         return payload if payload is not None else default
     except Exception:
         return default
+
+
+def _resolve_config_policies_root() -> Path:
+    candidates = [
+        CONFIG_POLICIES_ROOT,
+        (Path(__file__).resolve().parents[3] / "config" / "policies").resolve(),
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
+def _config_policy_files() -> tuple[Path, dict[str, Path]]:
+    root = _resolve_config_policies_root()
+    return root, {
+        "gates": root / "gates.yaml",
+        "microstructure": root / "microstructure.yaml",
+        "risk_policy": root / "risk_policy.yaml",
+        "beast_mode": root / "beast_mode.yaml",
+        "fees": root / "fees.yaml",
+    }
+
+
+def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
+    gates = bundle.get("gates") if isinstance(bundle.get("gates"), dict) else {}
+    micro = bundle.get("microstructure") if isinstance(bundle.get("microstructure"), dict) else {}
+    risk = bundle.get("risk_policy") if isinstance(bundle.get("risk_policy"), dict) else {}
+    beast = bundle.get("beast_mode") if isinstance(bundle.get("beast_mode"), dict) else {}
+    fees = bundle.get("fees") if isinstance(bundle.get("fees"), dict) else {}
+    g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
+    m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
+    r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
+    b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
+    f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
+    vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
+    thresholds = vpin.get("thresholds") if isinstance(vpin.get("thresholds"), dict) else {}
+    return {
+        "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
+        "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
+        "walk_forward_folds": (g.get("walk_forward") or {}).get("folds") if isinstance(g.get("walk_forward"), dict) else None,
+        "cost_stress_multipliers": (g.get("cost_stress") or {}).get("multipliers") if isinstance(g.get("cost_stress"), dict) else [],
+        "order_flow_level": m.get("order_flow_level"),
+        "vpin_soft_kill_cdf": thresholds.get("soft_kill_cdf"),
+        "vpin_hard_kill_cdf": thresholds.get("hard_kill_cdf"),
+        "risk_kill_scope": r.get("scope") if isinstance(r.get("scope"), list) else [],
+        "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
+        "beast_requires_postgres": b.get("requires_postgres"),
+        "fees_ttl_hours": f.get("fee_snapshot_ttl_hours"),
+        "funding_ttl_minutes": f.get("funding_snapshot_ttl_minutes"),
+    }
+
+
+def load_numeric_policies_bundle() -> dict[str, Any]:
+    root, files = _config_policy_files()
+    payloads: dict[str, Any] = {}
+    meta: dict[str, Any] = {}
+    warnings: list[str] = []
+    for name, path in files.items():
+        exists = path.exists()
+        data = _yaml_file_or_default(path, {})
+        valid = isinstance(data, dict) and bool(data)
+        if exists and not valid:
+            warnings.append(f"Policy YAML inválido o vacío: {name} ({path.name})")
+        if not exists:
+            warnings.append(f"Policy YAML no encontrado: {name} ({path})")
+        payloads[name] = data if isinstance(data, dict) else {}
+        meta[name] = {
+            "path": str(path),
+            "exists": exists,
+            "valid": valid,
+        }
+    return {
+        "ok": True,
+        "source_root": str(root),
+        "available": root.exists(),
+        "warnings": warnings,
+        "files": meta,
+        "policies": payloads,
+        "summary": _policy_summary(payloads),
+    }
 
 
 def _module_available(module_name: str) -> bool:
@@ -491,6 +581,7 @@ def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
     runtime_selector_compatible = [e["id"] for e in engines_out if e["id"] in {"fixed_rules", "bandit_thompson", "bandit_ucb1"}]
     if not yaml_valid:
         settings["learning"]["enabled"] = False
+    numeric_policies = load_numeric_policies_bundle()
     return {
         "ok": True,
         "yaml_valid": yaml_valid,
@@ -518,6 +609,12 @@ def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
         },
         "tiers": tiers_payload if isinstance(tiers_payload, dict) else {"tiers": []},
         "capabilities_registry": capabilities_registry,
+        "numeric_policies_summary": numeric_policies.get("summary") or {},
+        "numeric_policies_meta": {
+            "available": bool(numeric_policies.get("available")),
+            "source_root": str(numeric_policies.get("source_root") or ""),
+            "warnings": numeric_policies.get("warnings") or [],
+        },
     }
 
 
@@ -1068,6 +1165,7 @@ class ConsoleStore:
         ensure_paths()
         self.registry = RegistryDB(REGISTRY_DB_PATH)
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
+        self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self._init_console_db()
         self._ensure_defaults()
 
@@ -2360,6 +2458,33 @@ def risk_hooks(context):
             except Exception:
                 continue
 
+    def _resolve_backtest_cost_metadata(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        costs_model: dict[str, Any] | None,
+        df: Any | None = None,
+        is_perp: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            return self.cost_model_resolver.resolve(
+                exchange=exchange_name(),
+                market=str(market or "crypto"),
+                symbol=str(symbol or "BTCUSDT"),
+                costs=costs_model if isinstance(costs_model, dict) else {},
+                df=df,
+                is_perp=is_perp,
+            )
+        except Exception as exc:
+            return {
+                "fee_snapshot_id": None,
+                "funding_snapshot_id": None,
+                "spread_model_params": {"mode": "static", "source": "metadata_error", "error": str(exc)},
+                "slippage_model_params": {"mode": "static", "source": "metadata_error", "error": str(exc)},
+                "high_volatility": False,
+            }
+
     def _sync_backtest_runs_catalog(self) -> None:
         runs = self.load_runs()
         changed = False
@@ -2563,6 +2688,17 @@ def risk_hooks(context):
                 loss_streak = 0
         run_id = self.backtest_catalog.next_formatted_id("BT")
         strategy_structured_id = self._catalog_strategy_structured_id(strategy_id, strategy)
+        costs_model = {
+            "fees_bps": fees_bps,
+            "spread_bps": spread_bps,
+            "slippage_bps": slippage_bps,
+            "funding_bps": funding_bps,
+        }
+        cost_meta = self._resolve_backtest_cost_metadata(
+            market="crypto",
+            symbol=str(universe[0] if universe else "BTCUSDT"),
+            costs_model=costs_model,
+        )
         run = {
             "id": run_id,
             "catalog_run_id": run_id,
@@ -2577,12 +2713,15 @@ def risk_hooks(context):
             "period": {"start": start, "end": end},
             "universe": universe,
             "data_source": "synthetic_seeded",
-            "costs_model": {
-                "fees_bps": fees_bps,
-                "spread_bps": spread_bps,
-                "slippage_bps": slippage_bps,
-                "funding_bps": funding_bps,
-            },
+            "costs_model": costs_model,
+            "fee_snapshot_id": cost_meta.get("fee_snapshot_id"),
+            "funding_snapshot_id": cost_meta.get("funding_snapshot_id"),
+            "spread_model_params": cost_meta.get("spread_model_params") or {},
+            "slippage_model_params": cost_meta.get("slippage_model_params") or {},
+            "fee_model": f"maker_taker_bps:{fees_bps:.4f}",
+            "spread_model": f"{((cost_meta.get('spread_model_params') or {}).get('mode') or 'static')}:{spread_bps:.4f}",
+            "slippage_model": f"{((cost_meta.get('slippage_model_params') or {}).get('mode') or 'static')}:{slippage_bps:.4f}",
+            "funding_model": f"static:{funding_bps:.4f}",
             "validation_mode": validation_mode,
             "dataset_hash": hashlib.sha256(f"{run_id}:{strategy_id}:{start}:{end}".encode("utf-8")).hexdigest()[:16],
             "git_commit": get_env("GIT_COMMIT", "local"),
@@ -2652,6 +2791,8 @@ def risk_hooks(context):
             "dataset_hash": run["dataset_hash"],
             "costs_used": run["costs_model"],
             "commit_hash": run["git_commit"],
+            "fee_snapshot_id": run.get("fee_snapshot_id"),
+            "funding_snapshot_id": run.get("funding_snapshot_id"),
             "created_at": run["created_at"],
         }
         runs = self.load_runs()
@@ -2738,6 +2879,19 @@ def risk_hooks(context):
         metrics["expectancy_unit"] = "usd_per_trade"
         metrics["expectancy_pct_unit"] = "pct_per_trade"
         strategy_structured_id = self._catalog_strategy_structured_id(strategy_id, strategy)
+        costs_model = {
+            "fees_bps": fees_bps,
+            "spread_bps": spread_bps,
+            "slippage_bps": slippage_bps,
+            "funding_bps": funding_bps,
+            "rollover_bps": rollover_bps,
+        }
+        cost_meta = self._resolve_backtest_cost_metadata(
+            market=market_n,
+            symbol=symbol_n,
+            costs_model=costs_model,
+            df=loaded.df,
+        )
         run = {
             "id": run_id,
             "catalog_run_id": run_id,
@@ -2760,13 +2914,15 @@ def risk_hooks(context):
             "dataset_hash": loaded.dataset_hash,
             "dataset_manifest": loaded.manifest,
             "dataset_range": {"start": loaded.start, "end": loaded.end},
-            "costs_model": {
-                "fees_bps": fees_bps,
-                "spread_bps": spread_bps,
-                "slippage_bps": slippage_bps,
-                "funding_bps": funding_bps,
-                "rollover_bps": rollover_bps,
-            },
+            "costs_model": costs_model,
+            "fee_snapshot_id": cost_meta.get("fee_snapshot_id"),
+            "funding_snapshot_id": cost_meta.get("funding_snapshot_id"),
+            "spread_model_params": cost_meta.get("spread_model_params") or {},
+            "slippage_model_params": cost_meta.get("slippage_model_params") or {},
+            "fee_model": f"maker_taker_bps:{fees_bps:.4f}",
+            "spread_model": f"{((cost_meta.get('spread_model_params') or {}).get('mode') or 'static')}:{spread_bps:.4f}",
+            "slippage_model": f"{((cost_meta.get('slippage_model_params') or {}).get('mode') or 'static')}:{slippage_bps:.4f}",
+            "funding_model": f"static:{funding_bps:.4f}",
             "git_commit": get_env("GIT_COMMIT", "local"),
             "metrics": metrics,
             "costs_breakdown": engine_result["costs_breakdown"],
@@ -2798,6 +2954,8 @@ def risk_hooks(context):
             "dataset_hash": loaded.dataset_hash,
             "costs_used": run["costs_model"],
             "commit_hash": run["git_commit"],
+            "fee_snapshot_id": run.get("fee_snapshot_id"),
+            "funding_snapshot_id": run.get("funding_snapshot_id"),
             "created_at": run["created_at"],
         }
         artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
@@ -3986,6 +4144,12 @@ def create_app() -> FastAPI:
             }
         cfg["commit_hash"] = get_env("GIT_COMMIT", "local")
         cfg["requested_by"] = user.get("username", "admin")
+        _policies_bundle = load_numeric_policies_bundle()
+        cfg["policy_snapshot"] = _policies_bundle.get("policies") if isinstance(_policies_bundle.get("policies"), dict) else {}
+        cfg["policy_snapshot_summary"] = _policies_bundle.get("summary") if isinstance(_policies_bundle.get("summary"), dict) else {}
+        cfg["policy_snapshot_source_root"] = str(_policies_bundle.get("source_root") or "")
+        if _policies_bundle.get("warnings"):
+            cfg["policy_snapshot_warnings"] = list(_policies_bundle.get("warnings") or [])
         started = mass_backtest_coordinator.start_async(
             config=cfg,
             strategies=store.list_strategies(),
@@ -4021,6 +4185,12 @@ def create_app() -> FastAPI:
         cfg["commit_hash"] = get_env("GIT_COMMIT", "local")
         cfg["requested_by"] = user.get("username", "admin")
         cfg["objective"] = str(body.objective or "Research Batch")
+        _policies_bundle = load_numeric_policies_bundle()
+        cfg["policy_snapshot"] = _policies_bundle.get("policies") if isinstance(_policies_bundle.get("policies"), dict) else {}
+        cfg["policy_snapshot_summary"] = _policies_bundle.get("summary") if isinstance(_policies_bundle.get("summary"), dict) else {}
+        cfg["policy_snapshot_source_root"] = str(_policies_bundle.get("source_root") or "")
+        if _policies_bundle.get("warnings"):
+            cfg["policy_snapshot_warnings"] = list(_policies_bundle.get("warnings") or [])
         started = mass_backtest_coordinator.start_async(
             config=cfg,
             strategies=store.list_strategies(),
@@ -4063,6 +4233,15 @@ def create_app() -> FastAPI:
         row = next((r for r in rows if isinstance(r, dict) and str(r.get("variant_id") or "") == body.variant_id), None)
         if not row:
             raise HTTPException(status_code=404, detail="Variant not found in mass-backtest results")
+        gates_eval = row.get("gates_eval") if isinstance(row.get("gates_eval"), dict) else {}
+        if gates_eval and not bool(gates_eval.get("passed")):
+            fail_reasons = [str(x) for x in (gates_eval.get("fail_reasons") or []) if str(x)]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Variant failed advanced gates: {' | '.join(fail_reasons) if fail_reasons else 'gates_fail'}",
+            )
+        if row.get("recommendable_option_b") is False:
+            raise HTTPException(status_code=400, detail="Variant is not eligible for Option B suggestions (gates/constraints)")
         runtime_rows = learning_service.load_runtime_recommendations()
         draft_id = f"rec_mass_{hashlib.sha256(f'{body.run_id}:{body.variant_id}:{utc_now_iso()}'.encode('utf-8')).hexdigest()[:10]}"
         draft = {
@@ -4094,6 +4273,7 @@ def create_app() -> FastAPI:
                 "regime_metrics": row.get("regime_metrics") or {},
                 "hard_filters_pass": bool(row.get("hard_filters_pass")),
                 "anti_overfitting": row.get("anti_overfitting") or {},
+                "gates_eval": gates_eval,
             },
             "guardrails": {
                 "warnings": ["Draft de research masivo. Opcion B: no auto-live; requiere gates + canary + approve humano."],
@@ -4114,6 +4294,84 @@ def create_app() -> FastAPI:
             payload={"strategy_id": row.get("strategy_id"), "score": row.get("score"), "allow_live": False},
         )
         return {"ok": True, "recommendation_draft": draft}
+
+    @app.post("/api/v1/research/beast/start")
+    def research_beast_start(body: ResearchBeastStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        cfg = body.model_dump()
+        if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Modo Bestia solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'.",
+            )
+        if not isinstance(cfg.get("costs"), dict):
+            cfg["costs"] = {
+                "fees_bps": 5.5,
+                "spread_bps": 4.0,
+                "slippage_bps": 3.0,
+                "funding_bps": 1.0,
+                "rollover_bps": 0.0,
+            }
+        cfg["commit_hash"] = get_env("GIT_COMMIT", "local")
+        cfg["requested_by"] = user.get("username", "admin")
+        _policies_bundle = load_numeric_policies_bundle()
+        cfg["policy_snapshot"] = _policies_bundle.get("policies") if isinstance(_policies_bundle.get("policies"), dict) else {}
+        cfg["policy_snapshot_summary"] = _policies_bundle.get("summary") if isinstance(_policies_bundle.get("summary"), dict) else {}
+        cfg["policy_snapshot_source_root"] = str(_policies_bundle.get("source_root") or "")
+        if _policies_bundle.get("warnings"):
+            cfg["policy_snapshot_warnings"] = list(_policies_bundle.get("warnings") or [])
+        try:
+            started = mass_backtest_coordinator.start_beast_async(
+                config=cfg,
+                strategies=store.list_strategies(),
+                historical_runs=store.load_runs(),
+                backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
+                tier=body.tier,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="research_beast_start",
+            severity="info",
+            module="research",
+            message="Modo Bestia encolado",
+            related_ids=[str(started.get("run_id") or "")],
+            payload={"tier": body.tier, "estimated_trial_units": started.get("estimated_trial_units"), "config": cfg, "no_auto_live": True},
+        )
+        return started
+
+    @app.get("/api/v1/research/beast/status")
+    def research_beast_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return mass_backtest_coordinator.beast_status()
+
+    @app.get("/api/v1/research/beast/jobs")
+    def research_beast_jobs(limit: int = Query(default=50, ge=1, le=500), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return mass_backtest_coordinator.beast_jobs(limit=limit)
+
+    @app.post("/api/v1/research/beast/stop-all")
+    def research_beast_stop_all(body: ResearchBeastStopBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        payload = mass_backtest_coordinator.beast_stop_all(reason=str(body.reason or f"manual_by_{user.get('username', 'admin')}"))
+        store.add_log(
+            event_type="research_beast_stop_all",
+            severity="warn",
+            module="research",
+            message="Modo Bestia Stop All",
+            related_ids=[str(x) for x in (payload.get("canceled_queued") or [])[:20]],
+            payload=payload,
+        )
+        return payload
+
+    @app.post("/api/v1/research/beast/resume")
+    def research_beast_resume(user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        payload = mass_backtest_coordinator.beast_resume_dispatch()
+        store.add_log(
+            event_type="research_beast_resume",
+            severity="info",
+            module="research",
+            message="Modo Bestia reanudado",
+            related_ids=[],
+            payload={"user": user.get("username", "admin")},
+        )
+        return payload
 
     @app.post("/api/v1/learning/adopt")
     def learning_adopt(body: LearningAdoptBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -5275,6 +5533,10 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/config/learning")
     def config_learning(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return build_learning_config_payload(store.load_settings())
+
+    @app.get("/api/v1/config/policies")
+    def config_policies(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return load_numeric_policies_bundle()
 
     @app.put("/api/v1/settings")
     async def settings_update(request: Request, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

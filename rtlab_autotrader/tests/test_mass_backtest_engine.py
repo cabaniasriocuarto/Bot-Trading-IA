@@ -136,6 +136,12 @@ def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> N
   results = engine.results(run_id, limit=50)
   assert isinstance(results.get("results"), list) and results["results"]
   assert results["query_backend"]["engine"] in {"duckdb", "python"}
+  first_row = results["results"][0]
+  assert "microstructure" in first_row
+  assert isinstance(first_row.get("microstructure"), dict)
+  assert "gates_eval" in first_row
+  assert isinstance(first_row.get("gates_eval"), dict)
+  assert "checks" in (first_row.get("gates_eval") or {})
   artifacts = engine.artifacts(run_id)
   assert any(item["name"] == "index.html" for item in artifacts["items"])
   batch_row = engine.backtest_catalog.get_batch(run_id)
@@ -145,6 +151,7 @@ def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> N
   assert all(str(row["run_id"]).startswith("BT-") for row in child_rows)
   assert all(str(row["run_type"]) == "batch_child" for row in child_rows)
   assert any(str((row.get("kpis") or {}).get("expectancy_unit") or "") == "usd_per_trade" for row in child_rows)
+  assert "MICRO_SOFT_KILL" in (child_rows[0].get("flags") or {})
 
 
 def test_dataset_mode_provider_no_api_keys_required_and_returns_hints_when_missing(tmp_path: Path) -> None:

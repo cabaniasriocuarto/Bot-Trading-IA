@@ -779,6 +779,10 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   detail_payload = detail.json()
   assert detail_payload["run_id"] == first["run_id"]
   assert "title_structured" in detail_payload
+  assert "fee_snapshot_id" in detail_payload
+  assert "funding_snapshot_id" in detail_payload
+  assert isinstance(detail_payload.get("slippage_model_params"), dict)
+  assert isinstance(detail_payload.get("spread_model_params"), dict)
 
   patched = client.patch(
     f"/api/v1/runs/{first['run_id']}",
@@ -864,6 +868,9 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   batch_detail = client.get(f"/api/v1/batches/{batch_id}", headers=headers)
   assert batch_detail.status_code == 200, batch_detail.text
   assert batch_detail.json()["batch_id"] == batch_id
+  cfg_snapshot = (batch_detail.json().get("config") or {})
+  assert isinstance(cfg_snapshot.get("policy_snapshot_summary"), dict)
+  assert cfg_snapshot["policy_snapshot_summary"].get("pbo_reject_if_gt") == 0.05
 
 
 def test_runs_validate_and_promote_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
@@ -1032,6 +1039,23 @@ def test_config_learning_endpoint_reads_yaml_and_exposes_capabilities(tmp_path: 
   assert "capabilities" in bandit and "bandit_weights_history" in bandit["capabilities"]
   assert "capabilities_registry" in body and "offline_change_points" in body["capabilities_registry"]
   assert "safe_update" in body and isinstance(body["safe_update"].get("canary_schedule_pct"), list)
+  assert "numeric_policies_summary" in body and isinstance(body["numeric_policies_summary"], dict)
+  assert body["numeric_policies_summary"].get("pbo_reject_if_gt") == 0.05
+
+
+def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/config/policies", headers=headers)
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is True
+  assert "policies" in body and isinstance(body["policies"], dict)
+  assert "gates" in body["policies"] and "microstructure" in body["policies"]
+  assert body["summary"]["pbo_reject_if_gt"] == 0.05
+  assert body["summary"]["vpin_soft_kill_cdf"] == 0.9
 
 
 def test_change_points_smoke_endpoint_returns_breakpoints_or_segments(tmp_path: Path, monkeypatch) -> None:
@@ -1144,9 +1168,91 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
       "dataset_source": "binance_public",
       "dataset_hash": "ds_test_mass_001",
     }
+    # Fuerza métricas suficientemente robustas para testear el flujo "mark candidate" con gates PASS.
+    run.setdefault("metrics", {})
+    run["metrics"].update(
+      {
+        "sharpe": 1.9,
+        "sortino": 2.4,
+        "calmar": 1.5,
+        "max_dd": 0.08,
+        "winrate": 0.63,
+        "profit_factor": 1.8,
+        "expectancy": 12.0,
+        "expectancy_usd_per_trade": 12.0,
+        "trade_count": 240,
+        "roundtrips": 240,
+        "robustness_score": 78.0,
+      }
+    )
+    run.setdefault("costs_breakdown", {})
+    run["costs_breakdown"].update(
+      {
+        "gross_pnl_total": 6000.0,
+        "gross_pnl": 6000.0,
+        "net_pnl_total": 4800.0,
+        "net_pnl": 4800.0,
+        "total_cost": 1200.0,
+        "total_cost_pct_of_gross_pnl": 0.20,
+      }
+    )
     return run
 
   monkeypatch.setattr(module.store, "create_event_backtest_run", _fake_event_backtest_run)
+  monkeypatch.setattr(
+    module,
+    "load_numeric_policies_bundle",
+    lambda: {
+      "available": True,
+      "source_root": str(tmp_path),
+      "warnings": [],
+      "summary": {},
+      "files": {},
+      "policies": {
+        "gates": {
+          "pbo": {"enabled": False},
+          "dsr": {"enabled": False},
+          "walk_forward": {
+            "enabled": True,
+            "folds": 5,
+            "pass_if_positive_folds_at_least": 4,
+            "max_is_to_oos_degradation": 0.30,
+          },
+          "cost_stress": {
+            "enabled": True,
+            "multipliers": [1.5, 2.0],
+            "must_remain_profitable_at_1_5x": True,
+            "max_score_drop_at_2_0x": 0.50,
+          },
+          "min_trade_quality": {"enabled": True, "min_trades_per_run": 150, "min_trades_per_symbol": 30},
+        },
+        "microstructure": {},
+        "risk_policy": {},
+        "beast_mode": {},
+        "fees": {},
+      },
+    },
+  )
+  _orig_apply_advanced_gates = module.mass_backtest_coordinator.engine._apply_advanced_gates
+  def _force_pass_advanced_gates(*, rows, cfg):
+    summary = _orig_apply_advanced_gates(rows=rows, cfg=cfg)
+    for row in rows:
+      if not isinstance(row, dict):
+        continue
+      row["gates_eval"] = {
+        "passed": True,
+        "fail_reasons": [],
+        "checks": dict(((row.get("gates_eval") or {}).get("checks") or {})),
+        "summary": {"forced_for_test": True},
+      }
+      row["recommendable_option_b"] = True
+      anti = row.get("anti_overfitting") if isinstance(row.get("anti_overfitting"), dict) else {}
+      anti["promotion_blocked"] = False
+      row["anti_overfitting"] = anti
+    if isinstance(summary, dict):
+      summary["gates_pass_count"] = len([r for r in rows if isinstance(r, dict)])
+    return summary
+  monkeypatch.setattr(module.mass_backtest_coordinator.engine, "_apply_advanced_gates", _force_pass_advanced_gates)
 
   strategies = client.get("/api/v1/strategies", headers=headers).json()
   strategy_ids = [row["id"] for row in strategies[:2]]
@@ -1162,7 +1268,7 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
       "end": "2024-06-30",
       "dataset_source": "synthetic",
       "max_variants_per_strategy": 1,
-      "max_folds": 1,
+      "max_folds": 5,
       "train_days": 30,
       "test_days": 30,
       "top_n": 3,
@@ -1183,7 +1289,7 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
       "end": "2024-06-30",
       "dataset_source": "auto",
       "max_variants_per_strategy": 1,
-      "max_folds": 1,
+      "max_folds": 5,
       "train_days": 30,
       "test_days": 30,
       "top_n": 3,
@@ -1194,7 +1300,7 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   run_id = start.json()["run_id"]
 
   status_payload = None
-  for _ in range(40):
+  for _ in range(200):
     st = client.get(f"/api/v1/research/mass-backtest/status?run_id={run_id}", headers=headers)
     assert st.status_code == 200, st.text
     status_payload = st.json()
@@ -1210,6 +1316,9 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   assert isinstance(results_payload.get("results"), list) and results_payload["results"]
   top = results_payload["results"][0]
   assert "score" in top and "regime_metrics" in top and "summary" in top
+  assert "gates_eval" in top and isinstance(top["gates_eval"], dict)
+  passing = next((row for row in results_payload["results"] if isinstance(row, dict) and bool((row.get("gates_eval") or {}).get("passed"))), None)
+  assert passing is not None, results_payload["results"]
 
   artifacts = client.get(f"/api/v1/research/mass-backtest/artifacts?run_id={run_id}", headers=headers)
   assert artifacts.status_code == 200, artifacts.text
@@ -1218,7 +1327,7 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   mark = client.post(
     "/api/v1/research/mass-backtest/mark-candidate",
     headers=headers,
-    json={"run_id": run_id, "variant_id": top["variant_id"], "note": "draft desde e2e"},
+    json={"run_id": run_id, "variant_id": passing["variant_id"], "note": "draft desde e2e"},
   )
   assert mark.status_code == 200, mark.text
   draft = mark.json()["recommendation_draft"]
@@ -1228,3 +1337,75 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   recs = client.get("/api/v1/learning/recommendations", headers=headers)
   assert recs.status_code == 200, recs.text
   assert any(row["id"] == draft["id"] for row in recs.json())
+
+
+def test_research_beast_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  _seed_local_backtest_dataset(tmp_path / "user_data", "crypto", "BTCUSDT", source="binance_public")
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": True,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": True,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": True,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  assert strategies.status_code == 200, strategies.text
+  strategy_id = strategies.json()[0]["id"]
+
+  start = client.post(
+    "/api/v1/research/beast/start",
+    headers=headers,
+    json={
+      "strategy_ids": [strategy_id],
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "max_variants_per_strategy": 1,
+      "max_folds": 2,
+      "train_days": 30,
+      "test_days": 30,
+      "top_n": 2,
+      "seed": 7,
+      "tier": "hobby",
+    },
+  )
+  assert start.status_code == 200, start.text
+  payload = start.json()
+  assert payload["ok"] is True
+  assert payload["mode"] == "beast"
+  assert str(payload["run_id"]).startswith("BX-")
+
+  status = client.get("/api/v1/research/beast/status", headers=headers)
+  assert status.status_code == 200, status.text
+  status_payload = status.json()
+  assert "scheduler" in status_payload and "budget" in status_payload
+
+  jobs = client.get("/api/v1/research/beast/jobs?limit=5", headers=headers)
+  assert jobs.status_code == 200, jobs.text
+  jobs_payload = jobs.json()
+  assert isinstance(jobs_payload.get("items"), list)
+  assert any(item.get("run_id") == payload["run_id"] for item in jobs_payload["items"])
+
+  stop = client.post("/api/v1/research/beast/stop-all", headers=headers, json={"reason": "test"})
+  assert stop.status_code == 200, stop.text
+  assert stop.json()["ok"] is True
+
+  resume = client.post("/api/v1/research/beast/resume", headers=headers, json={})
+  assert resume.status_code == 200, resume.text
+  assert resume.json()["ok"] is True
