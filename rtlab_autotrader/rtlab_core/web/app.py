@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import csv
@@ -150,6 +150,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     role TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS breaker_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    run_id TEXT,
+    symbol TEXT,
+    source_log_id INTEGER UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_breaker_events_bot_mode_ts ON breaker_events(bot_id, mode, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_breaker_events_ts ON breaker_events(ts DESC);
 """
 
 
@@ -250,6 +262,7 @@ class ResearchMassBacktestStartBody(BaseModel):
     top_n: int = 10
     seed: int = 42
     costs: dict[str, float] | None = None
+    use_orderflow_data: bool = True
 
 
 class ResearchMassBacktestMarkCandidateBody(BaseModel):
@@ -326,6 +339,7 @@ class BatchCreateBody(BaseModel):
     top_n: int = 10
     seed: int = 42
     costs: dict[str, float] | None = None
+    use_orderflow_data: bool = True
 
 
 class BatchShortlistBody(BaseModel):
@@ -473,7 +487,7 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
         data = _yaml_file_or_default(path, {})
         valid = isinstance(data, dict) and bool(data)
         if exists and not valid:
-            warnings.append(f"Policy YAML inválido o vacío: {name} ({path.name})")
+            warnings.append(f"Policy YAML invÃ¡lido o vacÃ­o: {name} ({path.name})")
         if not exists:
             warnings.append(f"Policy YAML no encontrado: {name} ({path})")
         payloads[name] = data if isinstance(data, dict) else {}
@@ -568,7 +582,7 @@ def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         yaml_valid = False
         source_mode = "fallback_safe"
-        warnings.append(f"YAML inválido o no disponible: {exc}. Fallback seguro: learning OFF.")
+        warnings.append(f"YAML invÃ¡lido o no disponible: {exc}. Fallback seguro: learning OFF.")
         engines_payload = {
             "learning_mode": {"option": "B", "enabled_default": False, "auto_apply_live": False, "require_human_approval": True},
             "drift_detection": {"enabled": True, "detectors": []},
@@ -621,10 +635,10 @@ def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
 
     drift_detection = engines_payload.get("drift_detection") if isinstance(engines_payload, dict) and isinstance(engines_payload.get("drift_detection"), dict) else {"enabled": True, "detectors": []}
     detector_options = [
-        {"id": "adwin", "name": "ADWIN", "description": "Detecta cambio de distribución en streams (online)."},
+        {"id": "adwin", "name": "ADWIN", "description": "Detecta cambio de distribuciÃ³n en streams (online)."},
         {"id": "page_hinkley", "name": "Page-Hinkley", "description": "Detecta cambio de media acumulada (CUSUM)."},
     ]
-    # Heurístico de selectors compatibles con runtime actual.
+    # HeurÃ­stico de selectors compatibles con runtime actual.
     runtime_selector_compatible = [e["id"] for e in engines_out if e["id"] in {"fixed_rules", "bandit_thompson", "bandit_ucb1"}]
     if not yaml_valid:
         settings["learning"]["enabled"] = False
@@ -748,7 +762,7 @@ def _normalize_binance_endpoint_url(url: str, *, mode: str, kind: str) -> tuple[
     if not parsed_initial.scheme and parsed_initial.path:
         guessed_scheme = "wss" if kind == "ws" else "https"
         normalized = f"{guessed_scheme}://{normalized}"
-        warnings.append(f"URL de Binance sin esquema corregida automáticamente ({kind}/{mode}): se agregó {guessed_scheme}://")
+        warnings.append(f"URL de Binance sin esquema corregida automÃ¡ticamente ({kind}/{mode}): se agregÃ³ {guessed_scheme}://")
     parsed = urlparse(normalized)
     replacements = {
         "testnet.binance.visio": "testnet.binance.vision",
@@ -767,7 +781,7 @@ def _normalize_binance_endpoint_url(url: str, *, mode: str, kind: str) -> tuple[
         elif netloc.startswith(host):
             netloc = good_host + netloc[len(host):]
         normalized = parsed._replace(netloc=netloc).geturl()
-        warnings.append(f"URL de Binance corregida automáticamente ({kind}/{mode}): {host} -> {good_host}")
+        warnings.append(f"URL de Binance corregida automÃ¡ticamente ({kind}/{mode}): {host} -> {good_host}")
     return normalized, warnings
 
 
@@ -918,7 +932,7 @@ def _classify_exchange_error(status_code: int, payload: Any) -> tuple[str, str]:
         if code in {-2010, -2011, -1013, -1100, -1102}:
             return "permissions", f"Permisos o parametros invalidos ({code}): {msg}"
     if status_code == 451:
-        return "provider_restriction", "Proveedor/exchange restringe la region o red de salida (HTTP 451). Probá otro despliegue/VPS/proxy permitido."
+        return "provider_restriction", "Proveedor/exchange restringe la region o red de salida (HTTP 451). ProbÃ¡ otro despliegue/VPS/proxy permitido."
     if status_code >= 500:
         return "endpoint", f"Endpoint no disponible (HTTP {status_code})"
     return "endpoint", f"Error de endpoint/auth (HTTP {status_code})"
@@ -975,10 +989,10 @@ def _provider_restriction_action_plan(active_mode: str, exchange: str) -> list[s
     exch = (exchange or "binance").lower()
     target = "Binance Spot Testnet" if exch == "binance" and active_mode == "testnet" else f"{exch} ({mode_label})"
     return [
-        f"No es un bug del bot: {target} está bloqueando la red/región de salida del backend (HTTP 451).",
-        "Probá el backend localmente (tu PC) para validar claves y place/cancel.",
-        "Si en local funciona, mové el backend a otra región/proveedor (VPS/Cloud) con egress permitido.",
-        "Mantené Vercel solo para frontend; el bloqueo es del backend (Railway/egress), no de la UI.",
+        f"No es un bug del bot: {target} estÃ¡ bloqueando la red/regiÃ³n de salida del backend (HTTP 451).",
+        "ProbÃ¡ el backend localmente (tu PC) para validar claves y place/cancel.",
+        "Si en local funciona, movÃ© el backend a otra regiÃ³n/proveedor (VPS/Cloud) con egress permitido.",
+        "MantenÃ© Vercel solo para frontend; el bloqueo es del backend (Railway/egress), no de la UI.",
     ]
 
 
@@ -1160,7 +1174,7 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
         connector_reason = "Exchange connector listo."
     else:
         connector_reason = (
-            "Conector bloqueado por restricción del proveedor/región (HTTP 451)."
+            "Conector bloqueado por restricciÃ³n del proveedor/regiÃ³n (HTTP 451)."
             if infrastructure_blocked
             else (last_error or "Exchange connector no listo.")
         )
@@ -1169,7 +1183,7 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
         order_reason = "Place/cancel testnet operativo."
     else:
         order_reason = (
-            "Order test bloqueado por restricción del proveedor/región (HTTP 451)."
+            "Order test bloqueado por restricciÃ³n del proveedor/regiÃ³n (HTTP 451)."
             if infrastructure_blocked
             else (checks.get("order_test", {}).get("error") or "Cannot place/cancel on testnet.")
         )
@@ -1225,7 +1239,80 @@ class ConsoleStore:
     def _init_console_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(LOG_SCHEMA_SQL)
+            self._backfill_breaker_events_from_logs(conn)
             conn.commit()
+
+    @staticmethod
+    def _normalize_breaker_mode(value: str | None) -> str:
+        mode = str(value or "").strip().lower()
+        if mode in {"shadow", "paper", "testnet", "live"}:
+            return mode
+        return "unknown"
+
+    @staticmethod
+    def _normalize_breaker_bot_id(value: str | None) -> str:
+        bot_id = str(value or "").strip()
+        return bot_id if bot_id else "unknown_bot"
+
+    def _insert_breaker_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        ts: str,
+        bot_id: str | None,
+        mode: str | None,
+        reason: str | None,
+        run_id: str | None = None,
+        symbol: str | None = None,
+        source_log_id: int | None = None,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO breaker_events (ts, bot_id, mode, reason, run_id, symbol, source_log_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(ts or utc_now_iso()),
+                self._normalize_breaker_bot_id(bot_id),
+                self._normalize_breaker_mode(mode),
+                str(reason or "breaker_triggered"),
+                str(run_id).strip() if run_id is not None and str(run_id).strip() else None,
+                str(symbol).strip().upper() if symbol is not None and str(symbol).strip() else None,
+                int(source_log_id) if source_log_id is not None else None,
+            ),
+        )
+
+    def _backfill_breaker_events_from_logs(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT id, ts, message, payload_json
+            FROM logs
+            WHERE type = 'breaker_triggered'
+              AND id NOT IN (
+                  SELECT source_log_id
+                  FROM breaker_events
+                  WHERE source_log_id IS NOT NULL
+              )
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        for row in rows:
+            payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
+            try:
+                payload = json.loads(payload_raw)
+            except Exception:
+                payload = {}
+            payload_map = payload if isinstance(payload, dict) else {}
+            self._insert_breaker_event(
+                conn,
+                ts=str(row["ts"] or utc_now_iso()),
+                bot_id=str(payload_map.get("bot_id") or ""),
+                mode=str(payload_map.get("mode") or ""),
+                reason=str(payload_map.get("reason") or row["message"] or "breaker_triggered"),
+                run_id=str(payload_map.get("run_id") or ""),
+                symbol=str(payload_map.get("symbol") or ""),
+                source_log_id=int(row["id"]),
+            )
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
@@ -2270,139 +2357,318 @@ def risk_hooks(context):
         )
         self.save_bots([default_row])
 
-    def _bot_metrics(self, bot: dict[str, Any], *, recommendations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        pool = {str(x) for x in (bot.get("pool_strategy_ids") or []) if str(x)}
-        mode = self._normalize_bot_mode(str(bot.get("mode") or "paper"))
+    @staticmethod
+    def _aggregate_bot_metric_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        trades_total = 0
+        weighted_wins = 0.0
+        net_pnl_total = 0.0
+        sharpe_vals: list[float] = []
+        expectancy_weighted_num = 0.0
+        expectancy_weighted_den = 0.0
+        run_count_total = 0
+        for row in rows:
+            kpi = row.get("kpis") if isinstance(row.get("kpis"), dict) else {}
+            trades = int(kpi.get("trade_count") or 0)
+            winrate = float(kpi.get("winrate") or 0.0)
+            net_pnl_total += float(kpi.get("net_pnl") or 0.0)
+            trades_total += trades
+            weighted_wins += winrate * trades
+            expectancy_weighted_num += float(kpi.get("expectancy_value") or 0.0) * max(trades, 1)
+            expectancy_weighted_den += max(trades, 1)
+            run_count_total += int(kpi.get("run_count") or 0)
+            sharpe_vals.append(float(kpi.get("sharpe") or 0.0))
+        return {
+            "trade_count": trades_total,
+            "winrate": (weighted_wins / trades_total) if trades_total else 0.0,
+            "net_pnl": net_pnl_total,
+            "avg_sharpe": (sum(sharpe_vals) / len(sharpe_vals)) if sharpe_vals else 0.0,
+            "expectancy_value": (expectancy_weighted_num / expectancy_weighted_den) if expectancy_weighted_den else 0.0,
+            "run_count": run_count_total,
+        }
 
-        def _aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-            trades_total = 0
-            weighted_wins = 0.0
-            net_pnl_total = 0.0
-            sharpe_vals: list[float] = []
-            expectancy_weighted_num = 0.0
-            expectancy_weighted_den = 0.0
-            run_count_total = 0
-            for row in rows:
-                kpi = row.get("kpis") if isinstance(row.get("kpis"), dict) else {}
-                trades = int(kpi.get("trade_count") or 0)
-                winrate = float(kpi.get("winrate") or 0.0)
-                net_pnl_total += float(kpi.get("net_pnl") or 0.0)
-                trades_total += trades
-                weighted_wins += winrate * trades
-                expectancy_weighted_num += float(kpi.get("expectancy_value") or 0.0) * max(trades, 1)
-                expectancy_weighted_den += max(trades, 1)
-                run_count_total += int(kpi.get("run_count") or 0)
-                sharpe_vals.append(float(kpi.get("sharpe") or 0.0))
-            return {
-                "trade_count": trades_total,
-                "winrate": (weighted_wins / trades_total) if trades_total else 0.0,
-                "net_pnl": net_pnl_total,
-                "avg_sharpe": (sum(sharpe_vals) / len(sharpe_vals)) if sharpe_vals else 0.0,
-                "expectancy_value": (expectancy_weighted_num / expectancy_weighted_den) if expectancy_weighted_den else 0.0,
-                "run_count": run_count_total,
-            }
-
+    def get_bots_overview(
+        self,
+        bot_ids: list[str] | None = None,
+        *,
+        recommendations: list[dict[str, Any]] | None = None,
+        bots: list[dict[str, Any]] | None = None,
+        strategies: list[dict[str, Any]] | None = None,
+        runs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         mode_to_kpi_mode = {"shadow": "backtest", "paper": "paper", "testnet": "testnet", "live": "live"}
-        rows_by_mode: dict[str, list[dict[str, Any]]] = {}
-        by_mode_metrics: dict[str, dict[str, Any]] = {}
-        for mode_key, kpi_mode in mode_to_kpi_mode.items():
-            rows = [row for row in self.strategy_kpis_table(mode=kpi_mode) if str(row.get("strategy_id") or "") in pool]
-            rows_by_mode[mode_key] = rows
-            by_mode_metrics[mode_key] = _aggregate_rows(rows)
-        active = by_mode_metrics.get(mode, {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0})
+        kills_mode_keys = ("shadow", "paper", "testnet", "live", "unknown")
 
-        kills_by_mode = {"shadow": 0, "paper": 0, "testnet": 0, "live": 0}
-        kills_by_mode_24h = {"shadow": 0, "paper": 0, "testnet": 0, "live": 0}
-        kills_total = 0
-        kills_24h = 0
-        kills_last_at: str | None = None
-        recent_threshold = utc_now() - timedelta(hours=24)
-        with self._connect() as conn:
-            kill_rows = conn.execute(
-                """
-                SELECT ts, payload_json
-                FROM logs
-                WHERE module = 'risk' AND type = 'breaker_triggered'
-                ORDER BY id DESC
-                LIMIT 500
-                """
-            ).fetchall()
-        for row in kill_rows:
-            raw_ts = str(row["ts"] or "")
-            payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
-            try:
-                payload = json.loads(payload_raw)
-            except Exception:
-                payload = {}
-            raw_mode = str((payload if isinstance(payload, dict) else {}).get("mode") or "").strip().lower()
-            mode_key = raw_mode if raw_mode in kills_by_mode else "paper"
-            kills_by_mode[mode_key] = int(kills_by_mode[mode_key]) + 1
-            kills_total += 1
-            if kills_last_at is None and raw_ts:
-                kills_last_at = raw_ts
-            try:
-                ts_value = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-                if ts_value.tzinfo is None:
-                    ts_value = ts_value.replace(tzinfo=timezone.utc)
-                if ts_value >= recent_threshold:
-                    kills_by_mode_24h[mode_key] = int(kills_by_mode_24h[mode_key]) + 1
-                    kills_24h += 1
-            except Exception:
-                # Ignore malformed timestamps in historical rows.
-                pass
+        bots_rows = bots if isinstance(bots, list) else self.load_bots()
+        if bot_ids:
+            requested = {str(v).strip() for v in bot_ids if str(v).strip()}
+            bots_rows = [row for row in bots_rows if str(row.get("id") or "") in requested]
+        if not bots_rows:
+            return {}
 
-        last_run_at: str | None = None
-        strategies_lookup = {str(s.get("id") or ""): s for s in self.list_strategies()}
-        for rows in rows_by_mode.values():
-            for row in rows:
-                strategy_meta = strategies_lookup.get(str(row.get("strategy_id") or ""))
-                candidate_last = str((strategy_meta or {}).get("last_run_at") or "")
+        strategies_rows = strategies if isinstance(strategies, list) else self.list_strategies()
+        runs_rows = runs if isinstance(runs, list) else self.load_runs()
+        rec_rows = recommendations if isinstance(recommendations, list) else []
+        strategy_by_id = {str(row.get("id") or ""): row for row in strategies_rows if str(row.get("id") or "")}
+
+        bot_pool_ids: dict[str, list[str]] = {}
+        for bot in bots_rows:
+            bid = str(bot.get("id") or "")
+            pool_ids = [sid for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategy_by_id]
+            bot_pool_ids[bid] = [str(sid) for sid in pool_ids]
+
+        runs_by_strategy_mode: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for run in runs_rows:
+            if not isinstance(run, dict):
+                continue
+            sid = str(run.get("strategy_id") or "")
+            if not sid:
+                continue
+            run_mode = str(run.get("mode") or "backtest").lower()
+            key = (sid, run_mode)
+            rows = runs_by_strategy_mode.get(key)
+            if rows is None:
+                runs_by_strategy_mode[key] = [run]
+            else:
+                rows.append(run)
+
+        kpis_by_mode: dict[str, dict[str, dict[str, Any]]] = {mode_key: {} for mode_key in mode_to_kpi_mode}
+        for sid in strategy_by_id:
+            for mode_key, kpi_mode in mode_to_kpi_mode.items():
+                kpis_by_mode[mode_key][sid] = self._aggregate_strategy_kpis(runs_by_strategy_mode.get((sid, kpi_mode), []))
+
+        bot_ids_ordered = [str(bot.get("id") or "") for bot in bots_rows if str(bot.get("id") or "")]
+        bot_ids_set = set(bot_ids_ordered)
+        empty_kills_template = {key: 0 for key in kills_mode_keys}
+        kills_by_mode_per_bot: dict[str, dict[str, int]] = {bid: dict(empty_kills_template) for bid in bot_ids_ordered}
+        kills_by_mode_24h_per_bot: dict[str, dict[str, int]] = {bid: dict(empty_kills_template) for bid in bot_ids_ordered}
+        last_kill_by_bot: dict[str, str | None] = {bid: None for bid in bot_ids_ordered}
+        logs_per_bot: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bot_ids_ordered}
+
+        if bot_ids_ordered:
+            placeholders = ",".join("?" for _ in bot_ids_ordered)
+            since_24h = (utc_now() - timedelta(hours=24)).isoformat()
+            logs_batch_limit = min(2000, max(200, len(bot_ids_ordered) * 20))
+            with self._connect() as conn:
+                # Read 1/3: kills acumulados por bot+modo (all-time) + ultimo timestamp.
+                kills_total_rows = conn.execute(
+                    f"""
+                    SELECT bot_id, mode, COUNT(*) AS n, MAX(ts) AS last_ts
+                    FROM breaker_events
+                    WHERE bot_id IN ({placeholders})
+                    GROUP BY bot_id, mode
+                    """,
+                    tuple(bot_ids_ordered),
+                ).fetchall()
+                # Read 2/3: kills por bot+modo en ventana 24h.
+                kills_24h_rows = conn.execute(
+                    f"""
+                    SELECT bot_id, mode, COUNT(*) AS n
+                    FROM breaker_events
+                    WHERE bot_id IN ({placeholders}) AND ts >= ?
+                    GROUP BY bot_id, mode
+                    """,
+                    tuple(bot_ids_ordered + [since_24h]),
+                ).fetchall()
+                # Read 3/3: logs recientes en batch para evitar N+1 por bot.
+                log_rows = conn.execute(
+                    """
+                    SELECT id, ts, type, severity, module, message, related_ids, payload_json
+                    FROM logs
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (logs_batch_limit,),
+                ).fetchall()
+
+            for row in kills_total_rows:
+                bid = str(row["bot_id"] or "")
+                if bid not in bot_ids_set:
+                    continue
+                mode_key = self._normalize_breaker_mode(str(row["mode"] or ""))
+                kills_by_mode_per_bot[bid][mode_key] = int(row["n"] or 0)
+                ts_value = str(row["last_ts"] or "").strip()
+                if ts_value and (last_kill_by_bot[bid] is None or ts_value > str(last_kill_by_bot[bid] or "")):
+                    last_kill_by_bot[bid] = ts_value
+
+            for row in kills_24h_rows:
+                bid = str(row["bot_id"] or "")
+                if bid not in bot_ids_set:
+                    continue
+                mode_key = self._normalize_breaker_mode(str(row["mode"] or ""))
+                kills_by_mode_24h_per_bot[bid][mode_key] = int(row["n"] or 0)
+
+            for row in log_rows:
+                related_raw = row["related_ids"] if row["related_ids"] is not None else "[]"
+                payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
+                try:
+                    related_ids = json.loads(related_raw)
+                except Exception:
+                    related_ids = []
+                try:
+                    payload = json.loads(payload_raw)
+                except Exception:
+                    payload = {}
+                payload_map = payload if isinstance(payload, dict) else {}
+                targets: set[str] = set()
+                if isinstance(related_ids, list):
+                    for rid in related_ids:
+                        rid_s = str(rid or "").strip()
+                        if rid_s and rid_s in bot_ids_set:
+                            targets.add(rid_s)
+                payload_bot_id = str(payload_map.get("bot_id") or "").strip()
+                if payload_bot_id in bot_ids_set:
+                    targets.add(payload_bot_id)
+                if not targets:
+                    continue
+                payload_entry = {
+                    "id": f"log_{int(row['id'])}",
+                    "numeric_id": int(row["id"]),
+                    "ts": str(row["ts"] or ""),
+                    "type": str(row["type"] or ""),
+                    "severity": str(row["severity"] or ""),
+                    "module": str(row["module"] or ""),
+                    "message": str(row["message"] or ""),
+                    "payload": payload_map,
+                }
+                for bid in targets:
+                    bot_logs = logs_per_bot.get(bid)
+                    if bot_logs is None or len(bot_logs) >= 20:
+                        continue
+                    bot_logs.append(payload_entry)
+                if all(len(entries) >= 20 for entries in logs_per_bot.values()):
+                    break
+
+        kills_global_total = sum(sum(mode_counts.values()) for mode_counts in kills_by_mode_per_bot.values())
+        kills_global_24h = sum(sum(mode_counts.values()) for mode_counts in kills_by_mode_24h_per_bot.values())
+
+        out: dict[str, dict[str, Any]] = {}
+        for bot in bots_rows:
+            bot_id = str(bot.get("id") or "")
+            if not bot_id:
+                continue
+            mode = self._normalize_bot_mode(str(bot.get("mode") or "paper"))
+            pool = set(bot_pool_ids.get(bot_id, []))
+            by_mode_metrics: dict[str, dict[str, Any]] = {}
+            for mode_key in mode_to_kpi_mode:
+                mode_rows = [{"strategy_id": sid, "kpis": kpis_by_mode[mode_key].get(sid, {})} for sid in pool]
+                by_mode_metrics[mode_key] = self._aggregate_bot_metric_rows(mode_rows)
+            active = by_mode_metrics.get(
+                mode,
+                {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
+            )
+
+            rec_pending = 0
+            rec_approved = 0
+            rec_rejected = 0
+            for rec in rec_rows:
+                if not isinstance(rec, dict):
+                    continue
+                active_sid = str(rec.get("active_strategy_id") or "")
+                if active_sid and active_sid not in pool:
+                    continue
+                status = str(rec.get("status") or "PENDING").upper()
+                if "PENDING" in status:
+                    rec_pending += 1
+                elif "APPROVED" in status:
+                    rec_approved += 1
+                elif "REJECT" in status:
+                    rec_rejected += 1
+
+            last_run_at: str | None = None
+            for sid in pool:
+                strategy_meta = strategy_by_id.get(sid) or {}
+                candidate_last = str(strategy_meta.get("last_run_at") or "")
                 if candidate_last and (last_run_at is None or candidate_last > last_run_at):
                     last_run_at = candidate_last
-        rec_rows = recommendations if isinstance(recommendations, list) else []
-        pending = 0
-        approved = 0
-        rejected = 0
-        for rec in rec_rows:
-            if not isinstance(rec, dict):
-                continue
-            active_sid = str(rec.get("active_strategy_id") or "")
-            if active_sid and active_sid not in pool:
-                continue
-            status = str(rec.get("status") or "PENDING").upper()
-            if "PENDING" in status:
-                pending += 1
-            elif "APPROVED" in status:
-                approved += 1
-            elif "REJECT" in status:
-                rejected += 1
+
+            kills_by_mode = dict(kills_by_mode_per_bot.get(bot_id, empty_kills_template))
+            kills_by_mode_24h = dict(kills_by_mode_24h_per_bot.get(bot_id, empty_kills_template))
+            metrics = {
+                "strategy_count": len(pool),
+                "run_count": int(active.get("run_count") or 0),
+                "trade_count": int(active.get("trade_count") or 0),
+                "winrate": float(active.get("winrate") or 0.0),
+                "net_pnl": float(active.get("net_pnl") or 0.0),
+                "avg_sharpe": float(active.get("avg_sharpe") or 0.0),
+                "expectancy_value": float(active.get("expectancy_value") or 0.0),
+                "expectancy_unit": "$/trade",
+                "kills_total": int(kills_by_mode.get(mode, 0)),
+                "kills_24h": int(kills_by_mode_24h.get(mode, 0)),
+                "kills_global_total": int(kills_global_total),
+                "kills_global_24h": int(kills_global_24h),
+                "kills_by_mode": kills_by_mode,
+                "kills_by_mode_24h": kills_by_mode_24h,
+                "last_kill_at": last_kill_by_bot.get(bot_id),
+                "by_mode": by_mode_metrics,
+                "last_run_at": last_run_at,
+                "recommendations_pending": rec_pending,
+                "recommendations_approved": rec_approved,
+                "recommendations_rejected": rec_rejected,
+            }
+            out[bot_id] = {
+                "metrics": metrics,
+                "recent_logs": logs_per_bot.get(bot_id, []),
+            }
+        return out
+
+    def _bot_metrics(
+        self,
+        bot: dict[str, Any],
+        *,
+        recommendations: list[dict[str, Any]] | None = None,
+        overview: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        bot_id = str(bot.get("id") or "")
+        overview_map = overview
+        if overview_map is None:
+            overview_map = self.get_bots_overview(
+                [bot_id] if bot_id else None,
+                recommendations=recommendations,
+                bots=[bot] if bot_id else None,
+            )
+        payload = (overview_map.get(bot_id) if isinstance(overview_map, dict) else None) or {}
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        if metrics:
+            return metrics
         return {
-            "strategy_count": len(pool),
-            "run_count": int(active.get("run_count") or 0),
-            "trade_count": int(active.get("trade_count") or 0),
-            "winrate": float(active.get("winrate") or 0.0),
-            "net_pnl": float(active.get("net_pnl") or 0.0),
-            "avg_sharpe": float(active.get("avg_sharpe") or 0.0),
-            "expectancy_value": float(active.get("expectancy_value") or 0.0),
+            "strategy_count": 0,
+            "run_count": 0,
+            "trade_count": 0,
+            "winrate": 0.0,
+            "net_pnl": 0.0,
+            "avg_sharpe": 0.0,
+            "expectancy_value": 0.0,
             "expectancy_unit": "$/trade",
-            "kills_total": int(kills_by_mode.get(mode, 0)),
-            "kills_24h": int(kills_by_mode_24h.get(mode, 0)),
-            "kills_global_total": kills_total,
-            "kills_global_24h": kills_24h,
-            "kills_by_mode": kills_by_mode,
-            "kills_by_mode_24h": kills_by_mode_24h,
-            "last_kill_at": kills_last_at,
-            "by_mode": by_mode_metrics,
-            "last_run_at": last_run_at,
-            "recommendations_pending": pending,
-            "recommendations_approved": approved,
-            "recommendations_rejected": rejected,
+            "kills_total": 0,
+            "kills_24h": 0,
+            "kills_global_total": 0,
+            "kills_global_24h": 0,
+            "kills_by_mode": {"shadow": 0, "paper": 0, "testnet": 0, "live": 0, "unknown": 0},
+            "kills_by_mode_24h": {"shadow": 0, "paper": 0, "testnet": 0, "live": 0, "unknown": 0},
+            "last_kill_at": None,
+            "by_mode": {
+                "shadow": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
+                "paper": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
+                "testnet": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
+                "live": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
+            },
+            "last_run_at": None,
+            "recommendations_pending": 0,
+            "recommendations_approved": 0,
+            "recommendations_rejected": 0,
         }
 
     def list_bot_instances(self, *, recommendations: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         rows = self.load_bots()
         strategies = self.list_strategies()
+        runs = self.load_runs()
         by_id = {str(s.get("id") or ""): s for s in strategies}
+        overview = self.get_bots_overview(
+            recommendations=recommendations,
+            bots=rows,
+            strategies=strategies,
+            runs=runs,
+        )
         out: list[dict[str, Any]] = []
         for row in rows:
             pool_ids = [sid for sid in (row.get("pool_strategy_ids") or []) if sid in by_id]
@@ -2419,7 +2685,13 @@ def risk_hooks(context):
             payload = dict(row)
             payload["pool_strategy_ids"] = pool_ids
             payload["pool_strategies"] = pool_meta
-            payload["metrics"] = self._bot_metrics(dict(row, pool_strategy_ids=pool_ids), recommendations=recommendations)
+            bot_id = str(row.get("id") or "")
+            payload["metrics"] = self._bot_metrics(dict(row, pool_strategy_ids=pool_ids), recommendations=recommendations, overview=overview)
+            payload["recent_logs"] = (
+                ((overview.get(bot_id) or {}).get("recent_logs"))
+                if isinstance(overview.get(bot_id), dict)
+                else []
+            ) or []
             out.append(payload)
         out.sort(key=lambda item: (0 if str(item.get("status")) == "active" else 1, item.get("name", ""), item.get("id", "")))
         return out
@@ -2933,6 +3205,11 @@ def risk_hooks(context):
                 "fund_score": 0.0,
                 "fund_status": "UNKNOWN",
                 "explain": [{"code": "FUND_METADATA_ERROR", "severity": "WARN", "message": str(exc)}],
+                "reasons": [str(exc)],
+                "required_missing": [],
+                "promotion_blocked": False,
+                "warnings": [],
+                "fundamentals_quality": "snapshot",
             }
 
     def _sync_backtest_runs_catalog(self) -> None:
@@ -3152,7 +3429,7 @@ def risk_hooks(context):
         fundamentals_meta = self._resolve_backtest_fundamentals_metadata(
             market="crypto",
             symbol=str(universe[0] if universe else "BTCUSDT"),
-            target_mode="backtest",
+            target_mode="BACKTEST",
         )
         run = {
             "id": run_id,
@@ -3183,6 +3460,9 @@ def risk_hooks(context):
                 else None
             ),
             "fund_explain": fundamentals_meta.get("explain") if isinstance(fundamentals_meta.get("explain"), list) else [],
+            "use_orderflow_data": True,
+            "orderflow_feature_set": "orderflow_on",
+            "feature_set": "orderflow_on",
             "fee_model": f"maker_taker_bps:{fees_bps:.4f}",
             "spread_model": f"{((cost_meta.get('spread_model_params') or {}).get('mode') or 'static')}:{spread_bps:.4f}",
             "slippage_model": f"{((cost_meta.get('slippage_model_params') or {}).get('mode') or 'static')}:{slippage_bps:.4f}",
@@ -3240,6 +3520,19 @@ def risk_hooks(context):
             "equity_curve": points,
             "drawdown_curve": [{"time": p["time"], "value": p["drawdown"]} for p in points],
             "trades": trades,
+            "tags": ["feature_set:orderflow_on"],
+            "flags": {
+                "IS": False,
+                "OOS": bool(str(validation_mode or "").strip().lower() == "walk-forward"),
+                "WFA": bool(str(validation_mode or "").strip().lower() == "walk-forward"),
+                "PASO_GATES": False,
+                "BASELINE": False,
+                "FAVORITO": False,
+                "ARCHIVADO": False,
+                "ORDERFLOW_ENABLED": True,
+                "ORDERFLOW_FEATURE_SET": "orderflow_on",
+                "FUNDAMENTALS_PROMOTION_BLOCKED": bool(fundamentals_meta.get("promotion_blocked", False)),
+            },
             "artifacts_links": {
                 "report_json": f"/api/v1/backtests/runs/{run_id}?format=report_json",
                 "trades_csv": f"/api/v1/backtests/runs/{run_id}?format=trades_csv",
@@ -3263,6 +3556,12 @@ def risk_hooks(context):
             "fund_allow_trade": run.get("fund_allow_trade"),
             "fund_risk_multiplier": run.get("fund_risk_multiplier"),
             "fund_score": run.get("fund_score"),
+            "use_orderflow_data": True,
+            "orderflow_feature_set": "orderflow_on",
+            "fund_required_missing": run.get("fund_required_missing") if isinstance(run.get("fund_required_missing"), list) else [],
+            "fund_warnings": run.get("fund_warnings") if isinstance(run.get("fund_warnings"), list) else [],
+            "fund_promotion_blocked": bool(run.get("fund_promotion_blocked", False)),
+            "fundamentals_quality": str(run.get("fundamentals_quality") or "snapshot"),
             "created_at": run["created_at"],
         }
         runs = self.load_runs()
@@ -3308,6 +3607,7 @@ def risk_hooks(context):
         funding_bps: float,
         rollover_bps: float,
         validation_mode: str,
+        use_orderflow_data: bool = True,
     ) -> dict[str, Any]:
         strategy = self.strategy_or_404(strategy_id)
         market_n = normalize_market(market)
@@ -3326,6 +3626,7 @@ def risk_hooks(context):
                 end=end,
                 strategy_id=strategy_id,
                 validation_mode=validation_mode,
+                use_orderflow_data=bool(use_orderflow_data),
                 costs=BacktestCosts(
                     fees_bps=fees_bps,
                     spread_bps=spread_bps,
@@ -3365,8 +3666,13 @@ def risk_hooks(context):
         fundamentals_meta = self._resolve_backtest_fundamentals_metadata(
             market=market_n,
             symbol=symbol_n,
-            target_mode="backtest",
+            target_mode="BACKTEST",
         )
+        fund_required_missing = [str(x) for x in (fundamentals_meta.get("required_missing") or []) if str(x).strip()]
+        fund_warnings = [str(x) for x in (fundamentals_meta.get("warnings") or []) if str(x).strip()]
+        fund_reasons = [str(x) for x in (fundamentals_meta.get("reasons") or []) if str(x).strip()]
+        fund_promotion_blocked = bool(fundamentals_meta.get("promotion_blocked", False))
+        fund_quality = str(fundamentals_meta.get("fundamentals_quality") or ("ohlc_only" if fund_required_missing else "snapshot"))
         if bool(fundamentals_meta.get("enforced")) and not bool(fundamentals_meta.get("allow_trade", False)):
             reasons = " | ".join(
                 [
@@ -3375,7 +3681,32 @@ def risk_hooks(context):
                     if isinstance(row, dict)
                 ][:3]
             )
-            raise ValueError(f"Fundamentals/credit_filter bloqueó la corrida para {market_n}/{symbol_n}. {reasons}".strip())
+            detail = " | ".join([x for x in [*fund_reasons, reasons] if x][:3]).strip()
+            raise ValueError(f"Fundamentals/credit_filter bloqueó la corrida para {market_n}/{symbol_n}. {detail}".strip())
+        orderflow_enabled = bool(use_orderflow_data) and market_n != "equities"
+        orderflow_feature_set = "orderflow_on" if orderflow_enabled else "orderflow_off"
+        run_metadata = {
+            "warnings": fund_warnings,
+            "fundamentals_quality": fund_quality,
+            "promotion_blocked": fund_promotion_blocked,
+            "use_orderflow_data_requested": bool(use_orderflow_data),
+            "use_orderflow_data": orderflow_enabled,
+            "orderflow_feature_set": orderflow_feature_set,
+            "orderflow_feature_source": "request",
+        }
+        if bool(use_orderflow_data) and market_n == "equities":
+            run_metadata["warnings"] = list(run_metadata.get("warnings") or []) + ["orderflow_not_available_for_market"]
+        if fund_required_missing:
+            run_metadata["required_missing"] = fund_required_missing
+        if fund_reasons:
+            run_metadata["fundamentals_reasons"] = fund_reasons
+        run_tags = []
+        if fund_quality == "ohlc_only":
+            run_tags.append("fundamentals_quality:ohlc_only")
+        if fund_promotion_blocked:
+            run_tags.append("promotion_blocked:fundamentals")
+        run_tags.append(f"feature_set:{orderflow_feature_set}")
+        is_wfa = str(validation_mode or "").strip().lower() == "walk-forward"
         run = {
             "id": run_id,
             "catalog_run_id": run_id,
@@ -3413,6 +3744,14 @@ def risk_hooks(context):
                 else None
             ),
             "fund_explain": fundamentals_meta.get("explain") if isinstance(fundamentals_meta.get("explain"), list) else [],
+            "fund_required_missing": fund_required_missing,
+            "fund_warnings": fund_warnings,
+            "fund_reasons": fund_reasons,
+            "fund_promotion_blocked": fund_promotion_blocked,
+            "fundamentals_quality": fund_quality,
+            "use_orderflow_data": orderflow_enabled,
+            "orderflow_feature_set": orderflow_feature_set,
+            "feature_set": orderflow_feature_set,
             "fee_model": f"maker_taker_bps:{fees_bps:.4f}",
             "spread_model": f"{((cost_meta.get('spread_model_params') or {}).get('mode') or 'static')}:{spread_bps:.4f}",
             "slippage_model": f"{((cost_meta.get('slippage_model_params') or {}).get('mode') or 'static')}:{slippage_bps:.4f}",
@@ -3426,6 +3765,28 @@ def risk_hooks(context):
             "started_at": utc_now_iso(),
             "finished_at": utc_now_iso(),
             "duration_sec": random.randint(2, 30),
+            "metadata": run_metadata,
+            "tags": run_tags,
+            "flags": {
+                "IS": False,
+                "OOS": bool(is_wfa),
+                "WFA": bool(is_wfa),
+                "PASO_GATES": False,
+                "BASELINE": False,
+                "FAVORITO": False,
+                "ARCHIVADO": False,
+                "FUNDAMENTALS_PROMOTION_BLOCKED": bool(fund_promotion_blocked),
+                "ORDERFLOW_ENABLED": bool(orderflow_enabled),
+                "ORDERFLOW_FEATURE_SET": orderflow_feature_set,
+            },
+            "params_json": {
+                "validation_mode": validation_mode,
+                "costs_model": costs_model,
+                "dataset_range": {"start": loaded.start, "end": loaded.end},
+                "period": {"start": start, "end": end},
+                "use_orderflow_data": bool(orderflow_enabled),
+                "orderflow_feature_set": orderflow_feature_set,
+            },
             "equity_curve": engine_result["equity_curve"],
             "drawdown_curve": engine_result["drawdown_curve"],
             "trades": engine_result["trades"],
@@ -3455,6 +3816,8 @@ def risk_hooks(context):
             "fund_allow_trade": run.get("fund_allow_trade"),
             "fund_risk_multiplier": run.get("fund_risk_multiplier"),
             "fund_score": run.get("fund_score"),
+            "use_orderflow_data": bool(orderflow_enabled),
+            "orderflow_feature_set": orderflow_feature_set,
             "created_at": run["created_at"],
         }
         artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
@@ -3498,6 +3861,7 @@ def risk_hooks(context):
                 "costs_breakdown": run["costs_breakdown"],
                 "dataset_hash": loaded.dataset_hash,
                 "data_source": loaded.source,
+                "metadata": run.get("metadata") if isinstance(run.get("metadata"), dict) else {},
             },
         )
         return run
@@ -3512,13 +3876,14 @@ def risk_hooks(context):
         payload: dict[str, Any],
     ) -> int:
         with self._connect() as conn:
+            ts_now = utc_now_iso()
             cursor = conn.execute(
                 """
                 INSERT INTO logs (ts, type, severity, module, message, related_ids, payload_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    utc_now_iso(),
+                    ts_now,
                     event_type,
                     severity,
                     module,
@@ -3527,6 +3892,18 @@ def risk_hooks(context):
                     json.dumps(payload),
                 ),
             )
+            if str(event_type or "").strip().lower() == "breaker_triggered":
+                payload_map = payload if isinstance(payload, dict) else {}
+                self._insert_breaker_event(
+                    conn,
+                    ts=ts_now,
+                    bot_id=str(payload_map.get("bot_id") or ""),
+                    mode=str(payload_map.get("mode") or ""),
+                    reason=str(payload_map.get("reason") or message or "breaker_triggered"),
+                    run_id=str(payload_map.get("run_id") or ""),
+                    symbol=str(payload_map.get("symbol") or ""),
+                    source_log_id=int(cursor.lastrowid),
+                )
             conn.commit()
             return int(cursor.lastrowid)
 
@@ -4749,7 +5126,7 @@ def create_app() -> FastAPI:
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
                 status_code=400,
-                detail="Research Batch solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'.",
+                detail="Research Batch solo acepta datos reales. ElegÃ­ dataset_source='auto' o 'dataset'.",
             )
         if not isinstance(cfg.get("costs"), dict):
             cfg["costs"] = {
@@ -4789,7 +5166,7 @@ def create_app() -> FastAPI:
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
                 status_code=400,
-                detail="Research Batch solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'.",
+                detail="Research Batch solo acepta datos reales. ElegÃ­ dataset_source='auto' o 'dataset'.",
             )
         if not isinstance(cfg.get("costs"), dict):
             cfg["costs"] = {
@@ -4918,7 +5295,7 @@ def create_app() -> FastAPI:
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
                 status_code=400,
-                detail="Modo Bestia solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'.",
+                detail="Modo Bestia solo acepta datos reales. ElegÃ­ dataset_source='auto' o 'dataset'.",
             )
         if not isinstance(cfg.get("costs"), dict):
             cfg["costs"] = {
@@ -5296,6 +5673,8 @@ def create_app() -> FastAPI:
         funding_bps = float(body.get("funding_bps") or costs_input.get("funding_bps") or 1.0)
         rollover_bps = float(body.get("rollover_bps") or costs_input.get("rollover_bps") or 0.0)
         validation_mode = body.get("validation_mode") or "walk-forward"
+        use_orderflow_raw = body.get("use_orderflow_data", True)
+        use_orderflow_data = bool(use_orderflow_raw) if isinstance(use_orderflow_raw, bool) else str(use_orderflow_raw).strip().lower() not in {"0", "false", "no", "off"}
 
         market = body.get("market")
         symbol = body.get("symbol")
@@ -5304,7 +5683,7 @@ def create_app() -> FastAPI:
         if data_source in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
                 status_code=400,
-                detail="Quick Backtest ya no permite resultados sintéticos. Configurá mercado/símbolo/timeframe y asegurá dataset real.",
+                detail="Quick Backtest ya no permite resultados sintÃ©ticos. ConfigurÃ¡ mercado/sÃ­mbolo/timeframe y asegurÃ¡ dataset real.",
             )
         if market and symbol and timeframe:
             try:
@@ -5321,6 +5700,7 @@ def create_app() -> FastAPI:
                     funding_bps=funding_bps,
                     rollover_bps=rollover_bps,
                     validation_mode=validation_mode,
+                    use_orderflow_data=use_orderflow_data,
                 )
             except FileNotFoundError as exc:
                 mk = str(market).strip().lower()
@@ -5340,7 +5720,7 @@ def create_app() -> FastAPI:
         else:
             raise HTTPException(
                 status_code=400,
-                detail="Quick Backtest requiere mercado, símbolo y timeframe para usar datos reales. No se generan corridas sintéticas.",
+                detail="Quick Backtest requiere mercado, sÃ­mbolo y timeframe para usar datos reales. No se generan corridas sintÃ©ticas.",
             )
         return {"ok": True, "run_id": run["id"], "run": run}
 
@@ -5386,15 +5766,26 @@ def create_app() -> FastAPI:
     def _catalog_compare_payload(run_ids: list[str]) -> dict[str, Any]:
         rows = store.backtest_catalog.compare_runs(run_ids)
         dataset_hashes = sorted({str(r.get("dataset_hash") or "") for r in rows if str(r.get("dataset_hash") or "")})
+        feature_sets = sorted(
+            {
+                str(_infer_orderflow_feature_set(report=r, catalog_row=r)[0] or "")
+                for r in rows
+                if isinstance(r, dict)
+            }
+        )
         warnings: list[str] = []
         if len(dataset_hashes) > 1:
             warnings.append("datasets_distintos")
+        if len([x for x in feature_sets if x and x != "orderflow_unknown"]) > 1:
+            warnings.append("feature_sets_distintos")
         return {
             "items": rows,
             "count": len(rows),
             "warnings": warnings,
             "dataset_hashes": dataset_hashes,
+            "feature_sets": feature_sets,
             "same_dataset": len(dataset_hashes) <= 1,
+            "same_feature_set": len([x for x in feature_sets if x and x != "orderflow_unknown"]) <= 1,
         }
 
     def _parse_model_value(raw: Any, default_label: str = "static", *, numeric_default: float = 0.0) -> tuple[str, float]:
@@ -5409,6 +5800,85 @@ def create_app() -> FastAPI:
             return (left.strip() or default_label, float(right.strip()))
         except Exception:
             return (left.strip() or default_label, float(numeric_default))
+
+    def _normalize_orderflow_feature_set(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"orderflow_on", "on", "enabled", "true", "1"}:
+            return "orderflow_on"
+        if text in {"orderflow_off", "off", "disabled", "false", "0", "ohlc_only"}:
+            return "orderflow_off"
+        return "orderflow_unknown"
+
+    def _infer_orderflow_feature_set(
+        *,
+        report: dict[str, Any] | None,
+        catalog_row: dict[str, Any] | None = None,
+        mass_row: dict[str, Any] | None = None,
+    ) -> tuple[str, bool, str]:
+        payload = report if isinstance(report, dict) else {}
+        catalog = catalog_row if isinstance(catalog_row, dict) else {}
+        direct = _normalize_orderflow_feature_set(payload.get("orderflow_feature_set") or payload.get("feature_set"))
+        if direct != "orderflow_unknown":
+            return direct, direct == "orderflow_on", "report_field"
+
+        if isinstance(payload.get("use_orderflow_data"), bool):
+            enabled = bool(payload.get("use_orderflow_data"))
+            return ("orderflow_on" if enabled else "orderflow_off"), enabled, "report_flag"
+
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        md_set = _normalize_orderflow_feature_set(metadata.get("orderflow_feature_set"))
+        if md_set != "orderflow_unknown":
+            return md_set, md_set == "orderflow_on", "metadata"
+        if isinstance(metadata.get("use_orderflow_data"), bool):
+            enabled = bool(metadata.get("use_orderflow_data"))
+            return ("orderflow_on" if enabled else "orderflow_off"), enabled, "metadata_flag"
+
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        if isinstance(params.get("use_orderflow_data"), bool):
+            enabled = bool(params.get("use_orderflow_data"))
+            return ("orderflow_on" if enabled else "orderflow_off"), enabled, "params"
+
+        params_json = payload.get("params_json") if isinstance(payload.get("params_json"), dict) else {}
+        if not params_json and isinstance(catalog.get("params_json"), dict):
+            params_json = catalog.get("params_json") or {}
+        if isinstance(params_json.get("use_orderflow_data"), bool):
+            enabled = bool(params_json.get("use_orderflow_data"))
+            return ("orderflow_on" if enabled else "orderflow_off"), enabled, "params_json"
+
+        flags = payload.get("flags") if isinstance(payload.get("flags"), dict) else {}
+        if not flags and isinstance(catalog.get("flags"), dict):
+            flags = catalog.get("flags") or {}
+        fg_set = _normalize_orderflow_feature_set(flags.get("ORDERFLOW_FEATURE_SET"))
+        if fg_set != "orderflow_unknown":
+            return fg_set, fg_set == "orderflow_on", "flags"
+        if isinstance(flags.get("ORDERFLOW_ENABLED"), bool):
+            enabled = bool(flags.get("ORDERFLOW_ENABLED"))
+            return ("orderflow_on" if enabled else "orderflow_off"), enabled, "flags_bool"
+
+        tags = payload.get("tags") if isinstance(payload.get("tags"), list) else (
+            catalog.get("tags") if isinstance(catalog.get("tags"), list) else []
+        )
+        tag_values = {str(x).strip().lower() for x in tags if str(x).strip()}
+        if "feature_set:orderflow_off" in tag_values:
+            return "orderflow_off", False, "tags"
+        if "feature_set:orderflow_on" in tag_values:
+            return "orderflow_on", True, "tags"
+
+        if isinstance(mass_row, dict):
+            micro = mass_row.get("microstructure") if isinstance(mass_row.get("microstructure"), dict) else {}
+            policy = micro.get("policy") if isinstance(micro.get("policy"), dict) else {}
+            if bool(policy.get("disabled_by_request")):
+                return "orderflow_off", False, "mass_micro_policy"
+            if isinstance(policy.get("enabled"), bool):
+                enabled = bool(policy.get("enabled"))
+                return ("orderflow_on" if enabled else "orderflow_off"), enabled, "mass_micro_policy"
+
+        market_name = str(payload.get("market") or catalog.get("market") or "").strip().lower()
+        if market_name == "equities":
+            return "orderflow_off", False, "market_default_equities"
+
+        # Backward compatibility: historic runs had order flow implicit ON.
+        return "orderflow_on", True, "default_backward_compat"
 
     def _mass_result_row_for_catalog_run(catalog_row: dict[str, Any]) -> dict[str, Any] | None:
         batch_id = str(catalog_row.get("batch_id") or "")
@@ -5449,6 +5919,21 @@ def create_app() -> FastAPI:
                     payload["fund_allow_trade"] = bool(catalog_row.get("fund_allow_trade"))
                 payload["fund_risk_multiplier"] = payload.get("fund_risk_multiplier") or catalog_row.get("fund_risk_multiplier")
                 payload["fund_score"] = payload.get("fund_score") or catalog_row.get("fund_score")
+                flags = catalog_row.get("flags") if isinstance(catalog_row.get("flags"), dict) else {}
+                if payload.get("fund_promotion_blocked") is None:
+                    payload["fund_promotion_blocked"] = bool(flags.get("FUNDAMENTALS_PROMOTION_BLOCKED", False))
+                feature_set, orderflow_enabled, feature_source = _infer_orderflow_feature_set(
+                    report=payload,
+                    catalog_row=catalog_row,
+                )
+                payload["use_orderflow_data"] = bool(orderflow_enabled)
+                payload["orderflow_feature_set"] = feature_set
+                payload["feature_set"] = feature_set
+                metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+                metadata["orderflow_feature_set"] = feature_set
+                metadata["use_orderflow_data"] = bool(orderflow_enabled)
+                metadata["orderflow_feature_source"] = feature_source
+                payload["metadata"] = metadata
                 return payload
             except HTTPException:
                 pass
@@ -5583,7 +6068,21 @@ def create_app() -> FastAPI:
             "fund_allow_trade": catalog_row.get("fund_allow_trade"),
             "fund_risk_multiplier": catalog_row.get("fund_risk_multiplier"),
             "fund_score": catalog_row.get("fund_score"),
+            "fund_promotion_blocked": bool(flags.get("FUNDAMENTALS_PROMOTION_BLOCKED", False)),
         }
+        feature_set, orderflow_enabled, feature_source = _infer_orderflow_feature_set(
+            report=report,
+            catalog_row=catalog_row,
+            mass_row=mass_row,
+        )
+        report["use_orderflow_data"] = bool(orderflow_enabled)
+        report["orderflow_feature_set"] = feature_set
+        report["feature_set"] = feature_set
+        metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+        metadata["orderflow_feature_set"] = feature_set
+        metadata["use_orderflow_data"] = bool(orderflow_enabled)
+        metadata["orderflow_feature_source"] = feature_source
+        report["metadata"] = metadata
         return report
 
     def _resolve_strategy_from_report_or_catalog(report: dict[str, Any], catalog_row: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -5611,7 +6110,17 @@ def create_app() -> FastAPI:
         # Legacy runs (runs.json)
         try:
             legacy = _find_run_or_404(run_id)
-            return dict(legacy), None
+            payload = dict(legacy)
+            feature_set, orderflow_enabled, feature_source = _infer_orderflow_feature_set(report=payload)
+            payload["orderflow_feature_set"] = feature_set
+            payload["feature_set"] = feature_set
+            payload["use_orderflow_data"] = bool(orderflow_enabled)
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            metadata["orderflow_feature_set"] = feature_set
+            metadata["use_orderflow_data"] = bool(orderflow_enabled)
+            metadata["orderflow_feature_source"] = feature_source
+            payload["metadata"] = metadata
+            return payload, None
         except HTTPException:
             pass
         catalog_row = _catalog_run_or_404(run_id)
@@ -5627,6 +6136,10 @@ def create_app() -> FastAPI:
         period = candidate_report.get("period") or {}
         candidate_strategy_name = str(candidate_report.get("strategy_name") or "")
         candidate_run_id = str(candidate_report.get("id") or "")
+        candidate_feature_set, _, _ = _infer_orderflow_feature_set(
+            report=candidate_report,
+            catalog_row=candidate_catalog,
+        )
         catalog_rows = store.backtest_catalog.list_runs()
 
         # Prefer same dataset + period and different strategy, completed and not archived.
@@ -5647,6 +6160,9 @@ def create_app() -> FastAPI:
                 continue
             if str(row.get("strategy_name") or "") == candidate_strategy_name:
                 continue
+            row_feature_set, _, _ = _infer_orderflow_feature_set(report=row, catalog_row=row)
+            if candidate_feature_set and row_feature_set != candidate_feature_set:
+                continue
             return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
 
         # Fallback to legacy picker if candidate exists in legacy.
@@ -5662,6 +6178,9 @@ def create_app() -> FastAPI:
             if str(row.get("run_id") or "") == candidate_run_id:
                 continue
             if str(row.get("status") or "") in {"completed", "completed_warn"}:
+                row_feature_set, _, _ = _infer_orderflow_feature_set(report=row, catalog_row=row)
+                if candidate_feature_set and row_feature_set != candidate_feature_set:
+                    continue
                 return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
         raise HTTPException(status_code=400, detail="No baseline run available to compare against candidate")
 
@@ -5688,9 +6207,24 @@ def create_app() -> FastAPI:
         baseline_report["params"] = baseline_strategy.get("params")
 
         gates_result = rollout_gates.evaluate(candidate_report)
+        candidate_feature_set, candidate_orderflow_enabled, candidate_feature_source = _infer_orderflow_feature_set(
+            report=candidate_report,
+            catalog_row=candidate_catalog,
+        )
+        baseline_feature_set, baseline_orderflow_enabled, baseline_feature_source = _infer_orderflow_feature_set(
+            report=baseline_report,
+            catalog_row=baseline_catalog,
+        )
+        candidate_report["orderflow_feature_set"] = candidate_feature_set
+        candidate_report["feature_set"] = candidate_feature_set
+        candidate_report["use_orderflow_data"] = bool(candidate_orderflow_enabled)
+        baseline_report["orderflow_feature_set"] = baseline_feature_set
+        baseline_report["feature_set"] = baseline_feature_set
+        baseline_report["use_orderflow_data"] = bool(baseline_orderflow_enabled)
         compare_thresholds = ((store.load_settings().get("rollout") or {}).get("improve_vs_baseline") or {})
         compare_engine = CompareEngine(compare_thresholds if isinstance(compare_thresholds, dict) else {})
         compare_result = compare_engine.compare(baseline_report, candidate_report)
+        same_feature_set = candidate_feature_set == baseline_feature_set
 
         k = candidate_report.get("metrics") if isinstance(candidate_report.get("metrics"), dict) else {}
         flags = (candidate_catalog or {}).get("flags") if isinstance((candidate_catalog or {}).get("flags"), dict) else (candidate_report.get("flags") if isinstance(candidate_report.get("flags"), dict) else {})
@@ -5707,6 +6241,10 @@ def create_app() -> FastAPI:
         funding_snapshot_id = candidate_report.get("funding_snapshot_id")
         fund_status = str(candidate_report.get("fund_status") or "")
         fund_allow_trade_raw = candidate_report.get("fund_allow_trade")
+        fund_promotion_blocked = bool(candidate_report.get("fund_promotion_blocked", False))
+        fund_warnings = candidate_report.get("fund_warnings") if isinstance(candidate_report.get("fund_warnings"), list) else []
+        if not fund_promotion_blocked:
+            fund_promotion_blocked = bool(flags.get("FUNDAMENTALS_PROMOTION_BLOCKED"))
         if fund_allow_trade_raw is None and isinstance(candidate_catalog, dict):
             fund_allow_trade_raw = candidate_catalog.get("fund_allow_trade")
             fund_status = fund_status or str(candidate_catalog.get("fund_status") or "")
@@ -5717,9 +6255,20 @@ def create_app() -> FastAPI:
         fundamentals_ok = bool(fund_allow_trade_raw) if fund_allow_trade_raw is not None else (not has_catalog_provenance)
         constraints_checks = [
             {"id": "run_status_completed", "ok": str(candidate_report.get("status") or "").lower() in {"completed", "completed_warn"}, "reason": "Run debe estar completado", "details": {"status": candidate_report.get("status")}},
-            {"id": "min_trades", "ok": trade_count >= max(1, min_trades_req), "reason": "Trades mínimos", "details": {"actual": trade_count, "threshold": max(1, min_trades_req)}},
+            {"id": "min_trades", "ok": trade_count >= max(1, min_trades_req), "reason": "Trades mÃ­nimos", "details": {"actual": trade_count, "threshold": max(1, min_trades_req)}},
             {"id": "realistic_costs", "ok": costs_ratio <= costs_ratio_max, "reason": "Costos realistas (costs_ratio)", "details": {"actual": round(costs_ratio, 6), "threshold": costs_ratio_max}},
             {"id": "oos_or_wfa", "ok": bool(flags.get("OOS") or flags.get("WFA")), "reason": "Debe tener evidencia OOS/WFA", "details": {"flags": flags}},
+            {
+                "id": "same_feature_set",
+                "ok": same_feature_set,
+                "reason": "Baseline y candidato deben tener mismo feature set de order flow",
+                "details": {
+                    "candidate_feature_set": candidate_feature_set,
+                    "baseline_feature_set": baseline_feature_set,
+                    "candidate_source": candidate_feature_source,
+                    "baseline_source": baseline_feature_source,
+                },
+            },
             {
                 "id": "cost_snapshots_present",
                 "ok": snapshots_ok,
@@ -5737,6 +6286,16 @@ def create_app() -> FastAPI:
                 "details": {
                     "fund_allow_trade": fund_allow_trade_raw,
                     "fund_status": fund_status or None,
+                    "catalog_run": has_catalog_provenance,
+                },
+            },
+            {
+                "id": "fundamentals_promotion_not_blocked",
+                "ok": not fund_promotion_blocked,
+                "reason": "Fundamentals no debe estar bloqueado para promocion",
+                "details": {
+                    "fund_promotion_blocked": fund_promotion_blocked,
+                    "fund_warnings": fund_warnings,
                     "catalog_run": has_catalog_provenance,
                 },
             },
@@ -5761,6 +6320,8 @@ def create_app() -> FastAPI:
                 "dataset_hash": candidate_report.get("dataset_hash"),
                 "period": candidate_report.get("period"),
                 "status": candidate_report.get("status"),
+                "orderflow_feature_set": candidate_feature_set,
+                "use_orderflow_data": bool(candidate_orderflow_enabled),
             },
             "baseline": {
                 "run_id": str(baseline_report.get("id") or ""),
@@ -5771,6 +6332,8 @@ def create_app() -> FastAPI:
                 "dataset_hash": baseline_report.get("dataset_hash"),
                 "period": baseline_report.get("period"),
                 "status": baseline_report.get("status"),
+                "orderflow_feature_set": baseline_feature_set,
+                "use_orderflow_data": bool(baseline_orderflow_enabled),
             },
             "constraints": {
                 "passed": constraints_ok,
@@ -5900,7 +6463,7 @@ def create_app() -> FastAPI:
                 if patched:
                     affected.append(patched)
             if not affected:
-                raise HTTPException(status_code=404, detail="Ninguno de los runs enviados existe en el catálogo.")
+                raise HTTPException(status_code=404, detail="Ninguno de los runs enviados existe en el catÃ¡logo.")
             store.add_log(
                 event_type="runs_bulk_patch",
                 severity="info",
@@ -5915,18 +6478,18 @@ def create_app() -> FastAPI:
             deleted_payload = store.delete_catalog_runs(run_ids)
             count = int((deleted_payload or {}).get("deleted_count") or 0)
             if count <= 0:
-                raise HTTPException(status_code=404, detail="Ninguno de los runs enviados existe en el catálogo.")
+                raise HTTPException(status_code=404, detail="Ninguno de los runs enviados existe en el catÃ¡logo.")
             store.add_log(
                 event_type="runs_bulk_delete",
                 severity="warn",
                 module="backtest",
-                message="Borrado masivo de runs del catálogo",
+                message="Borrado masivo de runs del catÃ¡logo",
                 related_ids=[str(x) for x in ((deleted_payload or {}).get("deleted_run_ids") or [])][:20],
                 payload=deleted_payload or {},
             )
             return {"ok": True, "action": action, **(deleted_payload or {})}
 
-        raise HTTPException(status_code=400, detail=f"Acción no soportada: {body.action}")
+        raise HTTPException(status_code=400, detail=f"AcciÃ³n no soportada: {body.action}")
 
     @app.get("/api/v1/batches")
     def batches_list(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
@@ -6128,7 +6691,7 @@ def create_app() -> FastAPI:
             event_type="run_promoted_to_rollout",
             severity="info",
             module="rollout",
-            message="Run promovido a rollout (Opción B, sin auto-live)",
+            message="Run promovido a rollout (OpciÃ³n B, sin auto-live)",
             related_ids=[str(candidate_report.get("id") or run_id), str(baseline_report.get("id") or "")],
             payload={
                 "target_mode": body.target_mode,
@@ -6898,3 +7461,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+

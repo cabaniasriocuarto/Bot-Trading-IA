@@ -71,6 +71,7 @@ class BacktestRequest:
     strategy_id: str
     validation_mode: str
     costs: BacktestCosts
+    use_orderflow_data: bool = True
 
 
 @dataclass(slots=True)
@@ -350,8 +351,8 @@ class StrategyRunner:
                                 "whitelist_ok": True,
                                 "trend_ok": True,
                                 "pullback_ok": True,
-                                "orderflow_ok": self.request.market != "equities",
-                                "vpin_ok": True,
+                                "orderflow_ok": bool(self.request.use_orderflow_data and self.request.market != "equities"),
+                                "vpin_ok": bool(self.request.use_orderflow_data and self.request.market != "equities"),
                                 "spread_ok": True,
                             },
                         }

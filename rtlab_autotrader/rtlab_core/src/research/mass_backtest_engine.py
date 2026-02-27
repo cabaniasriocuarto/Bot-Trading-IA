@@ -324,6 +324,13 @@ class MassBacktestEngine:
                     base[key] = merged
                 else:
                     base[key] = value
+        # Runtime override desde UI/API para habilitar/deshabilitar Order Flow.
+        use_orderflow_data = cfg.get("use_orderflow_data")
+        if isinstance(use_orderflow_data, bool) and not use_orderflow_data:
+            base["enabled"] = False
+            if isinstance(base.get("vpin"), dict):
+                base["vpin"]["enabled"] = False
+            base["disabled_by_request"] = True
         return base
 
     def _gates_policy(self, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -478,7 +485,8 @@ class MassBacktestEngine:
             return {"available": False, "reason": f"pandas_missing:{exc}"}
         policy = self._micro_policy(cfg)
         if not bool(policy.get("enabled", True)) or not bool((policy.get("vpin") or {}).get("enabled", True)):
-            return {"available": False, "reason": "microstructure_disabled", "policy": policy}
+            reason = "microstructure_disabled_by_request" if bool(policy.get("disabled_by_request")) else "microstructure_disabled"
+            return {"available": False, "reason": reason, "policy": policy}
         if df is None or len(df) < 20:
             return {"available": False, "reason": "insufficient_rows", "policy": policy}
 
@@ -1293,6 +1301,8 @@ class MassBacktestEngine:
     def _record_batch_children_catalog(self, *, batch_id: str, rows: list[dict[str, Any]], cfg: dict[str, Any]) -> None:
         cost_meta = cfg.get("resolved_cost_metadata") if isinstance(cfg.get("resolved_cost_metadata"), dict) else {}
         fund_meta = cfg.get("resolved_fundamentals_metadata") if isinstance(cfg.get("resolved_fundamentals_metadata"), dict) else {}
+        orderflow_enabled = bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True)))
+        orderflow_feature_set = "orderflow_on" if orderflow_enabled else "orderflow_off"
         for idx, row in enumerate(rows, start=1):
             summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
             regime = row.get("regime_metrics") if isinstance(row.get("regime_metrics"), dict) else {}
@@ -1350,10 +1360,20 @@ class MassBacktestEngine:
                     "initial_capital": _f(cfg.get("initial_capital"), 10000.0),
                     "position_sizing_profile": str(cfg.get("position_sizing_profile") or "default"),
                     "max_open_positions": _i(cfg.get("max_open_positions"), 1),
-                    "params_json": json.dumps({"variant_id": row.get("variant_id"), "params": params, "batch_rank": idx}, ensure_ascii=True, sort_keys=True),
+                    "params_json": json.dumps(
+                        {
+                            "variant_id": row.get("variant_id"),
+                            "params": params,
+                            "batch_rank": idx,
+                            "use_orderflow_data": bool(orderflow_enabled),
+                            "orderflow_feature_set": orderflow_feature_set,
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    ),
                     "seed": _i(row.get("seed")) if row.get("seed") is not None else None,
                     "alias": None,
-                    "tags_json": json.dumps(["batch_child", "research"], ensure_ascii=True),
+                    "tags_json": json.dumps(["batch_child", "research", f"feature_set:{orderflow_feature_set}"], ensure_ascii=True),
                     "kpi_summary_json": json.dumps(
                         {
                             "sharpe": summary.get("sharpe_oos"),
@@ -1392,6 +1412,8 @@ class MassBacktestEngine:
                             "MICRO_HARD_KILL": bool(micro_symbol_kill.get("hard")),
                             "ROBUSTEZ": "Alta" if bool(gates_eval.get("passed")) else ("Media" if bool(row.get("hard_filters_pass")) else "Baja"),
                             "GATES_ADV_PASS": bool(gates_eval.get("passed")),
+                            "ORDERFLOW_ENABLED": bool(orderflow_enabled),
+                            "ORDERFLOW_FEATURE_SET": orderflow_feature_set,
                         },
                         ensure_ascii=True,
                         sort_keys=True,
@@ -1407,6 +1429,8 @@ class MassBacktestEngine:
                                 "aggregate": micro_agg,
                                 "policy": (micro.get("policy") if isinstance(micro.get("policy"), dict) else {}),
                             },
+                            "use_orderflow_data": bool(orderflow_enabled),
+                            "orderflow_feature_set": orderflow_feature_set,
                         },
                         ensure_ascii=True,
                         sort_keys=True,
@@ -1458,6 +1482,10 @@ class MassBacktestEngine:
                 "bars_rows": _i(micro_debug.get("bars_rows"), 0),
                 "bucket_rows": _i(micro_debug.get("bucket_rows"), 0),
             }
+            policy = micro_debug.get("policy") if isinstance(micro_debug.get("policy"), dict) else {}
+            orderflow_enabled_effective = bool(policy.get("enabled", True)) and not bool(policy.get("disabled_by_request"))
+            cfg["resolved_use_orderflow_data"] = bool(orderflow_enabled_effective)
+            cfg["resolved_orderflow_feature_set"] = "orderflow_on" if bool(orderflow_enabled_effective) else "orderflow_off"
         try:
             cfg["resolved_cost_metadata"] = self.cost_model_resolver.resolve(
                 exchange=str(cfg.get("exchange") or "binance"),
@@ -1606,6 +1634,8 @@ class MassBacktestEngine:
                     "strategy_name": variant.get("strategy_name"),
                     "template_id": variant.get("template_id"),
                     "params": variant.get("params") or {},
+                    "use_orderflow_data": bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))),
+                    "orderflow_feature_set": str(cfg.get("resolved_orderflow_feature_set") or ("orderflow_on" if bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))) else "orderflow_off")),
                     "summary": summary,
                     "folds": fold_rows,
                     "regime_metrics": self._regime_metrics(fold_rows),
@@ -1668,6 +1698,13 @@ class MassBacktestEngine:
                     "max_live_switch_per_week": 1,
                     "option_b_no_auto_live": True,
                 },
+                "orderflow": {
+                    "use_orderflow_data": bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))),
+                    "feature_set": str(
+                        cfg.get("resolved_orderflow_feature_set")
+                        or ("orderflow_on" if bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))) else "orderflow_off")
+                    ),
+                },
                 "fundamentals": {
                     "enabled": bool(fund_meta.get("enabled", False)),
                     "enforced": bool(fund_meta.get("enforced", False)),
@@ -1690,6 +1727,13 @@ class MassBacktestEngine:
             "timeframe": cfg.get("timeframe"),
             "universe": universe,
             "costs_used": cfg.get("costs") or {},
+            "orderflow": {
+                "use_orderflow_data": bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))),
+                "feature_set": str(
+                    cfg.get("resolved_orderflow_feature_set")
+                    or ("orderflow_on" if bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))) else "orderflow_off")
+                ),
+            },
             "fundamentals_used": cfg.get("resolved_fundamentals_metadata") if isinstance(cfg.get("resolved_fundamentals_metadata"), dict) else {},
             "commit_hash": str(cfg.get("commit_hash") or "local"),
             "results_parquet": parquet_info,

@@ -118,6 +118,55 @@ El proyecto tiene:
   - `test_cost_providers.py`
   - resultado: `11 passed`
 
+## Actualizacion Opcion B + Opcion C (sin refactor masivo)
+
+### Fundamentals gating por modo (policy explicita)
+
+- Orden de severidad aplicado:
+  - `UNKNOWN < WEAK < BASIC < STRONG`
+- Reglas por modo:
+  - `LIVE`: minimo `STRONG`, fail-closed si faltan requeridos (`allow_trade=false`)
+  - `PAPER`: minimo `STRONG`, fail-closed si faltan requeridos (`allow_trade=false`)
+  - `BACKTEST`: minimo `BASIC`; si faltan requeridos permite corrida con:
+    - `fund_status=UNKNOWN`
+    - `warnings` incluye `fundamentals_missing`
+    - `promotion_blocked=true`
+    - `fundamentals_quality=ohlc_only`
+- Separacion Snapshot vs Decision:
+  - `get_fundamentals_snapshot_cached(...)` cachea solo snapshot crudo
+  - `evaluate_credit_policy(...)` calcula decision final por modo
+  - `allow_trade` no se cachea
+- Backtest equities sin snapshot fundamentals:
+  - ya no aborta por defecto en BACKTEST
+  - el run se crea con metadata/warnings y bloqueado para promocion
+  - en PAPER/LIVE se mantiene fail-closed
+
+### Bots overview performance (/api/v1/bots)
+
+- Se elimino el patron N+1 por bot.
+- Nuevo agregado batch en backend:
+  - `ConsoleStore.get_bots_overview(...)`
+- Carga en lote:
+  - KPIs por modo y por pool de estrategias
+  - logs recientes por bot (max 20 por bot; limite total 2000)
+  - kills por bot y por modo
+- Endpoint `GET /api/v1/bots` mantiene contrato actual y ahora consume overview batch interno.
+
+### Breaker events schema (fuente canonica para kills)
+
+- Tabla SQLite:
+  - `breaker_events`
+- Campos:
+  - `bot_id` (obligatorio; faltante -> `unknown_bot`)
+  - `mode` (obligatorio; faltante/invalid -> `unknown`)
+  - `ts`
+  - `reason`
+  - `run_id` (nullable)
+  - `symbol` (nullable)
+  - `source_log_id` (unique cuando viene de logs)
+- `add_log(..., event_type=\"breaker_triggered\")` inserta/actualiza `breaker_events` en tiempo real.
+- Backfill legacy desde `logs` disponible en init (`_backfill_breaker_events_from_logs`).
+
 ## Lo que sigue faltando (verdad actual)
 
 - Virtualizacion adicional en otras tablas grandes (D2 de comparador ya virtualizado)

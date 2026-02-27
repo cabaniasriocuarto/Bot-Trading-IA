@@ -2,6 +2,30 @@
 
 ## 2026-02-27
 
+### Opcion B + Opcion C (hotfix calibracion sin refactor masivo)
+- `FundamentalsCreditFilter` separado en:
+  - `get_fundamentals_snapshot_cached(...)` (snapshot crudo)
+  - `evaluate_credit_policy(...)` (decision por modo)
+- Fix leakage por modo:
+  - mismo snapshot puede dar decision distinta segun `BACKTEST` vs `LIVE/PAPER`.
+  - `allow_trade` ya no depende de cache de decision.
+- Backtest equities sin fundamentals preexistentes:
+  - en `BACKTEST` no aborta por 400; corre con `fundamentals_missing`, `fundamentals_quality=ohlc_only`, `promotion_blocked=true`.
+  - en `LIVE/PAPER` se mantiene fail-closed.
+- `/api/v1/bots` sin N+1:
+  - nuevo batch `get_bots_overview(...)` para KPIs/logs/kills por bot.
+  - `list_bot_instances` usa overview batch interno.
+- Kills correctamente scopeados por `bot_id + mode`:
+  - nueva tabla `breaker_events` ya conectada al flujo runtime (`add_log` con `breaker_triggered`).
+  - `mode` faltante pasa a `unknown` (no se imputa a `paper`).
+- Tests nuevos/ajustados:
+  - `test_fundamentals_mode_leakage.py`
+  - `test_fundamentals_credit_filter.py` (policy nueva BACKTEST/LIVE)
+  - `test_web_live_ready.py` (equities ohlc_only + kills por bot/mode)
+- Suite focal corrida:
+  - `python -m pytest rtlab_autotrader/tests/test_fundamentals_mode_leakage.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py rtlab_autotrader/tests/test_web_live_ready.py::test_event_backtest_engine_runs_for_crypto_forex_equities rtlab_autotrader/tests/test_web_live_ready.py::test_bots_multi_instance_endpoints rtlab_autotrader/tests/test_web_live_ready.py::test_bots_overview_scopes_kills_by_bot_and_mode rtlab_autotrader/tests/test_web_live_ready.py::test_bots_live_mode_blocked_by_gates -q`
+  - resultado: `11 passed`.
+
 ### Calibracion real (fundamentals + costos)
 - Nueva policy `config/policies/fundamentals_credit_filter.yaml` con scoring, thresholds, reglas por instrumento y snapshots.
 - Nuevo modulo `rtlab_core/fundamentals/credit_filter.py` con evaluacion auditable:

@@ -163,3 +163,13 @@ def test_dataset_mode_provider_no_api_keys_required_and_returns_hints_when_missi
   assert payload["public_downloadable"] is True
   assert payload["ready"] is False
   assert payload["hints"]
+
+
+def test_orderflow_toggle_can_disable_microstructure_in_mass_backtest(tmp_path: Path) -> None:
+  engine = _engine(tmp_path)
+  policy = engine._micro_policy({"use_orderflow_data": False})
+  assert bool(policy.get("enabled")) is False
+  assert bool((policy.get("vpin") or {}).get("enabled")) is False
+  debug = engine._compute_microstructure_dataset_debug(df=None, cfg={"use_orderflow_data": False})
+  assert debug["available"] is False
+  assert debug["reason"] == "microstructure_disabled_by_request"

@@ -94,6 +94,13 @@ def test_compare_engine_improvement_rules() -> None:
   assert fail["passed"] is False
   assert {"same_dataset_hash", "improve_expectancy_or_net_pnl", "cost_increase_limit"} & set(fail["failed_ids"])
 
+  mixed = copy.deepcopy(candidate)
+  baseline["orderflow_feature_set"] = "orderflow_on"
+  mixed["orderflow_feature_set"] = "orderflow_off"
+  mixed_res = compare.compare(baseline, mixed)
+  assert mixed_res["passed"] is False
+  assert "same_feature_set" in set(mixed_res["failed_ids"])
+
 
 def test_rollout_manager_transitions_and_rollback(tmp_path: Path) -> None:
   manager = RolloutManager(user_data_dir=tmp_path)

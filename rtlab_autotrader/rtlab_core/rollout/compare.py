@@ -18,6 +18,56 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _normalize_orderflow_feature_set(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"orderflow_on", "on", "enabled", "true", "1"}:
+        return "orderflow_on"
+    if text in {"orderflow_off", "off", "disabled", "false", "0", "ohlc_only"}:
+        return "orderflow_off"
+    return "orderflow_unknown"
+
+
+def _extract_orderflow_feature_set(report: dict[str, Any]) -> tuple[str, str]:
+    direct = _normalize_orderflow_feature_set(report.get("orderflow_feature_set") or report.get("feature_set"))
+    if direct != "orderflow_unknown":
+        return direct, "report_field"
+
+    if isinstance(report.get("use_orderflow_data"), bool):
+        return ("orderflow_on" if bool(report.get("use_orderflow_data")) else "orderflow_off"), "report_flag"
+
+    params = report.get("params") if isinstance(report.get("params"), dict) else {}
+    if isinstance(params.get("use_orderflow_data"), bool):
+        return ("orderflow_on" if bool(params.get("use_orderflow_data")) else "orderflow_off"), "params"
+
+    params_json = report.get("params_json") if isinstance(report.get("params_json"), dict) else {}
+    if isinstance(params_json.get("use_orderflow_data"), bool):
+        return ("orderflow_on" if bool(params_json.get("use_orderflow_data")) else "orderflow_off"), "params_json"
+
+    metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+    mset = _normalize_orderflow_feature_set(metadata.get("orderflow_feature_set"))
+    if mset != "orderflow_unknown":
+        return mset, "metadata"
+    if isinstance(metadata.get("use_orderflow_data"), bool):
+        return ("orderflow_on" if bool(metadata.get("use_orderflow_data")) else "orderflow_off"), "metadata_flag"
+
+    flags = report.get("flags") if isinstance(report.get("flags"), dict) else {}
+    fset = _normalize_orderflow_feature_set(flags.get("ORDERFLOW_FEATURE_SET"))
+    if fset != "orderflow_unknown":
+        return fset, "flags"
+    if isinstance(flags.get("ORDERFLOW_ENABLED"), bool):
+        return ("orderflow_on" if bool(flags.get("ORDERFLOW_ENABLED")) else "orderflow_off"), "flags_bool"
+
+    tags = report.get("tags") if isinstance(report.get("tags"), list) else []
+    tag_values = {str(x).strip().lower() for x in tags if str(x).strip()}
+    if "feature_set:orderflow_off" in tag_values:
+        return "orderflow_off", "tags"
+    if "feature_set:orderflow_on" in tag_values:
+        return "orderflow_on", "tags"
+
+    # Backward compatibility: historic runs assumed order flow ON when missing.
+    return "orderflow_on", "default_backward_compat"
+
+
 class CompareEngine:
     def __init__(self, thresholds: dict[str, Any] | None = None) -> None:
         incoming = thresholds or {}
@@ -32,6 +82,18 @@ class CompareEngine:
 
         def check(check_id: str, ok: bool, reason: str, **details: Any) -> None:
             checks.append({"id": check_id, "ok": bool(ok), "reason": reason, "details": details})
+
+        b_feature_set, b_feature_source = _extract_orderflow_feature_set(baseline_report)
+        c_feature_set, c_feature_source = _extract_orderflow_feature_set(candidate_report)
+        check(
+            "same_feature_set",
+            b_feature_set == c_feature_set,
+            "Baseline y candidato deben usar el mismo set de features (order flow ON/OFF)",
+            baseline=b_feature_set,
+            candidate=c_feature_set,
+            baseline_source=b_feature_source,
+            candidate_source=c_feature_source,
+        )
 
         same_dataset_hash = str(candidate_report.get("dataset_hash") or "") == str(baseline_report.get("dataset_hash") or "")
         check(

@@ -396,6 +396,7 @@ export default function BacktestsPage() {
     top_n: "10",
     seed: "42",
     dataset_source: "auto",
+    use_orderflow_data: true,
   });
   const [focusRunTab, setFocusRunTab] = useState<FocusRunTab>("overview");
 
@@ -867,6 +868,7 @@ export default function BacktestsPage() {
         test_days: Number(massForm.test_days),
         top_n: Number(massForm.top_n),
         seed: Number(massForm.seed),
+        use_orderflow_data: Boolean(massForm.use_orderflow_data),
         costs: {
           fees_bps: Number(form.fees_bps),
           spread_bps: Number(form.spread_bps),
@@ -911,6 +913,7 @@ export default function BacktestsPage() {
           test_days: Number(massForm.test_days),
           top_n: Number(massForm.top_n),
           seed: Number(massForm.seed),
+          use_orderflow_data: Boolean(massForm.use_orderflow_data),
           tier: beastTier,
           costs: {
             fees_bps: Number(form.fees_bps),
@@ -3006,6 +3009,17 @@ export default function BacktestsPage() {
                   <label className="flex h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 text-sm">
                     <input type="checkbox" checked={massOnlyPass} onChange={(e) => setMassOnlyPass(e.target.checked)} />
                     Solo hard-pass
+                  </label>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Order Flow</label>
+                  <label className="flex h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={massForm.use_orderflow_data}
+                      onChange={(e) => setMassForm((p) => ({ ...p, use_orderflow_data: e.target.checked }))}
+                    />
+                    Usar datos order flow (VPIN/L1)
                   </label>
                 </div>
               </div>

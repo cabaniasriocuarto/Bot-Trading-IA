@@ -71,6 +71,45 @@ def _pick_float(payload: dict[str, Any], *keys: str) -> float | None:
     return _f(_pick(payload, *keys), None)
 
 
+STATUS_ORDER: dict[str, int] = {
+    "UNKNOWN": 0,
+    "WEAK": 1,
+    "SPECULATIVE": 1,  # Compat con snapshots legacy.
+    "BASIC": 2,
+    "STRONG": 3,
+    "NOT_APPLICABLE": 4,
+}
+
+DEFAULT_MIN_STATUS_BY_MODE: dict[str, str] = {
+    "backtest": "BASIC",
+    "paper": "STRONG",
+    "testnet": "STRONG",
+    "live": "STRONG",
+}
+
+DEFAULT_FAIL_CLOSED_MODES: set[str] = {"paper", "live"}
+
+REQUIRED_MISSING_CODES: set[str] = {
+    "DATA_MISSING_ASOF",
+    "DATA_STALE",
+    "DATA_MISSING_BALANCE",
+    "FUND_BOND_DATA_MISSING",
+    "COLLATERAL_BREACH",
+    "DATA_SOURCE_REMOTE_ERROR",
+}
+
+
+def _normalize_status(value: str | None) -> str:
+    status = str(value or "UNKNOWN").strip().upper()
+    if status == "SPECULATIVE":
+        return "WEAK"
+    return status if status in STATUS_ORDER else "UNKNOWN"
+
+
+def _status_rank(value: str | None) -> int:
+    return int(STATUS_ORDER.get(_normalize_status(value), 0))
+
+
 def _resolve_repo_root(explicit_policies_root: Path | None = None) -> Path:
     if explicit_policies_root:
         pr = explicit_policies_root.resolve()
@@ -198,6 +237,113 @@ class FundamentalsCreditFilter:
         except Exception as exc:
             return None, {"url": url, "error": str(exc)}
 
+    def _snapshot_version(self) -> str:
+        snapshots_cfg = self.policy.get("snapshots") if isinstance(self.policy.get("snapshots"), dict) else {}
+        return str(snapshots_cfg.get("snapshot_version") or "v2").strip().lower()
+
+    def get_fundamentals_snapshot_cached(
+        self,
+        *,
+        exchange: str,
+        market: str,
+        symbol: str,
+        instrument_type: str,
+        snapshot_version: str,
+        asof_ts: str | None = None,
+    ) -> dict[str, Any] | None:
+        cached = self.catalog.latest_valid_fundamentals_snapshot(
+            exchange=str(exchange),
+            market=str(market).lower(),
+            symbol=str(symbol).upper(),
+            as_of=asof_ts,
+        )
+        if not cached:
+            return None
+        if str(cached.get("instrument_type") or "").lower() != str(instrument_type or "").lower():
+            return None
+        payload = cached.get("payload") if isinstance(cached.get("payload"), dict) else {}
+        existing_version = str(payload.get("snapshot_version") or "").strip().lower()
+        expected_version = str(snapshot_version or "").strip().lower()
+        if expected_version:
+            if not existing_version:
+                return None
+            if existing_version != expected_version:
+                return None
+        return cached
+
+    def evaluate_credit_policy(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        mode: str,
+        min_status_by_mode: dict[str, str] | None = None,
+        fail_closed_modes: set[str] | None = None,
+    ) -> dict[str, Any]:
+        mode_n = str(mode or "backtest").strip().lower()
+        min_map = {**DEFAULT_MIN_STATUS_BY_MODE, **(min_status_by_mode or {})}
+        fail_closed = {str(x).strip().lower() for x in (fail_closed_modes or DEFAULT_FAIL_CLOSED_MODES) if str(x).strip()}
+        explain = snapshot.get("explain") if isinstance(snapshot.get("explain"), list) else []
+        required_missing: list[str] = []
+        reasons: list[str] = []
+        warnings: list[str] = []
+
+        for row in explain:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("code") or "").strip().upper()
+            sev = str(row.get("severity") or "").strip().upper()
+            if code in REQUIRED_MISSING_CODES or code.startswith("DATA_MISSING_"):
+                if code and code not in required_missing:
+                    required_missing.append(code)
+            if sev == "FAIL":
+                msg = str(row.get("message") or code or "").strip()
+                if msg:
+                    reasons.append(msg)
+
+        base_status = _normalize_status(str(snapshot.get("fund_status") or "UNKNOWN"))
+        min_status = _normalize_status(min_map.get(mode_n, "STRONG"))
+        enforced = bool(snapshot.get("enforced", False))
+        promotion_blocked = False
+        allow_trade = bool(snapshot.get("allow_trade", False))
+        status_final = base_status
+
+        if not enforced or base_status == "NOT_APPLICABLE":
+            allow_trade = True
+            promotion_blocked = False
+            status_final = "NOT_APPLICABLE" if base_status == "NOT_APPLICABLE" else base_status
+        elif mode_n == "backtest" and required_missing:
+            allow_trade = True
+            promotion_blocked = True
+            status_final = "UNKNOWN"
+            warnings.append("fundamentals_missing")
+            reasons.append("BACKTEST autorizado con OHLC-only: faltan fundamentals requeridos.")
+        elif required_missing and mode_n in fail_closed:
+            allow_trade = False
+            promotion_blocked = True
+            status_final = "UNKNOWN"
+            reasons.append(f"{mode_n.upper()} bloqueado por faltantes requeridos de fundamentals (fail-closed).")
+        else:
+            allow_trade = _status_rank(base_status) >= _status_rank(min_status)
+            promotion_blocked = not allow_trade
+            if not allow_trade:
+                reasons.append(
+                    f"Estado fundamentals {base_status} por debajo del minimo {min_status} para {mode_n.upper()}."
+                )
+
+        if promotion_blocked and "fundamentals_missing" not in warnings and required_missing:
+            warnings.append("fundamentals_missing")
+
+        fundamentals_quality = "ohlc_only" if "fundamentals_missing" in warnings else "snapshot"
+        return {
+            "allow_trade": bool(allow_trade),
+            "fund_status": status_final,
+            "required_missing": required_missing,
+            "promotion_blocked": bool(promotion_blocked),
+            "warnings": warnings,
+            "reasons": reasons,
+            "fundamentals_quality": fundamentals_quality,
+        }
+
     def evaluate(
         self,
         *,
@@ -230,6 +376,9 @@ class FundamentalsCreditFilter:
         snapshots_cfg = self.policy.get("snapshots") if isinstance(self.policy.get("snapshots"), dict) else {}
         persist_snapshots = bool(snapshots_cfg.get("persist", True))
         ttl_hours = int(_f(snapshots_cfg.get("snapshot_ttl_hours"), 24) or 24)
+        snapshot_version = self._snapshot_version()
+        min_status_by_mode = DEFAULT_MIN_STATUS_BY_MODE.copy()
+        fail_closed_modes = set(DEFAULT_FAIL_CLOSED_MODES if fail_closed else set())
 
         if not enabled:
             return {
@@ -241,20 +390,45 @@ class FundamentalsCreditFilter:
                 "fund_score": 100.0,
                 "fund_status": "DISABLED",
                 "explain": [{"code": "DISABLED", "severity": "INFO", "message": "fundamentals_credit_filter deshabilitado"}],
+                "reasons": [],
+                "required_missing": [],
+                "promotion_blocked": False,
+                "warnings": [],
+                "fundamentals_quality": "snapshot",
             }
 
-        cached = self.catalog.latest_valid_fundamentals_snapshot(exchange=str(exchange), market=market_n, symbol=symbol_n)
-        if cached and str(cached.get("instrument_type") or "").lower() == instr_n:
+        cached = self.get_fundamentals_snapshot_cached(
+            exchange=str(exchange),
+            market=market_n,
+            symbol=symbol_n,
+            instrument_type=instr_n,
+            snapshot_version=snapshot_version,
+            asof_ts=asof_date,
+        )
+        if cached:
+            decision = self.evaluate_credit_policy(
+                snapshot=cached,
+                mode=mode_n,
+                min_status_by_mode=min_status_by_mode,
+                fail_closed_modes=fail_closed_modes,
+            )
+            payload = cached.get("payload") if isinstance(cached.get("payload"), dict) else {}
+            source_ref = payload.get("source_ref") if isinstance(payload.get("source_ref"), dict) else {}
             return {
                 "enabled": True,
                 "enforced": bool(cached.get("enforced", False)),
                 "snapshot_id": cached.get("snapshot_id"),
-                "allow_trade": bool(cached.get("allow_trade", True)),
+                "allow_trade": bool(decision.get("allow_trade", False)),
                 "risk_multiplier": float(cached.get("risk_multiplier") or 1.0),
                 "fund_score": float(cached.get("fund_score") or 0.0),
-                "fund_status": str(cached.get("fund_status") or "UNKNOWN"),
+                "fund_status": str(decision.get("fund_status") or "UNKNOWN"),
                 "explain": list(cached.get("explain") or []),
-                "source_ref": cached.get("source_ref") or {},
+                "source_ref": source_ref,
+                "reasons": decision.get("reasons") if isinstance(decision.get("reasons"), list) else [],
+                "required_missing": decision.get("required_missing") if isinstance(decision.get("required_missing"), list) else [],
+                "promotion_blocked": bool(decision.get("promotion_blocked", False)),
+                "warnings": decision.get("warnings") if isinstance(decision.get("warnings"), list) else [],
+                "fundamentals_quality": str(decision.get("fundamentals_quality") or "snapshot"),
             }
 
         local_payload: dict[str, Any] | None = None
@@ -604,7 +778,6 @@ class FundamentalsCreditFilter:
 
             if hard_fail and fail_closed:
                 status = "UNKNOWN"
-                allow_trade = False
                 risk_multiplier = 0.0
             else:
                 if score >= 80:
@@ -612,18 +785,16 @@ class FundamentalsCreditFilter:
                 elif score >= 60:
                     status = "BASIC"
                 elif score > 0:
-                    status = "SPECULATIVE"
+                    status = "WEAK"
                 else:
                     status = "UNKNOWN"
-                allowed_status = self._mode_allow_statuses(instrument_type=instr_n, target_mode=mode_n)
-                allow_trade = status in set(allowed_status) if allowed_status else False
                 risk_multiplier = (
                     1.0
                     if status == "STRONG"
                     else 0.7
                     if status == "BASIC"
                     else 0.4
-                    if status == "SPECULATIVE"
+                    if status == "WEAK"
                     else 0.0
                 )
 
@@ -648,12 +819,34 @@ class FundamentalsCreditFilter:
             "market": market_n,
             "symbol": symbol_n,
             "instrument_type": instr_n,
-            "target_mode": mode_n,
+            "snapshot_version": snapshot_version,
+            "source_ref": source_ref,
             "policy": self.policy,
             "raw": raw,
         }
 
-        snapshot_id = None
+        # Snapshot guarda solo datos + scoring base; la decisión final se calcula por modo.
+        base_allow_trade = _status_rank(status) >= _status_rank("BASIC")
+        snapshot: dict[str, Any] = {
+            "snapshot_id": None,
+            "exchange": str(exchange).lower(),
+            "market": market_n,
+            "symbol": symbol_n,
+            "instrument_type": instr_n,
+            "source": str(source_ref.get("source") or "unknown"),
+            "source_id": str(source_ref.get("source_id") or ""),
+            "asof_date": str(source_ref.get("asof_date") or ""),
+            "raw_payload_hash": str(raw_hash),
+            "payload": payload,
+            "explain": explain,
+            "fund_score": float(score),
+            "fund_status": str(status),
+            "allow_trade": bool(base_allow_trade),
+            "risk_multiplier": float(risk_multiplier),
+            "fetched_at": fetched_at,
+            "expires_at": expires_at,
+            "enforced": bool(enforced),
+        }
         if persist_snapshots:
             snap = self.catalog.insert_fundamentals_snapshot(
                 exchange=str(exchange),
@@ -668,22 +861,35 @@ class FundamentalsCreditFilter:
                 explain=explain,
                 fund_score=float(score),
                 fund_status=str(status),
-                allow_trade=bool(allow_trade),
+                allow_trade=bool(base_allow_trade),
                 risk_multiplier=float(risk_multiplier),
                 fetched_at=fetched_at,
                 expires_at=expires_at,
                 enforced=bool(enforced),
             )
-            snapshot_id = snap.get("snapshot_id")
+            if isinstance(snap, dict):
+                snapshot = snap
+
+        decision = self.evaluate_credit_policy(
+            snapshot=snapshot,
+            mode=mode_n,
+            min_status_by_mode=min_status_by_mode,
+            fail_closed_modes=fail_closed_modes,
+        )
 
         return {
             "enabled": True,
             "enforced": bool(enforced),
-            "snapshot_id": snapshot_id,
-            "allow_trade": bool(allow_trade),
-            "risk_multiplier": float(risk_multiplier),
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "allow_trade": bool(decision.get("allow_trade", False)),
+            "risk_multiplier": float(snapshot.get("risk_multiplier") or 0.0),
             "fund_score": float(score),
-            "fund_status": str(status),
+            "fund_status": str(decision.get("fund_status") or "UNKNOWN"),
             "explain": explain,
             "source_ref": source_ref,
+            "reasons": decision.get("reasons") if isinstance(decision.get("reasons"), list) else [],
+            "required_missing": decision.get("required_missing") if isinstance(decision.get("required_missing"), list) else [],
+            "promotion_blocked": bool(decision.get("promotion_blocked", False)),
+            "warnings": decision.get("warnings") if isinstance(decision.get("warnings"), list) else [],
+            "fundamentals_quality": str(decision.get("fundamentals_quality") or "snapshot"),
         }

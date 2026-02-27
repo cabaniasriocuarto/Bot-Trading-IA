@@ -52,10 +52,33 @@ def test_fundamentals_fail_closed_when_required_data_missing(tmp_path: Path) -> 
         raw_payload={"market": "equities", "symbol": "AAPL"},
     )
     assert out["enforced"] is True
-    assert out["allow_trade"] is False
+    assert out["allow_trade"] is True
     assert out["fund_status"] == "UNKNOWN"
+    assert out["promotion_blocked"] is True
+    assert "fundamentals_missing" in list(out.get("warnings") or [])
     codes = {str((r or {}).get("code") or "") for r in out.get("explain") or [] if isinstance(r, dict)}
     assert "DATA_MISSING_BALANCE" in codes
+
+
+def test_fundamentals_live_fail_closed_when_required_data_missing(tmp_path: Path) -> None:
+    db = BacktestCatalogDB(tmp_path / "catalog.sqlite3")
+    filt = FundamentalsCreditFilter(catalog=db, policies_root=Path("config/policies"))
+    out = filt.evaluate(
+        exchange="alpaca",
+        market="equities",
+        symbol="AAPL",
+        instrument_type="common",
+        target_mode="live",
+        asof_date=_now_iso(),
+        source="test",
+        source_id="equities:AAPL",
+        raw_payload={"market": "equities", "symbol": "AAPL"},
+    )
+    assert out["enforced"] is True
+    assert out["allow_trade"] is False
+    assert out["fund_status"] == "UNKNOWN"
+    assert out["promotion_blocked"] is True
+    assert "fundamentals_missing" in list(out.get("warnings") or [])
 
 
 def test_fundamentals_common_strong_allows_backtest(tmp_path: Path) -> None:

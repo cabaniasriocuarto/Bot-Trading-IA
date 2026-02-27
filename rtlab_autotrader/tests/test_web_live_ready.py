@@ -498,7 +498,7 @@ def test_exchange_diagnose_autocorrects_common_binance_testnet_url_typo(tmp_path
   payload = diagnose.json()
   assert payload["ok"] is True
   assert payload["base_url"] == "https://testnet.binance.vision"
-  assert any("corregida automáticamente" in msg for msg in (payload.get("diagnostics") or []))
+  assert any("corregida autom" in str(msg).lower() for msg in (payload.get("diagnostics") or []))
 
 
 def test_exchange_diagnose_uses_json_only_in_local_dev(tmp_path: Path, monkeypatch) -> None:
@@ -589,6 +589,48 @@ def test_backtests_run_rejects_synthetic_source(tmp_path: Path, monkeypatch) -> 
   )
   assert res.status_code == 400
   assert "no permite resultados sint" in res.json()["detail"].lower()
+
+
+def test_validate_promotion_blocks_mixed_orderflow_feature_set(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(_module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  payload_common = {
+    "strategy_id": strategy_id,
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
+    "validation_mode": "walk-forward",
+    "costs_model": {"fees_bps": 5.0, "spread_bps": 4.0, "slippage_bps": 2.0, "funding_bps": 1.0},
+  }
+
+  run_on_res = client.post("/api/v1/backtests/run", headers=headers, json={**payload_common, "use_orderflow_data": True})
+  assert run_on_res.status_code == 200, run_on_res.text
+  run_on_id = str(run_on_res.json()["run"]["id"])
+
+  run_off_res = client.post("/api/v1/backtests/run", headers=headers, json={**payload_common, "use_orderflow_data": False})
+  assert run_off_res.status_code == 200, run_off_res.text
+  run_off_id = str(run_off_res.json()["run"]["id"])
+
+  validate_res = client.post(
+    f"/api/v1/runs/{run_off_id}/validate_promotion",
+    headers=headers,
+    json={"target_mode": "paper", "baseline_run_id": run_on_id},
+  )
+  assert validate_res.status_code == 200, validate_res.text
+  payload = validate_res.json()
+  compare_failed = set(((payload.get("compare_vs_baseline") or {}).get("failed_ids") or []))
+  assert "same_feature_set" in compare_failed
+  checks = (payload.get("constraints") or {}).get("checks") or []
+  same_feature_check = next(row for row in checks if row.get("id") == "same_feature_set")
+  assert bool(same_feature_check.get("ok")) is False
+  assert payload.get("rollout_ready") is False
 
 
 def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, *, source: str, include_bid_ask: bool = False) -> None:
@@ -697,6 +739,12 @@ def test_event_backtest_engine_runs_for_crypto_forex_equities(tmp_path: Path, mo
     assert "costs_breakdown" in run
     assert "total_entries" in run["metrics"]
     assert run["artifacts_local"]["report_json_local"].endswith(".json")
+    if cfg["market"] == "equities":
+      assert run["fund_allow_trade"] is True
+      assert run["fund_status"] == "UNKNOWN"
+      assert run["fund_promotion_blocked"] is True
+      assert run["fundamentals_quality"] == "ohlc_only"
+      assert "fundamentals_missing" in list((run.get("metadata") or {}).get("warnings") or [])
 
   status = client.get("/api/v1/data/status", headers=headers)
   assert status.status_code == 200
@@ -1054,6 +1102,70 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   assert updated_bot is not None
   assert updated_bot["mode"] == "paper"
   assert updated_bot["status"] == "paused"
+
+
+def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  bot1_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "AutoBot Scope 1", "mode": "paper", "status": "active"},
+  )
+  assert bot1_res.status_code == 200, bot1_res.text
+  bot1_id = bot1_res.json()["bot"]["id"]
+
+  bot2_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "AutoBot Scope 2", "mode": "paper", "status": "active"},
+  )
+  assert bot2_res.status_code == 200, bot2_res.text
+  bot2_id = bot2_res.json()["bot"]["id"]
+
+  module.store.add_log(
+    event_type="breaker_triggered",
+    severity="warn",
+    module="risk",
+    message="kill bot1 paper",
+    related_ids=[bot1_id],
+    payload={"bot_id": bot1_id, "mode": "paper", "reason": "test", "symbol": "BTCUSDT"},
+  )
+  module.store.add_log(
+    event_type="breaker_triggered",
+    severity="warn",
+    module="risk",
+    message="kill bot1 unknown",
+    related_ids=[bot1_id],
+    payload={"bot_id": bot1_id, "reason": "missing_mode"},
+  )
+  module.store.add_log(
+    event_type="breaker_triggered",
+    severity="warn",
+    module="risk",
+    message="kill bot2 testnet",
+    related_ids=[bot2_id],
+    payload={"bot_id": bot2_id, "mode": "testnet", "reason": "test"},
+  )
+
+  list_res = client.get("/api/v1/bots", headers=headers)
+  assert list_res.status_code == 200, list_res.text
+  items = list_res.json()["items"]
+  row1 = next(row for row in items if row["id"] == bot1_id)
+  row2 = next(row for row in items if row["id"] == bot2_id)
+
+  assert row1["metrics"]["kills_by_mode"]["paper"] == 1
+  assert row1["metrics"]["kills_by_mode"]["unknown"] == 1
+  assert row1["metrics"]["kills_total"] == 1
+  assert row1["metrics"]["kills_by_mode_24h"]["paper"] == 1
+  assert row1["metrics"]["kills_by_mode_24h"]["unknown"] == 1
+  assert row1["metrics"]["kills_by_mode_24h"]["testnet"] == 0
+
+  assert row2["metrics"]["kills_by_mode"]["paper"] == 0
+  assert row2["metrics"]["kills_by_mode"]["testnet"] == 1
+  assert row2["metrics"]["kills_by_mode"]["unknown"] == 0
 
 
 def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
@@ -1538,6 +1650,54 @@ def test_research_beast_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
   resume = client.post("/api/v1/research/beast/resume", headers=headers, json={})
   assert resume.status_code == 200, resume.text
   assert resume.json()["ok"] is True
+
+
+def test_research_beast_start_accepts_orderflow_toggle(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  captured: dict[str, object] = {}
+
+  def _fake_start_beast_async(**kwargs):
+    captured["config"] = kwargs.get("config")
+    return {
+      "ok": True,
+      "run_id": "BX-TEST-OFLOW",
+      "state": "QUEUED",
+      "mode": "beast",
+      "queue_position": 1,
+      "estimated_trial_units": 10,
+    }
+
+  monkeypatch.setattr(module.mass_backtest_coordinator, "start_beast_async", _fake_start_beast_async)
+
+  start = client.post(
+    "/api/v1/research/beast/start",
+    headers=headers,
+    json={
+      "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "validation_mode": "walk-forward",
+      "max_variants_per_strategy": 1,
+      "max_folds": 2,
+      "train_days": 30,
+      "test_days": 30,
+      "top_n": 2,
+      "seed": 7,
+      "tier": "hobby",
+      "use_orderflow_data": False,
+    },
+  )
+  assert start.status_code == 200, start.text
+  assert start.json()["ok"] is True
+  assert isinstance(captured.get("config"), dict)
+  assert bool((captured["config"] or {}).get("use_orderflow_data")) is False
 
 
 def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
