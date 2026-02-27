@@ -72,6 +72,52 @@ El proyecto tiene:
   - UI en `Backtests` con panel de estado/jobs/stop-all/resume
   - sin Celery/Redis todavia (pendiente fase 2)
 
+## Cambios recientes (Calibracion real - fundamentals + costos)
+
+- Nueva policy `config/policies/fundamentals_credit_filter.yaml`:
+  - `enabled`, `fail_closed`, `apply_markets`, `freshness_max_days`
+  - scoring y thresholds auditables
+  - reglas por `common/preferred/bond/fund_bond`
+  - snapshots con TTL
+- Nuevo modulo `rtlab_core/fundamentals/credit_filter.py`:
+  - calcula `fund_score`, `fund_status`, `allow_trade`, `risk_multiplier`, `explain[]`
+  - aplica fail-closed cuando faltan datos y el mercado esta en scope
+  - reutiliza snapshot vigente y persiste snapshot nuevo en DB
+  - autoload opcional de snapshot local JSON para equities cuando source esta en `unknown/auto/local_snapshot`
+  - traza de origen en `source_ref.source_path` + `DATA_SOURCE_LOCAL_SNAPSHOT`
+  - soporte `remote_json` configurable por policy/env con `endpoint_template` y auth header por ENV
+  - `source=auto` intenta remoto y luego fallback local (enforced/fail-closed se mantiene)
+  - traza remota en `source_ref.source_url` + `DATA_SOURCE_REMOTE_SNAPSHOT|DATA_SOURCE_REMOTE_ERROR`
+- Catalogo SQLite extendido:
+  - nueva tabla `fundamentals_snapshots`
+  - `backtest_runs` guarda `fundamentals_snapshot_id`, `fund_status`, `fund_allow_trade`, `fund_risk_multiplier`, `fund_score`
+- Wiring backend:
+  - `app.py` y `mass_backtest_engine.py` ahora resuelven y guardan metadata fundamentals por run
+  - ambos usan `source=auto` para habilitar remoto+fallback sin hardcode de proveedor
+  - si `fundamentals_credit_filter` esta enforced y `allow_trade=false`, bloquea corrida (fail-closed)
+- Cost model endurecido:
+  - `FeeProvider` intenta endpoints reales Binance (`/api/v3/account/commission`, `/sapi/v1/asset/tradeFee`) y fallback seguro
+  - `FeeProvider` soporta fallback por exchange (`per_exchange_defaults`) + override por ENV
+  - `FundingProvider` intenta `/fapi/v1/fundingRate` (Binance) y `/v5/market/funding/history` (Bybit) para perps
+  - `SpreadModel` agrega estimador `roll` cuando no hay BBO ni spread explicito
+- Promotion/rollout endurecido (bloque 4/5):
+  - `validate_promotion` agrega constraints fail-closed para corridas de catalogo:
+    - `cost_snapshots_present`
+    - `fundamentals_allow_trade`
+  - `_build_rollout_report_from_catalog_row` ahora preserva trazabilidad de costos/fundamentals en el reporte de validacion y promocion.
+- Admin multi-bot/live endurecido (bloque 5/5):
+  - metricas de `BotInstance` ahora incluyen desglose por modo (`shadow/paper/testnet/live`) para `trades/winrate/net_pnl/sharpe/run_count`.
+  - metricas de kills reales derivadas de logs (`breaker_triggered`) con `kills_total`, `kills_24h`, `kills_by_mode` y timestamp del ultimo kill.
+  - transicion de bots a `mode=live` bloqueada por gates en backend (`create/patch/bulk-patch`) si LIVE no esta listo.
+  - UI de `Ejecucion` bloquea el boton masivo `Modo LIVE` con motivo explicito cuando faltan checks.
+- Gates default ajustado:
+  - `dsr_min` default en rollout offline ahora `0.95`
+- Tests ejecutados:
+  - `test_backtest_catalog_db.py`
+  - `test_fundamentals_credit_filter.py`
+  - `test_cost_providers.py`
+  - resultado: `11 passed`
+
 ## Lo que sigue faltando (verdad actual)
 
 - Virtualizacion adicional en otras tablas grandes (D2 de comparador ya virtualizado)
@@ -81,7 +127,8 @@ El proyecto tiene:
 - UI de experimentos MLflow (si se habilita capability)
 - Reportes avanzados en detalle de corrida (heatmap mensual, rolling Sharpe, distribuciones)
 - Endpoints catalogo para `rerun_exact`, `clone_edit`, `export` unificado por `run_id`
-- Fee/Funding provider con endpoints reales por exchange (hoy baseline con fallback+snapshot, sin fetch live por simbolo)
+- Adaptador remoto especifico de proveedor financiero pendiente (el motor remoto generico ya esta implementado)
+- Fee/Funding provider multi-exchange avanzado pendiente (hoy Binance + Bybit base + fallback con snapshots)
 - VPIN L1 con trade tape real (hoy proxy desde OHLCV; falta tape de trades y BBO real)
 - Modo Bestia fase 2 (Celery + Redis + workers distribuidos + rate limit real por exchange)
 

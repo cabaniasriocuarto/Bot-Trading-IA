@@ -67,6 +67,11 @@ class BacktestCatalogDB:
                 "funding_snapshot_id": "TEXT",
                 "slippage_model_params": "TEXT NOT NULL DEFAULT '{}'",
                 "spread_model_params": "TEXT NOT NULL DEFAULT '{}'",
+                "fundamentals_snapshot_id": "TEXT",
+                "fund_status": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+                "fund_allow_trade": "INTEGER NOT NULL DEFAULT 1",
+                "fund_risk_multiplier": "REAL NOT NULL DEFAULT 1.0",
+                "fund_score": "REAL",
             },
         )
 
@@ -116,6 +121,11 @@ class BacktestCatalogDB:
                   funding_snapshot_id TEXT,
                   slippage_model_params TEXT NOT NULL DEFAULT '{}',
                   spread_model_params TEXT NOT NULL DEFAULT '{}',
+                  fundamentals_snapshot_id TEXT,
+                  fund_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+                  fund_allow_trade INTEGER NOT NULL DEFAULT 1,
+                  fund_risk_multiplier REAL NOT NULL DEFAULT 1.0,
+                  fund_score REAL,
                   latency_model TEXT,
                   fill_model TEXT NOT NULL,
                   initial_capital REAL NOT NULL,
@@ -211,6 +221,28 @@ class BacktestCatalogDB:
                   expires_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_funding_snapshots_lookup ON funding_snapshots(exchange, market, symbol, fetched_at DESC);
+
+                CREATE TABLE IF NOT EXISTS fundamentals_snapshots (
+                  snapshot_id TEXT PRIMARY KEY,
+                  exchange TEXT NOT NULL,
+                  market TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  instrument_type TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  source_id TEXT,
+                  asof_date TEXT,
+                  raw_payload_hash TEXT,
+                  payload_json TEXT NOT NULL,
+                  explain_json TEXT NOT NULL,
+                  fund_score REAL NOT NULL,
+                  fund_status TEXT NOT NULL,
+                  allow_trade INTEGER NOT NULL,
+                  risk_multiplier REAL NOT NULL,
+                  enforced INTEGER NOT NULL DEFAULT 0,
+                  fetched_at TEXT NOT NULL,
+                  expires_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_fundamentals_snapshots_lookup ON fundamentals_snapshots(exchange, market, symbol, fetched_at DESC);
                 """
             )
             self._migrate_schema(conn)
@@ -265,6 +297,11 @@ class BacktestCatalogDB:
             "funding_snapshot_id": None,
             "slippage_model_params": "{}",
             "spread_model_params": "{}",
+            "fundamentals_snapshot_id": None,
+            "fund_status": "UNKNOWN",
+            "fund_allow_trade": 1,
+            "fund_risk_multiplier": 1.0,
+            "fund_score": None,
             "latency_model": None,
             "fill_model": "market",
             "initial_capital": 10000.0,
@@ -480,6 +517,39 @@ class BacktestCatalogDB:
             "expires_at": raw.get("expires_at"),
         }
 
+    def _row_to_fundamentals_snapshot(self, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        raw = dict(row)
+        try:
+            raw["payload"] = json.loads(str(raw.get("payload_json") or "{}"))
+        except Exception:
+            raw["payload"] = {}
+        try:
+            raw["explain"] = json.loads(str(raw.get("explain_json") or "[]"))
+        except Exception:
+            raw["explain"] = []
+        return {
+            "snapshot_id": raw.get("snapshot_id"),
+            "exchange": raw.get("exchange"),
+            "market": raw.get("market"),
+            "symbol": raw.get("symbol"),
+            "instrument_type": raw.get("instrument_type"),
+            "source": raw.get("source"),
+            "source_id": raw.get("source_id"),
+            "asof_date": raw.get("asof_date"),
+            "raw_payload_hash": raw.get("raw_payload_hash"),
+            "payload": raw.get("payload") or {},
+            "explain": raw.get("explain") if isinstance(raw.get("explain"), list) else [],
+            "fund_score": float(raw.get("fund_score") or 0.0),
+            "fund_status": str(raw.get("fund_status") or "UNKNOWN"),
+            "allow_trade": bool(raw.get("allow_trade")),
+            "risk_multiplier": float(raw.get("risk_multiplier") or 1.0),
+            "enforced": bool(raw.get("enforced")),
+            "fetched_at": raw.get("fetched_at"),
+            "expires_at": raw.get("expires_at"),
+        }
+
     def latest_valid_fee_snapshot(self, *, exchange: str, market: str, symbol: str, as_of: str | None = None) -> dict[str, Any] | None:
         ref = str(as_of or _utc_iso())
         with self._connect() as conn:
@@ -507,6 +577,20 @@ class BacktestCatalogDB:
                 (str(exchange).lower(), str(market).lower(), str(symbol).upper(), ref),
             ).fetchone()
         return self._row_to_funding_snapshot(row)
+
+    def latest_valid_fundamentals_snapshot(self, *, exchange: str, market: str, symbol: str, as_of: str | None = None) -> dict[str, Any] | None:
+        ref = str(as_of or _utc_iso())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM fundamentals_snapshots
+                WHERE exchange = ? AND market = ? AND symbol = ? AND expires_at > ?
+                ORDER BY fetched_at DESC, snapshot_id DESC
+                LIMIT 1
+                """,
+                (str(exchange).lower(), str(market).lower(), str(symbol).upper(), ref),
+            ).fetchone()
+        return self._row_to_fundamentals_snapshot(row)
 
     def insert_fee_snapshot(
         self,
@@ -611,6 +695,80 @@ class BacktestCatalogDB:
             }
         ) or {}
 
+    def insert_fundamentals_snapshot(
+        self,
+        *,
+        exchange: str,
+        market: str,
+        symbol: str,
+        instrument_type: str,
+        source: str,
+        source_id: str | None,
+        asof_date: str | None,
+        raw_payload_hash: str | None,
+        payload: dict[str, Any] | None,
+        explain: list[dict[str, Any]] | None,
+        fund_score: float,
+        fund_status: str,
+        allow_trade: bool,
+        risk_multiplier: float,
+        fetched_at: str,
+        expires_at: str,
+        enforced: bool = False,
+    ) -> dict[str, Any]:
+        snapshot_id = self.next_formatted_id("FD")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO fundamentals_snapshots
+                (snapshot_id, exchange, market, symbol, instrument_type, source, source_id, asof_date, raw_payload_hash, payload_json, explain_json, fund_score, fund_status, allow_trade, risk_multiplier, enforced, fetched_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    str(exchange).lower(),
+                    str(market).lower(),
+                    str(symbol).upper(),
+                    str(instrument_type).lower(),
+                    str(source),
+                    str(source_id or ""),
+                    str(asof_date or ""),
+                    str(raw_payload_hash or ""),
+                    _to_json(payload or {}, {}),
+                    _to_json(explain or [], []),
+                    float(fund_score),
+                    str(fund_status or "UNKNOWN").upper(),
+                    1 if bool(allow_trade) else 0,
+                    float(risk_multiplier),
+                    1 if bool(enforced) else 0,
+                    str(fetched_at),
+                    str(expires_at),
+                ),
+            )
+            conn.commit()
+        return self._row_to_fundamentals_snapshot(
+            {
+                "snapshot_id": snapshot_id,
+                "exchange": str(exchange).lower(),
+                "market": str(market).lower(),
+                "symbol": str(symbol).upper(),
+                "instrument_type": str(instrument_type).lower(),
+                "source": str(source),
+                "source_id": str(source_id or ""),
+                "asof_date": str(asof_date or ""),
+                "raw_payload_hash": str(raw_payload_hash or ""),
+                "payload_json": _to_json(payload or {}, {}),
+                "explain_json": _to_json(explain or [], []),
+                "fund_score": float(fund_score),
+                "fund_status": str(fund_status or "UNKNOWN").upper(),
+                "allow_trade": 1 if bool(allow_trade) else 0,
+                "risk_multiplier": float(risk_multiplier),
+                "enforced": 1 if bool(enforced) else 0,
+                "fetched_at": str(fetched_at),
+                "expires_at": str(expires_at),
+            }
+        ) or {}
+
     def record_run_from_payload(self, *, run: dict[str, Any], strategy_meta: dict[str, Any] | None = None, created_by: str = "system") -> str:
         strategy = strategy_meta or {}
         costs = run.get("costs_model") if isinstance(run.get("costs_model"), dict) else {}
@@ -700,6 +858,19 @@ class BacktestCatalogDB:
                 "spread_model_params": _to_json(
                     spread_model_params if isinstance(spread_model_params, dict) else (run.get("spread_model_params") if isinstance(run.get("spread_model_params"), dict) else {}),
                     {},
+                ),
+                "fundamentals_snapshot_id": run.get("fundamentals_snapshot_id") or provenance.get("fundamentals_snapshot_id"),
+                "fund_status": str(run.get("fund_status") or provenance.get("fund_status") or "UNKNOWN"),
+                "fund_allow_trade": 1 if bool(run.get("fund_allow_trade", provenance.get("fund_allow_trade", True))) else 0,
+                "fund_risk_multiplier": float(run.get("fund_risk_multiplier", provenance.get("fund_risk_multiplier", 1.0)) or 1.0),
+                "fund_score": (
+                    float(run.get("fund_score"))
+                    if isinstance(run.get("fund_score"), (int, float))
+                    else (
+                        float(provenance.get("fund_score"))
+                        if isinstance(provenance.get("fund_score"), (int, float))
+                        else None
+                    )
                 ),
                 "fill_model": str(run.get("fill_model") or "market"),
                 "initial_capital": float(run.get("initial_capital") or 10000.0),
@@ -793,6 +964,11 @@ class BacktestCatalogDB:
             "funding_snapshot_id": raw.get("funding_snapshot_id"),
             "slippage_model_params": raw.get("slippage_model_params") or {},
             "spread_model_params": raw.get("spread_model_params") or {},
+            "fundamentals_snapshot_id": raw.get("fundamentals_snapshot_id"),
+            "fund_status": raw.get("fund_status"),
+            "fund_allow_trade": bool(raw.get("fund_allow_trade")),
+            "fund_risk_multiplier": float(raw.get("fund_risk_multiplier") or 1.0),
+            "fund_score": None if raw.get("fund_score") is None else float(raw.get("fund_score")),
             "latency_model": raw.get("latency_model"),
             "fill_model": raw.get("fill_model"),
             "initial_capital": raw.get("initial_capital"),

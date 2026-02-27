@@ -32,6 +32,25 @@ def test_backtest_catalog_ids_and_run_record(tmp_path: Path) -> None:
     fetched_at="2026-02-26T00:00:00+00:00",
     expires_at="2026-02-26T01:00:00+00:00",
   )
+  fundamentals_snapshot = db.insert_fundamentals_snapshot(
+    exchange="binance",
+    market="crypto",
+    symbol="BTCUSDT",
+    instrument_type="other",
+    source="runtime_policy",
+    source_id="crypto:BTCUSDT",
+    asof_date="2026-02-26T00:00:00+00:00",
+    raw_payload_hash="abc",
+    payload={"market": "crypto"},
+    explain=[{"code": "NO_APLICA_MERCADO", "severity": "INFO"}],
+    fund_score=100.0,
+    fund_status="NOT_APPLICABLE",
+    allow_trade=True,
+    risk_multiplier=1.0,
+    enforced=False,
+    fetched_at="2026-02-26T00:00:00+00:00",
+    expires_at="2026-02-27T00:00:00+00:00",
+  )
 
   bt1 = db.next_formatted_id("BT")
   bx1 = db.next_formatted_id("BX")
@@ -54,6 +73,11 @@ def test_backtest_catalog_ids_and_run_record(tmp_path: Path) -> None:
       "costs_model": {"fees_bps": 5.5, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 1.0},
       "fee_snapshot_id": fee_snapshot["snapshot_id"],
       "funding_snapshot_id": funding_snapshot["snapshot_id"],
+      "fundamentals_snapshot_id": fundamentals_snapshot["snapshot_id"],
+      "fund_status": "NOT_APPLICABLE",
+      "fund_allow_trade": True,
+      "fund_risk_multiplier": 1.0,
+      "fund_score": 100.0,
       "slippage_model_params": {"mode": "dynamic_v2", "used_bps": 3.0, "multiplier": 1.0},
       "spread_model_params": {"mode": "static", "used_bps": 4.0},
       "metrics": {"sharpe": 1.2, "max_dd": 0.12, "trade_count": 240, "expectancy": 2.5, "expectancy_unit": "usd_per_trade"},
@@ -73,10 +97,16 @@ def test_backtest_catalog_ids_and_run_record(tmp_path: Path) -> None:
   assert stored["kpis"]["expectancy_unit"] == "usd_per_trade"
   assert stored["fee_snapshot_id"] == fee_snapshot["snapshot_id"]
   assert stored["funding_snapshot_id"] == funding_snapshot["snapshot_id"]
+  assert stored["fundamentals_snapshot_id"] == fundamentals_snapshot["snapshot_id"]
+  assert stored["fund_status"] == "NOT_APPLICABLE"
+  assert stored["fund_allow_trade"] is True
+  assert stored["fund_risk_multiplier"] == 1.0
+  assert stored["fund_score"] == 100.0
   assert stored["slippage_model_params"]["mode"] == "dynamic_v2"
   assert stored["spread_model_params"]["used_bps"] == 4.0
   assert db.latest_valid_fee_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == fee_snapshot["snapshot_id"]
   assert db.latest_valid_funding_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == funding_snapshot["snapshot_id"]
+  assert db.latest_valid_fundamentals_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == fundamentals_snapshot["snapshot_id"]
 
   batch = db.upsert_backtest_batch(
       {

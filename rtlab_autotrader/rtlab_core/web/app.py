@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from rtlab_core.config import load_config
-from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver
+from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.learning import LearningService
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
@@ -421,6 +421,7 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "risk_policy": root / "risk_policy.yaml",
         "beast_mode": root / "beast_mode.yaml",
         "fees": root / "fees.yaml",
+        "fundamentals_credit_filter": root / "fundamentals_credit_filter.yaml",
     }
 
 
@@ -430,11 +431,15 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     risk = bundle.get("risk_policy") if isinstance(bundle.get("risk_policy"), dict) else {}
     beast = bundle.get("beast_mode") if isinstance(bundle.get("beast_mode"), dict) else {}
     fees = bundle.get("fees") if isinstance(bundle.get("fees"), dict) else {}
+    fundamentals = bundle.get("fundamentals_credit_filter") if isinstance(bundle.get("fundamentals_credit_filter"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
+    fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
+    f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
+    f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
     thresholds = vpin.get("thresholds") if isinstance(vpin.get("thresholds"), dict) else {}
     return {
@@ -450,6 +455,11 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "beast_requires_postgres": b.get("requires_postgres"),
         "fees_ttl_hours": f.get("fee_snapshot_ttl_hours"),
         "funding_ttl_minutes": f.get("funding_snapshot_ttl_minutes"),
+        "fundamentals_enabled": fc.get("enabled"),
+        "fundamentals_fail_closed": fc.get("fail_closed"),
+        "fundamentals_apply_markets": fc.get("apply_markets") if isinstance(fc.get("apply_markets"), list) else [],
+        "fundamentals_freshness_max_days": fc.get("freshness_max_days"),
+        "fundamentals_current_ratio_min": f_thr.get("current_ratio_min"),
     }
 
 
@@ -1203,6 +1213,7 @@ class ConsoleStore:
         self.registry = RegistryDB(REGISTRY_DB_PATH)
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
+        self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self._init_console_db()
         self._ensure_defaults()
 
@@ -2262,32 +2273,92 @@ def risk_hooks(context):
     def _bot_metrics(self, bot: dict[str, Any], *, recommendations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         pool = {str(x) for x in (bot.get("pool_strategy_ids") or []) if str(x)}
         mode = self._normalize_bot_mode(str(bot.get("mode") or "paper"))
-        kpi_mode = "backtest" if mode == "shadow" else mode
-        rows = [row for row in self.strategy_kpis_table(mode=kpi_mode) if str(row.get("strategy_id") or "") in pool]
-        trades_total = 0
-        weighted_wins = 0.0
-        net_pnl_total = 0.0
-        sharpe_vals: list[float] = []
-        expectancy_weighted_num = 0.0
-        expectancy_weighted_den = 0.0
-        run_count_total = 0
+
+        def _aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+            trades_total = 0
+            weighted_wins = 0.0
+            net_pnl_total = 0.0
+            sharpe_vals: list[float] = []
+            expectancy_weighted_num = 0.0
+            expectancy_weighted_den = 0.0
+            run_count_total = 0
+            for row in rows:
+                kpi = row.get("kpis") if isinstance(row.get("kpis"), dict) else {}
+                trades = int(kpi.get("trade_count") or 0)
+                winrate = float(kpi.get("winrate") or 0.0)
+                net_pnl_total += float(kpi.get("net_pnl") or 0.0)
+                trades_total += trades
+                weighted_wins += winrate * trades
+                expectancy_weighted_num += float(kpi.get("expectancy_value") or 0.0) * max(trades, 1)
+                expectancy_weighted_den += max(trades, 1)
+                run_count_total += int(kpi.get("run_count") or 0)
+                sharpe_vals.append(float(kpi.get("sharpe") or 0.0))
+            return {
+                "trade_count": trades_total,
+                "winrate": (weighted_wins / trades_total) if trades_total else 0.0,
+                "net_pnl": net_pnl_total,
+                "avg_sharpe": (sum(sharpe_vals) / len(sharpe_vals)) if sharpe_vals else 0.0,
+                "expectancy_value": (expectancy_weighted_num / expectancy_weighted_den) if expectancy_weighted_den else 0.0,
+                "run_count": run_count_total,
+            }
+
+        mode_to_kpi_mode = {"shadow": "backtest", "paper": "paper", "testnet": "testnet", "live": "live"}
+        rows_by_mode: dict[str, list[dict[str, Any]]] = {}
+        by_mode_metrics: dict[str, dict[str, Any]] = {}
+        for mode_key, kpi_mode in mode_to_kpi_mode.items():
+            rows = [row for row in self.strategy_kpis_table(mode=kpi_mode) if str(row.get("strategy_id") or "") in pool]
+            rows_by_mode[mode_key] = rows
+            by_mode_metrics[mode_key] = _aggregate_rows(rows)
+        active = by_mode_metrics.get(mode, {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0})
+
+        kills_by_mode = {"shadow": 0, "paper": 0, "testnet": 0, "live": 0}
+        kills_by_mode_24h = {"shadow": 0, "paper": 0, "testnet": 0, "live": 0}
+        kills_total = 0
+        kills_24h = 0
+        kills_last_at: str | None = None
+        recent_threshold = utc_now() - timedelta(hours=24)
+        with self._connect() as conn:
+            kill_rows = conn.execute(
+                """
+                SELECT ts, payload_json
+                FROM logs
+                WHERE module = 'risk' AND type = 'breaker_triggered'
+                ORDER BY id DESC
+                LIMIT 500
+                """
+            ).fetchall()
+        for row in kill_rows:
+            raw_ts = str(row["ts"] or "")
+            payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
+            try:
+                payload = json.loads(payload_raw)
+            except Exception:
+                payload = {}
+            raw_mode = str((payload if isinstance(payload, dict) else {}).get("mode") or "").strip().lower()
+            mode_key = raw_mode if raw_mode in kills_by_mode else "paper"
+            kills_by_mode[mode_key] = int(kills_by_mode[mode_key]) + 1
+            kills_total += 1
+            if kills_last_at is None and raw_ts:
+                kills_last_at = raw_ts
+            try:
+                ts_value = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                if ts_value.tzinfo is None:
+                    ts_value = ts_value.replace(tzinfo=timezone.utc)
+                if ts_value >= recent_threshold:
+                    kills_by_mode_24h[mode_key] = int(kills_by_mode_24h[mode_key]) + 1
+                    kills_24h += 1
+            except Exception:
+                # Ignore malformed timestamps in historical rows.
+                pass
+
         last_run_at: str | None = None
         strategies_lookup = {str(s.get("id") or ""): s for s in self.list_strategies()}
-        for row in rows:
-            kpi = row.get("kpis") if isinstance(row.get("kpis"), dict) else {}
-            trades = int(kpi.get("trade_count") or 0)
-            winrate = float(kpi.get("winrate") or 0.0)
-            net_pnl_total += float(kpi.get("net_pnl") or 0.0)
-            trades_total += trades
-            weighted_wins += winrate * trades
-            expectancy_weighted_num += float(kpi.get("expectancy_value") or 0.0) * max(trades, 1)
-            expectancy_weighted_den += max(trades, 1)
-            run_count_total += int(kpi.get("run_count") or 0)
-            sharpe_vals.append(float(kpi.get("sharpe") or 0.0))
-            strategy_meta = strategies_lookup.get(str(row.get("strategy_id") or ""))
-            candidate_last = str((strategy_meta or {}).get("last_run_at") or "")
-            if candidate_last and (last_run_at is None or candidate_last > last_run_at):
-                last_run_at = candidate_last
+        for rows in rows_by_mode.values():
+            for row in rows:
+                strategy_meta = strategies_lookup.get(str(row.get("strategy_id") or ""))
+                candidate_last = str((strategy_meta or {}).get("last_run_at") or "")
+                if candidate_last and (last_run_at is None or candidate_last > last_run_at):
+                    last_run_at = candidate_last
         rec_rows = recommendations if isinstance(recommendations, list) else []
         pending = 0
         approved = 0
@@ -2307,14 +2378,21 @@ def risk_hooks(context):
                 rejected += 1
         return {
             "strategy_count": len(pool),
-            "run_count": run_count_total,
-            "trade_count": trades_total,
-            "winrate": (weighted_wins / trades_total) if trades_total else 0.0,
-            "net_pnl": net_pnl_total,
-            "avg_sharpe": (sum(sharpe_vals) / len(sharpe_vals)) if sharpe_vals else 0.0,
-            "expectancy_value": (expectancy_weighted_num / expectancy_weighted_den) if expectancy_weighted_den else 0.0,
+            "run_count": int(active.get("run_count") or 0),
+            "trade_count": int(active.get("trade_count") or 0),
+            "winrate": float(active.get("winrate") or 0.0),
+            "net_pnl": float(active.get("net_pnl") or 0.0),
+            "avg_sharpe": float(active.get("avg_sharpe") or 0.0),
+            "expectancy_value": float(active.get("expectancy_value") or 0.0),
             "expectancy_unit": "$/trade",
-            "kills_total": 0,
+            "kills_total": int(kills_by_mode.get(mode, 0)),
+            "kills_24h": int(kills_by_mode_24h.get(mode, 0)),
+            "kills_global_total": kills_total,
+            "kills_global_24h": kills_24h,
+            "kills_by_mode": kills_by_mode,
+            "kills_by_mode_24h": kills_by_mode_24h,
+            "last_kill_at": kills_last_at,
+            "by_mode": by_mode_metrics,
             "last_run_at": last_run_at,
             "recommendations_pending": pending,
             "recommendations_approved": approved,
@@ -2823,6 +2901,40 @@ def risk_hooks(context):
                 "high_volatility": False,
             }
 
+    def _resolve_backtest_fundamentals_metadata(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        target_mode: str = "backtest",
+    ) -> dict[str, Any]:
+        market_n = str(market or "crypto").lower()
+        instrument_type = "common" if market_n == "equities" else "other"
+        try:
+            payload = self.fundamentals_filter.evaluate(
+                exchange=exchange_name(),
+                market=market_n,
+                symbol=str(symbol or "BTCUSDT"),
+                instrument_type=instrument_type,
+                target_mode=str(target_mode or "backtest"),
+                asof_date=utc_now_iso(),
+                source="auto",
+                source_id=f"{market_n}:{symbol}",
+                raw_payload={"market": market_n, "symbol": str(symbol or "BTCUSDT")},
+            )
+            return payload if isinstance(payload, dict) else {}
+        except Exception as exc:
+            return {
+                "enabled": False,
+                "enforced": False,
+                "snapshot_id": None,
+                "allow_trade": True,
+                "risk_multiplier": 1.0,
+                "fund_score": 0.0,
+                "fund_status": "UNKNOWN",
+                "explain": [{"code": "FUND_METADATA_ERROR", "severity": "WARN", "message": str(exc)}],
+            }
+
     def _sync_backtest_runs_catalog(self) -> None:
         runs = self.load_runs()
         changed = False
@@ -3037,6 +3149,11 @@ def risk_hooks(context):
             symbol=str(universe[0] if universe else "BTCUSDT"),
             costs_model=costs_model,
         )
+        fundamentals_meta = self._resolve_backtest_fundamentals_metadata(
+            market="crypto",
+            symbol=str(universe[0] if universe else "BTCUSDT"),
+            target_mode="backtest",
+        )
         run = {
             "id": run_id,
             "catalog_run_id": run_id,
@@ -3056,6 +3173,16 @@ def risk_hooks(context):
             "funding_snapshot_id": cost_meta.get("funding_snapshot_id"),
             "spread_model_params": cost_meta.get("spread_model_params") or {},
             "slippage_model_params": cost_meta.get("slippage_model_params") or {},
+            "fundamentals_snapshot_id": fundamentals_meta.get("snapshot_id"),
+            "fund_status": fundamentals_meta.get("fund_status"),
+            "fund_allow_trade": bool(fundamentals_meta.get("allow_trade", True)),
+            "fund_risk_multiplier": float(fundamentals_meta.get("risk_multiplier") or 1.0),
+            "fund_score": (
+                float(fundamentals_meta.get("fund_score"))
+                if isinstance(fundamentals_meta.get("fund_score"), (int, float))
+                else None
+            ),
+            "fund_explain": fundamentals_meta.get("explain") if isinstance(fundamentals_meta.get("explain"), list) else [],
             "fee_model": f"maker_taker_bps:{fees_bps:.4f}",
             "spread_model": f"{((cost_meta.get('spread_model_params') or {}).get('mode') or 'static')}:{spread_bps:.4f}",
             "slippage_model": f"{((cost_meta.get('slippage_model_params') or {}).get('mode') or 'static')}:{slippage_bps:.4f}",
@@ -3131,6 +3258,11 @@ def risk_hooks(context):
             "commit_hash": run["git_commit"],
             "fee_snapshot_id": run.get("fee_snapshot_id"),
             "funding_snapshot_id": run.get("funding_snapshot_id"),
+            "fundamentals_snapshot_id": run.get("fundamentals_snapshot_id"),
+            "fund_status": run.get("fund_status"),
+            "fund_allow_trade": run.get("fund_allow_trade"),
+            "fund_risk_multiplier": run.get("fund_risk_multiplier"),
+            "fund_score": run.get("fund_score"),
             "created_at": run["created_at"],
         }
         runs = self.load_runs()
@@ -3230,6 +3362,20 @@ def risk_hooks(context):
             costs_model=costs_model,
             df=loaded.df,
         )
+        fundamentals_meta = self._resolve_backtest_fundamentals_metadata(
+            market=market_n,
+            symbol=symbol_n,
+            target_mode="backtest",
+        )
+        if bool(fundamentals_meta.get("enforced")) and not bool(fundamentals_meta.get("allow_trade", False)):
+            reasons = " | ".join(
+                [
+                    str((row or {}).get("message") or (row or {}).get("code") or "")
+                    for row in (fundamentals_meta.get("explain") or [])
+                    if isinstance(row, dict)
+                ][:3]
+            )
+            raise ValueError(f"Fundamentals/credit_filter bloqueó la corrida para {market_n}/{symbol_n}. {reasons}".strip())
         run = {
             "id": run_id,
             "catalog_run_id": run_id,
@@ -3257,6 +3403,16 @@ def risk_hooks(context):
             "funding_snapshot_id": cost_meta.get("funding_snapshot_id"),
             "spread_model_params": cost_meta.get("spread_model_params") or {},
             "slippage_model_params": cost_meta.get("slippage_model_params") or {},
+            "fundamentals_snapshot_id": fundamentals_meta.get("snapshot_id"),
+            "fund_status": fundamentals_meta.get("fund_status"),
+            "fund_allow_trade": bool(fundamentals_meta.get("allow_trade", True)),
+            "fund_risk_multiplier": float(fundamentals_meta.get("risk_multiplier") or 1.0),
+            "fund_score": (
+                float(fundamentals_meta.get("fund_score"))
+                if isinstance(fundamentals_meta.get("fund_score"), (int, float))
+                else None
+            ),
+            "fund_explain": fundamentals_meta.get("explain") if isinstance(fundamentals_meta.get("explain"), list) else [],
             "fee_model": f"maker_taker_bps:{fees_bps:.4f}",
             "spread_model": f"{((cost_meta.get('spread_model_params') or {}).get('mode') or 'static')}:{spread_bps:.4f}",
             "slippage_model": f"{((cost_meta.get('slippage_model_params') or {}).get('mode') or 'static')}:{slippage_bps:.4f}",
@@ -3294,6 +3450,11 @@ def risk_hooks(context):
             "commit_hash": run["git_commit"],
             "fee_snapshot_id": run.get("fee_snapshot_id"),
             "funding_snapshot_id": run.get("funding_snapshot_id"),
+            "fundamentals_snapshot_id": run.get("fundamentals_snapshot_id"),
+            "fund_status": run.get("fund_status"),
+            "fund_allow_trade": run.get("fund_allow_trade"),
+            "fund_risk_multiplier": run.get("fund_risk_multiplier"),
+            "fund_score": run.get("fund_score"),
             "created_at": run["created_at"],
         }
         artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
@@ -4148,8 +4309,17 @@ def create_app() -> FastAPI:
         items = store.list_bot_instances(recommendations=recs)
         return {"items": items, "total": len(items)}
 
+    def ensure_bot_live_mode_allowed(mode: str | None) -> None:
+        if str(mode or "").lower() != "live":
+            return
+        gates_payload = evaluate_gates("live")
+        allowed, reason = live_can_be_enabled(gates_payload)
+        if not allowed:
+            raise HTTPException(status_code=400, detail=f"No se puede asignar bot en LIVE: {reason}")
+
     @app.post("/api/v1/bots")
     def create_bot(body: BotCreateBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        ensure_bot_live_mode_allowed(body.mode)
         bot = store.create_bot_instance(
             name=body.name,
             engine=body.engine,
@@ -4166,6 +4336,7 @@ def create_app() -> FastAPI:
 
     @app.patch("/api/v1/bots/{bot_id}")
     def patch_bot(bot_id: str, body: BotPatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        ensure_bot_live_mode_allowed(body.mode)
         bot = store.patch_bot_instance(
             bot_id,
             name=body.name,
@@ -4195,6 +4366,7 @@ def create_app() -> FastAPI:
             and body.notes is None
         ):
             raise HTTPException(status_code=400, detail="At least one patch field is required")
+        ensure_bot_live_mode_allowed(body.mode)
 
         updated_ids: list[str] = []
         errors: list[dict[str, str]] = []
@@ -5269,6 +5441,14 @@ def create_app() -> FastAPI:
                 payload["id"] = str(catalog_row.get("run_id") or payload.get("id") or legacy_id)
                 payload["catalog_run_id"] = str(catalog_row.get("run_id") or "")
                 payload["legacy_json_id"] = legacy_id
+                payload["fee_snapshot_id"] = payload.get("fee_snapshot_id") or catalog_row.get("fee_snapshot_id")
+                payload["funding_snapshot_id"] = payload.get("funding_snapshot_id") or catalog_row.get("funding_snapshot_id")
+                payload["fundamentals_snapshot_id"] = payload.get("fundamentals_snapshot_id") or catalog_row.get("fundamentals_snapshot_id")
+                payload["fund_status"] = payload.get("fund_status") or catalog_row.get("fund_status")
+                if payload.get("fund_allow_trade") is None and catalog_row.get("fund_allow_trade") is not None:
+                    payload["fund_allow_trade"] = bool(catalog_row.get("fund_allow_trade"))
+                payload["fund_risk_multiplier"] = payload.get("fund_risk_multiplier") or catalog_row.get("fund_risk_multiplier")
+                payload["fund_score"] = payload.get("fund_score") or catalog_row.get("fund_score")
                 return payload
             except HTTPException:
                 pass
@@ -5330,7 +5510,8 @@ def create_app() -> FastAPI:
             "strategy_name": str(catalog_row.get("strategy_name") or catalog_row.get("strategy_id") or ""),
             "strategy_version": str(catalog_row.get("strategy_version") or "batch"),
             "strategy_config_hash": str(catalog_row.get("strategy_config_hash") or ""),
-            "market": "crypto",
+            "market": str(catalog_row.get("market") or "crypto"),
+            "exchange": str(catalog_row.get("exchange") or ""),
             "symbol": str(symbols[0]) if symbols else None,
             "timeframe": str(timeframes[0]) if timeframes else None,
             "period": {
@@ -5395,6 +5576,13 @@ def create_app() -> FastAPI:
             "hf_commit_hash": catalog_row.get("hf_commit_hash"),
             "pipeline_task": catalog_row.get("pipeline_task"),
             "inference_mode": catalog_row.get("inference_mode"),
+            "fee_snapshot_id": catalog_row.get("fee_snapshot_id"),
+            "funding_snapshot_id": catalog_row.get("funding_snapshot_id"),
+            "fundamentals_snapshot_id": catalog_row.get("fundamentals_snapshot_id"),
+            "fund_status": catalog_row.get("fund_status"),
+            "fund_allow_trade": catalog_row.get("fund_allow_trade"),
+            "fund_risk_multiplier": catalog_row.get("fund_risk_multiplier"),
+            "fund_score": catalog_row.get("fund_score"),
         }
         return report
 
@@ -5515,11 +5703,43 @@ def create_app() -> FastAPI:
         thresholds = gates_result.get("thresholds") if isinstance(gates_result.get("thresholds"), dict) else {}
         min_trades_req = int(float(thresholds.get("min_trades_oos") or 0))
         costs_ratio_max = float(thresholds.get("costs_ratio_max") or 1.0)
+        fee_snapshot_id = candidate_report.get("fee_snapshot_id")
+        funding_snapshot_id = candidate_report.get("funding_snapshot_id")
+        fund_status = str(candidate_report.get("fund_status") or "")
+        fund_allow_trade_raw = candidate_report.get("fund_allow_trade")
+        if fund_allow_trade_raw is None and isinstance(candidate_catalog, dict):
+            fund_allow_trade_raw = candidate_catalog.get("fund_allow_trade")
+            fund_status = fund_status or str(candidate_catalog.get("fund_status") or "")
+            fee_snapshot_id = fee_snapshot_id or candidate_catalog.get("fee_snapshot_id")
+            funding_snapshot_id = funding_snapshot_id or candidate_catalog.get("funding_snapshot_id")
+        has_catalog_provenance = isinstance(candidate_catalog, dict)
+        snapshots_ok = (not has_catalog_provenance) or (bool(str(fee_snapshot_id or "")) and bool(str(funding_snapshot_id or "")))
+        fundamentals_ok = bool(fund_allow_trade_raw) if fund_allow_trade_raw is not None else (not has_catalog_provenance)
         constraints_checks = [
             {"id": "run_status_completed", "ok": str(candidate_report.get("status") or "").lower() in {"completed", "completed_warn"}, "reason": "Run debe estar completado", "details": {"status": candidate_report.get("status")}},
             {"id": "min_trades", "ok": trade_count >= max(1, min_trades_req), "reason": "Trades mínimos", "details": {"actual": trade_count, "threshold": max(1, min_trades_req)}},
             {"id": "realistic_costs", "ok": costs_ratio <= costs_ratio_max, "reason": "Costos realistas (costs_ratio)", "details": {"actual": round(costs_ratio, 6), "threshold": costs_ratio_max}},
             {"id": "oos_or_wfa", "ok": bool(flags.get("OOS") or flags.get("WFA")), "reason": "Debe tener evidencia OOS/WFA", "details": {"flags": flags}},
+            {
+                "id": "cost_snapshots_present",
+                "ok": snapshots_ok,
+                "reason": "Run debe tener fee_snapshot_id y funding_snapshot_id",
+                "details": {
+                    "fee_snapshot_id": fee_snapshot_id,
+                    "funding_snapshot_id": funding_snapshot_id,
+                    "catalog_run": has_catalog_provenance,
+                },
+            },
+            {
+                "id": "fundamentals_allow_trade",
+                "ok": fundamentals_ok,
+                "reason": "Fundamentals debe permitir trade para promocion",
+                "details": {
+                    "fund_allow_trade": fund_allow_trade_raw,
+                    "fund_status": fund_status or None,
+                    "catalog_run": has_catalog_provenance,
+                },
+            },
         ]
         constraints_ok = all(bool(row["ok"]) for row in constraints_checks)
         promotion_ok = bool(constraints_ok and gates_result.get("passed") and compare_result.get("passed"))
@@ -6529,7 +6749,7 @@ def create_app() -> FastAPI:
             module="risk",
             message="Kill switch executed by admin",
             related_ids=[],
-            payload={"close_positions": True, "cancel_orders": True},
+            payload={"close_positions": True, "cancel_orders": True, "mode": str(state.get("mode") or "paper")},
         )
         return {"ok": True, "state": state["bot_status"]}
 

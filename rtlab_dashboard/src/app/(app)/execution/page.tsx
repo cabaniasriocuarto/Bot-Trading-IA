@@ -262,6 +262,8 @@ export default function ExecutionPage() {
   const liveBlockingItems = liveReadyItems
     .filter((row) => ["keys", "connector", "gates"].includes(String(row.key)))
     .filter((row) => row.status !== "pass");
+  const liveBotsBlocked = liveBlockingItems.length > 0;
+  const liveBotsBlockedReason = liveBlockingItems.map((row) => row.label).join(", ");
 
   const primaryByMode = useMemo(() => {
     const findPrimary = (mode: "paper" | "testnet" | "live") =>
@@ -350,6 +352,10 @@ export default function ExecutionPage() {
       setControlError("Selecciona al menos un operador (bot).");
       return;
     }
+    if (String(patch.mode || "").toLowerCase() === "live" && liveBotsBlocked) {
+      setControlError(`No se puede pasar operadores a LIVE: falta PASS en ${liveBotsBlockedReason}.`);
+      return;
+    }
     setBotBulkBusy(true);
     setControlError("");
     setMessage("");
@@ -378,6 +384,10 @@ export default function ExecutionPage() {
 
   const patchSingleBot = async (botId: string, patch: Record<string, unknown>, label: string) => {
     if (role !== "admin") return;
+    if (String(patch.mode || "").toLowerCase() === "live" && liveBotsBlocked) {
+      setControlError(`No se puede pasar ${botId} a LIVE: falta PASS en ${liveBotsBlockedReason}.`);
+      return;
+    }
     setBotBulkBusy(true);
     setControlError("");
     setMessage("");
@@ -849,7 +859,12 @@ export default function ExecutionPage() {
             <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ mode: "testnet" }, "Cambiar modo a TESTNET")}>
               Modo TESTNET
             </Button>
-            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ mode: "live" }, "Cambiar modo a LIVE")}>
+            <Button
+              variant="outline"
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || liveBotsBlocked}
+              title={liveBotsBlocked ? `Bloqueado: ${liveBotsBlockedReason}` : "Cambiar modo de operadores a LIVE"}
+              onClick={() => void runBotsBulkPatch({ mode: "live" }, "Cambiar modo a LIVE")}
+            >
               Modo LIVE
             </Button>
             <Button variant="danger" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "archived" }, "Archivar operadores")}>
@@ -870,7 +885,9 @@ export default function ExecutionPage() {
                   <TH>Trades</TH>
                   <TH>WinRate</TH>
                   <TH>PnL</TH>
+                  <TH>Sharpe</TH>
                   <TH>Recs</TH>
+                  <TH>Kills</TH>
                   <TH>Acciones</TH>
                 </TR>
               </THead>
@@ -900,7 +917,12 @@ export default function ExecutionPage() {
                       <TD>{m?.trade_count ?? 0}</TD>
                       <TD>{fmtPct(m?.winrate ?? 0)}</TD>
                       <TD className={(m?.net_pnl || 0) >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(m?.net_pnl ?? 0)}</TD>
+                      <TD>{fmtNum(m?.avg_sharpe ?? 0)}</TD>
                       <TD>{m?.recommendations_pending ?? 0}/{m?.recommendations_approved ?? 0}/{m?.recommendations_rejected ?? 0}</TD>
+                      <TD>
+                        <div>{m?.kills_total ?? 0}</div>
+                        <div className="text-[10px] text-slate-500">24h: {m?.kills_24h ?? 0}</div>
+                      </TD>
                       <TD>
                         <div className="flex flex-wrap gap-1">
                           <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(bot.id, { status: bot.status === "active" ? "paused" : "active" }, bot.status === "active" ? "Pausar operador" : "Activar operador")}>
@@ -916,7 +938,7 @@ export default function ExecutionPage() {
                 })}
                 {!botRowsFiltered.length ? (
                   <TR>
-                    <TD colSpan={11} className="text-slate-400">
+                    <TD colSpan={13} className="text-slate-400">
                       No hay operadores para estos filtros. Ajusta modo/estado o crea bots en Estrategias.
                     </TD>
                   </TR>

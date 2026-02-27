@@ -922,6 +922,10 @@ def test_runs_validate_and_promote_endpoints_smoke(tmp_path: Path, monkeypatch) 
   assert "offline_gates" in validate_payload
   assert "compare_vs_baseline" in validate_payload
   assert "rollout_ready" in validate_payload
+  checks = validate_payload["constraints"]["checks"]
+  check_ids = {row["id"] for row in checks}
+  assert "cost_snapshots_present" in check_ids
+  assert "fundamentals_allow_trade" in check_ids
 
   promote_res = client.post(
     f"/api/v1/runs/{candidate_id}/promote",
@@ -1050,6 +1054,45 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   assert updated_bot is not None
   assert updated_bot["mode"] == "paper"
   assert updated_bot["status"] == "paused"
+
+
+def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  # En entorno de tests no hay keys live/testnet, por lo que LIVE debe quedar bloqueado por gates.
+  create_live = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "AutoBot Live", "mode": "live", "status": "active"},
+  )
+  assert create_live.status_code == 400, create_live.text
+  assert "LIVE" in str(create_live.json().get("detail") or "")
+
+  create_paper = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "AutoBot Base", "mode": "paper", "status": "active"},
+  )
+  assert create_paper.status_code == 200, create_paper.text
+  bot_id = create_paper.json()["bot"]["id"]
+
+  patch_live = client.patch(
+    f"/api/v1/bots/{bot_id}",
+    headers=headers,
+    json={"mode": "live"},
+  )
+  assert patch_live.status_code == 400, patch_live.text
+  assert "LIVE" in str(patch_live.json().get("detail") or "")
+
+  bulk_live = client.post(
+    "/api/v1/bots/bulk-patch",
+    headers=headers,
+    json={"ids": [bot_id], "mode": "live"},
+  )
+  assert bulk_live.status_code == 400, bulk_live.text
+  assert "LIVE" in str(bulk_live.json().get("detail") or "")
 
 
 def test_archiving_primary_reassigns_valid_primary(tmp_path: Path, monkeypatch) -> None:

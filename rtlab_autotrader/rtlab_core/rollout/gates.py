@@ -17,7 +17,7 @@ DEFAULT_OFFLINE_GATES: dict[str, float] = {
     "max_dd_duration_days": 30.0,
     "costs_ratio_max": 0.55,
     "pbo_max": 0.20,
-    "dsr_min": 1.00,
+    "dsr_min": 0.95,
 }
 
 

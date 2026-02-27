@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver
+from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.src.data.catalog import DataCatalog
 from .data_provider import build_data_provider
 
@@ -118,6 +118,7 @@ class MassBacktestEngine:
         self.catalog = DataCatalog(self.user_data_dir)
         self.backtest_catalog = BacktestCatalogDB(self.user_data_dir / "backtests" / "catalog.sqlite3")
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog)
+        self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog)
         self.root = (self.user_data_dir / "research" / "mass_backtests").resolve()
         self.db_path = self.root / "metadata.sqlite3"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -1291,6 +1292,7 @@ class MassBacktestEngine:
 
     def _record_batch_children_catalog(self, *, batch_id: str, rows: list[dict[str, Any]], cfg: dict[str, Any]) -> None:
         cost_meta = cfg.get("resolved_cost_metadata") if isinstance(cfg.get("resolved_cost_metadata"), dict) else {}
+        fund_meta = cfg.get("resolved_fundamentals_metadata") if isinstance(cfg.get("resolved_fundamentals_metadata"), dict) else {}
         for idx, row in enumerate(rows, start=1):
             summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
             regime = row.get("regime_metrics") if isinstance(row.get("regime_metrics"), dict) else {}
@@ -1339,6 +1341,11 @@ class MassBacktestEngine:
                     "funding_snapshot_id": cost_meta.get("funding_snapshot_id"),
                     "slippage_model_params": json.dumps(cost_meta.get("slippage_model_params") or {}, ensure_ascii=True, sort_keys=True),
                     "spread_model_params": json.dumps(cost_meta.get("spread_model_params") or {}, ensure_ascii=True, sort_keys=True),
+                    "fundamentals_snapshot_id": fund_meta.get("snapshot_id"),
+                    "fund_status": str(fund_meta.get("fund_status") or "UNKNOWN"),
+                    "fund_allow_trade": 1 if bool(fund_meta.get("allow_trade", True)) else 0,
+                    "fund_risk_multiplier": float(fund_meta.get("risk_multiplier") or 1.0),
+                    "fund_score": float(_f(fund_meta.get("fund_score"), 0.0)) if fund_meta.get("fund_score") is not None else None,
                     "fill_model": "simulated",
                     "initial_capital": _f(cfg.get("initial_capital"), 10000.0),
                     "position_sizing_profile": str(cfg.get("position_sizing_profile") or "default"),
@@ -1365,6 +1372,8 @@ class MassBacktestEngine:
                             "vpin_cdf": micro_agg.get("vpin_cdf_oos"),
                             "micro_soft_kill_ratio": micro_agg.get("micro_soft_kill_ratio"),
                             "micro_hard_kill_ratio": micro_agg.get("micro_hard_kill_ratio"),
+                            "fund_status": fund_meta.get("fund_status"),
+                            "fund_score": fund_meta.get("fund_score"),
                         },
                         ensure_ascii=True,
                         sort_keys=True,
@@ -1464,6 +1473,42 @@ class MassBacktestEngine:
                 "spread_model_params": {"mode": "static", "source": "metadata_error", "error": str(exc)},
                 "slippage_model_params": {"mode": "static", "source": "metadata_error", "error": str(exc)},
             }
+        try:
+            market_n = str(cfg.get("market") or "crypto").lower()
+            symbol_n = str(cfg.get("symbol") or (universe[0] if universe else "BTCUSDT"))
+            instrument_type = "common" if market_n == "equities" else "other"
+            cfg["resolved_fundamentals_metadata"] = self.fundamentals_filter.evaluate(
+                exchange=str(cfg.get("exchange") or "binance"),
+                market=market_n,
+                symbol=symbol_n,
+                instrument_type=instrument_type,
+                target_mode="backtest",
+                asof_date=_utc_iso(),
+                source="auto",
+                source_id=f"{run_id}:{symbol_n}",
+                raw_payload={"market": market_n, "symbol": symbol_n, "batch_id": run_id},
+            )
+        except Exception as exc:
+            cfg["resolved_fundamentals_metadata"] = {
+                "enabled": False,
+                "enforced": False,
+                "snapshot_id": None,
+                "allow_trade": True,
+                "risk_multiplier": 1.0,
+                "fund_score": 0.0,
+                "fund_status": "UNKNOWN",
+                "explain": [{"code": "FUNDAMENTALS_METADATA_ERROR", "severity": "WARN", "message": str(exc)}],
+            }
+        fund_meta = cfg.get("resolved_fundamentals_metadata") if isinstance(cfg.get("resolved_fundamentals_metadata"), dict) else {}
+        if bool(fund_meta.get("enforced")) and not bool(fund_meta.get("allow_trade", False)):
+            reasons = " | ".join(
+                [
+                    str((row or {}).get("message") or (row or {}).get("code") or "")
+                    for row in (fund_meta.get("explain") or [])
+                    if isinstance(row, dict)
+                ][:3]
+            )
+            raise ValueError(f"Fundamentals/credit_filter bloqueó Research Batch para {cfg.get('market')}/{cfg.get('symbol')}. {reasons}".strip())
         folds = self.walk_forward_runner(
             start=str(cfg.get("start") or "2024-01-01"),
             end=str(cfg.get("end") or "2024-12-31"),
@@ -1623,6 +1668,14 @@ class MassBacktestEngine:
                     "max_live_switch_per_week": 1,
                     "option_b_no_auto_live": True,
                 },
+                "fundamentals": {
+                    "enabled": bool(fund_meta.get("enabled", False)),
+                    "enforced": bool(fund_meta.get("enforced", False)),
+                    "allow_trade": bool(fund_meta.get("allow_trade", True)),
+                    "status": str(fund_meta.get("fund_status") or "UNKNOWN"),
+                    "score": fund_meta.get("fund_score"),
+                    "snapshot_id": fund_meta.get("snapshot_id"),
+                },
             },
             "results": ranked,
         }
@@ -1637,6 +1690,7 @@ class MassBacktestEngine:
             "timeframe": cfg.get("timeframe"),
             "universe": universe,
             "costs_used": cfg.get("costs") or {},
+            "fundamentals_used": cfg.get("resolved_fundamentals_metadata") if isinstance(cfg.get("resolved_fundamentals_metadata"), dict) else {},
             "commit_hash": str(cfg.get("commit_hash") or "local"),
             "results_parquet": parquet_info,
             "data_provider": dataset_info.to_dict(),

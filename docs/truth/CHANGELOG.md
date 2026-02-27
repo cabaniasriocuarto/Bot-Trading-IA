@@ -2,6 +2,132 @@
 
 ## 2026-02-27
 
+### Calibracion real (fundamentals + costos)
+- Nueva policy `config/policies/fundamentals_credit_filter.yaml` con scoring, thresholds, reglas por instrumento y snapshots.
+- Nuevo modulo `rtlab_core/fundamentals/credit_filter.py` con evaluacion auditable:
+  - `fund_score`, `fund_status`, `allow_trade`, `risk_multiplier`, `explain[]`
+  - cache/snapshot con TTL y persistencia en SQLite.
+- Catalogo SQLite extendido:
+  - nueva tabla `fundamentals_snapshots`
+  - columnas en `backtest_runs`: `fundamentals_snapshot_id`, `fund_status`, `fund_allow_trade`, `fund_risk_multiplier`, `fund_score`.
+- Wiring en backend (`app.py` + `mass_backtest_engine.py`):
+  - run metadata/provenance ahora incluye fundamentals
+  - bloqueo fail-closed cuando fundamentals enforced retorna `allow_trade=false`.
+- Cost model reforzado:
+  - `FeeProvider` intenta endpoints Binance reales (`/api/v3/account/commission`, `/sapi/v1/asset/tradeFee`) + fallback seguro
+  - `FundingProvider` intenta `/fapi/v1/fundingRate` + fallback seguro
+  - `SpreadModel` agrega estimador `roll` cuando no hay BBO ni spread explicito.
+- Ajuste de gates default:
+  - `dsr_min` en rollout offline pasa a `0.95`.
+- Tests corridos:
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_catalog_db.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py rtlab_autotrader/tests/test_cost_providers.py -q`
+  - resultado: `7 passed`.
+
+### Calibracion real (bloque siguiente: fundamentals con fuente local)
+- `FundamentalsCreditFilter` ahora puede autoleer snapshot local JSON cuando `source` llega en `unknown/auto/local_snapshot`.
+- Nueva configuracion en policy:
+  - `data_source.mode`
+  - `data_source.local_snapshot_dir`
+  - `data_source.auto_load_when_source_unknown`
+- El filtro rellena `asof_date` y metricas financieras desde snapshot local y agrega traza:
+  - `explain.code = DATA_SOURCE_LOCAL_SNAPSHOT`
+  - `source_ref.source_path`
+- Paths soportados para snapshot:
+  - `user_data/fundamentals/{market}/{symbol}.json`
+  - y fallback legacy en `user_data/data/fundamentals/{market}/{symbol}.json`
+- Test agregado:
+  - `test_fundamentals_autoload_local_snapshot_for_equities`
+- Suite parcial recalibrada:
+  - `python -m pytest rtlab_autotrader/tests/test_fundamentals_credit_filter.py rtlab_autotrader/tests/test_backtest_catalog_db.py rtlab_autotrader/tests/test_cost_providers.py -q`
+  - resultado: `8 passed`.
+
+### Calibracion real (bloque 2/5: fundamentals remoto + fallback local)
+- `FundamentalsCreditFilter` ahora soporta `remote_json` configurable por policy/env:
+  - `data_source.remote.enabled`
+  - `base_url_env/base_url`
+  - `endpoint_template` con placeholders `{market}`, `{symbol}`, `{exchange}`, `{instrument_type}`
+  - timeout y header de auth por ENV.
+- Flujo de resolucion de fuente:
+  - `source=auto|unknown|runtime_policy|research_batch` -> intenta remoto y luego fallback local
+  - `source=remote` -> solo remoto (si falla queda evidencia y aplica fail-closed segun policy)
+  - `source=local_snapshot` -> solo local.
+- En metadata/explain se agrega trazabilidad de origen:
+  - `source_ref.source_url`
+  - `source_ref.source_http_status`
+  - `DATA_SOURCE_REMOTE_SNAPSHOT` / `DATA_SOURCE_REMOTE_ERROR`.
+- Wiring actualizado para usar `source=auto` en:
+  - `rtlab_core/web/app.py`
+  - `rtlab_core/src/research/mass_backtest_engine.py`
+- Test nuevo:
+  - `test_fundamentals_autoload_remote_snapshot_for_equities`
+- Suite parcial recalibrada:
+  - `python -m pytest rtlab_autotrader/tests/test_fundamentals_credit_filter.py rtlab_autotrader/tests/test_backtest_catalog_db.py rtlab_autotrader/tests/test_cost_providers.py -q`
+  - resultado: `9 passed`.
+
+### Calibracion real (bloque 3/5: costos multi-exchange base)
+- `FeeProvider` ahora usa fallback por exchange desde policy:
+  - `fees.per_exchange_defaults` (binance/bybit/okx)
+  - override opcional por ENV (`{EXCHANGE}_MAKER_FEE`, `{EXCHANGE}_TAKER_FEE`).
+- `FundingProvider` agrega fetch para Bybit perps:
+  - endpoint `/v5/market/funding/history` (publico)
+  - parsea `fundingRate` y persiste snapshot.
+- Se mantiene fail-safe:
+  - si endpoint no responde, guarda snapshot con fallback y trazabilidad en payload.
+- Policy actualizada:
+  - `config/policies/fees.yaml` incluye `per_exchange_defaults`.
+- Tests nuevos:
+  - `test_cost_model_uses_exchange_fee_fallback_for_bybit`
+  - `test_cost_model_fetches_bybit_funding_when_perp`
+- Suite parcial recalibrada:
+  - `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py rtlab_autotrader/tests/test_backtest_catalog_db.py -q`
+  - resultado: `11 passed`.
+
+### Calibracion real (bloque 4/5: promotion fail-closed con trazabilidad)
+- `validate_promotion` ahora exige constraints adicionales en corridas de catalogo:
+  - `cost_snapshots_present` (`fee_snapshot_id` + `funding_snapshot_id`)
+  - `fundamentals_allow_trade` (`fund_allow_trade=true`)
+- `_build_rollout_report_from_catalog_row` expone metadata de trazabilidad en report de rollout:
+  - `market`, `exchange`
+  - `fee_snapshot_id`, `funding_snapshot_id`
+  - `fundamentals_snapshot_id`, `fund_status`, `fund_allow_trade`, `fund_risk_multiplier`, `fund_score`
+- Si el run viene de legado (`legacy_json_id`), se completa metadata faltante desde catalogo para no perder trazabilidad en promotion.
+- Tests actualizados:
+  - `test_web_live_ready.py::test_runs_validate_and_promote_endpoints_smoke` ahora verifica presencia de ambos checks nuevos.
+- Suites corridas:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py::test_runs_validate_and_promote_endpoints_smoke rtlab_autotrader/tests/test_web_live_ready.py::test_runs_batches_catalog_endpoints_smoke -q`
+  - resultado: `2 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py rtlab_autotrader/tests/test_backtest_catalog_db.py -q`
+  - resultado: `11 passed`.
+
+### Calibracion real (bloque 5/5: admin multi-bot/live + cierre)
+- `BotInstance` metrics reforzadas en backend (`_bot_metrics`):
+  - agrega breakdown por modo (`shadow/paper/testnet/live`) con `trade_count`, `winrate`, `net_pnl`, `avg_sharpe`, `run_count`.
+  - agrega kills reales desde logs `module=risk`, `type=breaker_triggered`:
+    - `kills_total` por modo del bot
+    - `kills_24h` por modo
+    - `kills_global_total`, `kills_global_24h`
+    - `kills_by_mode`, `kills_by_mode_24h`, `last_kill_at`.
+- `kill switch` ahora guarda `mode` en payload del log para trazabilidad de kills por entorno.
+- Endpoints de bots endurecidos para LIVE:
+  - `POST /api/v1/bots`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/bulk-patch`
+  - todos bloquean `mode=live` si `live_can_be_enabled(evaluate_gates("live"))` no pasa.
+- UI:
+  - `strategies/page.tsx`: tabla de bots ahora muestra `runs` debajo de `trades` y `kills 24h`.
+  - `execution/page.tsx`:
+    - botón masivo `Modo LIVE` bloqueado cuando checklist LIVE no está en PASS
+    - tabla de operadores agrega columnas `Sharpe` y `Kills (total/24h)`.
+- Tipos frontend actualizados en `src/lib/types.ts` para nuevos campos de métricas de bot.
+- Tests:
+  - nuevo `test_bots_live_mode_blocked_by_gates`
+  - se mantiene `test_bots_multi_instance_endpoints`.
+- Suites corridas:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py::test_bots_multi_instance_endpoints rtlab_autotrader/tests/test_web_live_ready.py::test_bots_live_mode_blocked_by_gates rtlab_autotrader/tests/test_web_live_ready.py::test_runs_validate_and_promote_endpoints_smoke -q`
+  - resultado: `3 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py rtlab_autotrader/tests/test_backtest_catalog_db.py -q`
+  - resultado: `11 passed`.
+
 ### Backtests / Runs (bloque continuo de UX + escala)
 - Runs table ahora permite ordenar haciendo click en cabeceras (Run ID, Fecha, Estrategia, Ret%, MaxDD, Sharpe, PF, WinRate, Trades, Expectancy) con toggle asc/desc.
 - Se agregó `sort_by=winrate` en backend (`BacktestCatalogDB.query_runs`) para ranking directo por winrate.

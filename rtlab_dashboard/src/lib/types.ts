@@ -156,6 +156,13 @@ export interface BotInstanceMetrics {
   expectancy_value: number;
   expectancy_unit: string;
   kills_total: number;
+  kills_24h?: number;
+  kills_global_total?: number;
+  kills_global_24h?: number;
+  kills_by_mode?: Record<string, number>;
+  kills_by_mode_24h?: Record<string, number>;
+  last_kill_at?: string | null;
+  by_mode?: Record<string, { trade_count: number; winrate: number; net_pnl: number; avg_sharpe: number; expectancy_value?: number; run_count: number }>;
   last_run_at?: string | null;
   recommendations_pending?: number;
   recommendations_approved?: number;

@@ -1042,7 +1042,10 @@ export default function StrategiesPage() {
                             </Badge>
                           </TD>
                           <TD>{m?.strategy_count ?? bot.pool_strategy_ids.length}</TD>
-                          <TD>{m?.trade_count ?? 0}</TD>
+                          <TD>
+                            <div>{m?.trade_count ?? 0}</div>
+                            <div className="text-[10px] text-slate-500">runs: {m?.run_count ?? 0}</div>
+                          </TD>
                           <TD>{fmtPct(m?.winrate ?? 0)}</TD>
                           <TD>{fmtNum(m?.net_pnl ?? 0)}</TD>
                           <TD>{fmtNum(m?.avg_sharpe ?? 0)}</TD>
@@ -1052,7 +1055,10 @@ export default function StrategiesPage() {
                             </span>
                             <div className="text-[10px] text-slate-500">pend/apr/rech</div>
                           </TD>
-                          <TD>{m?.kills_total ?? 0}</TD>
+                          <TD>
+                            <div>{m?.kills_total ?? 0}</div>
+                            <div className="text-[10px] text-slate-500">24h: {m?.kills_24h ?? 0}</div>
+                          </TD>
                           <TD className="whitespace-nowrap text-[11px] text-slate-300">
                             {m?.last_run_at ? new Date(m.last_run_at).toLocaleString() : "sin corridas"}
                           </TD>

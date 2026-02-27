@@ -4,4 +4,14 @@ fees:
   default_fee_model_if_api_missing:
     maker_fee: 0.0002
     taker_fee: 0.0004
+  per_exchange_defaults:
+    binance:
+      maker_fee: 0.0002
+      taker_fee: 0.0004
+    bybit:
+      maker_fee: 0.0001
+      taker_fee: 0.0006
+    okx:
+      maker_fee: 0.0008
+      taker_fee: 0.0010
   persist_snapshots: true
