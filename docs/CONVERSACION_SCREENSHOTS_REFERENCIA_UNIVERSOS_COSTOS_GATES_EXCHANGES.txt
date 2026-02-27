@@ -1,0 +1,357 @@
+RTLAB - Extracto de conversacion y capturas (referencia)
+Tema: universos, pares, timeframes, costos, gates y conexion de exchanges
+Fecha de compilacion: 2026-02-26
+Fuente: conversacion de este chat + capturas compartidas por el usuario
+
+========================================================================
+PARTE 1 - UNIVERSOS / PARES / TIMEFRAMES (lo que se definio y se ve)
+========================================================================
+
+1) Universos soportados (backend / research / knowledge pack)
+- Mercados: crypto, forex, equities
+- Esto aparece en:
+  - Knowledge Pack v2 (templates y strategies_v2)
+  - Research Batch / Mass Backtests (selector de market)
+  - APIs de backtest/research
+
+2) Pares / simbolos usados y visibles en la conversacion/capturas
+- BTCUSDT (principal ejemplo repetido)
+- ETHUSDT (segundo ejemplo recomendado para pruebas)
+- En UI / logs / capturas se ve:
+  - Research Batch con BTCUSDT
+  - Estrategias y Backtests con BTCUSDT
+  - Settings / Diagnostico con Binance testnet
+
+3) Timeframes definidos y usados
+- Timeframes de estrategias/research:
+  - 5m, 10m, 15m (Quick/Research Batch)
+- Timeframes de pipeline / señales (config de referencia):
+  - regime: 1h
+  - signal: 15m
+  - trigger: 5m
+  - execution: 1m
+- En Order Flow L1 / VPIN:
+  - barras de 1 minuto (time_bar_seconds = 60)
+- Nota importante:
+  - El downloader de Binance Public Data baja 1m y luego se usa para resample a 5m/10m/15m.
+
+4) Universe / allowlist (ejemplos usados)
+- En ejemplos de config de test:
+  - whitelist: BTC/USDT, ETH/USDT
+- En UI de Research Batch:
+  - market = crypto
+  - symbol = BTCUSDT
+  - timeframe = 5m (ejemplo frecuente)
+
+
+========================================================================
+PARTE 2 - COSTOS REALES (backtest/ranking/gates)
+========================================================================
+
+1) Costos usados en backtests (campos obligatorios)
+- fees_bps
+- spread_bps
+- slippage_bps
+- funding_bps
+
+2) Cost breakdown guardado y visible
+- gross_pnl / gross_pnl_total
+- fees_total
+- spread_total
+- slippage_total
+- funding_total
+- total_cost / costs_total
+- net_pnl / net_pnl_total
+- costs_ratio = costos_totales / pnl_bruto
+
+3) UI / KPIs donde se muestra
+- Backtests (comparador y detalle tipo Strategy Tester)
+- Strategies (KPIs por estrategia y por regimen)
+- Rollout / Offline Gates (check cost_breakdown y costs_ratio_max)
+
+4) Cost model real implementado (backend)
+- FeeProvider:
+  - snapshot persistente
+  - cache TTL
+  - fallback maker/taker fijo si API no responde
+- FundingProvider:
+  - snapshot persistente
+  - cache TTL
+  - spot = funding no aplica / 0
+- SpreadModel:
+  - si hay BBO usa spread real
+  - si no, fallback fijo
+- SlippageModel:
+  - base_bps spot/futures
+  - multiplica si volatilidad alta
+
+5) Policies de fees (config/policies/fees.yaml)
+- fee_snapshot_ttl_hours: 6
+- funding_snapshot_ttl_minutes: 60
+- fallback maker_fee / taker_fee definidos
+- persist_snapshots: true
+
+
+========================================================================
+PARTE 3 - GATES (offline, compare vs baseline, live, canary)
+========================================================================
+
+1) Offline Gates (visibles en capturas de Settings -> Rollout / Gates)
+Checks que se ven / se discutieron:
+- real_data
+- dataset_hash
+- cost_breakdown
+- walk_forward_oos
+- min_trades_oos
+- min_winrate
+- min_profit_factor
+- min_sharpe_oos
+- min_sortino_oos
+- min_calmar_oos
+- max_drawdown_oos_pct
+- max_dd_duration_days
+- costs_ratio_max
+- pbo_max
+- dsr_min
+
+2) Compare vs Baseline (capturas)
+Checks visibles:
+- same_dataset_hash (FAIL en una captura)
+- same_oos_period (PASS)
+- improve_expectancy_or_net_pnl (PASS)
+- max_dd_worsen_limit (PASS)
+- cost_increase_limit (PASS)
+
+3) Motivo real de ABORT en rollout (capturas)
+- Se vio "ABORTED" por:
+  - fallas de Offline Gates (min trades, winrate, PF, Sharpe, Sortino, costs ratio)
+  - y/o compare vs baseline con dataset_hash distinto
+- Esto es comportamiento esperado (protege capital / evita comparar datasets distintos).
+
+4) Gates LIVE (checklist operativo en Settings)
+Etapas visibles:
+- G1_CONFIG_VALID
+- G2_AUTH_READY
+- G3_BACKEND_HEALTH
+- G4_EXCHANGE_CONNECTOR_READY
+- G5_STRATEGY_PRINCIPAL_SET
+- G6_RISK_LIMITS_SET
+- G7_ORDER_SIM_OR_PAPER_OK
+- G8_OBSERVABILITY_OK
+
+5) Safe Update with Gates + Canary
+- Estados y flujo implementado:
+  - offline eval/gates
+  - paper soak
+  - testnet soak
+  - shadow
+  - canary 5/15/35/60
+  - stable 100 con approve humano
+- Rollback automatico por breach (DD, costos, slippage, errores, etc.)
+- Opcion B: NO auto-live.
+
+6) Gates avanzados (Research / Mass Backtests)
+- PBO/CSCV
+- DSR deflactado (proxy con fail-closed para sugerencias/promocion)
+- Walk-forward (folds / degradacion IS->OOS)
+- Cost stress x1.5 y x2.0
+- PASS/FAIL visible en leaderboards / drilldown de variantes
+- Si FAIL:
+  - no entra a sugerencias del bot
+  - no puede marcarse candidato (mark-candidate bloqueado)
+
+
+========================================================================
+PARTE 4 - CONEXION DE EXCHANGES (como se conecta y como se prueba)
+========================================================================
+
+1) Arquitectura de deploy (ya usada)
+- Frontend: Vercel (Next.js)
+- Backend: Railway (FastAPI)
+- Secrets por entorno (NO hardcode)
+
+2) Dato importante
+- Vercel NO lleva claves del exchange (normalmente).
+- Las claves de exchange van en Railway (backend) o VPS donde corre el backend.
+
+3) Variables de entorno usadas (Binance Spot Testnet)
+- BINANCE_TESTNET_API_KEY
+- BINANCE_TESTNET_API_SECRET
+- BINANCE_SPOT_TESTNET_BASE_URL = https://testnet.binance.vision
+- BINANCE_SPOT_TESTNET_WS_URL = wss://testnet.binance.vision/ws
+
+Opcionales:
+- BINANCE_TESTNET_TEST_SYMBOL = BTCUSDT
+- BINANCE_TESTNET_TEST_QUOTE_QTY = 15
+
+4) Variables de entorno usadas (Binance Spot Live, cuando corresponda)
+- BINANCE_API_KEY
+- BINANCE_API_SECRET
+- BINANCE_SPOT_BASE_URL (opcional)
+- BINANCE_SPOT_WS_URL (opcional)
+
+5) Como se prueba en la UI (Settings -> Diagnostico)
+- Seleccionar modo:
+  - TESTNET (o LIVE cuando toque)
+- Seleccionar exchange:
+  - binance
+- Boton:
+  - "Probar exchange"
+- Resultado esperado:
+  - "ok (testnet)" y detalles de base_url/ws_url
+
+6) WS timeout (diagnostico) - aclaracion importante
+- Hubo un falso "WS timeout" en la UI.
+- Se arreglo:
+  - la prueba del stream SSE valida onopen y eventos reales (status/risk/gates), no solo "health".
+- No implicaba que el backend estuviera roto.
+
+7) Error 451 (Railway / Binance Testnet)
+- Se vio HTTP 451 en capturas y conversaciones.
+- Diagnostico:
+  - restriccion de red / egress / region del proveedor (Railway), NO bug del bot.
+- Accion recomendada:
+  - usar otra region/proveedor/VPS para backend si Binance Testnet bloquea esa salida.
+
+8) Permisos recomendados para API keys (documentado y repetido)
+- Read + Trade
+- NUNCA Withdraw
+- IP whitelist si el exchange lo permite
+
+9) "Apply 1 change" en Railway (captura)
+- Se vio caso donde Railway tenia cambios pendientes (variables) sin aplicar.
+- Recordatorio:
+  - aplicar cambios y redeploy para que el contenedor use nuevas ENV.
+
+
+========================================================================
+PARTE 5 - CAPTURAS (que se vio en screenshots compartidas)
+========================================================================
+
+1) Capturas de Backtests / Research Batch
+- Se vio:
+  - Bloques "Crear Batch / Batches / Leaderboards"
+  - Pool de estrategias (research)
+  - Modo Bestia (cola de jobs) panel a la derecha
+  - Error de batch "FAILED" por falta de dataset real (sin sinteticos)
+- Mensaje relevante visible:
+  - "No hay dataset real disponible para crypto/BTCUSDT/5m ... use scripts/download_crypto_binance_public.py ..."
+- Esto es correcto con la politica "datos reales o error".
+
+2) Capturas de Settings / Rollout / Gates
+- Estado "ABORTED" por Offline Gates fail
+- Compare vs Baseline con "same_dataset_hash = FAIL"
+- Se mostraron checks individuales PASS/FAIL y motivos
+- Se vieron CTAs de empty state:
+  - iniciar evaluacion offline
+  - iniciar rollout (Shadow)
+
+3) Capturas de Settings / Diagnostico + Gates LIVE
+- Backend ok
+- Exchange ok (testnet) luego de corregir region y URL
+- WS timeout (antes del fix del falso negativo)
+- G1..G8 visibles con PASS/FAIL
+
+4) Capturas de Strategies
+- Tabla de estrategias con columnas de:
+  - ID / version / origen / estado
+  - trading / aprendizaje / principal
+- Se detecto problema UX:
+  - filas demasiado grandes para 50+ estrategias
+- Luego se compactaron filas y acciones.
+
+5) Capturas de Backtests / Runs
+- Se vio [object Object] en la UI
+- Luego se arreglo para mostrar error legible
+- Se vio necesidad de paginacion y seleccion masiva (implementada)
+
+
+========================================================================
+PARTE 6 - BOT QUE APRENDE / SUGERENCIAS / AUTOBOTS (lo que se hablo)
+========================================================================
+
+1) Lo pedido por el usuario
+- Poder elegir estrategias para el bot que aprende
+- Ver tabla de "mejores elegidas por el bot" y "mias"
+- Ver metricas de decision:
+  - trades
+  - winrate
+  - sharpe
+  - expectancy / pnl
+- Que sea mas automatico y menos trabajo manual
+
+2) Lo que quedo implementado (y se hablo)
+- Pool de aprendizaje por estrategia (`allow_learning`)
+- Sugerencias del bot (runtime + research)
+- Aprobacion/rechazo de sugerencias (Opcion B)
+- Panel AutoBot / Aprendizaje en `Estrategias`
+- Tabla de Bots / AutoBots multi-instancia (base):
+  - engine
+  - modo (shadow/paper/testnet/live)
+  - estado
+  - pool
+  - trades, winrate, pnl, sharpe
+  - recomendaciones pendientes/aprobadas/rechazadas
+  - acciones: pausar/activar, usar pool actual, cambiar modo/engine
+
+3) Lo que todavia se dejo como mejora futura (comentado en chat)
+- kills reales por bot (hoy placeholder en metrics)
+- modulo de administracion mas avanzado por bot/operador
+- flujo "live admin por bot" mas profundo
+
+
+========================================================================
+PARTE 7 - DATOS REALES vs SINTETICOS (aclaracion importante)
+========================================================================
+
+1) Pedido del usuario
+- "Que nunca haga resultados sinteticos, que sean reales o que diga error."
+
+2) Cambio aplicado
+- Quick Backtest y Research Batch en modo sintetico:
+  - ahora devuelven error (fail-closed)
+- Mass backtest engine:
+  - sin fallback silencioso a synthetic
+- UI:
+  - se saco synthetic del selector de dataset source
+  - mensaje visible: "Sin sinteticos: datos reales o error"
+
+3) Implicacion practica
+- Si falta dataset local real:
+  - el batch falla con mensaje claro (como se vio en capturas)
+- Para resolver:
+  - correr downloader de Binance Public Data y generar manifests/dataset_hash
+
+
+========================================================================
+PARTE 8 - COMANDOS / PASOS RELEVANTES (resumen operativo)
+========================================================================
+
+1) Descargar datos reales (sin API keys)
+Comando usado/recomendado:
+python rtlab_autotrader/scripts/download_crypto_binance_public.py --start-month 2024-01 --end-month 2024-12 --symbols BTCUSDT ETHUSDT
+
+2) Luego en UI (Backtests -> Research Batch)
+- dataset_source = auto (real; falla si no existe)
+- crear/ejecutar batch
+- ordenar leaderboard
+- seleccionar top N / auto-shortlist
+- comparar en Runs
+- validar/promover (Opcion B)
+
+3) Para rollout (Settings -> Rollout / Gates)
+- elegir baseline/candidate con MISMO dataset_hash
+- iniciar evaluacion/gates
+- seguir paper/testnet/shadow/canary
+- approve humano antes de stable
+
+
+========================================================================
+NOTAS FINALES
+========================================================================
+
+- Este archivo resume lo que ya se vio en esta conversacion y capturas, en formato compartible.
+- Si queres anexar capturas reales al repo, conviene guardarlas en:
+  docs/evidencia/ (png/jpg) y referenciarlas desde este txt o un md.
+- Si queres, se puede generar una version "checklist" mas corta para pasar a otro agente/IA.
+

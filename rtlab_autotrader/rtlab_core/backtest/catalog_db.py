@@ -380,6 +380,39 @@ class BacktestCatalogDB:
             conn.commit()
         return row
 
+    def patch_batch(
+        self,
+        batch_id: str,
+        *,
+        objective: str | None = None,
+        status: str | None = None,
+        best_runs_cache: list[dict[str, Any]] | None = None,
+        summary: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        current = self.get_batch(batch_id)
+        if not current:
+            return None
+
+        updates: dict[str, Any] = {}
+        if objective is not None:
+            updates["objective"] = str(objective or "").strip()
+        if status is not None:
+            updates["status"] = str(status or "").strip().lower() or str(current.get("status") or "queued")
+        if best_runs_cache is not None:
+            updates["best_runs_cache_json"] = _to_json(best_runs_cache, [])
+        if summary is not None:
+            updates["summary_json"] = _to_json(summary, {})
+        if not updates:
+            return current
+
+        updates["updated_at"] = _utc_iso()
+        assignments = ", ".join(f"{k}=?" for k in updates.keys())
+        values = list(updates.values()) + [str(batch_id)]
+        with self._connect() as conn:
+            conn.execute(f"UPDATE backtest_batches SET {assignments} WHERE batch_id = ?", values)
+            conn.commit()
+        return self.get_batch(batch_id)
+
     def add_artifact(self, *, run_id: str | None, batch_id: str | None, kind: str, path: str, url: str | None = None) -> None:
         with self._connect() as conn:
             exists = conn.execute(
@@ -1036,6 +1069,7 @@ class BacktestCatalogDB:
                 "sortino": float(k.get("sortino") or 0.0),
                 "dd": float(k.get("max_dd") or 0.0),
                 "pf": float(k.get("profit_factor") or 0.0),
+                "winrate": float(k.get("winrate") or 0.0),
                 "expectancy": float(k.get("expectancy") or 0.0),
                 "trades": int(k.get("trade_count") or k.get("roundtrips") or 0),
                 "strategy": str(row.get("strategy_name") or row.get("strategy_id") or ""),

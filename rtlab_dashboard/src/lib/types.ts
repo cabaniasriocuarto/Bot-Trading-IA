@@ -146,6 +146,45 @@ export interface StrategyKpisByRegimeResponse {
   regimes: Record<string, { regime_label: string; kpis: StrategyKpis }>;
 }
 
+export interface BotInstanceMetrics {
+  strategy_count: number;
+  run_count: number;
+  trade_count: number;
+  winrate: number;
+  net_pnl: number;
+  avg_sharpe: number;
+  expectancy_value: number;
+  expectancy_unit: string;
+  kills_total: number;
+  last_run_at?: string | null;
+  recommendations_pending?: number;
+  recommendations_approved?: number;
+  recommendations_rejected?: number;
+}
+
+export interface BotInstanceStrategyRef {
+  id: string;
+  name: string;
+  allow_learning?: boolean;
+  enabled_for_trading?: boolean;
+  is_primary?: boolean;
+}
+
+export interface BotInstance {
+  id: string;
+  name: string;
+  engine: string;
+  mode: "shadow" | "paper" | "testnet" | "live";
+  status: "active" | "paused" | "archived";
+  pool_strategy_ids: string[];
+  pool_strategies?: BotInstanceStrategyRef[];
+  universe?: string[];
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  metrics?: BotInstanceMetrics;
+}
+
 export interface StrategyComparison {
   left: Strategy;
   right: Strategy;
@@ -249,6 +288,9 @@ export interface TradeEvent {
 
 export interface Trade {
   id: string;
+  run_id?: string;
+  run_mode?: "backtest" | "paper" | "testnet" | "live" | string;
+  run_created_at?: string;
   strategy_id: string;
   symbol: string;
   side: "long" | "short";

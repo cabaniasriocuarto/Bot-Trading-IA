@@ -71,6 +71,7 @@ BOT_STATE_PATH = USER_DATA_DIR / "logs" / "bot_state.json"
 STRATEGY_META_PATH = STRATEGY_PACKS_DIR / "strategy_meta.json"
 RUNS_PATH = USER_DATA_DIR / "backtests" / "runs.json"
 BACKTEST_CATALOG_DB_PATH = USER_DATA_DIR / "backtests" / "catalog.sqlite3"
+BOTS_PATH = USER_DATA_DIR / "learning" / "bots.json"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
 ROLE_ADMIN = "admin"
@@ -277,6 +278,36 @@ class RunsBulkBody(BaseModel):
     action: Literal["archive", "unarchive", "delete"]
 
 
+class BotCreateBody(BaseModel):
+    name: str | None = None
+    engine: str = "bandit_thompson"
+    mode: Literal["shadow", "paper", "testnet", "live"] = "paper"
+    status: Literal["active", "paused", "archived"] = "active"
+    pool_strategy_ids: list[str] | None = None
+    universe: list[str] | None = None
+    notes: str | None = None
+
+
+class BotPatchBody(BaseModel):
+    name: str | None = None
+    engine: str | None = None
+    mode: Literal["shadow", "paper", "testnet", "live"] | None = None
+    status: Literal["active", "paused", "archived"] | None = None
+    pool_strategy_ids: list[str] | None = None
+    universe: list[str] | None = None
+    notes: str | None = None
+
+
+class BotBulkPatchBody(BaseModel):
+    ids: list[str]
+    engine: str | None = None
+    mode: Literal["shadow", "paper", "testnet", "live"] | None = None
+    status: Literal["active", "paused", "archived"] | None = None
+    pool_strategy_ids: list[str] | None = None
+    universe: list[str] | None = None
+    notes: str | None = None
+
+
 class BatchCreateBody(BaseModel):
     objective: str | None = None
     strategy_ids: list[str] | None = None
@@ -295,6 +326,12 @@ class BatchCreateBody(BaseModel):
     top_n: int = 10
     seed: int = 42
     costs: dict[str, float] | None = None
+
+
+class BatchShortlistBody(BaseModel):
+    items: list[dict[str, Any]] | None = None
+    source: str | None = None
+    note: str | None = None
 
 
 class RunPromoteBody(BaseModel):
@@ -1184,6 +1221,7 @@ class ConsoleStore:
         self._ensure_default_strategy()
         self._ensure_knowledge_strategies_registry()
         self._ensure_strategy_registry_invariants()
+        self._ensure_default_bots()
         self._ensure_seed_backtest()
         self._sync_backtest_runs_catalog()
         self.add_log(
@@ -2096,6 +2134,306 @@ def risk_hooks(context):
 
     def save_strategy_meta(self, payload: dict[str, dict[str, Any]]) -> None:
         json_save(STRATEGY_META_PATH, payload)
+
+    @staticmethod
+    def _normalize_bot_mode(value: str | None) -> str:
+        mode = str(value or "paper").strip().lower()
+        if mode not in {"shadow", "paper", "testnet", "live"}:
+            return "paper"
+        return mode
+
+    @staticmethod
+    def _normalize_bot_status(value: str | None) -> str:
+        status = str(value or "active").strip().lower()
+        if status not in {"active", "paused", "archived"}:
+            return "active"
+        return status
+
+    @staticmethod
+    def _normalize_bot_engine(value: str | None) -> str:
+        engine = str(value or "bandit_thompson").strip()
+        return engine or "bandit_thompson"
+
+    def _next_bot_id(self, rows: list[dict[str, Any]]) -> str:
+        max_n = 0
+        for row in rows:
+            raw = str((row or {}).get("id") or "")
+            match = re.fullmatch(r"BOT-(\d+)", raw)
+            if not match:
+                continue
+            try:
+                max_n = max(max_n, int(match.group(1)))
+            except Exception:
+                continue
+        return f"BOT-{max_n + 1:06d}"
+
+    def _normalize_bot_row(self, row: dict[str, Any], *, strategy_ids: set[str] | None = None) -> dict[str, Any]:
+        if not isinstance(row, dict):
+            row = {}
+        sid_allow = strategy_ids if isinstance(strategy_ids, set) else None
+        pool_ids_raw = row.get("pool_strategy_ids") if isinstance(row.get("pool_strategy_ids"), list) else []
+        pool_strategy_ids: list[str] = []
+        seen_pool: set[str] = set()
+        for item in pool_ids_raw:
+            sid = str(item or "").strip()
+            if not sid or sid in seen_pool:
+                continue
+            if sid_allow is not None and sid not in sid_allow:
+                continue
+            seen_pool.add(sid)
+            pool_strategy_ids.append(sid)
+        universe_raw = row.get("universe") if isinstance(row.get("universe"), list) else []
+        universe: list[str] = []
+        seen_universe: set[str] = set()
+        for item in universe_raw:
+            val = str(item or "").strip().upper()
+            if not val or val in seen_universe:
+                continue
+            seen_universe.add(val)
+            universe.append(val)
+        now_iso = utc_now_iso()
+        return {
+            "id": str(row.get("id") or "").strip() or "BOT-000000",
+            "name": str(row.get("name") or "AutoBot").strip()[:120] or "AutoBot",
+            "engine": self._normalize_bot_engine(str(row.get("engine") or "bandit_thompson")),
+            "mode": self._normalize_bot_mode(str(row.get("mode") or "paper")),
+            "status": self._normalize_bot_status(str(row.get("status") or "active")),
+            "pool_strategy_ids": pool_strategy_ids,
+            "universe": universe,
+            "notes": str(row.get("notes") or "")[:500],
+            "created_at": str(row.get("created_at") or now_iso),
+            "updated_at": str(row.get("updated_at") or now_iso),
+        }
+
+    def load_bots(self) -> list[dict[str, Any]]:
+        payload = json_load(BOTS_PATH, [])
+        if not isinstance(payload, list):
+            payload = []
+        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
+        normalized: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        changed = False
+        for idx, raw in enumerate(payload):
+            before = dict(raw) if isinstance(raw, dict) else {}
+            row = self._normalize_bot_row(before, strategy_ids=valid_strategy_ids)
+            if not row["id"] or row["id"] == "BOT-000000" or row["id"] in seen_ids:
+                row["id"] = self._next_bot_id(normalized)
+                changed = True
+            seen_ids.add(row["id"])
+            if before != row:
+                changed = True
+            normalized.append(row)
+        if changed:
+            json_save(BOTS_PATH, normalized)
+        return normalized
+
+    def save_bots(self, rows: list[dict[str, Any]]) -> None:
+        json_save(BOTS_PATH, rows)
+
+    def _ensure_default_bots(self) -> None:
+        rows = self.load_bots()
+        if rows:
+            return
+        strategies = self.list_strategies()
+        pool_ids = [
+            str(row.get("id"))
+            for row in strategies
+            if str(row.get("status") or "") != "archived" and bool(row.get("allow_learning", True))
+        ]
+        if not pool_ids:
+            pool_ids = [str(row.get("id")) for row in strategies[:1] if row.get("id")]
+        default_row = self._normalize_bot_row(
+            {
+                "id": "BOT-000001",
+                "name": "AutoBot Principal",
+                "engine": "bandit_thompson",
+                "mode": "paper",
+                "status": "active",
+                "pool_strategy_ids": pool_ids,
+                "universe": ["BTCUSDT", "ETHUSDT"],
+                "notes": "Bot base (Opcion B): propone cambios y requiere aprobacion humana.",
+                "created_at": utc_now_iso(),
+                "updated_at": utc_now_iso(),
+            },
+            strategy_ids={str(row.get("id") or "") for row in strategies},
+        )
+        self.save_bots([default_row])
+
+    def _bot_metrics(self, bot: dict[str, Any], *, recommendations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        pool = {str(x) for x in (bot.get("pool_strategy_ids") or []) if str(x)}
+        mode = self._normalize_bot_mode(str(bot.get("mode") or "paper"))
+        kpi_mode = "backtest" if mode == "shadow" else mode
+        rows = [row for row in self.strategy_kpis_table(mode=kpi_mode) if str(row.get("strategy_id") or "") in pool]
+        trades_total = 0
+        weighted_wins = 0.0
+        net_pnl_total = 0.0
+        sharpe_vals: list[float] = []
+        expectancy_weighted_num = 0.0
+        expectancy_weighted_den = 0.0
+        run_count_total = 0
+        last_run_at: str | None = None
+        strategies_lookup = {str(s.get("id") or ""): s for s in self.list_strategies()}
+        for row in rows:
+            kpi = row.get("kpis") if isinstance(row.get("kpis"), dict) else {}
+            trades = int(kpi.get("trade_count") or 0)
+            winrate = float(kpi.get("winrate") or 0.0)
+            net_pnl_total += float(kpi.get("net_pnl") or 0.0)
+            trades_total += trades
+            weighted_wins += winrate * trades
+            expectancy_weighted_num += float(kpi.get("expectancy_value") or 0.0) * max(trades, 1)
+            expectancy_weighted_den += max(trades, 1)
+            run_count_total += int(kpi.get("run_count") or 0)
+            sharpe_vals.append(float(kpi.get("sharpe") or 0.0))
+            strategy_meta = strategies_lookup.get(str(row.get("strategy_id") or ""))
+            candidate_last = str((strategy_meta or {}).get("last_run_at") or "")
+            if candidate_last and (last_run_at is None or candidate_last > last_run_at):
+                last_run_at = candidate_last
+        rec_rows = recommendations if isinstance(recommendations, list) else []
+        pending = 0
+        approved = 0
+        rejected = 0
+        for rec in rec_rows:
+            if not isinstance(rec, dict):
+                continue
+            active_sid = str(rec.get("active_strategy_id") or "")
+            if active_sid and active_sid not in pool:
+                continue
+            status = str(rec.get("status") or "PENDING").upper()
+            if "PENDING" in status:
+                pending += 1
+            elif "APPROVED" in status:
+                approved += 1
+            elif "REJECT" in status:
+                rejected += 1
+        return {
+            "strategy_count": len(pool),
+            "run_count": run_count_total,
+            "trade_count": trades_total,
+            "winrate": (weighted_wins / trades_total) if trades_total else 0.0,
+            "net_pnl": net_pnl_total,
+            "avg_sharpe": (sum(sharpe_vals) / len(sharpe_vals)) if sharpe_vals else 0.0,
+            "expectancy_value": (expectancy_weighted_num / expectancy_weighted_den) if expectancy_weighted_den else 0.0,
+            "expectancy_unit": "$/trade",
+            "kills_total": 0,
+            "last_run_at": last_run_at,
+            "recommendations_pending": pending,
+            "recommendations_approved": approved,
+            "recommendations_rejected": rejected,
+        }
+
+    def list_bot_instances(self, *, recommendations: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        rows = self.load_bots()
+        strategies = self.list_strategies()
+        by_id = {str(s.get("id") or ""): s for s in strategies}
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            pool_ids = [sid for sid in (row.get("pool_strategy_ids") or []) if sid in by_id]
+            pool_meta = [
+                {
+                    "id": sid,
+                    "name": str(by_id[sid].get("name") or sid),
+                    "allow_learning": bool(by_id[sid].get("allow_learning", True)),
+                    "enabled_for_trading": bool(by_id[sid].get("enabled_for_trading", by_id[sid].get("enabled", False))),
+                    "is_primary": bool(by_id[sid].get("is_primary", False)),
+                }
+                for sid in pool_ids
+            ]
+            payload = dict(row)
+            payload["pool_strategy_ids"] = pool_ids
+            payload["pool_strategies"] = pool_meta
+            payload["metrics"] = self._bot_metrics(dict(row, pool_strategy_ids=pool_ids), recommendations=recommendations)
+            out.append(payload)
+        out.sort(key=lambda item: (0 if str(item.get("status")) == "active" else 1, item.get("name", ""), item.get("id", "")))
+        return out
+
+    def create_bot_instance(
+        self,
+        *,
+        name: str | None,
+        engine: str,
+        mode: str,
+        status: str,
+        pool_strategy_ids: list[str] | None,
+        universe: list[str] | None,
+        notes: str | None,
+    ) -> dict[str, Any]:
+        rows = self.load_bots()
+        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
+        now_iso = utc_now_iso()
+        row = self._normalize_bot_row(
+            {
+                "id": self._next_bot_id(rows),
+                "name": name or f"AutoBot {len(rows) + 1}",
+                "engine": engine,
+                "mode": mode,
+                "status": status,
+                "pool_strategy_ids": pool_strategy_ids or [],
+                "universe": universe or [],
+                "notes": notes or "",
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            },
+            strategy_ids=valid_strategy_ids,
+        )
+        rows.append(row)
+        self.save_bots(rows)
+        self.add_log(
+            event_type="bot_instance",
+            severity="info",
+            module="learning",
+            message=f"Bot creado: {row['id']} ({row['name']})",
+            related_ids=[row["id"]],
+            payload={"engine": row["engine"], "mode": row["mode"], "pool_size": len(row["pool_strategy_ids"])},
+        )
+        return row
+
+    def patch_bot_instance(
+        self,
+        bot_id: str,
+        *,
+        name: str | None = None,
+        engine: str | None = None,
+        mode: str | None = None,
+        status: str | None = None,
+        pool_strategy_ids: list[str] | None = None,
+        universe: list[str] | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        rows = self.load_bots()
+        idx = next((i for i, row in enumerate(rows) if str(row.get("id")) == bot_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="BotInstance not found")
+        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
+        current = dict(rows[idx])
+        patched = dict(current)
+        if name is not None:
+            patched["name"] = name
+        if engine is not None:
+            patched["engine"] = engine
+        if mode is not None:
+            patched["mode"] = mode
+        if status is not None:
+            patched["status"] = status
+        if pool_strategy_ids is not None:
+            patched["pool_strategy_ids"] = pool_strategy_ids
+        if universe is not None:
+            patched["universe"] = universe
+        if notes is not None:
+            patched["notes"] = notes
+        patched["id"] = bot_id
+        patched["created_at"] = str(current.get("created_at") or utc_now_iso())
+        patched["updated_at"] = utc_now_iso()
+        rows[idx] = self._normalize_bot_row(patched, strategy_ids=valid_strategy_ids)
+        self.save_bots(rows)
+        self.add_log(
+            event_type="bot_instance",
+            severity="info",
+            module="learning",
+            message=f"Bot actualizado: {bot_id}",
+            related_ids=[bot_id],
+            payload={"status": rows[idx].get("status"), "mode": rows[idx].get("mode"), "engine": rows[idx].get("engine")},
+        )
+        return rows[idx]
 
     def list_strategies(self) -> list[dict[str, Any]]:
         metadata = self.load_strategy_meta()
@@ -3804,6 +4142,113 @@ def create_app() -> FastAPI:
         strategy = store.update_strategy_params(strategy_id, params_yaml)
         return {"ok": True, "strategy": strategy}
 
+    @app.get("/api/v1/bots")
+    def list_bots(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        recs = learning_service.load_all_recommendations()
+        items = store.list_bot_instances(recommendations=recs)
+        return {"items": items, "total": len(items)}
+
+    @app.post("/api/v1/bots")
+    def create_bot(body: BotCreateBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        bot = store.create_bot_instance(
+            name=body.name,
+            engine=body.engine,
+            mode=body.mode,
+            status=body.status,
+            pool_strategy_ids=body.pool_strategy_ids,
+            universe=body.universe,
+            notes=body.notes,
+        )
+        recs = learning_service.load_all_recommendations()
+        items = store.list_bot_instances(recommendations=recs)
+        enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
+        return {"ok": True, "bot": enriched}
+
+    @app.patch("/api/v1/bots/{bot_id}")
+    def patch_bot(bot_id: str, body: BotPatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        bot = store.patch_bot_instance(
+            bot_id,
+            name=body.name,
+            engine=body.engine,
+            mode=body.mode,
+            status=body.status,
+            pool_strategy_ids=body.pool_strategy_ids,
+            universe=body.universe,
+            notes=body.notes,
+        )
+        recs = learning_service.load_all_recommendations()
+        items = store.list_bot_instances(recommendations=recs)
+        enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
+        return {"ok": True, "bot": enriched}
+
+    @app.post("/api/v1/bots/bulk-patch")
+    def patch_bots_bulk(body: BotBulkPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        ids = [str(v).strip() for v in (body.ids or []) if str(v).strip()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="ids is required")
+        if (
+            body.engine is None
+            and body.mode is None
+            and body.status is None
+            and body.pool_strategy_ids is None
+            and body.universe is None
+            and body.notes is None
+        ):
+            raise HTTPException(status_code=400, detail="At least one patch field is required")
+
+        updated_ids: list[str] = []
+        errors: list[dict[str, str]] = []
+        dedup_ids: list[str] = list(dict.fromkeys(ids))
+        for bot_id in dedup_ids:
+            try:
+                store.patch_bot_instance(
+                    bot_id,
+                    engine=body.engine,
+                    mode=body.mode,
+                    status=body.status,
+                    pool_strategy_ids=body.pool_strategy_ids,
+                    universe=body.universe,
+                    notes=body.notes,
+                )
+                updated_ids.append(bot_id)
+            except HTTPException as exc:
+                errors.append({"id": bot_id, "detail": str(exc.detail)})
+            except Exception as exc:
+                errors.append({"id": bot_id, "detail": str(exc)})
+
+        recs = learning_service.load_all_recommendations()
+        items = store.list_bot_instances(recommendations=recs)
+        by_id = {str(row.get("id")): row for row in items}
+        updated_items = [by_id[bot_id] for bot_id in updated_ids if bot_id in by_id]
+        store.add_log(
+            event_type="bot_instance_bulk_patch",
+            severity="info" if not errors else "warn",
+            module="learning",
+            message=f"Bots actualizados en lote por {user.get('username', 'admin')}: {len(updated_ids)} OK / {len(errors)} error(es)",
+            related_ids=updated_ids[:20],
+            payload={
+                "requested": len(dedup_ids),
+                "updated": len(updated_ids),
+                "errors": len(errors),
+                "patch": {
+                    "engine": body.engine,
+                    "mode": body.mode,
+                    "status": body.status,
+                    "pool_strategy_ids": body.pool_strategy_ids,
+                    "universe": body.universe,
+                    "notes": body.notes,
+                },
+            },
+        )
+        return {
+            "ok": len(errors) == 0,
+            "requested_count": len(dedup_ids),
+            "updated_count": len(updated_ids),
+            "error_count": len(errors),
+            "updated": updated_items,
+            "errors": errors,
+        }
+
     @app.get("/api/v1/learning/status")
     def learning_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         settings_payload = learning_service.ensure_settings_shape(store.load_settings())
@@ -5295,6 +5740,65 @@ def create_app() -> FastAPI:
         batch["runtime_status"] = status_payload
         return batch
 
+    @app.post("/api/v1/batches/{batch_id}/shortlist")
+    def batches_save_shortlist(batch_id: str, body: BatchShortlistBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        batch = store.backtest_catalog.get_batch(batch_id)
+        if not batch:
+            raise HTTPException(status_code=404, detail=f"Batch not found: {batch_id}")
+
+        def _to_float(value: Any) -> float:
+            try:
+                return float(value or 0.0)
+            except Exception:
+                return 0.0
+
+        raw_items = body.items if isinstance(body.items, list) else []
+        shortlist: list[dict[str, Any]] = []
+        for raw in raw_items[:2000]:
+            if not isinstance(raw, dict):
+                continue
+            variant_id = str(raw.get("variant_id") or "").strip()
+            run_id = str(raw.get("run_id") or raw.get("catalog_run_id") or "").strip()
+            if not variant_id and not run_id:
+                continue
+            item: dict[str, Any] = {
+                "variant_id": variant_id or None,
+                "run_id": run_id or None,
+                "strategy_id": str(raw.get("strategy_id") or "").strip() or None,
+                "strategy_name": str(raw.get("strategy_name") or "").strip() or None,
+                "score": _to_float(raw.get("score")),
+                "winrate_oos": _to_float(raw.get("winrate_oos")),
+                "sharpe_oos": _to_float(raw.get("sharpe_oos")),
+                "costs_ratio": _to_float(raw.get("costs_ratio")),
+                "saved_at": utc_now_iso(),
+            }
+            shortlist.append(item)
+
+        patched = store.backtest_catalog.patch_batch(
+            batch_id,
+            best_runs_cache=shortlist,
+            summary={
+                **(batch.get("summary") if isinstance(batch.get("summary"), dict) else {}),
+                "shortlist_saved_at": utc_now_iso(),
+                "shortlist_saved_by": user.get("username", "admin"),
+                "shortlist_source": str(body.source or "ui_mass_shortlist"),
+                "shortlist_note": str(body.note or "").strip(),
+                "shortlist_count": len(shortlist),
+            },
+        )
+        if not patched:
+            raise HTTPException(status_code=404, detail=f"Batch not found: {batch_id}")
+
+        store.add_log(
+            event_type="batch_shortlist_saved",
+            severity="info",
+            module="backtest",
+            message="Shortlist del batch guardada",
+            related_ids=[batch_id],
+            payload={"batch_id": batch_id, "count": len(shortlist), "source": str(body.source or "ui_mass_shortlist")},
+        )
+        return {"ok": True, "batch_id": batch_id, "saved_count": len(shortlist), "batch": patched}
+
     @app.get("/api/v1/compare")
     def compare_runs(
         r: list[str] = Query(default=[]),
@@ -5430,30 +5934,350 @@ def create_app() -> FastAPI:
         )
         return out
 
+    def _collect_trades_with_run_meta() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for run in store.load_runs():
+            if not isinstance(run, dict):
+                continue
+            run_id = str(run.get("catalog_run_id") or run.get("id") or "")
+            run_mode = str(run.get("mode") or "backtest")
+            run_created_at = str(run.get("created_at") or "")
+            for trade in run.get("trades", []):
+                if not isinstance(trade, dict):
+                    continue
+                row = dict(trade)
+                row.setdefault("run_id", run_id)
+                row.setdefault("run_mode", run_mode)
+                row.setdefault("run_created_at", run_created_at)
+                rows.append(row)
+        return rows
+
+    def _trade_matches_filters(
+        row: dict[str, Any],
+        *,
+        strategy_id: str | None = None,
+        symbol: str | None = None,
+        side: str | None = None,
+        reason_code: str | None = None,
+        exit_reason: str | None = None,
+        result: str | None = None,
+        mode: str | None = None,
+        environment: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> bool:
+        if strategy_id and row.get("strategy_id") != strategy_id:
+            return False
+        if symbol and row.get("symbol") != symbol:
+            return False
+        if side and row.get("side") != side:
+            return False
+        if reason_code and row.get("reason_code") != reason_code:
+            return False
+        if exit_reason and row.get("exit_reason") != exit_reason:
+            return False
+        run_mode = str(row.get("run_mode") or "").lower()
+        if mode and run_mode != str(mode).lower():
+            return False
+        if environment:
+            env = str(environment).strip().lower()
+            if env == "real" and run_mode != "live":
+                return False
+            if env in {"test", "prueba"} and run_mode == "live":
+                return False
+        if result:
+            pnl_net = float(row.get("pnl_net") or 0.0)
+            r = str(result).lower()
+            if r == "win" and pnl_net <= 0:
+                return False
+            if r == "loss" and pnl_net >= 0:
+                return False
+            if r == "breakeven" and abs(pnl_net) > 1e-9:
+                return False
+        entry_time = str(row.get("entry_time") or "")
+        if date_from and entry_time < date_from:
+            return False
+        if date_to and entry_time > date_to:
+            return False
+        return True
+
+    def _trade_bucket(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        total = len(rows)
+        wins = 0
+        losses = 0
+        breakeven = 0
+        net_pnl = 0.0
+        gross_pnl = 0.0
+        fees_total = 0.0
+        slippage_total = 0.0
+        holding_sum_min = 0.0
+        for row in rows:
+            pnl_net = float(row.get("pnl_net") or 0.0)
+            if pnl_net > 0:
+                wins += 1
+            elif pnl_net < 0:
+                losses += 1
+            else:
+                breakeven += 1
+            net_pnl += pnl_net
+            gross_pnl += float(row.get("pnl") or 0.0)
+            fees_total += float(row.get("fees") or 0.0)
+            slippage_total += float(row.get("slippage") or 0.0)
+            try:
+                entry_ts = datetime.fromisoformat(str(row.get("entry_time") or "").replace("Z", "+00:00"))
+                exit_ts = datetime.fromisoformat(str(row.get("exit_time") or "").replace("Z", "+00:00"))
+                holding_sum_min += abs((exit_ts - entry_ts).total_seconds()) / 60.0
+            except Exception:
+                pass
+        winrate = (wins / total) if total else 0.0
+        return {
+            "trades": total,
+            "wins": wins,
+            "losses": losses,
+            "breakeven": breakeven,
+            "winrate": winrate,
+            "net_pnl": net_pnl,
+            "gross_pnl": gross_pnl,
+            "fees_total": fees_total,
+            "slippage_total": slippage_total,
+            "avg_trade": (net_pnl / total) if total else 0.0,
+            "avg_holding_minutes": (holding_sum_min / total) if total else 0.0,
+        }
+
     @app.get("/api/v1/trades")
     def trades(
         strategy_id: str | None = None,
         symbol: str | None = None,
         side: str | None = None,
+        reason_code: str | None = None,
+        exit_reason: str | None = None,
+        result: str | None = None,
+        mode: str | None = None,
+        environment: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = Query(default=1000, ge=1, le=5000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in _collect_trades_with_run_meta()
+            if _trade_matches_filters(
+                row,
+                strategy_id=strategy_id,
+                symbol=symbol,
+                side=side,
+                reason_code=reason_code,
+                exit_reason=exit_reason,
+                result=result,
+                mode=mode,
+                environment=environment,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        ]
+        rows.sort(key=lambda row: row.get("entry_time", ""), reverse=True)
+        return rows[:limit]
+
+    @app.get("/api/v1/trades/summary")
+    def trades_summary(
+        strategy_id: str | None = None,
+        symbol: str | None = None,
+        side: str | None = None,
+        reason_code: str | None = None,
+        exit_reason: str | None = None,
+        result: str | None = None,
+        mode: str | None = None,
+        environment: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         _: dict[str, str] = Depends(current_user),
-    ) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+    ) -> dict[str, Any]:
+        rows = [
+            row
+            for row in _collect_trades_with_run_meta()
+            if _trade_matches_filters(
+                row,
+                strategy_id=strategy_id,
+                symbol=symbol,
+                side=side,
+                reason_code=reason_code,
+                exit_reason=exit_reason,
+                result=result,
+                mode=mode,
+                environment=environment,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        ]
+        strategy_name_map = {str(row.get("id") or ""): str(row.get("name") or row.get("id") or "") for row in store.list_strategies()}
+        by_environment: dict[str, list[dict[str, Any]]] = {"real": [], "prueba": []}
+        by_mode: dict[str, list[dict[str, Any]]] = {}
+        by_strategy: dict[str, list[dict[str, Any]]] = {}
+        by_day: dict[str, list[dict[str, Any]]] = {}
+        by_strategy_day: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            run_mode = str(row.get("run_mode") or "backtest").lower()
+            env_key = "real" if run_mode == "live" else "prueba"
+            by_environment.setdefault(env_key, []).append(row)
+            by_mode.setdefault(run_mode, []).append(row)
+            strategy_key = str(row.get("strategy_id") or "-")
+            by_strategy.setdefault(strategy_key, []).append(row)
+            day_key = str(row.get("entry_time") or "")[:10]
+            if not day_key:
+                day_key = "sin_fecha"
+            by_day.setdefault(day_key, []).append(row)
+            by_strategy_day.setdefault((strategy_key, day_key, env_key), []).append(row)
+
+        by_environment_rows = [
+            {"environment": key, **_trade_bucket(group)}
+            for key, group in by_environment.items()
+            if group
+        ]
+        by_mode_rows = [
+            {"mode": key, "environment": ("real" if key == "live" else "prueba"), **_trade_bucket(group)}
+            for key, group in by_mode.items()
+        ]
+        by_strategy_rows = [
+            {
+                "strategy_id": key,
+                "strategy_name": strategy_name_map.get(key) or key,
+                **_trade_bucket(group),
+            }
+            for key, group in by_strategy.items()
+        ]
+        by_day_rows = [
+            {"day": key, **_trade_bucket(group)}
+            for key, group in by_day.items()
+        ]
+        by_strategy_day_rows = [
+            {
+                "strategy_id": strategy_id_key,
+                "strategy_name": strategy_name_map.get(strategy_id_key) or strategy_id_key,
+                "day": day_key,
+                "environment": env_key,
+                **_trade_bucket(group),
+            }
+            for (strategy_id_key, day_key, env_key), group in by_strategy_day.items()
+        ]
+        by_mode_rows.sort(key=lambda row: (row.get("environment", ""), row.get("mode", "")))
+        by_strategy_rows.sort(key=lambda row: (float(row.get("net_pnl") or 0.0), float(row.get("winrate") or 0.0), int(row.get("trades") or 0)), reverse=True)
+        by_day_rows.sort(key=lambda row: str(row.get("day") or ""), reverse=True)
+        by_strategy_day_rows.sort(
+            key=lambda row: (str(row.get("day") or ""), float(row.get("net_pnl") or 0.0), int(row.get("trades") or 0)),
+            reverse=True,
+        )
+        return {
+            "totals": _trade_bucket(rows),
+            "by_environment": by_environment_rows,
+            "by_mode": by_mode_rows,
+            "by_strategy": by_strategy_rows[:200],
+            "by_day": by_day_rows[:180],
+            "by_strategy_day": by_strategy_day_rows[:500],
+            "filters": {
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "side": side,
+                "reason_code": reason_code,
+                "exit_reason": exit_reason,
+                "result": result,
+                "mode": mode,
+                "environment": environment,
+                "date_from": date_from,
+                "date_to": date_to,
+            },
+        }
+
+    class TradesBulkDeleteBody(BaseModel):
+        ids: list[str] | None = None
+        strategy_id: str | None = None
+        symbol: str | None = None
+        side: str | None = None
+        reason_code: str | None = None
+        exit_reason: str | None = None
+        result: str | None = None
+        mode: str | None = None
+        environment: str | None = None
+        date_from: str | None = None
+        date_to: str | None = None
+        dry_run: bool = False
+
+    @app.post("/api/v1/trades/bulk-delete")
+    def trades_bulk_delete(body: "TradesBulkDeleteBody", user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        requested_ids = {str(v).strip() for v in (body.ids or []) if str(v).strip()}
+        deleted_ids: list[str] = []
+        affected_runs: set[str] = set()
+        before_count = 0
+        after_count = 0
+        new_runs: list[dict[str, Any]] = []
         for run in store.load_runs():
-            rows.extend(run.get("trades", []))
-        if strategy_id:
-            rows = [row for row in rows if row.get("strategy_id") == strategy_id]
-        if symbol:
-            rows = [row for row in rows if row.get("symbol") == symbol]
-        if side:
-            rows = [row for row in rows if row.get("side") == side]
-        if date_from:
-            rows = [row for row in rows if row.get("entry_time", "") >= date_from]
-        if date_to:
-            rows = [row for row in rows if row.get("entry_time", "") <= date_to]
-        rows.sort(key=lambda row: row.get("entry_time", ""), reverse=True)
-        return rows[:1000]
+            if not isinstance(run, dict):
+                new_runs.append(run)
+                continue
+            trades_rows = run.get("trades", [])
+            if not isinstance(trades_rows, list):
+                new_runs.append(run)
+                continue
+            before_count += len(trades_rows)
+            kept: list[dict[str, Any]] = []
+            run_id = str(run.get("catalog_run_id") or run.get("id") or "")
+            run_mode = str(run.get("mode") or "backtest")
+            for trade in trades_rows:
+                if not isinstance(trade, dict):
+                    kept.append(trade)
+                    continue
+                candidate = dict(trade)
+                candidate.setdefault("run_id", run_id)
+                candidate.setdefault("run_mode", run_mode)
+                match = False
+                if requested_ids:
+                    match = str(candidate.get("id") or "").strip() in requested_ids
+                else:
+                    match = _trade_matches_filters(
+                        candidate,
+                        strategy_id=body.strategy_id,
+                        symbol=body.symbol,
+                        side=body.side,
+                        reason_code=body.reason_code,
+                        exit_reason=body.exit_reason,
+                        result=body.result,
+                        mode=body.mode,
+                        environment=body.environment,
+                        date_from=body.date_from,
+                        date_to=body.date_to,
+                    )
+                if match:
+                    deleted_ids.append(str(candidate.get("id") or ""))
+                    affected_runs.add(run_id)
+                    continue
+                kept.append(trade)
+            run["trades"] = kept
+            after_count += len(kept)
+            new_runs.append(run)
+
+        if not body.dry_run and deleted_ids:
+            store.save_runs(new_runs)
+        store.add_log(
+            event_type="trades_bulk_delete",
+            severity="warn",
+            module="trades",
+            message=f"Trades bulk delete by {user.get('username', 'admin')}: {len(deleted_ids)} rows ({'dry-run' if body.dry_run else 'saved'}).",
+            related_ids=[rid for rid in list(affected_runs)[:20]],
+            payload={
+                "deleted_count": len(deleted_ids),
+                "affected_runs": sorted(list(affected_runs))[:50],
+                "dry_run": bool(body.dry_run),
+            },
+        )
+        return {
+            "ok": True,
+            "deleted_count": len(deleted_ids),
+            "deleted_trade_ids": [tid for tid in deleted_ids[:200]],
+            "affected_run_ids": sorted(list(affected_runs)),
+            "before_count": before_count,
+            "after_count": after_count if not body.dry_run else before_count - len(deleted_ids),
+            "dry_run": bool(body.dry_run),
+        }
 
     @app.get("/api/v1/trades/{trade_id}")
     def trade_detail(trade_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

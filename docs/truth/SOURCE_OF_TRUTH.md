@@ -1,6 +1,6 @@
-# SOURCE OF TRUTH (Estado Real del Proyecto)
+﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-02-26
+Fecha de actualizacion: 2026-02-27
 
 ## Estado actual (resumen ejecutivo)
 
@@ -15,12 +15,29 @@ El proyecto tiene:
 ## Cambios recientes (UI/UX Research-first)
 
 - `Backtests / Runs` con paginacion, filtros, metadata minima visible y empty states guiados
+- `Backtests / Runs` con orden por click en columnas clave (incluye `WinRate`) y sin recorte artificial de seleccion legacy
+- Parser de errores de Backtests endurecido para evitar `[object Object]` en UI y mostrar `detail/message/cause` real
+- `Research Batch` con shortlist persistente por `BX`:
+  - guardado de variantes/runs en `best_runs_cache`
+  - restauraciÃ³n de shortlist al reabrir batch
+  - sincronizaciÃ³n opcional con Comparador de Runs
+- Backtests / Runs D2 (Comparison Table Pro) ahora renderiza por ventana visible (virtualizacion + overscan + espaciadores).
+- Strategies compactado para escalar con 50+ filas (menos altura por fila y acciones principales mas compactas).
 - `Detalle de Corrida` con estructura tipo Strategy Tester por pestanas
 - `Quick Backtest Legacy` marcado como deprecado y colapsado
 - `Settings` con diagnostico WS/SSE corregido (sin falso timeout)
 - `Rollout / Gates` con empty states accionables
 - `Ejecucion` convertida en `Trading en Vivo (Paper/Testnet/Live) + Diagnostico`
+- `Ejecucion` reforzada (Bloque 4):
+  - gestion de estrategias primarias por modo (`paper/testnet/live`) desde la misma pantalla
+  - bloqueo explicito de cambio a `LIVE` si checklist critico no esta en PASS
+  - atajos de seleccion masiva de operadores por estado/modo runtime
 - `Portfolio`, `Riesgo`, `Operaciones` y `Alertas` con labels/empty states mas claros
+- `Operaciones` reforzado (Bloque 3):
+  - orden configurable de tabla
+  - seleccion masiva + borrado por IDs
+  - preview de borrado filtrado (`dry_run`)
+  - filtros rapidos por modo/entorno/estrategia desde paneles resumen
 
 ## Cambios recientes (RTLAB Strategy Console - Bloque 1)
 
@@ -57,7 +74,9 @@ El proyecto tiene:
 
 ## Lo que sigue faltando (verdad actual)
 
-- Virtualizacion real de tablas grandes en `Backtests / Runs` / comparador
+- Virtualizacion adicional en otras tablas grandes (D2 de comparador ya virtualizado)
+- Orden server-side multi-columna (hoy sigue siendo 1 clave por request, aunque ya se puede ordenar por click en UI)
+- Endpoints de shortlist por batch (CRUD completo; hoy hay guardado + lectura en detalle de batch)
 - Smoke/E2E frontend automatizados
 - UI de experimentos MLflow (si se habilita capability)
 - Reportes avanzados en detalle de corrida (heatmap mensual, rolling Sharpe, distribuciones)
@@ -107,3 +126,4 @@ El proyecto tiene:
 2. Deploy backend
 3. Usar `Backtests -> Research Batch -> Ejecutar en Modo Bestia`
 4. Monitorear panel `Modo Bestia` (cola/jobs/budget/stop-all)
+

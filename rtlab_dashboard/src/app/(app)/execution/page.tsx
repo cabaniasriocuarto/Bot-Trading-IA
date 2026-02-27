@@ -8,8 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
+import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet, apiPost } from "@/lib/client-api";
-import type { BotStatusResponse, ExchangeDiagnoseResponse, ExecutionStats, HealthResponse, SettingsResponse, TradingMode } from "@/lib/types";
+import type { BotInstance, BotStatusResponse, ExchangeDiagnoseResponse, ExecutionStats, HealthResponse, SettingsResponse, Strategy, TradingMode } from "@/lib/types";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/utils";
 
 type GatesResponse = {
@@ -55,6 +56,18 @@ export default function ExecutionPage() {
   const [modeDraft, setModeDraft] = useState<TradingMode>("PAPER");
   const [modeBusy, setModeBusy] = useState(false);
   const [cooldownUntil, setCooldownUntil] = useState<number>(0);
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [primaryDraft, setPrimaryDraft] = useState<Record<"paper" | "testnet" | "live", string>>({
+    paper: "",
+    testnet: "",
+    live: "",
+  });
+  const [primaryBusyMode, setPrimaryBusyMode] = useState<"paper" | "testnet" | "live" | null>(null);
+  const [botInstances, setBotInstances] = useState<BotInstance[]>([]);
+  const [botModeFilter, setBotModeFilter] = useState<"all" | "shadow" | "paper" | "testnet" | "live">("all");
+  const [botStatusFilter, setBotStatusFilter] = useState<"all" | "active" | "paused" | "archived">("all");
+  const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
+  const [botBulkBusy, setBotBulkBusy] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -78,19 +91,31 @@ export default function ExecutionPage() {
   };
 
   const loadTradingPanel = async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload] = await Promise.all([
+    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
       apiGet<GatesResponse>("/api/v1/gates"),
       apiGet<RolloutStatusLite>("/api/v1/rollout/status"),
+      apiGet<{ items: BotInstance[] }>("/api/v1/bots").catch(() => ({ items: [] })),
+      apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
     setHealth(healthPayload);
     setGates(gatesPayload);
     setRollout(rolloutPayload);
+    setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
     setModeDraft(currentSettings.mode);
+    setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
+    const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
+    const findPrimaryId = (mode: "paper" | "testnet" | "live") =>
+      String(rows.find((row) => Array.isArray(row.primary_for_modes) && row.primary_for_modes.includes(mode))?.id || "");
+    setPrimaryDraft({
+      paper: findPrimaryId("paper"),
+      testnet: findPrimaryId("testnet"),
+      live: findPrimaryId("live"),
+    });
 
     const mode = (currentSettings.mode || "PAPER").toLowerCase();
     try {
@@ -234,6 +259,43 @@ export default function ExecutionPage() {
     liveReadyItems.find((row) => row.key === "keys")?.status === "pass" &&
     liveReadyItems.find((row) => row.key === "connector")?.status === "pass" &&
     liveReadyItems.find((row) => row.key === "gates")?.status === "pass";
+  const liveBlockingItems = liveReadyItems
+    .filter((row) => ["keys", "connector", "gates"].includes(String(row.key)))
+    .filter((row) => row.status !== "pass");
+
+  const primaryByMode = useMemo(() => {
+    const findPrimary = (mode: "paper" | "testnet" | "live") =>
+      strategies.find((row) => Array.isArray(row.primary_for_modes) && row.primary_for_modes.includes(mode)) || null;
+    return {
+      paper: findPrimary("paper"),
+      testnet: findPrimary("testnet"),
+      live: findPrimary("live"),
+    };
+  }, [strategies]);
+
+  const strategyOptionsByMode = useMemo(() => {
+    const base = [...strategies].filter((row) => String(row.status || "").toLowerCase() !== "archived");
+    return {
+      paper: base,
+      testnet: base.filter((row) => Boolean(row.enabled_for_trading ?? row.enabled)),
+      live: base.filter((row) => Boolean(row.enabled_for_trading ?? row.enabled)),
+    };
+  }, [strategies]);
+
+  const runtimeModeLower = String(modeDraft || settings?.mode || "PAPER").toLowerCase();
+  const runtimeModeKey: "paper" | "testnet" | "live" =
+    runtimeModeLower === "live" ? "live" : runtimeModeLower === "testnet" ? "testnet" : "paper";
+
+  const botRowsFiltered = useMemo(() => {
+    return botInstances.filter((row) => {
+      if (botModeFilter !== "all" && String(row.mode) !== botModeFilter) return false;
+      if (botStatusFilter !== "all" && String(row.status) !== botStatusFilter) return false;
+      return true;
+    });
+  }, [botInstances, botModeFilter, botStatusFilter]);
+
+  const visibleBotIds = useMemo(() => botRowsFiltered.map((row) => String(row.id)), [botRowsFiltered]);
+  const selectedBotIdsSet = useMemo(() => new Set(botSelectedIds), [botSelectedIds]);
 
   const statusVariant = botStatus
     ? botStatus.bot_status === "RUNNING"
@@ -265,6 +327,82 @@ export default function ExecutionPage() {
     }
   };
 
+  const toggleBotSelection = (botId: string, checked: boolean) => {
+    setBotSelectedIds((prev) => {
+      const set = new Set(prev);
+      if (checked) set.add(botId);
+      else set.delete(botId);
+      return [...set];
+    });
+  };
+
+  const selectVisibleBots = () => {
+    setBotSelectedIds((prev) => [...new Set([...prev, ...visibleBotIds])]);
+  };
+
+  const clearBotSelection = () => {
+    setBotSelectedIds([]);
+  };
+
+  const runBotsBulkPatch = async (patch: Record<string, unknown>, label: string) => {
+    if (role !== "admin") return;
+    if (!botSelectedIds.length) {
+      setControlError("Selecciona al menos un operador (bot).");
+      return;
+    }
+    setBotBulkBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const res = await apiPost<{
+        ok: boolean;
+        updated_count: number;
+        error_count: number;
+        errors?: Array<{ id: string; detail: string }>;
+      }>("/api/v1/bots/bulk-patch", {
+        ids: botSelectedIds,
+        ...patch,
+      });
+      if (res.error_count) {
+        setControlError(`${label}: ${res.updated_count} OK / ${res.error_count} con error.`);
+      } else {
+        setMessage(`${label}: ${res.updated_count} bot(s) actualizados.`);
+      }
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : `No se pudo ejecutar: ${label}`);
+    } finally {
+      setBotBulkBusy(false);
+    }
+  };
+
+  const patchSingleBot = async (botId: string, patch: Record<string, unknown>, label: string) => {
+    if (role !== "admin") return;
+    setBotBulkBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const res = await apiPost<{
+        ok: boolean;
+        updated_count: number;
+        error_count: number;
+      }>("/api/v1/bots/bulk-patch", {
+        ids: [botId],
+        ...patch,
+      });
+      if (res.error_count) {
+        setControlError(`${label}: error al actualizar ${botId}.`);
+      } else {
+        setMessage(`${label}: ${botId} actualizado.`);
+      }
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : `No se pudo ejecutar: ${label}`);
+    } finally {
+      setBotBulkBusy(false);
+    }
+  };
+
   const applyMode = async () => {
     setModeBusy(true);
     setControlError("");
@@ -283,6 +421,32 @@ export default function ExecutionPage() {
     } finally {
       setModeBusy(false);
     }
+  };
+
+  const applyPrimaryForMode = async (mode: "paper" | "testnet" | "live") => {
+    if (role !== "admin") return;
+    const strategyId = String(primaryDraft[mode] || "").trim();
+    if (!strategyId) {
+      setControlError(`Selecciona estrategia primaria para ${mode.toUpperCase()}.`);
+      return;
+    }
+    setPrimaryBusyMode(mode);
+    setControlError("");
+    setMessage("");
+    try {
+      await apiPost(`/api/v1/strategies/${encodeURIComponent(strategyId)}/primary`, { mode });
+      setMessage(`Primaria ${mode.toUpperCase()} actualizada a ${strategyId}.`);
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : `No se pudo actualizar primaria ${mode.toUpperCase()}.`);
+    } finally {
+      setPrimaryBusyMode(null);
+    }
+  };
+
+  const selectBotsWhere = (predicate: (bot: BotInstance) => boolean) => {
+    const ids = botRowsFiltered.filter(predicate).map((row) => String(row.id));
+    setBotSelectedIds(ids);
   };
 
   return (
@@ -331,11 +495,16 @@ export default function ExecutionPage() {
                 <p className="mt-1 text-xs text-slate-400">
                   Cambia el modo runtime del bot. Para LIVE, el backend exige gates PASS y confirmacion explicita.
                 </p>
+                {modeDraft === "LIVE" && liveBlockingItems.length ? (
+                  <p className="mt-1 text-xs text-amber-300">
+                    LIVE bloqueado por checklist: {liveBlockingItems.map((row) => row.label).join(" · ")}.
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-end">
                 <Button
                   variant="outline"
-                  disabled={role !== "admin" || modeBusy || refreshing}
+                  disabled={role !== "admin" || modeBusy || refreshing || (modeDraft === "LIVE" && !canTradeLiveNow)}
                   onClick={() => {
                     void applyMode();
                   }}
@@ -434,6 +603,53 @@ export default function ExecutionPage() {
                 Cooldown critico activo por unos segundos para evitar ejecuciones repetidas del kill switch / safe mode.
               </p>
             ) : null}
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Estrategias primarias por modo</p>
+                <Badge variant="info">Runtime actual: {runtimeModeKey.toUpperCase()}</Badge>
+              </div>
+              <p className="mb-3 text-xs text-slate-400">
+                Define la estrategia principal que usa el bot por modo. Para LIVE solo aparecen estrategias habilitadas para trading.
+              </p>
+              <div className="grid gap-2 md:grid-cols-3">
+                {(["paper", "testnet", "live"] as const).map((mode) => (
+                  <div key={`primary-mode-${mode}`} className="rounded border border-slate-800 bg-slate-900/50 p-2 text-xs">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-200">{mode.toUpperCase()}</span>
+                      {primaryByMode[mode] ? (
+                        <Badge variant={mode === runtimeModeKey ? "success" : "neutral"}>{primaryByMode[mode]?.id}</Badge>
+                      ) : (
+                        <Badge variant="warn">sin primaria</Badge>
+                      )}
+                    </div>
+                    <Select
+                      value={primaryDraft[mode]}
+                      onChange={(e) => setPrimaryDraft((prev) => ({ ...prev, [mode]: e.target.value }))}
+                      disabled={role !== "admin" || primaryBusyMode === mode}
+                    >
+                      <option value="">Seleccionar estrategia...</option>
+                      {strategyOptionsByMode[mode].map((row) => (
+                        <option key={`${mode}-${row.id}`} value={row.id}>
+                          {row.name} ({row.id})
+                        </option>
+                      ))}
+                    </Select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-2 h-7 w-full px-2 text-[11px]"
+                      disabled={role !== "admin" || primaryBusyMode === mode || !primaryDraft[mode]}
+                      onClick={() => {
+                        void applyPrimaryForMode(mode);
+                      }}
+                    >
+                      {primaryBusyMode === mode ? "Guardando..." : `Guardar ${mode.toUpperCase()}`}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -552,6 +768,164 @@ export default function ExecutionPage() {
           </CardContent>
         </Card>
       </section>
+
+      <Card>
+        <CardTitle>Operadores (bots) - administracion</CardTitle>
+        <CardDescription>
+          Selecciona operadores y aplica acciones masivas por estado/modo. Esto administra bots de aprendizaje; no reemplaza el bot runtime global.
+        </CardDescription>
+        <CardContent className="space-y-3">
+          <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs text-slate-300">
+            Runtime global: <strong>{runtimeModeKey.toUpperCase()}</strong> · Operadores visibles se gestionan por separado (shadow/paper/testnet/live).
+          </div>
+          <div className="grid gap-3 md:grid-cols-6">
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Filtro modo</label>
+              <Select value={botModeFilter} onChange={(e) => setBotModeFilter(e.target.value as "all" | "shadow" | "paper" | "testnet" | "live")}>
+                <option value="all">Todos</option>
+                <option value="shadow">shadow</option>
+                <option value="paper">paper</option>
+                <option value="testnet">testnet</option>
+                <option value="live">live</option>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Filtro estado</label>
+              <Select value={botStatusFilter} onChange={(e) => setBotStatusFilter(e.target.value as "all" | "active" | "paused" | "archived")}>
+                <option value="all">Todos</option>
+                <option value="active">active</option>
+                <option value="paused">paused</option>
+                <option value="archived">archived</option>
+              </Select>
+            </div>
+            <div className="flex items-end">
+              <Button variant="outline" className="w-full" onClick={selectVisibleBots} disabled={!visibleBotIds.length}>
+                Seleccionar visibles ({visibleBotIds.length})
+              </Button>
+            </div>
+            <div className="flex items-end">
+              <Button variant="outline" className="w-full" onClick={clearBotSelection} disabled={!botSelectedIds.length}>
+                Limpiar seleccion ({botSelectedIds.length})
+              </Button>
+            </div>
+            <div className="flex items-end">
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => selectBotsWhere((row) => String(row.status) === "active")}
+                disabled={!botRowsFiltered.length}
+              >
+                Seleccionar activos
+              </Button>
+            </div>
+            <div className="flex items-end">
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => selectBotsWhere((row) => String(row.mode) === runtimeModeKey)}
+                disabled={!botRowsFiltered.length}
+              >
+                Seleccionar modo runtime
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+            <span>Visibles: {botRowsFiltered.length}</span>
+            <span>Seleccionados: {botSelectedIds.length}</span>
+            <Badge variant={botBulkBusy ? "warn" : "neutral"}>{botBulkBusy ? "Aplicando..." : "Listo"}</Badge>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "active" }, "Activar operadores")}>
+              Activar
+            </Button>
+            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "paused" }, "Pausar operadores")}>
+              Pausar
+            </Button>
+            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ mode: "paper" }, "Cambiar modo a PAPER")}>
+              Modo PAPER
+            </Button>
+            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ mode: "testnet" }, "Cambiar modo a TESTNET")}>
+              Modo TESTNET
+            </Button>
+            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ mode: "live" }, "Cambiar modo a LIVE")}>
+              Modo LIVE
+            </Button>
+            <Button variant="danger" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "archived" }, "Archivar operadores")}>
+              Archivar
+            </Button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <Table className="text-xs">
+              <THead>
+                <TR>
+                  <TH></TH>
+                  <TH>Bot</TH>
+                  <TH>Engine</TH>
+                  <TH>Modo</TH>
+                  <TH>Estado</TH>
+                  <TH>Pool</TH>
+                  <TH>Trades</TH>
+                  <TH>WinRate</TH>
+                  <TH>PnL</TH>
+                  <TH>Recs</TH>
+                  <TH>Acciones</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {botRowsFiltered.map((bot) => {
+                  const selected = selectedBotIdsSet.has(bot.id);
+                  const m = bot.metrics;
+                  return (
+                    <TR key={bot.id}>
+                      <TD>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={(e) => toggleBotSelection(bot.id, e.target.checked)}
+                        />
+                      </TD>
+                      <TD>
+                        <div className="max-w-[180px]">
+                          <p className="truncate font-semibold text-slate-100" title={bot.name}>{bot.name}</p>
+                          <p className="truncate text-[11px] text-slate-400" title={bot.id}>{bot.id}</p>
+                        </div>
+                      </TD>
+                      <TD>{bot.engine}</TD>
+                      <TD><Badge variant={bot.mode === "live" ? "warn" : bot.mode === "testnet" ? "info" : "neutral"}>{bot.mode}</Badge></TD>
+                      <TD><Badge variant={bot.status === "active" ? "success" : bot.status === "paused" ? "warn" : "neutral"}>{bot.status}</Badge></TD>
+                      <TD>{m?.strategy_count ?? bot.pool_strategy_ids.length}</TD>
+                      <TD>{m?.trade_count ?? 0}</TD>
+                      <TD>{fmtPct(m?.winrate ?? 0)}</TD>
+                      <TD className={(m?.net_pnl || 0) >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(m?.net_pnl ?? 0)}</TD>
+                      <TD>{m?.recommendations_pending ?? 0}/{m?.recommendations_approved ?? 0}/{m?.recommendations_rejected ?? 0}</TD>
+                      <TD>
+                        <div className="flex flex-wrap gap-1">
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(bot.id, { status: bot.status === "active" ? "paused" : "active" }, bot.status === "active" ? "Pausar operador" : "Activar operador")}>
+                            {bot.status === "active" ? "Pausar" : "Activar"}
+                          </Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(bot.id, { pool_strategy_ids: bot.pool_strategy_ids }, "Sincronizar pool")}>
+                            Pool
+                          </Button>
+                        </div>
+                      </TD>
+                    </TR>
+                  );
+                })}
+                {!botRowsFiltered.length ? (
+                  <TR>
+                    <TD colSpan={11} className="text-slate-400">
+                      No hay operadores para estos filtros. Ajusta modo/estado o crea bots en Estrategias.
+                    </TD>
+                  </TR>
+                ) : null}
+              </TBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
 
       {!hasData ? (
         <Card>

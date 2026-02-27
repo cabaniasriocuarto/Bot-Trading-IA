@@ -91,6 +91,22 @@ def test_backtest_catalog_ids_and_run_record(tmp_path: Path) -> None:
       }
   )
   assert batch["batch_id"] == "BX-000038"
+  patched_batch = db.patch_batch(
+      "BX-000038",
+      best_runs_cache=[
+          {
+              "variant_id": "trend_pullback_orderflow_v2__v001",
+              "run_id": "BT-000999",
+              "score": 0.61,
+              "winrate_oos": 0.57,
+          }
+      ],
+      summary={"shortlist_saved_by": "test"},
+  )
+  assert patched_batch is not None
+  assert isinstance(patched_batch["best_runs_cache"], list)
+  assert patched_batch["best_runs_cache"][0]["run_id"] == "BT-000999"
+  assert patched_batch["summary"]["shortlist_saved_by"] == "test"
 
   db.add_artifact(run_id="BT-000999", batch_id="BX-000038", kind="report_json", path="/api/v1/backtests/runs/BT-000999?format=report_json")
   artifacts = db.get_artifacts_for_run("BT-000999")
@@ -121,6 +137,7 @@ def test_backtest_catalog_query_patch_and_rankings(tmp_path: Path) -> None:
                 "calmar": 0.6 + i * 0.3,
                 "max_dd": 0.22 - i * 0.03,
                 "profit_factor": 1.1 + i * 0.2,
+                "winrate": 0.40 + i * 0.1,
                 "trade_count": 100 + i * 100,
                 "expectancy": 1.0 + i,
                 "expectancy_unit": "usd_per_trade",
@@ -134,6 +151,10 @@ def test_backtest_catalog_query_patch_and_rankings(tmp_path: Path) -> None:
     assert rows
     assert all(int((r.get("kpis") or {}).get("trade_count") or 0) >= 200 for r in rows)
     assert float((rows[0].get("kpis") or {}).get("sharpe") or 0.0) >= float((rows[-1].get("kpis") or {}).get("sharpe") or 0.0)
+
+    rows_winrate = db.query_runs(min_trades=100, sort_by="winrate", sort_dir="desc")
+    assert rows_winrate
+    assert float((rows_winrate[0].get("kpis") or {}).get("winrate") or 0.0) >= float((rows_winrate[-1].get("kpis") or {}).get("winrate") or 0.0)
 
     patched = db.patch_run("BT-000101", alias="Mi run", tags=["favorito", "wfa"], pinned=True, archived=True)
     assert patched is not None

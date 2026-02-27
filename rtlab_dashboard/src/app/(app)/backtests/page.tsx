@@ -56,7 +56,7 @@ type RunsListFilters = {
   min_trades: string;
   max_dd: string;
   sharpe: string;
-  sort_by: "created_at" | "score" | "return" | "sharpe" | "sortino" | "dd" | "pf" | "expectancy" | "trades" | "strategy";
+  sort_by: "created_at" | "run_id" | "score" | "return" | "sharpe" | "sortino" | "dd" | "pf" | "winrate" | "expectancy" | "trades" | "strategy";
   sort_dir: "asc" | "desc";
 };
 
@@ -78,6 +78,9 @@ type MassTopMetric = "score" | "winrate" | "sharpe" | "calmar" | "expectancy" | 
 type MassLeaderboardTab = "score_neto" | "winrate";
 
 const chartColors = ["#22d3ee", "#f97316", "#facc15", "#4ade80", "#f472b6"];
+const CATALOG_PRO_VIEWPORT_PX = 560;
+const CATALOG_PRO_ROW_HEIGHT = 148;
+const CATALOG_PRO_OVERSCAN_ROWS = 8;
 const MARKET_OPTIONS: Record<RunForm["market"], string[]> = {
   crypto: ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT"],
   forex: ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"],
@@ -258,6 +261,50 @@ function massGatesBadgeVariant(row: MassBacktestResultRow): "success" | "danger"
   return "warn";
 }
 
+function uiErrMsg(err: unknown, fallback: string): string {
+  const unpack = (raw: unknown): string | null => {
+    if (raw == null) return null;
+    if (typeof raw === "string") {
+      const txt = raw.trim();
+      if (!txt || txt === "[object Object]") return null;
+      return txt;
+    }
+    if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
+    if (Array.isArray(raw)) {
+      const lines = raw.map((item) => unpack(item)).filter((x): x is string => Boolean(x));
+      return lines.length ? lines.join(" | ") : null;
+    }
+    if (typeof raw === "object") {
+      const rec = raw as Record<string, unknown>;
+      const direct =
+        unpack(rec.detail) ||
+        unpack(rec.message) ||
+        unpack(rec.error) ||
+        unpack(rec.msg) ||
+        unpack(rec.reason) ||
+        unpack(rec.cause);
+      if (direct) return direct;
+      try {
+        const encoded = JSON.stringify(raw);
+        return encoded && encoded !== "{}" ? encoded : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  if (err instanceof Error) {
+    const msg = unpack(err.message);
+    if (msg) return msg;
+    const fromCause = unpack((err as Error & { cause?: unknown }).cause);
+    if (fromCause) return fromCause;
+  }
+  const unpacked = unpack(err);
+  if (unpacked) return unpacked;
+  return fallback;
+}
+
 export default function BacktestsPage() {
   const { role } = useSession();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -280,6 +327,7 @@ export default function BacktestsPage() {
   const [catalogPage, setCatalogPage] = useState(1);
   const [catalogPageInput, setCatalogPageInput] = useState("1");
   const [catalogProLimit, setCatalogProLimit] = useState<"50" | "100" | "250" | "500">("100");
+  const [catalogProScrollTop, setCatalogProScrollTop] = useState(0);
   const [catalogTableColumns, setCatalogTableColumns] = useState<Record<string, boolean>>({
     run: true,
     strategy: true,
@@ -315,6 +363,7 @@ export default function BacktestsPage() {
   const [massRunning, setMassRunning] = useState(false);
   const [massError, setMassError] = useState("");
   const [massMessage, setMassMessage] = useState("");
+  const [massShortlistBusy, setMassShortlistBusy] = useState(false);
   const [massSelectedStrategies, setMassSelectedStrategies] = useState<string[]>([]);
   const [massRunId, setMassRunId] = useState("");
   const [massStatus, setMassStatus] = useState<MassBacktestStatusResponse | null>(null);
@@ -402,7 +451,7 @@ export default function BacktestsPage() {
       setCatalogRuns(payload.items || []);
       setCatalogRunCount(payload.count || 0);
     } catch (err) {
-      setCatalogError(err instanceof Error ? err.message : "No se pudo cargar Backtests / Runs.");
+      setCatalogError(uiErrMsg(err, "No se pudo cargar Backtests / Runs."));
     } finally {
       setCatalogLoading(false);
     }
@@ -464,6 +513,23 @@ export default function BacktestsPage() {
     [buildCatalogComparePreview],
   );
 
+  const toggleCatalogSort = useCallback((nextSortBy: RunsListFilters["sort_by"]) => {
+    setCatalogFilters((prev) => {
+      if (prev.sort_by === nextSortBy) {
+        return { ...prev, sort_dir: prev.sort_dir === "desc" ? "asc" : "desc" };
+      }
+      return { ...prev, sort_by: nextSortBy, sort_dir: "desc" };
+    });
+  }, []);
+
+  const catalogSortLabel = useCallback(
+    (key: RunsListFilters["sort_by"]) => {
+      if (catalogFilters.sort_by !== key) return "";
+      return catalogFilters.sort_dir === "desc" ? " ▼" : " ▲";
+    },
+    [catalogFilters.sort_by, catalogFilters.sort_dir],
+  );
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -478,6 +544,10 @@ export default function BacktestsPage() {
     setCatalogPage(1);
     setCatalogPageInput("1");
   }, [catalogRuns, catalogPageSize]);
+
+  useEffect(() => {
+    setCatalogProScrollTop(0);
+  }, [catalogRuns, catalogProLimit]);
 
   useEffect(() => {
     setCatalogComparePreview(buildCatalogComparePreview(catalogCompareIds));
@@ -686,7 +756,7 @@ export default function BacktestsPage() {
       setCatalogCompareSelection(catalogCompareIds.filter((id) => !affectedIds.has(id)));
       await Promise.all([refreshCatalogRuns(), refreshCatalogRankings(), refreshCatalogBatches()]);
     } catch (err) {
-      setCatalogBulkError(err instanceof Error ? err.message : "No se pudo ejecutar la acción masiva.");
+      setCatalogBulkError(uiErrMsg(err, "No se pudo ejecutar la acción masiva."));
     } finally {
       setCatalogBulkBusy(false);
     }
@@ -712,7 +782,7 @@ export default function BacktestsPage() {
       await refreshCatalogRankings();
       await refreshCatalogBatches();
     } catch (err) {
-      setCatalogError(err instanceof Error ? err.message : "No se pudo actualizar metadata del run.");
+      setCatalogError(uiErrMsg(err, "No se pudo actualizar metadata del run."));
     }
   };
 
@@ -746,7 +816,7 @@ export default function BacktestsPage() {
         setPromotionError(`Validación no apta para rollout: revisar constraints/gates/compare (${row.run_id}).`);
       }
     } catch (err) {
-      setPromotionError(err instanceof Error ? err.message : "No se pudo validar el run para promoción.");
+      setPromotionError(uiErrMsg(err, "No se pudo validar el run para promoción."));
     } finally {
       setPromotionBusyRunId(null);
     }
@@ -767,7 +837,7 @@ export default function BacktestsPage() {
       setPromotionMessage(`Rollout iniciado desde ${row.run_id}. Siguiente paso: Settings -> Rollout / Gates.`);
       await Promise.all([refreshCatalogRuns(), refreshCatalogRankings(), refreshCatalogBatches()]);
     } catch (err) {
-      setPromotionError(err instanceof Error ? err.message : "No se pudo promover el run a rollout.");
+      setPromotionError(uiErrMsg(err, "No se pudo promover el run a rollout."));
     } finally {
       setPromotionBusyRunId(null);
     }
@@ -809,7 +879,7 @@ export default function BacktestsPage() {
       setMassMessage(`Research masivo iniciado: ${res.run_id}`);
       await refreshMassPayload(res.run_id, massOnlyPass).catch(() => undefined);
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo iniciar research masivo.");
+      setMassError(uiErrMsg(err, "No se pudo iniciar research masivo."));
     } finally {
       setMassRunning(false);
     }
@@ -855,7 +925,7 @@ export default function BacktestsPage() {
       setMassMessage(`Modo Bestia encolado: ${res.run_id} (cola ${res.queue_position ?? "?"}, units ${res.estimated_trial_units ?? "?"})`);
       await Promise.all([refreshBeastPanel(), refreshMassPayload(res.run_id, massOnlyPass).catch(() => undefined)]);
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo encolar el batch en Modo Bestia.");
+      setMassError(uiErrMsg(err, "No se pudo encolar el batch en Modo Bestia."));
     } finally {
       setBeastBusy(false);
     }
@@ -869,7 +939,7 @@ export default function BacktestsPage() {
       setMassMessage(res.note || "Modo Bestia Stop All aplicado.");
       await refreshBeastPanel();
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo ejecutar Stop All.");
+      setMassError(uiErrMsg(err, "No se pudo ejecutar Stop All."));
     } finally {
       setBeastBusy(false);
     }
@@ -882,7 +952,7 @@ export default function BacktestsPage() {
       setMassMessage("Modo Bestia reanudado.");
       await refreshBeastPanel();
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo reanudar Modo Bestia.");
+      setMassError(uiErrMsg(err, "No se pudo reanudar Modo Bestia."));
     } finally {
       setBeastBusy(false);
     }
@@ -893,7 +963,7 @@ export default function BacktestsPage() {
     try {
       await refreshMassPayload(massRunId, massOnlyPass);
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo refrescar research masivo.");
+      setMassError(uiErrMsg(err, "No se pudo refrescar research masivo."));
     }
   };
 
@@ -905,8 +975,9 @@ export default function BacktestsPage() {
     if (!runId) return;
     try {
       await refreshMassPayload(runId, massOnlyPass);
+      await loadMassShortlistForBatch(runId, { syncCompare: false });
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo cargar el Research Batch seleccionado.");
+      setMassError(uiErrMsg(err, "No se pudo cargar el Research Batch seleccionado."));
     }
   };
 
@@ -950,6 +1021,90 @@ export default function BacktestsPage() {
           .filter(Boolean),
       ),
     );
+
+  const restoreMassShortlistFromBatch = useCallback(
+    (batch: BacktestCatalogBatch | null | undefined, options?: { syncCompare?: boolean }) => {
+      const rawItems = Array.isArray(batch?.best_runs_cache) ? batch!.best_runs_cache : [];
+      if (!rawItems.length) return;
+      const variantIds = Array.from(
+        new Set(
+          rawItems
+            .map((row) => String((row as Record<string, unknown>)?.variant_id || "").trim())
+            .filter(Boolean),
+        ),
+      );
+      const runIds = Array.from(
+        new Set(
+          rawItems
+            .map((row) => {
+              const rec = row as Record<string, unknown>;
+              return String(rec?.run_id || rec?.catalog_run_id || "").trim();
+            })
+            .filter(Boolean),
+        ),
+      );
+      if (variantIds.length) setMassSelectedVariantIds(variantIds);
+      if (options?.syncCompare && runIds.length) setCatalogCompareSelection(runIds);
+      setMassMessage(`Shortlist BX restaurada: ${variantIds.length} variantes${runIds.length ? `, ${runIds.length} runs` : ""}.`);
+    },
+    [setCatalogCompareSelection],
+  );
+
+  const loadMassShortlistForBatch = useCallback(
+    async (batchId: string, options?: { syncCompare?: boolean }) => {
+      const id = String(batchId || "").trim();
+      if (!id) return;
+      setMassShortlistBusy(true);
+      try {
+        const batch = await apiGet<BacktestCatalogBatch>(`/api/v1/batches/${encodeURIComponent(id)}`);
+        restoreMassShortlistFromBatch(batch, options);
+      } catch (err) {
+        setMassError(uiErrMsg(err, "No se pudo cargar la shortlist guardada para este batch."));
+      } finally {
+        setMassShortlistBusy(false);
+      }
+    },
+    [restoreMassShortlistFromBatch],
+  );
+
+  const saveMassShortlistForBatch = async () => {
+    if (!massRunId) {
+      setMassError("Seleccioná un batch BX antes de guardar shortlist.");
+      return;
+    }
+    const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
+    if (!selectedRows.length) {
+      setMassError("Seleccioná variantes antes de guardar la shortlist.");
+      return;
+    }
+    const items = selectedRows.map((row) => ({
+      variant_id: row.variant_id,
+      run_id: String(row.catalog_run_id || "") || null,
+      strategy_id: row.strategy_id,
+      strategy_name: row.strategy_name,
+      score: Number(row.score || 0),
+      winrate_oos: Number(row.summary?.winrate_oos || 0),
+      sharpe_oos: Number(row.summary?.sharpe_oos || 0),
+      costs_ratio: Number(row.summary?.costs_ratio || 0),
+    }));
+    setMassShortlistBusy(true);
+    try {
+      const payload = await apiPost<{ ok: boolean; saved_count: number; batch: BacktestCatalogBatch }>(
+        `/api/v1/batches/${encodeURIComponent(massRunId)}/shortlist`,
+        {
+          items,
+          source: "ui_research_batch",
+          note: "Shortlist guardada desde Leaderboards",
+        },
+      );
+      setMassMessage(`Shortlist BX guardada: ${payload.saved_count} variantes.`);
+      await refreshCatalogBatches();
+    } catch (err) {
+      setMassError(uiErrMsg(err, "No se pudo guardar la shortlist del batch."));
+    } finally {
+      setMassShortlistBusy(false);
+    }
+  };
 
   const compareMassSelectedVariantsInRuns = () => {
     const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
@@ -1011,7 +1166,7 @@ export default function BacktestsPage() {
       setMassSelectedVariantIds([]);
       await Promise.all([refreshMass(), refreshCatalogRuns(), refreshCatalogBatches(), refreshCatalogRankings()]);
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo ejecutar la acción masiva sobre variantes.");
+      setMassError(uiErrMsg(err, "No se pudo ejecutar la acción masiva sobre variantes."));
     }
   };
 
@@ -1024,11 +1179,11 @@ export default function BacktestsPage() {
       });
       setMassMessage(`Draft Opción B creado: ${res.recommendation_draft.id}`);
     } catch (err) {
-      setMassError(err instanceof Error ? err.message : "No se pudo marcar candidato.");
+      setMassError(uiErrMsg(err, "No se pudo marcar candidato."));
     }
   };
 
-  const selectedRuns = runs.filter((run) => selected.includes(run.id)).slice(0, 5);
+  const selectedRuns = runs.filter((run) => selected.includes(run.id));
   const focusRun = selectedRuns[0] || runs[0] || null;
 
   const tradeStatsForRun = (run: BacktestRun | null) => {
@@ -1188,6 +1343,33 @@ export default function BacktestsPage() {
   const batchChildrenCount = catalogRuns.filter((r) => r.run_type === "batch_child").length;
   const quickRunsCount = catalogRuns.filter((r) => r.run_type !== "batch_child").length;
   const catalogProRows = catalogRuns.slice(0, Number(catalogProLimit));
+  const catalogProRowsPerViewport = Math.max(1, Math.ceil(CATALOG_PRO_VIEWPORT_PX / CATALOG_PRO_ROW_HEIGHT));
+  const catalogProStartIndex = Math.max(0, Math.floor(catalogProScrollTop / CATALOG_PRO_ROW_HEIGHT) - CATALOG_PRO_OVERSCAN_ROWS);
+  const catalogProEndIndex = Math.min(
+    catalogProRows.length,
+    catalogProStartIndex + catalogProRowsPerViewport + CATALOG_PRO_OVERSCAN_ROWS * 2,
+  );
+  const catalogProTopPadPx = catalogProStartIndex * CATALOG_PRO_ROW_HEIGHT;
+  const catalogProBottomPadPx = Math.max(0, (catalogProRows.length - catalogProEndIndex) * CATALOG_PRO_ROW_HEIGHT);
+  const catalogProVisibleRows = useMemo(
+    () => catalogProRows.slice(catalogProStartIndex, catalogProEndIndex),
+    [catalogProRows, catalogProStartIndex, catalogProEndIndex],
+  );
+  const catalogProColumnCount = useMemo(() => {
+    const dynamic = [
+      "run",
+      "strategy",
+      "status",
+      "dates",
+      "market",
+      "dataset",
+      "costs",
+      "kpis",
+      "rank",
+      "flags",
+    ].reduce((acc, key) => acc + (catalogTableColumns[key] ? 1 : 0), 0);
+    return 1 + dynamic;
+  }, [catalogTableColumns]);
 
   const massSortedRows = useMemo(() => {
     const rows = [...massResults];
@@ -1546,12 +1728,14 @@ export default function BacktestsPage() {
               <label className="text-xs uppercase tracking-wide text-slate-400">Ordenar por</label>
               <Select value={catalogFilters.sort_by} onChange={(e) => setCatalogFilters((p) => ({ ...p, sort_by: e.target.value as RunsListFilters["sort_by"] }))}>
                 <option value="created_at">Recientes</option>
+                <option value="run_id">Run ID</option>
                 <option value="score">Score</option>
                 <option value="return">Retorno</option>
                 <option value="sharpe">Sharpe</option>
                 <option value="sortino">Sortino</option>
                 <option value="dd">Max DD</option>
                 <option value="pf">Profit Factor</option>
+                <option value="winrate">WinRate</option>
                 <option value="expectancy">Expectancy</option>
                 <option value="trades">Trades</option>
                 <option value="strategy">Estrategia</option>
@@ -1701,16 +1885,62 @@ export default function BacktestsPage() {
               <THead>
                 <TR>
                   <TH>Comparar</TH>
-                  <TH>Run ID</TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("run_id")}>
+                      Run ID{catalogSortLabel("run_id")}
+                    </button>
+                  </TH>
                   <TH>Tipo</TH>
                   <TH>Estado</TH>
-                  <TH>Fecha</TH>
-                  <TH>Estrategia</TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("created_at")}>
+                      Fecha{catalogSortLabel("created_at")}
+                    </button>
+                  </TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("strategy")}>
+                      Estrategia{catalogSortLabel("strategy")}
+                    </button>
+                  </TH>
                   <TH>Mercado / TF</TH>
                   <TH>Rango</TH>
                   <TH>Dataset</TH>
                   <TH>Cost model</TH>
-                  <TH>KPIs</TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("return")}>
+                      Ret%{catalogSortLabel("return")}
+                    </button>
+                  </TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("dd")}>
+                      Max DD{catalogSortLabel("dd")}
+                    </button>
+                  </TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("sharpe")}>
+                      Sharpe{catalogSortLabel("sharpe")}
+                    </button>
+                  </TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("pf")}>
+                      PF{catalogSortLabel("pf")}
+                    </button>
+                  </TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("winrate")}>
+                      WinRate{catalogSortLabel("winrate")}
+                    </button>
+                  </TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("trades")}>
+                      Trades{catalogSortLabel("trades")}
+                    </button>
+                  </TH>
+                  <TH>
+                    <button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleCatalogSort("expectancy")}>
+                      Expectancy{catalogSortLabel("expectancy")}
+                    </button>
+                  </TH>
                   <TH>Chips</TH>
                   <TH>Acciones</TH>
                 </TR>
@@ -1765,14 +1995,14 @@ export default function BacktestsPage() {
                         <p className="text-slate-400">{row.spread_model}</p>
                         <p className="text-slate-400">{row.slippage_model}</p>
                       </TD>
+                      <TD className="text-xs">{fmtPct((k.return_total as number | undefined) ?? (k.cagr as number | undefined) ?? 0)}</TD>
+                      <TD className="text-xs">{fmtPct((k.max_dd as number | undefined) ?? 0)}</TD>
+                      <TD className="text-xs">{fmtNum((k.sharpe as number | undefined) ?? 0)}</TD>
+                      <TD className="text-xs">{fmtNum((k.profit_factor as number | undefined) ?? 0)}</TD>
+                      <TD className="text-xs">{fmtPct((k.winrate as number | undefined) ?? 0)}</TD>
+                      <TD className="text-xs">{fmtNum((k.trade_count as number | undefined) ?? (k.roundtrips as number | undefined) ?? 0)}</TD>
                       <TD className="text-xs">
-                        <p>Ret {fmtPct((k.return_total as number | undefined) ?? (k.cagr as number | undefined) ?? 0)}</p>
-                        <p>DD {fmtPct((k.max_dd as number | undefined) ?? 0)}</p>
-                        <p>Sharpe {fmtNum((k.sharpe as number | undefined) ?? 0)} · PF {fmtNum((k.profit_factor as number | undefined) ?? 0)}</p>
-                        <p>WR {fmtPct((k.winrate as number | undefined) ?? 0)} · Trades {fmtNum((k.trade_count as number | undefined) ?? (k.roundtrips as number | undefined) ?? 0)}</p>
-                        <p>
-                          Exp {fmtNum((expectancyValue as number | undefined) ?? 0)} {String(k.expectancy_unit || "")}
-                        </p>
+                        {fmtNum((expectancyValue as number | undefined) ?? 0)} {String(k.expectancy_unit || "")}
                       </TD>
                       <TD className="text-xs">
                         <div className="flex max-w-[200px] flex-wrap gap-1">
@@ -1830,7 +2060,7 @@ export default function BacktestsPage() {
                 })}
                 {!catalogPageRows.length ? (
                   <TR>
-                    <TD colSpan={13} className="py-6">
+                    <TD colSpan={19} className="py-6">
                       <div className="mx-auto max-w-2xl rounded-lg border border-slate-800 bg-slate-900/60 p-4 text-left">
                         <p className="text-sm font-semibold text-slate-100">Todavia no hay datos para esta vista</p>
                         <p className="mt-1 text-sm text-slate-400">
@@ -2084,7 +2314,7 @@ export default function BacktestsPage() {
               <div>
                 <p className="text-xs uppercase tracking-wide text-slate-400">D2 · Comparison Table Pro (50–500+)</p>
                 <p className="text-xs text-slate-400">
-                  Fase actual: server-side filtros/sort + tabla amplia. Virtualización dedicada queda para el siguiente bloque.
+                  Tabla virtualizada activa: filtros/sort server-side + ventana visible.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -2095,6 +2325,9 @@ export default function BacktestsPage() {
                   <option value="250">250</option>
                   <option value="500">500</option>
                 </Select>
+                <span className="text-xs text-slate-400">
+                  Ventana {catalogProRows.length ? `${catalogProStartIndex + 1}-${catalogProEndIndex}` : "0-0"} de {catalogProRows.length}
+                </span>
               </div>
             </div>
 
@@ -2122,7 +2355,7 @@ export default function BacktestsPage() {
               ))}
             </div>
 
-            <div className="mt-3 overflow-x-auto">
+            <div className="mt-3 max-h-[560px] overflow-auto" onScroll={(event) => setCatalogProScrollTop(event.currentTarget.scrollTop)}>
               <Table>
                 <THead>
                   <TR>
@@ -2140,7 +2373,12 @@ export default function BacktestsPage() {
                   </TR>
                 </THead>
                 <TBody>
-                  {catalogProRows.map((row) => {
+                  {catalogProTopPadPx > 0 ? (
+                    <TR className="hover:bg-transparent">
+                      <TD colSpan={catalogProColumnCount} style={{ height: catalogProTopPadPx, padding: 0 }} />
+                    </TR>
+                  ) : null}
+                  {catalogProVisibleRows.map((row) => {
                     const k = row.kpis || {};
                     const flags = (row.flags || {}) as Record<string, unknown>;
                     const ret = (k.return_total as number | undefined) ?? (k.cagr as number | undefined) ?? 0;
@@ -2230,6 +2468,11 @@ export default function BacktestsPage() {
                       </TR>
                     );
                   })}
+                  {catalogProBottomPadPx > 0 ? (
+                    <TR className="hover:bg-transparent">
+                      <TD colSpan={catalogProColumnCount} style={{ height: catalogProBottomPadPx, padding: 0 }} />
+                    </TR>
+                  ) : null}
                 </TBody>
               </Table>
             </div>
@@ -2538,6 +2781,7 @@ export default function BacktestsPage() {
                     <TH>Progreso</TH>
                     <TH>Objetivo</TH>
                     <TH>Runs BT</TH>
+                    <TH>Shortlist</TH>
                     <TH>Acciones</TH>
                   </TR>
                 </THead>
@@ -2561,10 +2805,23 @@ export default function BacktestsPage() {
                             {String(bx.objective || "-")}
                           </TD>
                           <TD className="text-xs text-slate-300">{childIds.length || "-"}</TD>
+                          <TD className="text-xs text-slate-300">
+                            {Array.isArray(bx.best_runs_cache) ? bx.best_runs_cache.length : 0}
+                          </TD>
                           <TD>
                             <div className="flex flex-wrap gap-1">
                               <Button type="button" variant="outline" className="h-8 px-2" onClick={() => void selectMassBatch(bx.batch_id)}>
                                 Ver
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 px-2"
+                                disabled={massShortlistBusy}
+                                onClick={() => void loadMassShortlistForBatch(bx.batch_id, { syncCompare: true })}
+                                title="Carga shortlist guardada para este batch"
+                              >
+                                Cargar shortlist
                               </Button>
                               <Button
                                 type="button"
@@ -3035,6 +3292,24 @@ export default function BacktestsPage() {
                     title="Borra runs BT del catálogo para estas variantes"
                   >
                     Borrar seleccionadas
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={role !== "admin" || massShortlistBusy || !massRunId || !massSelectedVariantIds.length}
+                    onClick={() => void saveMassShortlistForBatch()}
+                    title="Guarda la shortlist de variantes seleccionadas dentro del batch BX"
+                  >
+                    {massShortlistBusy ? "Guardando..." : "Guardar shortlist BX"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={massShortlistBusy || !massRunId}
+                    onClick={() => void loadMassShortlistForBatch(massRunId, { syncCompare: true })}
+                    title="Carga shortlist guardada del batch y la sincroniza con Comparador de Runs"
+                  >
+                    {massShortlistBusy ? "Cargando..." : "Cargar shortlist BX"}
                   </Button>
                 </div>
               </div>

@@ -10,7 +10,7 @@ Fecha: 2026-02-26
 5. Validar Modo Bestia fase 1 en produccion (cola, budget governor, stop-all, resume)
 
 ## Prioridad 2 (UX / producto)
-1. Virtualizacion real de tabla `Backtests / Runs` (50-500+ sin render completo)
+1. Virtualizacion adicional en tablas grandes restantes (D2 comparador ya virtualizado)
 2. Deep Compare avanzado (heatmap mensual, rolling Sharpe, distribucion retornos)
 3. Componente reutilizable unico para empty states / CTA
 4. Tooltips consistentes en acciones de runs (rerun/clone/export cuando existan)

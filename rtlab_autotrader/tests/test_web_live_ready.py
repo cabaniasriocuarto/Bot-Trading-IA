@@ -188,6 +188,33 @@ def test_default_principal_bootstrap_and_start(tmp_path: Path, monkeypatch) -> N
   assert trade_detail.json()["id"] == trades[0]["id"]
 
 
+def test_trades_summary_with_environment_filter(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  start_res = client.post("/api/v1/bot/start", headers=headers)
+  assert start_res.status_code == 200, start_res.text
+
+  summary = client.get("/api/v1/trades/summary", headers=headers)
+  assert summary.status_code == 200, summary.text
+  payload = summary.json()
+  assert "totals" in payload
+  assert "by_environment" in payload
+  assert "by_strategy" in payload
+  assert payload["totals"]["trades"] >= 1
+
+  only_test = client.get("/api/v1/trades/summary?environment=prueba", headers=headers)
+  assert only_test.status_code == 200, only_test.text
+  test_payload = only_test.json()
+  assert test_payload["totals"]["trades"] >= 1
+
+  only_real = client.get("/api/v1/trades/summary?environment=real", headers=headers)
+  assert only_real.status_code == 200, only_real.text
+  real_payload = only_real.json()
+  assert real_payload["totals"]["trades"] <= payload["totals"]["trades"]
+
+
 def test_live_blocked_by_gates_when_requirements_fail(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -966,6 +993,65 @@ def test_runtime_recommendations_are_visible_in_listing_endpoint(tmp_path: Path,
   assert detail.json()["id"] == rec_id
 
 
+def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  list_res = client.get("/api/v1/bots", headers=headers)
+  assert list_res.status_code == 200, list_res.text
+  payload = list_res.json()
+  assert isinstance(payload.get("items"), list)
+  assert payload["items"]
+  assert payload["items"][0]["id"].startswith("BOT-")
+  assert "metrics" in payload["items"][0]
+
+  strategies = client.get("/api/v1/strategies", headers=headers).json()
+  pool_ids = [row["id"] for row in strategies[:2]]
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "name": "AutoBot Testnet",
+      "engine": "bandit_ucb1",
+      "mode": "testnet",
+      "status": "paused",
+      "pool_strategy_ids": pool_ids,
+      "universe": ["BTCUSDT"],
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot = create_res.json()["bot"]
+  assert bot["mode"] == "testnet"
+  assert bot["status"] == "paused"
+  assert bot["id"].startswith("BOT-")
+
+  patch_res = client.patch(
+    f"/api/v1/bots/{bot['id']}",
+    headers=headers,
+    json={"status": "active", "mode": "shadow", "pool_strategy_ids": pool_ids[:1]},
+  )
+  assert patch_res.status_code == 200, patch_res.text
+  patched = patch_res.json()["bot"]
+  assert patched["status"] == "active"
+  assert patched["mode"] == "shadow"
+  assert len(patched["pool_strategy_ids"]) == 1
+
+  bulk_res = client.post(
+    "/api/v1/bots/bulk-patch",
+    headers=headers,
+    json={"ids": [bot["id"]], "mode": "paper", "status": "paused"},
+  )
+  assert bulk_res.status_code == 200, bulk_res.text
+  bulk_payload = bulk_res.json()
+  assert bulk_payload["updated_count"] == 1
+  assert bulk_payload["error_count"] == 0
+  updated_bot = next((row for row in bulk_payload["updated"] if row["id"] == bot["id"]), None)
+  assert updated_bot is not None
+  assert updated_bot["mode"] == "paper"
+  assert updated_bot["status"] == "paused"
+
+
 def test_archiving_primary_reassigns_valid_primary(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -1409,3 +1495,58 @@ def test_research_beast_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
   resume = client.post("/api/v1/research/beast/resume", headers=headers, json={})
   assert resume.status_code == 200, resume.text
   assert resume.json()["ok"] is True
+
+
+def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  module.store.backtest_catalog.upsert_backtest_batch(
+    {
+      "batch_id": "BX-001111",
+      "objective": "Batch test shortlist",
+      "status": "completed",
+      "run_count_total": 10,
+      "run_count_done": 10,
+      "run_count_failed": 0,
+    }
+  )
+
+  save = client.post(
+    "/api/v1/batches/BX-001111/shortlist",
+    headers=headers,
+    json={
+      "source": "test_suite",
+      "note": "guardado desde test",
+      "items": [
+        {
+          "variant_id": "trend_pullback__v001",
+          "run_id": "BT-000123",
+          "strategy_id": "trend_pullback_orderflow_v2",
+          "strategy_name": "Trend Pullback OF",
+          "score": 0.58,
+          "winrate_oos": 0.57,
+        },
+        {
+          "variant_id": "breakout__v007",
+          "run_id": "BT-000124",
+          "strategy_id": "breakout_volatility_v2",
+          "strategy_name": "Breakout Vol",
+          "score": 0.52,
+          "winrate_oos": 0.54,
+        },
+      ],
+    },
+  )
+  assert save.status_code == 200, save.text
+  payload = save.json()
+  assert payload["ok"] is True
+  assert payload["saved_count"] == 2
+
+  detail = client.get("/api/v1/batches/BX-001111", headers=headers)
+  assert detail.status_code == 200, detail.text
+  detail_payload = detail.json()
+  assert isinstance(detail_payload.get("best_runs_cache"), list)
+  assert len(detail_payload["best_runs_cache"]) == 2
+  assert detail_payload["best_runs_cache"][0]["run_id"] == "BT-000123"
