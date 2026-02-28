@@ -1263,6 +1263,26 @@ def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monk
   assert call_counter["n"] == 3
 
 
+def test_bots_overview_perf_headers_and_debug_payload(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  first = client.get("/api/v1/bots?debug_perf=true", headers=headers)
+  assert first.status_code == 200, first.text
+  perf = first.json().get("perf") or {}
+  assert perf.get("cache") in {"hit", "miss"}
+  assert isinstance(perf.get("latency_ms"), (int, float))
+  assert "X-RTLAB-Bots-Overview-Cache" in first.headers
+  assert "X-RTLAB-Bots-Overview-MS" in first.headers
+  assert "X-RTLAB-Bots-Count" in first.headers
+  assert first.headers.get("X-RTLAB-Bots-Recent-Logs") in {"enabled", "disabled"}
+
+  second = client.get("/api/v1/bots?debug_perf=true", headers=headers)
+  assert second.status_code == 200, second.text
+  assert (second.json().get("perf") or {}).get("cache") == "hit"
+
+
 def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

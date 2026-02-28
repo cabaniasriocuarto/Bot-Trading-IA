@@ -107,12 +107,20 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 LOGIN_RATE_LIMIT_ATTEMPTS = _env_int("RATE_LIMIT_LOGIN_ATTEMPTS", 10)
 LOGIN_RATE_LIMIT_WINDOW_MIN = _env_int("RATE_LIMIT_LOGIN_WINDOW_MIN", 10)
 LOGIN_LOCKOUT_MIN = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_MIN", 30)
 LOGIN_LOCKOUT_AFTER_FAILS = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_AFTER_FAILS", 20)
 BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10))
 BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
+BOTS_OVERVIEW_INCLUDE_RECENT_LOGS = _env_bool("BOTS_OVERVIEW_INCLUDE_RECENT_LOGS", True)
+BOTS_OVERVIEW_PROFILE_SLOW_MS = max(50, _env_int("BOTS_OVERVIEW_PROFILE_SLOW_MS", 500))
+BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC = max(5, _env_int("BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC", 30))
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -1121,6 +1129,7 @@ def _binance_signed_request(
 _EXCHANGE_DIAG_CACHE: dict[str, Any] = {"mode": "", "checked_at_epoch": 0.0, "result": None}
 _BOTS_OVERVIEW_CACHE: dict[str, Any] = {"expires_at_epoch": 0.0, "payload": None}
 _BOTS_OVERVIEW_CACHE_LOCK = Lock()
+_BOTS_OVERVIEW_LAST_SLOW_LOG_EPOCH = 0.0
 
 
 def _provider_restriction_action_plan(active_mode: str, exchange: str) -> list[str]:
@@ -2540,6 +2549,7 @@ def risk_hooks(context):
         bots: list[dict[str, Any]] | None = None,
         strategies: list[dict[str, Any]] | None = None,
         runs: list[dict[str, Any]] | None = None,
+        include_recent_logs: bool = True,
     ) -> dict[str, dict[str, Any]]:
         mode_to_kpi_mode = {"shadow": "backtest", "paper": "paper", "testnet": "testnet", "live": "live"}
         kills_mode_keys = ("shadow", "paper", "testnet", "live", "unknown")
@@ -2593,7 +2603,6 @@ def risk_hooks(context):
         if bot_ids_ordered:
             placeholders = ",".join("?" for _ in bot_ids_ordered)
             since_24h = (utc_now() - timedelta(hours=24)).isoformat()
-            logs_batch_limit = min(2000, max(200, len(bot_ids_ordered) * 20))
             with self._connect() as conn:
                 # Read 1/3: kills acumulados por bot+modo (all-time) + ultimo timestamp.
                 kills_total_rows = conn.execute(
@@ -2615,16 +2624,19 @@ def risk_hooks(context):
                     """,
                     tuple(bot_ids_ordered + [since_24h]),
                 ).fetchall()
-                # Read 3/3: logs recientes en batch para evitar N+1 por bot.
-                log_rows = conn.execute(
-                    """
-                    SELECT id, ts, type, severity, module, message, related_ids, payload_json
-                    FROM logs
-                    ORDER BY id DESC
-                    LIMIT ?
-                    """,
-                    (logs_batch_limit,),
-                ).fetchall()
+                log_rows: list[sqlite3.Row] = []
+                if include_recent_logs:
+                    logs_batch_limit = min(2000, max(200, len(bot_ids_ordered) * 20))
+                    # Read 3/3: logs recientes en batch para evitar N+1 por bot.
+                    log_rows = conn.execute(
+                        """
+                        SELECT id, ts, type, severity, module, message, related_ids, payload_json
+                        FROM logs
+                        ORDER BY id DESC
+                        LIMIT ?
+                        """,
+                        (logs_batch_limit,),
+                    ).fetchall()
 
             for row in kills_total_rows:
                 bid = str(row["bot_id"] or "")
@@ -2643,46 +2655,47 @@ def risk_hooks(context):
                 mode_key = self._normalize_breaker_mode(str(row["mode"] or ""))
                 kills_by_mode_24h_per_bot[bid][mode_key] = int(row["n"] or 0)
 
-            for row in log_rows:
-                related_raw = row["related_ids"] if row["related_ids"] is not None else "[]"
-                payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
-                try:
-                    related_ids = json.loads(related_raw)
-                except Exception:
-                    related_ids = []
-                try:
-                    payload = json.loads(payload_raw)
-                except Exception:
-                    payload = {}
-                payload_map = payload if isinstance(payload, dict) else {}
-                targets: set[str] = set()
-                if isinstance(related_ids, list):
-                    for rid in related_ids:
-                        rid_s = str(rid or "").strip()
-                        if rid_s and rid_s in bot_ids_set:
-                            targets.add(rid_s)
-                payload_bot_id = str(payload_map.get("bot_id") or "").strip()
-                if payload_bot_id in bot_ids_set:
-                    targets.add(payload_bot_id)
-                if not targets:
-                    continue
-                payload_entry = {
-                    "id": f"log_{int(row['id'])}",
-                    "numeric_id": int(row["id"]),
-                    "ts": str(row["ts"] or ""),
-                    "type": str(row["type"] or ""),
-                    "severity": str(row["severity"] or ""),
-                    "module": str(row["module"] or ""),
-                    "message": str(row["message"] or ""),
-                    "payload": payload_map,
-                }
-                for bid in targets:
-                    bot_logs = logs_per_bot.get(bid)
-                    if bot_logs is None or len(bot_logs) >= 20:
+            if include_recent_logs:
+                for row in log_rows:
+                    related_raw = row["related_ids"] if row["related_ids"] is not None else "[]"
+                    payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
+                    try:
+                        related_ids = json.loads(related_raw)
+                    except Exception:
+                        related_ids = []
+                    try:
+                        payload = json.loads(payload_raw)
+                    except Exception:
+                        payload = {}
+                    payload_map = payload if isinstance(payload, dict) else {}
+                    targets: set[str] = set()
+                    if isinstance(related_ids, list):
+                        for rid in related_ids:
+                            rid_s = str(rid or "").strip()
+                            if rid_s and rid_s in bot_ids_set:
+                                targets.add(rid_s)
+                    payload_bot_id = str(payload_map.get("bot_id") or "").strip()
+                    if payload_bot_id in bot_ids_set:
+                        targets.add(payload_bot_id)
+                    if not targets:
                         continue
-                    bot_logs.append(payload_entry)
-                if all(len(entries) >= 20 for entries in logs_per_bot.values()):
-                    break
+                    payload_entry = {
+                        "id": f"log_{int(row['id'])}",
+                        "numeric_id": int(row["id"]),
+                        "ts": str(row["ts"] or ""),
+                        "type": str(row["type"] or ""),
+                        "severity": str(row["severity"] or ""),
+                        "module": str(row["module"] or ""),
+                        "message": str(row["message"] or ""),
+                        "payload": payload_map,
+                    }
+                    for bid in targets:
+                        bot_logs = logs_per_bot.get(bid)
+                        if bot_logs is None or len(bot_logs) >= 20:
+                            continue
+                        bot_logs.append(payload_entry)
+                    if all(len(entries) >= 20 for entries in logs_per_bot.values()):
+                        break
 
         kills_global_total = sum(sum(mode_counts.values()) for mode_counts in kills_by_mode_per_bot.values())
         kills_global_24h = sum(sum(mode_counts.values()) for mode_counts in kills_by_mode_24h_per_bot.values())
@@ -2753,7 +2766,7 @@ def risk_hooks(context):
             }
             out[bot_id] = {
                 "metrics": metrics,
-                "recent_logs": logs_per_bot.get(bot_id, []),
+                "recent_logs": logs_per_bot.get(bot_id, []) if include_recent_logs else [],
             }
         return out
 
@@ -2814,6 +2827,7 @@ def risk_hooks(context):
             bots=rows,
             strategies=strategies,
             runs=runs,
+            include_recent_logs=BOTS_OVERVIEW_INCLUDE_RECENT_LOGS,
         )
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -4161,18 +4175,27 @@ def _invalidate_bots_overview_cache() -> None:
         _BOTS_OVERVIEW_CACHE["payload"] = None
 
 
-def _get_bots_overview_payload_cached(*, recommendations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _get_bots_overview_payload_cached(*, recommendations: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], str]:
     now_epoch = time.time()
     with _BOTS_OVERVIEW_CACHE_LOCK:
         cached_payload = _BOTS_OVERVIEW_CACHE.get("payload")
         if cached_payload and now_epoch < float(_BOTS_OVERVIEW_CACHE.get("expires_at_epoch", 0.0)):
-            return cached_payload
+            return cached_payload, "hit"
     items = store.list_bot_instances(recommendations=recommendations)
     payload = {"items": items, "total": len(items)}
     with _BOTS_OVERVIEW_CACHE_LOCK:
         _BOTS_OVERVIEW_CACHE["expires_at_epoch"] = now_epoch + float(BOTS_OVERVIEW_CACHE_TTL_SEC)
         _BOTS_OVERVIEW_CACHE["payload"] = payload
-    return payload
+    return payload, "miss"
+
+
+def _should_log_bots_overview_slow(now_epoch: float) -> bool:
+    global _BOTS_OVERVIEW_LAST_SLOW_LOG_EPOCH
+    with _BOTS_OVERVIEW_CACHE_LOCK:
+        if (now_epoch - float(_BOTS_OVERVIEW_LAST_SLOW_LOG_EPOCH)) < float(BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC):
+            return False
+        _BOTS_OVERVIEW_LAST_SLOW_LOG_EPOCH = now_epoch
+        return True
 
 
 def _learning_reference_run() -> dict[str, Any] | None:
@@ -4955,9 +4978,47 @@ def create_app() -> FastAPI:
         return {"ok": True, "strategy": strategy}
 
     @app.get("/api/v1/bots")
-    def list_bots(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+    def list_bots(
+        response: Response,
+        debug_perf: bool = Query(default=False),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        t0 = time.perf_counter()
         recs = learning_service.load_all_recommendations()
-        return _get_bots_overview_payload_cached(recommendations=recs)
+        payload, cache_state = _get_bots_overview_payload_cached(recommendations=recs)
+        total_ms = (time.perf_counter() - t0) * 1000.0
+        response.headers["X-RTLAB-Bots-Overview-Cache"] = cache_state
+        response.headers["X-RTLAB-Bots-Overview-MS"] = f"{total_ms:.3f}"
+        response.headers["X-RTLAB-Bots-Count"] = str(int(payload.get("total") or 0))
+        response.headers["X-RTLAB-Bots-Recent-Logs"] = "enabled" if BOTS_OVERVIEW_INCLUDE_RECENT_LOGS else "disabled"
+
+        if total_ms >= float(BOTS_OVERVIEW_PROFILE_SLOW_MS):
+            now_epoch = time.time()
+            if _should_log_bots_overview_slow(now_epoch):
+                store.add_log(
+                    event_type="bots_overview_slow",
+                    severity="warn",
+                    module="learning",
+                    message=f"/api/v1/bots lento: {total_ms:.1f}ms (cache={cache_state})",
+                    related_ids=[],
+                    payload={
+                        "latency_ms": round(total_ms, 3),
+                        "cache": cache_state,
+                        "bots_total": int(payload.get("total") or 0),
+                        "recent_logs_enabled": bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS),
+                    },
+                )
+
+        if not debug_perf:
+            return payload
+        out = dict(payload)
+        out["perf"] = {
+            "cache": cache_state,
+            "latency_ms": round(total_ms, 3),
+            "recent_logs_enabled": bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS),
+            "slow_threshold_ms": int(BOTS_OVERVIEW_PROFILE_SLOW_MS),
+        }
+        return out
 
     def ensure_bot_live_mode_allowed(mode: str | None) -> None:
         if str(mode or "").lower() != "live":

@@ -197,6 +197,29 @@
   - nuevo `test_bots_creation_respects_max_instances_limit`.
   - validacion focal bots: `4 passed`.
 
+### Bloque 13: observabilidad de performance en `/api/v1/bots`
+- Endpoint `GET /api/v1/bots` ahora expone telemetria de latencia/cache por request:
+  - headers:
+    - `X-RTLAB-Bots-Overview-Cache` (`hit|miss`)
+    - `X-RTLAB-Bots-Overview-MS`
+    - `X-RTLAB-Bots-Count`
+    - `X-RTLAB-Bots-Recent-Logs` (`enabled|disabled`)
+  - query opcional `debug_perf=true` agrega bloque `perf` en payload (sin romper contrato base).
+- Nuevo switch de carga:
+  - `BOTS_OVERVIEW_INCLUDE_RECENT_LOGS` (default `true`) para poder desactivar logs recientes en overview cuando Railway este bajo presion.
+- Slow-log controlado (throttled):
+  - si `/api/v1/bots` supera `BOTS_OVERVIEW_PROFILE_SLOW_MS` (default `500ms`) registra `bots_overview_slow`.
+  - throttling de logs con `BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC` (default `30s`) para evitar spam.
+- Config documentada en `.env.example`:
+  - `BOTS_OVERVIEW_CACHE_TTL_SEC`
+  - `BOTS_OVERVIEW_INCLUDE_RECENT_LOGS`
+  - `BOTS_OVERVIEW_PROFILE_SLOW_MS`
+  - `BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC`
+- Test nuevo:
+  - `test_bots_overview_perf_headers_and_debug_payload`
+- Validacion focal ejecutada:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_multi_instance_endpoints or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_perf_headers_and_debug_payload or bots_overview_scopes_kills_by_bot_and_mode or bots_live_mode_blocked_by_gates or bots_creation_respects_max_instances_limit" -q` -> `6 passed`.
+
 ### Auditoria comité + hardening adicional
 - Seguridad:
   - `current_user` ahora ignora headers internos si no existe `INTERNAL_PROXY_TOKEN` válido (fail-closed en todos los entornos).

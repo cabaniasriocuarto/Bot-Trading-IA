@@ -22,6 +22,11 @@ Fecha de actualizacion: 2026-02-28
   - cache TTL in-memory activado en endpoint `GET /api/v1/bots` (`10s` default).
   - invalidacion explicita en create/patch/bulk de bots y en logs `breaker_triggered`.
   - limite de cardinalidad activa en backend: `BOTS_MAX_INSTANCES` (default `30`).
+  - observabilidad por request activa en `/api/v1/bots`:
+    - headers de cache/latencia/cantidad
+    - `debug_perf=true` para inspeccion puntual.
+  - switch de carga:
+    - `BOTS_OVERVIEW_INCLUDE_RECENT_LOGS` permite apagar logs recientes por bot en overview para reducir costo en Railway.
   - benchmark local actualizado: `docs/audit/BOTS_OVERVIEW_BENCHMARK_LOCAL_20260228_AFTER_CACHE.md` con `p95=35.524ms` (PASS `<300ms`).
   - benchmark remoto post-deploy:
     - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228_POSTDEPLOY.md` -> `p95=1032.039ms` (FAIL) + `NO EVIDENCIA` por cardinalidad (`1` bot).

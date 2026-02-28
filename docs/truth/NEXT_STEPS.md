@@ -12,6 +12,8 @@ Fecha: 2026-02-28
 4. Remediar benchmark remoto de `/api/v1/bots`:
    - ya desplegado cache TTL/invalidacion; evidencia actual sigue en FAIL con 100 bots (`p95=1458.513ms`),
    - mantener `BOTS_MAX_INSTANCES` en rango conservador (recomendado Railway actual: `30`, bajar a `20` si aparece saturacion),
+   - probar en Railway `BOTS_OVERVIEW_INCLUDE_RECENT_LOGS=false` y medir impacto real de latencia,
+   - usar headers `X-RTLAB-Bots-Overview-*` y `debug_perf=true` para separar hit/miss y medir efecto de cache,
    - instrumentar timing interno por etapas en `get_bots_overview` (kpis/logs/kills/serialization),
    - agregar indice/materializacion para datos de overview de bots (si el costo principal viene de agregacion en request),
    - rerun remoto con `100` bots y objetivo `p95 < 300ms`.
