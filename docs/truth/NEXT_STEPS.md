@@ -10,9 +10,10 @@ Fecha: 2026-02-28
 2. Validar `runtime_engine=real` solo cuando exista loop de ejecucion real y reconciliacion; mantener `simulated` en cualquier otro caso.
 3. Confirmar gates LIVE con `G9_RUNTIME_ENGINE_REAL` en PASS antes de habilitar canary.
 4. Remediar benchmark remoto de `/api/v1/bots`:
-   - desplegar a Railway el fix de cache TTL/invalidacion de `/api/v1/bots`,
-   - volver a ejecutar `scripts/benchmark_bots_overview.py --base-url ... --min-bots-required 100`,
-   - registrar evidencia post-deploy y validar objetivo `p95 < 300ms`.
+   - ya desplegado cache TTL/invalidacion; evidencia actual sigue en FAIL con 100 bots (`p95=1458.513ms`),
+   - instrumentar timing interno por etapas en `get_bots_overview` (kpis/logs/kills/serialization),
+   - agregar indice/materializacion para datos de overview de bots (si el costo principal viene de agregacion en request),
+   - rerun remoto con `100` bots y objetivo `p95 < 300ms`.
 5. Validar integridad de `breaker_events` (`bot_id/mode`) y monitorear volumen de `unknown`.
 6. Afinar thresholds/parametros por estrategia del dispatcher de `BacktestEngine` y agregar `fail-closed` explicito para strategy_ids no soportados en modo estricto.
 7. Validar en entorno desplegado que `surrogate_adjustments` se mantenga apagado fuera de `execution_mode=demo` y que promotion quede bloqueada cuando se active.

@@ -164,6 +164,23 @@
 - Pendiente:
   - deploy del backend en Railway y rerun remoto para medir impacto real en prod.
 
+### Bloque 11: validacion remota post-deploy `/api/v1/bots` (Railway)
+- Push realizado a `main` con commit:
+  - `11544ae`
+- Benchmark remoto post-deploy (sin reseed) ejecutado:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228_POSTDEPLOY.md`
+  - resultado: `p50=881.590ms`, `p95=1032.039ms`, `p99=1236.711ms` (FAIL `<300ms`)
+  - estado evidencia: `NO EVIDENCIA` (la instancia devolvio `1` bot, minimo requerido `100`).
+- Seeding remoto aplicado de nuevo a `100` bots:
+  - script: `scripts/seed_bots_remote.py`
+  - resultado: `bots finales=100`.
+- Benchmark remoto post-deploy con 100 bots:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228_POSTDEPLOY_100BOTS.md`
+  - resultado: `p50=1265.135ms`, `p95=1458.513ms`, `p99=1519.641ms` (FAIL `<300ms`).
+- Conclusion del bloque:
+  - el cache TTL local mejora benchmark local pero no alcanza objetivo p95 en Railway con 100 bots;
+  - se requiere siguiente ronda de optimizacion estructural en backend/storage para overview batch.
+
 ### Auditoria comité + hardening adicional
 - Seguridad:
   - `current_user` ahora ignora headers internos si no existe `INTERNAL_PROXY_TOKEN` válido (fail-closed en todos los entornos).

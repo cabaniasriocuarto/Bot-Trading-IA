@@ -22,7 +22,10 @@ Fecha de actualizacion: 2026-02-28
   - cache TTL in-memory activado en endpoint `GET /api/v1/bots` (`10s` default).
   - invalidacion explicita en create/patch/bulk de bots y en logs `breaker_triggered`.
   - benchmark local actualizado: `docs/audit/BOTS_OVERVIEW_BENCHMARK_LOCAL_20260228_AFTER_CACHE.md` con `p95=35.524ms` (PASS `<300ms`).
-  - para cerrar evidencia productiva falta redeploy + rerun remoto en Railway.
+  - benchmark remoto post-deploy:
+    - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228_POSTDEPLOY.md` -> `p95=1032.039ms` (FAIL) + `NO EVIDENCIA` por cardinalidad (`1` bot).
+    - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228_POSTDEPLOY_100BOTS.md` -> `p95=1458.513ms` con `100` bots (FAIL).
+  - estado actual: objetivo `p95 < 300ms` en Railway sigue abierto; requiere optimizacion adicional.
 - Estado backtest por strategy_id:
   - `StrategyRunner` ahora despacha senales por familia de estrategia (`trend`, `breakout`, `meanreversion`, `trend_scanning`, `defensive`).
   - el sesgo de logica unica en `BacktestEngine` quedo resuelto en modo incremental (sin refactor masivo).
