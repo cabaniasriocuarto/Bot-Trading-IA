@@ -11,6 +11,7 @@ Fecha: 2026-02-28
 3. Confirmar gates LIVE con `G9_RUNTIME_ENGINE_REAL` en PASS antes de habilitar canary.
 4. Remediar benchmark remoto de `/api/v1/bots`:
    - ya desplegado cache TTL/invalidacion; evidencia actual sigue en FAIL con 100 bots (`p95=1458.513ms`),
+   - mantener `BOTS_MAX_INSTANCES` en rango conservador (recomendado Railway actual: `30`, bajar a `20` si aparece saturacion),
    - instrumentar timing interno por etapas en `get_bots_overview` (kpis/logs/kills/serialization),
    - agregar indice/materializacion para datos de overview de bots (si el costo principal viene de agregacion en request),
    - rerun remoto con `100` bots y objetivo `p95 < 300ms`.

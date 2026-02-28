@@ -181,6 +181,22 @@
   - el cache TTL local mejora benchmark local pero no alcanza objetivo p95 en Railway con 100 bots;
   - se requiere siguiente ronda de optimizacion estructural en backend/storage para overview batch.
 
+### Bloque 12: cardinalidad operativa de bots (sin minimos, con maximos)
+- Backend:
+  - nuevo limite maximo configurable por entorno: `BOTS_MAX_INSTANCES` (default `30`).
+  - `POST /api/v1/bots` bloquea altas al alcanzar el tope y devuelve error claro en espanol.
+- Script de benchmark:
+  - `scripts/benchmark_bots_overview.py` ahora permite `--min-bots-required 0` (sin minimo obligatorio de evidencia).
+  - mantiene modo estricto opcional cuando se quiera exigir una cardinalidad minima.
+- Script de seed remoto:
+  - default de `--target-bots` ajustado a `30` (recomendado para Railway actual).
+  - si el backend rechaza por limite maximo, corta seed con mensaje explicito.
+- Config:
+  - `rtlab_autotrader/.env.example` documenta `BOTS_MAX_INSTANCES=30`.
+- Tests:
+  - nuevo `test_bots_creation_respects_max_instances_limit`.
+  - validacion focal bots: `4 passed`.
+
 ### Auditoria comité + hardening adicional
 - Seguridad:
   - `current_user` ahora ignora headers internos si no existe `INTERNAL_PROXY_TOKEN` válido (fail-closed en todos los entornos).

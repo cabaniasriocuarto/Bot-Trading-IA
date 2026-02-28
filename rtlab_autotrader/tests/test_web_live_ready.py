@@ -1366,6 +1366,29 @@ def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
   assert "LIVE" in str(bulk_live.json().get("detail") or "")
 
 
+def test_bots_creation_respects_max_instances_limit(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("BOTS_MAX_INSTANCES", "2")
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  create_1 = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "Cap 1", "mode": "paper", "status": "active"},
+  )
+  assert create_1.status_code == 200, create_1.text
+
+  create_2 = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "Cap 2", "mode": "paper", "status": "active"},
+  )
+  assert create_2.status_code == 400
+  detail = str(create_2.json().get("detail") or "")
+  assert "Limite maximo de bots alcanzado (2)" in detail
+
+
 def test_archiving_primary_reassigns_valid_primary(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

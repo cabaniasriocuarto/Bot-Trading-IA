@@ -112,6 +112,7 @@ LOGIN_RATE_LIMIT_WINDOW_MIN = _env_int("RATE_LIMIT_LOGIN_WINDOW_MIN", 10)
 LOGIN_LOCKOUT_MIN = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_MIN", 30)
 LOGIN_LOCKOUT_AFTER_FAILS = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_AFTER_FAILS", 20)
 BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10))
+BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -4966,9 +4967,21 @@ def create_app() -> FastAPI:
         if not allowed:
             raise HTTPException(status_code=400, detail=f"No se puede asignar bot en LIVE: {reason}")
 
+    def ensure_bot_capacity_available() -> None:
+        current_count = len(store.load_bots())
+        if current_count >= int(BOTS_MAX_INSTANCES):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Limite maximo de bots alcanzado ({BOTS_MAX_INSTANCES}). "
+                    "Reduce cardinalidad o sube BOTS_MAX_INSTANCES si tu infraestructura lo soporta."
+                ),
+            )
+
     @app.post("/api/v1/bots")
     def create_bot(body: BotCreateBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         ensure_bot_live_mode_allowed(body.mode)
+        ensure_bot_capacity_available()
         bot = store.create_bot_instance(
             name=body.name,
             engine=body.engine,

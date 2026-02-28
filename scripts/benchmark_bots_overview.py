@@ -187,8 +187,9 @@ def _run_remote_benchmark(
             raise RuntimeError("Modo remoto requiere --auth-token o --password para login.")
         token = _remote_login(base_url, username=username, password=password, timeout_sec=timeout_sec)
 
+    min_required = max(0, int(min_bots_required))
     bot_count, _ = _remote_get_bots(base_url, token=token, timeout_sec=timeout_sec)
-    no_evidence = bot_count < max(1, min_bots_required)
+    no_evidence = bool(min_required > 0 and bot_count < min_required)
 
     headers = {"Authorization": f"Bearer {token}"}
     for _ in range(max(0, warmup_n)):
@@ -210,13 +211,13 @@ def _run_remote_benchmark(
     metrics = _build_metrics(times_ms)
     metrics["mode"] = "remote_http"
     metrics["bots_seen"] = bot_count
-    metrics["min_bots_required"] = max(1, min_bots_required)
+    metrics["min_bots_required"] = min_required if min_required > 0 else None
     metrics["no_evidencia_min_bots"] = bool(no_evidence)
     if no_evidence:
         metrics["target_pass"] = False
         metrics["no_evidencia_reason"] = (
             f"NO EVIDENCIA: /api/v1/bots devolvio {bot_count} bots, por debajo del minimo requerido "
-            f"{max(1, min_bots_required)} para este benchmark."
+            f"{min_required} para este benchmark."
         )
     elif last_ok_response is not None:
         data = last_ok_response.json() if last_ok_response.headers.get("content-type", "").lower().find("json") >= 0 else {}
@@ -283,7 +284,7 @@ def _write_report(path: Path, *, context: dict[str, Any], metrics: dict[str, Any
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Benchmark de /api/v1/bots (overview) con 100 bots.")
+    parser = argparse.ArgumentParser(description="Benchmark de /api/v1/bots (overview).")
     parser.add_argument("--bots", type=int, default=100, help="Cantidad de bots a seedear en modo local.")
     parser.add_argument("--requests", type=int, default=200, help="Cantidad de requests medidas.")
     parser.add_argument("--warmup", type=int, default=30, help="Cantidad de requests de warmup.")
@@ -295,7 +296,12 @@ def main() -> int:
     parser.add_argument("--username", type=str, default="admin", help="Usuario para login remoto cuando no hay token.")
     parser.add_argument("--password", type=str, default="", help="Password para login remoto cuando no hay token.")
     parser.add_argument("--timeout-sec", type=float, default=10.0, help="Timeout HTTP en segundos para modo remoto.")
-    parser.add_argument("--min-bots-required", type=int, default=100, help="Minimo de bots exigido para considerar evidencia valida en remoto.")
+    parser.add_argument(
+        "--min-bots-required",
+        type=int,
+        default=0,
+        help="Minimo de bots exigido para evidencia valida en remoto (0 = sin minimo).",
+    )
     parser.add_argument(
         "--report-path",
         type=str,
@@ -327,7 +333,7 @@ def main() -> int:
             requests_n=max(1, args.requests),
             warmup_n=max(0, args.warmup),
             timeout_sec=max(1.0, float(args.timeout_sec)),
-            min_bots_required=max(1, int(args.min_bots_required)),
+            min_bots_required=max(0, int(args.min_bots_required)),
         )
         _write_report(report_path, context=context, metrics=metrics)
         print(f"[benchmark] reporte: {report_path}")

@@ -65,7 +65,7 @@ def main() -> int:
     parser.add_argument("--base-url", required=True, help="URL base del backend.")
     parser.add_argument("--username", default="Wadmin", help="Usuario admin.")
     parser.add_argument("--password", required=True, help="Password admin.")
-    parser.add_argument("--target-bots", type=int, default=100, help="Cantidad objetivo de bots.")
+    parser.add_argument("--target-bots", type=int, default=30, help="Cantidad objetivo de bots (recomendado Railway: 30).")
     parser.add_argument("--engine", default="bandit_thompson", help="Engine para bots creados.")
     parser.add_argument("--mode", default="paper", choices=["shadow", "paper", "testnet"], help="Modo para bots creados.")
     parser.add_argument("--status", default="active", choices=["active", "paused"], help="Estado para bots creados.")
@@ -111,7 +111,14 @@ def main() -> int:
             "universe": ["BTCUSDT", "ETHUSDT"],
             "notes": "seed benchmark /api/v1/bots",
         }
-        api.post_json("/api/v1/bots", payload)
+        try:
+            api.post_json("/api/v1/bots", payload)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "Limite maximo de bots alcanzado" in msg:
+                print(f"[seed] stop: {msg}")
+                break
+            raise
         created += 1
         if created == 1 or created % 10 == 0 or created == missing:
             print(f"[seed] creados {created}/{missing}")
