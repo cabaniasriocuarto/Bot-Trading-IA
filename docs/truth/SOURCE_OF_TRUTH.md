@@ -2,6 +2,43 @@
 
 Fecha de actualizacion: 2026-02-28
 
+## Actualizacion auditoria comite (2026-02-28)
+
+- Se generaron artefactos de auditoria completos en `docs/audit/`:
+  - `AUDIT_REPORT_20260228.md`
+  - `AUDIT_FINDINGS_20260228.md`
+  - `AUDIT_BACKLOG_20260228.md`
+- Seguridad endurecida adicional:
+  - backend ahora rechaza headers internos (`x-rtlab-role/x-rtlab-user`) si falta `INTERNAL_PROXY_TOKEN` (fail-closed).
+  - login backend con rate-limit + lockout (`10 intentos/10min`, lockout `30min` tras `20` fallos por `IP+user`).
+  - BFF falla cerrado si falta `INTERNAL_PROXY_TOKEN`.
+- Bibliografia:
+  - nuevo extractor incremental `scripts/biblio_extract.py`.
+  - `docs/reference/BIBLIO_INDEX.md` regenerado con SHA256 por fuente.
+  - `docs/reference/biblio_txt/.gitignore` agregado para salida local de texto.
+- Hallazgos abiertos bloqueantes para LIVE:
+  - runtime real OMS/broker (hoy simulado).
+- Estado `/api/v1/bots` (performance):
+  - cache TTL in-memory activado en endpoint `GET /api/v1/bots` (`10s` default).
+  - invalidacion explicita en create/patch/bulk de bots y en logs `breaker_triggered`.
+  - benchmark local actualizado: `docs/audit/BOTS_OVERVIEW_BENCHMARK_LOCAL_20260228_AFTER_CACHE.md` con `p95=35.524ms` (PASS `<300ms`).
+  - para cerrar evidencia productiva falta redeploy + rerun remoto en Railway.
+- Estado backtest por strategy_id:
+  - `StrategyRunner` ahora despacha senales por familia de estrategia (`trend`, `breakout`, `meanreversion`, `trend_scanning`, `defensive`).
+  - el sesgo de logica unica en `BacktestEngine` quedo resuelto en modo incremental (sin refactor masivo).
+- Estado gate de calidad por simbolo:
+  - `MassBacktestEngine` ya aplica `min_trades_per_symbol` real en `min_trade_quality`.
+  - cada variante publica `trade_count_by_symbol_oos` y `min_trades_per_symbol_oos` en `summary`.
+  - UI `Backtests > Research Batch` ya expone esos campos en leaderboard y drilldown.
+- Estado fuente canónica de gates:
+  - learning/research/runtime consumen `config/policies/gates.yaml` como fuente primaria.
+  - `knowledge/policies/gates.yaml` queda como fallback/soporte documental cuando falta config.
+- Estado surrogate adjustments (research):
+  - `enable_surrogate_adjustments` ya no se evalua directo desde request/config.
+  - se resuelve por policy canónica (`gates.surrogate_adjustments`) con `allowed_execution_modes`.
+  - default actual: solo `demo`, sin override por request y con bloqueo de promotion (`promotable=false`, `recommendable_option_b=false`).
+  - trazabilidad visible en `summary/manifest/artifacts` bajo `surrogate_adjustments`.
+
 ## Estado actual (resumen ejecutivo)
 
 El proyecto tiene:
@@ -177,6 +214,15 @@ El proyecto tiene:
   - logs recientes por bot (max 20 por bot; limite total 2000)
   - kills por bot y por modo
 - Endpoint `GET /api/v1/bots` mantiene contrato actual y ahora consume overview batch interno.
+- Benchmark reproducible local agregado:
+  - script: `scripts/benchmark_bots_overview.py`
+  - evidencia: `docs/audit/BOTS_OVERVIEW_BENCHMARK_20260228.md`
+  - resultado local (100 bots, 200 requests, warmup 30): `p95=280.875ms` (objetivo `<300ms` => PASS).
+  - el mismo script ya soporta benchmark remoto (`--base-url`) con validacion de evidencia minima (`--min-bots-required`, default `100`).
+- Benchmark remoto ejecutado (Railway):
+  - evidencia: `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228.md`
+  - resultado actual: `p95=1663.014ms` (FAIL vs `<300ms`)
+  - `NO EVIDENCIA` de carga objetivo por cardinalidad: `/api/v1/bots` retorna `1` bot (se exigen `>=100` para este test).
 
 ### Breaker events schema (fuente canonica para kills)
 

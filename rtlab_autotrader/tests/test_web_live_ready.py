@@ -176,7 +176,6 @@ def test_gates_requires_auth(tmp_path: Path, monkeypatch) -> None:
 
 def test_internal_headers_require_proxy_token(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
-  monkeypatch.setenv("NODE_ENV", "production")
   spoof_headers = {"x-rtlab-role": "admin", "x-rtlab-user": "spoof"}
 
   blocked_no_token = client.get("/api/v1/me", headers=spoof_headers)
@@ -195,6 +194,24 @@ def test_internal_headers_require_proxy_token(tmp_path: Path, monkeypatch) -> No
   )
   assert allowed.status_code == 200
   assert allowed.json()["role"] == "admin"
+
+
+def test_auth_login_rate_limit_and_lock_guard(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  module.LOGIN_RATE_LIMITER = module.LoginRateLimiter(
+    attempts_per_window=10,
+    window_minutes=10,
+    lockout_minutes=30,
+    lockout_after_failures=20,
+  )
+
+  for _ in range(10):
+    res = client.post("/api/v1/auth/login", json={"username": "Wadmin", "password": "invalid"})
+    assert res.status_code == 401
+
+  limited = client.post("/api/v1/auth/login", json={"username": "Wadmin", "password": "invalid"})
+  assert limited.status_code == 429
+  assert "Demasiados intentos" in str(limited.json().get("detail") or "")
 
 
 def test_auth_validation_fails_in_production_with_default_credentials(tmp_path: Path, monkeypatch) -> None:
@@ -1208,6 +1225,44 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   assert updated_bot["status"] == "paused"
 
 
+def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  call_counter = {"n": 0}
+  original = module.store.list_bot_instances
+
+  def _wrapped_list_bot_instances(*, recommendations=None):
+    call_counter["n"] += 1
+    return original(recommendations=recommendations)
+
+  monkeypatch.setattr(module.store, "list_bot_instances", _wrapped_list_bot_instances)
+
+  first = client.get("/api/v1/bots", headers=headers)
+  assert first.status_code == 200, first.text
+  first_total = int(first.json().get("total") or 0)
+  assert call_counter["n"] == 1
+
+  second = client.get("/api/v1/bots", headers=headers)
+  assert second.status_code == 200, second.text
+  assert int(second.json().get("total") or 0) == first_total
+  assert call_counter["n"] == 1
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "AutoBot Cache", "mode": "paper", "status": "active"},
+  )
+  assert create_res.status_code == 200, create_res.text
+  assert call_counter["n"] == 2
+
+  third = client.get("/api/v1/bots", headers=headers)
+  assert third.status_code == 200, third.text
+  assert int(third.json().get("total") or 0) == first_total + 1
+  assert call_counter["n"] == 3
+
+
 def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -1386,6 +1441,8 @@ def test_config_learning_endpoint_reads_yaml_and_exposes_capabilities(tmp_path: 
   assert "safe_update" in body and isinstance(body["safe_update"].get("canary_schedule_pct"), list)
   assert "numeric_policies_summary" in body and isinstance(body["numeric_policies_summary"], dict)
   assert body["numeric_policies_summary"].get("pbo_reject_if_gt") == 0.05
+  assert (body.get("gates_summary") or {}).get("source") == "config/policies/gates.yaml"
+  assert (body.get("safe_update") or {}).get("gates_file") == "config/policies/gates.yaml"
 
 
 def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, monkeypatch) -> None:

@@ -17,6 +17,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Literal
 from urllib.parse import urlencode, urlparse
 
@@ -97,6 +98,20 @@ BINANCE_LIVE_ENV_SECRET = "BINANCE_API_SECRET"
 BINANCE_LIVE_ENV_BASE = "BINANCE_SPOT_BASE_URL"
 BINANCE_LIVE_ENV_WS = "BINANCE_SPOT_WS_URL"
 EXCHANGE_DIAG_CACHE_TTL_SEC = 45
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        return default
+
+
+LOGIN_RATE_LIMIT_ATTEMPTS = _env_int("RATE_LIMIT_LOGIN_ATTEMPTS", 10)
+LOGIN_RATE_LIMIT_WINDOW_MIN = _env_int("RATE_LIMIT_LOGIN_WINDOW_MIN", 10)
+LOGIN_LOCKOUT_MIN = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_MIN", 30)
+LOGIN_LOCKOUT_AFTER_FAILS = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_AFTER_FAILS", 20)
+BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10))
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -462,6 +477,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
     thresholds = vpin.get("thresholds") if isinstance(vpin.get("thresholds"), dict) else {}
+    surrogate = g.get("surrogate_adjustments") if isinstance(g.get("surrogate_adjustments"), dict) else {}
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -480,6 +496,9 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "fundamentals_apply_markets": fc.get("apply_markets") if isinstance(fc.get("apply_markets"), list) else [],
         "fundamentals_freshness_max_days": fc.get("freshness_max_days"),
         "fundamentals_current_ratio_min": f_thr.get("current_ratio_min"),
+        "surrogate_adjustments_enabled": surrogate.get("enabled"),
+        "surrogate_adjustments_allowed_execution_modes": surrogate.get("allowed_execution_modes") if isinstance(surrogate.get("allowed_execution_modes"), list) else [],
+        "surrogate_adjustments_promotion_blocked": surrogate.get("promotion_blocked"),
     }
 
 
@@ -575,6 +594,10 @@ def _engine_id_to_selector_algo(engine_id: str) -> str:
 def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
     settings = learning_service.ensure_settings_shape(dict(settings or {}))
     capabilities_registry = _build_learning_capabilities_registry()
+    numeric_policies = load_numeric_policies_bundle()
+    numeric_policies_map = numeric_policies.get("policies") if isinstance(numeric_policies.get("policies"), dict) else {}
+    numeric_gates_file = numeric_policies_map.get("gates") if isinstance(numeric_policies_map.get("gates"), dict) else {}
+    numeric_gates_root = numeric_gates_file.get("gates") if isinstance(numeric_gates_file.get("gates"), dict) else {}
     warnings: list[str] = []
     yaml_valid = True
     source_mode = "knowledge_loader"
@@ -648,7 +671,15 @@ def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
     runtime_selector_compatible = [e["id"] for e in engines_out if e["id"] in {"fixed_rules", "bandit_thompson", "bandit_ucb1"}]
     if not yaml_valid:
         settings["learning"]["enabled"] = False
-    numeric_policies = load_numeric_policies_bundle()
+    knowledge_gates = gates_payload if isinstance(gates_payload, dict) else {}
+    canonical_gates = numeric_gates_root if isinstance(numeric_gates_root, dict) and numeric_gates_root else knowledge_gates
+    gates_source = "config/policies/gates.yaml" if canonical_gates is numeric_gates_root else "knowledge/policies/gates.yaml"
+    configured_gates_file = str(safe_update_cfg.get("gates_file") or "").strip()
+    if configured_gates_file and configured_gates_file != gates_source:
+        warnings.append(
+            f"safe_update.gates_file ({configured_gates_file}) difiere de la fuente canonica ({gates_source}). Se usa fuente canonica."
+        )
+    safe_update_gates_file = gates_source
     return {
         "ok": True,
         "yaml_valid": yaml_valid,
@@ -665,14 +696,15 @@ def build_learning_config_payload(settings: dict[str, Any]) -> dict[str, Any]:
         "runtime_selector_compatible_engine_ids": runtime_selector_compatible,
         "safe_update": {
             "enabled": bool(safe_update_cfg.get("enabled", True)),
-            "gates_file": str(safe_update_cfg.get("gates_file") or "knowledge/policies/gates.yaml"),
+            "gates_file": safe_update_gates_file,
             "canary_schedule_pct": canary_schedule,
             "rollback_auto": bool(safe_update_cfg.get("rollback_auto", True)),
             "approve_required": require_approve,
         },
         "gates_summary": {
-            "pbo_enabled": bool(((gates_payload.get("pbo") or {}).get("enabled")) if isinstance(gates_payload, dict) else False),
-            "dsr_enabled": bool(((gates_payload.get("dsr") or {}).get("enabled")) if isinstance(gates_payload, dict) else False),
+            "source": gates_source,
+            "pbo_enabled": bool(((canonical_gates.get("pbo") or {}).get("enabled")) if isinstance(canonical_gates, dict) else False),
+            "dsr_enabled": bool(((canonical_gates.get("dsr") or {}).get("enabled")) if isinstance(canonical_gates, dict) else False),
         },
         "tiers": tiers_payload if isinstance(tiers_payload, dict) else {"tiers": []},
         "capabilities_registry": capabilities_registry,
@@ -716,6 +748,73 @@ def internal_proxy_token() -> str:
 def runtime_engine_default() -> str:
     value = get_env("RUNTIME_ENGINE", RUNTIME_ENGINE_SIMULATED).lower().strip()
     return RUNTIME_ENGINE_REAL if value == RUNTIME_ENGINE_REAL else RUNTIME_ENGINE_SIMULATED
+
+
+class LoginRateLimiter:
+    def __init__(
+        self,
+        *,
+        attempts_per_window: int = LOGIN_RATE_LIMIT_ATTEMPTS,
+        window_minutes: int = LOGIN_RATE_LIMIT_WINDOW_MIN,
+        lockout_minutes: int = LOGIN_LOCKOUT_MIN,
+        lockout_after_failures: int = LOGIN_LOCKOUT_AFTER_FAILS,
+    ) -> None:
+        self.attempts_per_window = max(1, int(attempts_per_window))
+        self.window = timedelta(minutes=max(1, int(window_minutes)))
+        self.lockout = timedelta(minutes=max(1, int(lockout_minutes)))
+        self.lockout_after_failures = max(self.attempts_per_window, int(lockout_after_failures))
+        self._lock = Lock()
+        self._state: dict[str, dict[str, Any]] = {}
+
+    def _prune(self, *, entry: dict[str, Any], now: datetime) -> None:
+        fails = [
+            ts
+            for ts in (entry.get("failures") or [])
+            if isinstance(ts, datetime) and (now - ts) <= self.lockout
+        ]
+        entry["failures"] = fails
+        lock_until = entry.get("lock_until")
+        if isinstance(lock_until, datetime) and now >= lock_until:
+            entry["lock_until"] = None
+
+    def check(self, key: str) -> tuple[bool, int, str]:
+        now = utc_now()
+        with self._lock:
+            entry = self._state.setdefault(key, {"failures": [], "lock_until": None})
+            self._prune(entry=entry, now=now)
+            lock_until = entry.get("lock_until")
+            if isinstance(lock_until, datetime) and now < lock_until:
+                wait_sec = max(1, int((lock_until - now).total_seconds()))
+                return False, wait_sec, "lockout"
+
+            recent_failures = [
+                ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime) and (now - ts) <= self.window
+            ]
+            if len(recent_failures) >= self.attempts_per_window:
+                earliest = min(recent_failures)
+                retry_at = earliest + self.window
+                wait_sec = max(1, int((retry_at - now).total_seconds()))
+                return False, wait_sec, "rate_limit"
+        return True, 0, ""
+
+    def register_failure(self, key: str) -> None:
+        now = utc_now()
+        with self._lock:
+            entry = self._state.setdefault(key, {"failures": [], "lock_until": None})
+            self._prune(entry=entry, now=now)
+            fails = [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)]
+            fails.append(now)
+            entry["failures"] = fails
+            if len(fails) >= self.lockout_after_failures:
+                entry["lock_until"] = now + self.lockout
+
+    def register_success(self, key: str) -> None:
+        with self._lock:
+            if key in self._state:
+                self._state.pop(key, None)
+
+
+LOGIN_RATE_LIMITER = LoginRateLimiter()
 
 
 def _has_default_credentials() -> bool:
@@ -1019,6 +1118,8 @@ def _binance_signed_request(
 
 
 _EXCHANGE_DIAG_CACHE: dict[str, Any] = {"mode": "", "checked_at_epoch": 0.0, "result": None}
+_BOTS_OVERVIEW_CACHE: dict[str, Any] = {"expires_at_epoch": 0.0, "payload": None}
+_BOTS_OVERVIEW_CACHE_LOCK = Lock()
 
 
 def _provider_restriction_action_plan(active_mode: str, exchange: str) -> list[str]:
@@ -3921,6 +4022,7 @@ def risk_hooks(context):
     ) -> int:
         with self._connect() as conn:
             ts_now = utc_now_iso()
+            event_type_norm = str(event_type or "").strip().lower()
             cursor = conn.execute(
                 """
                 INSERT INTO logs (ts, type, severity, module, message, related_ids, payload_json)
@@ -3936,7 +4038,7 @@ def risk_hooks(context):
                     json.dumps(payload),
                 ),
             )
-            if str(event_type or "").strip().lower() == "breaker_triggered":
+            if event_type_norm == "breaker_triggered":
                 payload_map = payload if isinstance(payload, dict) else {}
                 self._insert_breaker_event(
                     conn,
@@ -3949,7 +4051,13 @@ def risk_hooks(context):
                     source_log_id=int(cursor.lastrowid),
                 )
             conn.commit()
-            return int(cursor.lastrowid)
+            log_id = int(cursor.lastrowid)
+        if event_type_norm == "breaker_triggered":
+            try:
+                _invalidate_bots_overview_cache()
+            except Exception:
+                pass
+        return log_id
 
     def logs_since(self, min_id: int) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -4044,6 +4152,26 @@ rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
 mass_backtest_engine = MassBacktestEngine(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT, knowledge_loader=KnowledgeLoader(repo_root=MONOREPO_ROOT))
 mass_backtest_coordinator = MassBacktestCoordinator(engine=mass_backtest_engine)
 rollout_gates = GateEvaluator(repo_root=MONOREPO_ROOT)
+
+
+def _invalidate_bots_overview_cache() -> None:
+    with _BOTS_OVERVIEW_CACHE_LOCK:
+        _BOTS_OVERVIEW_CACHE["expires_at_epoch"] = 0.0
+        _BOTS_OVERVIEW_CACHE["payload"] = None
+
+
+def _get_bots_overview_payload_cached(*, recommendations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    now_epoch = time.time()
+    with _BOTS_OVERVIEW_CACHE_LOCK:
+        cached_payload = _BOTS_OVERVIEW_CACHE.get("payload")
+        if cached_payload and now_epoch < float(_BOTS_OVERVIEW_CACHE.get("expires_at_epoch", 0.0)):
+            return cached_payload
+    items = store.list_bot_instances(recommendations=recommendations)
+    payload = {"items": items, "total": len(items)}
+    with _BOTS_OVERVIEW_CACHE_LOCK:
+        _BOTS_OVERVIEW_CACHE["expires_at_epoch"] = now_epoch + float(BOTS_OVERVIEW_CACHE_TTL_SEC)
+        _BOTS_OVERVIEW_CACHE["payload"] = payload
+    return payload
 
 
 def _learning_reference_run() -> dict[str, Any] | None:
@@ -4206,11 +4334,20 @@ def _runtime_engine_from_state(state: dict[str, Any] | None) -> str:
 def _is_trusted_internal_proxy(request: Request) -> bool:
     configured = internal_proxy_token()
     if not configured:
-        return get_env("NODE_ENV", "development").lower() != "production"
+        return False
     provided = (request.headers.get("x-rtlab-proxy-token") or "").strip()
     if not provided:
         return False
     return hmac.compare_digest(provided, configured)
+
+
+def _request_client_ip(request: Request) -> str:
+    try:
+        client = request.client
+        host = str(client.host or "").strip() if client else ""
+        return host or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def current_user(request: Request) -> dict[str, str]:
@@ -4632,15 +4769,27 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/v1/auth/login")
-    def auth_login(body: LoginBody) -> dict[str, Any]:
+    def auth_login(request: Request, body: LoginBody) -> dict[str, Any]:
         username = body.username.strip()
+        client_ip = _request_client_ip(request)
+        limiter_key = f"{client_ip}:{username.lower()}"
+        allowed, retry_after_sec, reason = LOGIN_RATE_LIMITER.check(limiter_key)
+        if not allowed:
+            detail = (
+                f"Demasiados intentos de login. Reintenta en {retry_after_sec}s."
+                if reason == "rate_limit"
+                else f"Acceso temporalmente bloqueado por seguridad. Reintenta en {retry_after_sec}s."
+            )
+            raise HTTPException(status_code=429, detail=detail)
         role: str | None = None
         if username == admin_username() and body.password == admin_password():
             role = ROLE_ADMIN
         elif username == viewer_username() and body.password == viewer_password():
             role = ROLE_VIEWER
         if not role:
+            LOGIN_RATE_LIMITER.register_failure(limiter_key)
             raise HTTPException(status_code=401, detail="Invalid credentials")
+        LOGIN_RATE_LIMITER.register_success(limiter_key)
         token = store.create_session(username=username, role=role)
         store.add_log(
             event_type="auth",
@@ -4807,8 +4956,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/bots")
     def list_bots(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         recs = learning_service.load_all_recommendations()
-        items = store.list_bot_instances(recommendations=recs)
-        return {"items": items, "total": len(items)}
+        return _get_bots_overview_payload_cached(recommendations=recs)
 
     def ensure_bot_live_mode_allowed(mode: str | None) -> None:
         if str(mode or "").lower() != "live":
@@ -4830,6 +4978,7 @@ def create_app() -> FastAPI:
             universe=body.universe,
             notes=body.notes,
         )
+        _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
         items = store.list_bot_instances(recommendations=recs)
         enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
@@ -4848,6 +4997,7 @@ def create_app() -> FastAPI:
             universe=body.universe,
             notes=body.notes,
         )
+        _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
         items = store.list_bot_instances(recommendations=recs)
         enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
@@ -4889,6 +5039,7 @@ def create_app() -> FastAPI:
             except Exception as exc:
                 errors.append({"id": bot_id, "detail": str(exc)})
 
+        _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
         items = store.list_bot_instances(recommendations=recs)
         by_id = {str(row.get("id")): row for row in items}

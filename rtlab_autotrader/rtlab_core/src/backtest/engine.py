@@ -187,10 +187,26 @@ class StrategyRunner:
     def __init__(self, request: BacktestRequest, fee_bps: float | None = None) -> None:
         self.request = request
         self.qty = 1.0
+        self._strategy_id = str(request.strategy_id or "").strip().lower()
         self.fee_bps = float(fee_bps if fee_bps is not None else (request.costs.taker_fee_bps or request.costs.fees_bps))
 
-    def _signal(self, prev: pd.Series) -> str | None:
-        if any(pd.isna(prev.get(col)) for col in ("ema20", "ema50", "ema200", "adx14", "rsi14", "atr14", "prev_high", "prev_low")):
+    def _has_fields(self, prev: pd.Series, fields: tuple[str, ...]) -> bool:
+        return not any(pd.isna(prev.get(col)) for col in fields)
+
+    def _strategy_family(self) -> str:
+        sid = self._strategy_id
+        if sid in {"breakout_volatility_v2"} or "breakout" in sid:
+            return "breakout"
+        if sid in {"meanreversion_range_v2"} or "meanreversion" in sid or "mean_reversion" in sid:
+            return "meanreversion"
+        if sid in {"trend_scanning_regime_v2"} or "trend_scanning" in sid or "regime" in sid:
+            return "trend_scanning"
+        if sid in {"defensive_liquidity_v2"} or "defensive" in sid or "liquidity" in sid:
+            return "defensive"
+        return "trend_pullback"
+
+    def _signal_trend_pullback(self, prev: pd.Series) -> str | None:
+        if not self._has_fields(prev, ("ema20", "ema50", "ema200", "adx14", "rsi14", "atr14", "prev_high", "prev_low")):
             return None
         long_regime = float(prev["ema20"]) > float(prev["ema50"]) and float(prev["close"]) > float(prev["ema200"]) and float(prev["adx14"]) > 18.0
         short_regime = float(prev["ema20"]) < float(prev["ema50"]) and float(prev["close"]) < float(prev["ema200"]) and float(prev["adx14"]) > 18.0
@@ -201,6 +217,83 @@ class StrategyRunner:
         if short_regime and short_trigger:
             return "short"
         return None
+
+    def _signal_breakout_volatility(self, prev: pd.Series) -> str | None:
+        if not self._has_fields(prev, ("close", "high", "low", "prev_high", "prev_low", "atr14")):
+            return None
+        atr = float(prev["atr14"])
+        if atr <= 0:
+            return None
+        range_expansion = (float(prev["high"]) - float(prev["low"])) >= (1.1 * atr)
+        if not range_expansion:
+            return None
+        if float(prev["close"]) > float(prev["prev_high"]):
+            return "long"
+        if float(prev["close"]) < float(prev["prev_low"]):
+            return "short"
+        return None
+
+    def _signal_meanreversion_range(self, prev: pd.Series) -> str | None:
+        if not self._has_fields(prev, ("close", "ema20", "rsi14", "atr14", "adx14")):
+            return None
+        adx = float(prev["adx14"])
+        if adx > 18.0:
+            return None
+        close = float(prev["close"])
+        ema20 = float(prev["ema20"])
+        atr = max(float(prev["atr14"]), 0.0001)
+        dist = close - ema20
+        if float(prev["rsi14"]) <= 30.0 and dist <= (-0.6 * atr):
+            return "long"
+        if float(prev["rsi14"]) >= 70.0 and dist >= (0.6 * atr):
+            return "short"
+        return None
+
+    def _signal_defensive_liquidity(self, prev: pd.Series) -> str | None:
+        if not self._has_fields(prev, ("close", "ema50", "rsi14", "adx14")):
+            return None
+        close = float(prev["close"])
+        ema50 = float(prev["ema50"])
+        adx = float(prev["adx14"])
+        rsi = float(prev["rsi14"])
+        obi = prev.get("obi_topn")
+        obi_gate = None if pd.isna(obi) else float(obi)
+        long_ok = close > ema50 and adx >= 12.0 and 45.0 <= rsi <= 65.0 and (obi_gate is None or obi_gate >= 0.55)
+        short_ok = close < ema50 and adx >= 12.0 and 35.0 <= rsi <= 55.0 and (obi_gate is None or obi_gate <= 0.45)
+        if long_ok:
+            return "long"
+        if short_ok:
+            return "short"
+        return None
+
+    def _signal_trend_scanning_regime(self, prev: pd.Series) -> str | None:
+        if not self._has_fields(prev, ("close", "adx14", "atr14")):
+            return None
+        close = max(float(prev["close"]), 0.0001)
+        atr = float(prev["atr14"])
+        adx = float(prev["adx14"])
+        high_vol = atr >= (close * 0.01)
+        if high_vol:
+            breakout = self._signal_breakout_volatility(prev)
+            if breakout is not None:
+                return breakout
+        if adx >= 20.0:
+            return self._signal_trend_pullback(prev)
+        if adx <= 18.0:
+            return self._signal_meanreversion_range(prev)
+        return None
+
+    def _signal(self, prev: pd.Series) -> str | None:
+        family = self._strategy_family()
+        if family == "breakout":
+            return self._signal_breakout_volatility(prev)
+        if family == "meanreversion":
+            return self._signal_meanreversion_range(prev)
+        if family == "trend_scanning":
+            return self._signal_trend_scanning_regime(prev)
+        if family == "defensive":
+            return self._signal_defensive_liquidity(prev)
+        return self._signal_trend_pullback(prev)
 
     def run(self, df: pd.DataFrame) -> dict[str, Any]:
         cost_model = CostModel(self.request.market, self.request.costs)

@@ -33,3 +33,13 @@ gates:
     enabled: true
     min_trades_per_run: 150
     min_trades_per_symbol: 30
+
+  # Ajustes surrogate para research:
+  # - Por defecto apagado.
+  # - Solo permitido en modo "demo".
+  # - Si se usa, nunca debe quedar promotable (fail-closed para promotion).
+  surrogate_adjustments:
+    enabled: false
+    allow_request_override: false
+    allowed_execution_modes: ["demo"]
+    promotion_blocked: true

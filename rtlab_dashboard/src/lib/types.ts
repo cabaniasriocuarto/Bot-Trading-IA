@@ -602,6 +602,8 @@ export interface MassBacktestResultRow {
   hard_filter_reasons?: string[];
   summary?: {
     trade_count_oos?: number;
+    trade_count_by_symbol_oos?: Record<string, number>;
+    min_trades_per_symbol_oos?: number;
     sharpe_oos?: number;
     sortino_oos?: number;
     calmar_oos?: number;

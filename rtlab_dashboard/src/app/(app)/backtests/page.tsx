@@ -226,6 +226,47 @@ function massSummaryNum(row: MassBacktestResultRow, key: "trade_count_oos" | "wi
   return Number(row.summary?.[key] ?? 0);
 }
 
+function massTradeCountBySymbol(row: MassBacktestResultRow): Record<string, number> {
+  const raw = row.summary?.trade_count_by_symbol_oos;
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [symbol, count] of Object.entries(raw)) {
+    const key = String(symbol || "").trim().toUpperCase();
+    if (!key) continue;
+    const val = Number(count ?? 0);
+    if (!Number.isFinite(val)) continue;
+    out[key] = Math.max(0, Math.floor(val));
+  }
+  return out;
+}
+
+function massMinTradesPerSymbol(row: MassBacktestResultRow): number {
+  const direct = Number(row.summary?.min_trades_per_symbol_oos ?? NaN);
+  if (Number.isFinite(direct)) return Math.max(0, Math.floor(direct));
+  const perSymbol = massTradeCountBySymbol(row);
+  const values = Object.values(perSymbol);
+  if (!values.length) return 0;
+  return Math.max(0, Math.floor(Math.min(...values)));
+}
+
+function massMinTradesPerSymbolRequired(row: MassBacktestResultRow): number | null {
+  const check = row.gates_eval?.checks?.min_trade_quality;
+  const value = Number(
+    (check?.min_trades_per_symbol_required as number | undefined) ??
+      (check?.min_trades_per_symbol as number | undefined) ??
+      NaN,
+  );
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+}
+
+function massMinTradesPerSymbolPass(row: MassBacktestResultRow): boolean | null {
+  const check = row.gates_eval?.checks?.min_trade_quality;
+  if (typeof check?.symbol_trade_pass === "boolean") return check.symbol_trade_pass;
+  const required = massMinTradesPerSymbolRequired(row);
+  if (required == null) return null;
+  return massMinTradesPerSymbol(row) >= required;
+}
+
 function massMetricValue(row: MassBacktestResultRow, metric: MassTopMetric): number {
   switch (metric) {
     case "score":
@@ -3336,6 +3377,7 @@ export default function BacktestsPage() {
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("strategy")}>Estrategia{massSortLabel("strategy")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("score")}>Score{massSortLabel("score")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("trades")}>Trades OOS{massSortLabel("trades")}</button></TH>
+                    <TH>Mín trades/símbolo</TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("winrate")}>WinRate{massSortLabel("winrate")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("sharpe")}>Sharpe{massSortLabel("sharpe")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("calmar")}>Calmar{massSortLabel("calmar")}</button></TH>
@@ -3362,6 +3404,16 @@ export default function BacktestsPage() {
                       <TD>{row.strategy_name || row.strategy_id}</TD>
                       <TD>{fmtNum(row.score)}</TD>
                       <TD>{row.summary?.trade_count_oos ?? "-"}</TD>
+                      <TD>
+                        <div className="space-y-1">
+                          <span>{massMinTradesPerSymbol(row)}</span>
+                          {massMinTradesPerSymbolRequired(row) != null ? (
+                            <Badge variant={massMinTradesPerSymbolPass(row) === false ? "danger" : "success"}>
+                              min {massMinTradesPerSymbolRequired(row)}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      </TD>
                       <TD>{fmtPct(row.summary?.winrate_oos ?? 0)}</TD>
                       <TD>{fmtNum(row.summary?.sharpe_oos ?? 0)}</TD>
                       <TD>{fmtNum(row.summary?.calmar_oos ?? 0)}</TD>
@@ -3473,8 +3525,23 @@ export default function BacktestsPage() {
                     <div className="rounded border border-slate-800 p-2">Score: {fmtNum(massSelectedRow.score)}</div>
                     <div className="rounded border border-slate-800 p-2">Promotable: {massSelectedRow.promotable ? "Sí" : "No"}</div>
                     <div className="rounded border border-slate-800 p-2">Trades OOS: {massSelectedRow.summary?.trade_count_oos ?? 0}</div>
+                    <div className="rounded border border-slate-800 p-2">
+                      MÃ­n trades/sÃ­mbolo: {massMinTradesPerSymbol(massSelectedRow)}
+                      {massMinTradesPerSymbolRequired(massSelectedRow) != null ? ` (min req ${massMinTradesPerSymbolRequired(massSelectedRow)})` : ""}
+                    </div>
                     <div className="rounded border border-slate-800 p-2">Stability: {fmtNum(massSelectedRow.summary?.stability ?? 0)}</div>
                   </div>
+                  {Object.keys(massTradeCountBySymbol(massSelectedRow)).length ? (
+                    <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
+                      <p className="font-semibold text-slate-300">Trades OOS por sÃ­mbolo</p>
+                      <p className="mt-1 text-slate-400">
+                        {Object.entries(massTradeCountBySymbol(massSelectedRow))
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([sym, cnt]) => `${sym}: ${cnt}`)
+                          .join(" | ")}
+                      </p>
+                    </div>
+                  ) : null}
                   <div className="space-y-1 text-xs">
                     <p className="font-semibold text-slate-300">Por régimen</p>
                     {Object.entries(massSelectedRow.regime_metrics || {}).map(([regime, vals]) => (

@@ -2,6 +2,188 @@
 
 ## 2026-02-28
 
+### Bloque 2: backtest por strategy_id (sin refactor masivo)
+- `BacktestEngine/StrategyRunner` ya no usa una unica senal para todas las estrategias.
+- Se agrego dispatcher por familia de `strategy_id`:
+  - `trend_pullback_orderflow_v2`
+  - `breakout_volatility_v2`
+  - `meanreversion_range_v2`
+  - `trend_scanning_regime_v2`
+  - `defensive_liquidity_v2`
+- Fallback conservador:
+  - cualquier `strategy_id` no reconocido sigue usando `trend_pullback` para mantener compatibilidad.
+- Tests nuevos:
+  - `rtlab_autotrader/tests/test_backtest_strategy_dispatch.py`
+    - verifica que el mismo contexto produce decisiones distintas segun `strategy_id`.
+    - valida ruteo de `trend_scanning` y gate de `obi_topn` en `defensive_liquidity`.
+- Validacion ejecutada:
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_strategy_dispatch.py -q` -> `4 passed`
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_annualization.py -q` -> `2 passed`
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "event_backtest_engine_runs_for_crypto_forex_equities or backtest_orderflow_toggle_metadata_and_gating" -q` -> `1 passed`
+
+### Bloque 3: min_trades_per_symbol real en gates masivos
+- `MassBacktestEngine` ahora calcula y persiste en `summary`:
+  - `trade_count_by_symbol_oos`
+  - `min_trades_per_symbol_oos`
+- Gate `min_trade_quality` actualizado:
+  - ya no mira solo `trade_count_oos`
+  - ahora exige simultaneamente:
+    - `trade_count_oos >= min_trades_per_run`
+    - `min_trades_per_symbol_oos >= min_trades_per_symbol`
+  - expone detalle en `gates_eval.checks.min_trade_quality`:
+    - `run_trade_pass`
+    - `symbol_trade_pass`
+    - `symbols_below_min_trades`
+- Compatibilidad hacia atras:
+  - si faltan conteos por simbolo en corridas legacy, usa fallback `UNSPECIFIED=trade_count_oos`.
+- Tests agregados:
+  - `test_advanced_gates_fail_when_min_trades_per_symbol_is_below_threshold`
+  - `test_advanced_gates_pass_when_min_trades_per_symbol_meets_threshold`
+- Validacion ejecutada:
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `9 passed`
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "mass_backtest_research_endpoints_and_mark_candidate" -q` -> `1 passed`
+
+### Bloque 4: fuente canonica de gates unificada (config > knowledge)
+- `build_learning_config_payload` ahora toma gates desde `config/policies/gates.yaml` como fuente primaria.
+- Si `safe_update.gates_file` en knowledge difiere de la canónica, se agrega warning y se fuerza la fuente canónica.
+- `gates_summary` en `/api/v1/config/learning` ahora expone:
+  - `source` (ruta canónica efectiva)
+  - flags `pbo_enabled` / `dsr_enabled` derivados de política canónica.
+- `LearningService` para recomendaciones usa thresholds de gates canónicos:
+  - `pbo_max` desde `reject_if_gt`
+  - `dsr_min` desde `min_dsr`
+  - fallback explícito a `knowledge/policies/gates.yaml` solo si no existe config.
+- `MassBacktestEngine` añade trazabilidad de política en artefactos:
+  - `knowledge_snapshot.gates_canonical`
+  - `knowledge_snapshot.gates_source`
+- Tests agregados/ajustados:
+  - `test_learning_service_uses_canonical_config_gates_thresholds`
+  - `test_config_learning_endpoint_reads_yaml_and_exposes_capabilities` (assert de `gates_summary.source` y `safe_update.gates_file`)
+- Validación ejecutada:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> `2 passed`
+  - `python -m pytest rtlab_autotrader/tests/test_learning_service_gates_source.py rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `10 passed`
+
+### Bloque 5: UI Research Batch con calidad por simbolo visible
+- `Backtests > Research Batch` ahora muestra en leaderboard:
+  - columna `Mín trades/símbolo`
+  - badge de mínimo requerido cuando existe en `gates_eval.min_trade_quality`.
+- Drilldown de variante agrega:
+  - `Mín trades/símbolo` con umbral requerido
+  - detalle `Trades OOS por símbolo` (mapa agregado).
+- Tipado frontend actualizado:
+  - `MassBacktestResultRow.summary.trade_count_by_symbol_oos`
+  - `MassBacktestResultRow.summary.min_trades_per_symbol_oos`
+- Validación ejecutada:
+  - `npm --prefix rtlab_dashboard run test -- src/lib/auth.test.ts src/lib/security.test.ts` -> `11 passed`
+  - `npm --prefix rtlab_dashboard run lint` -> `0 errores` (warnings existentes no bloqueantes)
+
+### Bloque 6: politica canonica para `enable_surrogate_adjustments` (fail-closed)
+- `MassBacktestEngine` ahora resuelve surrogate por policy con trazabilidad:
+  - nuevo resolver `_resolve_surrogate_adjustments(cfg)` con:
+    - `enabled_effective`
+    - `allowed_execution_modes`
+    - `reason`
+    - `promotion_blocked_effective`
+    - `evaluation_mode`
+- Policy canónica agregada en `config/policies/gates.yaml`:
+  - `gates.surrogate_adjustments.enabled=false`
+  - `allow_request_override=false`
+  - `allowed_execution_modes=["demo"]`
+  - `promotion_blocked=true`
+- El motor ya no usa `cfg.enable_surrogate_adjustments` de forma directa.
+- Si surrogate queda activo (solo `demo` por policy), la variante:
+  - se etiqueta `evaluation_mode=engine_surrogate_adjusted`
+  - falla `gates_eval.checks.surrogate_adjustments`
+  - queda `promotable=false` y `recommendable_option_b=false` (fail-closed para promotion).
+- Trazabilidad agregada en artifacts/manifest/summary:
+  - `summary.surrogate_adjustments`
+  - `manifest.surrogate_adjustments`
+  - flags de catalogo `SURROGATE_ADJUSTMENTS` y `EVALUATION_MODE`.
+- Tests agregados:
+  - `test_surrogate_adjustments_policy_requires_allowed_execution_mode`
+  - `test_surrogate_adjustments_request_override_rejected_by_default`
+  - `test_advanced_gates_block_promotion_when_surrogate_adjustments_enabled`
+  - `test_run_job_applies_surrogate_only_in_demo_mode_and_blocks_promotion`
+- Validación ejecutada:
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `13 passed`
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "mass_backtest_research_endpoints_and_mark_candidate" -q` -> `1 passed`
+
+### Bloque 7: benchmark reproducible de `/api/v1/bots` (100 bots)
+- Script nuevo: `scripts/benchmark_bots_overview.py`
+  - seed controlado de bots/logs/breakers.
+  - benchmark con `FastAPI TestClient` sobre endpoint real `/api/v1/bots`.
+  - reporte markdown automatico en `docs/audit/`.
+- Evidencia generada:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_20260228.md`
+  - resultado: `p95=280.875ms` con `100 bots` y `200 requests` (objetivo `< 300ms`: PASS).
+- Smoke adicional:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_SMOKE_20260228.md`.
+
+### Bloque 8: benchmark remoto de `/api/v1/bots` (entorno desplegado)
+- `scripts/benchmark_bots_overview.py` extendido con modo remoto:
+  - `--base-url`, `--auth-token` (o login con `--username/--password`).
+  - `--timeout-sec`.
+  - `--min-bots-required` (default `100`).
+- Criterio estricto de evidencia:
+  - si `/api/v1/bots` devuelve menos bots que el minimo requerido, el reporte marca:
+    - estado `NO_EVIDENCIA`
+    - `target_pass=false`
+    - motivo explicito en `no_evidencia_reason`.
+- Smoke local de regresion del script actualizado:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_LOCAL_SMOKE2_20260228.md`.
+
+### Bloque 9: ejecucion real benchmark remoto `/api/v1/bots` (Railway)
+- Corrida remota ejecutada contra:
+  - `https://bot-trading-ia-production.up.railway.app`
+- Evidencia:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228.md`
+- Resultado:
+  - `p50=977.579ms`
+  - `p95=1663.014ms`
+  - `p99=1923.523ms`
+  - objetivo `p95 < 300ms`: **FAIL**
+- Estado de evidencia:
+  - **NO EVIDENCIA** para benchmark objetivo de 100 bots, porque `/api/v1/bots` devolvio `1` bot (minimo requerido `100`).
+
+### Bloque 10: cache TTL en `/api/v1/bots` + invalidacion explicita
+- Backend:
+  - `GET /api/v1/bots` ahora usa cache in-memory con TTL (`BOTS_OVERVIEW_CACHE_TTL_SEC`, default `10s`).
+  - invalidacion explicita del cache en:
+    - `POST /api/v1/bots`
+    - `PATCH /api/v1/bots/{bot_id}`
+    - `POST /api/v1/bots/bulk-patch`
+  - `add_log(event_type=\"breaker_triggered\")` invalida cache para reflejar kills por bot/mode sin esperar TTL.
+- Test de regresion agregado:
+  - `test_bots_overview_cache_hit_and_invalidation_on_create`
+  - verifica cache hit en GET consecutivos e invalidacion al crear bot.
+- Validacion ejecutada:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_multi_instance_endpoints or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_scopes_kills_by_bot_and_mode or bots_live_mode_blocked_by_gates" -q` -> `4 passed`.
+- Benchmark local posterior al cambio:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_LOCAL_20260228_AFTER_CACHE.md`
+  - resultado: `p50=31.453ms`, `p95=35.524ms`, `p99=37.875ms` (objetivo `<300ms`: PASS).
+- Pendiente:
+  - deploy del backend en Railway y rerun remoto para medir impacto real en prod.
+
+### Auditoria comité + hardening adicional
+- Seguridad:
+  - `current_user` ahora ignora headers internos si no existe `INTERNAL_PROXY_TOKEN` válido (fail-closed en todos los entornos).
+  - login backend con rate-limit/lockout por `IP+user`:
+    - `10` intentos en `10` min -> `429`
+    - lockout `30` min tras `20` fallos.
+  - BFF (`[...path]` y `events-stream`) ahora falla con `500` explícito si falta `INTERNAL_PROXY_TOKEN`.
+- Config:
+  - `.env.example` backend y frontend actualizados con `INTERNAL_PROXY_TOKEN`.
+- Auditoría:
+  - nuevos artefactos `docs/audit/AUDIT_REPORT_20260228.md`, `docs/audit/AUDIT_FINDINGS_20260228.md`, `docs/audit/AUDIT_BACKLOG_20260228.md`.
+- Bibliografía:
+  - nuevo `scripts/biblio_extract.py` (indexación SHA256 + extracción incremental a txt).
+  - nuevo `docs/reference/biblio_txt/.gitignore`.
+  - `docs/reference/BIBLIO_INDEX.md` regenerado con hashes.
+- Seguridad documental:
+  - `docs/SECURITY.md` reescrito con threat model mínimo, checklist y comandos de auditoría.
+- Test agregado:
+  - `test_auth_login_rate_limit_and_lock_guard`.
+
 ### Seguridad + Runtime + CI (T1 + T2 + T4 + T6 + T9)
 - T1 auth bypass mitigado:
   - backend ya no confia ciegamente en `x-rtlab-role/x-rtlab-user`.
@@ -32,7 +214,7 @@
 - `BacktestEngine` bloquea `validation_mode=purged-cv|cpcv` en Quick Backtest con error explicito (fail-closed; sin `hook_only` silencioso).
 - `MassBacktestEngine` desactiva surrogate adjustments por defecto:
   - nuevo comportamiento default `evaluation_mode=engine_raw`.
-  - surrogate solo si `enable_surrogate_adjustments=true` en config del batch.
+  - surrogate solo segun policy canónica (`gates.surrogate_adjustments`) y modo permitido.
 - `GateEvaluator` migra fuente primaria de thresholds a `config/policies/gates.yaml` (fallback `knowledge/policies/gates.yaml`).
 - `GateEvaluator` pasa a fail-closed para PBO/DSR cuando policy los marca como habilitados y faltan en el reporte.
 

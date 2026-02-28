@@ -2,14 +2,20 @@
 
 Fecha: 2026-02-28
 
+## Bloqueantes LIVE (auditoria comite)
+1. Implementar runtime de ejecucion real (OMS/broker paper-testnet con reconciliacion) y remover dependencias de payloads simulados.
+
 ## Prioridad 1 (RC operativo)
 1. Configurar `INTERNAL_PROXY_TOKEN` en Vercel + Railway y validar que requests directos al backend sin token fallen (hard check de T1 en entorno real).
 2. Validar `runtime_engine=real` solo cuando exista loop de ejecucion real y reconciliacion; mantener `simulated` en cualquier otro caso.
 3. Confirmar gates LIVE con `G9_RUNTIME_ENGINE_REAL` en PASS antes de habilitar canary.
-4. Ejecutar benchmark real de `/api/v1/bots` con 100 bots y registrar p95 < 300ms.
+4. Remediar benchmark remoto de `/api/v1/bots`:
+   - desplegar a Railway el fix de cache TTL/invalidacion de `/api/v1/bots`,
+   - volver a ejecutar `scripts/benchmark_bots_overview.py --base-url ... --min-bots-required 100`,
+   - registrar evidencia post-deploy y validar objetivo `p95 < 300ms`.
 5. Validar integridad de `breaker_events` (`bot_id/mode`) y monitorear volumen de `unknown`.
-6. Completar wiring de `StrategyImplRegistry` para evitar sesgo de una sola logica en todas las estrategias del engine.
-7. Definir politica final de `enable_surrogate_adjustments` (ideal: solo DEMO y siempre excluido de promotion).
+6. Afinar thresholds/parametros por estrategia del dispatcher de `BacktestEngine` y agregar `fail-closed` explicito para strategy_ids no soportados en modo estricto.
+7. Validar en entorno desplegado que `surrogate_adjustments` se mantenga apagado fuera de `execution_mode=demo` y que promotion quede bloqueada cuando se active.
 
 ## Prioridad 2 (operacion + hardening)
 1. Agregar rotacion/expiracion para `INTERNAL_PROXY_TOKEN` y checklist de cambio en runbook.

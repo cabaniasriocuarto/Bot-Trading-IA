@@ -118,6 +118,29 @@ class LearningService:
         }.get(selector_algo, "bandit_thompson")
         return next((row for row in engines if str(row.get("id")) == fallback_id), None)
 
+    def _canonical_gates_thresholds(self) -> dict[str, Any]:
+        config_path = (self.knowledge.repo_root / "config" / "policies" / "gates.yaml").resolve()
+        if config_path.exists():
+            try:
+                payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                gates_root = payload.get("gates") if isinstance(payload.get("gates"), dict) else {}
+                if isinstance(gates_root, dict) and gates_root:
+                    pbo_cfg = gates_root.get("pbo") if isinstance(gates_root.get("pbo"), dict) else {}
+                    dsr_cfg = gates_root.get("dsr") if isinstance(gates_root.get("dsr"), dict) else {}
+                    return {
+                        "source": "config/policies/gates.yaml",
+                        "pbo_max": float(pbo_cfg.get("reject_if_gt", 0.05) or 0.05),
+                        "dsr_min": float(dsr_cfg.get("min_dsr", 0.95) or 0.95),
+                    }
+            except Exception:
+                pass
+        gates = self.knowledge.get_gates()
+        return {
+            "source": "knowledge/policies/gates.yaml",
+            "pbo_max": float(((gates.get("pbo") or {}).get("max_allowed")) or 0.55),
+            "dsr_min": float(((gates.get("dsr") or {}).get("min_allowed")) or 0.10),
+        }
+
     def _streams_from_runs(self, runs: list[dict[str, Any]]) -> dict[str, list[float]]:
         latest = runs[:50]
         return {
@@ -393,9 +416,9 @@ class LearningService:
             )
 
         pbo_payload = pbo_cscv(returns_map)
-        gates = self.knowledge.get_gates()
-        pbo_max = float(((gates.get("pbo") or {}).get("max_allowed")) or 0.55)
-        dsr_min = float(((gates.get("dsr") or {}).get("min_allowed")) or 0.10)
+        gates_thresholds = self._canonical_gates_thresholds()
+        pbo_max = float(gates_thresholds.get("pbo_max", 0.05))
+        dsr_min = float(gates_thresholds.get("dsr_min", 0.95))
         enforce_pbo = bool((learning.get("validation") or {}).get("enforce_pbo", True))
         enforce_dsr = bool((learning.get("validation") or {}).get("enforce_dsr", True))
 
@@ -418,6 +441,7 @@ class LearningService:
                 "walk_forward": bool((learning.get("validation") or {}).get("walk_forward", True)),
                 "pbo": pbo_value,
                 "dsr": dsr_value,
+                "gates_source": str(gates_thresholds.get("source") or "config/policies/gates.yaml"),
                 "cpcv": {"implemented": False, "enforce": False, "note": "hook_only"},
                 "purged_cv": {"implemented": False, "enforce": False, "note": "hook_only"},
             }

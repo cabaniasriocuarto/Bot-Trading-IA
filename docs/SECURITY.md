@@ -1,79 +1,75 @@
 # Seguridad Operativa (RTLAB Bot-Trading-IA)
 
-## Resumen
-- **Secretos**: solo por variables de entorno / secrets manager (Railway, Vercel, VPS).
-- **Opción B**: el sistema recomienda; **no** auto-promueve a LIVE.
-- **Credenciales de exchange**: mínimo privilegio (**Read + Trade**) y **nunca** permisos de retiro (**Withdraw**).
+Fecha de actualización: 2026-02-28
 
-## 1) Secrets (obligatorio)
-### Dónde configurar
-- **Railway (backend)**: Variables del servicio backend (`rtlab_autotrader`)
-- **Vercel (frontend)**: solo secretos del frontend/proxy si aplica (no poner API keys del exchange en el cliente)
-- **VPS/local**: `.env` local no versionado + systemd/env vars
+## Alcance y objetivo
+- Alcance: `rtlab_autotrader` (backend FastAPI), `rtlab_dashboard` (BFF Next.js) y sus integraciones.
+- Objetivo: proteger autenticación/autorización, secretos, superficie API y operación paper/testnet.
+- Restricción explícita: este repo **no** habilita trading LIVE real sin gates y aprobación humana.
 
-### Reglas
-- Nunca hardcodear API keys, passwords o tokens.
-- Nunca commitear `.env` reales.
-- Usar `.env.example` como plantilla.
-- Rotar credenciales si:
-  - se sospecha exposición,
-  - hubo acceso compartido del repo/máquina,
-  - o se cambian operadores/admins.
+## Threat model mínimo
+- Actores:
+  - Operador legítimo (admin/viewer).
+  - Usuario no autenticado en internet.
+  - Atacante con acceso parcial a frontend/BFF.
+- Activos críticos:
+  - Credenciales (`AUTH_SECRET`, exchange keys, `INTERNAL_PROXY_TOKEN`).
+  - Endpoints admin (`/api/v1/bot/*`, `/api/v1/bots/*`, rollout/promotion).
+  - Integridad de gates y reportes de riesgo.
+- Fronteras de confianza:
+  - Navegador → BFF (`rtlab_dashboard`).
+  - BFF → Backend (`rtlab_autotrader`).
+  - Backend → exchange/API externas.
 
-## 2) Exchange: mínimo privilegio
-- **Permitir**: `Read` + `Trade`
-- **Prohibido**: `Withdraw`
-- Recomendado:
-  - whitelist de IP (si el exchange lo soporta)
-  - separar keys de `testnet` y `live`
-  - una key por entorno / servicio (no reutilizar)
+## Controles vigentes
+- Credenciales default bloqueadas en producción:
+  - backend falla en boot si `NODE_ENV=production` y hay defaults o `AUTH_SECRET` débil.
+- Proxy interno endurecido:
+  - backend solo acepta `x-rtlab-role/x-rtlab-user` si llega `x-rtlab-proxy-token` válido.
+- Rate-limit login backend:
+  - `10` intentos / `10` min por `IP+user`.
+  - lockout `30` min al superar `20` fallos acumulados.
+- Sesiones backend con expiración (tabla `sessions`).
+- Eventos de breaker persistidos por `bot_id + mode` en `breaker_events`.
 
-## 3) Logs y redacción
-- Los endpoints de diagnóstico y gates deben mostrar **estado** y **errores**, pero no secretos.
-- Revisar que en logs no se impriman:
-  - API keys completas
-  - secrets
-  - tokens de Telegram
-  - headers de auth
-- Si necesitás debug, loguear solo:
-  - últimos 4 caracteres (`****ABCD`)
-  - key source (`env/json`)
-  - nombre de variable faltante
+## Configuración obligatoria
+- Backend (`rtlab_autotrader/.env` o secrets manager):
+  - `AUTH_SECRET` (>=32 chars)
+  - `ADMIN_USERNAME`, `ADMIN_PASSWORD`
+  - `VIEWER_USERNAME`, `VIEWER_PASSWORD`
+  - `INTERNAL_PROXY_TOKEN` (>=32 chars, compartido con BFF)
+- BFF (`rtlab_dashboard/.env`):
+  - `INTERNAL_PROXY_TOKEN` (mismo valor que backend)
+  - `BACKEND_API_URL`
 
-## 4) Auditoría de dependencias (seguridad)
-Script agregado:
-- `scripts/security_audit.sh`
+## Checklist pre-deploy
+- [ ] `AUTH_SECRET` robusto y rotado.
+- [ ] Credenciales default reemplazadas.
+- [ ] `INTERNAL_PROXY_TOKEN` configurado en backend y BFF.
+- [ ] Exchange keys con mínimo privilegio (`Read + Trade`, nunca `Withdraw`).
+- [ ] IP allowlist/Zero Trust aplicado al backend si está público.
+- [ ] `scripts/security_audit.sh` ejecutado y revisado.
+- [ ] Gates LIVE en PASS antes de cualquier canary.
 
-Qué hace:
-- corre `pip-audit` sobre `requirements-runtime.txt`
-- corre `pip-audit` sobre `requirements-research.txt`
-- intenta generar SBOM CycloneDX (si `cyclonedx-py` o `cyclonedx-bom` está instalado)
+## OWASP (mapa rápido)
+- API2 Broken Authentication: protegido con credenciales fuertes + token interno BFF→backend.
+- API5 Broken Function Level Authorization: endpoints críticos usan `require_admin`.
+- API8 Security Misconfiguration: validaciones de `AUTH_SECRET`/defaults y checklist de despliegue.
+- API4 Unrestricted Resource Consumption: rate-limit login implementado (faltan límites generales en toda API).
 
-Uso:
+## Auditoría de dependencias y secretos
+Comandos recomendados:
 ```bash
 bash scripts/security_audit.sh
+python -m pip_audit -r requirements-runtime.txt
+python -m pip_audit -r requirements-research.txt
+gitleaks detect --source . --verbose
 ```
 
-Salida esperada:
-- reportes en `artifacts/security_audit/`
+Si no hay tooling instalado:
+- `pip-audit`: `python -m pip install pip-audit`
+- `gitleaks`: instalar binario oficial en CI/runner
 
-## 5) CI/CD (recomendado para “final”)
-Estado actual:
-- Hay scripts locales para auditoría y chequeo de dependencias.
-- **Recomendación**: integrarlos en CI (GitHub Actions / pipeline) antes de LIVE real.
-
-Pipeline mínimo sugerido:
-1. `python -m py_compile`
-2. `pytest` (suites críticas)
-3. `npx tsc --noEmit`
-4. `bash scripts/deps_check.sh`
-5. `bash scripts/security_audit.sh`
-
-## 6) Checklist rápido pre-LIVE
-- [ ] `AUTH_SECRET` configurado y fuerte
-- [ ] `ADMIN_PASSWORD` y `VIEWER_PASSWORD` cambiados
-- [ ] Exchange keys con `Read+Trade` y sin `Withdraw`
-- [ ] IP whitelist configurada (si aplica)
-- [ ] `scripts/deps_check.sh` OK
-- [ ] `scripts/security_audit.sh` revisado
-- [ ] Gates + canary + rollback + approve validados
+## Notas operativas
+- Si `INTERNAL_PROXY_TOKEN` no está configurado, el BFF falla cerrado hacia backend.
+- El modo LIVE sigue bloqueado por `G9_RUNTIME_ENGINE_REAL` y gates de rollout.

@@ -734,6 +734,8 @@ class MassBacktestEngine:
         m = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
         c = run.get("costs_breakdown") if isinstance(run.get("costs_breakdown"), dict) else {}
         micro_row = micro if isinstance(micro, dict) else {}
+        trade_count = _i(m.get("trade_count", m.get("roundtrips")), 0)
+        symbol_counts = self._extract_trade_count_by_symbol(run=run, fallback_trade_count=trade_count)
         return {
             "fold": fold.fold_index,
             "train_start": fold.train_start,
@@ -746,7 +748,9 @@ class MassBacktestEngine:
             "calmar_oos": _f(m.get("calmar")),
             "max_dd_oos_pct": abs(_f(m.get("max_dd"))) * 100.0,
             "expectancy_net_usd": _f(m.get("expectancy_usd_per_trade", m.get("expectancy"))),
-            "trade_count": _i(m.get("trade_count", m.get("roundtrips")), 0),
+            "trade_count": trade_count,
+            "trade_count_by_symbol": symbol_counts,
+            "min_trades_per_symbol": min(symbol_counts.values()) if symbol_counts else 0,
             "gross_pnl": _f(c.get("gross_pnl_total", c.get("gross_pnl"))),
             "net_pnl": _f(c.get("net_pnl_total", c.get("net_pnl"))),
             "costs_total": _f(c.get("total_cost")),
@@ -756,8 +760,28 @@ class MassBacktestEngine:
             "dataset_hash": str(run.get("dataset_hash") or ""),
             "provenance": run.get("provenance") if isinstance(run.get("provenance"), dict) else {},
             "run_id": str(run.get("id") or ""),
+            "evaluation_mode": str(run.get("evaluation_mode") or "engine_raw"),
             "microstructure": micro_row,
         }
+
+    def _extract_trade_count_by_symbol(self, *, run: dict[str, Any], fallback_trade_count: int) -> dict[str, int]:
+        out: dict[str, int] = {}
+        trades = run.get("trades") if isinstance(run.get("trades"), list) else []
+        default_symbol = str(run.get("symbol") or "").strip().upper()
+        for row in trades:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or default_symbol).strip().upper()
+            if not symbol:
+                continue
+            out[symbol] = out.get(symbol, 0) + 1
+        if out:
+            return out
+        if default_symbol and fallback_trade_count > 0:
+            return {default_symbol: int(fallback_trade_count)}
+        if fallback_trade_count > 0:
+            return {"UNKNOWN": int(fallback_trade_count)}
+        return {}
 
     def robustness_suite(self, *, fold_metrics: list[dict[str, Any]], variant: dict[str, Any]) -> dict[str, Any]:
         sharpe_vals = [_f(x.get("sharpe_oos")) for x in fold_metrics]
@@ -797,15 +821,72 @@ class MassBacktestEngine:
         snap = cfg.get("policy_snapshot") if isinstance(cfg.get("policy_snapshot"), dict) else {}
         gates_file = snap.get("gates") if isinstance(snap.get("gates"), dict) else {}
         gates = gates_file.get("gates") if isinstance(gates_file.get("gates"), dict) else {}
-        if gates:
-            return gates
-        # Fallback coherente con config/policies/gates.yaml
-        return {
+        defaults = {
             "pbo": {"enabled": True, "reject_if_gt": 0.05, "metric": "sharpe", "cscv": {"S": 8, "bootstrap_iters": 2000}},
             "dsr": {"enabled": True, "min_dsr": 0.95, "require_trials_stats": True},
             "walk_forward": {"enabled": True, "folds": 5, "pass_if_positive_folds_at_least": 4, "max_is_to_oos_degradation": 0.30},
             "cost_stress": {"enabled": True, "multipliers": [1.5, 2.0], "must_remain_profitable_at_1_5x": True, "max_score_drop_at_2_0x": 0.50},
             "min_trade_quality": {"enabled": True, "min_trades_per_run": 150, "min_trades_per_symbol": 30},
+            "surrogate_adjustments": {
+                "enabled": False,
+                "allow_request_override": False,
+                "allowed_execution_modes": ["demo"],
+                "promotion_blocked": True,
+            },
+        }
+        if not isinstance(gates, dict) or not gates:
+            return defaults
+        out = copy.deepcopy(defaults)
+        for key, value in gates.items():
+            if isinstance(value, dict) and isinstance(out.get(key), dict):
+                merged = dict(out.get(key) or {})
+                merged.update(value)
+                if key == "pbo" and isinstance(merged.get("cscv"), dict) and isinstance((value or {}).get("cscv"), dict):
+                    c = dict((out.get("pbo") or {}).get("cscv") or {})
+                    c.update((value or {}).get("cscv") or {})
+                    merged["cscv"] = c
+                out[key] = merged
+            else:
+                out[key] = value
+        return out
+
+    def _resolve_surrogate_adjustments(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        policy = self._gates_policy(cfg)
+        policy_cfg = policy.get("surrogate_adjustments") if isinstance(policy.get("surrogate_adjustments"), dict) else {}
+        policy_enabled = bool(policy_cfg.get("enabled", False))
+        allow_request_override = bool(policy_cfg.get("allow_request_override", False))
+        requested_enabled = bool(cfg.get("enable_surrogate_adjustments", False))
+        execution_mode = str(cfg.get("execution_mode") or "research").strip().lower()
+        allowed_modes_raw = policy_cfg.get("allowed_execution_modes")
+        allowed_modes = (
+            [str(x).strip().lower() for x in allowed_modes_raw if str(x).strip()]
+            if isinstance(allowed_modes_raw, list)
+            else ["demo"]
+        )
+        mode_allowed = execution_mode in allowed_modes if allowed_modes else True
+        enabled_effective = mode_allowed and (policy_enabled or (allow_request_override and requested_enabled))
+        reason = "policy_disabled"
+        if not mode_allowed:
+            reason = "execution_mode_not_allowed"
+        elif requested_enabled and not allow_request_override and not policy_enabled:
+            reason = "request_override_not_allowed"
+        elif requested_enabled and allow_request_override:
+            reason = "request_override_enabled"
+        elif policy_enabled:
+            reason = "policy_enabled"
+        promotion_blocked_policy = bool(policy_cfg.get("promotion_blocked", True))
+        return {
+            "requested_enabled": requested_enabled,
+            "policy_enabled": policy_enabled,
+            "allow_request_override": allow_request_override,
+            "allowed_execution_modes": allowed_modes,
+            "execution_mode": execution_mode,
+            "mode_allowed": mode_allowed,
+            "enabled_effective": enabled_effective,
+            "promotion_blocked_policy": promotion_blocked_policy,
+            "promotion_blocked_effective": bool(enabled_effective and promotion_blocked_policy),
+            "reason": reason,
+            "evaluation_mode": "engine_surrogate_adjusted" if bool(enabled_effective) else "engine_raw",
         }
 
     def _cscv_pbo_batch(self, *, rows: list[dict[str, Any]], policy: dict[str, Any]) -> dict[str, Any]:
@@ -881,6 +962,12 @@ class MassBacktestEngine:
         stress_cfg = policy.get("cost_stress") if isinstance(policy.get("cost_stress"), dict) else {}
         trade_quality_cfg = policy.get("min_trade_quality") if isinstance(policy.get("min_trade_quality"), dict) else {}
         pbo_cfg = policy.get("pbo") if isinstance(policy.get("pbo"), dict) else {}
+        surrogate_meta = (
+            cfg.get("resolved_surrogate_adjustments")
+            if isinstance(cfg.get("resolved_surrogate_adjustments"), dict)
+            else self._resolve_surrogate_adjustments(cfg)
+        )
+        surrogate_block_promotion = bool(surrogate_meta.get("promotion_blocked_effective", False))
 
         gates_pass_count = 0
         for row in rows:
@@ -1008,15 +1095,53 @@ class MassBacktestEngine:
 
             # Trade quality (policy)
             min_trades = _i(trade_quality_cfg.get("min_trades_per_run"), 150)
-            trade_pass = (not bool(trade_quality_cfg.get("enabled", False))) or (_i(summary.get("trade_count_oos"), 0) >= min_trades)
+            min_trades_symbol = _i(trade_quality_cfg.get("min_trades_per_symbol"), 30)
+            symbol_counts_oos = summary.get("trade_count_by_symbol_oos") if isinstance(summary.get("trade_count_by_symbol_oos"), dict) else {}
+            if not symbol_counts_oos and _i(summary.get("trade_count_oos"), 0) > 0:
+                symbol_counts_oos = {"UNSPECIFIED": _i(summary.get("trade_count_oos"), 0)}
+            min_symbol_trades_oos = (
+                min(_i(v) for v in symbol_counts_oos.values())
+                if symbol_counts_oos
+                else _i(summary.get("min_trades_per_symbol_oos"), 0)
+            )
+            weak_symbols = sorted(
+                [
+                    str(sym)
+                    for sym, val in symbol_counts_oos.items()
+                    if _i(val) < min_trades_symbol
+                ]
+            )
+            run_trade_pass = _i(summary.get("trade_count_oos"), 0) >= min_trades
+            symbol_trade_pass = min_symbol_trades_oos >= min_trades_symbol if symbol_counts_oos else False
+            trade_pass = (not bool(trade_quality_cfg.get("enabled", False))) or (run_trade_pass and symbol_trade_pass)
             checks["min_trade_quality"] = {
                 "enabled": bool(trade_quality_cfg.get("enabled", False)),
                 "trade_count_oos": _i(summary.get("trade_count_oos"), 0),
                 "min_trades_per_run": min_trades,
+                "trade_count_by_symbol_oos": symbol_counts_oos,
+                "min_trades_per_symbol_oos": int(min_symbol_trades_oos),
+                "min_trades_per_symbol_required": int(min_trades_symbol),
+                "symbols_below_min_trades": weak_symbols,
+                "run_trade_pass": bool(run_trade_pass),
+                "symbol_trade_pass": bool(symbol_trade_pass),
                 "pass": trade_pass,
             }
             if not trade_pass:
                 fail_reasons.append("min_trade_quality")
+
+            checks["surrogate_adjustments"] = {
+                "enabled_effective": bool(surrogate_meta.get("enabled_effective", False)),
+                "policy_enabled": bool(surrogate_meta.get("policy_enabled", False)),
+                "requested_enabled": bool(surrogate_meta.get("requested_enabled", False)),
+                "allow_request_override": bool(surrogate_meta.get("allow_request_override", False)),
+                "execution_mode": str(surrogate_meta.get("execution_mode") or "research"),
+                "allowed_execution_modes": [str(x) for x in (surrogate_meta.get("allowed_execution_modes") or [])],
+                "promotion_blocked_effective": surrogate_block_promotion,
+                "reason": str(surrogate_meta.get("reason") or ""),
+                "pass": not surrogate_block_promotion,
+            }
+            if surrogate_block_promotion:
+                fail_reasons.append("surrogate_adjustments")
 
             gates_pass = len(fail_reasons) == 0
             if gates_pass:
@@ -1037,7 +1162,7 @@ class MassBacktestEngine:
             anti["dsr"] = checks["dsr_deflated"]["value"]
             anti["enforce_ready"] = bool(pbo_batch.get("available")) and bool(dsr_cfg.get("enabled", False))
             anti["promotion_blocked"] = not gates_pass
-            anti["promotion_block_reason"] = "Advanced gates failed" if not gates_pass else ""
+            anti["promotion_block_reason"] = "surrogate_adjustments_enabled" if surrogate_block_promotion else ("Advanced gates failed" if not gates_pass else "")
             row["anti_overfitting"] = anti
             row["promotable"] = bool(row.get("hard_filters_pass")) and gates_pass
             row["recommendable_option_b"] = bool(row.get("hard_filters_pass")) and gates_pass
@@ -1048,6 +1173,7 @@ class MassBacktestEngine:
             "trials": n_trials,
             "batch_sharpe_var": round(sharpe_trial_var, 8),
             "gates_pass_count": gates_pass_count,
+            "surrogate_adjustments": surrogate_meta,
         }
 
     def _regime_metrics(self, folds: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1303,6 +1429,9 @@ class MassBacktestEngine:
         fund_meta = cfg.get("resolved_fundamentals_metadata") if isinstance(cfg.get("resolved_fundamentals_metadata"), dict) else {}
         orderflow_enabled = bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True)))
         orderflow_feature_set = "orderflow_on" if orderflow_enabled else "orderflow_off"
+        surrogate_meta = cfg.get("resolved_surrogate_adjustments") if isinstance(cfg.get("resolved_surrogate_adjustments"), dict) else {}
+        surrogate_enabled = bool(surrogate_meta.get("enabled_effective", False))
+        surrogate_eval_mode = str(surrogate_meta.get("evaluation_mode") or "engine_raw")
         for idx, row in enumerate(rows, start=1):
             summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
             regime = row.get("regime_metrics") if isinstance(row.get("regime_metrics"), dict) else {}
@@ -1367,6 +1496,8 @@ class MassBacktestEngine:
                             "batch_rank": idx,
                             "use_orderflow_data": bool(orderflow_enabled),
                             "orderflow_feature_set": orderflow_feature_set,
+                            "surrogate_adjustments_enabled": surrogate_enabled,
+                            "evaluation_mode": surrogate_eval_mode,
                         },
                         ensure_ascii=True,
                         sort_keys=True,
@@ -1414,6 +1545,8 @@ class MassBacktestEngine:
                             "GATES_ADV_PASS": bool(gates_eval.get("passed")),
                             "ORDERFLOW_ENABLED": bool(orderflow_enabled),
                             "ORDERFLOW_FEATURE_SET": orderflow_feature_set,
+                            "SURROGATE_ADJUSTMENTS": surrogate_enabled,
+                            "EVALUATION_MODE": surrogate_eval_mode,
                         },
                         ensure_ascii=True,
                         sort_keys=True,
@@ -1431,6 +1564,7 @@ class MassBacktestEngine:
                             },
                             "use_orderflow_data": bool(orderflow_enabled),
                             "orderflow_feature_set": orderflow_feature_set,
+                            "surrogate_adjustments": surrogate_meta,
                         },
                         ensure_ascii=True,
                         sort_keys=True,
@@ -1537,6 +1671,7 @@ class MassBacktestEngine:
                 ][:3]
             )
             raise ValueError(f"Fundamentals/credit_filter bloqueó Research Batch para {cfg.get('market')}/{cfg.get('symbol')}. {reasons}".strip())
+        cfg["resolved_surrogate_adjustments"] = self._resolve_surrogate_adjustments(cfg)
         folds = self.walk_forward_runner(
             start=str(cfg.get("start") or "2024-01-01"),
             end=str(cfg.get("end") or "2024-12-31"),
@@ -1556,7 +1691,9 @@ class MassBacktestEngine:
         self._write_status(run_id, state="RUNNING", config=cfg, progress={"total_tasks": total_tasks, "completed_tasks": 0, "pct": 0}, logs=[f"Iniciando {len(variants)} variantes x {len(folds)} folds"])
         ranked_input: list[dict[str, Any]] = []
         completed = 0
-        enable_surrogate_adjustments = bool(cfg.get("enable_surrogate_adjustments", False))
+        surrogate_meta = cfg.get("resolved_surrogate_adjustments") if isinstance(cfg.get("resolved_surrogate_adjustments"), dict) else {}
+        enable_surrogate_adjustments = bool(surrogate_meta.get("enabled_effective", False))
+        surrogate_promotion_blocked = bool(surrogate_meta.get("promotion_blocked_effective", False))
         for idx, variant in enumerate(variants, 1):
             fold_rows: list[dict[str, Any]] = []
             for fold in folds:
@@ -1617,6 +1754,20 @@ class MassBacktestEngine:
                     if bool((((x.get("microstructure") or {}) if isinstance(x.get("microstructure"), dict) else {}).get("hard_kill_symbol")))
                 ),
             }
+            symbol_counts_oos: dict[str, int] = {}
+            for fold_row in fold_rows:
+                per_symbol = fold_row.get("trade_count_by_symbol") if isinstance(fold_row.get("trade_count_by_symbol"), dict) else {}
+                for sym, count in per_symbol.items():
+                    s = str(sym).strip().upper()
+                    if not s:
+                        continue
+                    symbol_counts_oos[s] = symbol_counts_oos.get(s, 0) + max(0, _i(count, 0))
+            if not symbol_counts_oos and _i(summary.get("trade_count_oos"), 0) > 0:
+                default_symbol = str(cfg.get("symbol") or "").strip().upper() or "UNSPECIFIED"
+                symbol_counts_oos[default_symbol] = _i(summary.get("trade_count_oos"), 0)
+            summary["trade_count_by_symbol_oos"] = symbol_counts_oos
+            summary["min_trades_per_symbol_oos"] = min(symbol_counts_oos.values()) if symbol_counts_oos else 0
+            summary["evaluation_mode"] = str(surrogate_meta.get("evaluation_mode") or ("engine_surrogate_adjusted" if enable_surrogate_adjustments else "engine_raw"))
             summary["micro_soft_kill_ratio"] = round(_f(summary.get("micro_soft_kill_folds")) / max(1, len(fold_rows)), 6)
             summary["micro_hard_kill_ratio"] = round(_f(summary.get("micro_hard_kill_folds")) / max(1, len(fold_rows)), 6)
             micro_agg_reasons = sorted(
@@ -1675,12 +1826,13 @@ class MassBacktestEngine:
                     "score": score,
                     "hard_filters_pass": hard_pass,
                     "hard_filter_reasons": reasons,
-                    "promotable": bool(hard_pass and not anti.get("promotion_blocked")),
-                    "recommendable_option_b": bool(hard_pass),
+                    "promotable": bool(hard_pass and not anti.get("promotion_blocked") and not surrogate_promotion_blocked),
+                    "recommendable_option_b": bool(hard_pass and not surrogate_promotion_blocked),
                 }
             )
         ranked = self.scoring_and_ranking(variants_payload=ranked_input)
         gates_summary = self._apply_advanced_gates(rows=ranked, cfg=cfg)
+        gates_policy_keys = sorted(list((self._gates_policy(cfg) or {}).keys()))
         top_n = max(1, _i(cfg.get("top_n"), 10))
         top_rows = ranked[:top_n]
         self._record_batch_children_catalog(batch_id=run_id, rows=ranked, cfg=cfg)
@@ -1689,7 +1841,13 @@ class MassBacktestEngine:
             "created_at": self._status(run_id).get("created_at") or _utc_iso(),
             "completed_at": _utc_iso(),
             "config": cfg,
-            "knowledge_snapshot": {"templates": len(kp.get("templates") or []), "filters": len(kp.get("filters") or []), "gates": sorted(list((kp.get("gates") or {}).keys()))},
+            "knowledge_snapshot": {
+                "templates": len(kp.get("templates") or []),
+                "filters": len(kp.get("filters") or []),
+                "gates": sorted(list((kp.get("gates") or {}).keys())),
+                "gates_canonical": gates_policy_keys,
+                "gates_source": str(cfg.get("policy_snapshot_source_root") or "config/policies"),
+            },
             "summary": {
                 "variants_total": len(ranked),
                 "hard_pass_count": sum(1 for r in ranked if bool(r.get("hard_filters_pass"))),
@@ -1710,6 +1868,7 @@ class MassBacktestEngine:
                         or ("orderflow_on" if bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))) else "orderflow_off")
                     ),
                 },
+                "surrogate_adjustments": surrogate_meta,
                 "fundamentals": {
                     "enabled": bool(fund_meta.get("enabled", False)),
                     "enforced": bool(fund_meta.get("enforced", False)),
@@ -1739,6 +1898,7 @@ class MassBacktestEngine:
                     or ("orderflow_on" if bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))) else "orderflow_off")
                 ),
             },
+            "surrogate_adjustments": surrogate_meta,
             "fundamentals_used": cfg.get("resolved_fundamentals_metadata") if isinstance(cfg.get("resolved_fundamentals_metadata"), dict) else {},
             "commit_hash": str(cfg.get("commit_hash") or "local"),
             "results_parquet": parquet_info,
