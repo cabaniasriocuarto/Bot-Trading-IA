@@ -222,7 +222,7 @@ El proyecto tiene:
   - script: `scripts/benchmark_bots_overview.py`
   - evidencia: `docs/audit/BOTS_OVERVIEW_BENCHMARK_20260228.md`
   - resultado local (100 bots, 200 requests, warmup 30): `p95=280.875ms` (objetivo `<300ms` => PASS).
-  - el mismo script ya soporta benchmark remoto (`--base-url`) con validacion de evidencia minima (`--min-bots-required`, default `100`).
+  - el mismo script ya soporta benchmark remoto (`--base-url`) con validacion minima opcional (`--min-bots-required`, default `0` = sin minimo).
 - Benchmark remoto ejecutado (Railway):
   - evidencia: `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228.md`
   - resultado actual: `p95=1663.014ms` (FAIL vs `<300ms`)
