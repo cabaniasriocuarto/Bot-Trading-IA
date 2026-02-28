@@ -31,6 +31,12 @@ Fecha de actualizacion: 2026-02-28
   - benchmark remoto post-deploy:
     - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228_POSTDEPLOY.md` -> `p95=1032.039ms` (FAIL) + `NO EVIDENCIA` por cardinalidad (`1` bot).
     - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_20260228_POSTDEPLOY_100BOTS.md` -> `p95=1458.513ms` con `100` bots (FAIL).
+  - benchmark remoto A/B con telemetria server-side (30 bots):
+    - `enabled`: `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_BLOCK14_ENABLED_30BOTS.md` -> `server_p95_ms=74.93`
+    - `disabled`: `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_BLOCK14_DISABLED_30BOTS.md` -> `server_p95_ms=63.034`
+    - decision: dejar `BOTS_OVERVIEW_INCLUDE_RECENT_LOGS=false` en prod.
+  - observacion de infraestructura:
+    - redeploy por cambio de variables en Railway resetea estado runtime en este entorno (`RTLAB_USER_DATA_DIR=/tmp/...`), afectando cardinalidad de bots y repetibilidad de benchmark.
   - estado actual: objetivo `p95 < 300ms` en Railway sigue abierto; requiere optimizacion adicional.
 - Estado backtest por strategy_id:
   - `StrategyRunner` ahora despacha senales por familia de estrategia (`trend`, `breakout`, `meanreversion`, `trend_scanning`, `defensive`).

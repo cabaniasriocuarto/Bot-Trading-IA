@@ -17,6 +17,7 @@ Fecha: 2026-02-28
    - instrumentar timing interno por etapas en `get_bots_overview` (kpis/logs/kills/serialization),
    - agregar indice/materializacion para datos de overview de bots (si el costo principal viene de agregacion en request),
    - rerun remoto con `100` bots y objetivo `p95 < 300ms`.
+   - estabilizar storage persistente para `RTLAB_USER_DATA_DIR` (evitar `/tmp`) antes de benchmarks comparativos: hoy cada redeploy puede resetear bots/runs y contaminar evidencia.
 5. Validar integridad de `breaker_events` (`bot_id/mode`) y monitorear volumen de `unknown`.
 6. Afinar thresholds/parametros por estrategia del dispatcher de `BacktestEngine` y agregar `fail-closed` explicito para strategy_ids no soportados en modo estricto.
 7. Validar en entorno desplegado que `surrogate_adjustments` se mantenga apagado fuera de `execution_mode=demo` y que promotion quede bloqueada cuando se active.

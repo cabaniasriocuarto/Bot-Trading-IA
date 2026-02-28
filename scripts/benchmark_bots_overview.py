@@ -198,6 +198,9 @@ def _run_remote_benchmark(
             raise RuntimeError(f"Warmup remoto fallo: {res.status_code} {res.text[:200]}")
 
     times_ms: list[float] = []
+    server_ms_values: list[float] = []
+    cache_hits = 0
+    cache_misses = 0
     last_ok_response: requests.Response | None = None
     for _ in range(max(1, requests_n)):
         t0 = perf_counter()
@@ -207,6 +210,17 @@ def _run_remote_benchmark(
             raise RuntimeError(f"Benchmark remoto fallo: {res.status_code} {res.text[:200]}")
         last_ok_response = res
         times_ms.append((t1 - t0) * 1000.0)
+        server_ms_raw = str(res.headers.get("X-RTLAB-Bots-Overview-MS") or "").strip()
+        if server_ms_raw:
+            try:
+                server_ms_values.append(float(server_ms_raw))
+            except Exception:
+                pass
+        cache_state = str(res.headers.get("X-RTLAB-Bots-Overview-Cache") or "").strip().lower()
+        if cache_state == "hit":
+            cache_hits += 1
+        elif cache_state == "miss":
+            cache_misses += 1
 
     metrics = _build_metrics(times_ms)
     metrics["mode"] = "remote_http"
@@ -223,6 +237,19 @@ def _run_remote_benchmark(
         data = last_ok_response.json() if last_ok_response.headers.get("content-type", "").lower().find("json") >= 0 else {}
         items = (data or {}).get("items") if isinstance(data, dict) else []
         metrics["bots_seen_last_response"] = len(items) if isinstance(items, list) else 0
+        metrics["recent_logs_mode"] = str(last_ok_response.headers.get("X-RTLAB-Bots-Recent-Logs") or "unknown")
+    metrics["cache_hits"] = int(cache_hits)
+    metrics["cache_misses"] = int(cache_misses)
+    metrics["cache_hit_ratio"] = round((cache_hits / max(1, cache_hits + cache_misses)), 4)
+    if server_ms_values:
+        server_stats = _build_metrics(server_ms_values)
+        metrics["server_p50_ms"] = server_stats["p50_ms"]
+        metrics["server_p95_ms"] = server_stats["p95_ms"]
+        metrics["server_p99_ms"] = server_stats["p99_ms"]
+        metrics["server_avg_ms"] = server_stats["avg_ms"]
+        metrics["server_min_ms"] = server_stats["min_ms"]
+        metrics["server_max_ms"] = server_stats["max_ms"]
+        metrics["server_target_pass"] = bool(server_stats["target_pass"])
     return metrics
 
 
@@ -264,11 +291,29 @@ def _write_report(path: Path, *, context: dict[str, Any], metrics: dict[str, Any
             f"- `avg_ms`: **{metrics.get('avg_ms')}**",
             f"- `min_ms`: `{metrics.get('min_ms')}`",
             f"- `max_ms`: `{metrics.get('max_ms')}`",
+            f"- `cache_hits`: `{metrics.get('cache_hits')}`",
+            f"- `cache_misses`: `{metrics.get('cache_misses')}`",
+            f"- `cache_hit_ratio`: `{metrics.get('cache_hit_ratio')}`",
             "",
             "## Estado",
             f"- Estado: **{status}**",
         ]
     )
+    if metrics.get("server_p95_ms") is not None:
+        lines.extend(
+            [
+                "",
+                "## Servidor (header `X-RTLAB-Bots-Overview-MS`)",
+                f"- `server_p50_ms`: **{metrics.get('server_p50_ms')}**",
+                f"- `server_p95_ms`: **{metrics.get('server_p95_ms')}**",
+                f"- `server_p99_ms`: **{metrics.get('server_p99_ms')}**",
+                f"- `server_avg_ms`: **{metrics.get('server_avg_ms')}**",
+                f"- `server_min_ms`: `{metrics.get('server_min_ms')}`",
+                f"- `server_max_ms`: `{metrics.get('server_max_ms')}`",
+                f"- `recent_logs_mode`: `{metrics.get('recent_logs_mode')}`",
+                f"- Objetivo server p95<300ms: **{'PASS' if metrics.get('server_target_pass') else 'FAIL'}**",
+            ]
+        )
     if metrics.get("no_evidencia_reason"):
         lines.extend(["", "## NO EVIDENCIA", f"- {metrics.get('no_evidencia_reason')}"])
     lines.extend(

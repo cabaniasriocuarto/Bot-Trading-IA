@@ -220,6 +220,26 @@
 - Validacion focal ejecutada:
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_multi_instance_endpoints or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_perf_headers_and_debug_payload or bots_overview_scopes_kills_by_bot_and_mode or bots_live_mode_blocked_by_gates or bots_creation_respects_max_instances_limit" -q` -> `6 passed`.
 
+### Bloque 14: benchmark remoto A/B con `recent_logs` y metrica server-side
+- Script `scripts/benchmark_bots_overview.py` extendido:
+  - ahora reporta metricas server-side via header `X-RTLAB-Bots-Overview-MS`:
+    - `server_p50_ms`, `server_p95_ms`, `server_p99_ms`, `server_avg_ms`
+  - agrega trazabilidad de cache:
+    - `cache_hits`, `cache_misses`, `cache_hit_ratio`
+    - `recent_logs_mode` (enabled/disabled).
+- Evidencia remota A/B en Railway:
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_BLOCK14_ENABLED_30BOTS.md`
+  - `docs/audit/BOTS_OVERVIEW_BENCHMARK_PROD_BLOCK14_DISABLED_30BOTS.md`
+- Resultado relevante (server-side, 30 bots):
+  - `enabled`: `server_p95_ms=74.93`
+  - `disabled`: `server_p95_ms=63.034`
+  - mejora aproximada: `~15.9%` al desactivar `recent_logs`.
+- Observacion operativa critica:
+  - cambios de variables en Railway disparan redeploy y en este entorno se observa reset de datos runtime (`/tmp/rtlab_user_data`), con cardinalidad de bots volviendo de `30` a `1`.
+  - conclusion: la comparativa robusta exige persistencia de storage o reseed controlado tras cada redeploy.
+- Estado final de config en prod:
+  - `BOTS_OVERVIEW_INCLUDE_RECENT_LOGS=false`.
+
 ### Auditoria comité + hardening adicional
 - Seguridad:
   - `current_user` ahora ignora headers internos si no existe `INTERNAL_PROXY_TOKEN` válido (fail-closed en todos los entornos).
