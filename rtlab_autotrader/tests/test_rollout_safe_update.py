@@ -34,8 +34,8 @@ def _sample_run(*, run_id: str, strategy_id: str, dataset_hash: str = "abc123", 
       "max_dd_duration_bars": 5000,
       "expectancy": 12.0,
       "expectancy_usd_per_trade": 12.0,
-      "pbo": None,
-      "dsr": None,
+      "pbo": 0.02,
+      "dsr": 1.05,
     },
     "costs_breakdown": {
       "gross_pnl_total": gross,
@@ -50,6 +50,13 @@ def _sample_run(*, run_id: str, strategy_id: str, dataset_hash: str = "abc123", 
       "net_pnl": net_pnl,
     },
   }
+
+
+def _set_required_anti_overfitting_metrics(run: dict, *, pbo: float = 0.02, dsr: float = 1.05) -> None:
+  metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+  metrics["pbo"] = float(pbo)
+  metrics["dsr"] = float(dsr)
+  run["metrics"] = metrics
 
 
 def test_gate_evaluator_with_knowledge_gates_defaults_pass_and_fail() -> None:
@@ -69,6 +76,20 @@ def test_gate_evaluator_with_knowledge_gates_defaults_pass_and_fail() -> None:
   assert "real_data" in failed_ids
   assert "min_trades_oos" in failed_ids
   assert "min_sharpe_oos" in failed_ids
+
+
+def test_gate_evaluator_fail_closed_when_pbo_dsr_missing_and_enabled() -> None:
+  repo_root = Path(__file__).resolve().parents[2]
+  evaluator = GateEvaluator(repo_root=repo_root)
+  run = _sample_run(run_id="run_missing", strategy_id="s1")
+  run["metrics"]["pbo"] = None
+  run["metrics"]["dsr"] = None
+
+  result = evaluator.evaluate(run)
+  assert result["passed"] is False
+  failed_ids = set(result["failed_ids"])
+  assert "pbo_max" in failed_ids
+  assert "dsr_min" in failed_ids
 
 
 def test_compare_engine_improvement_rules() -> None:
@@ -514,6 +535,8 @@ defaults:
       "expectancy_usd_per_trade": 11.2,
     }
   )
+  _set_required_anti_overfitting_metrics(baseline_run, pbo=0.02, dsr=1.05)
+  _set_required_anti_overfitting_metrics(candidate_run, pbo=0.02, dsr=1.08)
   candidate_run["costs_breakdown"].update({"gross_pnl_total": 2150.0, "total_cost": 630.0, "net_pnl_total": 1520.0, "net_pnl": 1520.0})
 
   module.store.save_runs([candidate_run, baseline_run, *runs])
@@ -630,6 +653,8 @@ defaults:
   candidate_run["id"] = "run_candidate_rollout_2"
   candidate_run["strategy_id"] = "rollout_candidate_strategy_2"
   candidate_run["metrics"].update({"winrate": 0.54, "profit_factor": 1.35, "sharpe": 1.55, "sortino": 2.10, "calmar": 1.25, "max_dd": 0.13, "expectancy_usd_per_trade": 11.0})
+  _set_required_anti_overfitting_metrics(baseline_run, pbo=0.02, dsr=1.05)
+  _set_required_anti_overfitting_metrics(candidate_run, pbo=0.02, dsr=1.07)
   candidate_run["costs_breakdown"].update({"gross_pnl_total": 2150.0, "total_cost": 630.0, "net_pnl_total": 1520.0, "net_pnl": 1520.0})
   module.store.save_runs([candidate_run, baseline_run, *runs])
 
@@ -686,6 +711,8 @@ defaults:
   candidate_run["id"] = "run_candidate_rollout_3"
   candidate_run["strategy_id"] = "rollout_candidate_strategy_3"
   candidate_run["metrics"].update({"winrate": 0.54, "profit_factor": 1.35, "sharpe": 1.55, "sortino": 2.10, "calmar": 1.25, "max_dd": 0.13, "expectancy_usd_per_trade": 11.1})
+  _set_required_anti_overfitting_metrics(baseline_run, pbo=0.02, dsr=1.05)
+  _set_required_anti_overfitting_metrics(candidate_run, pbo=0.02, dsr=1.06)
   candidate_run["costs_breakdown"].update({"gross_pnl_total": 2150.0, "total_cost": 630.0, "net_pnl_total": 1520.0, "net_pnl": 1520.0})
   module.store.save_runs([candidate_run, baseline_run, *runs])
 
@@ -765,6 +792,8 @@ defaults:
   candidate_run["id"] = "run_candidate_rollout_4"
   candidate_run["strategy_id"] = "rollout_candidate_strategy_4"
   candidate_run["metrics"].update({"winrate": 0.54, "profit_factor": 1.35, "sharpe": 1.55, "sortino": 2.10, "calmar": 1.25, "max_dd": 0.13, "expectancy_usd_per_trade": 12.0})
+  _set_required_anti_overfitting_metrics(baseline_run, pbo=0.02, dsr=1.05)
+  _set_required_anti_overfitting_metrics(candidate_run, pbo=0.02, dsr=1.09)
   candidate_run["costs_breakdown"].update({"gross_pnl_total": 2150.0, "total_cost": 630.0, "net_pnl_total": 1520.0, "net_pnl": 1520.0})
   module.store.save_runs([candidate_run, baseline_run, *runs])
 
@@ -889,6 +918,8 @@ defaults:
   candidate_run["id"] = "run_candidate_rollout_5"
   candidate_run["strategy_id"] = "rollout_candidate_strategy_5"
   candidate_run["metrics"].update({"winrate": 0.54, "profit_factor": 1.35, "sharpe": 1.55, "sortino": 2.10, "calmar": 1.25, "max_dd": 0.13, "expectancy_usd_per_trade": 12.0})
+  _set_required_anti_overfitting_metrics(baseline_run, pbo=0.02, dsr=1.05)
+  _set_required_anti_overfitting_metrics(candidate_run, pbo=0.02, dsr=1.09)
   candidate_run["costs_breakdown"].update({"gross_pnl_total": 2150.0, "total_cost": 630.0, "net_pnl_total": 1520.0, "net_pnl": 1520.0})
   module.store.save_runs([candidate_run, baseline_run, *runs])
 

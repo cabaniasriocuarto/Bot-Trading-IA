@@ -1,5 +1,45 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-02-28
+
+### Seguridad + Runtime + CI (T1 + T2 + T4 + T6 + T9)
+- T1 auth bypass mitigado:
+  - backend ya no confia ciegamente en `x-rtlab-role/x-rtlab-user`.
+  - ahora exige `x-rtlab-proxy-token` valido contra `INTERNAL_PROXY_TOKEN`.
+  - BFF (`[...path]` + `events-stream`) envia el token interno desde ENV.
+- T2 defaults peligrosos endurecidos:
+  - fail-fast en boot cuando `NODE_ENV=production` y hay defaults en admin/viewer o `AUTH_SECRET` corto.
+  - `G2_AUTH_READY` actualizado con `no_default_credentials`.
+- T4 runtime simulado explicitado:
+  - estado del bot persistido con `runtime_engine`.
+  - nuevo gate `G9_RUNTIME_ENGINE_REAL`.
+  - `POST /api/v1/bot/mode` bloquea `LIVE` si `runtime_engine != real`.
+  - `/api/v1/status` y `/api/v1/health` exponen `runtime_engine/runtime_mode`.
+- T6 annualizacion por timeframe:
+  - `ReportEngine.build_metrics` ya no usa constante fija 5m para Sharpe/Sortino.
+  - factor anual se calcula por timeframe real (`1m/5m/10m/15m/1h/1d` + parse generico).
+- T9 CI frontend agregado:
+  - nuevo job `frontend` en GitHub Actions con `npm ci`, typecheck, vitest y build.
+- Tests agregados/ajustados:
+  - `test_web_live_ready.py`:
+    - `test_internal_headers_require_proxy_token`
+    - `test_auth_validation_fails_in_production_with_default_credentials`
+    - `test_live_mode_blocked_when_runtime_engine_is_simulated`
+  - `test_backtest_annualization.py` (factor y scaling de Sharpe por timeframe).
+
+### Ajustes auditoria comite (quick wins adicionales)
+- `GET /api/v1/gates` ahora requiere auth (`current_user`) para evitar exposicion publica del checklist.
+- `BacktestEngine` bloquea `validation_mode=purged-cv|cpcv` en Quick Backtest con error explicito (fail-closed; sin `hook_only` silencioso).
+- `MassBacktestEngine` desactiva surrogate adjustments por defecto:
+  - nuevo comportamiento default `evaluation_mode=engine_raw`.
+  - surrogate solo si `enable_surrogate_adjustments=true` en config del batch.
+- `GateEvaluator` migra fuente primaria de thresholds a `config/policies/gates.yaml` (fallback `knowledge/policies/gates.yaml`).
+- `GateEvaluator` pasa a fail-closed para PBO/DSR cuando policy los marca como habilitados y faltan en el reporte.
+
+### Bibliografia
+- Nuevo `docs/reference/BIBLIO_INDEX.md` con las 20 fuentes externas informadas.
+- Nuevo `docs/reference/biblio_raw/.gitignore` para trabajo local sin subir PDFs/TXT al repo.
+
 ## 2026-02-27
 
 ### Opcion B + Opcion C (hotfix calibracion sin refactor masivo)

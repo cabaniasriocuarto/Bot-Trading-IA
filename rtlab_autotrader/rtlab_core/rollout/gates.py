@@ -42,13 +42,15 @@ def _timeframe_minutes(tf: str | None) -> float:
 class GateEvaluator:
     def __init__(self, *, repo_root: Path) -> None:
         self.repo_root = Path(repo_root).resolve()
-        self.gates_path = (self.repo_root / "knowledge" / "policies" / "gates.yaml").resolve()
+        self.gates_path_primary = (self.repo_root / "config" / "policies" / "gates.yaml").resolve()
+        self.gates_path_fallback = (self.repo_root / "knowledge" / "policies" / "gates.yaml").resolve()
 
-    def _load_thresholds(self) -> dict[str, float]:
+    def _load_thresholds(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        if self.gates_path.exists():
+        gates_path = self.gates_path_primary if self.gates_path_primary.exists() else self.gates_path_fallback
+        if gates_path.exists():
             try:
-                raw = yaml.safe_load(self.gates_path.read_text(encoding="utf-8")) or {}
+                raw = yaml.safe_load(gates_path.read_text(encoding="utf-8")) or {}
             except Exception:
                 raw = {}
             if isinstance(raw, dict):
@@ -63,10 +65,15 @@ class GateEvaluator:
         pbo_cfg = gates_cfg.get("pbo") if isinstance(gates_cfg.get("pbo"), dict) else {}
         dsr_cfg = gates_cfg.get("dsr") if isinstance(gates_cfg.get("dsr"), dict) else {}
         merged = {**DEFAULT_OFFLINE_GATES, **offline_numeric}
-        if "pbo_max" not in offline_numeric and isinstance(pbo_cfg.get("max_allowed"), (int, float)):
-            merged["pbo_max"] = _safe_float(pbo_cfg.get("max_allowed"), merged["pbo_max"])
-        if "dsr_min" not in offline_numeric and isinstance(dsr_cfg.get("min_allowed"), (int, float)):
-            merged["dsr_min"] = _safe_float(dsr_cfg.get("min_allowed"), merged["dsr_min"])
+        pbo_threshold = pbo_cfg.get("reject_if_gt", pbo_cfg.get("max_allowed"))
+        dsr_threshold = dsr_cfg.get("min_dsr", dsr_cfg.get("min_allowed"))
+        if "pbo_max" not in offline_numeric and isinstance(pbo_threshold, (int, float)):
+            merged["pbo_max"] = _safe_float(pbo_threshold, merged["pbo_max"])
+        if "dsr_min" not in offline_numeric and isinstance(dsr_threshold, (int, float)):
+            merged["dsr_min"] = _safe_float(dsr_threshold, merged["dsr_min"])
+        merged["pbo_required"] = bool(pbo_cfg.get("enabled", False))
+        merged["dsr_required"] = bool(dsr_cfg.get("enabled", False))
+        merged["source_path"] = str(gates_path)
         return merged
 
     def evaluate(self, candidate_report: dict[str, Any]) -> dict[str, Any]:
@@ -149,17 +156,33 @@ class GateEvaluator:
             total_cost=total_cost,
         )
 
+        pbo_required = bool(thresholds.get("pbo_required", False))
         pbo_val = metrics.get("pbo")
         if isinstance(pbo_val, (int, float)):
             check("pbo_max", float(pbo_val) <= thresholds["pbo_max"], "PBO maximo", actual=float(pbo_val), threshold=thresholds["pbo_max"])
         else:
-            check("pbo_max", True, "PBO no disponible (skip)", actual=None, threshold=thresholds["pbo_max"], skipped=True)
+            check(
+                "pbo_max",
+                not pbo_required,
+                "PBO requerido y no disponible" if pbo_required else "PBO no disponible (skip)",
+                actual=None,
+                threshold=thresholds["pbo_max"],
+                skipped=not pbo_required,
+            )
 
+        dsr_required = bool(thresholds.get("dsr_required", False))
         dsr_val = metrics.get("dsr")
         if isinstance(dsr_val, (int, float)):
             check("dsr_min", float(dsr_val) >= thresholds["dsr_min"], "DSR minimo", actual=float(dsr_val), threshold=thresholds["dsr_min"])
         else:
-            check("dsr_min", True, "DSR no disponible (skip)", actual=None, threshold=thresholds["dsr_min"], skipped=True)
+            check(
+                "dsr_min",
+                not dsr_required,
+                "DSR requerido y no disponible" if dsr_required else "DSR no disponible (skip)",
+                actual=None,
+                threshold=thresholds["dsr_min"],
+                skipped=not dsr_required,
+            )
 
         passed = all(bool(row["ok"]) for row in checks)
         failed_ids = [row["id"] for row in checks if not row["ok"]]

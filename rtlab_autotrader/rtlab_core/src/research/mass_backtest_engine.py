@@ -1556,12 +1556,17 @@ class MassBacktestEngine:
         self._write_status(run_id, state="RUNNING", config=cfg, progress={"total_tasks": total_tasks, "completed_tasks": 0, "pct": 0}, logs=[f"Iniciando {len(variants)} variantes x {len(folds)} folds"])
         ranked_input: list[dict[str, Any]] = []
         completed = 0
+        enable_surrogate_adjustments = bool(cfg.get("enable_surrogate_adjustments", False))
         for idx, variant in enumerate(variants, 1):
             fold_rows: list[dict[str, Any]] = []
             for fold in folds:
                 costs_cfg = self.realistic_cost_model(cfg.get("costs") if isinstance(cfg.get("costs"), dict) else {})
                 base_run = backtest_callback(variant, fold, costs_cfg)
-                run = self._adjust_run(base_run, variant=variant, fold=fold)
+                if enable_surrogate_adjustments:
+                    run = self._adjust_run(base_run, variant=variant, fold=fold)
+                else:
+                    run = copy.deepcopy(base_run)
+                    run["evaluation_mode"] = "engine_raw"
                 fold_rows.append(self._fold_summary(run, fold, micro=self._micro_fold_snapshot(micro_debug=micro_debug, fold=fold)))
                 completed += 1
                 if completed == 1 or completed % 5 == 0 or completed == total_tasks:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import sqrt
+import re
 from typing import Any
 
 import numpy as np
@@ -389,7 +390,40 @@ class StrategyRunner:
 
 
 class ReportEngine:
-    def build_metrics(self, *, trades: list[dict[str, Any]], equity_curve: list[dict[str, Any]], avg_exposure: float) -> dict[str, Any]:
+    @staticmethod
+    def _periods_per_year(timeframe: str) -> float:
+        tf = str(timeframe or "").strip().lower()
+        known = {
+            "1m": 365 * 24 * 60,
+            "5m": 365 * 24 * 12,
+            "10m": 365 * 24 * 6,
+            "15m": 365 * 24 * 4,
+            "1h": 365 * 24,
+            "1d": 365,
+        }
+        if tf in known:
+            return float(known[tf])
+        match = re.fullmatch(r"(\d+)([mhd])", tf)
+        if not match:
+            return float(known["5m"])
+        value = max(1, int(match.group(1)))
+        unit = match.group(2)
+        if unit == "m":
+            periods_per_day = (24 * 60) / value
+        elif unit == "h":
+            periods_per_day = 24 / value
+        else:
+            periods_per_day = 1 / value
+        return float(365 * periods_per_day)
+
+    def build_metrics(
+        self,
+        *,
+        trades: list[dict[str, Any]],
+        equity_curve: list[dict[str, Any]],
+        avg_exposure: float,
+        timeframe: str,
+    ) -> dict[str, Any]:
         if not equity_curve:
             raise ValueError("equity_curve vacío")
         eq = pd.DataFrame(equity_curve)
@@ -401,8 +435,9 @@ class ReportEngine:
         std_r = float(returns.std(ddof=0))
         downside = returns.clip(upper=0.0)
         downside_std = float(downside.std(ddof=0))
-        sharpe = 0.0 if std_r == 0 else (mean_r / std_r) * sqrt(365 * 24 * 12)
-        sortino = 0.0 if downside_std == 0 else (mean_r / downside_std) * sqrt(365 * 24 * 12)
+        annualization = sqrt(self._periods_per_year(timeframe))
+        sharpe = 0.0 if std_r == 0 else (mean_r / std_r) * annualization
+        sortino = 0.0 if downside_std == 0 else (mean_r / downside_std) * annualization
 
         total_return = float((eq["equity"].iloc[-1] / eq["equity"].iloc[0]) - 1.0) if len(eq) > 1 else 0.0
         days = max(1.0, float((eq["time"].iloc[-1] - eq["time"].iloc[0]).total_seconds() / 86400.0))
@@ -519,6 +554,10 @@ class ReportEngine:
 class BacktestEngine:
     def _select_validation_window(self, request: BacktestRequest, df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
         mode = (request.validation_mode or "").strip().lower()
+        if mode in {"purged-cv", "cpcv"}:
+            raise ValueError(
+                f"validation_mode='{mode}' no está implementado en BacktestEngine. Usa 'walk-forward' en Quick Backtest o ejecuta Research Batch."
+            )
         if mode != "walk-forward":
             return df, {"mode": mode or "none", "implemented": mode in {"purged-cv", "cpcv"}, "note": "hook_only"}
         total = len(df)
@@ -549,6 +588,7 @@ class BacktestEngine:
             trades=simulation["trades"],
             equity_curve=simulation["equity_curve"],
             avg_exposure=float(simulation["avg_exposure"]),
+            timeframe=request.timeframe,
         )
         costs_breakdown = reporter.build_cost_breakdown(simulation["costs"])
         return {

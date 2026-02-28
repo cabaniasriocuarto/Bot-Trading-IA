@@ -78,6 +78,12 @@ ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
 ALLOWED_ROLES = {ROLE_ADMIN, ROLE_VIEWER}
 ALLOWED_MODES = {"paper", "testnet", "live"}
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin123!"
+DEFAULT_VIEWER_USERNAME = "viewer"
+DEFAULT_VIEWER_PASSWORD = "viewer123!"
+RUNTIME_ENGINE_REAL = "real"
+RUNTIME_ENGINE_SIMULATED = "simulated"
 BINANCE_TESTNET_BASE_URL_DEFAULT = "https://testnet.binance.vision"
 BINANCE_TESTNET_WS_URL_DEFAULT = "wss://testnet.binance.vision/ws"
 BINANCE_LIVE_BASE_URL_DEFAULT = "https://api.binance.com"
@@ -684,23 +690,54 @@ def get_env(name: str, default: str = "") -> str:
 
 
 def admin_username() -> str:
-    return get_env("ADMIN_USERNAME", "admin")
+    return get_env("ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME)
 
 
 def admin_password() -> str:
-    return get_env("ADMIN_PASSWORD", "admin123!")
+    return get_env("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
 
 
 def viewer_username() -> str:
-    return get_env("VIEWER_USERNAME", "viewer")
+    return get_env("VIEWER_USERNAME", DEFAULT_VIEWER_USERNAME)
 
 
 def viewer_password() -> str:
-    return get_env("VIEWER_PASSWORD", "viewer123!")
+    return get_env("VIEWER_PASSWORD", DEFAULT_VIEWER_PASSWORD)
 
 
 def auth_secret() -> str:
     return get_env("AUTH_SECRET", "")
+
+
+def internal_proxy_token() -> str:
+    return get_env("INTERNAL_PROXY_TOKEN", "")
+
+
+def runtime_engine_default() -> str:
+    value = get_env("RUNTIME_ENGINE", RUNTIME_ENGINE_SIMULATED).lower().strip()
+    return RUNTIME_ENGINE_REAL if value == RUNTIME_ENGINE_REAL else RUNTIME_ENGINE_SIMULATED
+
+
+def _has_default_credentials() -> bool:
+    admin_is_default = (
+        admin_username() == DEFAULT_ADMIN_USERNAME and admin_password() == DEFAULT_ADMIN_PASSWORD
+    )
+    viewer_is_default = (
+        viewer_username() == DEFAULT_VIEWER_USERNAME and viewer_password() == DEFAULT_VIEWER_PASSWORD
+    )
+    return admin_is_default or viewer_is_default
+
+
+def _validate_auth_config_for_production() -> None:
+    if get_env("NODE_ENV", "development").lower() != "production":
+        return
+    issues: list[str] = []
+    if len(auth_secret()) < 32:
+        issues.append("AUTH_SECRET debe tener al menos 32 caracteres")
+    if _has_default_credentials():
+        issues.append("credenciales por defecto detectadas (admin/viewer)")
+    if issues:
+        raise RuntimeError("Configuracion de auth insegura para produccion: " + "; ".join(issues))
 
 
 def exchange_name() -> str:
@@ -1463,6 +1500,7 @@ class ConsoleStore:
         if not state:
             state = {
                 "mode": default_mode(),
+                "runtime_engine": runtime_engine_default(),
                 "bot_status": "PAUSED",
                 "running": False,
                 "safe_mode": False,
@@ -2218,6 +2256,12 @@ def risk_hooks(context):
         if not state:
             self._ensure_default_bot_state()
             state = json_load(BOT_STATE_PATH, {})
+        changed = False
+        if str(state.get("runtime_engine") or "").strip().lower() not in {RUNTIME_ENGINE_REAL, RUNTIME_ENGINE_SIMULATED}:
+            state["runtime_engine"] = runtime_engine_default()
+            changed = True
+        if changed:
+            json_save(BOT_STATE_PATH, state)
         return state
 
     def save_bot_state(self, state: dict[str, Any]) -> None:
@@ -3992,6 +4036,8 @@ def risk_hooks(context):
         return {"username": row["username"], "role": row["role"]}
 
 
+_validate_auth_config_for_production()
+
 store = ConsoleStore()
 learning_service = LearningService(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT)
 rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
@@ -4150,10 +4196,27 @@ def _pick_baseline_run(candidate_run: dict[str, Any], explicit_run_id: str | Non
     raise HTTPException(status_code=400, detail="No baseline run available to compare against candidate")
 
 
+def _runtime_engine_from_state(state: dict[str, Any] | None) -> str:
+    runtime_engine = str((state or {}).get("runtime_engine") or "").strip().lower()
+    if runtime_engine in {RUNTIME_ENGINE_REAL, RUNTIME_ENGINE_SIMULATED}:
+        return runtime_engine
+    return runtime_engine_default()
+
+
+def _is_trusted_internal_proxy(request: Request) -> bool:
+    configured = internal_proxy_token()
+    if not configured:
+        return get_env("NODE_ENV", "development").lower() != "production"
+    provided = (request.headers.get("x-rtlab-proxy-token") or "").strip()
+    if not provided:
+        return False
+    return hmac.compare_digest(provided, configured)
+
+
 def current_user(request: Request) -> dict[str, str]:
     internal_role = (request.headers.get("x-rtlab-role") or "").lower().strip()
     internal_user = (request.headers.get("x-rtlab-user") or "").strip()
-    if internal_role in ALLOWED_ROLES and internal_user:
+    if internal_role in ALLOWED_ROLES and internal_user and _is_trusted_internal_proxy(request):
         return {"username": internal_user, "role": internal_role}
 
     auth_header = request.headers.get("authorization") or ""
@@ -4187,14 +4250,25 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
     except Exception as exc:
         gates.append(gate_row("G1_CONFIG_VALID", "Config valid", "FAIL", "Config parse failed", {"error": str(exc), "path": config_path}))
 
-    auth_ok = bool(auth_secret() and len(auth_secret()) >= 32 and admin_username() and admin_password() and viewer_username() and viewer_password())
+    has_users = bool(admin_username() and admin_password() and viewer_username() and viewer_password())
+    auth_secret_ok = bool(auth_secret() and len(auth_secret()) >= 32)
+    default_credentials = _has_default_credentials()
+    auth_ok = bool(has_users and auth_secret_ok and not default_credentials)
     gates.append(
         gate_row(
             "G2_AUTH_READY",
             "Auth ready",
             "PASS" if auth_ok else "FAIL",
-            "Auth env ready" if auth_ok else "AUTH_SECRET/admin/viewer missing",
-            {"admin": bool(admin_username()), "viewer": bool(viewer_username()), "secret_len": len(auth_secret())},
+            "Auth env listo y seguro"
+            if auth_ok
+            else "AUTH_SECRET/admin/viewer invalidos o credenciales por defecto detectadas",
+            {
+                "admin": bool(admin_username()),
+                "viewer": bool(viewer_username()),
+                "secret_len": len(auth_secret()),
+                "auth_secret_ok": auth_secret_ok,
+                "no_default_credentials": not default_credentials,
+            },
         )
     )
 
@@ -4309,6 +4383,32 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
         g8_reason = "Observability ready"
     gates.append(gate_row("G8_OBSERVABILITY_OK", "Observability", g8_status, g8_reason, {"telegram_enabled": telegram_enabled, "telegram_configured": has_telegram}))
 
+    runtime_engine = _runtime_engine_from_state(store.load_bot_state())
+    runtime_real = runtime_engine == RUNTIME_ENGINE_REAL
+    if active_mode == "live":
+        g9_status = "PASS" if runtime_real else "FAIL"
+        g9_reason = (
+            "Runtime de ejecucion real habilitado"
+            if runtime_real
+            else "Runtime simulado detectado: LIVE bloqueado hasta configurar RUNTIME_ENGINE=real"
+        )
+    else:
+        g9_status = "PASS" if runtime_real else "WARN"
+        g9_reason = (
+            "Runtime de ejecucion real habilitado"
+            if runtime_real
+            else "Runtime en modo simulado (valido para paper/testnet)"
+        )
+    gates.append(
+        gate_row(
+            "G9_RUNTIME_ENGINE_REAL",
+            "Runtime engine",
+            g9_status,
+            g9_reason,
+            {"runtime_engine": runtime_engine, "mode": active_mode},
+        )
+    )
+
     overall = "PASS"
     if any(row["status"] == "FAIL" for row in gates):
         overall = "FAIL"
@@ -4320,7 +4420,16 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
 
 def live_can_be_enabled(gates_payload: dict[str, Any]) -> tuple[bool, str]:
     gates = {row["id"]: row for row in gates_payload["gates"]}
-    required = ["G1_CONFIG_VALID", "G2_AUTH_READY", "G3_BACKEND_HEALTH", "G5_STRATEGY_PRINCIPAL_SET", "G6_RISK_LIMITS_SET", "G4_EXCHANGE_CONNECTOR_READY", "G7_ORDER_SIM_OR_PAPER_OK"]
+    required = [
+        "G1_CONFIG_VALID",
+        "G2_AUTH_READY",
+        "G3_BACKEND_HEALTH",
+        "G5_STRATEGY_PRINCIPAL_SET",
+        "G6_RISK_LIMITS_SET",
+        "G4_EXCHANGE_CONNECTOR_READY",
+        "G7_ORDER_SIM_OR_PAPER_OK",
+        "G9_RUNTIME_ENGINE_REAL",
+    ]
     for gate_id in required:
         row = gates.get(gate_id)
         if not row or row["status"] != "PASS":
@@ -4333,6 +4442,9 @@ def build_status_payload() -> dict[str, Any]:
     state = store.load_bot_state()
     settings = store.load_settings()
     gates = evaluate_gates(state.get("mode", "paper"))
+    runtime_engine = _runtime_engine_from_state(state)
+    runtime_real = runtime_engine == RUNTIME_ENGINE_REAL
+    runtime_mode = "real" if runtime_real else "simulado"
     positions = [
         {
             "symbol": "BTC/USDT",
@@ -4351,6 +4463,14 @@ def build_status_payload() -> dict[str, Any]:
         "bot_status": state.get("bot_status", "PAUSED"),
         "mode": state.get("mode", "paper"),
         "exchange": {"name": settings.get("exchange", exchange_name()), "mode": settings.get("mode", default_mode().upper())},
+        "runtime": {
+            "engine": runtime_engine,
+            "mode": runtime_mode,
+            "real_trading_enabled": runtime_real,
+            "warning": None if runtime_real else "Runtime simulado: no se envian ordenes reales al exchange.",
+        },
+        "runtime_engine": runtime_engine,
+        "runtime_mode": runtime_mode,
         "equity": float(state.get("equity", 10000.0)),
         "daily_pnl": float(state.get("daily_pnl", 0.0)),
         "pnl": {
@@ -4495,13 +4615,17 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
-        mode = store.load_bot_state().get("mode", "paper")
+        state = store.load_bot_state()
+        mode = state.get("mode", "paper")
+        runtime_engine = _runtime_engine_from_state(state)
         return {
             "status": "ok",
             "ok": True,
             "time": utc_now_iso(),
             "version": APP_VERSION,
             "mode": mode,
+            "runtime_engine": runtime_engine,
+            "runtime_mode": "real" if runtime_engine == RUNTIME_ENGINE_REAL else "simulado",
             "ws": {"connected": True, "transport": "sse", "url": "/api/v1/stream", "last_event_at": utc_now_iso()},
             "exchange": {"name": exchange_name(), "mode": mode.upper()},
             "db": {"ok": True, "driver": "sqlite"},
@@ -4533,7 +4657,7 @@ def create_app() -> FastAPI:
         return {"username": user["username"], "role": user["role"]}
 
     @app.get("/api/v1/gates")
-    def gates() -> dict[str, Any]:
+    def gates(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         payload = evaluate_gates()
         settings = store.load_settings()
         settings["gate_checklist"] = payload["gates"]
@@ -7241,6 +7365,12 @@ def create_app() -> FastAPI:
     def bot_mode(body: BotModeBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         mode = body.mode
         if mode == "live":
+            runtime_engine = _runtime_engine_from_state(store.load_bot_state())
+            if runtime_engine != RUNTIME_ENGINE_REAL:
+                raise HTTPException(
+                    status_code=400,
+                    detail="LIVE bloqueado: runtime simulado. Configura RUNTIME_ENGINE=real antes de habilitar LIVE.",
+                )
             if body.confirm != "ENABLE_LIVE":
                 raise HTTPException(status_code=400, detail="Missing explicit confirmation for LIVE")
             gates_payload = evaluate_gates("live")
@@ -7249,6 +7379,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail=f"LIVE blocked by gates: {reason}")
         state = store.load_bot_state()
         state["mode"] = mode
+        state["runtime_engine"] = _runtime_engine_from_state(state)
         state["bot_status"] = "PAUSED"
         state["running"] = False
         store.save_bot_state(state)
@@ -7265,6 +7396,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/bot/start")
     def bot_start(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         state = store.load_bot_state()
+        state["runtime_engine"] = _runtime_engine_from_state(state)
         principal = store.registry.get_principal(state["mode"])
         if not principal:
             raise HTTPException(status_code=400, detail=f"No principals configured for mode {state['mode']}")

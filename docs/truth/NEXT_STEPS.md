@@ -1,8 +1,24 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-02-27
+Fecha: 2026-02-28
 
 ## Prioridad 1 (RC operativo)
+1. Configurar `INTERNAL_PROXY_TOKEN` en Vercel + Railway y validar que requests directos al backend sin token fallen (hard check de T1 en entorno real).
+2. Validar `runtime_engine=real` solo cuando exista loop de ejecucion real y reconciliacion; mantener `simulated` en cualquier otro caso.
+3. Confirmar gates LIVE con `G9_RUNTIME_ENGINE_REAL` en PASS antes de habilitar canary.
+4. Ejecutar benchmark real de `/api/v1/bots` con 100 bots y registrar p95 < 300ms.
+5. Validar integridad de `breaker_events` (`bot_id/mode`) y monitorear volumen de `unknown`.
+6. Completar wiring de `StrategyImplRegistry` para evitar sesgo de una sola logica en todas las estrategias del engine.
+7. Definir politica final de `enable_surrogate_adjustments` (ideal: solo DEMO y siempre excluido de promotion).
+
+## Prioridad 2 (operacion + hardening)
+1. Agregar rotacion/expiracion para `INTERNAL_PROXY_TOKEN` y checklist de cambio en runbook.
+2. Sumar lockout/rate-limit de login backend para completar hardening de auth.
+3. Instrumentar alertas de seguridad para intentos de headers internos sin token valido.
+4. Definir policy de despliegue que impida `NODE_ENV=production` con defaults de auth.
+5. Asegurar que backend no sea accesible en bypass directo (allowlist/zero-trust) aun con token interno.
+
+## Prioridad 3 (UX / producto)
 1. Deploy frontend/backend y validacion visual completa de UI `Research-first`
 2. Validar `Settings -> Diagnostico` (WS/Exchange)
 3. Validar `Backtests / Runs -> Validate -> Promote -> Rollout / Gates`
@@ -12,13 +28,13 @@ Fecha: 2026-02-27
 7. Medir `/api/v1/bots` con 100 bots y verificar objetivo p95 `< 300ms` (tracing real en entorno productivo)
 8. Verificar integridad de `breaker_events` (bot_id/mode) en logs reales y alertar filas `unknown_bot`/`unknown` por encima de umbral
 
-## Prioridad 2 (UX / producto)
+## Prioridad 4 (UX / producto)
 1. Virtualizacion adicional en tablas grandes restantes (D2 comparador ya virtualizado)
 2. Deep Compare avanzado (heatmap mensual, rolling Sharpe, distribucion retornos)
 3. Componente reutilizable unico para empty states / CTA
 4. Tooltips consistentes en acciones de runs (rerun/clone/export cuando existan)
 
-## Prioridad 3 (robustez / automatizacion)
+## Prioridad 5 (robustez / automatizacion)
 1. Smoke/E2E frontend automatizados (runs table, paginacion, filtros, empty states)
 2. Integrar `deps_check` + `security_audit` a CI
 3. PBO/DSR completos (no solo proxy/fail-closed) en research masivo
@@ -27,7 +43,7 @@ Fecha: 2026-02-27
 6. Order Flow L1 full (trade tape/BBO real) sobre VPIN proxy actual
 7. Materializar agregados para overview de bots (si sube cardinalidad) e indices adicionales por ventana temporal
 
-## Prioridad 4 (nice-to-have)
+## Prioridad 6 (nice-to-have)
 1. UI de experimentos MLflow (capability)
 2. SBOM firmado por release
 3. Dashboards externos para canary live (Prometheus/Grafana)

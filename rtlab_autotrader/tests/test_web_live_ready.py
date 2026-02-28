@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -163,6 +164,52 @@ def test_auth_and_admin_protection(tmp_path: Path, monkeypatch) -> None:
   assert unauthorized.status_code == 401
 
 
+def test_gates_requires_auth(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch)
+  unauthorized = client.get("/api/v1/gates")
+  assert unauthorized.status_code == 401
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  authorized = client.get("/api/v1/gates", headers=_auth_headers(admin_token))
+  assert authorized.status_code == 200
+
+
+def test_internal_headers_require_proxy_token(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setenv("NODE_ENV", "production")
+  spoof_headers = {"x-rtlab-role": "admin", "x-rtlab-user": "spoof"}
+
+  blocked_no_token = client.get("/api/v1/me", headers=spoof_headers)
+  assert blocked_no_token.status_code == 401
+
+  monkeypatch.setenv("INTERNAL_PROXY_TOKEN", "proxy-secret-123")
+  blocked_wrong_token = client.get(
+    "/api/v1/me",
+    headers={**spoof_headers, "x-rtlab-proxy-token": "wrong-token"},
+  )
+  assert blocked_wrong_token.status_code == 401
+
+  allowed = client.get(
+    "/api/v1/me",
+    headers={**spoof_headers, "x-rtlab-proxy-token": "proxy-secret-123"},
+  )
+  assert allowed.status_code == 200
+  assert allowed.json()["role"] == "admin"
+
+
+def test_auth_validation_fails_in_production_with_default_credentials(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setenv("NODE_ENV", "production")
+  monkeypatch.setenv("AUTH_SECRET", "x" * 40)
+  monkeypatch.setenv("ADMIN_USERNAME", "admin")
+  monkeypatch.setenv("ADMIN_PASSWORD", "admin123!")
+  monkeypatch.setenv("VIEWER_USERNAME", "viewer")
+  monkeypatch.setenv("VIEWER_PASSWORD", "viewer123!")
+
+  with pytest.raises(RuntimeError, match="credenciales por defecto"):
+    module._validate_auth_config_for_production()
+
+
 def test_default_principal_bootstrap_and_start(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -228,6 +275,36 @@ def test_live_blocked_by_gates_when_requirements_fail(tmp_path: Path, monkeypatc
   enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
   assert enable_live.status_code == 400
   assert "LIVE blocked by gates" in enable_live.json()["detail"]
+
+
+def test_live_mode_blocked_when_runtime_engine_is_simulated(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  assert strategies.status_code == 200, strategies.text
+  strategy_id = strategies.json()[0]["id"]
+  set_live_primary = client.post(f"/api/v1/strategies/{strategy_id}/primary", headers=headers, json={"mode": "live"})
+  assert set_live_primary.status_code == 200, set_live_primary.text
+
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "simulated"
+  module.store.save_bot_state(state)
+
+  gates_live = module.evaluate_gates("live", force_exchange_check=True)
+  gate_by_id = {row["id"]: row for row in gates_live["gates"]}
+  assert gate_by_id["G9_RUNTIME_ENGINE_REAL"]["status"] == "FAIL"
+
+  enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
+  assert enable_live.status_code == 400
+  assert "runtime simulado" in str(enable_live.json().get("detail") or "").lower()
 
 
 def test_strategy_upload_validation_and_primary_assignment(tmp_path: Path, monkeypatch) -> None:
@@ -589,6 +666,33 @@ def test_backtests_run_rejects_synthetic_source(tmp_path: Path, monkeypatch) -> 
   )
   assert res.status_code == 400
   assert "no permite resultados sint" in res.json()["detail"].lower()
+
+
+def test_backtests_run_rejects_purged_cv_and_cpcv_until_implemented(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  payload = {
+    "strategy_id": strategy_id,
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
+    "costs_model": {"fees_bps": 5.0, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 0.0},
+  }
+
+  purged = client.post("/api/v1/backtests/run", headers=headers, json={**payload, "validation_mode": "purged-cv"})
+  assert purged.status_code == 400, purged.text
+  assert "no está implementado" in str(purged.json().get("detail") or "")
+
+  cpcv = client.post("/api/v1/backtests/run", headers=headers, json={**payload, "validation_mode": "cpcv"})
+  assert cpcv.status_code == 400, cpcv.text
+  assert "no está implementado" in str(cpcv.json().get("detail") or "")
 
 
 def test_validate_promotion_blocks_mixed_orderflow_feature_set(tmp_path: Path, monkeypatch) -> None:

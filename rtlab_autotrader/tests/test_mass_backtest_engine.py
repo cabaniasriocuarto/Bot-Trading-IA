@@ -173,3 +173,34 @@ def test_orderflow_toggle_can_disable_microstructure_in_mass_backtest(tmp_path: 
   debug = engine._compute_microstructure_dataset_debug(df=None, cfg={"use_orderflow_data": False})
   assert debug["available"] is False
   assert debug["reason"] == "microstructure_disabled_by_request"
+
+
+def test_run_job_uses_raw_engine_metrics_by_default(tmp_path: Path) -> None:
+  engine = _engine(tmp_path)
+  _seed_dataset_manifest(tmp_path, market="crypto", symbol="BTCUSDT", timeframe="5m")
+  cfg = {
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-02-01",
+    "dataset_source": "auto",
+    "validation_mode": "walk-forward",
+    "max_variants_per_strategy": 1,
+    "max_folds": 1,
+    "train_days": 30,
+    "test_days": 10,
+    "top_n": 1,
+    "seed": 11,
+    "costs": {"fees_bps": 5.5, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 1.0},
+  }
+  strategies = [{"id": "trend_pullback_orderflow_v2", "name": "Trend", "status": "active", "tags": ["trend"]}]
+
+  def cb(variant: dict, fold: FoldWindow, costs: dict) -> dict:
+    return _dummy_run_factory(str(variant["strategy_id"]), fold)
+
+  engine.run_job(run_id="mass_raw_engine", config=cfg, strategies=strategies, historical_runs=[], backtest_callback=cb)
+  rows = engine.results("mass_raw_engine", limit=5).get("results") or []
+  assert rows
+  first = rows[0]
+  assert float((first.get("summary") or {}).get("sharpe_oos") or 0.0) == 0.9

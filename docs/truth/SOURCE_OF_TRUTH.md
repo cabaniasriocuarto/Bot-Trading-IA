@@ -1,6 +1,6 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-02-27
+Fecha de actualizacion: 2026-02-28
 
 ## Estado actual (resumen ejecutivo)
 
@@ -38,6 +38,32 @@ El proyecto tiene:
   - seleccion masiva + borrado por IDs
   - preview de borrado filtrado (`dry_run`)
   - filtros rapidos por modo/entorno/estrategia desde paneles resumen
+
+## Bibliografia y trazabilidad externa
+
+- Se agrego `docs/reference/BIBLIO_INDEX.md` con el listado consolidado de fuentes externas (1-20).
+- Se agrego `docs/reference/biblio_raw/.gitignore` para permitir trabajo local con PDFs sin versionarlos.
+- Politica vigente: bibliografia raw fuera de git; solo se versiona indice y metadatos de trazabilidad.
+
+## Actualizacion 2026-02-28 (seguridad runtime + annualizacion + CI frontend)
+
+- Auth interna backend endurecida:
+  - `current_user` ahora acepta `x-rtlab-role/x-rtlab-user` solo si `x-rtlab-proxy-token` coincide con `INTERNAL_PROXY_TOKEN`.
+  - sin token valido, los headers internos se ignoran y se requiere `Bearer` de sesion.
+- BFF actualizado para proxy seguro:
+  - `rtlab_dashboard/src/app/api/[...path]/route.ts` y `rtlab_dashboard/src/lib/events-stream.ts` ahora reenvian `x-rtlab-proxy-token` desde ENV.
+- Credenciales por defecto en produccion:
+  - fail-fast al boot si `NODE_ENV=production` y quedan credenciales default (`admin/admin123!`, `viewer/viewer123!`) o `AUTH_SECRET` debil.
+  - `G2_AUTH_READY` ahora reporta `no_default_credentials` y falla si hay defaults.
+- Runtime de ejecucion real:
+  - estado del bot incorpora `runtime_engine` (`simulated|real`).
+  - nuevo gate `G9_RUNTIME_ENGINE_REAL`.
+  - `LIVE` queda bloqueado si runtime sigue simulado.
+  - `status/health` exponen `runtime_engine/runtime_mode`.
+- Backtest:
+  - Sharpe/Sortino anualizados por timeframe real (`1m`, `5m`, `10m`, `15m`, `1h`, `1d` + parse generico `Nm/Nh/Nd`).
+- CI:
+  - workflow agrega job frontend (`npm ci`, `tsc --noEmit`, `vitest`, `next build`).
 
 ## Cambios recientes (RTLAB Strategy Console - Bloque 1)
 

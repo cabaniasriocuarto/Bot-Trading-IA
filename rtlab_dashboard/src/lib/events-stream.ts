@@ -40,9 +40,14 @@ async function proxyEventStream(req: NextRequest, session: SessionInfo, upstream
   }
   const target = `${backend.replace(/\/$/, "")}${upstreamPath}${req.nextUrl.search}`;
   const headers = new Headers(req.headers);
+  const internalProxyToken = (process.env.INTERNAL_PROXY_TOKEN || "").trim();
   headers.set("Accept", "text/event-stream");
   headers.set("x-rtlab-role", session.role);
   headers.set("x-rtlab-user", session.username);
+  headers.delete("x-rtlab-proxy-token");
+  if (internalProxyToken) {
+    headers.set("x-rtlab-proxy-token", internalProxyToken);
+  }
   headers.delete("host");
   headers.delete("content-length");
 
