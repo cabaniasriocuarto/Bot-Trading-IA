@@ -9,7 +9,7 @@
 | T-SEC-001 | P0 | CRITICAL | Mantener trust interno solo con `INTERNAL_PROXY_TOKEN` y runbook de rotación | `rtlab_autotrader/rtlab_core/web/app.py`, `rtlab_dashboard/src/app/api/[...path]/route.ts`, `rtlab_dashboard/src/lib/events-stream.ts`, `docs/SECURITY.md` | S | DONE |
 | T-SEC-002 | P0 | HIGH | Rate-limit login backend + lockout por IP+user | `rtlab_autotrader/rtlab_core/web/app.py`, `rtlab_autotrader/tests/test_web_live_ready.py` | S | DONE |
 | T-SEC-003 | P1 | MEDIUM | Rate-limit general API (incl. endpoints costosos) | `rtlab_autotrader/rtlab_core/web/app.py` | M | TODO |
-| T-SEC-004 | P1 | MEDIUM | Integrar gitleaks/pip-audit en CI bloqueante | `scripts/security_scan.sh`, `rtlab_autotrader/.github/workflows/ci.yml` | S | TODO |
+| T-SEC-004 | P1 | MEDIUM | Integrar gitleaks/pip-audit en CI bloqueante | `scripts/security_scan.sh`, `rtlab_autotrader/.github/workflows/ci.yml` | S | DONE |
 | T-EXEC-001 | P0 | HIGH | Implementar runtime paper/testnet real (BrokerAdapter) | `rtlab_autotrader/rtlab_core/web/app.py`, módulo runtime nuevo | L | TODO |
 | T-EXEC-002 | P1 | MEDIUM | Reemplazar métricas de ejecución sintéticas por reales | `rtlab_autotrader/rtlab_core/web/app.py` | M | TODO |
 | T-QUANT-001 | P0 | CRITICAL | Ejecutar lógica por `strategy_id` (sin engine único) | `rtlab_autotrader/rtlab_core/src/backtest/engine.py`, wiring en `web/app.py` | L | TODO |

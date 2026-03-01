@@ -1,5 +1,25 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-01
+
+### Bloque 15: cierre hardening + limpieza de repo (commit limpio)
+- `.gitignore` endurecido:
+  - se ignoran `artifacts/`, `backups/`, `__pycache__/`, `*.pyc`.
+  - se ignora bibliografia cruda local `docs/reference/biblio_raw/*` (manteniendo `.gitignore` del directorio).
+- `scripts/security_scan.sh` corregido:
+  - flujo `gitleaks` baseline-aware.
+  - usa baseline si existe `artifacts/security_audit/gitleaks-baseline.json`.
+  - sin baseline, ejecuta modo estricto con `gitleaks git`.
+  - elimina falso warning de “gitleaks no instalado” cuando el binario esta presente.
+- CI de seguridad:
+  - `rtlab_autotrader/.github/workflows/ci.yml` agrega job `security` bloqueante.
+  - ejecuta `pip-audit` + `gitleaks` y sube artefactos de auditoria.
+  - ajuste del job Python para correr en `rtlab_autotrader` (coherente con `pyproject.toml`).
+- Config local exchange:
+  - `rtlab_autotrader/user_data/config/exchange_binance_spot.json` verificado con placeholders de ENV (sin claves reales).
+- Requisitos:
+  - `requirements-runtime.txt` y `requirements-research.txt` auditados (pip-audit sin vulns reportadas en esta corrida).
+
 ## 2026-02-28
 
 ### Bloque 2: backtest por strategy_id (sin refactor masivo)

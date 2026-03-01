@@ -28,6 +28,8 @@ Fecha: 2026-02-28
 3. Instrumentar alertas de seguridad para intentos de headers internos sin token valido.
 4. Definir policy de despliegue que impida `NODE_ENV=production` con defaults de auth.
 5. Asegurar que backend no sea accesible en bypass directo (allowlist/zero-trust) aun con token interno.
+6. Configurar branch protection para requerir job `security` antes de merge a `main`.
+7. Rotar claves de exchange (testnet/live) y validar que no exista hardcode en archivos locales.
 
 ## Prioridad 3 (UX / producto)
 1. Deploy frontend/backend y validacion visual completa de UI `Research-first`
@@ -53,6 +55,7 @@ Fecha: 2026-02-28
 5. Integrar proveedor financiero especifico (mapeos/contratos) sobre el adaptador remoto generico de fundamentals
 6. Order Flow L1 full (trade tape/BBO real) sobre VPIN proxy actual
 7. Materializar agregados para overview de bots (si sube cardinalidad) e indices adicionales por ventana temporal
+8. Revisar y refrescar `gitleaks-baseline.json` cuando se remedien hallazgos historicos.
 
 ## Prioridad 6 (nice-to-have)
 1. UI de experimentos MLflow (capability)

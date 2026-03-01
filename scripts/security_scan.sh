@@ -15,28 +15,23 @@ if [[ $AUDIT_STATUS -eq 2 && "$STRICT_MODE" != "1" ]]; then
   AUDIT_STATUS=0
 fi
 
-GITLEAKS_STATUS=0
-if command -v gitleaks >/dev/null 2>&1; then
-  mkdir -p artifacts/security_audit
-  echo "[security-scan] gitleaks detect"
-  # --- gitleaks ---
 GITLEAKS_REPORT_DIR="artifacts/security_audit"
-mkdir -p "$GITLEAKS_REPORT_DIR"
-
 BASELINE_JSON="$GITLEAKS_REPORT_DIR/gitleaks-baseline.json"
 REPORT_SARIF="$GITLEAKS_REPORT_DIR/gitleaks.sarif"
+GITLEAKS_STATUS=0
 
-echo "[security-scan] gitleaks (baseline-aware)"
-
-if [ -f "$BASELINE_JSON" ]; then
-  echo "[security-scan] usando baseline: $BASELINE_JSON"
-  # Escanea historial pero ignora hallazgos presentes en baseline
-  gitleaks git --redact --baseline-path "$BASELINE_JSON" \
-    --report-format sarif --report-path "$REPORT_SARIF"
+if command -v gitleaks >/dev/null 2>&1; then
+  mkdir -p "$GITLEAKS_REPORT_DIR"
+  echo "[security-scan] gitleaks (baseline-aware)"
+  if [[ -f "$BASELINE_JSON" ]]; then
+    echo "[security-scan] usando baseline: $BASELINE_JSON"
+    gitleaks git --redact --baseline-path "$BASELINE_JSON" \
+      --report-format sarif --report-path "$REPORT_SARIF" || GITLEAKS_STATUS=$?
+  else
+    echo "[security-scan] sin baseline (modo estricto)"
+    gitleaks git --redact --report-format sarif --report-path "$REPORT_SARIF" || GITLEAKS_STATUS=$?
+  fi
 else
-  echo "[security-scan] sin baseline (modo estricto)"
-  gitleaks git --redact --report-format sarif --report-path "$REPORT_SARIF"
-fi
   if [[ "$STRICT_MODE" == "1" ]]; then
     echo "[security-scan][ERROR] gitleaks no instalado y SECURITY_SCAN_STRICT=1"
     GITLEAKS_STATUS=2

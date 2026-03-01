@@ -12,6 +12,12 @@ Fecha de actualizacion: 2026-02-28
   - backend ahora rechaza headers internos (`x-rtlab-role/x-rtlab-user`) si falta `INTERNAL_PROXY_TOKEN` (fail-closed).
   - login backend con rate-limit + lockout (`10 intentos/10min`, lockout `30min` tras `20` fallos por `IP+user`).
   - BFF falla cerrado si falta `INTERNAL_PROXY_TOKEN`.
+  - scanner de seguridad baseline-aware:
+    - `scripts/security_scan.sh` usa `gitleaks git --baseline-path artifacts/security_audit/gitleaks-baseline.json` cuando existe baseline.
+    - sin baseline, corre en modo estricto (`gitleaks git`).
+  - CI bloqueante de seguridad:
+    - `rtlab_autotrader/.github/workflows/ci.yml` agrega job `security` (pip-audit + gitleaks).
+    - artefactos de auditoria en `artifacts/security_audit/*` se publican en cada corrida.
 - Bibliografia:
   - nuevo extractor incremental `scripts/biblio_extract.py`.
   - `docs/reference/BIBLIO_INDEX.md` regenerado con SHA256 por fuente.

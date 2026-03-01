@@ -1,7 +1,12 @@
 # Backups locales (NO subir)
 backups/
 *.zip
+artifacts/
 
 # Python cache (NO subir)
 __pycache__/
 *.pyc
+
+# Bibliografia local cruda (NO subir PDFs)
+docs/reference/biblio_raw/*
+!docs/reference/biblio_raw/.gitignore

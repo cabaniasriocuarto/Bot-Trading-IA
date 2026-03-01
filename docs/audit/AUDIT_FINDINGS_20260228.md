@@ -41,17 +41,18 @@ Formato por hallazgo: Severidad, Impacto, Evidencia, Fix propuesto, Test/Validac
   - tests de 429 por endpoint y ventana temporal.
 - OWASP: API4 Unrestricted Resource Consumption.
 
-## F-SEC-004 - Security scanning no bloqueante en CI (abierto)
-- Severidad: MEDIUM.
-- Impacto: secretos/dependencias vulnerables pueden entrar a `main`.
+## F-SEC-004 - Security scanning en CI (cerrado)
+- Severidad: MEDIUM (estado actual: mitigado).
+- Impacto: reduce riesgo de merge con secretos o dependencias vulnerables.
 - Evidencia:
-  - CI actual: `rtlab_autotrader/.github/workflows/ci.yml`.
-  - script agregado para uso local: `scripts/security_scan.sh`.
+  - CI ahora incluye job `security`: `rtlab_autotrader/.github/workflows/ci.yml`.
+  - script endurecido y baseline-aware: `scripts/security_scan.sh`.
 - Fix propuesto:
-  1. Integrar `security_scan.sh` en CI.
-  2. Agregar job gitleaks con fail on findings.
+  1. Mantener `SECURITY_SCAN_STRICT=1` en CI.
+  2. Requerir job `security` como status check en branch protection.
 - Test/Validación:
-  - PR con secreto dummy debe fallar pipeline.
+  - `bash scripts/security_scan.sh` en local/CI debe terminar en `OK`.
+  - PR con secreto dummy o dependencia vulnerable debe fallar.
 - OWASP: API8 Misconfiguration, ASVS V1/V14.
 
 ## F-EXEC-001 - Runtime de trading real (abierto)

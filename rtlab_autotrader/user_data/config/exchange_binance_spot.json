@@ -1,7 +1,7 @@
 {
   "exchange": {
     "name": "binance",
-    "key": "SET_IN_ENV_OR_LOCAL_DEV_FILE_ONLY",
+    "key": "${BINANCE_TESTNET_API_KEY}",
     "api_key": "${BINANCE_TESTNET_API_KEY}",
     "api_secret": "${BINANCE_TESTNET_API_SECRET}",
     "ccxt_config": {},
