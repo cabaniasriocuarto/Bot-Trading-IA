@@ -1,0 +1,7 @@
+# Backups locales (NO subir)
+backups/
+*.zip
+
+# Python cache (NO subir)
+__pycache__/
+*.pyc
