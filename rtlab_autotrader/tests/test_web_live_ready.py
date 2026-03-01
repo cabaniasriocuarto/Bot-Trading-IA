@@ -214,6 +214,44 @@ def test_auth_login_rate_limit_and_lock_guard(tmp_path: Path, monkeypatch) -> No
   assert "Demasiados intentos" in str(limited.json().get("detail") or "")
 
 
+def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  module.API_RATE_LIMITER = module.ApiRateLimiter(
+    enabled=True,
+    general_per_minute=2,
+    expensive_per_minute=10,
+    window_seconds=60,
+  )
+  token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(token)
+
+  assert client.get("/api/v1/me", headers=headers).status_code == 200
+  assert client.get("/api/v1/me", headers=headers).status_code == 200
+  limited = client.get("/api/v1/me", headers=headers)
+  assert limited.status_code == 429
+  assert limited.headers.get("X-RTLAB-RateLimit-Bucket") == "general"
+  assert "rate limit general" in str(limited.json().get("detail") or "").lower()
+
+
+def test_api_expensive_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  module.API_RATE_LIMITER = module.ApiRateLimiter(
+    enabled=True,
+    general_per_minute=100,
+    expensive_per_minute=1,
+    window_seconds=60,
+  )
+  token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(token)
+
+  first = client.get("/api/v1/bots", headers=headers)
+  assert first.status_code == 200, first.text
+  limited = client.get("/api/v1/bots", headers=headers)
+  assert limited.status_code == 429
+  assert limited.headers.get("X-RTLAB-RateLimit-Bucket") == "expensive"
+  assert "endpoint costoso" in str(limited.json().get("detail") or "").lower()
+
+
 def test_auth_validation_fails_in_production_with_default_credentials(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch)
   monkeypatch.setenv("NODE_ENV", "production")
@@ -291,7 +329,8 @@ def test_live_blocked_by_gates_when_requirements_fail(tmp_path: Path, monkeypatc
 
   enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
   assert enable_live.status_code == 400
-  assert "LIVE blocked by gates" in enable_live.json()["detail"]
+  detail = str(enable_live.json().get("detail") or "").lower()
+  assert "live bloqueado" in detail or "live blocked by gates" in detail
 
 
 def test_live_mode_blocked_when_runtime_engine_is_simulated(tmp_path: Path, monkeypatch) -> None:
@@ -322,6 +361,31 @@ def test_live_mode_blocked_when_runtime_engine_is_simulated(tmp_path: Path, monk
   enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
   assert enable_live.status_code == 400
   assert "runtime simulado" in str(enable_live.json().get("detail") or "").lower()
+
+
+def test_health_reports_storage_persistence_status(tmp_path: Path, monkeypatch) -> None:
+  _, client = _build_app(tmp_path, monkeypatch)
+  res = client.get("/api/v1/health")
+  assert res.status_code == 200, res.text
+  body = res.json()
+  storage = body.get("storage") or {}
+  assert "user_data_dir" in storage
+  assert "storage_ephemeral" in storage
+  assert "persistent_storage" in storage
+  assert isinstance(storage.get("persistent_storage"), bool)
+
+
+def test_storage_gate_blocks_live_when_user_data_is_ephemeral(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setattr(module, "USER_DATA_DIR", Path("/tmp/rtlab_user_data"))
+
+  gates_live = module.evaluate_gates("live")
+  gate_by_id = {row["id"]: row for row in gates_live["gates"]}
+  assert gate_by_id["G10_STORAGE_PERSISTENCE"]["status"] == "FAIL"
+  assert "efimero" in str(gate_by_id["G10_STORAGE_PERSISTENCE"].get("reason") or "").lower()
+
+  can_live, reason = module.live_can_be_enabled(gates_live)
+  assert can_live is False
 
 
 def test_strategy_upload_validation_and_primary_assignment(tmp_path: Path, monkeypatch) -> None:

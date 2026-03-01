@@ -63,6 +63,40 @@ def _resolve_user_data_dir() -> Path:
 
 
 USER_DATA_DIR = _resolve_user_data_dir()
+
+
+def _path_is_ephemeral_user_data(path: str | Path) -> bool:
+    normalized = str(path or "").replace("\\", "/").strip().lower()
+    if not normalized:
+        return False
+    return (
+        normalized == "/tmp"
+        or normalized.startswith("/tmp/")
+        or normalized == "/var/tmp"
+        or normalized.startswith("/var/tmp/")
+        or normalized == "/dev/shm"
+        or normalized.startswith("/dev/shm/")
+    )
+
+
+def _user_data_persistence_status(path: str | Path | None = None) -> dict[str, Any]:
+    target = Path(path).resolve() if path is not None else USER_DATA_DIR
+    explicit_env = bool(str(os.getenv("RTLAB_USER_DATA_DIR", "")).strip())
+    ephemeral = _path_is_ephemeral_user_data(target)
+    warning = (
+        "RTLAB_USER_DATA_DIR apunta a almacenamiento efimero; un redeploy puede resetear bots/runs/logs."
+        if ephemeral
+        else ""
+    )
+    return {
+        "user_data_dir": str(target),
+        "explicit_env": explicit_env,
+        "storage_ephemeral": bool(ephemeral),
+        "persistent_storage": not bool(ephemeral),
+        "warning": warning,
+    }
+
+
 STRATEGY_PACKS_DIR = USER_DATA_DIR / "strategy_packs"
 UPLOADS_DIR = STRATEGY_PACKS_DIR / "uploads"
 REGISTRY_DB_PATH = STRATEGY_PACKS_DIR / "registry.sqlite3"
@@ -116,6 +150,10 @@ LOGIN_RATE_LIMIT_ATTEMPTS = _env_int("RATE_LIMIT_LOGIN_ATTEMPTS", 10)
 LOGIN_RATE_LIMIT_WINDOW_MIN = _env_int("RATE_LIMIT_LOGIN_WINDOW_MIN", 10)
 LOGIN_LOCKOUT_MIN = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_MIN", 30)
 LOGIN_LOCKOUT_AFTER_FAILS = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_AFTER_FAILS", 20)
+API_RATE_LIMIT_ENABLED = _env_bool("RATE_LIMIT_GENERAL_ENABLED", True)
+API_RATE_LIMIT_GENERAL_PER_MIN = max(1, _env_int("RATE_LIMIT_GENERAL_REQ_PER_MIN", 60))
+API_RATE_LIMIT_EXPENSIVE_PER_MIN = max(1, _env_int("RATE_LIMIT_EXPENSIVE_REQ_PER_MIN", 5))
+API_RATE_LIMIT_WINDOW_SEC = max(10, _env_int("RATE_LIMIT_WINDOW_SEC", 60))
 BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10))
 BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
 BOTS_OVERVIEW_INCLUDE_RECENT_LOGS = _env_bool("BOTS_OVERVIEW_INCLUDE_RECENT_LOGS", True)
@@ -824,6 +862,73 @@ class LoginRateLimiter:
 
 
 LOGIN_RATE_LIMITER = LoginRateLimiter()
+
+
+class ApiRateLimiter:
+    def __init__(
+        self,
+        *,
+        enabled: bool = API_RATE_LIMIT_ENABLED,
+        general_per_minute: int = API_RATE_LIMIT_GENERAL_PER_MIN,
+        expensive_per_minute: int = API_RATE_LIMIT_EXPENSIVE_PER_MIN,
+        window_seconds: int = API_RATE_LIMIT_WINDOW_SEC,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.general_per_window = max(1, int(general_per_minute))
+        self.expensive_per_window = max(1, int(expensive_per_minute))
+        self.window = timedelta(seconds=max(10, int(window_seconds)))
+        self._lock = Lock()
+        self._state: dict[str, list[datetime]] = {}
+        self._exempt_prefixes = (
+            "/api/v1/health",
+            "/api/v1/stream",
+            "/api/v1/auth/login",
+        )
+        self._expensive_prefixes = (
+            "/api/v1/research/",
+            "/api/v1/backtests/",
+            "/api/v1/runs/compare",
+            "/api/v1/gates/reevaluate",
+            "/api/v1/bots",
+        )
+
+    def _is_exempt(self, *, path: str, method: str) -> bool:
+        if method.upper() == "OPTIONS":
+            return True
+        return any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._exempt_prefixes)
+
+    def _bucket_for_path(self, *, path: str) -> str:
+        if any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._expensive_prefixes):
+            return "expensive"
+        return "general"
+
+    def check(self, *, client_ip: str, path: str, method: str) -> tuple[bool, int, str]:
+        if not self.enabled:
+            return True, 0, "disabled"
+        if self._is_exempt(path=path, method=method):
+            return True, 0, "exempt"
+        bucket = self._bucket_for_path(path=path)
+        limit = self.expensive_per_window if bucket == "expensive" else self.general_per_window
+        now = utc_now()
+        key = f"{client_ip}:{bucket}"
+        with self._lock:
+            events = [
+                ts
+                for ts in self._state.get(key, [])
+                if isinstance(ts, datetime) and (now - ts) <= self.window
+            ]
+            if len(events) >= limit:
+                oldest = min(events)
+                retry_at = oldest + self.window
+                retry_after = max(1, int((retry_at - now).total_seconds()))
+                self._state[key] = events
+                return False, retry_after, bucket
+            events.append(now)
+            self._state[key] = events
+        return True, 0, bucket
+
+
+API_RATE_LIMITER = ApiRateLimiter()
 
 
 def _has_default_credentials() -> bool:
@@ -4570,6 +4675,27 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
         )
     )
 
+    storage_status = _user_data_persistence_status()
+    if storage_status.get("persistent_storage"):
+        g10_status = "PASS"
+        g10_reason = "User data en almacenamiento persistente"
+    else:
+        if active_mode == "live":
+            g10_status = "FAIL"
+            g10_reason = "User data en almacenamiento efimero; LIVE bloqueado hasta usar volumen persistente"
+        else:
+            g10_status = "WARN"
+            g10_reason = "User data en almacenamiento efimero; posible perdida de estado tras redeploy"
+    gates.append(
+        gate_row(
+            "G10_STORAGE_PERSISTENCE",
+            "Storage persistence",
+            g10_status,
+            g10_reason,
+            storage_status,
+        )
+    )
+
     overall = "PASS"
     if any(row["status"] == "FAIL" for row in gates):
         overall = "FAIL"
@@ -4590,6 +4716,7 @@ def live_can_be_enabled(gates_payload: dict[str, Any]) -> tuple[bool, str]:
         "G4_EXCHANGE_CONNECTOR_READY",
         "G7_ORDER_SIM_OR_PAPER_OK",
         "G9_RUNTIME_ENGINE_REAL",
+        "G10_STORAGE_PERSISTENCE",
     ]
     for gate_id in required:
         row = gates.get(gate_id)
@@ -4774,11 +4901,38 @@ def parse_strategy_yaml_upload(payload: bytes) -> dict[str, Any]:
 def create_app() -> FastAPI:
     app = FastAPI(title="RTLAB API", version=APP_VERSION)
 
+    @app.middleware("http")
+    async def api_rate_limit_middleware(request: Request, call_next):
+        allowed, retry_after_sec, bucket = API_RATE_LIMITER.check(
+            client_ip=_request_client_ip(request),
+            path=request.url.path,
+            method=request.method,
+        )
+        if not allowed:
+            detail = (
+                f"Rate limit de endpoint costoso excedido. Reintenta en {retry_after_sec}s."
+                if bucket == "expensive"
+                else f"Rate limit general de API excedido. Reintenta en {retry_after_sec}s."
+            )
+            return JSONResponse(
+                status_code=429,
+                content={"detail": detail, "bucket": bucket},
+                headers={
+                    "Retry-After": str(retry_after_sec),
+                    "X-RTLAB-RateLimit-Bucket": bucket,
+                },
+            )
+        response = await call_next(request)
+        if bucket not in {"disabled", "exempt"}:
+            response.headers["X-RTLAB-RateLimit-Bucket"] = bucket
+        return response
+
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
         state = store.load_bot_state()
         mode = state.get("mode", "paper")
         runtime_engine = _runtime_engine_from_state(state)
+        storage_status = _user_data_persistence_status()
         return {
             "status": "ok",
             "ok": True,
@@ -4790,6 +4944,7 @@ def create_app() -> FastAPI:
             "ws": {"connected": True, "transport": "sse", "url": "/api/v1/stream", "last_event_at": utc_now_iso()},
             "exchange": {"name": exchange_name(), "mode": mode.upper()},
             "db": {"ok": True, "driver": "sqlite"},
+            "storage": storage_status,
         }
 
     @app.post("/api/v1/auth/login")
