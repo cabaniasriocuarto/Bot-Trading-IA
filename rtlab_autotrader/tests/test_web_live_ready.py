@@ -1404,9 +1404,14 @@ def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monk
   call_counter = {"n": 0}
   original = module.store.list_bot_instances
 
-  def _wrapped_list_bot_instances(*, recommendations=None, overview_perf=None):
+  def _wrapped_list_bot_instances(*, recommendations=None, include_recent_logs=None, recent_logs_per_bot=None, overview_perf=None):
     call_counter["n"] += 1
-    return original(recommendations=recommendations, overview_perf=overview_perf)
+    return original(
+      recommendations=recommendations,
+      include_recent_logs=include_recent_logs,
+      recent_logs_per_bot=recent_logs_per_bot,
+      overview_perf=overview_perf,
+    )
 
   monkeypatch.setattr(module.store, "list_bot_instances", _wrapped_list_bot_instances)
 
@@ -1455,6 +1460,45 @@ def test_bots_overview_perf_headers_and_debug_payload(tmp_path: Path, monkeypatc
   second = client.get("/api/v1/bots?debug_perf=true", headers=headers)
   assert second.status_code == 200, second.text
   assert (second.json().get("perf") or {}).get("cache") == "hit"
+
+
+def test_bots_overview_supports_recent_logs_query_overrides_and_cache_key(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  call_counter = {"n": 0}
+  original = module.store.list_bot_instances
+
+  def _wrapped_list_bot_instances(*, recommendations=None, include_recent_logs=None, recent_logs_per_bot=None, overview_perf=None):
+    call_counter["n"] += 1
+    return original(
+      recommendations=recommendations,
+      include_recent_logs=include_recent_logs,
+      recent_logs_per_bot=recent_logs_per_bot,
+      overview_perf=overview_perf,
+    )
+
+  monkeypatch.setattr(module.store, "list_bot_instances", _wrapped_list_bot_instances)
+
+  first = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0&debug_perf=true", headers=headers)
+  assert first.status_code == 200, first.text
+  assert call_counter["n"] == 1
+  assert first.headers.get("X-RTLAB-Bots-Recent-Logs") == "disabled"
+  assert first.headers.get("X-RTLAB-Bots-Recent-Logs-Per-Bot") == "0"
+  assert (first.json().get("perf") or {}).get("cache") == "miss"
+
+  second = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0&debug_perf=true", headers=headers)
+  assert second.status_code == 200, second.text
+  assert call_counter["n"] == 1
+  assert (second.json().get("perf") or {}).get("cache") == "hit"
+
+  third = client.get("/api/v1/bots?recent_logs=true&recent_logs_per_bot=1&debug_perf=true", headers=headers)
+  assert third.status_code == 200, third.text
+  assert call_counter["n"] == 2
+  assert third.headers.get("X-RTLAB-Bots-Recent-Logs") == "enabled"
+  assert third.headers.get("X-RTLAB-Bots-Recent-Logs-Per-Bot") == "1"
+  assert (third.json().get("perf") or {}).get("cache") == "miss"
 
 
 def test_bots_overview_only_computes_kpis_for_strategies_in_pool(tmp_path: Path, monkeypatch) -> None:

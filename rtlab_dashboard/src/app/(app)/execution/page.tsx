@@ -97,7 +97,7 @@ export default function ExecutionPage() {
       apiGet<HealthResponse>("/api/v1/health"),
       apiGet<GatesResponse>("/api/v1/gates"),
       apiGet<RolloutStatusLite>("/api/v1/rollout/status"),
-      apiGet<{ items: BotInstance[] }>("/api/v1/bots").catch(() => ({ items: [] })),
+      apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
     ]);
     setBotStatus(status);

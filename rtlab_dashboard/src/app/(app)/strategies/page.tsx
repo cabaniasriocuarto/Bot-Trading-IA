@@ -125,7 +125,7 @@ export default function StrategiesPage() {
       apiGet<{ items: StrategyKpisRow[] }>(`/api/v1/strategies/kpis?${params.toString()}`),
       apiGet<LearningStatusLite>("/api/v1/learning/status").catch(() => null),
       apiGet<LearningRecommendationLite[]>("/api/v1/learning/recommendations").catch(() => []),
-      apiGet<{ items: BotInstance[] }>("/api/v1/bots").catch(() => ({ items: [] })),
+      apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
     ]);
     setStrategies(rows);
     setBacktests(bt);

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import tempfile
+from getpass import getpass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 
 import requests
@@ -138,9 +140,17 @@ def _run_local_benchmark(module: Any, requests_n: int, warmup_n: int) -> dict[st
     return metrics
 
 
-def _remote_login(base_url: str, *, username: str, password: str, timeout_sec: float) -> str:
+def _remote_login(
+    base_url: str,
+    *,
+    username: str,
+    password: str,
+    timeout_sec: float,
+    session: requests.Session | None = None,
+) -> str:
     login_url = f"{base_url}/api/v1/auth/login"
-    res = requests.post(
+    http = session or requests
+    res = http.post(
         login_url,
         json={"username": username, "password": password},
         timeout=timeout_sec,
@@ -159,15 +169,76 @@ def _remote_get_bots(
     *,
     token: str,
     timeout_sec: float,
+    retry_429: bool = False,
+    max_retries_429: int = 6,
+    session: requests.Session | None = None,
 ) -> tuple[int, requests.Response]:
     headers = {"Authorization": f"Bearer {token}"}
-    res = requests.get(f"{base_url}/api/v1/bots", headers=headers, timeout=timeout_sec)
-    if res.status_code != 200:
+    http = session or requests
+    retries = 0
+    while True:
+        res = http.get(f"{base_url}/api/v1/bots", headers=headers, timeout=timeout_sec)
+        if res.status_code == 200:
+            break
+        if res.status_code == 429 and retry_429 and retries < max(0, int(max_retries_429)):
+            wait_sec = _rate_limit_wait_seconds(res)
+            retries += 1
+            sleep(wait_sec)
+            continue
         raise RuntimeError(f"GET /api/v1/bots remoto fallo: {res.status_code} {res.text[:200]}")
     data = res.json() if res.headers.get("content-type", "").lower().find("json") >= 0 else {}
     items = (data or {}).get("items") if isinstance(data, dict) else []
     bot_count = len(items) if isinstance(items, list) else 0
     return bot_count, res
+
+
+def _rate_limit_wait_seconds(res: requests.Response) -> float:
+    header = str(res.headers.get("Retry-After") or "").strip()
+    if header:
+        try:
+            return max(1.0, float(int(header)))
+        except Exception:
+            pass
+    detail = ""
+    try:
+        payload = res.json() if "json" in str(res.headers.get("content-type", "")).lower() else {}
+        detail = str((payload or {}).get("detail") or "")
+    except Exception:
+        detail = ""
+    if not detail:
+        detail = str(res.text or "")
+    m = re.search(r"(\d+)\s*s", detail)
+    if m:
+        try:
+            return max(1.0, float(int(m.group(1))))
+        except Exception:
+            pass
+    return 5.0
+
+
+def _remote_get_bots_with_retry(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    timeout_sec: float,
+    retry_429: bool,
+    max_retries_429: int,
+    session: requests.Session | None = None,
+) -> tuple[requests.Response, int, float]:
+    http = session or requests
+    retries = 0
+    wait_ms_total = 0.0
+    while True:
+        res = http.get(f"{base_url}/api/v1/bots", headers=headers, timeout=timeout_sec)
+        if res.status_code == 200:
+            return res, retries, wait_ms_total
+        if res.status_code == 429 and retry_429 and retries < max(0, int(max_retries_429)):
+            wait_sec = _rate_limit_wait_seconds(res)
+            retries += 1
+            wait_ms_total += max(0.0, float(wait_sec)) * 1000.0
+            sleep(wait_sec)
+            continue
+        raise RuntimeError(f"Benchmark remoto fallo: {res.status_code} {res.text[:200]}")
 
 
 def _run_remote_benchmark(
@@ -180,36 +251,74 @@ def _run_remote_benchmark(
     warmup_n: int,
     timeout_sec: float,
     min_bots_required: int,
+    retry_429: bool = False,
+    max_retries_429: int = 6,
+    pace_sec: float = 0.0,
 ) -> dict[str, Any]:
+    session = requests.Session()
     token = str(auth_token or "").strip()
     if not token:
         if not password:
             raise RuntimeError("Modo remoto requiere --auth-token o --password para login.")
-        token = _remote_login(base_url, username=username, password=password, timeout_sec=timeout_sec)
+        token = _remote_login(
+            base_url,
+            username=username,
+            password=password,
+            timeout_sec=timeout_sec,
+            session=session,
+        )
 
     min_required = max(0, int(min_bots_required))
-    bot_count, _ = _remote_get_bots(base_url, token=token, timeout_sec=timeout_sec)
+    bot_count, _ = _remote_get_bots(
+        base_url,
+        token=token,
+        timeout_sec=timeout_sec,
+        retry_429=retry_429,
+        max_retries_429=max_retries_429,
+        session=session,
+    )
     no_evidence = bool(min_required > 0 and bot_count < min_required)
 
     headers = {"Authorization": f"Bearer {token}"}
+    rate_limit_retries = 0
+    rate_limit_wait_ms_total = 0.0
     for _ in range(max(0, warmup_n)):
-        res = requests.get(f"{base_url}/api/v1/bots", headers=headers, timeout=timeout_sec)
-        if res.status_code != 200:
-            raise RuntimeError(f"Warmup remoto fallo: {res.status_code} {res.text[:200]}")
+        res, retries, wait_ms = _remote_get_bots_with_retry(
+            base_url=base_url,
+            headers=headers,
+            timeout_sec=timeout_sec,
+            retry_429=retry_429,
+            max_retries_429=max_retries_429,
+            session=session,
+        )
+        rate_limit_retries += retries
+        rate_limit_wait_ms_total += wait_ms
+        if pace_sec > 0:
+            sleep(pace_sec)
 
     times_ms: list[float] = []
+    times_no_backoff_ms: list[float] = []
     server_ms_values: list[float] = []
     cache_hits = 0
     cache_misses = 0
     last_ok_response: requests.Response | None = None
     for _ in range(max(1, requests_n)):
         t0 = perf_counter()
-        res = requests.get(f"{base_url}/api/v1/bots", headers=headers, timeout=timeout_sec)
+        res, retries, wait_ms = _remote_get_bots_with_retry(
+            base_url=base_url,
+            headers=headers,
+            timeout_sec=timeout_sec,
+            retry_429=retry_429,
+            max_retries_429=max_retries_429,
+            session=session,
+        )
         t1 = perf_counter()
-        if res.status_code != 200:
-            raise RuntimeError(f"Benchmark remoto fallo: {res.status_code} {res.text[:200]}")
+        rate_limit_retries += retries
+        rate_limit_wait_ms_total += wait_ms
         last_ok_response = res
-        times_ms.append((t1 - t0) * 1000.0)
+        elapsed_ms = (t1 - t0) * 1000.0
+        times_ms.append(elapsed_ms)
+        times_no_backoff_ms.append(max(0.0, elapsed_ms - wait_ms))
         server_ms_raw = str(res.headers.get("X-RTLAB-Bots-Overview-MS") or "").strip()
         if server_ms_raw:
             try:
@@ -221,6 +330,8 @@ def _run_remote_benchmark(
             cache_hits += 1
         elif cache_state == "miss":
             cache_misses += 1
+        if pace_sec > 0:
+            sleep(pace_sec)
 
     metrics = _build_metrics(times_ms)
     metrics["mode"] = "remote_http"
@@ -241,6 +352,13 @@ def _run_remote_benchmark(
     metrics["cache_hits"] = int(cache_hits)
     metrics["cache_misses"] = int(cache_misses)
     metrics["cache_hit_ratio"] = round((cache_hits / max(1, cache_hits + cache_misses)), 4)
+    metrics["rate_limit_retries"] = int(rate_limit_retries)
+    metrics["rate_limit_wait_ms_total"] = round(float(rate_limit_wait_ms_total), 3)
+    no_backoff_stats = _build_metrics(times_no_backoff_ms)
+    metrics["p50_no_backoff_ms"] = no_backoff_stats["p50_ms"]
+    metrics["p95_no_backoff_ms"] = no_backoff_stats["p95_ms"]
+    metrics["p99_no_backoff_ms"] = no_backoff_stats["p99_ms"]
+    metrics["avg_no_backoff_ms"] = no_backoff_stats["avg_ms"]
     if server_ms_values:
         server_stats = _build_metrics(server_ms_values)
         metrics["server_p50_ms"] = server_stats["p50_ms"]
@@ -250,6 +368,9 @@ def _run_remote_benchmark(
         metrics["server_min_ms"] = server_stats["min_ms"]
         metrics["server_max_ms"] = server_stats["max_ms"]
         metrics["server_target_pass"] = bool(server_stats["target_pass"])
+    if last_ok_response is not None:
+        metrics["railway_edge"] = str(last_ok_response.headers.get("X-Railway-Edge") or "")
+        metrics["railway_cdn_edge"] = str(last_ok_response.headers.get("X-Railway-CDN-Edge") or "")
     return metrics
 
 
@@ -270,6 +391,10 @@ def _write_report(path: Path, *, context: dict[str, Any], metrics: dict[str, Any
     ]
     if context.get("base_url"):
         lines.append(f"- Base URL: `{context.get('base_url')}`")
+    if metrics.get("railway_edge"):
+        lines.append(f"- Railway edge: `{metrics.get('railway_edge')}`")
+    if metrics.get("railway_cdn_edge"):
+        lines.append(f"- Railway CDN edge: `{metrics.get('railway_cdn_edge')}`")
     if context.get("user_data_dir"):
         lines.append(f"- User data dir: `{context.get('user_data_dir')}`")
     if context.get("bots"):
@@ -294,6 +419,14 @@ def _write_report(path: Path, *, context: dict[str, Any], metrics: dict[str, Any
             f"- `cache_hits`: `{metrics.get('cache_hits')}`",
             f"- `cache_misses`: `{metrics.get('cache_misses')}`",
             f"- `cache_hit_ratio`: `{metrics.get('cache_hit_ratio')}`",
+            f"- `rate_limit_retries`: `{metrics.get('rate_limit_retries')}`",
+            f"- `rate_limit_wait_ms_total`: `{metrics.get('rate_limit_wait_ms_total')}`",
+            "",
+            "## Resultado (sin espera de backoff 429)",
+            f"- `p50_no_backoff_ms`: **{metrics.get('p50_no_backoff_ms')}**",
+            f"- `p95_no_backoff_ms`: **{metrics.get('p95_no_backoff_ms')}**",
+            f"- `p99_no_backoff_ms`: **{metrics.get('p99_no_backoff_ms')}**",
+            f"- `avg_no_backoff_ms`: **{metrics.get('avg_no_backoff_ms')}**",
             "",
             "## Estado",
             f"- Estado: **{status}**",
@@ -340,7 +473,11 @@ def main() -> int:
     parser.add_argument("--auth-token", type=str, default="", help="Bearer token para modo remoto.")
     parser.add_argument("--username", type=str, default="admin", help="Usuario para login remoto cuando no hay token.")
     parser.add_argument("--password", type=str, default="", help="Password para login remoto cuando no hay token.")
+    parser.add_argument("--ask-password", action="store_true", help="Pide password por consola si falta en modo remoto.")
     parser.add_argument("--timeout-sec", type=float, default=10.0, help="Timeout HTTP en segundos para modo remoto.")
+    parser.add_argument("--retry-429", action="store_true", help="Reintenta automaticamente cuando /api/v1/bots responde 429.")
+    parser.add_argument("--max-retries-429", type=int, default=6, help="Maximo de reintentos por request ante 429.")
+    parser.add_argument("--pace-sec", type=float, default=0.0, help="Espera fija entre requests (s), util para evitar 429.")
     parser.add_argument(
         "--min-bots-required",
         type=int,
@@ -353,6 +490,16 @@ def main() -> int:
         default=f"docs/audit/BOTS_OVERVIEW_BENCHMARK_{datetime.now(timezone.utc).strftime('%Y%m%d')}.md",
         help="Ruta del reporte markdown.",
     )
+    parser.add_argument(
+        "--require-evidence",
+        action="store_true",
+        help="Falla con exit 2 si el benchmark remoto queda en NO_EVIDENCIA.",
+    )
+    parser.add_argument(
+        "--require-target-pass",
+        action="store_true",
+        help="Falla con exit 3 si no cumple objetivo p95<target en la corrida medida.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -362,6 +509,12 @@ def main() -> int:
     auth_token = str(args.auth_token or os.getenv("RTLAB_BENCH_TOKEN", "")).strip()
 
     if base_url:
+        if not auth_token and not password and args.ask_password:
+            try:
+                password = getpass("ADMIN_PASSWORD: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                password = ""
+
         context = {
             "base_url": base_url,
             "warmup": max(0, args.warmup),
@@ -379,6 +532,9 @@ def main() -> int:
             warmup_n=max(0, args.warmup),
             timeout_sec=max(1.0, float(args.timeout_sec)),
             min_bots_required=max(0, int(args.min_bots_required)),
+            retry_429=bool(args.retry_429),
+            max_retries_429=max(0, int(args.max_retries_429)),
+            pace_sec=max(0.0, float(args.pace_sec)),
         )
         _write_report(report_path, context=context, metrics=metrics)
         print(f"[benchmark] reporte: {report_path}")
@@ -386,8 +542,17 @@ def main() -> int:
             f"[benchmark] mode=remote p50={metrics['p50_ms']}ms p95={metrics['p95_ms']}ms p99={metrics['p99_ms']}ms "
             f"(objetivo p95<300ms: {'PASS' if metrics['target_pass'] else 'FAIL'})"
         )
+        print(
+            f"[benchmark] no-backoff p50={metrics.get('p50_no_backoff_ms')}ms "
+            f"p95={metrics.get('p95_no_backoff_ms')}ms p99={metrics.get('p99_no_backoff_ms')}ms "
+            f"(429_retries={metrics.get('rate_limit_retries')}, wait_ms_total={metrics.get('rate_limit_wait_ms_total')})"
+        )
         if metrics.get("no_evidencia_reason"):
             print(f"[benchmark] {metrics['no_evidencia_reason']}")
+        if args.require_evidence and metrics.get("no_evidencia_min_bots"):
+            return 2
+        if args.require_target_pass and not metrics.get("target_pass"):
+            return 3
         return 0
 
     _ensure_repo_import_path(repo_root)
@@ -402,6 +567,8 @@ def main() -> int:
     try:
         os.environ["RTLAB_USER_DATA_DIR"] = str(user_data_dir)
         os.environ.setdefault("NODE_ENV", "development")
+        # Evita falsos FAIL del benchmark local por guardas de rate-limit.
+        os.environ.setdefault("RATE_LIMIT_GENERAL_ENABLED", "0")
 
         import importlib
 
