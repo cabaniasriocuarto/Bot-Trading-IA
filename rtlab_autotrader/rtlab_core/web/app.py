@@ -1002,7 +1002,11 @@ class ApiRateLimiter:
             return True
         return any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._exempt_prefixes)
 
-    def _bucket_for_path(self, *, path: str) -> str:
+    def _bucket_for_path(self, *, path: str, method: str) -> str:
+        # /api/v1/bots es polling de UI/BFF; no debe caer en bucket "expensive"
+        # porque con 5 req/min dispara 429 aun en uso normal (10-15s polling).
+        if method.upper() == "GET" and path == "/api/v1/bots":
+            return "general"
         if any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._expensive_prefixes):
             return "expensive"
         return "general"
@@ -1012,7 +1016,7 @@ class ApiRateLimiter:
             return True, 0, "disabled"
         if self._is_exempt(path=path, method=method):
             return True, 0, "exempt"
-        bucket = self._bucket_for_path(path=path)
+        bucket = self._bucket_for_path(path=path, method=method)
         limit = self.expensive_per_window if bucket == "expensive" else self.general_per_window
         now = utc_now()
         key = f"{client_ip}:{bucket}"

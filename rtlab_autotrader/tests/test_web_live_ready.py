@@ -315,12 +315,44 @@ def test_api_expensive_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
   token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(token)
 
+  strategies = client.get("/api/v1/strategies", headers=headers).json()
+  pool_ids = [row["id"] for row in strategies if row.get("id")]
+  payload = {
+    "name": "rate-limit-expensive-1",
+    "engine": "bandit_thompson",
+    "mode": "paper",
+    "status": "active",
+    "pool_strategy_ids": pool_ids[:1],
+    "universe": ["BTCUSDT"],
+    "notes": "rate limit test",
+  }
+
+  first = client.post("/api/v1/bots", headers=headers, json=payload)
+  assert first.status_code == 200, first.text
+  payload["name"] = "rate-limit-expensive-2"
+  limited = client.post("/api/v1/bots", headers=headers, json=payload)
+  assert limited.status_code == 429
+  assert limited.headers.get("X-RTLAB-RateLimit-Bucket") == "expensive"
+  assert "endpoint costoso" in str(limited.json().get("detail") or "").lower()
+
+
+def test_api_bots_overview_uses_general_bucket(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  module.API_RATE_LIMITER = module.ApiRateLimiter(
+    enabled=True,
+    general_per_minute=1,
+    expensive_per_minute=1,
+    window_seconds=60,
+  )
+  token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(token)
+
   first = client.get("/api/v1/bots", headers=headers)
   assert first.status_code == 200, first.text
   limited = client.get("/api/v1/bots", headers=headers)
   assert limited.status_code == 429
-  assert limited.headers.get("X-RTLAB-RateLimit-Bucket") == "expensive"
-  assert "endpoint costoso" in str(limited.json().get("detail") or "").lower()
+  assert limited.headers.get("X-RTLAB-RateLimit-Bucket") == "general"
+  assert "rate limit general" in str(limited.json().get("detail") or "").lower()
 
 
 def test_auth_validation_fails_in_production_with_default_credentials(tmp_path: Path, monkeypatch) -> None:
