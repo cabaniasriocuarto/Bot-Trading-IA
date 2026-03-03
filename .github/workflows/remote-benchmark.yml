@@ -1,0 +1,260 @@
+﻿name: Remote Bots Benchmark (GitHub VM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Backend base URL
+        required: true
+        default: https://bot-trading-ia-production.up.railway.app
+        type: string
+      username:
+        description: Admin username
+        required: true
+        default: Wadmin
+        type: string
+      pass_criterion:
+        description: PASS criterion for objective
+        required: true
+        default: server
+        type: choice
+        options:
+          - server
+          - client
+          - either
+      requests:
+        description: Measured requests
+        required: true
+        default: 20
+        type: number
+      warmup:
+        description: Warmup requests
+        required: true
+        default: 5
+        type: number
+      timeout_sec:
+        description: HTTP timeout seconds
+        required: true
+        default: 10
+        type: number
+      min_bots_required:
+        description: Minimum bots required for evidence
+        required: true
+        default: 30
+        type: number
+      retry_429:
+        description: Retry on 429
+        required: true
+        default: true
+        type: boolean
+      max_retries_429:
+        description: Max retries on 429
+        required: true
+        default: 20
+        type: number
+      pace_sec:
+        description: Fixed wait between requests
+        required: true
+        default: 0
+        type: number
+      auto_seed:
+        description: Seed bots before benchmark
+        required: true
+        default: true
+        type: boolean
+      target_bots:
+        description: Target bot cardinality for seed
+        required: true
+        default: 30
+        type: number
+      exact_seed:
+        description: Enforce exact cardinality (may delete)
+        required: true
+        default: false
+        type: boolean
+      allow_delete:
+        description: Allow delete when exact_seed=true
+        required: true
+        default: false
+        type: boolean
+      delete_confirm:
+        description: Safety phrase for exact delete (must be ALLOW_DELETE_BOTS)
+        required: false
+        default: ""
+        type: string
+      delete_policy:
+        description: Deletion policy for exact seed
+        required: true
+        default: seed-only
+        type: choice
+        options:
+          - seed-only
+          - any
+      seed_pace_sec:
+        description: Wait between seed operations
+        required: true
+        default: 0.8
+        type: number
+      require_target_pass:
+        description: Fail workflow if objective does not pass
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  benchmark:
+    concurrency:
+      group: remote-benchmark-${{ github.ref }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Validate auth configuration
+        env:
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+        run: |
+          if [[ -z "${RTLAB_ADMIN_PASSWORD}" && -z "${RTLAB_AUTH_TOKEN}" ]]; then
+            echo "Missing secrets: set RTLAB_ADMIN_PASSWORD or RTLAB_AUTH_TOKEN in repository secrets." >&2
+            exit 1
+          fi
+
+      - name: Seed bots (optional)
+        if: ${{ inputs.auto_seed }}
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          USERNAME: ${{ inputs.username }}
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RETRY_429: ${{ inputs.retry_429 }}
+          MAX_RETRIES_429: ${{ inputs.max_retries_429 }}
+          TARGET_BOTS: ${{ inputs.target_bots }}
+          TIMEOUT_SEC: ${{ inputs.timeout_sec }}
+          SEED_PACE_SEC: ${{ inputs.seed_pace_sec }}
+          EXACT_SEED: ${{ inputs.exact_seed }}
+          ALLOW_DELETE: ${{ inputs.allow_delete }}
+          DELETE_CONFIRM: ${{ inputs.delete_confirm }}
+          DELETE_POLICY: ${{ inputs.delete_policy }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RTLAB_ADMIN_PASSWORD}" ]]; then
+            echo "RTLAB_ADMIN_PASSWORD is required for auto_seed." >&2
+            exit 1
+          fi
+          cmd=(
+            python scripts/seed_bots_remote.py
+            --base-url "${BASE_URL}"
+            --username "${USERNAME}"
+            --password "${RTLAB_ADMIN_PASSWORD}"
+            --target-bots "${TARGET_BOTS}"
+            --timeout-sec "${TIMEOUT_SEC}"
+            --max-retries-429 "${MAX_RETRIES_429}"
+            --pace-sec "${SEED_PACE_SEC}"
+          )
+          if [[ "${RETRY_429}" == "true" ]]; then
+            cmd+=(--retry-429)
+          fi
+          if [[ "${EXACT_SEED}" == "true" ]]; then
+            if [[ "${ALLOW_DELETE}" != "true" ]]; then
+              echo "exact_seed=true requires allow_delete=true (explicit)." >&2
+              exit 1
+            fi
+            if [[ "${DELETE_CONFIRM}" != "ALLOW_DELETE_BOTS" ]]; then
+              echo "Delete safety check failed. Set delete_confirm=ALLOW_DELETE_BOTS to proceed." >&2
+              exit 1
+            fi
+            cmd+=(--exact --delete-policy "${DELETE_POLICY}" --allow-delete)
+          fi
+          "${cmd[@]}"
+
+      - name: Run benchmark in GitHub VM
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          USERNAME: ${{ inputs.username }}
+          PASS_CRITERION: ${{ inputs.pass_criterion }}
+          REQUESTS: ${{ inputs.requests }}
+          WARMUP: ${{ inputs.warmup }}
+          TIMEOUT_SEC: ${{ inputs.timeout_sec }}
+          MIN_BOTS_REQUIRED: ${{ inputs.min_bots_required }}
+          RETRY_429: ${{ inputs.retry_429 }}
+          MAX_RETRIES_429: ${{ inputs.max_retries_429 }}
+          PACE_SEC: ${{ inputs.pace_sec }}
+          REQUIRE_TARGET_PASS: ${{ inputs.require_target_pass }}
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          report_path="artifacts/BOTS_OVERVIEW_BENCHMARK_GHA_${GITHUB_RUN_ID}.md"
+
+          cmd=(
+            python scripts/benchmark_bots_overview.py
+            --base-url "${BASE_URL}"
+            --username "${USERNAME}"
+            --pass-criterion "${PASS_CRITERION}"
+            --requests "${REQUESTS}"
+            --warmup "${WARMUP}"
+            --timeout-sec "${TIMEOUT_SEC}"
+            --min-bots-required "${MIN_BOTS_REQUIRED}"
+            --report-path "${report_path}"
+            --require-evidence
+          )
+          if [[ "${RETRY_429}" == "true" ]]; then
+            cmd+=(--retry-429 --max-retries-429 "${MAX_RETRIES_429}")
+          fi
+          if [[ "${PACE_SEC}" != "0" && "${PACE_SEC}" != "0.0" ]]; then
+            cmd+=(--pace-sec "${PACE_SEC}")
+          fi
+          if [[ "${REQUIRE_TARGET_PASS}" == "true" ]]; then
+            cmd+=(--require-target-pass)
+          fi
+
+          if [[ -n "${RTLAB_AUTH_TOKEN}" ]]; then
+            cmd+=(--auth-token "${RTLAB_AUTH_TOKEN}")
+          else
+            cmd+=(--password "${RTLAB_ADMIN_PASSWORD}")
+          fi
+
+          "${cmd[@]}" | tee artifacts/benchmark_stdout.log
+          echo "REPORT_PATH=${report_path}" >> "${GITHUB_ENV}"
+
+      - name: Build summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "${REPORT_PATH:-}" && -f "${REPORT_PATH}" ]]; then
+            {
+              echo "## Remote Benchmark (GitHub VM)"
+              echo
+              grep -E "^- Railway edge:|^- Estado:|`p95_ms`|`p95_no_backoff_ms`|`server_p95_ms`|`rate_limit_retries`|`pass_criterion`" "${REPORT_PATH}" || true
+              echo
+              echo "Report file: ${REPORT_PATH}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "No report generated." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bots-overview-benchmark-${{ github.run_id }}
+          path: |
+            artifacts/*.md
+            artifacts/*.log
+          if-no-files-found: warn
