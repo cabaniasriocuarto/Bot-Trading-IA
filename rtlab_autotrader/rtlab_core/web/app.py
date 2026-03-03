@@ -141,6 +141,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        return default
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -157,8 +164,14 @@ API_RATE_LIMIT_WINDOW_SEC = max(10, _env_int("RATE_LIMIT_WINDOW_SEC", 60))
 BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10))
 BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
 BOTS_OVERVIEW_INCLUDE_RECENT_LOGS = _env_bool("BOTS_OVERVIEW_INCLUDE_RECENT_LOGS", True)
+BOTS_OVERVIEW_RECENT_LOGS_PER_BOT = max(0, _env_int("BOTS_OVERVIEW_RECENT_LOGS_PER_BOT", 5))
 BOTS_OVERVIEW_PROFILE_SLOW_MS = max(50, _env_int("BOTS_OVERVIEW_PROFILE_SLOW_MS", 500))
 BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC = max(5, _env_int("BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC", 30))
+BOTS_LOGS_REF_BACKFILL_MAX_ROWS = max(1000, _env_int("BOTS_LOGS_REF_BACKFILL_MAX_ROWS", 50000))
+BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
+BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
+BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
+SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(1, _env_int("SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC", 60))
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -210,13 +223,19 @@ CREATE TABLE IF NOT EXISTS logs (
     module TEXT NOT NULL,
     message TEXT NOT NULL,
     related_ids TEXT NOT NULL,
-    payload_json TEXT NOT NULL
+    payload_json TEXT NOT NULL,
+    has_bot_ref INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     username TEXT NOT NULL,
     role TEXT NOT NULL,
     expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS log_bot_refs (
+    log_id INTEGER NOT NULL,
+    bot_id TEXT NOT NULL,
+    PRIMARY KEY (log_id, bot_id)
 );
 CREATE TABLE IF NOT EXISTS breaker_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,6 +249,7 @@ CREATE TABLE IF NOT EXISTS breaker_events (
 );
 CREATE INDEX IF NOT EXISTS idx_breaker_events_bot_mode_ts ON breaker_events(bot_id, mode, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_breaker_events_ts ON breaker_events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC);
 """
 
 
@@ -792,6 +812,76 @@ def internal_proxy_token() -> str:
     return get_env("INTERNAL_PROXY_TOKEN", "")
 
 
+def _parse_iso_datetime_utc(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(f"{text}T00:00:00+00:00")
+        except Exception:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _internal_proxy_token_state(*, now: datetime | None = None) -> dict[str, Any]:
+    now_dt = now or utc_now()
+    active_token = internal_proxy_token()
+    previous_token = get_env("INTERNAL_PROXY_TOKEN_PREVIOUS", "")
+    previous_expires_raw = get_env("INTERNAL_PROXY_TOKEN_PREVIOUS_EXPIRES_AT", "")
+    previous_expires_at = _parse_iso_datetime_utc(previous_expires_raw)
+    previous_token_configured = bool(previous_token)
+    previous_token_enabled = bool(previous_token and previous_expires_at and now_dt < previous_expires_at)
+    previous_token_expired = bool(previous_token and previous_expires_at and now_dt >= previous_expires_at)
+    previous_token_missing_expiry = bool(previous_token and not previous_expires_at)
+    previous_token_seconds_remaining = (
+        max(0, int((previous_expires_at - now_dt).total_seconds()))
+        if previous_token_enabled and isinstance(previous_expires_at, datetime)
+        else 0
+    )
+    warnings: list[str] = []
+    if previous_token_missing_expiry:
+        warnings.append("INTERNAL_PROXY_TOKEN_PREVIOUS configurado sin INTERNAL_PROXY_TOKEN_PREVIOUS_EXPIRES_AT (ignorado).")
+    if previous_token_expired:
+        warnings.append("INTERNAL_PROXY_TOKEN_PREVIOUS expirado.")
+    return {
+        "active_token": active_token,
+        "active_token_configured": bool(active_token),
+        "previous_token": previous_token,
+        "previous_token_configured": previous_token_configured,
+        "previous_token_expires_at": previous_expires_at.isoformat() if isinstance(previous_expires_at, datetime) else None,
+        "previous_token_enabled": previous_token_enabled,
+        "previous_token_expired": previous_token_expired,
+        "previous_token_missing_expiry": previous_token_missing_expiry,
+        "previous_token_seconds_remaining": previous_token_seconds_remaining,
+        "warnings": warnings,
+    }
+
+
+def _internal_proxy_token_auth_result(request: Request) -> tuple[bool, str]:
+    state = _internal_proxy_token_state()
+    provided = (request.headers.get("x-rtlab-proxy-token") or "").strip()
+    if not provided:
+        return False, "missing_proxy_token"
+    if not bool(state.get("active_token_configured")):
+        return False, "proxy_not_configured"
+    active = str(state.get("active_token") or "")
+    if active and hmac.compare_digest(provided, active):
+        return True, "active_token"
+    previous = str(state.get("previous_token") or "")
+    if previous and hmac.compare_digest(provided, previous):
+        if bool(state.get("previous_token_enabled")):
+            return True, "previous_token"
+        if bool(state.get("previous_token_expired")):
+            return False, "expired_previous_token"
+        return False, "previous_token_disabled"
+    return False, "invalid_proxy_token"
+
+
 def runtime_engine_default() -> str:
     value = get_env("RUNTIME_ENGINE", RUNTIME_ENGINE_SIMULATED).lower().strip()
     return RUNTIME_ENGINE_REAL if value == RUNTIME_ENGINE_REAL else RUNTIME_ENGINE_SIMULATED
@@ -1232,9 +1322,11 @@ def _binance_signed_request(
 
 
 _EXCHANGE_DIAG_CACHE: dict[str, Any] = {"mode": "", "checked_at_epoch": 0.0, "result": None}
-_BOTS_OVERVIEW_CACHE: dict[str, Any] = {"expires_at_epoch": 0.0, "payload": None}
+_BOTS_OVERVIEW_CACHE: dict[str, Any] = {"expires_at_epoch": 0.0, "payload": None, "perf": None}
 _BOTS_OVERVIEW_CACHE_LOCK = Lock()
 _BOTS_OVERVIEW_LAST_SLOW_LOG_EPOCH = 0.0
+_INTERNAL_HEADER_ALERT_CACHE: dict[str, float] = {}
+_INTERNAL_HEADER_ALERT_LOCK = Lock()
 
 
 def _provider_restriction_action_plan(active_mode: str, exchange: str) -> list[str]:
@@ -1492,8 +1584,123 @@ class ConsoleStore:
     def _init_console_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(LOG_SCHEMA_SQL)
+            self._ensure_console_db_migrations(conn)
             self._backfill_breaker_events_from_logs(conn)
             conn.commit()
+
+    def _ensure_console_db_migrations(self, conn: sqlite3.Connection) -> None:
+        columns = {str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
+        if "has_bot_ref" not in columns:
+            conn.execute("ALTER TABLE logs ADD COLUMN has_bot_ref INTEGER NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_has_bot_ref_id ON logs(has_bot_ref, id DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS log_bot_refs (
+                log_id INTEGER NOT NULL,
+                bot_id TEXT NOT NULL,
+                PRIMARY KEY (log_id, bot_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC)")
+        self._backfill_logs_has_bot_ref(conn)
+        self._backfill_log_bot_refs(conn)
+
+    def _backfill_logs_has_bot_ref(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute("SELECT MAX(id) AS max_id FROM logs").fetchone()
+        max_id = int((row["max_id"] if row is not None else 0) or 0)
+        if max_id <= 0:
+            return
+        min_id = max(1, max_id - int(BOTS_LOGS_REF_BACKFILL_MAX_ROWS) + 1)
+        conn.execute(
+            """
+            UPDATE logs
+            SET has_bot_ref = 1
+            WHERE id >= ?
+              AND has_bot_ref = 0
+              AND (
+                  related_ids LIKE '%BOT-%'
+                  OR payload_json LIKE '%"bot_id"%'
+              )
+            """,
+            (min_id,),
+        )
+
+    def _backfill_log_bot_refs(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute("SELECT MAX(id) AS max_id FROM logs").fetchone()
+        max_id = int((row["max_id"] if row is not None else 0) or 0)
+        if max_id <= 0:
+            return
+        limit_rows = int(BOTS_LOGS_REF_BACKFILL_MAX_ROWS)
+        min_id = max(1, max_id - limit_rows + 1)
+        rows = conn.execute(
+            """
+            SELECT id, related_ids, payload_json
+            FROM logs
+            WHERE id >= ?
+              AND id NOT IN (SELECT log_id FROM log_bot_refs)
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (min_id, limit_rows),
+        ).fetchall()
+        inserts: list[tuple[int, str]] = []
+        for row in rows:
+            related_raw = row["related_ids"] if row["related_ids"] is not None else "[]"
+            payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
+            try:
+                related_ids = json.loads(related_raw)
+            except Exception:
+                related_ids = []
+            try:
+                payload = json.loads(payload_raw)
+            except Exception:
+                payload = {}
+            refs = self._extract_bot_refs_from_log(
+                related_ids if isinstance(related_ids, list) else [],
+                payload if isinstance(payload, dict) else {},
+            )
+            if not refs:
+                continue
+            log_id = int(row["id"])
+            for bot_id in refs:
+                inserts.append((log_id, bot_id))
+        if inserts:
+            conn.executemany(
+                "INSERT OR IGNORE INTO log_bot_refs (log_id, bot_id) VALUES (?, ?)",
+                inserts,
+            )
+
+    @staticmethod
+    def _normalize_log_bot_ref(value: Any) -> str:
+        ref = str(value or "").strip()
+        if not ref:
+            return ""
+        return ref.upper() if ref.upper().startswith("BOT-") else ref
+
+    @classmethod
+    def _extract_bot_refs_from_log(cls, related_ids: list[str], payload: dict[str, Any]) -> set[str]:
+        refs: set[str] = set()
+        payload_map = payload if isinstance(payload, dict) else {}
+        bot_id = cls._normalize_log_bot_ref(payload_map.get("bot_id"))
+        if bot_id:
+            refs.add(bot_id)
+        bot_ids = payload_map.get("bot_ids")
+        if isinstance(bot_ids, list):
+            for item in bot_ids:
+                item_id = cls._normalize_log_bot_ref(item)
+                if item_id:
+                    refs.add(item_id)
+        if isinstance(related_ids, list):
+            for rid in related_ids:
+                item_id = cls._normalize_log_bot_ref(rid)
+                if item_id and item_id.upper().startswith("BOT-"):
+                    refs.add(item_id)
+        return refs
+
+    @staticmethod
+    def _log_has_bot_ref(related_ids: list[str], payload: dict[str, Any]) -> bool:
+        return bool(ConsoleStore._extract_bot_refs_from_log(related_ids, payload))
 
     @staticmethod
     def _normalize_breaker_mode(value: str | None) -> str:
@@ -1566,6 +1773,91 @@ class ConsoleStore:
                 symbol=str(payload_map.get("symbol") or ""),
                 source_log_id=int(row["id"]),
             )
+
+    def breaker_events_integrity(self, *, window_hours: int | None = None) -> dict[str, Any]:
+        window_h = max(1, int(window_hours or BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS))
+        since = (utc_now() - timedelta(hours=window_h)).isoformat()
+        ratio_warn = float(BREAKER_EVENTS_UNKNOWN_RATIO_WARN)
+        min_events_warn = int(BREAKER_EVENTS_UNKNOWN_MIN_EVENTS)
+
+        def _query_counts(conn: sqlite3.Connection, *, since_ts: str | None = None) -> dict[str, Any]:
+            where_sql = "WHERE ts >= ?" if since_ts else ""
+            params: tuple[Any, ...] = (since_ts,) if since_ts else ()
+            row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN bot_id='unknown_bot' THEN 1 ELSE 0 END) AS unknown_bot_total,
+                    SUM(CASE WHEN mode='unknown' THEN 1 ELSE 0 END) AS unknown_mode_total,
+                    SUM(CASE WHEN bot_id='unknown_bot' OR mode='unknown' THEN 1 ELSE 0 END) AS unknown_any_total
+                FROM breaker_events
+                {where_sql}
+                """,
+                params,
+            ).fetchone()
+            mode_rows = conn.execute(
+                f"""
+                SELECT mode, COUNT(*) AS n
+                FROM breaker_events
+                {where_sql}
+                GROUP BY mode
+                """,
+                params,
+            ).fetchall()
+            total = int((row["total"] if row is not None else 0) or 0)
+            unknown_bot_total = int((row["unknown_bot_total"] if row is not None else 0) or 0)
+            unknown_mode_total = int((row["unknown_mode_total"] if row is not None else 0) or 0)
+            unknown_any_total = int((row["unknown_any_total"] if row is not None else 0) or 0)
+            mode_counts = {str(r["mode"] or "unknown"): int(r["n"] or 0) for r in mode_rows}
+            return {
+                "total": total,
+                "unknown_bot_total": unknown_bot_total,
+                "unknown_mode_total": unknown_mode_total,
+                "unknown_any_total": unknown_any_total,
+                "unknown_bot_ratio": round((unknown_bot_total / total), 6) if total else 0.0,
+                "unknown_mode_ratio": round((unknown_mode_total / total), 6) if total else 0.0,
+                "unknown_any_ratio": round((unknown_any_total / total), 6) if total else 0.0,
+                "mode_counts": mode_counts,
+            }
+
+        with self._connect() as conn:
+            overall = _query_counts(conn)
+            window = _query_counts(conn, since_ts=since)
+
+        warnings: list[str] = []
+
+        def _warn_if_high_unknown(scope_name: str, payload: dict[str, Any]) -> None:
+            if int(payload.get("total") or 0) < min_events_warn:
+                return
+            if float(payload.get("unknown_any_ratio") or 0.0) > ratio_warn:
+                warnings.append(
+                    f"{scope_name}: unknown_any_ratio={payload.get('unknown_any_ratio')} "
+                    f"supera umbral={round(ratio_warn, 6)} con total={payload.get('total')}"
+                )
+
+        _warn_if_high_unknown("overall", overall)
+        _warn_if_high_unknown(f"window_{window_h}h", window)
+
+        if int(overall.get("total") or 0) == 0:
+            status = "NO_DATA"
+        elif warnings:
+            status = "WARN"
+        else:
+            status = "PASS"
+
+        return {
+            "status": status,
+            "ok": status != "WARN",
+            "generated_at": utc_now_iso(),
+            "window_hours": window_h,
+            "thresholds": {
+                "unknown_ratio_warn": round(ratio_warn, 6),
+                "min_events_warn": min_events_warn,
+            },
+            "overall": overall,
+            "window": window,
+            "warnings": warnings,
+        }
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
@@ -2655,28 +2947,57 @@ def risk_hooks(context):
         strategies: list[dict[str, Any]] | None = None,
         runs: list[dict[str, Any]] | None = None,
         include_recent_logs: bool = True,
+        perf: dict[str, Any] | None = None,
     ) -> dict[str, dict[str, Any]]:
+        t_overview_start = time.perf_counter()
+        perf_stages: dict[str, Any] = {
+            "include_recent_logs": bool(include_recent_logs),
+            "recent_logs_per_bot": int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT),
+            "bots_count": 0,
+            "strategies_count": 0,
+            "runs_count": 0,
+            "recommendations_count": 0,
+        }
+
         mode_to_kpi_mode = {"shadow": "backtest", "paper": "paper", "testnet": "testnet", "live": "live"}
         kills_mode_keys = ("shadow", "paper", "testnet", "live", "unknown")
 
+        t_stage = time.perf_counter()
         bots_rows = bots if isinstance(bots, list) else self.load_bots()
         if bot_ids:
             requested = {str(v).strip() for v in bot_ids if str(v).strip()}
             bots_rows = [row for row in bots_rows if str(row.get("id") or "") in requested]
+        perf_stages["stage_inputs_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+        perf_stages["bots_count"] = len(bots_rows)
         if not bots_rows:
+            perf_stages["total_ms"] = round((time.perf_counter() - t_overview_start) * 1000.0, 3)
+            if isinstance(perf, dict):
+                perf["overview"] = perf_stages
             return {}
 
+        t_stage = time.perf_counter()
         strategies_rows = strategies if isinstance(strategies, list) else self.list_strategies()
         runs_rows = runs if isinstance(runs, list) else self.load_runs()
         rec_rows = recommendations if isinstance(recommendations, list) else []
+        perf_stages["stage_load_context_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+        perf_stages["strategies_count"] = len(strategies_rows)
+        perf_stages["runs_count"] = len(runs_rows)
+        perf_stages["recommendations_count"] = len(rec_rows)
         strategy_by_id = {str(row.get("id") or ""): row for row in strategies_rows if str(row.get("id") or "")}
 
+        t_stage = time.perf_counter()
         bot_pool_ids: dict[str, list[str]] = {}
+        strategy_ids_in_pool: set[str] = set()
         for bot in bots_rows:
             bid = str(bot.get("id") or "")
             pool_ids = [sid for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategy_by_id]
-            bot_pool_ids[bid] = [str(sid) for sid in pool_ids]
+            normalized_pool = [str(sid) for sid in pool_ids]
+            bot_pool_ids[bid] = normalized_pool
+            strategy_ids_in_pool.update(normalized_pool)
+        perf_stages["stage_pool_index_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+        perf_stages["strategies_in_pool_count"] = len(strategy_ids_in_pool)
 
+        t_stage = time.perf_counter()
         runs_by_strategy_mode: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for run in runs_rows:
             if not isinstance(run, dict):
@@ -2691,11 +3012,15 @@ def risk_hooks(context):
                 runs_by_strategy_mode[key] = [run]
             else:
                 rows.append(run)
+        perf_stages["stage_runs_index_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
 
+        t_stage = time.perf_counter()
         kpis_by_mode: dict[str, dict[str, dict[str, Any]]] = {mode_key: {} for mode_key in mode_to_kpi_mode}
-        for sid in strategy_by_id:
+        # Compute KPIs only for strategies referenced by at least one bot pool.
+        for sid in strategy_ids_in_pool:
             for mode_key, kpi_mode in mode_to_kpi_mode.items():
                 kpis_by_mode[mode_key][sid] = self._aggregate_strategy_kpis(runs_by_strategy_mode.get((sid, kpi_mode), []))
+        perf_stages["stage_kpis_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
 
         bot_ids_ordered = [str(bot.get("id") or "") for bot in bots_rows if str(bot.get("id") or "")]
         bot_ids_set = set(bot_ids_ordered)
@@ -2705,9 +3030,12 @@ def risk_hooks(context):
         last_kill_by_bot: dict[str, str | None] = {bid: None for bid in bot_ids_ordered}
         logs_per_bot: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bot_ids_ordered}
 
+        db_read_ms = 0.0
+        post_db_process_ms = 0.0
         if bot_ids_ordered:
             placeholders = ",".join("?" for _ in bot_ids_ordered)
             since_24h = (utc_now() - timedelta(hours=24)).isoformat()
+            t_db = time.perf_counter()
             with self._connect() as conn:
                 # Read 1/3: kills acumulados por bot+modo (all-time) + ultimo timestamp.
                 kills_total_rows = conn.execute(
@@ -2730,19 +3058,55 @@ def risk_hooks(context):
                     tuple(bot_ids_ordered + [since_24h]),
                 ).fetchall()
                 log_rows: list[sqlite3.Row] = []
-                if include_recent_logs:
-                    logs_batch_limit = min(2000, max(200, len(bot_ids_ordered) * 20))
+                if include_recent_logs and int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT) > 0:
+                    per_bot_limit = max(1, int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT))
+                    logs_batch_limit = min(2000, max(200, len(bot_ids_ordered) * max(5, per_bot_limit)))
+                    logs_refs_limit = min(8000, max(400, len(bot_ids_ordered) * max(10, per_bot_limit * 2)))
                     # Read 3/3: logs recientes en batch para evitar N+1 por bot.
-                    log_rows = conn.execute(
-                        """
-                        SELECT id, ts, type, severity, module, message, related_ids, payload_json
-                        FROM logs
-                        ORDER BY id DESC
-                        LIMIT ?
-                        """,
-                        (logs_batch_limit,),
-                    ).fetchall()
+                    try:
+                        log_rows = conn.execute(
+                            f"""
+                            SELECT r.bot_id AS ref_bot_id, l.id, l.ts, l.type, l.severity, l.module, l.message, l.payload_json
+                            FROM log_bot_refs r
+                            JOIN logs l ON l.id = r.log_id
+                            WHERE r.bot_id IN ({placeholders})
+                            ORDER BY l.id DESC
+                            LIMIT ?
+                            """,
+                            tuple(bot_ids_ordered + [logs_refs_limit]),
+                        ).fetchall()
+                        perf_stages["logs_prefilter_mode"] = "log_bot_refs"
+                        perf_stages["logs_prefilter_has_bot_ref"] = True
+                    except sqlite3.OperationalError:
+                        try:
+                            log_rows = conn.execute(
+                                """
+                                SELECT id, ts, type, severity, module, message, related_ids, payload_json
+                                FROM logs
+                                WHERE has_bot_ref = 1
+                                ORDER BY id DESC
+                                LIMIT ?
+                                """,
+                                (logs_batch_limit,),
+                            ).fetchall()
+                            perf_stages["logs_prefilter_mode"] = "has_bot_ref"
+                            perf_stages["logs_prefilter_has_bot_ref"] = True
+                        except sqlite3.OperationalError:
+                            # Fallback for legacy DBs before migration.
+                            log_rows = conn.execute(
+                                """
+                                SELECT id, ts, type, severity, module, message, related_ids, payload_json
+                                FROM logs
+                                ORDER BY id DESC
+                                LIMIT ?
+                                """,
+                                (logs_batch_limit,),
+                            ).fetchall()
+                            perf_stages["logs_prefilter_mode"] = "legacy_full_logs"
+                            perf_stages["logs_prefilter_has_bot_ref"] = False
+            db_read_ms = (time.perf_counter() - t_db) * 1000.0
 
+            t_post_db = time.perf_counter()
             for row in kills_total_rows:
                 bid = str(row["bot_id"] or "")
                 if bid not in bot_ids_set:
@@ -2760,33 +3124,45 @@ def risk_hooks(context):
                 mode_key = self._normalize_breaker_mode(str(row["mode"] or ""))
                 kills_by_mode_24h_per_bot[bid][mode_key] = int(row["n"] or 0)
 
-            if include_recent_logs:
+            if include_recent_logs and int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT) > 0:
+                perf_stages["logs_rows_read"] = len(log_rows)
+                payload_cache: dict[int, dict[str, Any]] = {}
+                per_bot_limit = max(1, int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT))
+                remaining_slots: dict[str, int] = {bid: per_bot_limit for bid in bot_ids_ordered}
+                bots_pending = len(bot_ids_ordered)
                 for row in log_rows:
-                    related_raw = row["related_ids"] if row["related_ids"] is not None else "[]"
-                    payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
-                    try:
-                        related_ids = json.loads(related_raw)
-                    except Exception:
-                        related_ids = []
-                    try:
-                        payload = json.loads(payload_raw)
-                    except Exception:
-                        payload = {}
-                    payload_map = payload if isinstance(payload, dict) else {}
+                    row_id = int(row["id"])
+                    payload_map = payload_cache.get(row_id)
+                    if payload_map is None:
+                        payload_raw = row["payload_json"] if row["payload_json"] is not None else "{}"
+                        try:
+                            payload = json.loads(payload_raw)
+                        except Exception:
+                            payload = {}
+                        payload_map = payload if isinstance(payload, dict) else {}
+                        payload_cache[row_id] = payload_map
+
                     targets: set[str] = set()
-                    if isinstance(related_ids, list):
-                        for rid in related_ids:
-                            rid_s = str(rid or "").strip()
-                            if rid_s and rid_s in bot_ids_set:
-                                targets.add(rid_s)
-                    payload_bot_id = str(payload_map.get("bot_id") or "").strip()
-                    if payload_bot_id in bot_ids_set:
-                        targets.add(payload_bot_id)
+                    ref_bot_id = str(row["ref_bot_id"] or "").strip() if "ref_bot_id" in row.keys() else ""
+                    if ref_bot_id and ref_bot_id in bot_ids_set:
+                        targets.add(ref_bot_id)
+                    if not targets:
+                        related_raw = row["related_ids"] if row["related_ids"] is not None else "[]"
+                        try:
+                            related_ids = json.loads(related_raw)
+                        except Exception:
+                            related_ids = []
+                        for ref in self._extract_bot_refs_from_log(
+                            related_ids if isinstance(related_ids, list) else [],
+                            payload_map,
+                        ):
+                            if ref in bot_ids_set:
+                                targets.add(ref)
                     if not targets:
                         continue
                     payload_entry = {
-                        "id": f"log_{int(row['id'])}",
-                        "numeric_id": int(row["id"]),
+                        "id": f"log_{row_id}",
+                        "numeric_id": row_id,
                         "ts": str(row["ts"] or ""),
                         "type": str(row["type"] or ""),
                         "severity": str(row["severity"] or ""),
@@ -2795,13 +3171,22 @@ def risk_hooks(context):
                         "payload": payload_map,
                     }
                     for bid in targets:
+                        if remaining_slots.get(bid, 0) <= 0:
+                            continue
                         bot_logs = logs_per_bot.get(bid)
-                        if bot_logs is None or len(bot_logs) >= 20:
+                        if bot_logs is None:
                             continue
                         bot_logs.append(payload_entry)
-                    if all(len(entries) >= 20 for entries in logs_per_bot.values()):
+                        remaining_slots[bid] = int(remaining_slots.get(bid, 0)) - 1
+                        if remaining_slots[bid] == 0:
+                            bots_pending -= 1
+                    if bots_pending <= 0:
                         break
+            post_db_process_ms = (time.perf_counter() - t_post_db) * 1000.0
+        perf_stages["stage_db_reads_ms"] = round(db_read_ms, 3)
+        perf_stages["stage_db_process_ms"] = round(post_db_process_ms, 3)
 
+        t_stage = time.perf_counter()
         kills_global_total = sum(sum(mode_counts.values()) for mode_counts in kills_by_mode_per_bot.values())
         kills_global_24h = sum(sum(mode_counts.values()) for mode_counts in kills_by_mode_24h_per_bot.values())
 
@@ -2871,8 +3256,16 @@ def risk_hooks(context):
             }
             out[bot_id] = {
                 "metrics": metrics,
-                "recent_logs": logs_per_bot.get(bot_id, []) if include_recent_logs else [],
+                "recent_logs": (
+                    logs_per_bot.get(bot_id, [])
+                    if include_recent_logs and int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT) > 0
+                    else []
+                ),
             }
+        perf_stages["stage_assemble_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+        perf_stages["total_ms"] = round((time.perf_counter() - t_overview_start) * 1000.0, 3)
+        if isinstance(perf, dict):
+            perf["overview"] = perf_stages
         return out
 
     def _bot_metrics(
@@ -2922,7 +3315,12 @@ def risk_hooks(context):
             "recommendations_rejected": 0,
         }
 
-    def list_bot_instances(self, *, recommendations: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    def list_bot_instances(
+        self,
+        *,
+        recommendations: list[dict[str, Any]] | None = None,
+        overview_perf: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         rows = self.load_bots()
         strategies = self.list_strategies()
         runs = self.load_runs()
@@ -2933,6 +3331,7 @@ def risk_hooks(context):
             strategies=strategies,
             runs=runs,
             include_recent_logs=BOTS_OVERVIEW_INCLUDE_RECENT_LOGS,
+            perf=overview_perf,
         )
         out: list[dict[str, Any]] = []
         for row in rows:
@@ -3049,6 +3448,23 @@ def risk_hooks(context):
             payload={"status": rows[idx].get("status"), "mode": rows[idx].get("mode"), "engine": rows[idx].get("engine")},
         )
         return rows[idx]
+
+    def delete_bot_instance(self, bot_id: str) -> dict[str, Any]:
+        rows = self.load_bots()
+        idx = next((i for i, row in enumerate(rows) if str(row.get("id")) == bot_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="BotInstance not found")
+        deleted = rows.pop(idx)
+        self.save_bots(rows)
+        self.add_log(
+            event_type="bot_instance",
+            severity="info",
+            module="learning",
+            message=f"Bot eliminado: {bot_id}",
+            related_ids=[bot_id],
+            payload={"mode": deleted.get("mode"), "status": deleted.get("status"), "engine": deleted.get("engine")},
+        )
+        return deleted
 
     def list_strategies(self) -> list[dict[str, Any]]:
         metadata = self.load_strategy_meta()
@@ -3873,6 +4289,7 @@ def risk_hooks(context):
         rollover_bps: float,
         validation_mode: str,
         use_orderflow_data: bool = True,
+        strict_strategy_id: bool = False,
     ) -> dict[str, Any]:
         strategy = self.strategy_or_404(strategy_id)
         market_n = normalize_market(market)
@@ -3892,6 +4309,7 @@ def risk_hooks(context):
                 strategy_id=strategy_id,
                 validation_mode=validation_mode,
                 use_orderflow_data=bool(use_orderflow_data),
+                strict_strategy_id=bool(strict_strategy_id),
                 costs=BacktestCosts(
                     fees_bps=fees_bps,
                     spread_bps=spread_bps,
@@ -3956,6 +4374,7 @@ def risk_hooks(context):
             "promotion_blocked": fund_promotion_blocked,
             "use_orderflow_data_requested": bool(use_orderflow_data),
             "use_orderflow_data": orderflow_enabled,
+            "strict_strategy_id": bool(strict_strategy_id),
             "orderflow_feature_set": orderflow_feature_set,
             "orderflow_feature_source": "request",
         }
@@ -4050,6 +4469,7 @@ def risk_hooks(context):
                 "dataset_range": {"start": loaded.start, "end": loaded.end},
                 "period": {"start": start, "end": end},
                 "use_orderflow_data": bool(orderflow_enabled),
+                "strict_strategy_id": bool(strict_strategy_id),
                 "orderflow_feature_set": orderflow_feature_set,
             },
             "equity_curve": engine_result["equity_curve"],
@@ -4082,6 +4502,7 @@ def risk_hooks(context):
             "fund_risk_multiplier": run.get("fund_risk_multiplier"),
             "fund_score": run.get("fund_score"),
             "use_orderflow_data": bool(orderflow_enabled),
+            "strict_strategy_id": bool(strict_strategy_id),
             "orderflow_feature_set": orderflow_feature_set,
             "created_at": run["created_at"],
         }
@@ -4143,10 +4564,13 @@ def risk_hooks(context):
         with self._connect() as conn:
             ts_now = utc_now_iso()
             event_type_norm = str(event_type or "").strip().lower()
+            related_ids_list = related_ids if isinstance(related_ids, list) else []
+            payload_map = payload if isinstance(payload, dict) else {}
+            has_bot_ref = 1 if self._log_has_bot_ref(related_ids_list, payload_map) else 0
             cursor = conn.execute(
                 """
-                INSERT INTO logs (ts, type, severity, module, message, related_ids, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO logs (ts, type, severity, module, message, related_ids, payload_json, has_bot_ref)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts_now,
@@ -4154,12 +4578,19 @@ def risk_hooks(context):
                     severity,
                     module,
                     message,
-                    json.dumps(related_ids),
-                    json.dumps(payload),
+                    json.dumps(related_ids_list),
+                    json.dumps(payload_map),
+                    has_bot_ref,
                 ),
             )
+            if has_bot_ref:
+                bot_refs = self._extract_bot_refs_from_log(related_ids_list, payload_map)
+                if bot_refs:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO log_bot_refs (log_id, bot_id) VALUES (?, ?)",
+                        [(int(cursor.lastrowid), bot_id) for bot_id in bot_refs],
+                    )
             if event_type_norm == "breaker_triggered":
-                payload_map = payload if isinstance(payload, dict) else {}
                 self._insert_breaker_event(
                     conn,
                     ts=ts_now,
@@ -4278,20 +4709,28 @@ def _invalidate_bots_overview_cache() -> None:
     with _BOTS_OVERVIEW_CACHE_LOCK:
         _BOTS_OVERVIEW_CACHE["expires_at_epoch"] = 0.0
         _BOTS_OVERVIEW_CACHE["payload"] = None
+        _BOTS_OVERVIEW_CACHE["perf"] = None
 
 
-def _get_bots_overview_payload_cached(*, recommendations: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], str]:
+def _get_bots_overview_payload_cached(
+    *,
+    recommendations: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
     now_epoch = time.time()
     with _BOTS_OVERVIEW_CACHE_LOCK:
         cached_payload = _BOTS_OVERVIEW_CACHE.get("payload")
         if cached_payload and now_epoch < float(_BOTS_OVERVIEW_CACHE.get("expires_at_epoch", 0.0)):
-            return cached_payload, "hit"
-    items = store.list_bot_instances(recommendations=recommendations)
+            cached_perf = _BOTS_OVERVIEW_CACHE.get("perf")
+            return cached_payload, "hit", (cached_perf if isinstance(cached_perf, dict) else {})
+    overview_perf: dict[str, Any] = {}
+    items = store.list_bot_instances(recommendations=recommendations, overview_perf=overview_perf)
     payload = {"items": items, "total": len(items)}
+    cache_perf = {"overview": dict(overview_perf.get("overview") or {})}
     with _BOTS_OVERVIEW_CACHE_LOCK:
         _BOTS_OVERVIEW_CACHE["expires_at_epoch"] = now_epoch + float(BOTS_OVERVIEW_CACHE_TTL_SEC)
         _BOTS_OVERVIEW_CACHE["payload"] = payload
-    return payload, "miss"
+        _BOTS_OVERVIEW_CACHE["perf"] = cache_perf
+    return payload, "miss", cache_perf
 
 
 def _should_log_bots_overview_slow(now_epoch: float) -> bool:
@@ -4461,13 +4900,8 @@ def _runtime_engine_from_state(state: dict[str, Any] | None) -> str:
 
 
 def _is_trusted_internal_proxy(request: Request) -> bool:
-    configured = internal_proxy_token()
-    if not configured:
-        return False
-    provided = (request.headers.get("x-rtlab-proxy-token") or "").strip()
-    if not provided:
-        return False
-    return hmac.compare_digest(provided, configured)
+    trusted, _reason = _internal_proxy_token_auth_result(request)
+    return trusted
 
 
 def _request_client_ip(request: Request) -> str:
@@ -4479,11 +4913,62 @@ def _request_client_ip(request: Request) -> str:
         return "unknown"
 
 
+def _should_log_internal_header_alert(cache_key: str) -> bool:
+    now_epoch = time.time()
+    with _INTERNAL_HEADER_ALERT_LOCK:
+        last = float(_INTERNAL_HEADER_ALERT_CACHE.get(cache_key, 0.0) or 0.0)
+        if now_epoch - last < float(SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC):
+            return False
+        _INTERNAL_HEADER_ALERT_CACHE[cache_key] = now_epoch
+        return True
+
+
+def _log_internal_header_spoof_attempt(
+    request: Request,
+    *,
+    reason: str,
+    internal_role: str,
+    internal_user: str,
+) -> None:
+    client_ip = _request_client_ip(request)
+    cache_key = f"{client_ip}:{reason}:{internal_role}:{internal_user[:64]}"
+    if not _should_log_internal_header_alert(cache_key):
+        return
+    try:
+        store.add_log(
+            event_type="security_auth",
+            severity="warn",
+            module="auth",
+            message="Intento de headers internos sin token valido",
+            related_ids=[],
+            payload={
+                "reason": reason,
+                "client_ip": client_ip,
+                "path": request.url.path,
+                "method": request.method,
+                "internal_role": internal_role,
+                "internal_user": internal_user[:120],
+                "has_proxy_token_header": bool((request.headers.get("x-rtlab-proxy-token") or "").strip()),
+            },
+        )
+    except Exception:
+        # Auth path must fail closed regardless of logging failures.
+        return
+
+
 def current_user(request: Request) -> dict[str, str]:
     internal_role = (request.headers.get("x-rtlab-role") or "").lower().strip()
     internal_user = (request.headers.get("x-rtlab-user") or "").strip()
-    if internal_role in ALLOWED_ROLES and internal_user and _is_trusted_internal_proxy(request):
-        return {"username": internal_user, "role": internal_role}
+    if internal_role in ALLOWED_ROLES and internal_user:
+        trusted, reason = _internal_proxy_token_auth_result(request)
+        if trusted:
+            return {"username": internal_user, "role": internal_role}
+        _log_internal_header_spoof_attempt(
+            request,
+            reason=reason,
+            internal_role=internal_role,
+            internal_user=internal_user,
+        )
 
     auth_header = request.headers.get("authorization") or ""
     if auth_header.lower().startswith("bearer "):
@@ -4984,6 +5469,20 @@ def create_app() -> FastAPI:
     def me(user: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return {"username": user["username"], "role": user["role"]}
 
+    @app.get("/api/v1/auth/internal-proxy/status")
+    def internal_proxy_status(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        state = _internal_proxy_token_state()
+        return {
+            "ok": bool(state.get("active_token_configured")),
+            "active_token_configured": bool(state.get("active_token_configured")),
+            "previous_token_configured": bool(state.get("previous_token_configured")),
+            "previous_token_enabled": bool(state.get("previous_token_enabled")),
+            "previous_token_expires_at": state.get("previous_token_expires_at"),
+            "previous_token_seconds_remaining": int(state.get("previous_token_seconds_remaining") or 0),
+            "warnings": state.get("warnings") or [],
+            "rotation_ready": bool(state.get("active_token_configured") and state.get("previous_token_enabled")),
+        }
+
     @app.get("/api/v1/gates")
     def gates(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         payload = evaluate_gates()
@@ -5140,12 +5639,13 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         t0 = time.perf_counter()
         recs = learning_service.load_all_recommendations()
-        payload, cache_state = _get_bots_overview_payload_cached(recommendations=recs)
+        payload, cache_state, cache_perf = _get_bots_overview_payload_cached(recommendations=recs)
         total_ms = (time.perf_counter() - t0) * 1000.0
         response.headers["X-RTLAB-Bots-Overview-Cache"] = cache_state
         response.headers["X-RTLAB-Bots-Overview-MS"] = f"{total_ms:.3f}"
         response.headers["X-RTLAB-Bots-Count"] = str(int(payload.get("total") or 0))
         response.headers["X-RTLAB-Bots-Recent-Logs"] = "enabled" if BOTS_OVERVIEW_INCLUDE_RECENT_LOGS else "disabled"
+        response.headers["X-RTLAB-Bots-Recent-Logs-Per-Bot"] = str(int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT))
 
         if total_ms >= float(BOTS_OVERVIEW_PROFILE_SLOW_MS):
             now_epoch = time.time()
@@ -5161,6 +5661,7 @@ def create_app() -> FastAPI:
                         "cache": cache_state,
                         "bots_total": int(payload.get("total") or 0),
                         "recent_logs_enabled": bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS),
+                        "overview_perf": cache_perf.get("overview") if isinstance(cache_perf.get("overview"), dict) else {},
                     },
                 )
 
@@ -5171,7 +5672,9 @@ def create_app() -> FastAPI:
             "cache": cache_state,
             "latency_ms": round(total_ms, 3),
             "recent_logs_enabled": bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS),
+            "recent_logs_per_bot": int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT),
             "slow_threshold_ms": int(BOTS_OVERVIEW_PROFILE_SLOW_MS),
+            "overview": cache_perf.get("overview") if isinstance(cache_perf.get("overview"), dict) else {},
         }
         return out
 
@@ -5231,6 +5734,12 @@ def create_app() -> FastAPI:
         items = store.list_bot_instances(recommendations=recs)
         enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
         return {"ok": True, "bot": enriched}
+
+    @app.delete("/api/v1/bots/{bot_id}")
+    def delete_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        deleted = store.delete_bot_instance(bot_id)
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "deleted": deleted, "remaining": len(store.load_bots())}
 
     @app.post("/api/v1/bots/bulk-patch")
     def patch_bots_bulk(body: BotBulkPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -6179,6 +6688,8 @@ def create_app() -> FastAPI:
         validation_mode = body.get("validation_mode") or "walk-forward"
         use_orderflow_raw = body.get("use_orderflow_data", True)
         use_orderflow_data = bool(use_orderflow_raw) if isinstance(use_orderflow_raw, bool) else str(use_orderflow_raw).strip().lower() not in {"0", "false", "no", "off"}
+        strict_raw = body.get("strict_strategy_id", False)
+        strict_strategy_id = bool(strict_raw) if isinstance(strict_raw, bool) else str(strict_raw).strip().lower() in {"1", "true", "yes", "on"}
 
         market = body.get("market")
         symbol = body.get("symbol")
@@ -6205,6 +6716,7 @@ def create_app() -> FastAPI:
                     rollover_bps=rollover_bps,
                     validation_mode=validation_mode,
                     use_orderflow_data=use_orderflow_data,
+                    strict_strategy_id=strict_strategy_id,
                 )
             except FileNotFoundError as exc:
                 mk = str(market).strip().lower()
@@ -7740,6 +8252,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Invalid mode: {selected_mode}")
         payload = diagnose_exchange(selected_mode, force_refresh=force)
         return payload
+
+    @app.get("/api/v1/diagnostics/breaker-events")
+    def diagnostics_breaker_events(
+        window_hours: int = Query(default=BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS, ge=1, le=168),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.breaker_events_integrity(window_hours=window_hours)
 
     @app.post("/api/v1/bot/mode")
     def bot_mode(body: BotModeBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

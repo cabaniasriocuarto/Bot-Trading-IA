@@ -175,7 +175,7 @@ def test_gates_requires_auth(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_internal_headers_require_proxy_token(tmp_path: Path, monkeypatch) -> None:
-  _, client = _build_app(tmp_path, monkeypatch)
+  module, client = _build_app(tmp_path, monkeypatch)
   spoof_headers = {"x-rtlab-role": "admin", "x-rtlab-user": "spoof"}
 
   blocked_no_token = client.get("/api/v1/me", headers=spoof_headers)
@@ -194,6 +194,77 @@ def test_internal_headers_require_proxy_token(tmp_path: Path, monkeypatch) -> No
   )
   assert allowed.status_code == 200
   assert allowed.json()["role"] == "admin"
+
+  logs_payload = module.store.list_logs(severity="warn", module="auth", since=None, until=None, page=1, page_size=200)
+  items = logs_payload.get("items") or []
+  security_logs = [row for row in items if str(row.get("type") or "") == "security_auth"]
+  assert security_logs
+  reasons = {str((row.get("payload") or {}).get("reason") or "") for row in security_logs}
+  assert "missing_proxy_token" in reasons
+  assert "invalid_proxy_token" in reasons
+
+
+def test_internal_proxy_allows_previous_token_with_future_expiry(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setenv("INTERNAL_PROXY_TOKEN", "proxy-new")
+  monkeypatch.setenv("INTERNAL_PROXY_TOKEN_PREVIOUS", "proxy-old")
+  future_expiry = (module.utc_now() + module.timedelta(minutes=30)).isoformat()
+  monkeypatch.setenv("INTERNAL_PROXY_TOKEN_PREVIOUS_EXPIRES_AT", future_expiry)
+
+  headers = {
+    "x-rtlab-role": "admin",
+    "x-rtlab-user": "spoof",
+    "x-rtlab-proxy-token": "proxy-old",
+  }
+  allowed = client.get("/api/v1/me", headers=headers)
+  assert allowed.status_code == 200, allowed.text
+  assert allowed.json()["role"] == "admin"
+
+  status = client.get("/api/v1/auth/internal-proxy/status", headers=headers)
+  assert status.status_code == 200, status.text
+  payload = status.json()
+  assert payload["ok"] is True
+  assert payload["active_token_configured"] is True
+  assert payload["previous_token_configured"] is True
+  assert payload["previous_token_enabled"] is True
+  assert payload["rotation_ready"] is True
+  assert isinstance(payload.get("previous_token_seconds_remaining"), int)
+  assert payload["previous_token_seconds_remaining"] > 0
+
+
+def test_internal_proxy_rejects_previous_token_when_expired(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setenv("INTERNAL_PROXY_TOKEN", "proxy-new")
+  monkeypatch.setenv("INTERNAL_PROXY_TOKEN_PREVIOUS", "proxy-old")
+  expired_at = (module.utc_now() - module.timedelta(minutes=2)).isoformat()
+  monkeypatch.setenv("INTERNAL_PROXY_TOKEN_PREVIOUS_EXPIRES_AT", expired_at)
+
+  headers = {
+    "x-rtlab-role": "admin",
+    "x-rtlab-user": "spoof",
+    "x-rtlab-proxy-token": "proxy-old",
+  }
+  blocked = client.get("/api/v1/me", headers=headers)
+  assert blocked.status_code == 401
+
+  status_headers = {
+    "x-rtlab-role": "admin",
+    "x-rtlab-user": "spoof",
+    "x-rtlab-proxy-token": "proxy-new",
+  }
+  status = client.get("/api/v1/auth/internal-proxy/status", headers=status_headers)
+  assert status.status_code == 200, status.text
+  payload = status.json()
+  assert payload["previous_token_configured"] is True
+  assert payload["previous_token_enabled"] is False
+  assert payload["rotation_ready"] is False
+  warnings = payload.get("warnings") or []
+  assert any("expirado" in str(msg).lower() for msg in warnings)
+
+  logs_payload = module.store.list_logs(severity="warn", module="auth", since=None, until=None, page=1, page_size=200)
+  items = logs_payload.get("items") or []
+  security_logs = [row for row in items if str(row.get("type") or "") == "security_auth"]
+  assert any(str((row.get("payload") or {}).get("reason") or "") == "expired_previous_token" for row in security_logs)
 
 
 def test_auth_login_rate_limit_and_lock_guard(tmp_path: Path, monkeypatch) -> None:
@@ -776,6 +847,34 @@ def test_backtests_run_rejects_purged_cv_and_cpcv_until_implemented(tmp_path: Pa
   assert "no está implementado" in str(cpcv.json().get("detail") or "")
 
 
+def test_backtests_run_forwards_strict_strategy_id_flag(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  captured: dict[str, object] = {}
+
+  def _fake_event_backtest_run(**kwargs):
+    captured.update(kwargs)
+    return {"id": "BT-STRICT-FLAG"}
+
+  monkeypatch.setattr(module.store, "create_event_backtest_run", _fake_event_backtest_run)
+
+  payload = {
+    "strategy_id": "trend_pullback_orderflow_confirm_v1",
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-01-31",
+    "strict_strategy_id": True,
+  }
+  res = client.post("/api/v1/backtests/run", headers=headers, json=payload)
+  assert res.status_code == 200, res.text
+  assert res.json()["run_id"] == "BT-STRICT-FLAG"
+  assert captured.get("strict_strategy_id") is True
+
+
 def test_validate_promotion_blocks_mixed_orderflow_feature_set(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch, mode="paper")
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -1242,6 +1341,7 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   assert payload["items"]
   assert payload["items"][0]["id"].startswith("BOT-")
   assert "metrics" in payload["items"][0]
+  initial_total = int(payload.get("total") or 0)
 
   strategies = client.get("/api/v1/strategies", headers=headers).json()
   pool_ids = [row["id"] for row in strategies[:2]]
@@ -1288,6 +1388,13 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   assert updated_bot["mode"] == "paper"
   assert updated_bot["status"] == "paused"
 
+  delete_res = client.delete(f"/api/v1/bots/{bot['id']}", headers=headers)
+  assert delete_res.status_code == 200, delete_res.text
+  delete_payload = delete_res.json()
+  assert delete_payload["ok"] is True
+  assert str((delete_payload.get("deleted") or {}).get("id") or "") == bot["id"]
+  assert int(delete_payload.get("remaining") or 0) == initial_total
+
 
 def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
@@ -1297,9 +1404,9 @@ def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monk
   call_counter = {"n": 0}
   original = module.store.list_bot_instances
 
-  def _wrapped_list_bot_instances(*, recommendations=None):
+  def _wrapped_list_bot_instances(*, recommendations=None, overview_perf=None):
     call_counter["n"] += 1
-    return original(recommendations=recommendations)
+    return original(recommendations=recommendations, overview_perf=overview_perf)
 
   monkeypatch.setattr(module.store, "list_bot_instances", _wrapped_list_bot_instances)
 
@@ -1337,6 +1444,9 @@ def test_bots_overview_perf_headers_and_debug_payload(tmp_path: Path, monkeypatc
   perf = first.json().get("perf") or {}
   assert perf.get("cache") in {"hit", "miss"}
   assert isinstance(perf.get("latency_ms"), (int, float))
+  overview_perf = perf.get("overview") or {}
+  assert isinstance(overview_perf, dict)
+  assert isinstance(overview_perf.get("total_ms"), (int, float))
   assert "X-RTLAB-Bots-Overview-Cache" in first.headers
   assert "X-RTLAB-Bots-Overview-MS" in first.headers
   assert "X-RTLAB-Bots-Count" in first.headers
@@ -1345,6 +1455,153 @@ def test_bots_overview_perf_headers_and_debug_payload(tmp_path: Path, monkeypatc
   second = client.get("/api/v1/bots?debug_perf=true", headers=headers)
   assert second.status_code == 200, second.text
   assert (second.json().get("perf") or {}).get("cache") == "hit"
+
+
+def test_bots_overview_only_computes_kpis_for_strategies_in_pool(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  call_counter = {"n": 0}
+  original = module.store._aggregate_strategy_kpis
+
+  def _wrapped_aggregate_strategy_kpis(runs):
+    call_counter["n"] += 1
+    return original(runs)
+
+  monkeypatch.setattr(module.store, "_aggregate_strategy_kpis", _wrapped_aggregate_strategy_kpis)
+
+  bots = [
+    {"id": "BOT-A", "mode": "paper", "pool_strategy_ids": ["S1"]},
+    {"id": "BOT-B", "mode": "testnet", "pool_strategy_ids": ["S2"]},
+  ]
+  strategies = [
+    {"id": "S1"},
+    {"id": "S2"},
+    {"id": "S3"},  # not referenced by any bot pool
+  ]
+  perf: dict = {}
+
+  overview = module.store.get_bots_overview(
+    bots=bots,
+    strategies=strategies,
+    runs=[],
+    recommendations=[],
+    include_recent_logs=False,
+    perf=perf,
+  )
+  assert "BOT-A" in overview
+  assert "BOT-B" in overview
+  assert call_counter["n"] == 8  # 2 strategies in pool * 4 modes
+  stage = (perf.get("overview") or {})
+  assert stage.get("strategies_in_pool_count") == 2
+
+
+def test_logs_has_bot_ref_materialized_and_bots_recent_logs_ignore_unrelated(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  bots_payload = client.get("/api/v1/bots", headers=headers)
+  assert bots_payload.status_code == 200, bots_payload.text
+  bot_id = str((bots_payload.json().get("items") or [])[0]["id"])
+
+  log_unrelated = module.store.add_log(
+    event_type="health",
+    severity="info",
+    module="tests",
+    message="MARK_UNRELATED_NO_BOT_REF",
+    related_ids=[],
+    payload={"probe": "x"},
+  )
+  log_related_by_related_ids = module.store.add_log(
+    event_type="status",
+    severity="info",
+    module="tests",
+    message="MARK_RELATED_IDS_BOT_REF",
+    related_ids=[bot_id],
+    payload={"probe": "y"},
+  )
+  log_related_by_payload = module.store.add_log(
+    event_type="status",
+    severity="info",
+    module="tests",
+    message="MARK_PAYLOAD_BOT_REF",
+    related_ids=[],
+    payload={"bot_id": bot_id},
+  )
+
+  with module.store._connect() as conn:
+    rows = conn.execute(
+      "SELECT id, has_bot_ref FROM logs WHERE id IN (?, ?, ?)",
+      (log_unrelated, log_related_by_related_ids, log_related_by_payload),
+    ).fetchall()
+  has_by_id = {int(row["id"]): int(row["has_bot_ref"]) for row in rows}
+  assert has_by_id[log_unrelated] == 0
+  assert has_by_id[log_related_by_related_ids] == 1
+  assert has_by_id[log_related_by_payload] == 1
+
+  module._invalidate_bots_overview_cache()
+  overview_res = client.get("/api/v1/bots?debug_perf=true", headers=headers)
+  assert overview_res.status_code == 200, overview_res.text
+  payload = overview_res.json()
+  stage = (((payload.get("perf") or {}).get("overview")) or {})
+  assert stage.get("logs_prefilter_has_bot_ref") is True
+
+  row = next(item for item in (payload.get("items") or []) if str(item.get("id")) == bot_id)
+  messages = [str(entry.get("message") or "") for entry in (row.get("recent_logs") or [])]
+  assert "MARK_RELATED_IDS_BOT_REF" in messages
+  assert "MARK_PAYLOAD_BOT_REF" in messages
+  assert "MARK_UNRELATED_NO_BOT_REF" not in messages
+
+
+def test_log_bot_refs_table_is_populated_and_used_in_overview(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  first_list = client.get("/api/v1/bots", headers=headers)
+  assert first_list.status_code == 200, first_list.text
+  bot1_id = str((first_list.json().get("items") or [])[0]["id"])
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={"name": "AutoBot RefTable", "mode": "paper", "status": "active"},
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot2_id = str((create_res.json().get("bot") or {}).get("id") or "")
+  assert bot2_id
+
+  log_multi = module.store.add_log(
+    event_type="status",
+    severity="info",
+    module="tests",
+    message="MARK_MULTI_BOT_REFS",
+    related_ids=[bot1_id],
+    payload={"bot_ids": [bot2_id]},
+  )
+
+  with module.store._connect() as conn:
+    ref_rows = conn.execute(
+      "SELECT bot_id FROM log_bot_refs WHERE log_id = ? ORDER BY bot_id ASC",
+      (log_multi,),
+    ).fetchall()
+  refs = [str(row["bot_id"] or "") for row in ref_rows]
+  assert bot1_id in refs
+  assert bot2_id in refs
+
+  module._invalidate_bots_overview_cache()
+  overview_res = client.get("/api/v1/bots?debug_perf=true", headers=headers)
+  assert overview_res.status_code == 200, overview_res.text
+  payload = overview_res.json()
+  stage = (((payload.get("perf") or {}).get("overview")) or {})
+  assert stage.get("logs_prefilter_mode") == "log_bot_refs"
+
+  items = payload.get("items") or []
+  row1 = next(item for item in items if str(item.get("id")) == bot1_id)
+  row2 = next(item for item in items if str(item.get("id")) == bot2_id)
+  msgs1 = [str(entry.get("message") or "") for entry in (row1.get("recent_logs") or [])]
+  msgs2 = [str(entry.get("message") or "") for entry in (row2.get("recent_logs") or [])]
+  assert "MARK_MULTI_BOT_REFS" in msgs1
+  assert "MARK_MULTI_BOT_REFS" in msgs2
 
 
 def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch) -> None:
@@ -1409,6 +1666,87 @@ def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch)
   assert row2["metrics"]["kills_by_mode"]["paper"] == 0
   assert row2["metrics"]["kills_by_mode"]["testnet"] == 1
   assert row2["metrics"]["kills_by_mode"]["unknown"] == 0
+
+
+def test_breaker_events_integrity_endpoint_pass(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", "24")
+  monkeypatch.setenv("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", "0.40")
+  monkeypatch.setenv("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", "4")
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  for _ in range(5):
+    module.store.add_log(
+      event_type="breaker_triggered",
+      severity="warn",
+      module="risk",
+      message="breaker known",
+      related_ids=[],
+      payload={"bot_id": "BOT-KNOWN", "mode": "paper", "reason": "test"},
+    )
+  module.store.add_log(
+    event_type="breaker_triggered",
+    severity="warn",
+    module="risk",
+    message="breaker unknown mode",
+    related_ids=[],
+    payload={"bot_id": "BOT-KNOWN", "reason": "missing_mode"},
+  )
+
+  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+
+  assert payload["status"] == "PASS"
+  assert payload["ok"] is True
+  assert payload["window_hours"] == 24
+  assert (payload.get("thresholds") or {}).get("unknown_ratio_warn") == 0.4
+  assert (payload.get("thresholds") or {}).get("min_events_warn") == 4
+  assert int((payload.get("overall") or {}).get("total") or 0) >= 6
+  assert int((payload.get("overall") or {}).get("unknown_any_total") or 0) >= 1
+  assert float((payload.get("overall") or {}).get("unknown_any_ratio") or 0.0) < 0.4
+  assert payload.get("warnings") == []
+
+
+def test_breaker_events_integrity_endpoint_warn_when_unknown_ratio_high(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", "24")
+  monkeypatch.setenv("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", "0.20")
+  monkeypatch.setenv("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", "4")
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  for _ in range(3):
+    module.store.add_log(
+      event_type="breaker_triggered",
+      severity="warn",
+      module="risk",
+      message="breaker known",
+      related_ids=[],
+      payload={"bot_id": "BOT-KNOWN", "mode": "paper", "reason": "test"},
+    )
+  for _ in range(3):
+    module.store.add_log(
+      event_type="breaker_triggered",
+      severity="warn",
+      module="risk",
+      message="breaker unknown",
+      related_ids=[],
+      payload={"reason": "missing_bot_and_mode"},
+    )
+
+  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+
+  assert payload["status"] == "WARN"
+  assert payload["ok"] is False
+  assert int((payload.get("overall") or {}).get("total") or 0) >= 6
+  assert float((payload.get("overall") or {}).get("unknown_any_ratio") or 0.0) > 0.2
+  warnings = payload.get("warnings") or []
+  assert warnings
+  assert any("overall:" in str(msg) for msg in warnings)
 
 
 def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
