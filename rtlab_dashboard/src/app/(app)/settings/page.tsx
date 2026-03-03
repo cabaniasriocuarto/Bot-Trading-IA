@@ -101,6 +101,8 @@ type RolloutStatusResponse = {
 };
 
 type RolloutActionResponse = { ok?: boolean; state: RolloutStatusResponse };
+const ROLLOUT_POLL_ACTIVE_MS = 15000;
+const ROLLOUT_POLL_HIDDEN_MS = 45000;
 
 const ROLLOUT_STATE_TO_EVAL_PHASE: Record<string, "paper_soak" | "testnet_soak" | "shadow" | "canary05" | "canary15" | "canary35" | "canary60"> = {
   PAPER_SOAK: "paper_soak",
@@ -185,7 +187,7 @@ export default function SettingsPage() {
   const [rolloutBaselineRunId, setRolloutBaselineRunId] = useState("");
   const [rolloutReason, setRolloutReason] = useState("");
   const [learningConfig, setLearningConfig] = useState<LearningConfigResponse | null>(null);
-  const [learningConfigError, setLearningConfigError] = useState("");
+  const [isPageVisible, setIsPageVisible] = useState<boolean>(() => (typeof document === "undefined" ? true : document.visibilityState === "visible"));
 
   useEffect(() => {
     const load = async () => {
@@ -201,7 +203,6 @@ export default function SettingsPage() {
         setGates(gatesPayload.gates);
         setGatesOverall(gatesPayload.overall_status);
         setLearningConfig(cfgLearning);
-        setLearningConfigError("");
         if (!data.learning.engine_id && cfgLearning.selected_engine_id) {
           setSettings((prev) => (prev ? { ...prev, learning: { ...prev.learning, engine_id: cfgLearning.selected_engine_id } } : prev));
         }
@@ -213,6 +214,14 @@ export default function SettingsPage() {
       }
     };
     void load();
+  }, []);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      setIsPageVisible(document.visibilityState === "visible");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
   useEffect(() => {
@@ -249,21 +258,30 @@ export default function SettingsPage() {
     };
 
     void hydrateRolloutPanel();
-    const timer = window.setInterval(() => {
-      void apiGet<RolloutStatusResponse>("/api/v1/rollout/status")
-        .then((payload) => {
-          if (!cancelled) setRollout(payload);
-        })
-        .catch(() => {
-          // silencioso: polling best-effort
-        });
-    }, 15000);
+    let timer: ReturnType<typeof window.setTimeout> | null = null;
+    const schedule = () => {
+      if (cancelled) return;
+      const waitMs = isPageVisible ? ROLLOUT_POLL_ACTIVE_MS : ROLLOUT_POLL_HIDDEN_MS;
+      timer = window.setTimeout(() => {
+        void apiGet<RolloutStatusResponse>("/api/v1/rollout/status")
+          .then((payload) => {
+            if (!cancelled) setRollout(payload);
+          })
+          .catch(() => {
+            // silencioso: polling best-effort
+          })
+          .finally(() => {
+            schedule();
+          });
+      }, waitMs);
+    };
+    schedule();
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
     };
-  }, [rolloutBaselineRunId, rolloutCandidateRunId]);
+  }, [rolloutBaselineRunId, rolloutCandidateRunId, isPageVisible]);
 
   const refreshRollout = async () => {
     try {

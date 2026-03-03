@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { useSession } from "@/components/providers/session-provider";
@@ -36,6 +36,8 @@ type ControlActionPath =
   | "/api/v1/control/close-all";
 
 const CONNECTOR_OPTIONS = ["binance", "bybit", "oanda", "alpaca"] as const;
+const ACTIVE_POLL_MS = 12000;
+const HIDDEN_POLL_MS = 30000;
 
 export default function ExecutionPage() {
   const { role } = useSession();
@@ -68,29 +70,16 @@ export default function ExecutionPage() {
   const [botStatusFilter, setBotStatusFilter] = useState<"all" | "active" | "paused" | "archived">("all");
   const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
   const [botBulkBusy, setBotBulkBusy] = useState(false);
+  const [isPageVisible, setIsPageVisible] = useState<boolean>(() => (typeof document === "undefined" ? true : document.visibilityState === "visible"));
+  const pollInFlightRef = useRef(false);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        setPanelLoading(true);
-        await Promise.all([loadExecutionMetrics(), loadTradingPanel(false)]);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "No se pudo cargar ejecucion.";
-        setError(message);
-      } finally {
-        setPanelLoading(false);
-      }
-    };
-    void load();
-  }, []);
-
-  const loadExecutionMetrics = async () => {
+  const loadExecutionMetrics = useCallback(async () => {
     const exec = await apiGet<ExecutionStats>("/api/v1/execution/metrics");
     setStats(exec);
     setError("");
-  };
+  }, []);
 
-  const loadTradingPanel = async (forceExchange: boolean) => {
+  const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
     const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
@@ -126,9 +115,9 @@ export default function ExecutionPage() {
       setExchangeDiag(null);
       setExchangeDiagError(err instanceof Error ? err.message : "No se pudo diagnosticar el exchange.");
     }
-  };
+  }, []);
 
-  const refreshAll = async (forceExchange = false) => {
+  const refreshAll = useCallback(async (forceExchange = false) => {
     setRefreshing(true);
     setMessage("");
     setControlError("");
@@ -140,7 +129,63 @@ export default function ExecutionPage() {
     } finally {
       setRefreshing(false);
     }
-  };
+  }, [loadExecutionMetrics, loadTradingPanel]);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setPanelLoading(true);
+        await Promise.all([loadExecutionMetrics(), loadTradingPanel(false)]);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "No se pudo cargar ejecucion.";
+        setError(message);
+      } finally {
+        setPanelLoading(false);
+      }
+    };
+    void load();
+  }, [loadExecutionMetrics, loadTradingPanel]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      setIsPageVisible(document.visibilityState === "visible");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof window.setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) return;
+      if (pollInFlightRef.current) {
+        timer = window.setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
+        return;
+      }
+      pollInFlightRef.current = true;
+      try {
+        if (isPageVisible) {
+          await Promise.all([loadExecutionMetrics(), loadTradingPanel(false)]);
+        } else {
+          // Hidden tab: keep lightweight status updates at lower frequency.
+          await loadTradingPanel(false);
+        }
+      } catch {
+        // Best-effort polling: user can always refresh manually.
+      } finally {
+        pollInFlightRef.current = false;
+      }
+      timer = window.setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
+    };
+
+    timer = window.setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [isPageVisible, loadExecutionMetrics, loadTradingPanel]);
 
   const latencySeries = useMemo(
     () =>
