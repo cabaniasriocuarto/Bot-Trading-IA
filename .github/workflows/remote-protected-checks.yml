@@ -1,0 +1,135 @@
+﻿name: Remote Protected Checks (GitHub VM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Backend base URL
+        required: true
+        default: https://bot-trading-ia-production.up.railway.app
+        type: string
+      username:
+        description: Admin username
+        required: true
+        default: Wadmin
+        type: string
+      timeout_sec:
+        description: HTTP timeout seconds
+        required: true
+        default: 15
+        type: number
+      window_hours:
+        description: Breaker diagnostics window (hours)
+        required: true
+        default: 24
+        type: number
+      expect_g9:
+        description: Expected G9 status in this stage
+        required: true
+        default: WARN
+        type: choice
+        options:
+          - WARN
+          - PASS
+          - ANY
+      strict:
+        description: Fail workflow if any required check fails
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  protected-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Validate auth configuration
+        env:
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+        run: |
+          if [[ -z "${RTLAB_ADMIN_PASSWORD}" && -z "${RTLAB_AUTH_TOKEN}" ]]; then
+            echo "Missing secrets: set RTLAB_ADMIN_PASSWORD or RTLAB_AUTH_TOKEN in repository secrets." >&2
+            exit 1
+          fi
+
+      - name: Run protected checks
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          USERNAME: ${{ inputs.username }}
+          TIMEOUT_SEC: ${{ inputs.timeout_sec }}
+          WINDOW_HOURS: ${{ inputs.window_hours }}
+          EXPECT_G9: ${{ inputs.expect_g9 }}
+          STRICT: ${{ inputs.strict }}
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          report_prefix="artifacts/ops_protected_checks_gha_${GITHUB_RUN_ID}"
+
+          cmd=(
+            python scripts/ops_protected_checks_report.py
+            --base-url "${BASE_URL}"
+            --username "${USERNAME}"
+            --timeout-sec "${TIMEOUT_SEC}"
+            --window-hours "${WINDOW_HOURS}"
+            --expect-g9 "${EXPECT_G9}"
+            --report-prefix "${report_prefix}"
+          )
+
+          if [[ "${STRICT}" == "true" ]]; then
+            cmd+=(--strict)
+          fi
+
+          if [[ -n "${RTLAB_AUTH_TOKEN}" ]]; then
+            cmd+=(--auth-token "${RTLAB_AUTH_TOKEN}")
+          else
+            cmd+=(--password "${RTLAB_ADMIN_PASSWORD}")
+          fi
+
+          "${cmd[@]}" | tee artifacts/protected_checks_stdout.log
+
+      - name: Build summary
+        if: always()
+        run: |
+          set -euo pipefail
+          latest_md="$(ls -1t artifacts/ops_protected_checks_gha_${GITHUB_RUN_ID}_*.md 2>/dev/null | head -n 1 || true)"
+          if [[ -n "${latest_md}" && -f "${latest_md}" ]]; then
+            {
+              echo "## Remote Protected Checks"
+              echo
+              grep -E "^- overall_pass:|^- protected_checks_complete:|^- g10_status:|^- g9_status:|^- breaker_ok:|^- internal_proxy_status_ok:" "${latest_md}" || true
+              echo
+              echo "Report file: ${latest_md}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "No protected-checks report generated." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload protected-check artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: protected-checks-${{ github.run_id }}
+          path: |
+            artifacts/ops_protected_checks_gha_${{ github.run_id }}_*.md
+            artifacts/ops_protected_checks_gha_${{ github.run_id }}_*.json
+            artifacts/protected_checks_stdout.log
+          if-no-files-found: warn
