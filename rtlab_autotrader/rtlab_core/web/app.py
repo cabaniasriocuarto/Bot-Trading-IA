@@ -442,6 +442,21 @@ class RunPromoteBody(BaseModel):
     target_mode: Literal["paper", "testnet", "live"] = "paper"
 
 
+class TradesBulkDeleteBody(BaseModel):
+    ids: list[str] | None = None
+    strategy_id: str | None = None
+    symbol: str | None = None
+    side: str | None = None
+    reason_code: str | None = None
+    exit_reason: str | None = None
+    result: str | None = None
+    mode: str | None = None
+    environment: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    dry_run: bool = False
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -7987,22 +8002,8 @@ def create_app() -> FastAPI:
             },
         }
 
-    class TradesBulkDeleteBody(BaseModel):
-        ids: list[str] | None = None
-        strategy_id: str | None = None
-        symbol: str | None = None
-        side: str | None = None
-        reason_code: str | None = None
-        exit_reason: str | None = None
-        result: str | None = None
-        mode: str | None = None
-        environment: str | None = None
-        date_from: str | None = None
-        date_to: str | None = None
-        dry_run: bool = False
-
     @app.post("/api/v1/trades/bulk-delete")
-    def trades_bulk_delete(body: "TradesBulkDeleteBody", user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def trades_bulk_delete(body: TradesBulkDeleteBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         requested_ids = {str(v).strip() for v in (body.ids or []) if str(v).strip()}
         deleted_ids: list[str] = []
         affected_runs: set[str] = set()
