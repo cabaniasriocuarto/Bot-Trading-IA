@@ -201,12 +201,16 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           report_path="artifacts/BOTS_OVERVIEW_BENCHMARK_GHA_${GITHUB_RUN_ID}.md"
+          help_text="$(python scripts/benchmark_bots_overview.py --help 2>&1 || true)"
+          supports_pass_criterion="false"
+          if echo "${help_text}" | grep -q -- "--pass-criterion"; then
+            supports_pass_criterion="true"
+          fi
 
           cmd=(
             python scripts/benchmark_bots_overview.py
             --base-url "${BASE_URL}"
             --username "${USERNAME}"
-            --pass-criterion "${PASS_CRITERION}"
             --requests "${REQUESTS}"
             --warmup "${WARMUP}"
             --timeout-sec "${TIMEOUT_SEC}"
@@ -214,6 +218,11 @@ jobs:
             --report-path "${report_path}"
             --require-evidence
           )
+          if [[ "${supports_pass_criterion}" == "true" ]]; then
+            cmd+=(--pass-criterion "${PASS_CRITERION}")
+          else
+            echo "[warn] benchmark_bots_overview.py sin --pass-criterion en esta revision; continuo con criterio default del script."
+          fi
           if [[ "${RETRY_429}" == "true" ]]; then
             cmd+=(--retry-429 --max-retries-429 "${MAX_RETRIES_429}")
           fi
