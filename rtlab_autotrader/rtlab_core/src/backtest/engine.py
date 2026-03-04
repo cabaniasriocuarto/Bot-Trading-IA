@@ -93,6 +93,17 @@ class MarketDataset:
     manifest: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionProfile:
+    stop_atr_mult: float
+    take_atr_mult: float
+    trail_activate_atr_mult: float
+    trail_distance_atr_mult: float
+    time_stop_bars: int
+    trailing_enabled: bool = True
+    use_ema20_take_profit: bool = False
+
+
 class IndicatorEngine:
     def enrich(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
@@ -198,6 +209,51 @@ class StrategyRunner:
         self._strict_strategy_id = bool(getattr(request, "strict_strategy_id", False))
         self.fee_bps = float(fee_bps if fee_bps is not None else (request.costs.taker_fee_bps or request.costs.fees_bps))
         self._family, self._strategy_supported = self._resolve_strategy_family()
+        self._fallback_profile_family = "trend_pullback"
+        self._profiles: dict[str, ExecutionProfile] = {
+            "trend_pullback": ExecutionProfile(
+                stop_atr_mult=2.0,
+                take_atr_mult=3.0,
+                trail_activate_atr_mult=1.5,
+                trail_distance_atr_mult=2.0,
+                time_stop_bars=20,
+                trailing_enabled=True,
+            ),
+            "breakout": ExecutionProfile(
+                stop_atr_mult=1.8,
+                take_atr_mult=3.2,
+                trail_activate_atr_mult=1.2,
+                trail_distance_atr_mult=1.8,
+                time_stop_bars=16,
+                trailing_enabled=True,
+            ),
+            "meanreversion": ExecutionProfile(
+                stop_atr_mult=1.4,
+                take_atr_mult=1.6,
+                trail_activate_atr_mult=0.0,
+                trail_distance_atr_mult=0.0,
+                time_stop_bars=10,
+                trailing_enabled=False,
+                use_ema20_take_profit=True,
+            ),
+            "defensive": ExecutionProfile(
+                stop_atr_mult=2.2,
+                take_atr_mult=2.8,
+                trail_activate_atr_mult=1.0,
+                trail_distance_atr_mult=1.8,
+                time_stop_bars=18,
+                trailing_enabled=True,
+            ),
+            # Trend-scanning hereda del sub-setup segun regimen en cada entrada.
+            "trend_scanning": ExecutionProfile(
+                stop_atr_mult=2.0,
+                take_atr_mult=3.0,
+                trail_activate_atr_mult=1.5,
+                trail_distance_atr_mult=2.0,
+                time_stop_bars=20,
+                trailing_enabled=True,
+            ),
+        }
         if self._strict_strategy_id and not self._strategy_supported:
             raise ValueError(
                 f"strategy_id='{self.request.strategy_id}' no soportado por BacktestEngine en modo estricto. "
@@ -220,6 +276,12 @@ class StrategyRunner:
         if sid in {"trend_pullback_orderflow_v2", "trend_pullback_orderflow_confirm_v1"} or "trend_pullback" in sid:
             return "trend_pullback", True
         return "trend_pullback", False
+
+    def _execution_profile(self, family: str | None = None) -> ExecutionProfile:
+        key = str(family or "").strip().lower()
+        if key in self._profiles:
+            return self._profiles[key]
+        return self._profiles[self._fallback_profile_family]
 
     def _signal_trend_pullback(self, prev: pd.Series) -> str | None:
         if not self._has_fields(prev, ("ema20", "ema50", "ema200", "adx14", "rsi14", "atr14", "prev_high", "prev_low")):
@@ -283,8 +345,12 @@ class StrategyRunner:
         return None
 
     def _signal_trend_scanning_regime(self, prev: pd.Series) -> str | None:
+        signal, _signal_family = self._signal_trend_scanning_with_family(prev)
+        return signal
+
+    def _signal_trend_scanning_with_family(self, prev: pd.Series) -> tuple[str | None, str]:
         if not self._has_fields(prev, ("close", "adx14", "atr14")):
-            return None
+            return None, "trend_pullback"
         close = max(float(prev["close"]), 0.0001)
         atr = float(prev["atr14"])
         adx = float(prev["adx14"])
@@ -292,24 +358,28 @@ class StrategyRunner:
         if high_vol:
             breakout = self._signal_breakout_volatility(prev)
             if breakout is not None:
-                return breakout
+                return breakout, "breakout"
         if adx >= 20.0:
-            return self._signal_trend_pullback(prev)
+            return self._signal_trend_pullback(prev), "trend_pullback"
         if adx <= 18.0:
-            return self._signal_meanreversion_range(prev)
-        return None
+            return self._signal_meanreversion_range(prev), "meanreversion"
+        return None, "trend_pullback"
 
     def _signal(self, prev: pd.Series) -> str | None:
+        signal, _family = self._signal_with_family(prev)
+        return signal
+
+    def _signal_with_family(self, prev: pd.Series) -> tuple[str | None, str]:
         family = self._family
         if family == "breakout":
-            return self._signal_breakout_volatility(prev)
+            return self._signal_breakout_volatility(prev), "breakout"
         if family == "meanreversion":
-            return self._signal_meanreversion_range(prev)
+            return self._signal_meanreversion_range(prev), "meanreversion"
         if family == "trend_scanning":
-            return self._signal_trend_scanning_regime(prev)
+            return self._signal_trend_scanning_with_family(prev)
         if family == "defensive":
-            return self._signal_defensive_liquidity(prev)
-        return self._signal_trend_pullback(prev)
+            return self._signal_defensive_liquidity(prev), "defensive"
+        return self._signal_trend_pullback(prev), "trend_pullback"
 
     def run(self, df: pd.DataFrame) -> dict[str, Any]:
         cost_model = CostModel(self.request.market, self.request.costs)
@@ -319,6 +389,8 @@ class StrategyRunner:
         trades: list[dict[str, Any]] = []
         position: dict[str, Any] | None = None
         pending_entry: str | None = None
+        pending_profile_family = self._fallback_profile_family
+        pending_profile: ExecutionProfile | None = None
         total_fees = 0.0
         total_spread = 0.0
         total_slippage = 0.0
@@ -336,6 +408,7 @@ class StrategyRunner:
         for i, (ts, bar) in enumerate(rows):
             if pending_entry and position is None:
                 fill = simulator.market_fill(bar, pending_entry, self.qty, fee_bps=self.fee_bps)
+                profile = pending_profile or self._execution_profile(pending_profile_family)
                 atr = max(float(bar.get("atr14", 0.0) or 0.0), max(float(bar["close"]) * 0.001, 0.01))
                 entry_px = float(fill["fill_px"])
                 side = pending_entry
@@ -349,13 +422,22 @@ class StrategyRunner:
                     "entry_spread_cost": float(fill["spread_cost"]),
                     "entry_slippage_cost": float(fill["slippage_cost"]),
                     "atr": atr,
-                    "stop_px": entry_px - 2.0 * atr if side == "long" else entry_px + 2.0 * atr,
-                    "take_px": entry_px + 3.0 * atr if side == "long" else entry_px - 3.0 * atr,
+                    "strategy_family": pending_profile_family,
+                    "stop_atr_mult": float(profile.stop_atr_mult),
+                    "take_atr_mult": float(profile.take_atr_mult),
+                    "trail_activate_atr_mult": float(profile.trail_activate_atr_mult),
+                    "trail_distance_atr_mult": float(profile.trail_distance_atr_mult),
+                    "time_stop_bars": int(profile.time_stop_bars),
+                    "trailing_enabled": bool(profile.trailing_enabled),
+                    "use_ema20_take_profit": bool(profile.use_ema20_take_profit),
+                    "stop_px": entry_px - float(profile.stop_atr_mult) * atr if side == "long" else entry_px + float(profile.stop_atr_mult) * atr,
+                    "take_px": entry_px + float(profile.take_atr_mult) * atr if side == "long" else entry_px - float(profile.take_atr_mult) * atr,
                     "trail_active": False,
                     "trail_px": None,
                     "bars_open": 0,
                 }
                 pending_entry = None
+                pending_profile = None
 
             unrealized = 0.0
             if position is not None:
@@ -369,17 +451,20 @@ class StrategyRunner:
                 unrealized = move * qty
 
                 atr = float(position["atr"])
-                if not position["trail_active"]:
-                    if side == "long" and float(bar["high"]) >= float(position["entry_px"]) + 1.5 * atr:
+                trail_enabled = bool(position.get("trailing_enabled", True))
+                trail_activate_mult = max(0.0, float(position.get("trail_activate_atr_mult") or 0.0))
+                trail_distance_mult = max(0.0, float(position.get("trail_distance_atr_mult") or 0.0))
+                if trail_enabled and not position["trail_active"]:
+                    if side == "long" and float(bar["high"]) >= float(position["entry_px"]) + trail_activate_mult * atr:
                         position["trail_active"] = True
-                    if side == "short" and float(bar["low"]) <= float(position["entry_px"]) - 1.5 * atr:
+                    if side == "short" and float(bar["low"]) <= float(position["entry_px"]) - trail_activate_mult * atr:
                         position["trail_active"] = True
-                if position["trail_active"]:
+                if trail_enabled and position["trail_active"]:
                     if side == "long":
-                        candidate = float(bar["close"]) - 2.0 * atr
+                        candidate = float(bar["close"]) - trail_distance_mult * atr
                         position["trail_px"] = max(float(position.get("trail_px") or position["stop_px"]), candidate)
                     else:
-                        candidate = float(bar["close"]) + 2.0 * atr
+                        candidate = float(bar["close"]) + trail_distance_mult * atr
                         position["trail_px"] = min(float(position.get("trail_px") or position["stop_px"]), candidate)
 
                 stop_px = float(position["trail_px"] if position.get("trail_px") is not None else position["stop_px"])
@@ -397,7 +482,16 @@ class StrategyRunner:
                     elif float(bar["low"]) <= take_px:
                         exit_reason, exit_px = "tp", take_px
 
-                if exit_reason is None and int(position["bars_open"]) >= 12:
+                if exit_reason is None and bool(position.get("use_ema20_take_profit", False)):
+                    ema20 = bar.get("ema20")
+                    if not pd.isna(ema20):
+                        ema_target = float(ema20)
+                        if side == "long" and float(bar["high"]) >= ema_target:
+                            exit_reason, exit_px = "tp_ema20", ema_target
+                        elif side == "short" and float(bar["low"]) <= ema_target:
+                            exit_reason, exit_px = "tp_ema20", ema_target
+
+                if exit_reason is None and int(position["bars_open"]) >= int(position.get("time_stop_bars") or 12):
                     exit_reason, exit_px = "time", float(bar["close"])
 
                 if exit_reason and exit_px is not None:
@@ -451,7 +545,7 @@ class StrategyRunner:
                             "pnl_net": round(net, 6),
                             "mae": round(abs(gross) * 0.6, 6),
                             "mfe": round(abs(gross) * 1.1, 6),
-                            "reason_code": "trend_pullback",
+                            "reason_code": str(position.get("strategy_family") or self._family),
                             "exit_reason": exit_reason,
                             "events": [
                                 {"ts": position["entry_ts"].isoformat(), "type": "fill", "detail": "Entrada market simulada"},
@@ -472,7 +566,8 @@ class StrategyRunner:
 
             if i > 0 and position is None:
                 prev = rows[i - 1][1]
-                pending_entry = self._signal(prev)
+                pending_entry, pending_profile_family = self._signal_with_family(prev)
+                pending_profile = self._execution_profile(pending_profile_family) if pending_entry else None
 
             if position is not None:
                 exposure_sum += abs(float(position["qty"]) * float(bar["close"]))

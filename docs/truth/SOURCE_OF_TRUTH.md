@@ -2,6 +2,30 @@
 
 Fecha de actualizacion: 2026-03-04
 
+## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (coherencia de cerebro) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/src/backtest/engine.py`:
+  - se elimino hardcode unico de exits para todas las estrategias;
+  - ahora cada familia usa perfil propio (stop/take/trailing/time-stop) alineado con `knowledge/strategies/strategies_v2.yaml`;
+  - `trend_scanning` selecciona perfil efectivo segun sub-regimen;
+  - `reason_code` del trade refleja la familia real ejecutada (no queda fijo en `trend_pullback`).
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_infer_orderflow_feature_set` pasa a fail-closed: sin evidencia explicita devuelve `orderflow_unknown`;
+  - validacion de promotion agrega check `known_feature_set`;
+  - busqueda de baseline evita filtro estricto por feature-set cuando el candidato esta en `unknown`.
+- Tests nuevos/focales:
+  - `rtlab_autotrader/tests/test_backtest_execution_profiles.py`
+  - `rtlab_autotrader/tests/test_web_feature_set_fail_closed.py`
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_execution_profiles.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_strategy_dispatch.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "validate_promotion_blocks_mixed_orderflow_feature_set or mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo" -q` -> PASS.
+- Estado:
+  - Coherencia estrategia->ejecucion: reforzada.
+  - Promotion sin evidencia de feature-set: fail-closed.
+  - LIVE: sigue NO GO hasta cerrar runtime real end-to-end (decision operativa vigente).
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

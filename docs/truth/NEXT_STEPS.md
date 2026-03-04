@@ -2,6 +2,16 @@
 
 Fecha: 2026-03-04
 
+## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
+- [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
+- [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_execution_profiles.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_strategy_dispatch.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "validate_promotion_blocks_mixed_orderflow_feature_set or mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo" -q` -> PASS.
+
 ## Cierre de auditoria integral (2026-03-04)
 - Auditoria completa finalizada y documentada en:
   - `docs/audit/AUDIT_REPORT_20260304.md`

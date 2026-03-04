@@ -8114,8 +8114,8 @@ def create_app() -> FastAPI:
         if market_name == "equities":
             return "orderflow_off", False, "market_default_equities"
 
-        # Backward compatibility: historic runs had order flow implicit ON.
-        return "orderflow_on", True, "default_backward_compat"
+        # Fail-closed: sin evidencia explicita no se asume ON ni OFF.
+        return "orderflow_unknown", False, "missing_fail_closed"
 
     def _mass_result_row_for_catalog_run(catalog_row: dict[str, Any]) -> dict[str, Any] | None:
         batch_id = str(catalog_row.get("batch_id") or "")
@@ -8412,7 +8412,7 @@ def create_app() -> FastAPI:
             if str(row.get("strategy_name") or "") == candidate_strategy_name:
                 continue
             row_feature_set, _, _ = _infer_orderflow_feature_set(report=row, catalog_row=row)
-            if candidate_feature_set and row_feature_set != candidate_feature_set:
+            if candidate_feature_set and candidate_feature_set != "orderflow_unknown" and row_feature_set != candidate_feature_set:
                 continue
             return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
 
@@ -8430,7 +8430,7 @@ def create_app() -> FastAPI:
                 continue
             if str(row.get("status") or "") in {"completed", "completed_warn"}:
                 row_feature_set, _, _ = _infer_orderflow_feature_set(report=row, catalog_row=row)
-                if candidate_feature_set and row_feature_set != candidate_feature_set:
+                if candidate_feature_set and candidate_feature_set != "orderflow_unknown" and row_feature_set != candidate_feature_set:
                     continue
                 return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
         raise HTTPException(status_code=400, detail="No baseline run available to compare against candidate")
@@ -8476,6 +8476,7 @@ def create_app() -> FastAPI:
         compare_engine = CompareEngine(compare_thresholds if isinstance(compare_thresholds, dict) else {})
         compare_result = compare_engine.compare(baseline_report, candidate_report)
         same_feature_set = candidate_feature_set == baseline_feature_set
+        known_feature_set = candidate_feature_set != "orderflow_unknown" and baseline_feature_set != "orderflow_unknown"
         candidate_provenance = candidate_report.get("provenance") if isinstance(candidate_report.get("provenance"), dict) else {}
         candidate_metadata = candidate_report.get("metadata") if isinstance(candidate_report.get("metadata"), dict) else {}
         candidate_params = candidate_report.get("params_json") if isinstance(candidate_report.get("params_json"), dict) else {}
@@ -8535,6 +8536,17 @@ def create_app() -> FastAPI:
             {"id": "min_trades", "ok": trade_count >= max(1, min_trades_req), "reason": "Trades mÃ­nimos", "details": {"actual": trade_count, "threshold": max(1, min_trades_req)}},
             {"id": "realistic_costs", "ok": costs_ratio <= costs_ratio_max, "reason": "Costos realistas (costs_ratio)", "details": {"actual": round(costs_ratio, 6), "threshold": costs_ratio_max}},
             {"id": "oos_or_wfa", "ok": bool(flags.get("OOS") or flags.get("WFA")), "reason": "Debe tener evidencia OOS/WFA", "details": {"flags": flags}},
+            {
+                "id": "known_feature_set",
+                "ok": known_feature_set,
+                "reason": "Baseline y candidato deben declarar feature set de order flow explicito",
+                "details": {
+                    "candidate_feature_set": candidate_feature_set,
+                    "baseline_feature_set": baseline_feature_set,
+                    "candidate_source": candidate_feature_source,
+                    "baseline_source": baseline_feature_source,
+                },
+            },
             {
                 "id": "same_feature_set",
                 "ok": same_feature_set,

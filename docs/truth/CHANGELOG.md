@@ -2,6 +2,27 @@
 
 ## 2026-03-04
 
+### AP-BOT-1001/AP-BOT-1002 (coherencia estrategia + fail-closed feature-set)
+- `rtlab_autotrader/rtlab_core/src/backtest/engine.py`
+  - agregado `ExecutionProfile` por familia (`trend_pullback`, `breakout`, `meanreversion`, `defensive`, `trend_scanning`);
+  - `StrategyRunner.run(...)` deja de usar hardcodes globales (`2.0/3.0/12`) y aplica stop/take/trailing/time-stop por perfil;
+  - `trend_scanning` ahora devuelve familia efectiva del sub-regimen para usar perfil correcto;
+  - `reason_code` de trades pasa a reflejar familia real ejecutada.
+- `rtlab_autotrader/rtlab_core/web/app.py`
+  - `_infer_orderflow_feature_set(...)` cambia fallback a `orderflow_unknown` (`missing_fail_closed`);
+  - `validate_promotion` agrega check `known_feature_set`;
+  - baseline picker no bloquea por feature-set cuando candidato esta en `orderflow_unknown` (evita falsos `No baseline`).
+- Tests agregados:
+  - `rtlab_autotrader/tests/test_backtest_execution_profiles.py`
+  - `rtlab_autotrader/tests/test_web_feature_set_fail_closed.py`
+- Evidencia de validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/src/backtest/engine.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_backtest_execution_profiles.py rtlab_autotrader/tests/test_web_feature_set_fail_closed.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_execution_profiles.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_backtest_strategy_dispatch.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "validate_promotion_blocks_mixed_orderflow_feature_set or mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo" -q` -> PASS.
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`
