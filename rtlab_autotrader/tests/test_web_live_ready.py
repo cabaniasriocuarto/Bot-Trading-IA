@@ -274,6 +274,7 @@ def test_auth_login_rate_limit_and_lock_guard(tmp_path: Path, monkeypatch) -> No
     window_minutes=10,
     lockout_minutes=30,
     lockout_after_failures=20,
+    backend="memory",
   )
 
   for _ in range(10):
@@ -283,6 +284,47 @@ def test_auth_login_rate_limit_and_lock_guard(tmp_path: Path, monkeypatch) -> No
   limited = client.post("/api/v1/auth/login", json={"username": "Wadmin", "password": "invalid"})
   assert limited.status_code == 429
   assert "Demasiados intentos" in str(limited.json().get("detail") or "")
+
+
+def test_auth_login_rate_limit_shared_sqlite_backend_across_instances(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  sqlite_path = tmp_path / "shared_login_limiter.sqlite3"
+  limiter_a = module.LoginRateLimiter(
+    attempts_per_window=2,
+    window_minutes=10,
+    lockout_minutes=30,
+    lockout_after_failures=3,
+    backend="sqlite",
+    sqlite_path=sqlite_path,
+  )
+  limiter_b = module.LoginRateLimiter(
+    attempts_per_window=2,
+    window_minutes=10,
+    lockout_minutes=30,
+    lockout_after_failures=3,
+    backend="sqlite",
+    sqlite_path=sqlite_path,
+  )
+
+  key = "127.0.0.1:wadmin"
+  limiter_a.register_failure(key)
+  limiter_a.register_failure(key)
+  allowed, retry_after_sec, reason = limiter_b.check(key)
+  assert allowed is False
+  assert retry_after_sec > 0
+  assert reason == "rate_limit"
+
+  limiter_b.register_failure(key)
+  lock_allowed, lock_retry_after_sec, lock_reason = limiter_a.check(key)
+  assert lock_allowed is False
+  assert lock_retry_after_sec > 0
+  assert lock_reason == "lockout"
+
+  limiter_a.register_success(key)
+  reset_allowed, reset_retry_after_sec, reset_reason = limiter_b.check(key)
+  assert reset_allowed is True
+  assert reset_retry_after_sec == 0
+  assert reset_reason == ""
 
 
 def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:

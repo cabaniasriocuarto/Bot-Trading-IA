@@ -198,6 +198,21 @@
 - Resultado:
   - merge a `main` queda condicionado al check `security`.
 
+### AP-4003 completado (lockout/rate-limit login backend compartido)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `LoginRateLimiter` ahora soporta backend `sqlite|memory` (default `sqlite`).
+  - nuevos envs:
+    - `RATE_LIMIT_LOGIN_BACKEND`
+    - `RATE_LIMIT_LOGIN_SQLITE_PATH`
+  - persistencia de estado de login en tabla `auth_login_rate_limit` para compartir lockout/rate-limit entre instancias.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_auth_login_rate_limit_and_lock_guard` ajustado a `backend="memory"` para estabilidad deterministica.
+  - nuevo `test_auth_login_rate_limit_shared_sqlite_backend_across_instances`.
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_login_rate_limit_and_lock_guard or auth_login_rate_limit_shared_sqlite_backend_across_instances" -q` -> `2 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_and_admin_protection or api_general_rate_limit_guard or api_expensive_rate_limit_guard" -q` -> `3 passed`.
+
 ### Auditoria integral (comite senior) + evidencia operativa
 - Se ejecuto auditoria E2E del sistema (AppSec/DevSecOps, ejecucion, quant/backtests, risk, SRE, QA, UX) con evidencia por rutas y lineas.
 - Resultado de go/no-go actualizado: **NO GO para LIVE** por bloqueantes tecnicos de runtime real.

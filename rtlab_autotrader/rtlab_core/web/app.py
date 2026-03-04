@@ -165,6 +165,10 @@ LOGIN_RATE_LIMIT_ATTEMPTS = _env_int("RATE_LIMIT_LOGIN_ATTEMPTS", 10)
 LOGIN_RATE_LIMIT_WINDOW_MIN = _env_int("RATE_LIMIT_LOGIN_WINDOW_MIN", 10)
 LOGIN_LOCKOUT_MIN = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_MIN", 30)
 LOGIN_LOCKOUT_AFTER_FAILS = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_AFTER_FAILS", 20)
+LOGIN_RATE_LIMIT_BACKEND = str(os.getenv("RATE_LIMIT_LOGIN_BACKEND", "sqlite")).strip().lower()
+LOGIN_RATE_LIMIT_SQLITE_PATH = Path(
+    str(os.getenv("RATE_LIMIT_LOGIN_SQLITE_PATH", "")).strip() or str(CONSOLE_DB_PATH)
+).resolve()
 API_RATE_LIMIT_ENABLED = _env_bool("RATE_LIMIT_GENERAL_ENABLED", True)
 API_RATE_LIMIT_GENERAL_PER_MIN = max(1, _env_int("RATE_LIMIT_GENERAL_REQ_PER_MIN", 60))
 API_RATE_LIMIT_EXPENSIVE_PER_MIN = max(1, _env_int("RATE_LIMIT_EXPENSIVE_REQ_PER_MIN", 5))
@@ -920,13 +924,128 @@ class LoginRateLimiter:
         window_minutes: int = LOGIN_RATE_LIMIT_WINDOW_MIN,
         lockout_minutes: int = LOGIN_LOCKOUT_MIN,
         lockout_after_failures: int = LOGIN_LOCKOUT_AFTER_FAILS,
+        backend: str = LOGIN_RATE_LIMIT_BACKEND,
+        sqlite_path: str | Path | None = None,
     ) -> None:
         self.attempts_per_window = max(1, int(attempts_per_window))
         self.window = timedelta(minutes=max(1, int(window_minutes)))
         self.lockout = timedelta(minutes=max(1, int(lockout_minutes)))
         self.lockout_after_failures = max(self.attempts_per_window, int(lockout_after_failures))
+        normalized_backend = str(backend or "memory").strip().lower()
+        self.backend = normalized_backend if normalized_backend in {"memory", "sqlite"} else "memory"
+        configured_sqlite = str(sqlite_path).strip() if sqlite_path is not None else ""
+        self.sqlite_path = Path(configured_sqlite).resolve() if configured_sqlite else LOGIN_RATE_LIMIT_SQLITE_PATH
         self._lock = Lock()
         self._state: dict[str, dict[str, Any]] = {}
+        if self.backend == "sqlite":
+            self._ensure_sqlite_schema()
+
+    def _connect_sqlite(self) -> sqlite3.Connection:
+        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.sqlite_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_sqlite_schema(self) -> None:
+        with self._connect_sqlite() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_login_rate_limit (
+                    limiter_key TEXT PRIMARY KEY,
+                    failures_json TEXT NOT NULL,
+                    lock_until TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_login_rate_limit_updated_at ON auth_login_rate_limit(updated_at)")
+            conn.commit()
+
+    @staticmethod
+    def _serialize_failures(failures: list[datetime]) -> str:
+        payload = [ts.isoformat() for ts in failures if isinstance(ts, datetime)]
+        return json.dumps(payload, separators=(",", ":"))
+
+    @staticmethod
+    def _deserialize_failures(raw: str | None) -> list[datetime]:
+        if not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return []
+        values = payload if isinstance(payload, list) else []
+        out: list[datetime] = []
+        for item in values:
+            parsed = _parse_iso_datetime_utc(str(item))
+            if isinstance(parsed, datetime):
+                out.append(parsed)
+        return out
+
+    def _load_entry_sqlite(self, key: str) -> dict[str, Any]:
+        with self._connect_sqlite() as conn:
+            row = conn.execute(
+                "SELECT failures_json, lock_until FROM auth_login_rate_limit WHERE limiter_key = ?",
+                (key,),
+            ).fetchone()
+        if row is None:
+            return {"failures": [], "lock_until": None}
+        return {
+            "failures": self._deserialize_failures(str(row["failures_json"] or "")),
+            "lock_until": _parse_iso_datetime_utc(str(row["lock_until"] or "")),
+        }
+
+    def _delete_entry_sqlite(self, key: str) -> None:
+        with self._connect_sqlite() as conn:
+            conn.execute("DELETE FROM auth_login_rate_limit WHERE limiter_key = ?", (key,))
+            conn.commit()
+
+    def _persist_entry_sqlite(self, key: str, entry: dict[str, Any]) -> None:
+        failures = [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)]
+        lock_until = entry.get("lock_until")
+        if not failures and not isinstance(lock_until, datetime):
+            self._delete_entry_sqlite(key)
+            return
+        with self._connect_sqlite() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO auth_login_rate_limit
+                (limiter_key, failures_json, lock_until, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    self._serialize_failures(failures),
+                    lock_until.isoformat() if isinstance(lock_until, datetime) else None,
+                    utc_now_iso(),
+                ),
+            )
+            conn.commit()
+
+    def _load_entry(self, key: str) -> dict[str, Any]:
+        if self.backend == "sqlite":
+            return self._load_entry_sqlite(key)
+        entry = self._state.get(key)
+        if not isinstance(entry, dict):
+            return {"failures": [], "lock_until": None}
+        return {
+            "failures": [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)],
+            "lock_until": entry.get("lock_until"),
+        }
+
+    def _persist_entry(self, key: str, entry: dict[str, Any]) -> None:
+        if self.backend == "sqlite":
+            self._persist_entry_sqlite(key, entry)
+            return
+        failures = [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)]
+        lock_until = entry.get("lock_until")
+        if not failures and not isinstance(lock_until, datetime):
+            self._state.pop(key, None)
+            return
+        self._state[key] = {
+            "failures": failures,
+            "lock_until": lock_until if isinstance(lock_until, datetime) else None,
+        }
 
     def _prune(self, *, entry: dict[str, Any], now: datetime) -> None:
         fails = [
@@ -942,8 +1061,9 @@ class LoginRateLimiter:
     def check(self, key: str) -> tuple[bool, int, str]:
         now = utc_now()
         with self._lock:
-            entry = self._state.setdefault(key, {"failures": [], "lock_until": None})
+            entry = self._load_entry(key)
             self._prune(entry=entry, now=now)
+            self._persist_entry(key, entry)
             lock_until = entry.get("lock_until")
             if isinstance(lock_until, datetime) and now < lock_until:
                 wait_sec = max(1, int((lock_until - now).total_seconds()))
@@ -962,16 +1082,20 @@ class LoginRateLimiter:
     def register_failure(self, key: str) -> None:
         now = utc_now()
         with self._lock:
-            entry = self._state.setdefault(key, {"failures": [], "lock_until": None})
+            entry = self._load_entry(key)
             self._prune(entry=entry, now=now)
             fails = [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)]
             fails.append(now)
             entry["failures"] = fails
             if len(fails) >= self.lockout_after_failures:
                 entry["lock_until"] = now + self.lockout
+            self._persist_entry(key, entry)
 
     def register_success(self, key: str) -> None:
         with self._lock:
+            if self.backend == "sqlite":
+                self._delete_entry_sqlite(key)
+                return
             if key in self._state:
                 self._state.pop(key, None)
 

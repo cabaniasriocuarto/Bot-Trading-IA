@@ -22,15 +22,13 @@ Leyenda de estado:
 
 ### FM-SEC-002 - Fuerza bruta en login
 - Severidad: HIGH
-- Estado: MITIGADO
+- Estado: CERRADO
 - Impacto: abuso de `/api/v1/auth/login`.
 - Evidencia:
-  - `rtlab_autotrader/rtlab_core/web/app.py:905`
-  - `rtlab_autotrader/rtlab_core/web/app.py:5495`
-- Brecha abierta:
-  - estado del limiter en memoria local (`_state`), no distribuido multi-instancia.
-- Fix pendiente:
-  - backend compartido (redis/db) para lockout/rate-limit cross-instance.
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`LoginRateLimiter` con `backend=sqlite|memory` y tabla `auth_login_rate_limit`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_auth_login_rate_limit_shared_sqlite_backend_across_instances`).
+- Fix aplicado:
+  - backend compartido por SQLite para lockout/rate-limit cross-instance (con fallback `memory`).
 
 ### FM-SEC-003 - Rate limit general de API
 - Severidad: MEDIUM

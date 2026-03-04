@@ -198,6 +198,26 @@ Fecha de actualizacion: 2026-03-04
 - Pendiente:
   - completar primera corrida verde de `Security CI` despues del fix AP-4001.
 
+## Actualizacion tecnica AP-4003 (login lockout/rate-limit backend compartido) - 2026-03-04
+
+- `LoginRateLimiter` ahora soporta backend configurable:
+  - `memory` (compatibilidad local).
+  - `sqlite` (compartido multi-instancia sobre storage persistente).
+- Implementacion aplicada en `rtlab_autotrader/rtlab_core/web/app.py`:
+  - nuevos envs:
+    - `RATE_LIMIT_LOGIN_BACKEND` (`sqlite` por default).
+    - `RATE_LIMIT_LOGIN_SQLITE_PATH` (override opcional de ruta sqlite).
+  - persistencia de estado de login en tabla `auth_login_rate_limit` (`limiter_key`, `failures_json`, `lock_until`, `updated_at`).
+  - fallback seguro: backend invalido vuelve a `memory`.
+- Cobertura de tests:
+  - `rtlab_autotrader/tests/test_web_live_ready.py`:
+    - `test_auth_login_rate_limit_and_lock_guard` (explicitamente en `backend="memory"`).
+    - `test_auth_login_rate_limit_shared_sqlite_backend_across_instances` (nuevo, valida rate-limit/lockout/reset cross-instancia).
+- Validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_login_rate_limit_and_lock_guard or auth_login_rate_limit_shared_sqlite_backend_across_instances" -q` -> `2 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_and_admin_protection or api_general_rate_limit_guard or api_expensive_rate_limit_guard" -q` -> `3 passed`.
+
 ## Cierre PARTE 7/7 (Cerebro del bot) - 2026-03-04
 
 - Auditoria del cerebro de decision/aprendizaje cerrada con evidencia en:
@@ -231,7 +251,7 @@ Fecha de actualizacion: 2026-03-04
   - Runtime LIVE aun no acoplado a broker/exchange real end-to-end (el wiring actual es no-live interno); `G9` sigue bloqueante para LIVE.
   - `G9` todavia requiere cerrar evidencias estrictas de loop/heartbeat/reconciliacion sobre runtime de mercado real.
   - `breaker_events` solo queda fail-closed con `strict=true`; en `strict=false` sigue aceptando `NO_DATA` por compatibilidad.
-  - En root solo hay workflows activos de benchmark/checks remotos; workflow de seguridad root existe local pero aun no esta versionado.
+  - `security-ci` root ya versionado + branch protection aplicada; resta corrida verde inicial post-fix de instalacion de `gitleaks`.
 - Evidencia de validacion ejecutada en esta auditoria:
   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security_scan.ps1 -Strict` -> PASS (`pip-audit` runtime/research sin vulns conocidas, `gitleaks` sin leaks).
   - `python -m pytest rtlab_autotrader/tests --collect-only` -> `126 tests collected`.
