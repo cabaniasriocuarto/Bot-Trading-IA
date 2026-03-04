@@ -96,6 +96,26 @@
 - Evidencia:
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot or runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS.
 
+### AP-BOT-1008 (costos runtime por fill-delta)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - agregado acumulador de costos runtime en `RuntimeBridge` con deltas de fill (`OMS`) para fees/spread/slippage/funding;
+  - nuevos campos en `execution_metrics_snapshot`:
+    - `fills_count_runtime`,
+    - `fills_notional_runtime_usd`,
+    - `fees_total_runtime_usd`,
+    - `spread_total_runtime_usd`,
+    - `slippage_total_runtime_usd`,
+    - `funding_total_runtime_usd`,
+    - `total_cost_runtime_usd`,
+    - `runtime_costs`.
+  - reset de acumuladores al evento `start`/`mode_change` en runtime real.
+  - `build_execution_metrics_payload` fail-closed fuerza costos runtime a cero cuando telemetry es sintetica.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_execution_metrics_accumulate_costs_from_fill_deltas`;
+  - `test_execution_metrics_fail_closed_when_telemetry_source_is_synthetic` ahora valida `runtime_costs` en cero.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_execution_metrics_accumulate_costs_from_fill_deltas or execution_metrics_fail_closed_when_telemetry_source_is_synthetic or runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot or runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS.
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`

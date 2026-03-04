@@ -5058,6 +5058,16 @@ class RuntimeBridge:
         self._recent_remote_submit_request_at: dict[str, float] = {}
         self._remote_positions: list[dict[str, Any]] = []
         self._active_mode: str = "paper"
+        self._last_filled_qty_by_order: dict[str, float] = {}
+        self._runtime_costs: dict[str, float] = {
+            "fills_count": 0.0,
+            "fills_notional_usd": 0.0,
+            "fees_total_usd": 0.0,
+            "spread_total_usd": 0.0,
+            "slippage_total_usd": 0.0,
+            "funding_total_usd": 0.0,
+            "total_cost_usd": 0.0,
+        }
 
     @staticmethod
     def _symbol_mark_price(symbol: str) -> float:
@@ -5076,6 +5086,100 @@ class RuntimeBridge:
         if parsed <= 0:
             return float(default)
         return parsed
+
+    def _reset_runtime_costs(self) -> None:
+        self._last_filled_qty_by_order = {}
+        self._runtime_costs = {
+            "fills_count": 0.0,
+            "fills_notional_usd": 0.0,
+            "fees_total_usd": 0.0,
+            "spread_total_usd": 0.0,
+            "slippage_total_usd": 0.0,
+            "funding_total_usd": 0.0,
+            "total_cost_usd": 0.0,
+        }
+
+    def _estimate_runtime_fill_costs(
+        self,
+        *,
+        symbol: str,
+        fill_qty: float,
+        settings: dict[str, Any],
+    ) -> dict[str, float]:
+        qty = max(0.0, float(fill_qty))
+        if qty <= 0.0:
+            return {
+                "notional_usd": 0.0,
+                "fees_usd": 0.0,
+                "spread_usd": 0.0,
+                "slippage_usd": 0.0,
+                "funding_usd": 0.0,
+                "total_cost_usd": 0.0,
+            }
+        execution_cfg = settings.get("execution") if isinstance(settings.get("execution"), dict) else {}
+        post_only = bool(execution_cfg.get("post_only", True))
+        maker_fee_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("maker_fee_bps"), 2.0))
+        taker_fee_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("taker_fee_bps"), 5.5))
+        spread_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("spread_proxy_bps"), 4.0))
+        slippage_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("slippage_base_bps"), 3.0))
+        funding_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("funding_proxy_bps"), 1.0))
+        fee_bps = maker_fee_bps if post_only else taker_fee_bps
+        mark_price = max(0.0001, RuntimeBridge._symbol_mark_price(symbol))
+        notional_usd = qty * mark_price
+        fees_usd = notional_usd * (fee_bps / 10000.0)
+        spread_usd = notional_usd * ((spread_bps / 2.0) / 10000.0)
+        slippage_usd = notional_usd * (slippage_bps / 10000.0)
+        funding_usd = notional_usd * (funding_bps / 10000.0) * 0.1
+        total_cost_usd = fees_usd + spread_usd + slippage_usd + funding_usd
+        return {
+            "notional_usd": float(notional_usd),
+            "fees_usd": float(fees_usd),
+            "spread_usd": float(spread_usd),
+            "slippage_usd": float(slippage_usd),
+            "funding_usd": float(funding_usd),
+            "total_cost_usd": float(total_cost_usd),
+        }
+
+    def _capture_runtime_fill_costs(self, *, settings: dict[str, Any]) -> None:
+        active_ids: set[str] = set()
+        for order in self._oms.orders.values():
+            order_id = str(order.order_id or "").strip()
+            if not order_id:
+                continue
+            active_ids.add(order_id)
+            filled_now = max(0.0, float(order.filled_qty))
+            filled_prev = max(0.0, float(self._last_filled_qty_by_order.get(order_id, 0.0) or 0.0))
+            fill_delta = max(0.0, filled_now - filled_prev)
+            self._last_filled_qty_by_order[order_id] = filled_now
+            if fill_delta <= 0.0:
+                continue
+            estimate = self._estimate_runtime_fill_costs(symbol=str(order.symbol or "BTCUSDT"), fill_qty=fill_delta, settings=settings)
+            self._runtime_costs["fills_count"] = self._runtime_costs.get("fills_count", 0.0) + 1.0
+            self._runtime_costs["fills_notional_usd"] = self._runtime_costs.get("fills_notional_usd", 0.0) + float(
+                estimate.get("notional_usd", 0.0)
+            )
+            self._runtime_costs["fees_total_usd"] = self._runtime_costs.get("fees_total_usd", 0.0) + float(
+                estimate.get("fees_usd", 0.0)
+            )
+            self._runtime_costs["spread_total_usd"] = self._runtime_costs.get("spread_total_usd", 0.0) + float(
+                estimate.get("spread_usd", 0.0)
+            )
+            self._runtime_costs["slippage_total_usd"] = self._runtime_costs.get("slippage_total_usd", 0.0) + float(
+                estimate.get("slippage_usd", 0.0)
+            )
+            self._runtime_costs["funding_total_usd"] = self._runtime_costs.get("funding_total_usd", 0.0) + float(
+                estimate.get("funding_usd", 0.0)
+            )
+            self._runtime_costs["total_cost_usd"] = self._runtime_costs.get("total_cost_usd", 0.0) + float(
+                estimate.get("total_cost_usd", 0.0)
+            )
+
+        if active_ids:
+            self._last_filled_qty_by_order = {
+                oid: qty for oid, qty in self._last_filled_qty_by_order.items() if oid in active_ids
+            }
+        else:
+            self._last_filled_qty_by_order = {}
 
     def _risk_limits_from_settings(self, settings: dict[str, Any]) -> RiskLimits:
         risk_defaults = settings.get("risk_defaults") if isinstance(settings.get("risk_defaults"), dict) else {}
@@ -5707,6 +5811,8 @@ class RuntimeBridge:
                 if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
                     changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                     changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
+                if runtime_engine != RUNTIME_ENGINE_REAL:
+                    self._reset_runtime_costs()
                 self._remote_positions = []
                 self._append_execution_point(settings=settings, mode=active_mode)
                 return changed
@@ -5734,6 +5840,8 @@ class RuntimeBridge:
 
             if event in {"start", "mode_change"} and self._kill_switch.is_triggered():
                 self._kill_switch.reset()
+            if event in {"start", "mode_change"}:
+                self._reset_runtime_costs()
             self._ensure_seed_order(state)
             if active_mode in {"testnet", "live"}:
                 submit_result = self._maybe_submit_exchange_seed_order(state=state, mode=active_mode)
@@ -5800,6 +5908,7 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
 
             positions = self._positions_snapshot(mode=active_mode)
+            self._capture_runtime_fill_costs(settings=settings)
             exposure_total, _exposure_rows, max_symbol_exposure = RuntimeBridge._aggregate_exposure(positions)
             equity = max(1.0, RuntimeBridge._safe_positive(state.get("equity"), 10000.0))
             total_exposure_pct = exposure_total / equity
@@ -5971,6 +6080,22 @@ class RuntimeBridge:
                 "p95_slippage": round(max(slips), 6),
                 "latency_ms_p95": round(max(lats), 6),
                 "requests_24h_estimate": max(1, len(points) * 6),
+                "fills_count_runtime": int(round(self._runtime_costs.get("fills_count", 0.0))),
+                "fills_notional_runtime_usd": round(_as_float(self._runtime_costs.get("fills_notional_usd"), 0.0), 6),
+                "fees_total_runtime_usd": round(_as_float(self._runtime_costs.get("fees_total_usd"), 0.0), 6),
+                "spread_total_runtime_usd": round(_as_float(self._runtime_costs.get("spread_total_usd"), 0.0), 6),
+                "slippage_total_runtime_usd": round(_as_float(self._runtime_costs.get("slippage_total_usd"), 0.0), 6),
+                "funding_total_runtime_usd": round(_as_float(self._runtime_costs.get("funding_total_usd"), 0.0), 6),
+                "total_cost_runtime_usd": round(_as_float(self._runtime_costs.get("total_cost_usd"), 0.0), 6),
+                "runtime_costs": {
+                    "fills_count": int(round(self._runtime_costs.get("fills_count", 0.0))),
+                    "fills_notional_usd": round(_as_float(self._runtime_costs.get("fills_notional_usd"), 0.0), 6),
+                    "fees_total_usd": round(_as_float(self._runtime_costs.get("fees_total_usd"), 0.0), 6),
+                    "spread_total_usd": round(_as_float(self._runtime_costs.get("spread_total_usd"), 0.0), 6),
+                    "slippage_total_usd": round(_as_float(self._runtime_costs.get("slippage_total_usd"), 0.0), 6),
+                    "funding_total_usd": round(_as_float(self._runtime_costs.get("funding_total_usd"), 0.0), 6),
+                    "total_cost_usd": round(_as_float(self._runtime_costs.get("total_cost_usd"), 0.0), 6),
+                },
                 "series": points,
                 "notes": [
                     "Metricas derivadas del runtime bridge (OMS/Reconciliation/Risk/KillSwitch).",
@@ -6749,6 +6874,22 @@ def build_execution_metrics_payload() -> dict[str, Any]:
         payload["latency_ms_p95"] = max(999.0, _as_float(payload.get("latency_ms_p95"), 0.0))
         payload["api_errors"] = max(1, _as_int(payload.get("api_errors"), 0))
         payload["rate_limit_hits"] = max(1, _as_int(payload.get("rate_limit_hits"), 0))
+        payload["fills_count_runtime"] = 0
+        payload["fills_notional_runtime_usd"] = 0.0
+        payload["fees_total_runtime_usd"] = 0.0
+        payload["spread_total_runtime_usd"] = 0.0
+        payload["slippage_total_runtime_usd"] = 0.0
+        payload["funding_total_runtime_usd"] = 0.0
+        payload["total_cost_runtime_usd"] = 0.0
+        payload["runtime_costs"] = {
+            "fills_count": 0,
+            "fills_notional_usd": 0.0,
+            "fees_total_usd": 0.0,
+            "spread_total_usd": 0.0,
+            "slippage_total_usd": 0.0,
+            "funding_total_usd": 0.0,
+            "total_cost_usd": 0.0,
+        }
         notes = list(payload.get("notes") or [])
         notes.append("Telemetry synthetic: fail-closed activo para bloquear promotion/live.")
         payload["notes"] = notes

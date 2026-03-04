@@ -114,6 +114,30 @@ Fecha de actualizacion: 2026-03-04
   - runtime no-live queda mas cercano a estado real de exchange (ordenes + balances);
   - LIVE sigue **NO GO** hasta cierre total de costos/fills finales end-to-end.
 
+## Actualizacion tecnica AP-BOT-1008 (costos runtime por fill-delta) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - runtime agrega contabilidad acumulada de costos por deltas de fills observados en OMS:
+    - `fills_count_runtime`,
+    - `fills_notional_runtime_usd`,
+    - `fees_total_runtime_usd`,
+    - `spread_total_runtime_usd`,
+    - `slippage_total_runtime_usd`,
+    - `funding_total_runtime_usd`,
+    - `total_cost_runtime_usd`,
+    - `runtime_costs` (breakdown).
+  - calculo incremental basado en `execution` settings (`maker/taker fees`, `spread_proxy_bps`, `slippage_base_bps`, `funding_proxy_bps`) y `mark_price` por simbolo.
+  - reset de costos al iniciar runtime real o en `mode_change` para evitar mezclar sesiones.
+  - `build_execution_metrics_payload` aplica fail-closed tambien a costos cuando telemetry es sintetica.
+- Tests nuevos/ajustados:
+  - `test_runtime_execution_metrics_accumulate_costs_from_fill_deltas`.
+  - `test_execution_metrics_fail_closed_when_telemetry_source_is_synthetic` (ahora valida costos runtime en cero).
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_execution_metrics_accumulate_costs_from_fill_deltas or execution_metrics_fail_closed_when_telemetry_source_is_synthetic or runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot or runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS (`9 passed`).
+- Estado:
+  - runtime no-live ya refleja ordenes + balances + costos estimados por fill;
+  - LIVE sigue **NO GO** (faltan cierre de wiring final de ejecucion y hardening operativo global).
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

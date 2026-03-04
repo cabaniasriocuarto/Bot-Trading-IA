@@ -856,6 +856,72 @@ def test_runtime_sync_testnet_account_positions_failure_falls_back_to_open_order
   assert any(str(row.get("order_id") or "") == "oid-pos-fallback-1" for row in positions)
 
 
+def test_runtime_execution_metrics_accumulate_costs_from_fill_deltas(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  calls = {"open_orders_get": 0}
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      calls["open_orders_get"] += 1
+      executed_qty = "0.2" if calls["open_orders_get"] <= 1 else "0.5"
+      return True, {
+        "status_code": 200,
+        "payload": [
+          {
+            "clientOrderId": "oid-costs-1",
+            "orderId": 778899,
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "origQty": "1.0",
+            "executedQty": executed_qty,
+          }
+        ],
+      }
+    if path == "/api/v3/account" and method_u == "GET":
+      return True, {"status_code": 200, "payload": {"balances": []}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced_1 = module._sync_runtime_state(state, persist=False)
+  metrics_1 = module.runtime_bridge.execution_metrics_snapshot()
+  assert bool(synced_1.get("runtime_reconciliation_ok")) is True
+  assert int(metrics_1.get("fills_count_runtime") or 0) >= 1
+  first_total_cost = float(metrics_1.get("total_cost_runtime_usd") or 0.0)
+  assert first_total_cost > 0.0
+
+  synced_2 = module._sync_runtime_state(synced_1, persist=False)
+  metrics_2 = module.runtime_bridge.execution_metrics_snapshot()
+  assert bool(synced_2.get("runtime_reconciliation_ok")) is True
+  assert int(metrics_2.get("fills_count_runtime") or 0) >= int(metrics_1.get("fills_count_runtime") or 0)
+  assert float(metrics_2.get("total_cost_runtime_usd") or 0.0) > first_total_cost
+
+
 def test_runtime_contract_snapshot_defaults_are_exposed_in_status(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="paper")
 
@@ -1160,6 +1226,10 @@ def test_execution_metrics_fail_closed_when_telemetry_source_is_synthetic(tmp_pa
   assert float(payload.get("maker_ratio") or 0.0) == 0.0
   assert float(payload.get("latency_ms_p95") or 0.0) >= 999.0
   assert int(payload.get("api_errors") or 0) >= 1
+  assert int(payload.get("fills_count_runtime") or 0) == 0
+  assert float(payload.get("total_cost_runtime_usd") or 0.0) == 0.0
+  runtime_costs = payload.get("runtime_costs") if isinstance(payload.get("runtime_costs"), dict) else {}
+  assert float(runtime_costs.get("total_cost_usd") or 0.0) == 0.0
 
 
 def test_runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live(tmp_path: Path, monkeypatch) -> None:
