@@ -181,9 +181,22 @@
 - Validacion local de sintaxis:
   - parse YAML de workflow con `python + yaml.safe_load` -> `OK_WORKFLOW`.
 - Pendiente para cierre operativo:
-  - push remoto exitoso del branch,
-  - corrida verde en GitHub Actions,
-  - branch protection con required check `security` (AP-4002).
+  - corrida verde en GitHub Actions.
+- Evidencia remota inicial:
+  - run `22674323602` (evento `push`) en `failure`;
+  - causa: paso `Install security tooling` del job `security`.
+- Fix incremental:
+  - instalacion de `gitleaks` migrada a `"$RUNNER_TEMP/bin"` + `GITHUB_PATH` para evitar error de permisos.
+
+### AP-4002 completado (branch protection con required check security)
+- Proteccion de rama `main` aplicada por API:
+  - `required_status_checks.strict=true`
+  - `required_status_checks.contexts=["security"]`
+- Evidencia de verificacion:
+  - `PROTECTION_SET_OK contexts=security`
+  - `PROTECTION_VERIFY strict=True contexts=security enforce_admins=False`
+- Resultado:
+  - merge a `main` queda condicionado al check `security`.
 
 ### Auditoria integral (comite senior) + evidencia operativa
 - Se ejecuto auditoria E2E del sistema (AppSec/DevSecOps, ejecucion, quant/backtests, risk, SRE, QA, UX) con evidencia por rutas y lineas.

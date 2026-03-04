@@ -42,13 +42,14 @@ Leyenda de estado:
 
 ### FM-SEC-004 - Security CI en repo root y branch protection
 - Severidad: HIGH
-- Estado: ABIERTO
-- Impacto: riesgo de merge sin gate de seguridad bloqueante.
+- Estado: MITIGADO
+- Impacto: gate bloqueante de seguridad ya aplicado en `main`; resta estabilizar corrida verde inicial del workflow.
 - Evidencia:
-  - `/.github/workflows/security-ci.yml` existe en working tree local.
-  - `docs/truth/NEXT_STEPS.md:10`
+  - `/.github/workflows/security-ci.yml` versionado en repo.
+  - Branch protection API: `required_status_checks.strict=true`, `contexts=["security"]`.
+  - Run inicial `Security CI`: `22674323602` (`failure` en paso `Install security tooling`).
 - Brecha abierta:
-  - NO EVIDENCIA en repo de branch protection (setting de GitHub fuera del repo).
+  - falta una corrida verde post-fix del workflow (`gitleaks` en `RUNNER_TEMP/bin`).
 
 ## Ejecucion y runtime operativo
 
@@ -275,6 +276,5 @@ Leyenda de estado:
 3. FM-EXEC-003
 4. FM-EXEC-004
 5. FM-EXEC-005
-6. FM-SEC-004
-7. FM-QA-001
-8. FM-RISK-002
+6. FM-QA-001
+7. FM-RISK-002

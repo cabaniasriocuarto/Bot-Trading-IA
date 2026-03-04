@@ -177,10 +177,26 @@ Fecha de actualizacion: 2026-03-04
   - publica artifacts `artifacts/security_audit/`.
 - Validacion local de workflow:
   - parse YAML via `python + yaml.safe_load` -> `OK_WORKFLOW`.
-- Pendiente operativo (fuera de codigo local):
-  - push remoto exitoso del branch;
-  - primera corrida verde en GitHub Actions;
-  - branch protection con required check `security` (AP-4002).
+- Evidencia de corrida remota inicial:
+  - workflow run `22674323602` (`push`, branch `feature/runtime-contract-v1`) en `failure`;
+  - falla en job `security` paso `Install security tooling` (instalacion de `gitleaks` en path con permisos).
+- Fix incremental aplicado:
+  - `security-ci.yml` instala `gitleaks` en `"$RUNNER_TEMP/bin"` y agrega ese path a `GITHUB_PATH` (sin requerir root).
+- Pendiente operativo:
+  - rerun/corrida verde de `Security CI` post-fix.
+
+## Actualizacion tecnica AP-4002 (branch protection required check security) - 2026-03-04
+
+- Branch protection aplicada en `main` via GitHub API:
+  - `required_status_checks.strict=true`
+  - `required_status_checks.contexts=["security"]`
+- Evidencia de aplicacion/verificacion (API):
+  - `PROTECTION_SET_OK contexts=security`
+  - `PROTECTION_VERIFY strict=True contexts=security enforce_admins=False`
+- Efecto operativo:
+  - merge a `main` queda bloqueado si no pasa el check `security`.
+- Pendiente:
+  - completar primera corrida verde de `Security CI` despues del fix AP-4001.
 
 ## Cierre PARTE 7/7 (Cerebro del bot) - 2026-03-04
 

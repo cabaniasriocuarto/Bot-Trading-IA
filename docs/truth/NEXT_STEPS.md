@@ -14,8 +14,8 @@ Fecha: 2026-03-04
    - avance: AP-0001/AP-0002 + AP-1001/AP-1002/AP-1003/AP-1004 + AP-2001/AP-2002/AP-2003 implementados (`RuntimeBridge`, telemetry fail-closed, breaker strict y bloqueo de evaluate-phase sin telemetry real).
    - pendiente: wiring broker/exchange real end-to-end.
 2. Versionar y activar `/.github/workflows/security-ci.yml` en GitHub Actions + branch protection.
-   - avance: AP-4001 versionado local en rama tecnica (`feature/runtime-contract-v1`, commit `0dbf55d`).
-   - pendiente: push remoto exitoso + activar required check `security` (AP-4002).
+   - avance: AP-4001 versionado en branch (`0dbf55d`) + AP-4002 aplicado en GitHub (`main` con required check `security`, `strict=true`).
+   - pendiente: corrida verde de `Security CI` tras fix de instalacion de `gitleaks` (run `22674323602` fallo en `Install security tooling`; fix aplicado en workflow, pendiente rerun).
 3. Ejecutar hardening final (alertas/recovery/e2e criticos) y volver a correr checks protegidos con evidencia.
 
 ## Bloque 3 (quant/learning) - estado actual
@@ -77,7 +77,7 @@ Fecha: 2026-03-04
 3. Instrumentar alertas de seguridad para intentos de headers internos sin token valido.
 4. Definir policy de despliegue que impida `NODE_ENV=production` con defaults de auth.
 5. Asegurar que backend no sea accesible en bypass directo (allowlist/zero-trust) aun con token interno.
-6. Configurar branch protection para requerir job `security` antes de merge a `main`.
+6. Branch protection para requerir job `security` antes de merge a `main` (AP-4002 completado).
 7. Rotar claves de exchange (testnet/live) y validar que no exista hardcode en archivos locales.
 
 ## Prioridad 3 (UX / producto)
