@@ -81,6 +81,21 @@
 - Evidencia:
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS.
 
+### AP-BOT-1007 (reconciliacion de posiciones por account snapshot)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - agregado fetch firmado de `/api/v3/account` para runtime `testnet/live` y parser de balances spot a posiciones;
+  - `RuntimeBridge` expone posiciones reconciliadas por account snapshot cuando la fuente remota responde OK;
+  - fallback: si account falla, se mantiene snapshot derivado de `openOrders` (sin frenar loop);
+  - nuevo estado runtime:
+    - `runtime_account_positions_ok`,
+    - `runtime_account_positions_verified_at`,
+    - `runtime_account_positions_reason`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot`;
+  - nuevo `test_runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot or runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS.
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`

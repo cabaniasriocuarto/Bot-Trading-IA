@@ -2193,6 +2193,9 @@ class ConsoleStore:
                 "runtime_exchange_mode": "",
                 "runtime_exchange_verified_at": "",
                 "runtime_exchange_reason": "",
+                "runtime_account_positions_ok": False,
+                "runtime_account_positions_verified_at": "",
+                "runtime_account_positions_reason": "",
                 "runtime_last_remote_submit_at": "",
                 "runtime_last_remote_client_order_id": "",
                 "runtime_last_remote_submit_error": "",
@@ -5053,6 +5056,8 @@ class RuntimeBridge:
         }
         self._recent_remote_cancel_request_at: dict[str, float] = {}
         self._recent_remote_submit_request_at: dict[str, float] = {}
+        self._remote_positions: list[dict[str, Any]] = []
+        self._active_mode: str = "paper"
 
     @staticmethod
     def _symbol_mark_price(symbol: str) -> float:
@@ -5236,6 +5241,69 @@ class RuntimeBridge:
             return {}, "exchange_api_error", False, reason
         except Exception as exc:
             return {}, "exchange_api_exception", False, str(exc)
+
+    @staticmethod
+    def _parse_exchange_account_positions_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        balances = payload.get("balances") if isinstance(payload.get("balances"), list) else []
+        positions: list[dict[str, Any]] = []
+        for row in balances:
+            if not isinstance(row, dict):
+                continue
+            asset = str(row.get("asset") or "").strip().upper()
+            if not asset or asset in {"USDT", "USDC", "BUSD", "FDUSD"}:
+                continue
+            free_qty = max(0.0, _as_float(row.get("free"), 0.0))
+            locked_qty = max(0.0, _as_float(row.get("locked"), 0.0))
+            qty = free_qty + locked_qty
+            if qty <= 0.0:
+                continue
+            symbol = f"{asset}USDT"
+            mark_px = RuntimeBridge._symbol_mark_price(symbol)
+            entry_px = mark_px * 0.998
+            pnl_unrealized = (mark_px - entry_px) * qty
+            positions.append(
+                {
+                    "symbol": symbol,
+                    "side": "long",
+                    "qty": round(qty, 8),
+                    "entry_px": round(entry_px, 6),
+                    "mark_px": round(mark_px, 6),
+                    "pnl_unrealized": round(pnl_unrealized, 6),
+                    "exposure_usd": round(abs(qty * mark_px), 6),
+                    "strategy_id": DEFAULT_STRATEGY_ID,
+                    "order_id": f"BAL-{asset}",
+                }
+            )
+        positions.sort(key=lambda row: str(row.get("symbol") or ""))
+        return positions
+
+    def _fetch_exchange_account_positions(self, *, mode: str) -> tuple[list[dict[str, Any]], str, bool, str]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return [], "exchange_api_skip_mode", False, f"Modo no soportado para exchange account: {mode_n or 'unknown'}"
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return [], "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para account snapshot."
+        timeout_sec = _exchange_timeout_seconds()
+        try:
+            request_ok, result = _binance_signed_request(
+                method="GET",
+                base_url=str(creds.get("base_url") or ""),
+                path="/api/v3/account",
+                api_key=str(creds.get("api_key") or ""),
+                api_secret=str(creds.get("api_secret") or ""),
+                params={},
+                timeout_sec=timeout_sec,
+            )
+            payload = result.get("payload")
+            if request_ok and isinstance(payload, dict):
+                return RuntimeBridge._parse_exchange_account_positions_payload(payload), "exchange_api", True, ""
+            status_code = int(_as_int(result.get("status_code"), 0))
+            category, detail = _classify_exchange_error(status_code, payload)
+            reason = detail if detail else f"Exchange account failed ({category})"
+            return [], "exchange_api_error", False, reason
+        except Exception as exc:
+            return [], "exchange_api_exception", False, str(exc)
 
     def _remember_remote_cancel_request(self, order_id: str) -> bool:
         text = str(order_id or "").strip()
@@ -5480,7 +5548,10 @@ class RuntimeBridge:
         )
         self._oms.submit(seed)
 
-    def _positions_snapshot(self) -> list[dict[str, Any]]:
+    def _positions_snapshot(self, *, mode: str | None = None) -> list[dict[str, Any]]:
+        mode_n = str(mode or self._active_mode or "paper").strip().lower()
+        if mode_n in {"testnet", "live"} and self._remote_positions:
+            return [dict(row) for row in self._remote_positions]
         rows: list[dict[str, Any]] = []
         for order in self._oms.open_orders():
             remaining = max(0.0, float(order.qty) - float(order.filled_qty))
@@ -5595,6 +5666,7 @@ class RuntimeBridge:
             runtime_engine = _runtime_engine_from_state(state)
             running = bool(state.get("running")) and not bool(state.get("killed"))
             active_mode = str(state.get("mode") or default_mode()).strip().lower()
+            self._active_mode = active_mode
             now_iso = utc_now_iso()
             max_age_for_stale = max(10, _as_int((settings.get("execution") or {}).get("order_timeout_sec"), 45))
 
@@ -5623,6 +5695,9 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_exchange_connector_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_order_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
                 if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
                     changed = self._set_state_value(state, "runtime_exchange_mode", "") or changed
                     changed = self._set_state_value(state, "runtime_exchange_verified_at", "") or changed
@@ -5632,6 +5707,7 @@ class RuntimeBridge:
                 if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
                     changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                     changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
+                self._remote_positions = []
                 self._append_execution_point(settings=settings, mode=active_mode)
                 return changed
 
@@ -5646,9 +5722,13 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
                 changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
                 changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                 changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
+                self._remote_positions = []
                 self._append_execution_point(settings=settings, mode=active_mode)
                 return changed
 
@@ -5693,8 +5773,33 @@ class RuntimeBridge:
             changed = self._set_state_value(state, "runtime_reconciliation_ok", reconciliation_ok) or changed
             changed = self._set_state_value(state, "runtime_heartbeat_at", now_iso) or changed
             changed = self._set_state_value(state, "runtime_last_reconcile_at", now_iso) or changed
+            if active_mode in {"testnet", "live"}:
+                account_positions, account_source, account_ok, account_reason = self._fetch_exchange_account_positions(
+                    mode=active_mode
+                )
+                if account_ok:
+                    self._remote_positions = account_positions
+                else:
+                    self._remote_positions = []
+                    self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                changed = self._set_state_value(state, "runtime_account_positions_ok", bool(account_ok)) or changed
+                changed = self._set_state_value(
+                    state,
+                    "runtime_account_positions_verified_at",
+                    now_iso if bool(account_ok) else "",
+                ) or changed
+                changed = self._set_state_value(
+                    state,
+                    "runtime_account_positions_reason",
+                    str(account_reason or account_source),
+                ) or changed
+            else:
+                self._remote_positions = []
+                changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
 
-            positions = self._positions_snapshot()
+            positions = self._positions_snapshot(mode=active_mode)
             exposure_total, _exposure_rows, max_symbol_exposure = RuntimeBridge._aggregate_exposure(positions)
             equity = max(1.0, RuntimeBridge._safe_positive(state.get("equity"), 10000.0))
             total_exposure_pct = exposure_total / equity
@@ -5753,11 +5858,12 @@ class RuntimeBridge:
 
     def positions(self) -> list[dict[str, Any]]:
         with self._lock:
-            return self._positions_snapshot()
+            return self._positions_snapshot(mode=self._active_mode)
 
     def risk_snapshot(self, *, state: dict[str, Any], settings: dict[str, Any], gate_checklist: list[dict[str, Any]]) -> dict[str, Any]:
         with self._lock:
-            positions = self._positions_snapshot()
+            mode = str(state.get("mode") or self._active_mode).strip().lower()
+            positions = self._positions_snapshot(mode=mode)
             exposure_total, exposure_rows, max_symbol_exposure = RuntimeBridge._aggregate_exposure(positions)
             equity = max(1.0, RuntimeBridge._safe_positive(state.get("equity"), 10000.0))
             total_exposure_pct = exposure_total / equity
@@ -6245,6 +6351,9 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_exchange_mode", "")
     runtime_state.setdefault("runtime_exchange_verified_at", "")
     runtime_state.setdefault("runtime_exchange_reason", "")
+    runtime_state.setdefault("runtime_account_positions_ok", False)
+    runtime_state.setdefault("runtime_account_positions_verified_at", "")
+    runtime_state.setdefault("runtime_account_positions_reason", "")
     runtime_state.setdefault("runtime_last_remote_submit_at", "")
     runtime_state.setdefault("runtime_last_remote_client_order_id", "")
     runtime_state.setdefault("runtime_last_remote_submit_error", "")

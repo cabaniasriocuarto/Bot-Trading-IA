@@ -743,6 +743,119 @@ def test_runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency(tm
   assert str(synced_2.get("runtime_last_remote_submit_error") or "") == ""
 
 
+def test_runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      return True, {"status_code": 200, "payload": []}
+    if path == "/api/v3/account" and method_u == "GET":
+      return True, {
+        "status_code": 200,
+        "payload": {
+          "balances": [
+            {"asset": "BTC", "free": "0.25", "locked": "0.05"},
+            {"asset": "USDT", "free": "500.0", "locked": "0.0"},
+          ]
+        },
+      }
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced = module._sync_runtime_state(state, persist=False)
+  assert bool(synced.get("runtime_account_positions_ok")) is True
+  assert str(synced.get("runtime_account_positions_verified_at") or "")
+  assert str(synced.get("runtime_account_positions_reason") or "") == "exchange_api"
+
+  positions = module.runtime_bridge.positions()
+  btc = next((row for row in positions if row.get("symbol") == "BTCUSDT"), None)
+  assert btc is not None
+  assert float(btc["qty"]) == pytest.approx(0.30, rel=1e-4)
+  assert str(btc["side"]) == "long"
+  assert float(btc["exposure_usd"]) > 0.0
+
+
+def test_runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      return True, {
+        "status_code": 200,
+        "payload": [
+          {
+            "clientOrderId": "oid-pos-fallback-1",
+            "orderId": 445566,
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "origQty": "1.0",
+            "executedQty": "0.4",
+          }
+        ],
+      }
+    if path == "/api/v3/account" and method_u == "GET":
+      return False, {"status_code": 503, "payload": {"code": -1000, "msg": "exchange down"}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced = module._sync_runtime_state(state, persist=False)
+  assert bool(synced.get("runtime_account_positions_ok")) is False
+  assert str(synced.get("runtime_account_positions_reason") or "").strip() != ""
+
+  positions = module.runtime_bridge.positions()
+  assert any(str(row.get("order_id") or "") == "oid-pos-fallback-1" for row in positions)
+
+
 def test_runtime_contract_snapshot_defaults_are_exposed_in_status(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="paper")
 

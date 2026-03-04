@@ -95,6 +95,25 @@ Fecha de actualizacion: 2026-03-04
   - submit remoto queda integrado pero apagado por defecto (sin impacto en no-live actual);
   - LIVE sigue **NO GO** hasta cerrar pipeline completo de ejecucion/posiciones/fills reales end-to-end.
 
+## Actualizacion tecnica AP-BOT-1007 (reconciliacion de posiciones por account snapshot) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - runtime `testnet/live` consulta `GET /api/v3/account` firmado y deriva posiciones desde balances reales (spot);
+  - nuevos campos de trazabilidad en estado:
+    - `runtime_account_positions_ok`,
+    - `runtime_account_positions_verified_at`,
+    - `runtime_account_positions_reason`;
+  - `RuntimeBridge.positions()` y `risk_snapshot` priorizan posiciones reconciliadas por account snapshot cuando estan disponibles;
+  - fallback seguro: si falla `/api/v3/account`, se conserva posicionamiento derivado de `openOrders` (sin cortar runtime loop).
+- Tests nuevos:
+  - `test_runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot`.
+  - `test_runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot or runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS (`7 passed`).
+- Estado:
+  - runtime no-live queda mas cercano a estado real de exchange (ordenes + balances);
+  - LIVE sigue **NO GO** hasta cierre total de costos/fills finales end-to-end.
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.
