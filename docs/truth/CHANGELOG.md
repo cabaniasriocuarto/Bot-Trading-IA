@@ -47,6 +47,20 @@
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
 
+### AP-BOT-1005 (cancel remoto idempotente por `client_order_id`)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - agregado parser comun de `openOrders` con `client_order_id/order_id`;
+  - agregado cancel remoto en runtime para `testnet/live` (`DELETE /api/v3/order`) durante `stop/kill/mode_change`;
+  - idempotencia temporal de cancel con:
+    - `RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC=30` (default),
+    - `RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS=2000` (default);
+  - si exchange responde `unknown order`, se toma como cancel idempotente exitoso.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_stop_testnet_cancels_remote_open_orders_idempotently`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`

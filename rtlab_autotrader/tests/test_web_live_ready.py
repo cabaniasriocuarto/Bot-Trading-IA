@@ -569,6 +569,55 @@ def test_runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progres
   assert bool(synced_2.get("runtime_reconciliation_ok")) is True
 
 
+def test_runtime_stop_testnet_cancels_remote_open_orders_idempotently(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+
+  calls = {"open_orders_get": 0, "cancel_delete": 0}
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    if path == "/api/v3/openOrders" and str(method).upper() == "GET":
+      calls["open_orders_get"] += 1
+      return True, {
+        "status_code": 200,
+        "payload": [
+          {
+            "clientOrderId": "oid-cancel-idem-1",
+            "orderId": 112233,
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "origQty": "1.0",
+            "executedQty": "0.0",
+          }
+        ],
+      }
+    if path == "/api/v3/order" and str(method).upper() == "DELETE":
+      calls["cancel_delete"] += 1
+      return True, {"status_code": 200, "payload": {"status": "CANCELED"}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = False
+  state["killed"] = False
+
+  stopped_1 = module._sync_runtime_state(state, event="stop", persist=False)
+  stopped_2 = module._sync_runtime_state(stopped_1, event="stop", persist=False)
+
+  assert calls["open_orders_get"] >= 1
+  # Segundo stop inmediato no debe duplicar cancel remoto por misma client_order_id.
+  assert calls["cancel_delete"] == 1
+  assert stopped_2["runtime_telemetry_source"] == module.RUNTIME_TELEMETRY_SOURCE_SYNTHETIC
+  assert bool(stopped_2.get("running")) is False
+
+
 def test_runtime_contract_snapshot_defaults_are_exposed_in_status(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="paper")
 

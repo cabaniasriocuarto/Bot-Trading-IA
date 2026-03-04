@@ -54,6 +54,24 @@ Fecha de actualizacion: 2026-03-04
   - runtime no-live se acerca a fuente real de exchange;
   - pendiente para cierre total: submit/cancel/fill real end-to-end con idempotencia de orden y reconciliacion completa de posiciones.
 
+## Actualizacion tecnica AP-BOT-1005 (idempotencia cancel remoto) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - runtime agrega idempotencia de cancel remoto por `client_order_id/order_id` con ventana temporal configurable:
+    - `RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC` (default `30`);
+    - `RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS` (default `2000`);
+  - en eventos `stop/kill/mode_change` y runtime `real` en `testnet/live`:
+    - consulta `openOrders` reales;
+    - emite `DELETE /api/v3/order` con `origClientOrderId` (o `orderId`);
+    - evita duplicar cancel de la misma orden dentro de TTL;
+    - trata `unknown order` como estado ya-cancelado (idempotente).
+  - reconciliacion reutiliza parser comun de `openOrders` para coherencia de `client_order_id`/`order_id`.
+- Test nuevo:
+  - `test_runtime_stop_testnet_cancels_remote_open_orders_idempotently`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS (`10 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

@@ -184,6 +184,8 @@ BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT = max(0, _env_int("BOTS_OVERVIEW_AUTO_
 BOTS_OVERVIEW_PROFILE_SLOW_MS = max(50, _env_int("BOTS_OVERVIEW_PROFILE_SLOW_MS", 500))
 BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC = max(5, _env_int("BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC", 30))
 BOTS_LOGS_REF_BACKFILL_MAX_ROWS = max(1000, _env_int("BOTS_LOGS_REF_BACKFILL_MAX_ROWS", 50000))
+RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC", 30))
+RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS", 2000))
 BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
 BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
 BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
@@ -5040,6 +5042,7 @@ class RuntimeBridge:
             "total_exposure_pct": 0.0,
             "asset_exposure_pct": 0.0,
         }
+        self._recent_remote_cancel_request_at: dict[str, float] = {}
 
     @staticmethod
     def _symbol_mark_price(symbol: str) -> float:
@@ -5175,6 +5178,124 @@ class RuntimeBridge:
             if delta > 0.0:
                 self._oms.apply_fill(order_id, delta)
 
+    @staticmethod
+    def _parse_exchange_open_orders_payload(payload: list[Any]) -> dict[str, dict[str, Any]]:
+        parsed_orders: dict[str, dict[str, Any]] = {}
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            client_order_id = str(row.get("clientOrderId") or "").strip()
+            exchange_order_id = str(row.get("orderId") or "").strip()
+            oid = client_order_id or exchange_order_id
+            if not oid:
+                continue
+            parsed_orders[oid] = {
+                "filled_qty": float(_as_float(row.get("executedQty"), 0.0)),
+                "qty": float(_as_float(row.get("origQty"), 0.0)),
+                "symbol": str(row.get("symbol") or ""),
+                "side": str(row.get("side") or ""),
+                "client_order_id": client_order_id,
+                "exchange_order_id": exchange_order_id,
+            }
+        return parsed_orders
+
+    def _fetch_exchange_open_orders(self, *, mode: str) -> tuple[dict[str, dict[str, Any]], str, bool, str]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return {}, "exchange_api_skip_mode", False, f"Modo no soportado para exchange open orders: {mode_n or 'unknown'}"
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return {}, "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para cancel/reconcile real."
+        timeout_sec = _exchange_timeout_seconds()
+        try:
+            request_ok, result = _binance_signed_request(
+                method="GET",
+                base_url=str(creds.get("base_url") or ""),
+                path="/api/v3/openOrders",
+                api_key=str(creds.get("api_key") or ""),
+                api_secret=str(creds.get("api_secret") or ""),
+                params={},
+                timeout_sec=timeout_sec,
+            )
+            payload = result.get("payload")
+            if request_ok and isinstance(payload, list):
+                return RuntimeBridge._parse_exchange_open_orders_payload(payload), "exchange_api", True, ""
+            status_code = int(_as_int(result.get("status_code"), 0))
+            category, detail = _classify_exchange_error(status_code, payload)
+            reason = detail if detail else f"Exchange openOrders failed ({category})"
+            return {}, "exchange_api_error", False, reason
+        except Exception as exc:
+            return {}, "exchange_api_exception", False, str(exc)
+
+    def _remember_remote_cancel_request(self, order_id: str) -> bool:
+        text = str(order_id or "").strip()
+        if not text:
+            return False
+        now_epoch = time.time()
+        ttl_sec = float(RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC)
+        last = float(self._recent_remote_cancel_request_at.get(text, 0.0) or 0.0)
+        if last > 0.0 and (now_epoch - last) < ttl_sec:
+            return False
+        self._recent_remote_cancel_request_at[text] = now_epoch
+        if len(self._recent_remote_cancel_request_at) > int(RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS):
+            floor = now_epoch - ttl_sec
+            self._recent_remote_cancel_request_at = {
+                key: value for key, value in self._recent_remote_cancel_request_at.items() if float(value) >= floor
+            }
+        return True
+
+    def _cancel_exchange_open_orders(self, *, mode: str) -> int:
+        mode_n = str(mode or "").strip().lower()
+        exchange_orders, source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
+        if not source_ok:
+            if mode_n in {"testnet", "live"}:
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            return 0
+        creds = load_exchange_credentials(mode_n)
+        timeout_sec = _exchange_timeout_seconds()
+        canceled_remote = 0
+        for oid, payload in exchange_orders.items():
+            if not self._remember_remote_cancel_request(oid):
+                continue
+            symbol = str(payload.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            client_order_id = str(payload.get("client_order_id") or "").strip()
+            exchange_order_id = str(payload.get("exchange_order_id") or "").strip()
+            cancel_params: dict[str, Any] = {"symbol": symbol}
+            if client_order_id:
+                cancel_params["origClientOrderId"] = client_order_id
+            elif exchange_order_id:
+                cancel_params["orderId"] = exchange_order_id
+            else:
+                continue
+            try:
+                request_ok, result = _binance_signed_request(
+                    method="DELETE",
+                    base_url=str(creds.get("base_url") or ""),
+                    path="/api/v3/order",
+                    api_key=str(creds.get("api_key") or ""),
+                    api_secret=str(creds.get("api_secret") or ""),
+                    params=cancel_params,
+                    timeout_sec=timeout_sec,
+                )
+                payload_raw = result.get("payload")
+                if request_ok:
+                    canceled_remote += 1
+                    continue
+                error_code = int(_as_int((payload_raw.get("code") if isinstance(payload_raw, dict) else 0), 0))
+                error_text = str((payload_raw.get("msg") if isinstance(payload_raw, dict) else "") or "").strip().lower()
+                # Idempotencia remota: si ya no existe, treat as already canceled.
+                if error_code == -2011 or "unknown order" in error_text:
+                    canceled_remote += 1
+                    continue
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            except Exception:
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+        self._last_reconcile["cancel_source"] = source
+        self._last_reconcile["cancel_source_reason"] = source_reason
+        return canceled_remote
+
     def _ensure_seed_order(self, state: dict[str, Any]) -> None:
         if str(state.get("mode") or "paper").strip().lower() != "paper":
             return
@@ -5245,54 +5366,9 @@ class RuntimeBridge:
                 for order in self._oms.orders.values()
             }
         if mode_n in {"testnet", "live"}:
-            creds = load_exchange_credentials(mode_n)
-            if not bool(creds.get("has_keys", False)):
-                source = "exchange_api_missing_keys"
-                source_ok = False
-                source_reason = "Credenciales de exchange faltantes para reconciliacion real."
-                exchange_orders = {}
-            else:
-                timeout_sec = _exchange_timeout_seconds()
-                try:
-                    request_ok, result = _binance_signed_request(
-                        method="GET",
-                        base_url=str(creds.get("base_url") or ""),
-                        path="/api/v3/openOrders",
-                        api_key=str(creds.get("api_key") or ""),
-                        api_secret=str(creds.get("api_secret") or ""),
-                        params={},
-                        timeout_sec=timeout_sec,
-                    )
-                    payload = result.get("payload")
-                    if request_ok and isinstance(payload, list):
-                        parsed_orders: dict[str, dict[str, float]] = {}
-                        for row in payload:
-                            if not isinstance(row, dict):
-                                continue
-                            oid = str(row.get("clientOrderId") or row.get("orderId") or "").strip()
-                            if not oid:
-                                continue
-                            parsed_orders[oid] = {
-                                "filled_qty": float(_as_float(row.get("executedQty"), 0.0)),
-                                "qty": float(_as_float(row.get("origQty"), 0.0)),
-                                "symbol": str(row.get("symbol") or ""),
-                                "side": str(row.get("side") or ""),
-                            }
-                        exchange_orders = parsed_orders
-                        source = "exchange_api"
-                        self._sync_oms_with_exchange_open_orders(exchange_orders)
-                    else:
-                        source = "exchange_api_error"
-                        source_ok = False
-                        status_code = int(_as_int(result.get("status_code"), 0))
-                        category, detail = _classify_exchange_error(status_code, payload)
-                        source_reason = detail if detail else f"Exchange openOrders failed ({category})"
-                        exchange_orders = {}
-                except Exception as exc:
-                    source = "exchange_api_exception"
-                    source_ok = False
-                    source_reason = str(exc)
-                    exchange_orders = {}
+            exchange_orders, source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
+            if source_ok:
+                self._sync_oms_with_exchange_open_orders(exchange_orders)
         local_orders = {
             str(order.order_id): {"filled_qty": float(order.filled_qty)}
             for order in self._oms.orders.values()
@@ -5361,9 +5437,13 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "bot_status", "KILLED") or changed
 
             if event in {"stop", "kill", "mode_change"}:
+                canceled_remote = 0
+                if runtime_engine == RUNTIME_ENGINE_REAL and active_mode in {"testnet", "live"}:
+                    canceled_remote = self._cancel_exchange_open_orders(mode=active_mode)
                 canceled_now = self._cancel_open_orders()
-                if canceled_now > 0:
-                    self._stats["requotes"] = self._stats.get("requotes", 0) + canceled_now
+                canceled_total = int(canceled_now) + int(canceled_remote)
+                if canceled_total > 0:
+                    self._stats["requotes"] = self._stats.get("requotes", 0) + canceled_total
 
             if runtime_engine != RUNTIME_ENGINE_REAL or not running:
                 changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
