@@ -175,6 +175,7 @@ API_RATE_LIMIT_EXPENSIVE_PER_MIN = max(1, _env_int("RATE_LIMIT_EXPENSIVE_REQ_PER
 API_RATE_LIMIT_WINDOW_SEC = max(10, _env_int("RATE_LIMIT_WINDOW_SEC", 60))
 RUNTIME_HEARTBEAT_MAX_AGE_SEC = max(5, _env_int("RUNTIME_HEARTBEAT_MAX_AGE_SEC", 90))
 RUNTIME_RECONCILIATION_MAX_AGE_SEC = max(5, _env_int("RUNTIME_RECONCILIATION_MAX_AGE_SEC", 120))
+RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC = max(5, _env_int("RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC", 120))
 BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10))
 BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
 BOTS_OVERVIEW_INCLUDE_RECENT_LOGS = _env_bool("BOTS_OVERVIEW_INCLUDE_RECENT_LOGS", True)
@@ -2178,6 +2179,11 @@ class ConsoleStore:
                 "runtime_loop_alive": False,
                 "runtime_executor_connected": False,
                 "runtime_reconciliation_ok": False,
+                "runtime_exchange_connector_ok": False,
+                "runtime_exchange_order_ok": False,
+                "runtime_exchange_mode": "",
+                "runtime_exchange_verified_at": "",
+                "runtime_exchange_reason": "",
                 "runtime_heartbeat_at": "",
                 "runtime_last_reconcile_at": "",
                 "bot_status": "PAUSED",
@@ -2946,11 +2952,23 @@ def risk_hooks(context):
         if telemetry_source not in {RUNTIME_TELEMETRY_SOURCE_SYNTHETIC, RUNTIME_TELEMETRY_SOURCE_REAL}:
             state["runtime_telemetry_source"] = RUNTIME_TELEMETRY_SOURCE_SYNTHETIC
             changed = True
-        for key in ("runtime_loop_alive", "runtime_executor_connected", "runtime_reconciliation_ok"):
+        for key in (
+            "runtime_loop_alive",
+            "runtime_executor_connected",
+            "runtime_reconciliation_ok",
+            "runtime_exchange_connector_ok",
+            "runtime_exchange_order_ok",
+        ):
             if key not in state or not isinstance(state.get(key), bool):
                 state[key] = bool(state.get(key, False))
                 changed = True
-        for key in ("runtime_heartbeat_at", "runtime_last_reconcile_at"):
+        for key in (
+            "runtime_heartbeat_at",
+            "runtime_last_reconcile_at",
+            "runtime_exchange_verified_at",
+            "runtime_exchange_mode",
+            "runtime_exchange_reason",
+        ):
             if key not in state:
                 state[key] = ""
                 changed = True
@@ -4943,6 +4961,35 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _load_runtime_risk_policy_thresholds() -> dict[str, Any]:
+    defaults = {
+        "source": "settings",
+        "soft_daily_loss_pct": None,
+        "hard_daily_loss_pct": None,
+        "hard_drawdown_pct": None,
+    }
+    policy_path = (CONFIG_POLICIES_ROOT / "risk_policy.yaml").resolve()
+    if not policy_path.exists():
+        return defaults
+    try:
+        payload = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+        root = payload.get("risk_policy") if isinstance(payload.get("risk_policy"), dict) else {}
+        triggers = root.get("triggers") if isinstance(root.get("triggers"), dict) else {}
+        daily_cfg = triggers.get("daily_loss_pct") if isinstance(triggers.get("daily_loss_pct"), dict) else {}
+        dd_cfg = triggers.get("max_drawdown_pct") if isinstance(triggers.get("max_drawdown_pct"), dict) else {}
+        soft_daily = abs(_as_float(daily_cfg.get("soft_kill_bot_at"), 0.0)) / 100.0 if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_daily = abs(_as_float(daily_cfg.get("hard_kill_bot_at"), 0.0)) / 100.0 if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_dd = abs(_as_float(dd_cfg.get("hard_kill_bot_at"), 0.0)) / 100.0 if bool(dd_cfg.get("enabled", False)) else 0.0
+        return {
+            "source": "config/policies/risk_policy.yaml",
+            "soft_daily_loss_pct": soft_daily if soft_daily > 0 else None,
+            "hard_daily_loss_pct": hard_daily if hard_daily > 0 else None,
+            "hard_drawdown_pct": hard_dd if hard_dd > 0 else None,
+        }
+    except Exception:
+        return defaults
+
+
 class RuntimeBridge:
     def __init__(self) -> None:
         self._lock = RLock()
@@ -4950,6 +4997,7 @@ class RuntimeBridge:
         self._kill_switch = KillSwitch()
         self._risk_engine: RiskEngine | None = None
         self._risk_limits_fingerprint: tuple[float, float, int, float, float, float] | None = None
+        self._risk_policy_thresholds: dict[str, Any] = _load_runtime_risk_policy_thresholds()
         self._series: list[dict[str, Any]] = []
         self._stats: dict[str, int] = {
             "requotes": 0,
@@ -4992,10 +5040,24 @@ class RuntimeBridge:
 
     def _risk_limits_from_settings(self, settings: dict[str, Any]) -> RiskLimits:
         risk_defaults = settings.get("risk_defaults") if isinstance(settings.get("risk_defaults"), dict) else {}
+        self._risk_policy_thresholds = _load_runtime_risk_policy_thresholds()
+        soft_daily = _as_float(self._risk_policy_thresholds.get("soft_daily_loss_pct"), 0.0)
+        hard_daily = _as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0)
+        hard_dd = _as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0)
+        settings_daily = abs(_as_float(risk_defaults.get("max_daily_loss"), 5.0)) / 100.0
+        settings_dd = abs(_as_float(risk_defaults.get("max_dd"), 22.0)) / 100.0
+        daily_limit = settings_daily
+        if soft_daily > 0:
+            daily_limit = min(daily_limit, soft_daily)
+        if hard_daily > 0:
+            daily_limit = min(daily_limit, hard_daily)
+        dd_limit = settings_dd
+        if hard_dd > 0:
+            dd_limit = min(dd_limit, hard_dd)
         safe_factor = RuntimeBridge._safe_positive((settings.get("safety") or {}).get("safe_factor"), 0.5)
         return RiskLimits(
-            daily_loss_limit_pct=max(0.001, abs(_as_float(risk_defaults.get("max_daily_loss"), 5.0)) / 100.0),
-            max_drawdown_pct=max(0.001, abs(_as_float(risk_defaults.get("max_dd"), 22.0)) / 100.0),
+            daily_loss_limit_pct=max(0.001, daily_limit),
+            max_drawdown_pct=max(0.001, dd_limit),
             max_positions=max(1, _as_int(risk_defaults.get("max_positions"), 20)),
             max_total_exposure_pct=max(0.01, RuntimeBridge._safe_positive(risk_defaults.get("max_total_exposure_pct"), 1.0)),
             max_asset_exposure_pct=max(0.01, RuntimeBridge._safe_positive(risk_defaults.get("max_asset_exposure_pct"), 0.2)),
@@ -5025,6 +5087,34 @@ class RuntimeBridge:
         state[key] = value
         return True
 
+    def _runtime_exchange_ready(self, *, mode: str) -> dict[str, Any]:
+        mode_n = str(mode or "paper").strip().lower()
+        checked_at = utc_now_iso()
+        if mode_n == "paper":
+            return {
+                "ok": True,
+                "mode": mode_n,
+                "connector_ok": True,
+                "order_ok": True,
+                "reason": "Paper connector operativo (simulador).",
+                "source": "paper_simulator",
+                "checked_at": checked_at,
+            }
+        diag = diagnose_exchange(mode_n, force_refresh=False)
+        connector_ok = bool(diag.get("connector_ok", False))
+        order_ok = bool(diag.get("order_ok", False))
+        ok = connector_ok and order_ok
+        reason = str(diag.get("order_reason") or diag.get("connector_reason") or diag.get("last_error") or "")
+        return {
+            "ok": ok,
+            "mode": mode_n,
+            "connector_ok": connector_ok,
+            "order_ok": order_ok,
+            "reason": reason if reason else ("Exchange runtime check ok" if ok else "Exchange runtime check failed"),
+            "source": "exchange_diagnose_v1",
+            "checked_at": checked_at,
+        }
+
     def _cancel_open_orders(self) -> int:
         canceled = 0
         for order in list(self._oms.orders.values()):
@@ -5034,6 +5124,8 @@ class RuntimeBridge:
         return canceled
 
     def _ensure_seed_order(self, state: dict[str, Any]) -> None:
+        if str(state.get("mode") or "paper").strip().lower() != "paper":
+            return
         if self._oms.open_orders():
             return
         qty = max(0.001, round(RuntimeBridge._safe_positive(state.get("equity"), 10000.0) / 1_000_000.0, 6))
@@ -5084,36 +5176,92 @@ class RuntimeBridge:
         max_symbol_exposure = max(by_symbol.values()) if by_symbol else 0.0
         return exposure_total, exposure_rows, max_symbol_exposure
 
-    def _reconcile(self) -> dict[str, Any]:
+    def _reconcile(self, *, mode: str) -> dict[str, Any]:
         local_orders = {
             str(order.order_id): {"filled_qty": float(order.filled_qty)}
             for order in self._oms.orders.values()
         }
+        mode_n = str(mode or "paper").strip().lower()
+        source = "local_mirror"
+        source_ok = True
+        source_reason = ""
         exchange_orders = {oid: dict(payload) for oid, payload in local_orders.items()}
+        if mode_n in {"testnet", "live"}:
+            creds = load_exchange_credentials(mode_n)
+            if not bool(creds.get("has_keys", False)):
+                source = "exchange_api_missing_keys"
+                source_ok = False
+                source_reason = "Credenciales de exchange faltantes para reconciliacion real."
+                exchange_orders = {}
+            else:
+                timeout_sec = _exchange_timeout_seconds()
+                try:
+                    request_ok, result = _binance_signed_request(
+                        method="GET",
+                        base_url=str(creds.get("base_url") or ""),
+                        path="/api/v3/openOrders",
+                        api_key=str(creds.get("api_key") or ""),
+                        api_secret=str(creds.get("api_secret") or ""),
+                        params={},
+                        timeout_sec=timeout_sec,
+                    )
+                    payload = result.get("payload")
+                    if request_ok and isinstance(payload, list):
+                        parsed_orders: dict[str, dict[str, float]] = {}
+                        for row in payload:
+                            if not isinstance(row, dict):
+                                continue
+                            oid = str(row.get("clientOrderId") or row.get("orderId") or "").strip()
+                            if not oid:
+                                continue
+                            parsed_orders[oid] = {
+                                "filled_qty": float(_as_float(row.get("executedQty"), 0.0)),
+                            }
+                        exchange_orders = parsed_orders
+                        source = "exchange_api"
+                    else:
+                        source = "exchange_api_error"
+                        source_ok = False
+                        status_code = int(_as_int(result.get("status_code"), 0))
+                        category, detail = _classify_exchange_error(status_code, payload)
+                        source_reason = detail if detail else f"Exchange openOrders failed ({category})"
+                        exchange_orders = {}
+                except Exception as exc:
+                    source = "exchange_api_exception"
+                    source_ok = False
+                    source_reason = str(exc)
+                    exchange_orders = {}
         report = reconcile_orders(exchange_orders=exchange_orders, local_orders=local_orders)
         self._last_reconcile = {
             "desync_count": int(report.desync_count),
             "missing_local": list(report.missing_local),
             "missing_exchange": list(report.missing_exchange),
             "qty_mismatches": list(report.qty_mismatches),
+            "source": source,
+            "source_ok": bool(source_ok),
+            "source_reason": source_reason,
         }
         return dict(self._last_reconcile)
 
-    def _append_execution_point(self, *, settings: dict[str, Any]) -> dict[str, Any]:
+    def _append_execution_point(self, *, settings: dict[str, Any], mode: str) -> dict[str, Any]:
         execution_cfg = settings.get("execution") if isinstance(settings.get("execution"), dict) else {}
         spread_base = max(0.1, RuntimeBridge._safe_positive(execution_cfg.get("spread_proxy_bps"), 4.0))
         slip_base = max(0.1, RuntimeBridge._safe_positive(execution_cfg.get("slippage_base_bps"), 3.0))
         post_only = bool(execution_cfg.get("post_only", True))
+        mode_n = str(mode or "paper").strip().lower()
 
         open_orders = len(self._oms.open_orders())
         filled = sum(1 for row in self._oms.orders.values() if row.status == OrderStatus.FILLED)
         partial = sum(1 for row in self._oms.orders.values() if row.status == OrderStatus.PARTIALLY_FILLED)
         total_orders = len(self._oms.orders)
         if total_orders <= 0:
-            fill_ratio = 0.92
+            fill_ratio = 0.0 if mode_n in {"testnet", "live"} else 0.92
         else:
             fill_ratio = min(1.0, max(0.0, (filled + partial * 0.5) / total_orders))
-        maker_ratio = 0.92 if post_only else 0.48
+        if total_orders <= 0 and mode_n in {"testnet", "live"}:
+            maker_ratio = 0.0
+        else:
+            maker_ratio = 0.92 if post_only else 0.48
         latency_ms = 80.0 + (open_orders * 9.0) + (0.0 if post_only else 25.0)
 
         point = {
@@ -5134,6 +5282,7 @@ class RuntimeBridge:
             changed = False
             runtime_engine = _runtime_engine_from_state(state)
             running = bool(state.get("running")) and not bool(state.get("killed"))
+            active_mode = str(state.get("mode") or default_mode()).strip().lower()
             now_iso = utc_now_iso()
             max_age_for_stale = max(10, _as_int((settings.get("execution") or {}).get("order_timeout_sec"), 45))
 
@@ -5155,10 +5304,32 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_exchange_connector_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_exchange_order_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_exchange_reason", "") or changed
+                if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
+                    changed = self._set_state_value(state, "runtime_exchange_mode", "") or changed
+                    changed = self._set_state_value(state, "runtime_exchange_verified_at", "") or changed
                 if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
                     changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                     changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
-                self._append_execution_point(settings=settings)
+                self._append_execution_point(settings=settings, mode=active_mode)
+                return changed
+
+            exchange_ready = self._runtime_exchange_ready(mode=active_mode)
+            changed = self._set_state_value(state, "runtime_exchange_connector_ok", bool(exchange_ready.get("connector_ok", False))) or changed
+            changed = self._set_state_value(state, "runtime_exchange_order_ok", bool(exchange_ready.get("order_ok", False))) or changed
+            changed = self._set_state_value(state, "runtime_exchange_mode", str(exchange_ready.get("mode") or active_mode)) or changed
+            changed = self._set_state_value(state, "runtime_exchange_verified_at", str(exchange_ready.get("checked_at") or now_iso)) or changed
+            changed = self._set_state_value(state, "runtime_exchange_reason", str(exchange_ready.get("reason") or "")) or changed
+            if not bool(exchange_ready.get("ok", False)):
+                changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
+                changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
+                changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
+                changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
+                changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
+                self._append_execution_point(settings=settings, mode=active_mode)
                 return changed
 
             if event in {"start", "mode_change"} and self._kill_switch.is_triggered():
@@ -5175,11 +5346,16 @@ class RuntimeBridge:
                     fill_step = min(remaining, max(0.0001, remaining * 0.25))
                     self._oms.apply_fill(target.order_id, fill_step)
 
-            reconcile = self._reconcile()
-            changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_REAL) or changed
+            reconcile = self._reconcile(mode=active_mode)
+            reconciliation_ok = int(reconcile.get("desync_count") or 0) == 0 and bool(reconcile.get("source_ok", False))
+            changed = self._set_state_value(
+                state,
+                "runtime_telemetry_source",
+                RUNTIME_TELEMETRY_SOURCE_REAL if reconciliation_ok else RUNTIME_TELEMETRY_SOURCE_SYNTHETIC,
+            ) or changed
             changed = self._set_state_value(state, "runtime_loop_alive", True) or changed
             changed = self._set_state_value(state, "runtime_executor_connected", not self._kill_switch.is_triggered()) or changed
-            changed = self._set_state_value(state, "runtime_reconciliation_ok", int(reconcile.get("desync_count") or 0) == 0) or changed
+            changed = self._set_state_value(state, "runtime_reconciliation_ok", reconciliation_ok) or changed
             changed = self._set_state_value(state, "runtime_heartbeat_at", now_iso) or changed
             changed = self._set_state_value(state, "runtime_last_reconcile_at", now_iso) or changed
 
@@ -5197,6 +5373,22 @@ class RuntimeBridge:
                 asset_exposure_pct=asset_exposure_pct,
                 safe_mode=bool(state.get("safe_mode", False)),
             )
+            daily_loss_pct = risk_engine.daily_loss_pct(_as_float(state.get("daily_pnl"), 0.0), equity)
+            drawdown_pct = risk_engine.drawdown_pct(equity)
+            hard_daily_limit = _as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0)
+            hard_dd_limit = _as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0)
+            policy_hard_trigger = ""
+            if hard_daily_limit > 0 and daily_loss_pct >= hard_daily_limit:
+                policy_hard_trigger = "policy_hard_daily_loss"
+            elif hard_dd_limit > 0 and drawdown_pct >= hard_dd_limit:
+                policy_hard_trigger = "policy_hard_drawdown"
+            if policy_hard_trigger:
+                decision = type(decision)(
+                    allow_new_positions=False,
+                    reason=policy_hard_trigger,
+                    safe_mode=True,
+                    kill=True,
+                )
             self._last_risk = {
                 "allow_new_positions": bool(decision.allow_new_positions),
                 "reason": str(decision.reason or ""),
@@ -5205,6 +5397,9 @@ class RuntimeBridge:
                 "open_positions": len(positions),
                 "total_exposure_pct": float(total_exposure_pct),
                 "asset_exposure_pct": float(asset_exposure_pct),
+                "daily_loss_pct": float(daily_loss_pct),
+                "drawdown_pct": float(drawdown_pct),
+                "policy_source": str(self._risk_policy_thresholds.get("source") or "settings"),
             }
             changed = self._set_state_value(state, "runtime_risk_allow_new_positions", bool(decision.allow_new_positions)) or changed
             changed = self._set_state_value(state, "runtime_risk_reason", str(decision.reason or "")) or changed
@@ -5216,8 +5411,9 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "bot_status", "KILLED") or changed
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
+                changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-            self._append_execution_point(settings=settings)
+            self._append_execution_point(settings=settings, mode=active_mode)
             return changed
 
     def positions(self) -> list[dict[str, Any]]:
@@ -5267,6 +5463,9 @@ class RuntimeBridge:
                     "kill": bool(decision.get("kill", False)),
                     "safe_mode": bool(decision.get("safe_mode", state.get("safe_mode", False))),
                     "asset_exposure_pct": round(asset_exposure_pct, 6),
+                    "daily_loss_pct": round(_as_float(decision.get("daily_loss_pct"), 0.0), 6),
+                    "drawdown_pct": round(_as_float(decision.get("drawdown_pct"), 0.0), 6),
+                    "policy_source": str(decision.get("policy_source") or "settings"),
                 },
                 "circuit_breakers": breaker_flags,
                 "limits": {
@@ -5276,6 +5475,12 @@ class RuntimeBridge:
                     "max_total_exposure": float(risk_limits.max_total_exposure_pct),
                     "max_asset_exposure": float(risk_limits.max_asset_exposure_pct),
                     "risk_per_trade": float(risk_limits.risk_per_trade),
+                    "policy_hard_daily_loss_limit": -abs(_as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0))
+                    if _as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0) > 0
+                    else None,
+                    "policy_hard_drawdown_limit": -abs(_as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0))
+                    if _as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0) > 0
+                    else None,
                 },
                 "stress_tests": [
                     {"scenario": "fees_x2", "robust_score": round(max(0.0, robust_base - 7.5), 3)},
@@ -5586,14 +5791,22 @@ def _runtime_ts_age_sec(value: str | None, *, now: datetime | None = None) -> in
     return max(0, int((now_dt - parsed).total_seconds()))
 
 
-def _runtime_contract_snapshot(state: dict[str, Any] | None) -> dict[str, Any]:
+def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str | None = None) -> dict[str, Any]:
     snapshot = state if isinstance(state, dict) else {}
     now_dt = utc_now()
+    mode_n = str(target_mode or snapshot.get("mode") or default_mode()).strip().lower()
+    if mode_n not in ALLOWED_MODES:
+        mode_n = default_mode()
     runtime_engine = _runtime_engine_from_state(snapshot)
     telemetry_source = str(snapshot.get("runtime_telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC).strip().lower()
     loop_alive = bool(snapshot.get("runtime_loop_alive", False))
     executor_connected = bool(snapshot.get("runtime_executor_connected", False))
     reconciliation_ok = bool(snapshot.get("runtime_reconciliation_ok", False))
+    exchange_connector_ok = bool(snapshot.get("runtime_exchange_connector_ok", False))
+    exchange_order_ok = bool(snapshot.get("runtime_exchange_order_ok", False))
+    exchange_mode = str(snapshot.get("runtime_exchange_mode") or "").strip().lower()
+    exchange_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_exchange_verified_at") or ""), now=now_dt)
+    exchange_required = mode_n in {"testnet", "live"}
     heartbeat_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_heartbeat_at") or ""), now=now_dt)
     reconcile_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_last_reconcile_at") or ""), now=now_dt)
 
@@ -5605,17 +5818,30 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None) -> dict[str, Any]:
         "reconciliation_ok": reconciliation_ok,
         "heartbeat_fresh": heartbeat_age_sec is not None and heartbeat_age_sec <= int(RUNTIME_HEARTBEAT_MAX_AGE_SEC),
         "reconciliation_fresh": reconcile_age_sec is not None and reconcile_age_sec <= int(RUNTIME_RECONCILIATION_MAX_AGE_SEC),
+        "exchange_connector_ok": (not exchange_required) or exchange_connector_ok,
+        "exchange_order_ok": (not exchange_required) or exchange_order_ok,
+        "exchange_check_fresh": (not exchange_required)
+        or (exchange_age_sec is not None and exchange_age_sec <= int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC)),
+        "exchange_mode_known": (not exchange_required) or bool(exchange_mode),
     }
     missing_checks = [key for key, ok in checks.items() if not bool(ok)]
     ready_for_live = len(missing_checks) == 0
 
     return {
         "contract_version": RUNTIME_CONTRACT_VERSION,
+        "mode": mode_n,
         "runtime_engine": runtime_engine,
         "telemetry_source": telemetry_source,
         "runtime_loop_alive": loop_alive,
         "executor_connected": executor_connected,
         "reconciliation_ok": reconciliation_ok,
+        "runtime_exchange_connector_ok": exchange_connector_ok,
+        "runtime_exchange_order_ok": exchange_order_ok,
+        "runtime_exchange_mode": exchange_mode,
+        "runtime_exchange_verified_at": str(snapshot.get("runtime_exchange_verified_at") or ""),
+        "runtime_exchange_reason": str(snapshot.get("runtime_exchange_reason") or ""),
+        "exchange_check_age_sec": exchange_age_sec,
+        "exchange_check_max_age_sec": int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC),
         "runtime_heartbeat_at": str(snapshot.get("runtime_heartbeat_at") or ""),
         "runtime_last_reconcile_at": str(snapshot.get("runtime_last_reconcile_at") or ""),
         "heartbeat_age_sec": heartbeat_age_sec,
@@ -5630,8 +5856,8 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _runtime_gate_status_for_mode(mode: str, state: dict[str, Any] | None) -> tuple[str, str, dict[str, Any]]:
-    snapshot = _runtime_contract_snapshot(state)
     mode_n = str(mode or "paper").strip().lower()
+    snapshot = _runtime_contract_snapshot(state, target_mode=mode_n)
     missing = snapshot.get("missing_checks") if isinstance(snapshot.get("missing_checks"), list) else []
     if mode_n == "live":
         if bool(snapshot.get("ready_for_live")):
@@ -5671,6 +5897,11 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_loop_alive", False)
     runtime_state.setdefault("runtime_executor_connected", False)
     runtime_state.setdefault("runtime_reconciliation_ok", False)
+    runtime_state.setdefault("runtime_exchange_connector_ok", False)
+    runtime_state.setdefault("runtime_exchange_order_ok", False)
+    runtime_state.setdefault("runtime_exchange_mode", "")
+    runtime_state.setdefault("runtime_exchange_verified_at", "")
+    runtime_state.setdefault("runtime_exchange_reason", "")
     runtime_state.setdefault("runtime_heartbeat_at", "")
     runtime_state.setdefault("runtime_last_reconcile_at", "")
     runtime_settings = settings if isinstance(settings, dict) else store.load_settings()
@@ -5770,7 +6001,12 @@ def gate_row(gate_id: str, name: str, status: Literal["PASS", "FAIL", "WARN"], r
     return {"id": gate_id, "name": name, "status": status, "reason": reason, "details": details}
 
 
-def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = False) -> dict[str, Any]:
+def evaluate_gates(
+    mode: str | None = None,
+    *,
+    force_exchange_check: bool = False,
+    runtime_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     active_mode = (mode or store.load_bot_state().get("mode") or "paper").lower()
     settings = store.load_settings()
     gates: list[dict[str, Any]] = []
@@ -5915,8 +6151,12 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
         g8_reason = "Observability ready"
     gates.append(gate_row("G8_OBSERVABILITY_OK", "Observability", g8_status, g8_reason, {"telegram_enabled": telegram_enabled, "telegram_configured": has_telegram}))
 
-    runtime_state = store.load_bot_state()
-    g9_status, g9_reason, runtime_snapshot = _runtime_gate_status_for_mode(active_mode, runtime_state)
+    runtime_state_synced = (
+        dict(runtime_state)
+        if isinstance(runtime_state, dict)
+        else _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    )
+    g9_status, g9_reason, runtime_snapshot = _runtime_gate_status_for_mode(active_mode, runtime_state_synced)
     gates.append(
         gate_row(
             "G9_RUNTIME_ENGINE_REAL",
@@ -5925,7 +6165,7 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
             g9_reason,
             {
                 "mode": active_mode,
-                "runtime_engine": _runtime_engine_from_state(runtime_state),
+                "runtime_engine": _runtime_engine_from_state(runtime_state_synced),
                 "runtime_contract": runtime_snapshot,
             },
         )
@@ -5992,7 +6232,7 @@ def build_status_payload() -> dict[str, Any]:
     runtime_mode = "real" if runtime_real else "simulado"
     runtime_positions = runtime_bridge.positions()
     execution_snapshot = runtime_bridge.execution_metrics_snapshot()
-    gates = evaluate_gates(state.get("mode", "paper"))
+    gates = evaluate_gates(state.get("mode", "paper"), runtime_state=state)
     return {
         "status": state.get("bot_status", "PAUSED"),
         "state": state.get("bot_status", "PAUSED"),
@@ -9137,7 +9377,7 @@ def create_app() -> FastAPI:
         state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
         runtime_snapshot = _runtime_contract_snapshot(state)
         telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
-        gates_payload = evaluate_gates(status["mode"])
+        gates_payload = evaluate_gates(status["mode"], runtime_state=state)
         checklist = [{"stage": row["id"], "done": row["status"] == "PASS", "note": row["reason"]} for row in gates_payload["gates"]]
         payload = runtime_bridge.risk_snapshot(state=state, settings=settings, gate_checklist=checklist)
         payload["equity"] = float(status["equity"])

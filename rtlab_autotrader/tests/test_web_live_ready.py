@@ -561,13 +561,17 @@ def test_g9_live_passes_only_when_runtime_contract_is_fully_ready(tmp_path: Path
       "runtime_loop_alive": True,
       "runtime_executor_connected": True,
       "runtime_reconciliation_ok": True,
+      "runtime_exchange_connector_ok": True,
+      "runtime_exchange_order_ok": True,
+      "runtime_exchange_mode": "testnet",
+      "runtime_exchange_verified_at": module.utc_now_iso(),
       "runtime_heartbeat_at": module.utc_now_iso(),
       "runtime_last_reconcile_at": module.utc_now_iso(),
     }
   )
   module.store.save_bot_state(state)
 
-  gates_live_pass = module.evaluate_gates("live", force_exchange_check=True)
+  gates_live_pass = module.evaluate_gates("live", force_exchange_check=True, runtime_state=state)
   g9_pass = {row["id"]: row for row in gates_live_pass["gates"]}["G9_RUNTIME_ENGINE_REAL"]
   assert g9_pass["status"] == "PASS"
   runtime_contract_pass = (g9_pass.get("details") or {}).get("runtime_contract") or {}
@@ -641,13 +645,17 @@ def test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers(tmp_pat
       "runtime_loop_alive": True,
       "runtime_executor_connected": True,
       "runtime_reconciliation_ok": True,
+      "runtime_exchange_connector_ok": True,
+      "runtime_exchange_order_ok": True,
+      "runtime_exchange_mode": "testnet",
+      "runtime_exchange_verified_at": module.utc_now_iso(),
       "runtime_heartbeat_at": module.utc_now_iso(),
       "runtime_last_reconcile_at": stale_reconcile,
     }
   )
   module.store.save_bot_state(state)
 
-  gates_fail = module.evaluate_gates("live", force_exchange_check=True)
+  gates_fail = module.evaluate_gates("live", force_exchange_check=True, runtime_state=state)
   g9_fail = {row["id"]: row for row in gates_fail["gates"]}["G9_RUNTIME_ENGINE_REAL"]
   assert g9_fail["status"] == "FAIL"
   runtime_contract_fail = (g9_fail.get("details") or {}).get("runtime_contract") or {}
@@ -658,13 +666,18 @@ def test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers(tmp_pat
   refreshed["runtime_last_reconcile_at"] = module.utc_now_iso()
   module.store.save_bot_state(refreshed)
 
-  gates_pass = module.evaluate_gates("live", force_exchange_check=True)
+  gates_pass = module.evaluate_gates("live", force_exchange_check=True, runtime_state=refreshed)
   g9_pass = {row["id"]: row for row in gates_pass["gates"]}["G9_RUNTIME_ENGINE_REAL"]
   assert g9_pass["status"] == "PASS"
 
 
 def test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
@@ -687,7 +700,6 @@ def test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk(
   assert runtime_snapshot.get("executor_connected") is True
   assert runtime_snapshot.get("reconciliation_ok") is True
   assert isinstance(status_payload.get("positions"), list)
-  assert status_payload.get("positions")
 
   execution_res = client.get("/api/v1/execution/metrics", headers=headers)
   assert execution_res.status_code == 200, execution_res.text
@@ -1117,6 +1129,8 @@ def _mock_exchange_ok(module, monkeypatch) -> None:
       return _DummyResponse(200, {"balances": []})
     if "/api/v3/order/test" in url:
       return _DummyResponse(200, {})
+    if "/api/v3/openOrders" in url:
+      return _DummyResponse(200, [])
     return _DummyResponse(404, {"code": -1, "msg": "not found"})
 
   monkeypatch.setattr(module.requests, "get", fake_get)
