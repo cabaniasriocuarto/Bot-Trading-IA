@@ -131,6 +131,13 @@
   - `rg -n --glob '*.yml' --glob '!security-ci.yml' -- '--password([[:space:]]|=|\\\")' .github/workflows` -> sin matches.
   - `rg -n --glob '*.ps1' -- '--password([[:space:]]|=|\\\")' scripts` -> sin matches.
 
+### AP-BOT-1010 (cierre no-live formal)
+- Nuevo artefacto:
+  - `docs/audit/NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md`.
+- Resultado consolidado:
+  - no-live/testnet: GO.
+  - LIVE: NO GO (postergado por decision operativa, pendiente tramo final con APIs reales/canary).
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`

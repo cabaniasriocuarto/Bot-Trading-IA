@@ -159,6 +159,18 @@ Fecha de actualizacion: 2026-03-04
   - riesgo de exposicion de secretos por CLI en automatizacion remota queda mitigado;
   - LIVE sigue **NO GO** por pendientes funcionales finales fuera de seguridad (`runtime` end-to-end total + hardening final).
 
+## Actualizacion tecnica AP-BOT-1010 (cierre no-live formal) - 2026-03-04
+
+- Artefacto de cierre agregado:
+  - `docs/audit/NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md`.
+- Consolidado operativo:
+  - no-live/testnet queda en **GO** con evidencia de runtime + seguridad + hardening.
+  - LIVE queda en **NO GO** por decision operativa (postergado hasta configuracion final de APIs/canary).
+- Evidencia de cierre usada:
+  - pruebas runtime focales: PASS.
+  - `scripts/security_scan.sh`: PASS.
+  - guard CI de `--password`: activo.
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

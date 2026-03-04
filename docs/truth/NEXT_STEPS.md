@@ -80,6 +80,14 @@ Fecha: 2026-03-04
 - Pendiente inmediato:
   - cerrar `AP-BOT-1010`: estabilizacion final operativa (latencia/soak/checklist no-live de cierre).
 
+## Actualizacion tecnica AP-BOT-1010 (2026-03-04)
+- [x] Checklist formal de cierre no-live generado:
+  - `docs/audit/NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md`.
+- [x] Tramo no-live/testnet consolidado en estado GO.
+- [ ] LIVE postergado hasta fase final (configuracion APIs/canary/rollback).
+- Pendiente inmediato:
+  - preparar tramo final LIVE cuando se habilite la configuracion real de APIs.
+
 ## Cierre de auditoria integral (2026-03-04)
 - Auditoria completa finalizada y documentada en:
   - `docs/audit/AUDIT_REPORT_20260304.md`
