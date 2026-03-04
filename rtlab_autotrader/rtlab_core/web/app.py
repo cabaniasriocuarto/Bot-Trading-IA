@@ -181,6 +181,7 @@ BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
 BOTS_OVERVIEW_INCLUDE_RECENT_LOGS = _env_bool("BOTS_OVERVIEW_INCLUDE_RECENT_LOGS", True)
 BOTS_OVERVIEW_RECENT_LOGS_PER_BOT = max(0, _env_int("BOTS_OVERVIEW_RECENT_LOGS_PER_BOT", 5))
 BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT = max(0, _env_int("BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT", 40))
+BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE = max(10, _env_int("BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE", 250))
 BOTS_OVERVIEW_PROFILE_SLOW_MS = max(50, _env_int("BOTS_OVERVIEW_PROFILE_SLOW_MS", 500))
 BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC = max(5, _env_int("BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC", 30))
 BOTS_LOGS_REF_BACKFILL_MAX_ROWS = max(1000, _env_int("BOTS_LOGS_REF_BACKFILL_MAX_ROWS", 50000))
@@ -3220,11 +3221,17 @@ def risk_hooks(context):
 
         t_stage = time.perf_counter()
         runs_by_strategy_mode: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        indexed_runs = 0
+        skipped_runs_outside_pool = 0
+        max_runs_per_key = int(BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE)
         for run in runs_rows:
             if not isinstance(run, dict):
                 continue
             sid = str(run.get("strategy_id") or "")
             if not sid:
+                continue
+            if strategy_ids_in_pool and sid not in strategy_ids_in_pool:
+                skipped_runs_outside_pool += 1
                 continue
             run_mode = str(run.get("mode") or "backtest").lower()
             key = (sid, run_mode)
@@ -3233,7 +3240,13 @@ def risk_hooks(context):
                 runs_by_strategy_mode[key] = [run]
             else:
                 rows.append(run)
+                if len(rows) > max_runs_per_key:
+                    rows.pop(0)
+            indexed_runs += 1
         perf_stages["stage_runs_index_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+        perf_stages["runs_indexed"] = int(indexed_runs)
+        perf_stages["runs_skipped_outside_pool"] = int(skipped_runs_outside_pool)
+        perf_stages["max_runs_per_strategy_mode"] = int(max_runs_per_key)
 
         t_stage = time.perf_counter()
         kpis_by_mode: dict[str, dict[str, dict[str, Any]]] = {mode_key: {} for mode_key in mode_to_kpi_mode}
@@ -6141,9 +6154,10 @@ def _get_bots_overview_payload_cached(
             cached_perf = cached_entry.get("perf")
             if isinstance(cached_payload, dict):
                 return cached_payload, "hit", (cached_perf if isinstance(cached_perf, dict) else {})
+    rec_rows = recommendations if isinstance(recommendations, list) else learning_service.load_all_recommendations()
     overview_perf: dict[str, Any] = {}
     items = store.list_bot_instances(
-        recommendations=recommendations,
+        recommendations=rec_rows,
         include_recent_logs=include_recent_logs,
         recent_logs_per_bot=recent_logs_per_bot,
         overview_perf=overview_perf,
@@ -7366,9 +7380,7 @@ def create_app() -> FastAPI:
             int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT if recent_logs_per_bot is None else recent_logs_per_bot),
         )
         t0 = time.perf_counter()
-        recs = learning_service.load_all_recommendations()
         payload, cache_state, cache_perf = _get_bots_overview_payload_cached(
-            recommendations=recs,
             include_recent_logs=recent_logs,
             recent_logs_per_bot=recent_logs_per_bot,
         )

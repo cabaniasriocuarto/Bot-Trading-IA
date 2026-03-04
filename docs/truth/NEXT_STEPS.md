@@ -54,6 +54,16 @@ Fecha: 2026-03-04
 - Pendiente inmediato:
   - completar runtime real end-to-end (broker/exchange) y confirmar corrida verde del workflow `Security CI` en GitHub.
 
+## Actualizacion tecnica AP-8011 (2026-03-04)
+- [x] Optimizacion incremental aplicada en `/api/v1/bots`:
+  - carga lazy de recomendaciones en `cache miss`;
+  - indexado de runs limitado a estrategias de pools activos;
+  - cap por `(strategy_id, mode)` con `BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE`.
+- [x] Regresion funcional del endpoint:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
+- [ ] Pendiente de cierre:
+  - rerun benchmark remoto para confirmar `p95` estable en entorno productivo (objetivo `< 300ms` sostenido).
+
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
 - [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
 - [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.

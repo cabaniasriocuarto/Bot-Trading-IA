@@ -45,6 +45,23 @@ Fecha de actualizacion: 2026-03-04
   - se reduce la divergencia `config` vs `knowledge` para thresholds de gates;
   - LIVE sigue **NO GO** (pendiente runtime real end-to-end + cierre security CI run green).
 
+## Actualizacion tecnica AP-8011 (latencia `/api/v1/bots`: optimizacion incremental) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `list_bots` deja de cargar recomendaciones antes del cache-check (se cargan solo en `cache miss`);
+  - `get_bots_overview` indexa runs filtrando por estrategias realmente presentes en pools de bots;
+  - nuevo cap por estrategia/modo para indexado de runs:
+    - `BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE` (default `250`);
+  - perf debug agrega:
+    - `runs_indexed`,
+    - `runs_skipped_outside_pool`,
+    - `max_runs_per_strategy_mode`.
+- Validacion:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
+- Estado:
+  - optimizacion aplicada sin cambio de contrato API;
+  - pendiente: rerun remoto de benchmark para confirmar impacto en `p95` productivo de forma estable.
+
 ## Actualizacion cleanroom docs + staging NO-LIVE (2026-03-04)
 
 - Se aplico limpieza de documentacion para reducir confusion operativa:

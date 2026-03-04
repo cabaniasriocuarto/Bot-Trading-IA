@@ -39,6 +39,17 @@
 - Evidencia:
   - `python -m pytest rtlab_autotrader/tests/test_learning_service_gates_source.py rtlab_autotrader/tests/test_gates_policy_source_fail_closed.py rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS (`17 passed`).
 
+### AP-8011 (optimizacion incremental de `/api/v1/bots`)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - evita `learning_service.load_all_recommendations()` en cada request cuando hay cache hit;
+  - filtra indexado de `runs` por `strategy_ids` presentes en pools de bots;
+  - limita runs indexados por `(strategy_id, mode)` con `BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE` (default `250`);
+  - expone nuevos campos de perfilado interno en debug: `runs_indexed`, `runs_skipped_outside_pool`, `max_runs_per_strategy_mode`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
+- Nota:
+  - requiere rerun remoto de benchmark para verificar impacto final de `p95` en entorno productivo.
+
 ### Cleanroom docs + staging no-live (docops/devops)
 - Limpieza de documentacion vigente/historica:
   - movidos a `docs/_archive/*`: `BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `MASS_BACKTEST_DATA.md`, `research_mass_backtests.md`, `research_stack.md`, `FINAL_RELEASE_REPORT.md`, `DEPENDENCIES_COMPAT.md`, `UI_UX_RESEARCH_FIRST_FINAL.md`, `CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`.
