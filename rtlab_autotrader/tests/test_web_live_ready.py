@@ -2278,6 +2278,46 @@ def test_bots_overview_supports_recent_logs_query_overrides_and_cache_key(tmp_pa
   assert (third.json().get("perf") or {}).get("cache") == "miss"
 
 
+def test_bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT", "1")
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  assert strategies.status_code == 200, strategies.text
+  strategy_id = str(strategies.json()[0]["id"])
+  create = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "name": "bot-auto-disable-logs",
+      "engine": "bandit_thompson",
+      "mode": "paper",
+      "status": "active",
+      "pool_strategy_ids": [strategy_id],
+      "universe": ["BTCUSDT"],
+      "notes": "auto-disable logs test",
+    },
+  )
+  assert create.status_code == 200, create.text
+
+  module._invalidate_bots_overview_cache()
+  default_poll = client.get("/api/v1/bots?debug_perf=true", headers=headers)
+  assert default_poll.status_code == 200, default_poll.text
+  assert default_poll.headers.get("X-RTLAB-Bots-Recent-Logs") == "disabled"
+  default_perf = default_poll.json().get("perf") or {}
+  assert bool(default_perf.get("logs_auto_disabled")) is True
+  assert int(default_perf.get("bots_count") or 0) >= 2
+
+  module._invalidate_bots_overview_cache()
+  explicit = client.get("/api/v1/bots?recent_logs=true&debug_perf=true", headers=headers)
+  assert explicit.status_code == 200, explicit.text
+  assert explicit.headers.get("X-RTLAB-Bots-Recent-Logs") == "enabled"
+  explicit_perf = explicit.json().get("perf") or {}
+  assert bool(explicit_perf.get("logs_auto_disabled")) is False
+
+
 def test_bots_overview_only_computes_kpis_for_strategies_in_pool(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch)
   call_counter = {"n": 0}

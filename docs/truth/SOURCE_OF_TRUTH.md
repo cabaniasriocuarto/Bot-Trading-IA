@@ -26,6 +26,19 @@ Fecha de actualizacion: 2026-03-04
   - Promotion sin evidencia de feature-set: fail-closed.
   - LIVE: sigue NO GO hasta cerrar runtime real end-to-end (decision operativa vigente).
 
+## Actualizacion tecnica AP-BOT-1003 (latencia `/api/v1/bots`) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - nuevo umbral `BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT` (default `40`) para polling por defecto;
+  - cuando `recent_logs` no viene explicito y hay muchos bots, se desactiva carga de logs recientes automaticamente;
+  - override explicito `?recent_logs=true` se mantiene disponible;
+  - cache key de `/api/v1/bots` ahora distingue `source=default|explicit` para evitar reutilizar payload de una politica en otra;
+  - headers/debug perf reflejan el estado efectivo (`X-RTLAB-Bots-Recent-Logs`, `logs_auto_disabled`).
+- Tests de regresion:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
+- Impacto esperado:
+  - menos picos de latencia en cardinalidad alta de bots sin romper el contrato del endpoint.
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

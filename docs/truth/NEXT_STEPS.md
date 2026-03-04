@@ -12,6 +12,16 @@ Fecha: 2026-03-04
   - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "validate_promotion_blocks_mixed_orderflow_feature_set or mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo" -q` -> PASS.
 
+## Actualizacion tecnica AP-BOT-1003 (2026-03-04)
+- [x] Estabilizacion de `/api/v1/bots` para cardinalidad alta:
+  - auto-disable de logs recientes en polling default con muchos bots (`BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT`, default `40`);
+  - override explicito `recent_logs=true` preservado;
+  - cache key separa `source=default|explicit`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
+- Siguiente AP recomendado:
+  - cerrar runtime real end-to-end (idempotencia submit/cancel/fill + reconciliacion de posiciones/ordenes externas).
+
 ## Cierre de auditoria integral (2026-03-04)
 - Auditoria completa finalizada y documentada en:
   - `docs/audit/AUDIT_REPORT_20260304.md`

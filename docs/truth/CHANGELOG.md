@@ -23,6 +23,19 @@
   - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "validate_promotion_blocks_mixed_orderflow_feature_set or mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo" -q` -> PASS.
 
+### AP-BOT-1003 (estabilizacion de latencia en `/api/v1/bots`)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - agregado `BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT` (default `40`);
+  - en polling default (`recent_logs` sin explicitar), se auto-desactiva carga de logs recientes con muchos bots;
+  - `recent_logs=true` explicito mantiene logs habilitados;
+  - cache key de overview distingue `source=default|explicit`;
+  - debug perf expone `logs_auto_disabled`, threshold y `bots_count`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo test `test_bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_supports_recent_logs_query_overrides_and_cache_key or bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override or bots_overview_perf_headers_and_debug_payload" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`

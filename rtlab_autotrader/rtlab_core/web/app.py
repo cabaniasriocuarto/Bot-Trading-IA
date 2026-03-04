@@ -180,6 +180,7 @@ BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10)
 BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
 BOTS_OVERVIEW_INCLUDE_RECENT_LOGS = _env_bool("BOTS_OVERVIEW_INCLUDE_RECENT_LOGS", True)
 BOTS_OVERVIEW_RECENT_LOGS_PER_BOT = max(0, _env_int("BOTS_OVERVIEW_RECENT_LOGS_PER_BOT", 5))
+BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT = max(0, _env_int("BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT", 40))
 BOTS_OVERVIEW_PROFILE_SLOW_MS = max(50, _env_int("BOTS_OVERVIEW_PROFILE_SLOW_MS", 500))
 BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC = max(5, _env_int("BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC", 30))
 BOTS_LOGS_REF_BACKFILL_MAX_ROWS = max(1000, _env_int("BOTS_LOGS_REF_BACKFILL_MAX_ROWS", 50000))
@@ -3530,7 +3531,27 @@ def risk_hooks(context):
         overview_perf: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         effective_recent_logs = bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS if include_recent_logs is None else include_recent_logs)
+        effective_recent_logs_per_bot = max(
+            0,
+            int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT if recent_logs_per_bot is None else recent_logs_per_bot),
+        )
         rows = self.load_bots()
+        logs_auto_disabled = False
+        if (
+            include_recent_logs is None
+            and effective_recent_logs
+            and int(BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT) > 0
+            and len(rows) > int(BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT)
+        ):
+            effective_recent_logs = False
+            logs_auto_disabled = True
+            effective_recent_logs_per_bot = 0
+        if isinstance(overview_perf, dict):
+            overview_perf["logs_auto_disabled"] = bool(logs_auto_disabled)
+            overview_perf["logs_auto_disable_threshold"] = int(BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT)
+            overview_perf["bots_count"] = len(rows)
+            overview_perf["effective_recent_logs"] = bool(effective_recent_logs)
+            overview_perf["logs_per_bot_effective"] = int(effective_recent_logs_per_bot)
         strategies = self.list_strategies()
         runs = self.load_runs()
         by_id = {str(s.get("id") or ""): s for s in strategies}
@@ -3540,7 +3561,7 @@ def risk_hooks(context):
             strategies=strategies,
             runs=runs,
             include_recent_logs=effective_recent_logs,
-            recent_logs_per_bot=recent_logs_per_bot,
+            recent_logs_per_bot=effective_recent_logs_per_bot,
             perf=overview_perf,
         )
         out: list[dict[str, Any]] = []
@@ -5557,7 +5578,12 @@ def _get_bots_overview_payload_cached(
         0,
         int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT if recent_logs_per_bot is None else recent_logs_per_bot),
     )
-    cache_key = f"recent_logs={1 if effective_recent_logs else 0};logs_per_bot={effective_recent_logs_per_bot}"
+    recent_logs_source = "default" if include_recent_logs is None else "explicit"
+    cache_key = (
+        f"recent_logs={1 if effective_recent_logs else 0};"
+        f"logs_per_bot={effective_recent_logs_per_bot};"
+        f"source={recent_logs_source}"
+    )
     now_epoch = time.time()
     with _BOTS_OVERVIEW_CACHE_LOCK:
         entries = _BOTS_OVERVIEW_CACHE.get("entries")
@@ -5573,12 +5599,15 @@ def _get_bots_overview_payload_cached(
     overview_perf: dict[str, Any] = {}
     items = store.list_bot_instances(
         recommendations=recommendations,
-        include_recent_logs=effective_recent_logs,
-        recent_logs_per_bot=effective_recent_logs_per_bot,
+        include_recent_logs=include_recent_logs,
+        recent_logs_per_bot=recent_logs_per_bot,
         overview_perf=overview_perf,
     )
     payload = {"items": items, "total": len(items)}
     cache_perf = {"overview": dict(overview_perf.get("overview") or {})}
+    for key in ("logs_auto_disabled", "logs_auto_disable_threshold", "bots_count", "effective_recent_logs", "logs_per_bot_effective"):
+        if key in overview_perf:
+            cache_perf[key] = overview_perf.get(key)
     with _BOTS_OVERVIEW_CACHE_LOCK:
         entries = _BOTS_OVERVIEW_CACHE.get("entries")
         if not isinstance(entries, dict):
@@ -6764,8 +6793,8 @@ def create_app() -> FastAPI:
         recent_logs_per_bot: int | None = Query(default=None, ge=0, le=50),
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
-        effective_recent_logs = bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS if recent_logs is None else recent_logs)
-        effective_recent_logs_per_bot = max(
+        default_recent_logs = bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS if recent_logs is None else recent_logs)
+        default_recent_logs_per_bot = max(
             0,
             int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT if recent_logs_per_bot is None else recent_logs_per_bot),
         )
@@ -6773,9 +6802,11 @@ def create_app() -> FastAPI:
         recs = learning_service.load_all_recommendations()
         payload, cache_state, cache_perf = _get_bots_overview_payload_cached(
             recommendations=recs,
-            include_recent_logs=effective_recent_logs,
-            recent_logs_per_bot=effective_recent_logs_per_bot,
+            include_recent_logs=recent_logs,
+            recent_logs_per_bot=recent_logs_per_bot,
         )
+        effective_recent_logs = bool(cache_perf.get("effective_recent_logs", default_recent_logs))
+        effective_recent_logs_per_bot = int(cache_perf.get("logs_per_bot_effective", default_recent_logs_per_bot) or 0)
         total_ms = (time.perf_counter() - t0) * 1000.0
         response.headers["X-RTLAB-Bots-Overview-Cache"] = cache_state
         response.headers["X-RTLAB-Bots-Overview-MS"] = f"{total_ms:.3f}"
@@ -6812,6 +6843,9 @@ def create_app() -> FastAPI:
             "recent_logs_per_bot": int(effective_recent_logs_per_bot),
             "slow_threshold_ms": int(BOTS_OVERVIEW_PROFILE_SLOW_MS),
             "overview": cache_perf.get("overview") if isinstance(cache_perf.get("overview"), dict) else {},
+            "logs_auto_disabled": bool(cache_perf.get("logs_auto_disabled", False)),
+            "logs_auto_disable_threshold": int(cache_perf.get("logs_auto_disable_threshold") or 0),
+            "bots_count": int(cache_perf.get("bots_count") or 0),
         }
         return out
 
