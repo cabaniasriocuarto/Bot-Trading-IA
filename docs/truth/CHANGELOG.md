@@ -18,6 +18,15 @@
 - Evidencia:
   - `npm test -- --run src/lib/security.test.ts` -> PASS (`9 passed`).
 
+### AP-8002 (security CI: instalacion robusta de gitleaks)
+- `.github/workflows/security-ci.yml`:
+  - reemplazada instalacion via script `master/install.sh` por descarga de release oficial:
+    - `gitleaks_8.30.0_linux_x64.tar.gz`
+  - agregado `curl` con retries y timeout para runners GitHub.
+  - extraccion directa a `RUNNER_TEMP/bin` y validacion de `gitleaks version`.
+- Resultado esperado:
+  - reducir fallos espurios en `Install security tooling` y facilitar cierre de `FM-SEC-004` al rerun del workflow.
+
 ### Cleanroom docs + staging no-live (docops/devops)
 - Limpieza de documentacion vigente/historica:
   - movidos a `docs/_archive/*`: `BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `MASS_BACKTEST_DATA.md`, `research_mass_backtests.md`, `research_stack.md`, `FINAL_RELEASE_REPORT.md`, `DEPENDENCIES_COMPAT.md`, `UI_UX_RESEARCH_FIRST_FINAL.md`, `CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`.

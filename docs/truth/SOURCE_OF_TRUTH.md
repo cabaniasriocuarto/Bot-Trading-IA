@@ -17,6 +17,16 @@ Fecha de actualizacion: 2026-03-04
   - riesgo de fallback mock accidental en staging/prod queda mitigado en BFF;
   - LIVE sigue **NO GO** por pendientes runtime end-to-end fuera de este AP.
 
+## Actualizacion tecnica AP-8002 (security CI tooling estable) - 2026-03-04
+
+- `.github/workflows/security-ci.yml`:
+  - instalacion de `gitleaks` cambia a binario oficial versionado (`8.30.0`) desde release de GitHub;
+  - se elimina dependencia del install script remoto `master/install.sh` (mas fragil);
+  - descarga con `curl --retry` + `tar` + `chmod` para reducir fallos transitorios en runners.
+- Estado:
+  - queda pendiente validar corrida verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
+  - no se toco runtime ni logica de trading.
+
 ## Actualizacion cleanroom docs + staging NO-LIVE (2026-03-04)
 
 - Se aplico limpieza de documentacion para reducir confusion operativa:

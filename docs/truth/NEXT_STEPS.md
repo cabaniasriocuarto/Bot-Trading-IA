@@ -39,6 +39,12 @@ Fecha: 2026-03-04
 - Pendiente inmediato:
   - cerrar wiring runtime broker/exchange end-to-end (orden/fill/reconciliacion real) y corrida verde de `Security CI` root.
 
+## Actualizacion tecnica AP-8002 (2026-03-04)
+- [x] Workflow `security-ci` endurecido para instalar `gitleaks` desde release oficial versionado (`8.30.0`) con retries.
+- [ ] Pendiente validar corrida verde en GitHub Actions (`Security CI`) para cerrar `FM-SEC-004`.
+- Evidencia local:
+  - cambio en `/.github/workflows/security-ci.yml` (paso `Install security tooling`).
+
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
 - [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
 - [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.
