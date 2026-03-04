@@ -5822,7 +5822,7 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
         "exchange_order_ok": (not exchange_required) or exchange_order_ok,
         "exchange_check_fresh": (not exchange_required)
         or (exchange_age_sec is not None and exchange_age_sec <= int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC)),
-        "exchange_mode_known": (not exchange_required) or bool(exchange_mode),
+        "exchange_mode_match": (not exchange_required) or exchange_mode == mode_n,
     }
     missing_checks = [key for key, ok in checks.items() if not bool(ok)]
     ready_for_live = len(missing_checks) == 0
@@ -6154,7 +6154,7 @@ def evaluate_gates(
     runtime_state_synced = (
         dict(runtime_state)
         if isinstance(runtime_state, dict)
-        else _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        else dict(store.load_bot_state())
     )
     g9_status, g9_reason, runtime_snapshot = _runtime_gate_status_for_mode(active_mode, runtime_state_synced)
     gates.append(

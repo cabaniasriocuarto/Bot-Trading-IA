@@ -563,7 +563,7 @@ def test_g9_live_passes_only_when_runtime_contract_is_fully_ready(tmp_path: Path
       "runtime_reconciliation_ok": True,
       "runtime_exchange_connector_ok": True,
       "runtime_exchange_order_ok": True,
-      "runtime_exchange_mode": "testnet",
+      "runtime_exchange_mode": "live",
       "runtime_exchange_verified_at": module.utc_now_iso(),
       "runtime_heartbeat_at": module.utc_now_iso(),
       "runtime_last_reconcile_at": module.utc_now_iso(),
@@ -578,6 +578,47 @@ def test_g9_live_passes_only_when_runtime_contract_is_fully_ready(tmp_path: Path
   assert runtime_contract_pass.get("ready_for_live") is True
   checks = runtime_contract_pass.get("checks") or {}
   assert all(bool(v) for v in checks.values())
+
+
+def test_g9_live_fails_when_runtime_exchange_mode_does_not_match_target_mode(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  set_live_primary = client.post(f"/api/v1/strategies/{strategy_id}/primary", headers=headers, json={"mode": "live"})
+  assert set_live_primary.status_code == 200, set_live_primary.text
+
+  state = module.store.load_bot_state()
+  state.update(
+    {
+      "runtime_engine": "real",
+      "runtime_contract_version": "runtime_snapshot_v1",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_exchange_connector_ok": True,
+      "runtime_exchange_order_ok": True,
+      "runtime_exchange_mode": "testnet",
+      "runtime_exchange_verified_at": module.utc_now_iso(),
+      "runtime_heartbeat_at": module.utc_now_iso(),
+      "runtime_last_reconcile_at": module.utc_now_iso(),
+    }
+  )
+  module.store.save_bot_state(state)
+
+  gates_live = module.evaluate_gates("live", force_exchange_check=True, runtime_state=state)
+  g9 = {row["id"]: row for row in gates_live["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9["status"] == "FAIL"
+  runtime_contract = (g9.get("details") or {}).get("runtime_contract") or {}
+  missing_checks = set(str(x) for x in (runtime_contract.get("missing_checks") or []))
+  assert "exchange_mode_match" in missing_checks
 
 
 def test_g9_live_fails_when_runtime_heartbeat_is_stale(tmp_path: Path, monkeypatch) -> None:
@@ -647,7 +688,7 @@ def test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers(tmp_pat
       "runtime_reconciliation_ok": True,
       "runtime_exchange_connector_ok": True,
       "runtime_exchange_order_ok": True,
-      "runtime_exchange_mode": "testnet",
+      "runtime_exchange_mode": "live",
       "runtime_exchange_verified_at": module.utc_now_iso(),
       "runtime_heartbeat_at": module.utc_now_iso(),
       "runtime_last_reconcile_at": stale_reconcile,
@@ -669,6 +710,48 @@ def test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers(tmp_pat
   gates_pass = module.evaluate_gates("live", force_exchange_check=True, runtime_state=refreshed)
   g9_pass = {row["id"]: row for row in gates_pass["gates"]}["G9_RUNTIME_ENGINE_REAL"]
   assert g9_pass["status"] == "PASS"
+
+
+def test_evaluate_gates_does_not_persist_runtime_state_side_effects(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  set_live_primary = client.post(f"/api/v1/strategies/{strategy_id}/primary", headers=headers, json={"mode": "live"})
+  assert set_live_primary.status_code == 200, set_live_primary.text
+
+  initial_state = module.store.load_bot_state()
+  initial_state.update(
+    {
+      "running": True,
+      "killed": False,
+      "runtime_engine": "real",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_exchange_connector_ok": True,
+      "runtime_exchange_order_ok": True,
+      "runtime_exchange_mode": "live",
+      "runtime_exchange_verified_at": module.utc_now_iso(),
+      "runtime_heartbeat_at": module.utc_now_iso(),
+      "runtime_last_reconcile_at": module.utc_now_iso(),
+    }
+  )
+  module.store.save_bot_state(initial_state)
+  before = module.store.load_bot_state()
+
+  gates_live = module.evaluate_gates("live", force_exchange_check=True)
+  assert gates_live.get("mode") == "live"
+
+  after = module.store.load_bot_state()
+  assert after == before
 
 
 def test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk(tmp_path: Path, monkeypatch) -> None:

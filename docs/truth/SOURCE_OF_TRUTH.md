@@ -2,6 +2,21 @@
 
 Fecha de actualizacion: 2026-03-04
 
+## Hotfix tecnico AP-7003 (G9 mode-binding + gate read-only) - 2026-03-04
+
+- Ajuste puntual en `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `RuntimeSnapshot` reemplaza `exchange_mode_known` por `exchange_mode_match` (exige coincidencia estricta entre `runtime_exchange_mode` y `mode` objetivo).
+  - `evaluate_gates(...)` deja de persistir/sincronizar estado runtime cuando no recibe `runtime_state`; ahora evalua en modo solo lectura sobre snapshot persistido.
+- Cobertura de regresion en `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_g9_live_fails_when_runtime_exchange_mode_does_not_match_target_mode`;
+  - nuevo `test_evaluate_gates_does_not_persist_runtime_state_side_effects`;
+  - ajuste de fixtures G9 para modo `live` real en tests de PASS.
+- Evidencia de validacion:
+  - `python -m pytest -q rtlab_autotrader/tests/test_web_live_ready.py::test_g9_live_passes_only_when_runtime_contract_is_fully_ready rtlab_autotrader/tests/test_web_live_ready.py::test_g9_live_fails_when_runtime_exchange_mode_does_not_match_target_mode rtlab_autotrader/tests/test_web_live_ready.py::test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers rtlab_autotrader/tests/test_web_live_ready.py::test_evaluate_gates_does_not_persist_runtime_state_side_effects rtlab_autotrader/tests/test_web_live_ready.py::test_live_mode_blocked_when_runtime_engine_is_simulated` -> PASS (5).
+  - `python -m pytest -q rtlab_autotrader/tests/test_web_live_ready.py -k "g9 or runtime_contract_snapshot_defaults_are_exposed_in_status or live_blocked_by_gates_when_requirements_fail or storage_gate_blocks_live_when_user_data_is_ephemeral"` -> PASS (7).
+- Estado hallazgo:
+  - `FM-EXEC-002`: CERRADO y revalidado con test de mismatch de modo runtime.
+
 ## Actualizacion tecnica Fase 2 (AP-7001/AP-7002) - 2026-03-04
 
 - Runtime operativo reforzado en `rtlab_autotrader/rtlab_core/web/app.py`:
