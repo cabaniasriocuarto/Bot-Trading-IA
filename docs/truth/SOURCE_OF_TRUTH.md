@@ -2,6 +2,31 @@
 
 Fecha de actualizacion: 2026-03-04
 
+## Actualizacion cleanroom docs + staging NO-LIVE (2026-03-04)
+
+- Se aplico limpieza de documentacion para reducir confusion operativa:
+  - nuevos indices vigentes:
+    - `docs/START_HERE.md`
+    - `docs/audit/INDEX.md`
+  - historico movido a `docs/_archive/*` con regla explicita `NO USAR PARA DECISIONES` en:
+    - `docs/_archive/README_ARCHIVE.md`
+- Seguridad DocOps agregada:
+  - `docs/security/LOGGING_POLICY.md` (CWE-532: no secretos en logs/CLI, redaccion obligatoria, checklist por release).
+  - `docs/SECURITY.md` referencia explicita a la policy de logging seguro.
+- Staging online validado (solo no-live):
+  - frontend: `https://bot-trading-ia-staging.vercel.app`
+  - backend: `https://bot-trading-ia-staging.up.railway.app`
+  - health backend esperado y verificado: `ok=true`, `mode=paper`, `runtime_ready_for_live=false`.
+- Runbooks de despliegue/rollback agregados:
+  - `docs/deploy/VERCEL_STAGING.md`
+  - `docs/deploy/RAILWAY_STAGING.md`
+- Restriccion vigente:
+  - `LIVE_TRADING_ENABLED=false` en staging.
+  - estado LIVE global permanece **NO GO** por decision operativa y tramo tecnico final pendiente.
+- Regla de bibliografia vigente para decisiones tecnicas:
+  - primero bibliografia local (`docs/reference/BIBLIO_INDEX.md` + `docs/reference/biblio_raw/*`);
+  - si falta cobertura local: solo fuentes primarias oficiales/papers de nivel equivalente (sin blogs como fuente principal).
+
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (coherencia de cerebro) - 2026-03-04
 
 - `rtlab_autotrader/rtlab_core/src/backtest/engine.py`:

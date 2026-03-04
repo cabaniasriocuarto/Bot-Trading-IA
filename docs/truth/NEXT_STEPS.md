@@ -2,6 +2,31 @@
 
 Fecha: 2026-03-04
 
+## Tramo vigente (cleanroom + staging online, sin LIVE)
+- [x] Documentacion ordenada con indice unico:
+  - `docs/START_HERE.md`
+  - `docs/audit/INDEX.md`
+  - `docs/_archive/README_ARCHIVE.md`
+- [x] App online en staging (solo no-live):
+  - frontend: `https://bot-trading-ia-staging.vercel.app`
+  - backend: `https://bot-trading-ia-staging.up.railway.app`
+  - health backend esperado: `ok=true`, `mode=paper`, `runtime_ready_for_live=false`.
+- [x] Runbooks de rollback documentados:
+  - `docs/deploy/VERCEL_STAGING.md`
+  - `docs/deploy/RAILWAY_STAGING.md`
+- [x] Policy de logging seguro publicada:
+  - `docs/security/LOGGING_POLICY.md` (CWE-532).
+
+## Proximo tramo operativo (sin habilitar LIVE)
+1. Ejecutar smoke diario en staging (login + `/api/v1/health` + `/api/v1/bots`) y registrar evidencia en `docs/audit/`.
+2. Mantener enforcement no-live en entornos de prueba:
+   - `LIVE_TRADING_ENABLED=false`
+   - `KILL_SWITCH_ENABLED=true`
+   - `MODE/TRADING_MODE=paper` (o `testnet` cuando aplique).
+3. Cerrar pendientes tecnicos de runtime end-to-end (orden/fill/reconciliacion/costos) antes de cualquier canary LIVE.
+4. Revalidar security CI y branch protection en cada release de hardening.
+5. Preparar checklist final paper -> testnet -> canary -> live (sin ejecutar live hasta aprobacion explicita).
+
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
 - [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
 - [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.

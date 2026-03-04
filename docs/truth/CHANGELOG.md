@@ -2,6 +2,25 @@
 
 ## 2026-03-04
 
+### Cleanroom docs + staging no-live (docops/devops)
+- Limpieza de documentacion vigente/historica:
+  - movidos a `docs/_archive/*`: `BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `MASS_BACKTEST_DATA.md`, `research_mass_backtests.md`, `research_stack.md`, `FINAL_RELEASE_REPORT.md`, `DEPENDENCIES_COMPAT.md`, `UI_UX_RESEARCH_FIRST_FINAL.md`, `CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`.
+  - agregado `docs/_archive/README_ARCHIVE.md` con disclaimer de no vigencia.
+- Indices nuevos para lectura canonica:
+  - `docs/START_HERE.md`
+  - `docs/audit/INDEX.md`
+- Seguridad documental:
+  - `docs/security/LOGGING_POLICY.md` (alineado a CWE-532).
+  - `docs/SECURITY.md` actualizado con referencia obligatoria a policy de logging seguro.
+- Runbooks de staging y rollback:
+  - `docs/deploy/VERCEL_STAGING.md`
+  - `docs/deploy/RAILWAY_STAGING.md`
+- Verificacion operativa no-live (staging):
+  - backend `https://bot-trading-ia-staging.up.railway.app` en `mode=paper`, `runtime_ready_for_live=false`.
+  - frontend `https://bot-trading-ia-staging.vercel.app` accesible (`/login` OK).
+- Hardening complementario de docs/runbooks:
+  - `docs/runbooks/RAILWAY_STORAGE_PERSISTENCE.md` elimina ejemplo con `--password` en CLI y usa env var.
+
 ### AP-BOT-1001/AP-BOT-1002 (coherencia estrategia + fail-closed feature-set)
 - `rtlab_autotrader/rtlab_core/src/backtest/engine.py`
   - agregado `ExecutionProfile` por familia (`trend_pullback`, `breakout`, `meanreversion`, `defensive`, `trend_scanning`);
@@ -1272,6 +1291,6 @@
 - `Backtests`: `Quick Backtest Legacy` marcado como deprecado y colapsado
 
 ### Documentacion
-- `docs/UI_UX_RESEARCH_FIRST_FINAL.md`
+- `docs/_archive/UI_UX_RESEARCH_FIRST_FINAL.md`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/NEXT_STEPS.md`
