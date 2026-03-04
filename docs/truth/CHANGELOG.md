@@ -27,6 +27,18 @@
 - Resultado esperado:
   - reducir fallos espurios en `Install security tooling` y facilitar cierre de `FM-SEC-004` al rerun del workflow.
 
+### AP-8007 (unificacion de thresholds de gates)
+- `rtlab_autotrader/rtlab_core/learning/service.py`:
+  - eliminado fallback de thresholds a `knowledge/policies/gates.yaml`;
+  - si no hay config valida, se usa `default_fail_closed` (`pbo_max=0.05`, `dsr_min=0.95`).
+- `rtlab_autotrader/rtlab_core/rollout/gates.py`:
+  - `GateEvaluator` usa `config/policies/gates.yaml` como fuente canonica;
+  - en ausencia/error de config, marca `source_mode=default_fail_closed` y exige `pbo/dsr`.
+- Test agregado:
+  - `rtlab_autotrader/tests/test_gates_policy_source_fail_closed.py`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_learning_service_gates_source.py rtlab_autotrader/tests/test_gates_policy_source_fail_closed.py rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS (`17 passed`).
+
 ### Cleanroom docs + staging no-live (docops/devops)
 - Limpieza de documentacion vigente/historica:
   - movidos a `docs/_archive/*`: `BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `MASS_BACKTEST_DATA.md`, `research_mass_backtests.md`, `research_stack.md`, `FINAL_RELEASE_REPORT.md`, `DEPENDENCIES_COMPAT.md`, `UI_UX_RESEARCH_FIRST_FINAL.md`, `CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`.

@@ -27,6 +27,24 @@ Fecha de actualizacion: 2026-03-04
   - queda pendiente validar corrida verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
   - no se toco runtime ni logica de trading.
 
+## Actualizacion tecnica AP-8007 (gates canonicos sin fallback permisivo) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/learning/service.py`:
+  - `_canonical_gates_thresholds` deja de usar fallback a `knowledge/policies/gates.yaml`;
+  - si `config/policies/gates.yaml` falta o falla parseo, aplica default `fail-closed`:
+    - `pbo_max=0.05`
+    - `dsr_min=0.95`
+    - `source=config/policies/gates.yaml:default_fail_closed`.
+- `rtlab_autotrader/rtlab_core/rollout/gates.py`:
+  - `GateEvaluator` usa fuente canonica `config/policies/gates.yaml` como `source_path`;
+  - cuando falta/esta invalido, opera en `source_mode=default_fail_closed` y exige `pbo/dsr` como requeridos.
+- Tests nuevos/validacion:
+  - `rtlab_autotrader/tests/test_gates_policy_source_fail_closed.py` (nuevo).
+  - `python -m pytest rtlab_autotrader/tests/test_learning_service_gates_source.py rtlab_autotrader/tests/test_gates_policy_source_fail_closed.py rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS (`17 passed`).
+- Estado:
+  - se reduce la divergencia `config` vs `knowledge` para thresholds de gates;
+  - LIVE sigue **NO GO** (pendiente runtime real end-to-end + cierre security CI run green).
+
 ## Actualizacion cleanroom docs + staging NO-LIVE (2026-03-04)
 
 - Se aplico limpieza de documentacion para reducir confusion operativa:

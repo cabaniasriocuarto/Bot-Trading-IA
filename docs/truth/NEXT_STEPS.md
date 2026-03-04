@@ -45,6 +45,15 @@ Fecha: 2026-03-04
 - Evidencia local:
   - cambio en `/.github/workflows/security-ci.yml` (paso `Install security tooling`).
 
+## Actualizacion tecnica AP-8007 (2026-03-04)
+- [x] Thresholds de gates unificados a fuente canonica `config/policies/gates.yaml`.
+- [x] Eliminado fallback permisivo a `knowledge/policies/gates.yaml` en learning thresholds.
+- [x] Fail-closed aplicado cuando falta config (`pbo/dsr` requeridos + defaults estrictos).
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_learning_service_gates_source.py rtlab_autotrader/tests/test_gates_policy_source_fail_closed.py rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS (`17 passed`).
+- Pendiente inmediato:
+  - completar runtime real end-to-end (broker/exchange) y confirmar corrida verde del workflow `Security CI` en GitHub.
+
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
 - [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
 - [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.

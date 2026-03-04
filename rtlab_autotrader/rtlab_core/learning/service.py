@@ -162,6 +162,11 @@ class LearningService:
         return next((row for row in engines if str(row.get("id")) == fallback_id), None)
 
     def _canonical_gates_thresholds(self) -> dict[str, Any]:
+        default_fail_closed = {
+            "source": "config/policies/gates.yaml:default_fail_closed",
+            "pbo_max": 0.05,
+            "dsr_min": 0.95,
+        }
         config_path = (self.knowledge.repo_root / "config" / "policies" / "gates.yaml").resolve()
         if config_path.exists():
             try:
@@ -176,13 +181,8 @@ class LearningService:
                         "dsr_min": float(dsr_cfg.get("min_dsr", 0.95) or 0.95),
                     }
             except Exception:
-                pass
-        gates = self.knowledge.get_gates()
-        return {
-            "source": "knowledge/policies/gates.yaml",
-            "pbo_max": float(((gates.get("pbo") or {}).get("max_allowed")) or 0.55),
-            "dsr_min": float(((gates.get("dsr") or {}).get("min_allowed")) or 0.10),
-        }
+                return dict(default_fail_closed)
+        return dict(default_fail_closed)
 
     def _streams_from_runs(self, runs: list[dict[str, Any]]) -> dict[str, list[float]]:
         latest = runs[:50]
