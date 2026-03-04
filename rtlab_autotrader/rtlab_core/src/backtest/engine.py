@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from math import sqrt
 import re
@@ -73,6 +74,12 @@ class BacktestRequest:
     validation_mode: str
     costs: BacktestCosts
     use_orderflow_data: bool = True
+    strict_strategy_id: bool = False
+    purge_bars: int | None = None
+    embargo_bars: int | None = None
+    cpcv_n_splits: int | None = None
+    cpcv_k_test_groups: int | None = None
+    cpcv_max_paths: int | None = None
 
 
 @dataclass(slots=True)
@@ -188,22 +195,31 @@ class StrategyRunner:
         self.request = request
         self.qty = 1.0
         self._strategy_id = str(request.strategy_id or "").strip().lower()
+        self._strict_strategy_id = bool(getattr(request, "strict_strategy_id", False))
         self.fee_bps = float(fee_bps if fee_bps is not None else (request.costs.taker_fee_bps or request.costs.fees_bps))
+        self._family, self._strategy_supported = self._resolve_strategy_family()
+        if self._strict_strategy_id and not self._strategy_supported:
+            raise ValueError(
+                f"strategy_id='{self.request.strategy_id}' no soportado por BacktestEngine en modo estricto. "
+                "Permitidos: trend_pullback, breakout, meanreversion, trend_scanning, defensive."
+            )
 
     def _has_fields(self, prev: pd.Series, fields: tuple[str, ...]) -> bool:
         return not any(pd.isna(prev.get(col)) for col in fields)
 
-    def _strategy_family(self) -> str:
+    def _resolve_strategy_family(self) -> tuple[str, bool]:
         sid = self._strategy_id
         if sid in {"breakout_volatility_v2"} or "breakout" in sid:
-            return "breakout"
+            return "breakout", True
         if sid in {"meanreversion_range_v2"} or "meanreversion" in sid or "mean_reversion" in sid:
-            return "meanreversion"
-        if sid in {"trend_scanning_regime_v2"} or "trend_scanning" in sid or "regime" in sid:
-            return "trend_scanning"
+            return "meanreversion", True
+        if sid in {"trend_scanning_regime_v2"} or "trend_scanning" in sid:
+            return "trend_scanning", True
         if sid in {"defensive_liquidity_v2"} or "defensive" in sid or "liquidity" in sid:
-            return "defensive"
-        return "trend_pullback"
+            return "defensive", True
+        if sid in {"trend_pullback_orderflow_v2", "trend_pullback_orderflow_confirm_v1"} or "trend_pullback" in sid:
+            return "trend_pullback", True
+        return "trend_pullback", False
 
     def _signal_trend_pullback(self, prev: pd.Series) -> str | None:
         if not self._has_fields(prev, ("ema20", "ema50", "ema200", "adx14", "rsi14", "atr14", "prev_high", "prev_low")):
@@ -284,7 +300,7 @@ class StrategyRunner:
         return None
 
     def _signal(self, prev: pd.Series) -> str | None:
-        family = self._strategy_family()
+        family = self._family
         if family == "breakout":
             return self._signal_breakout_volatility(prev)
         if family == "meanreversion":
@@ -645,14 +661,241 @@ class ReportEngine:
 
 
 class BacktestEngine:
+    def _resolve_purge_embargo(self, request: BacktestRequest, total: int) -> tuple[int, int]:
+        purge_default = max(5, int(total * 0.02))
+        embargo_default = max(5, int(total * 0.01))
+        purge = int(request.purge_bars if isinstance(request.purge_bars, int) else purge_default)
+        embargo = int(request.embargo_bars if isinstance(request.embargo_bars, int) else embargo_default)
+        return max(0, purge), max(0, embargo)
+
+    def _select_purged_cv_window(self, request: BacktestRequest, df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+        total = len(df)
+        min_train_bars = 250
+        min_oos_bars = 250
+        if total < (min_train_bars + min_oos_bars):
+            raise ValueError(
+                "validation_mode='purged-cv' requiere al menos 500 velas para respetar train/oos minimos."
+            )
+
+        split_idx = int(total * 0.70)
+        split_idx = max(min_train_bars, min(split_idx, total - min_oos_bars))
+        purge_bars, embargo_bars = self._resolve_purge_embargo(request, total)
+
+        max_purge = max(0, split_idx - min_train_bars)
+        max_embargo = max(0, (total - split_idx) - min_oos_bars)
+        effective_purge = min(purge_bars, max_purge)
+        effective_embargo = min(embargo_bars, max_embargo)
+
+        train_end_exclusive = split_idx - effective_purge
+        oos_start = split_idx + effective_embargo
+        oos = df.iloc[oos_start:].copy()
+        if len(oos) < min_oos_bars:
+            raise ValueError(
+                "validation_mode='purged-cv' no pudo reservar OOS minimo tras aplicar purge/embargo."
+            )
+        if train_end_exclusive < min_train_bars:
+            raise ValueError(
+                "validation_mode='purged-cv' no pudo reservar train minimo tras aplicar purge/embargo."
+            )
+        return (
+            oos,
+            {
+                "mode": "purged-cv",
+                "implemented": True,
+                "folds": 1,
+                "split_bars": int(split_idx),
+                "is_bars": int(train_end_exclusive),
+                "purge_bars": int(effective_purge),
+                "embargo_bars": int(effective_embargo),
+                "oos_bars": int(len(oos)),
+                "train_end_exclusive": str(df.index[train_end_exclusive - 1].isoformat()) if train_end_exclusive > 0 else None,
+                "oos_start": str(oos.index.min().isoformat()) if not oos.empty else None,
+                "oos_end": str(oos.index.max().isoformat()) if not oos.empty else None,
+                "note": "single_split_purged_holdout",
+            },
+        )
+
+    def _resolve_cpcv_config(self, request: BacktestRequest) -> tuple[int, int, int]:
+        n_splits = int(request.cpcv_n_splits if isinstance(request.cpcv_n_splits, int) else 6)
+        k_test_groups = int(request.cpcv_k_test_groups if isinstance(request.cpcv_k_test_groups, int) else 2)
+        max_paths = int(request.cpcv_max_paths if isinstance(request.cpcv_max_paths, int) else 8)
+        n_splits = max(4, min(n_splits, 12))
+        k_test_groups = max(1, min(k_test_groups, n_splits - 1))
+        max_paths = max(1, min(max_paths, 32))
+        return n_splits, k_test_groups, max_paths
+
+    def _build_cpcv_paths(self, request: BacktestRequest, df: pd.DataFrame) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        total = len(df)
+        min_total_bars = 1000
+        if total < min_total_bars:
+            raise ValueError("validation_mode='cpcv' requiere al menos 1000 velas para generar paths robustos.")
+        n_splits, k_test_groups, max_paths = self._resolve_cpcv_config(request)
+        purge_bars, embargo_bars = self._resolve_purge_embargo(request, total)
+        trim_bars = purge_bars + embargo_bars
+        bounds = np.linspace(0, total, n_splits + 1, dtype=int)
+        groups: list[tuple[int, int]] = []
+        for idx in range(n_splits):
+            start = int(bounds[idx])
+            end = int(bounds[idx + 1])
+            if end <= start:
+                continue
+            groups.append((start, end))
+        if len(groups) < 4:
+            raise ValueError("validation_mode='cpcv' no pudo construir grupos temporales suficientes.")
+
+        combos = list(itertools.combinations(range(len(groups)), k_test_groups))
+        if not combos:
+            raise ValueError("validation_mode='cpcv' sin combinaciones validas para grupos de test.")
+
+        min_path_bars = 250
+        valid_paths: list[dict[str, Any]] = []
+        for combo in combos:
+            segments: list[tuple[int, int]] = []
+            combo_raw_bars = 0
+            for group_idx in combo:
+                g_start, g_end = groups[group_idx]
+                combo_raw_bars += int(g_end - g_start)
+                seg_start = min(g_end, g_start + trim_bars)
+                seg_end = max(seg_start, g_end - trim_bars)
+                if seg_end <= seg_start:
+                    continue
+                segments.append((seg_start, seg_end))
+            if not segments:
+                continue
+            parts = [df.iloc[s:e].copy() for s, e in segments if e > s]
+            if not parts:
+                continue
+            path_df = pd.concat(parts, axis=0).sort_index()
+            if len(path_df) < min_path_bars:
+                continue
+            valid_paths.append(
+                {
+                    "combo": [int(x) for x in combo],
+                    "segments": [{"start_idx": int(s), "end_idx_exclusive": int(e)} for s, e in segments],
+                    "raw_bars": int(combo_raw_bars),
+                    "bars": int(len(path_df)),
+                    "df": path_df,
+                }
+            )
+            if len(valid_paths) >= max_paths:
+                break
+
+        if not valid_paths:
+            raise ValueError(
+                "validation_mode='cpcv' no pudo generar paths validos con los parametros actuales (n_splits/k_test_groups/purge/embargo)."
+            )
+        summary_base = {
+            "mode": "cpcv",
+            "implemented": True,
+            "n_splits": int(n_splits),
+            "k_test_groups": int(k_test_groups),
+            "max_paths": int(max_paths),
+            "purge_bars": int(purge_bars),
+            "embargo_bars": int(embargo_bars),
+            "trim_bars": int(trim_bars),
+            "dataset_bars": int(total),
+        }
+        return valid_paths, summary_base
+
+    def _run_cpcv(self, request: BacktestRequest, df: pd.DataFrame) -> tuple[dict[str, Any], dict[str, Any]]:
+        paths, summary_base = self._build_cpcv_paths(request, df)
+        reporter = ReportEngine()
+        runner = StrategyRunner(request)
+        merged_trades: list[dict[str, Any]] = []
+        merged_equity: list[dict[str, Any]] = []
+        merged_drawdown: list[dict[str, Any]] = []
+        current_equity = 10000.0
+        max_equity = current_equity
+        total_costs = {
+            "gross_pnl_total": 0.0,
+            "fees_total": 0.0,
+            "spread_total": 0.0,
+            "slippage_total": 0.0,
+            "funding_total": 0.0,
+            "rollover_total": 0.0,
+        }
+        avg_exposure_values: list[float] = []
+        path_summaries: list[dict[str, Any]] = []
+
+        for path_idx, path in enumerate(paths, start=1):
+            path_df = path.get("df")
+            if not isinstance(path_df, pd.DataFrame) or path_df.empty:
+                continue
+            simulation = runner.run(path_df)
+            avg_exposure_values.append(float(simulation.get("avg_exposure", 0.0)))
+            path_curve = simulation.get("equity_curve") or []
+            if not path_curve:
+                continue
+
+            curve_start_equity = float(path_curve[0].get("equity", 10000.0))
+            curve_offset = current_equity - curve_start_equity
+            for point in path_curve:
+                ts = str(point.get("time") or "")
+                eq = float(point.get("equity", current_equity)) + curve_offset
+                max_equity = max(max_equity, eq)
+                dd = 0.0 if max_equity <= 0 else (eq - max_equity) / max_equity
+                merged_equity.append({"time": ts, "equity": round(eq, 4), "drawdown": round(float(dd), 6)})
+                merged_drawdown.append({"time": ts, "value": round(float(dd), 6)})
+            current_equity = float(merged_equity[-1]["equity"])
+
+            for trade in simulation.get("trades", []) or []:
+                if not isinstance(trade, dict):
+                    continue
+                row = dict(trade)
+                row["cpcv_path_id"] = int(path_idx)
+                merged_trades.append(row)
+
+            costs = simulation.get("costs") if isinstance(simulation.get("costs"), dict) else {}
+            for key in total_costs:
+                total_costs[key] += float(costs.get(key, 0.0))
+
+            path_metrics = reporter.build_metrics(
+                trades=simulation.get("trades") if isinstance(simulation.get("trades"), list) else [],
+                equity_curve=path_curve if isinstance(path_curve, list) else [],
+                avg_exposure=float(simulation.get("avg_exposure", 0.0)),
+                timeframe=request.timeframe,
+            )
+            path_summaries.append(
+                {
+                    "path_id": int(path_idx),
+                    "combo": path.get("combo") if isinstance(path.get("combo"), list) else [],
+                    "bars": int(path.get("bars") or len(path_df)),
+                    "raw_bars": int(path.get("raw_bars") or 0),
+                    "trades": int(path_metrics.get("trade_count", 0)),
+                    "return_total": float(path_metrics.get("return_total", 0.0)),
+                }
+            )
+
+        if not merged_equity:
+            raise ValueError("validation_mode='cpcv' no produjo curvas de equity validas.")
+
+        summary = {
+            **summary_base,
+            "paths_evaluated": int(len(path_summaries)),
+            "path_bars_total": int(sum(int(row.get("bars", 0)) for row in path_summaries)),
+            "oos_bars": int(sum(int(row.get("bars", 0)) for row in path_summaries)),
+            "path_summaries": path_summaries,
+            "note": "combinatorial_purged_cross_validation",
+        }
+        simulation_merged = {
+            "equity_curve": merged_equity,
+            "drawdown_curve": merged_drawdown,
+            "trades": merged_trades,
+            "costs": total_costs,
+            "avg_exposure": float(sum(avg_exposure_values) / max(1, len(avg_exposure_values))),
+        }
+        return simulation_merged, summary
+
     def _select_validation_window(self, request: BacktestRequest, df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
         mode = (request.validation_mode or "").strip().lower()
-        if mode in {"purged-cv", "cpcv"}:
+        if mode == "cpcv":
             raise ValueError(
-                f"validation_mode='{mode}' no está implementado en BacktestEngine. Usa 'walk-forward' en Quick Backtest o ejecuta Research Batch."
+                "validation_mode='cpcv' requiere ejecucion por paths y se resuelve en BacktestEngine.run()."
             )
+        if mode == "purged-cv":
+            return self._select_purged_cv_window(request, df)
         if mode != "walk-forward":
-            return df, {"mode": mode or "none", "implemented": mode in {"purged-cv", "cpcv"}, "note": "hook_only"}
+            return df, {"mode": mode or "none", "implemented": False, "note": "unsupported_using_full_dataset"}
         total = len(df)
         if total < 500:
             return df, {"mode": "walk-forward", "implemented": True, "split": None, "note": "dataset_too_short_for_split_using_full"}
@@ -674,8 +917,12 @@ class BacktestEngine:
     def run(self, request: BacktestRequest, dataset: MarketDataset) -> dict[str, Any]:
         if dataset.df.empty:
             raise ValueError("Dataset vacío para el rango solicitado")
-        eval_df, validation_summary = self._select_validation_window(request, dataset.df)
-        simulation = StrategyRunner(request).run(eval_df)
+        mode = (request.validation_mode or "").strip().lower()
+        if mode == "cpcv":
+            simulation, validation_summary = self._run_cpcv(request, dataset.df)
+        else:
+            eval_df, validation_summary = self._select_validation_window(request, dataset.df)
+            simulation = StrategyRunner(request).run(eval_df)
         reporter = ReportEngine()
         metrics = reporter.build_metrics(
             trades=simulation["trades"],

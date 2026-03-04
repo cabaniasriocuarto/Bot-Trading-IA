@@ -466,6 +466,210 @@ def test_live_mode_blocked_when_runtime_engine_is_simulated(tmp_path: Path, monk
   assert "runtime simulado" in str(enable_live.json().get("detail") or "").lower()
 
 
+def test_runtime_contract_snapshot_defaults_are_exposed_in_status(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="paper")
+
+  status = module.build_status_payload()
+  runtime_snapshot = status.get("runtime_snapshot") or {}
+  runtime = status.get("runtime") or {}
+  telemetry_guard = status.get("runtime_telemetry_guard") or {}
+
+  assert runtime_snapshot.get("contract_version") == "runtime_snapshot_v1"
+  assert runtime_snapshot.get("telemetry_source") == "synthetic_v1"
+  assert runtime_snapshot.get("ready_for_live") is False
+  assert runtime.get("contract_version") == "runtime_snapshot_v1"
+  assert runtime.get("telemetry_source") == "synthetic_v1"
+  assert runtime.get("ready_for_live") is False
+  assert runtime.get("telemetry_fail_closed") is True
+  assert telemetry_guard.get("fail_closed") is True
+
+
+def test_g9_live_passes_only_when_runtime_contract_is_fully_ready(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  strategy_id = strategies.json()[0]["id"]
+  set_live_primary = client.post(f"/api/v1/strategies/{strategy_id}/primary", headers=headers, json={"mode": "live"})
+  assert set_live_primary.status_code == 200, set_live_primary.text
+
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+
+  gates_live_fail = module.evaluate_gates("live", force_exchange_check=True)
+  g9_fail = {row["id"]: row for row in gates_live_fail["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9_fail["status"] == "FAIL"
+  runtime_contract_fail = (g9_fail.get("details") or {}).get("runtime_contract") or {}
+  assert runtime_contract_fail.get("ready_for_live") is False
+  assert runtime_contract_fail.get("missing_checks")
+
+  state = module.store.load_bot_state()
+  state.update(
+    {
+      "runtime_engine": "real",
+      "runtime_contract_version": "runtime_snapshot_v1",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_heartbeat_at": module.utc_now_iso(),
+      "runtime_last_reconcile_at": module.utc_now_iso(),
+    }
+  )
+  module.store.save_bot_state(state)
+
+  gates_live_pass = module.evaluate_gates("live", force_exchange_check=True)
+  g9_pass = {row["id"]: row for row in gates_live_pass["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9_pass["status"] == "PASS"
+  runtime_contract_pass = (g9_pass.get("details") or {}).get("runtime_contract") or {}
+  assert runtime_contract_pass.get("ready_for_live") is True
+  checks = runtime_contract_pass.get("checks") or {}
+  assert all(bool(v) for v in checks.values())
+
+
+def test_g9_live_fails_when_runtime_heartbeat_is_stale(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  strategy_id = strategies.json()[0]["id"]
+  set_live_primary = client.post(f"/api/v1/strategies/{strategy_id}/primary", headers=headers, json={"mode": "live"})
+  assert set_live_primary.status_code == 200, set_live_primary.text
+
+  stale_heartbeat = (module.utc_now() - module.timedelta(seconds=int(module.RUNTIME_HEARTBEAT_MAX_AGE_SEC) + 15)).isoformat()
+  state = module.store.load_bot_state()
+  state.update(
+    {
+      "runtime_engine": "real",
+      "runtime_contract_version": "runtime_snapshot_v1",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_heartbeat_at": stale_heartbeat,
+      "runtime_last_reconcile_at": module.utc_now_iso(),
+    }
+  )
+  module.store.save_bot_state(state)
+
+  gates_live = module.evaluate_gates("live", force_exchange_check=True)
+  g9 = {row["id"]: row for row in gates_live["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9["status"] == "FAIL"
+  runtime_contract = (g9.get("details") or {}).get("runtime_contract") or {}
+  missing_checks = set(str(x) for x in (runtime_contract.get("missing_checks") or []))
+  assert "heartbeat_fresh" in missing_checks
+
+
+def test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+
+  start_res = client.post("/api/v1/bot/start", headers=headers)
+  assert start_res.status_code == 200, start_res.text
+
+  status_res = client.get("/api/v1/status", headers=headers)
+  assert status_res.status_code == 200, status_res.text
+  status_payload = status_res.json()
+  runtime = status_payload.get("runtime") or {}
+  runtime_snapshot = status_payload.get("runtime_snapshot") or {}
+  assert runtime.get("telemetry_source") == "runtime_loop_v1"
+  assert runtime.get("telemetry_fail_closed") is False
+  assert runtime_snapshot.get("runtime_loop_alive") is True
+  assert runtime_snapshot.get("executor_connected") is True
+  assert runtime_snapshot.get("reconciliation_ok") is True
+  assert isinstance(status_payload.get("positions"), list)
+  assert status_payload.get("positions")
+
+  execution_res = client.get("/api/v1/execution/metrics", headers=headers)
+  assert execution_res.status_code == 200, execution_res.text
+  execution_payload = execution_res.json()
+  assert execution_payload.get("runtime_telemetry_source") == "runtime_loop_v1"
+  assert execution_payload.get("runtime_telemetry_fail_closed") is False
+  assert execution_payload.get("runtime_telemetry_ok") is True
+  assert isinstance(execution_payload.get("series"), list)
+  assert execution_payload.get("series")
+
+  risk_res = client.get("/api/v1/risk", headers=headers)
+  assert risk_res.status_code == 200, risk_res.text
+  risk_payload = risk_res.json()
+  assert isinstance(risk_payload.get("runtime_risk_decision"), dict)
+  assert isinstance(risk_payload.get("reconciliation"), dict)
+  assert risk_payload.get("runtime_telemetry_fail_closed") is False
+  assert "gate_checklist" in risk_payload
+
+
+def test_execution_metrics_fail_closed_when_telemetry_source_is_synthetic(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="paper")
+  payload = module.build_execution_metrics_payload()
+  assert payload.get("runtime_telemetry_source") == "synthetic_v1"
+  assert payload.get("runtime_telemetry_fail_closed") is True
+  assert payload.get("runtime_telemetry_ok") is False
+  assert float(payload.get("fill_ratio") or 0.0) == 0.0
+  assert float(payload.get("maker_ratio") or 0.0) == 0.0
+  assert float(payload.get("latency_ms_p95") or 0.0) >= 999.0
+  assert int(payload.get("api_errors") or 0) >= 1
+
+
+def test_runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+
+  started = client.post("/api/v1/bot/start", headers=headers)
+  assert started.status_code == 200, started.text
+
+  stopped = client.post("/api/v1/bot/stop", headers=headers)
+  assert stopped.status_code == 200, stopped.text
+  status_after_stop = client.get("/api/v1/status", headers=headers).json()
+  snap_stop = status_after_stop.get("runtime_snapshot") or {}
+  assert snap_stop.get("runtime_loop_alive") is False
+  assert snap_stop.get("executor_connected") is False
+  assert snap_stop.get("telemetry_source") == "synthetic_v1"
+  assert bool((snap_stop.get("missing_checks") or []))
+
+  started_again = client.post("/api/v1/bot/start", headers=headers)
+  assert started_again.status_code == 200, started_again.text
+
+  killed = client.post("/api/v1/bot/killswitch", headers=headers)
+  assert killed.status_code == 200, killed.text
+  status_after_kill = client.get("/api/v1/status", headers=headers).json()
+  snap_kill = status_after_kill.get("runtime_snapshot") or {}
+  assert status_after_kill.get("bot_status") == "KILLED"
+  assert bool((status_after_kill.get("risk_flags") or {}).get("killed")) is True
+  assert snap_kill.get("runtime_loop_alive") is False
+  assert snap_kill.get("executor_connected") is False
+  assert snap_kill.get("telemetry_source") == "synthetic_v1"
+
+  risk_after_kill = client.get("/api/v1/risk", headers=headers)
+  assert risk_after_kill.status_code == 200, risk_after_kill.text
+  breakers = risk_after_kill.json().get("circuit_breakers") or []
+  assert "kill_switch" in breakers
+
+
 def test_health_reports_storage_persistence_status(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
   res = client.get("/api/v1/health")
@@ -603,9 +807,39 @@ def test_settings_endpoint_recovers_legacy_settings_shape(tmp_path: Path, monkey
 
 
 def test_learning_research_loop_and_adopt_option_b(tmp_path: Path, monkeypatch) -> None:
-  _, client = _build_app(tmp_path, monkeypatch)
+  module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+
+  def _fake_learning_eval_candidate(_candidate: dict[str, object]) -> dict[str, object]:
+    return {
+      "metrics": {
+        "max_dd": 0.08,
+        "sortino": 1.25,
+        "expectancy": 0.07,
+        "sharpe": 1.10,
+      },
+      "costs_breakdown": {
+        "gross_pnl_total": 140.0,
+        "total_cost": 18.0,
+      },
+      "equity_curve": [
+        {"t": "2024-01-01T00:00:00+00:00", "equity": 1000.0},
+        {"t": "2024-01-02T00:00:00+00:00", "equity": 1012.0},
+        {"t": "2024-01-03T00:00:00+00:00", "equity": 1024.0},
+      ],
+      "data_source": "dataset",
+      "dataset_hash": "test_dataset_hash",
+      "costs_model": {
+        "fees_bps": 5.5,
+        "spread_bps": 4.0,
+        "slippage_bps": 3.0,
+        "funding_bps": 1.0,
+        "rollover_bps": 0.0,
+      },
+    }
+
+  monkeypatch.setattr(module, "_learning_eval_candidate", _fake_learning_eval_candidate)
 
   settings_get = client.get("/api/v1/settings", headers=headers)
   assert settings_get.status_code == 200, settings_get.text
@@ -644,6 +878,8 @@ def test_learning_research_loop_and_adopt_option_b(tmp_path: Path, monkeypatch) 
   rec = recs[0]
   assert rec["adoptable_modes"] == ["paper", "testnet"]
   assert rec["option_b"]["requires_admin_adoption"] is True
+  assert bool(((rec.get("validation") or {}).get("purged_cv") or {}).get("implemented")) is True
+  assert bool(((rec.get("validation") or {}).get("cpcv") or {}).get("implemented")) is True
 
   rec_detail = client.get(f"/api/v1/learning/recommendations/{rec['id']}", headers=headers)
   assert rec_detail.status_code == 200, rec_detail.text
@@ -655,6 +891,107 @@ def test_learning_research_loop_and_adopt_option_b(tmp_path: Path, monkeypatch) 
   assert adopt_body["ok"] is True
   assert adopt_body["mode"] == "paper"
   assert adopt_body["applied_live"] is False
+
+
+def test_learning_run_now_fails_closed_when_real_dataset_missing(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  settings_get = client.get("/api/v1/settings", headers=headers)
+  assert settings_get.status_code == 200, settings_get.text
+  settings = settings_get.json()
+  settings["learning"]["enabled"] = True
+  settings["learning"]["mode"] = "RESEARCH"
+  settings["learning"]["validation"]["enforce_pbo"] = False
+  settings["learning"]["validation"]["enforce_dsr"] = False
+  settings_put = client.put("/api/v1/settings", headers=headers, json=settings)
+  assert settings_put.status_code == 200, settings_put.text
+
+  def _raise_missing_dataset(*_args, **_kwargs):
+    raise FileNotFoundError("dataset real ausente para test")
+
+  monkeypatch.setattr(module.DataLoader, "load_resampled", _raise_missing_dataset)
+
+  run_res = client.post("/api/v1/learning/run-now", headers=headers)
+  assert run_res.status_code == 400, run_res.text
+  detail = str((run_res.json() or {}).get("detail") or "").lower()
+  assert "fail-closed" in detail
+  assert "dataset real" in detail
+
+
+def test_learning_eval_candidate_uses_purged_cv_when_walk_forward_disabled(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  base_run = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": strategy_id,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-01-06",
+      "validation_mode": "walk-forward",
+    },
+  )
+  assert base_run.status_code == 200, base_run.text
+
+  settings = client.get("/api/v1/settings", headers=headers).json()
+  settings["learning"]["validation"]["walk_forward"] = False
+  put_res = client.put("/api/v1/settings", headers=headers, json=settings)
+  assert put_res.status_code == 200, put_res.text
+
+  result = module._learning_eval_candidate({"base_strategy_id": strategy_id})
+  summary = result.get("validation_summary") or {}
+  assert summary.get("mode") == "purged-cv"
+  assert bool(summary.get("implemented")) is True
+  assert int(summary.get("oos_bars") or 0) > 0
+
+
+def test_learning_eval_candidate_supports_cpcv_mode_from_settings(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  base_run = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": strategy_id,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-01-10",
+      "validation_mode": "walk-forward",
+    },
+  )
+  assert base_run.status_code == 200, base_run.text
+
+  settings = client.get("/api/v1/settings", headers=headers).json()
+  settings["learning"]["validation"]["validation_mode"] = "cpcv"
+  settings["learning"]["validation"]["cpcv_n_splits"] = 6
+  settings["learning"]["validation"]["cpcv_k_test_groups"] = 2
+  settings["learning"]["validation"]["cpcv_max_paths"] = 6
+  put_res = client.put("/api/v1/settings", headers=headers, json=settings)
+  assert put_res.status_code == 200, put_res.text
+
+  result = module._learning_eval_candidate({"base_strategy_id": strategy_id})
+  summary = result.get("validation_summary") or {}
+  assert summary.get("mode") == "cpcv"
+  assert bool(summary.get("implemented")) is True
+  assert int(summary.get("paths_evaluated") or 0) >= 1
+  assert int(summary.get("oos_bars") or 0) > 0
 
 
 class _DummyResponse:
@@ -852,7 +1189,7 @@ def test_backtests_run_rejects_synthetic_source(tmp_path: Path, monkeypatch) -> 
   assert "no permite resultados sint" in res.json()["detail"].lower()
 
 
-def test_backtests_run_rejects_purged_cv_and_cpcv_until_implemented(tmp_path: Path, monkeypatch) -> None:
+def test_backtests_run_supports_purged_cv_and_cpcv(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="paper")
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
@@ -871,12 +1208,25 @@ def test_backtests_run_rejects_purged_cv_and_cpcv_until_implemented(tmp_path: Pa
   }
 
   purged = client.post("/api/v1/backtests/run", headers=headers, json={**payload, "validation_mode": "purged-cv"})
-  assert purged.status_code == 400, purged.text
-  assert "no está implementado" in str(purged.json().get("detail") or "")
+  assert purged.status_code == 200, purged.text
+  purged_run = purged.json()["run"]
+  assert purged_run["validation_mode"] == "purged-cv"
+  summary = purged_run.get("validation_summary") or {}
+  assert summary.get("mode") == "purged-cv"
+  assert bool(summary.get("implemented")) is True
+  assert int(summary.get("oos_bars") or 0) > 0
+  assert int(summary.get("purge_bars") or 0) >= 0
+  assert int(summary.get("embargo_bars") or 0) >= 0
 
   cpcv = client.post("/api/v1/backtests/run", headers=headers, json={**payload, "validation_mode": "cpcv"})
-  assert cpcv.status_code == 400, cpcv.text
-  assert "no está implementado" in str(cpcv.json().get("detail") or "")
+  assert cpcv.status_code == 200, cpcv.text
+  cpcv_run = cpcv.json()["run"]
+  assert cpcv_run["validation_mode"] == "cpcv"
+  cpcv_summary = cpcv_run.get("validation_summary") or {}
+  assert cpcv_summary.get("mode") == "cpcv"
+  assert bool(cpcv_summary.get("implemented")) is True
+  assert int(cpcv_summary.get("paths_evaluated") or 0) >= 1
+  assert int(cpcv_summary.get("oos_bars") or 0) > 0
 
 
 def test_backtests_run_forwards_strict_strategy_id_flag(tmp_path: Path, monkeypatch) -> None:
@@ -1290,6 +1640,7 @@ def test_runs_validate_and_promote_endpoints_smoke(tmp_path: Path, monkeypatch) 
   check_ids = {row["id"] for row in checks}
   assert "cost_snapshots_present" in check_ids
   assert "fundamentals_allow_trade" in check_ids
+  assert "strict_strategy_id_non_demo" in check_ids
 
   promote_res = client.post(
     f"/api/v1/runs/{candidate_id}/promote",
@@ -1785,6 +2136,34 @@ def test_breaker_events_integrity_endpoint_pass(tmp_path: Path, monkeypatch) -> 
   assert payload.get("warnings") == []
 
 
+def test_breaker_events_integrity_endpoint_no_data_non_strict_ok(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", "24")
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+  assert payload["status"] == "NO_DATA"
+  assert payload["strict_mode"] is False
+  assert payload["ok"] is True
+
+
+def test_breaker_events_integrity_endpoint_no_data_strict_fail_closed(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", "24")
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24&strict=true", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+  assert payload["status"] == "NO_DATA"
+  assert payload["strict_mode"] is True
+  assert payload["ok"] is False
+
+
 def test_breaker_events_integrity_endpoint_warn_when_unknown_ratio_high(tmp_path: Path, monkeypatch) -> None:
   monkeypatch.setenv("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", "24")
   monkeypatch.setenv("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", "0.20")
@@ -2035,7 +2414,7 @@ def test_thompson_respects_max_switch_per_day_and_weights_history(tmp_path: Path
       assert rr.status_code == 200, rr.text
       assert rr.json()["active_strategy_id"] == sid
     else:
-      # max_switch_per_day=2 en YAML -> al cuarto cambio en el día debe bloquear.
+      # max_switch_per_day=2 en YAML -> al cuarto cambio en el dÃ­a debe bloquear.
       assert rr.status_code == 400
       assert "max_switch_per_day" in rr.json()["detail"]
 
@@ -2070,6 +2449,7 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   (dataset_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
   def _fake_event_backtest_run(**kwargs):
+    strict_strategy_id = bool(kwargs.get("strict_strategy_id", False))
     run = module.store.create_backtest_run(
       strategy_id=str(kwargs.get("strategy_id") or "trend_pullback_orderflow_confirm_v1"),
       start=str(kwargs.get("start") or "2024-01-01"),
@@ -2090,8 +2470,10 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
       **dict(run.get("provenance") or {}),
       "dataset_source": "binance_public",
       "dataset_hash": "ds_test_mass_001",
+      "strict_strategy_id": strict_strategy_id,
     }
-    # Fuerza métricas suficientemente robustas para testear el flujo "mark candidate" con gates PASS.
+    run["strict_strategy_id"] = strict_strategy_id
+    # Fuerza mÃ©tricas suficientemente robustas para testear el flujo "mark candidate" con gates PASS.
     run.setdefault("metrics", {})
     run["metrics"].update(
       {
@@ -2240,6 +2622,8 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   top = results_payload["results"][0]
   assert "score" in top and "regime_metrics" in top and "summary" in top
   assert "gates_eval" in top and isinstance(top["gates_eval"], dict)
+  assert bool(top.get("strict_strategy_id")) is True
+  assert bool((top.get("summary") or {}).get("strict_strategy_id")) is True
   passing = next((row for row in results_payload["results"] if isinstance(row, dict) and bool((row.get("gates_eval") or {}).get("passed"))), None)
   assert passing is not None, results_payload["results"]
 
@@ -2255,11 +2639,48 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   assert mark.status_code == 200, mark.text
   draft = mark.json()["recommendation_draft"]
   assert draft["status"] == "DRAFT_MASS_BACKTEST"
+  assert draft["mass_backtest"]["strict_strategy_id"] is True
   assert draft["option_b"]["allow_live"] is False
 
   recs = client.get("/api/v1/learning/recommendations", headers=headers)
   assert recs.status_code == 200, recs.text
   assert any(row["id"] == draft["id"] for row in recs.json())
+
+
+def test_mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "results",
+    lambda run_id, limit=5000, strategy_id=None, only_pass=False: {
+      "run_id": run_id,
+      "config": {"execution_mode": "research"},
+      "results": [
+        {
+          "variant_id": "v_strict_missing",
+          "strategy_id": "trend_pullback_orderflow_confirm_v1",
+          "score": 1.23,
+          "summary": {"trade_count_oos": 220, "expectancy_net_usd": 8.0, "sharpe_oos": 1.4, "calmar_oos": 1.1, "max_dd_oos_pct": 10.0},
+          "regime_metrics": {},
+          "hard_filters_pass": True,
+          "recommendable_option_b": True,
+          "gates_eval": {"passed": True, "fail_reasons": [], "checks": {}},
+          "strict_strategy_id": False,
+        }
+      ],
+    },
+  )
+
+  mark = client.post(
+    "/api/v1/research/mass-backtest/mark-candidate",
+    headers=headers,
+    json={"run_id": "RBX-1", "variant_id": "v_strict_missing", "note": "strict missing"},
+  )
+  assert mark.status_code == 400, mark.text
+  assert "strict_strategy_id" in str(mark.json().get("detail") or "")
 
 
 def test_research_beast_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
@@ -2435,3 +2856,4 @@ def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
   assert isinstance(detail_payload.get("best_runs_cache"), list)
   assert len(detail_payload["best_runs_cache"]) == 2
   assert detail_payload["best_runs_cache"][0]["run_id"] == "BT-000123"
+

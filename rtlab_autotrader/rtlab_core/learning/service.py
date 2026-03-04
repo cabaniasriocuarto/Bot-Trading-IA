@@ -442,8 +442,16 @@ class LearningService:
                 "pbo": pbo_value,
                 "dsr": dsr_value,
                 "gates_source": str(gates_thresholds.get("source") or "config/policies/gates.yaml"),
-                "cpcv": {"implemented": False, "enforce": False, "note": "hook_only"},
-                "purged_cv": {"implemented": False, "enforce": False, "note": "hook_only"},
+                "cpcv": {
+                    "implemented": True,
+                    "enforce": bool((learning.get("validation") or {}).get("enforce_cpcv", False)),
+                    "note": "backtest_engine_cpcv",
+                },
+                "purged_cv": {
+                    "implemented": True,
+                    "enforce": bool((learning.get("validation") or {}).get("enforce_purged_cv", False)),
+                    "note": "backtest_engine_purged_cv",
+                },
             }
             row["status"] = "APPROVED" if accepted else "REJECTED"
             row["status_reason"] = "; ".join(reasons) if reasons else "Validacion OK"

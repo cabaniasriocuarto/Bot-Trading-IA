@@ -1,5 +1,426 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-04
+
+### Cierre auditoria PARTE 7/7 (cerebro del bot)
+- Se cerro la auditoria de aprendizaje/decision/rollout con evidencia de codigo en:
+  - `learning/brain.py`, `learning/service.py`,
+  - `src/backtest/engine.py`, `src/research/mass_backtest_engine.py`,
+  - `rollout/manager.py`, `rollout/compare.py`, `rollout/gates.py`,
+  - `web/app.py`.
+- Se agregaron artefactos de cierre para no perder contexto y planificar reparacion sin retrabajo:
+  - `docs/audit/FINDINGS_MASTER_20260304.md` (registro maestro de problemas con estado).
+  - `docs/audit/ACTION_PLAN_FINAL_20260304.md` (plan final por bloques y dependencias).
+- Confirmado:
+  - Opcion B sigue obligatoria (`allow_auto_apply=false`, `allow_live=false`).
+  - `purged_cv` y `cpcv` quedan implementados en quick backtest/learning rapido.
+  - runtime web seguia con payloads sinteticos en endpoints operativos clave (`status`/`execution metrics`) al inicio de la auditoria; mitigado parcialmente en Bloque 1.
+- Se deja trazado que faltan 3 bloques no-live para cierre final: runtime real no-live, security CI root protegido y hardening final de operacion/pruebas.
+
+### Bloque 0 iniciado (AP-0001/AP-0002)
+- Rama tecnica creada: `feature/runtime-contract-v1`.
+- Contrato canonico `RuntimeSnapshot v1` y criterio exacto `G9` documentados en:
+  - `docs/audit/AP0001_AP0002_RUNTIME_CONTRACT_V1.md`.
+- Implementacion base (sin runtime real aun):
+  - `web/app.py` ahora expone metadata de contrato runtime en `/health`, `/status`, `/execution/metrics`.
+  - `evaluate_gates` usa evaluacion de contrato runtime para `G9_RUNTIME_ENGINE_REAL`.
+- Tests focales agregados y en verde:
+  - `test_runtime_contract_snapshot_defaults_are_exposed_in_status`
+  - `test_g9_live_passes_only_when_runtime_contract_is_fully_ready`
+  - `test_live_mode_blocked_when_runtime_engine_is_simulated`
+
+### Bloque 1 en progreso (AP-1001/AP-1002/AP-1003)
+- Wiring runtime aplicado en backend web (`rtlab_autotrader/rtlab_core/web/app.py`):
+  - nuevo `RuntimeBridge` acoplado a `OMS + Reconciliation + RiskEngine + KillSwitch`;
+  - sincronizacion runtime integrada en `/api/v1/status`, `/api/v1/execution/metrics`, `/api/v1/risk` y `/api/v1/health`;
+  - endpoints de control (`bot/mode`, `bot/start`, `bot/stop`, `bot/killswitch`, `control/pause`, `control/safe-mode`) ahora actualizan contrato runtime en cada transicion.
+- Payloads operativos ya no usan valores hardcodeados:
+  - `build_status_payload` usa `positions` y health derivados del runtime bridge.
+  - `build_execution_metrics_payload` usa series/ratios calculados por runtime bridge.
+  - `/api/v1/risk` usa snapshot de exposicion/riesgo/reconciliacion del runtime bridge.
+- Tests agregados en `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk`
+  - `test_runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live`
+- Validacion ejecutada:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_contract_snapshot_defaults_are_exposed_in_status or g9_live_passes_only_when_runtime_contract_is_fully_ready or live_mode_blocked_when_runtime_engine_is_simulated or runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk or runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live or health_reports_storage_persistence_status or storage_gate_blocks_live_when_user_data_is_ephemeral or breaker_events_integrity_endpoint_warn_when_unknown_ratio_high" -q` -> `8 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `13 passed`.
+- Estado: mitigacion fuerte de `FM-EXEC-001/FM-EXEC-005` en no-live; sigue pendiente wiring de broker/exchange real para LIVE y cierre de gates estrictos de runtime (AP-200x).
+
+### AP-1004 completado (telemetry_source + fail-closed sintetico)
+- `build_status_payload`, `build_execution_metrics_payload`, `/api/v1/risk` y `/api/v1/health` exponen guard de telemetria runtime:
+  - `runtime_telemetry_source`
+  - `runtime_telemetry_ok`
+  - `runtime_telemetry_fail_closed`
+  - `runtime_telemetry_reason`
+- Regla fail-closed aplicada cuando `telemetry_source=synthetic_v1`:
+  - `execution_metrics` fuerza metricas conservadoras (ej. `fill_ratio=0`, `maker_ratio=0`, `latency_ms_p95>=999`) para no permitir lecturas falsas de salud operativa.
+- Tests agregados/ajustados:
+  - `test_execution_metrics_fail_closed_when_telemetry_source_is_synthetic`
+  - `test_runtime_contract_snapshot_defaults_are_exposed_in_status` (assert de `telemetry_fail_closed`)
+  - `test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk` (assert de `telemetry_ok`)
+  - `test_rollout_safe_update.py` API e2e ajustado para levantar runtime real no-live en setup (`_ensure_runtime_real_for_rollout_api`).
+- Validacion:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_contract_snapshot_defaults_are_exposed_in_status or runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk or execution_metrics_fail_closed_when_telemetry_source_is_synthetic or runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live or g9_live_passes_only_when_runtime_contract_is_fully_ready or live_mode_blocked_when_runtime_engine_is_simulated" -q` -> `6 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `13 passed`.
+
+### AP-2001/AP-2002/AP-2003 completados (gating runtime + breaker strict + bloqueo de evaluacion sintetica)
+- AP-2001 (G9 con heartbeat/reconciliacion frescos) reforzado con test especifico:
+  - `test_g9_live_fails_when_runtime_heartbeat_is_stale` en `rtlab_autotrader/tests/test_web_live_ready.py`.
+- AP-2002 aplicado en diagnostico de `breaker_events`:
+  - `GET /api/v1/diagnostics/breaker-events` acepta `strict=true|false`;
+  - en modo estricto, `NO_DATA` pasa a fail-closed (`ok=false`);
+  - `scripts/ops_protected_checks_report.py` propaga el flag y reporta `breaker_strict_mode`.
+  - cobertura nueva:
+    - `test_breaker_events_integrity_endpoint_no_data_non_strict_ok`
+    - `test_breaker_events_integrity_endpoint_no_data_strict_fail_closed`
+- AP-2003 aplicado en `POST /api/v1/rollout/evaluate-phase`:
+  - fail-closed explicito cuando `runtime_telemetry_guard.ok=false` (telemetry sintetica);
+  - se registra log `rollout_phase_eval_blocked` con fase + fuente de telemetria.
+- Cobertura nueva:
+  - `test_rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic` en `rtlab_autotrader/tests/test_rollout_safe_update.py`.
+- Validacion:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_heartbeat_is_stale or runtime_contract_snapshot_defaults_are_exposed_in_status or runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk or execution_metrics_fail_closed_when_telemetry_source_is_synthetic or runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live or live_mode_blocked_when_runtime_engine_is_simulated" -q` -> `7 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "breaker_events_integrity_endpoint_pass or breaker_events_integrity_endpoint_no_data_non_strict_ok or breaker_events_integrity_endpoint_no_data_strict_fail_closed or breaker_events_integrity_endpoint_warn_when_unknown_ratio_high" -q` -> `4 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
+
+### AP-3001 completado (Purged CV + embargo real)
+- `rtlab_autotrader/rtlab_core/src/backtest/engine.py`:
+  - `validation_mode=purged-cv` deja de ser hook y ejecuta split OOS real con `purge_bars + embargo_bars`;
+  - `validation_summary` ahora registra `purge_bars`, `embargo_bars`, `oos_bars`, `is_bars` y rango temporal OOS;
+  - base de configuracion (`purge/embargo`) queda lista para CPCV.
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `POST /api/v1/backtests/run` acepta `purge_bars` y `embargo_bars` (opcionales, enteros `>=0`);
+  - `_learning_eval_candidate` usa `settings.learning.validation` para resolver modo (`walk-forward`/`purged-cv`/`cpcv`).
+- `rtlab_autotrader/rtlab_core/learning/service.py`:
+  - `validation.purged_cv` pasa a `implemented=true`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_backtests_run_supports_purged_cv_and_cpcv`.
+  - `test_learning_eval_candidate_uses_purged_cv_when_walk_forward_disabled`.
+  - `test_learning_research_loop_and_adopt_option_b` valida estado de `purged_cv/cpcv`.
+- Validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/src/backtest/engine.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "backtests_run_supports_purged_cv_and_cpcv or learning_eval_candidate_uses_purged_cv_when_walk_forward_disabled or learning_research_loop_and_adopt_option_b" -q` -> `3 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `14 passed`.
+
+### AP-3002 completado (CPCV real en learning/research rapido)
+- `rtlab_autotrader/rtlab_core/src/backtest/engine.py`:
+  - `validation_mode=cpcv` ya no es hook-only y ejecuta paths combinatoriales (`n_splits`, `k_test_groups`, `max_paths`);
+  - cada path aplica trimming por `purge_bars + embargo_bars`, se evalua con `StrategyRunner` y se consolida en `validation_summary`.
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `POST /api/v1/backtests/run` acepta `cpcv_n_splits`, `cpcv_k_test_groups`, `cpcv_max_paths` (enteros validados);
+  - `_learning_eval_candidate` propaga `cpcv_*` desde `settings.learning.validation`.
+- `rtlab_autotrader/rtlab_core/learning/service.py`:
+  - `validation.cpcv` pasa a `implemented=true` con `enforce` atado a `enforce_cpcv`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_backtests_run_supports_purged_cv_and_cpcv` ahora valida `cpcv` en `200` + `paths_evaluated>=1`.
+  - nuevo `test_learning_eval_candidate_supports_cpcv_mode_from_settings`.
+  - `test_learning_research_loop_and_adopt_option_b` exige `cpcv.implemented=true`.
+- Validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/src/backtest/engine.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "backtests_run_supports_purged_cv_and_cpcv or learning_eval_candidate_uses_purged_cv_when_walk_forward_disabled or learning_eval_candidate_supports_cpcv_mode_from_settings or learning_research_loop_and_adopt_option_b" -q` -> `4 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "backtests_run_rejects_synthetic_source or event_backtest_engine_runs_for_crypto_forex_equities or runs_validate_and_promote_endpoints_smoke" -q` -> `3 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `14 passed`.
+
+### AP-3003 completado (learning eval fail-closed sin fallback silencioso)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_learning_eval_candidate` deja de usar fallback silencioso a runs cache/dummy;
+  - ante falta de dataset real o `dataset_source` sintetico, ahora lanza `ValueError` fail-closed.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_learning_research_loop_and_adopt_option_b` se estabiliza con evaluator stub explicito;
+  - nuevo `test_learning_run_now_fails_closed_when_real_dataset_missing`.
+- Validacion:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "learning_research_loop_and_adopt_option_b or learning_run_now_fails_closed_when_real_dataset_missing" -q` -> `2 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
+
+### AP-3004 completado (separar `anti_proxy` y `anti_advanced` en research)
+- `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`:
+  - resultados de `run_job` ahora incluyen `anti_proxy`, `anti_advanced` y `anti_overfitting` (alias legacy de `anti_advanced`);
+  - `_apply_advanced_gates` deja trazabilidad separada de proxy vs gates avanzados;
+  - persistencia de batch (`kpi_summary_json`/`artifacts_json`) prioriza valores de `anti_advanced` y conserva `anti_proxy`.
+- `rtlab_autotrader/tests/test_mass_backtest_engine.py`:
+  - se amplian asserts en `test_run_job_persists_results_and_duckdb_smoke_fallback`;
+  - nuevo `test_advanced_gates_exposes_anti_proxy_and_anti_advanced_separately`.
+- Validacion:
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `14 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "mass_backtest_research_endpoints_and_mark_candidate" -q` -> `1 passed`.
+
+### AP-3005 completado (CompareEngine fail-closed cuando feature_set es unknown)
+- `rtlab_autotrader/rtlab_core/rollout/compare.py`:
+  - `_extract_orderflow_feature_set` ya no hace fallback silencioso a `orderflow_on`;
+  - nuevo check `known_feature_set` bloquea compare cuando baseline/candidato quedan `orderflow_unknown`.
+- `rtlab_autotrader/tests/test_rollout_safe_update.py`:
+  - `_sample_run` pasa a declarar `orderflow_feature_set` explicito;
+  - `test_compare_engine_improvement_rules` agrega caso fail-closed por unknown.
+- Validacion:
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "validate_promotion_blocks_mixed_orderflow_feature_set or runs_validate_and_promote_endpoints_smoke" -q` -> `2 passed`.
+
+### AP-3006 completado (strict_strategy_id obligatorio en research/promotion no-demo)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - research mass/beast propaga `execution_mode` y fuerza `strict_strategy_id` en `_mass_backtest_eval_fold` para no-demo;
+  - `POST /api/v1/research/mass-backtest/mark-candidate` bloquea candidatos sin `strict_strategy_id=true` en no-demo;
+  - `validate_promotion/promote` agregan constraint `strict_strategy_id_non_demo`.
+- `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`:
+  - resultados incluyen `strict_strategy_id` + `execution_mode` y se persisten en `params_json/artifacts_json`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo` nuevo;
+  - `test_mass_backtest_research_endpoints_and_mark_candidate` y `test_runs_validate_and_promote_endpoints_smoke` actualizados.
+- Validacion:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "mass_backtest_research_endpoints_and_mark_candidate or mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo or runs_validate_and_promote_endpoints_smoke" -q` -> `3 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `14 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
+
+### Auditoria integral (comite senior) + evidencia operativa
+- Se ejecuto auditoria E2E del sistema (AppSec/DevSecOps, ejecucion, quant/backtests, risk, SRE, QA, UX) con evidencia por rutas y lineas.
+- Resultado de go/no-go actualizado: **NO GO para LIVE** por bloqueantes tecnicos de runtime real.
+- Evidencia de ejecucion local en esta corrida:
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security_scan.ps1 -Strict` -> PASS (`pip-audit` runtime/research sin vulnerabilidades conocidas + `gitleaks` sin leaks).
+  - `python -m pytest rtlab_autotrader/tests --collect-only` -> `126 tests collected`.
+  - `npm --prefix rtlab_dashboard run test` -> `11 passed`.
+  - `npm --prefix rtlab_dashboard run lint` -> PASS.
+- Hallazgos criticos consolidados:
+  - runtime live en backend web todavia desacoplado de OMS/risk/reconciliacion reales;
+  - payloads sinteticos en endpoints de estado/ejecucion/riesgo (estado previo, mitigado parcialmente en Bloque 1);
+  - `breaker_events` queda fail-closed solo en modo estricto (`strict=true`).
+- CI/security:
+  - en root siguen activos solo `remote-benchmark.yml` y `remote-protected-checks.yml`;
+  - `/.github/workflows/security-ci.yml` existe en working tree local pero aun no esta versionado (pendiente commit/push/corrida en GitHub Actions).
+- Bibliografia:
+  - se confirma `BIBLIO_INDEX.md`;
+  - `docs/reference/biblio_raw/` en repo continua sin PDFs versionados (solo `.gitignore`), por lo que se registro faltante para trazabilidad local reproducible.
+
+## 2026-03-03
+
+### Remote protected checks + cierre no-live
+- Workflow `Remote Protected Checks (GitHub VM)` ejecutado con defaults (`strict=true`):
+  - run `22648114549` -> `success`.
+  - artifact `protected-checks-22648114549` con:
+    - `ops_protected_checks_gha_22648114549_20260303_234740.json`
+    - `ops_protected_checks_gha_22648114549_20260303_234740.md`
+    - `protected_checks_stdout.log`
+- Resultado canonico del reporte remoto:
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en etapa no-live)
+  - `breaker_ok=true` (`breaker_status=NO_DATA`)
+  - `internal_proxy_status_ok=true`
+- Revalidacion de seguridad ejecutada en local (equivalente al job security):
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security_scan.ps1 -Strict`
+  - resultado: `pip-audit` runtime/research sin vulnerabilidades conocidas y `gitleaks` baseline-aware sin leaks.
+  - nota de CI: en GitHub Actions del repo root solo se observan workflows remotos (`Remote Bots Benchmark` y `Remote Protected Checks`), por lo que este cierre registra la verificacion estricta local como evidencia operativa de seguridad.
+  - para cerrar ese gap, se agrega workflow root `/.github/workflows/security-ci.yml` (security CI bloqueante); queda pendiente push + corrida en GitHub Actions.
+- Estado no-live consolidado:
+  - benchmark remoto GitHub VM previamente en PASS (`p95_ms ~18ms`, `server_p95_ms ~0.068ms`, sin `429` retries).
+  - checks protegidos remotos en PASS.
+  - LIVE real continua bloqueado por `G9_RUNTIME_ENGINE_REAL` hasta runtime real.
+
+## 2026-03-02
+
+### Cierre final de bloque (6h real + lint limpio)
+- Soak extendido `6h` finalizado en segundo plano con evidencia real:
+  - `artifacts/soak_6h_bg_status.json` -> `loops=1440`, `ok=1440`, `errors=0`, `g10_pass=1440`.
+  - `artifacts/soak_6h_bg_20260302_132230_DONE.txt`.
+- Snapshot operativo final (sin supuestos) ejecutado:
+  - `python scripts/build_ops_snapshot.py`
+  - evidencia: `artifacts/ops_block2_snapshot_20260302_231911.json` + `.md`.
+  - resultado: `block2_provisional_ready=true`, `soak_6h_effective_pass=true`.
+- Limpieza de warnings frontend completada:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`: deps de hooks corregidas + memoizacion de `focusTrades` + remocion de variable no usada.
+  - `rtlab_dashboard/src/app/(app)/settings/page.tsx`: remocion de estado no usado `learningConfigError`.
+  - validacion: `npm --prefix rtlab_dashboard run lint` -> `0 errores, 0 warnings`.
+  - validacion: `npm --prefix rtlab_dashboard run test` -> `11 passed`.
+- Cierre estricto de checks protegidos preparado:
+  - `scripts/build_ops_snapshot.py` agrega:
+    - `--ask-password` (prompt de `ADMIN_PASSWORD` cuando falta token),
+    - `--require-protected` (falla si no valida endpoints protegidos),
+    - checks nuevos en reporte: `protected_checks_complete`, `breaker_integrity_ok`, `internal_proxy_status_ok`, `block2_ready_strict`.
+  - nuevo launcher `scripts/run_protected_ops_checks.ps1`:
+    - pide password una sola vez,
+    - ejecuta `check_storage_persistence --require-persistent`,
+    - ejecuta `build_ops_snapshot --require-protected --label ops_block2_snapshot_final`.
+- Drill de backup/restore ejecutado y documentado:
+  - nuevo script `scripts/backup_restore_drill.py` (usa scripts existentes de backup/restore y valida integridad por SHA256).
+  - corrida ejecutada:
+    - `python scripts/backup_restore_drill.py`
+    - evidencia: `artifacts/backup_restore_drill_20260302_234205.json` + `.md`.
+    - resultado: `backup_ok=true`, `restore_ok=true`, `manifest_match=true`.
+  - runbook actualizado: `docs/runbooks/BACKUP_RESTORE_USER_DATA.md`.
+- Bloque seguridad local (Windows) cerrado:
+  - nuevo script `scripts/security_scan.ps1` (equivalente del job CI security sin dependencia de bash).
+  - corrida estricta ejecutada:
+    - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security_scan.ps1 -Strict`
+    - `pip-audit` runtime/research: sin vulnerabilidades conocidas.
+    - `gitleaks` baseline-aware: sin leaks.
+  - evidencia refrescada:
+    - `artifacts/security_audit/pip-audit-runtime.json`
+    - `artifacts/security_audit/pip-audit-research.json`
+    - `artifacts/security_audit/gitleaks.sarif`
+- Bloque benchmark `/api/v1/bots` (regresión local + endurecimiento remoto):
+  - `scripts/benchmark_bots_overview.py` agrega:
+    - `--ask-password`,
+    - `--require-evidence` (exit `2` cuando no hay cardinalidad mínima),
+    - `--require-target-pass` (exit `3` cuando no cumple objetivo p95).
+  - nuevo launcher `scripts/run_bots_benchmark_remote.ps1` para ejecutar benchmark remoto estricto en Windows con prompt de password.
+  - rerun local ejecutado:
+    - `python scripts/benchmark_bots_overview.py --bots 100 --requests 200 --warmup 30 --report-path docs/audit/BOTS_OVERVIEW_BENCHMARK_LOCAL_20260302_RERUN.md`
+    - resultado: `p50=36.914ms`, `p95=55.513ms`, `p99=81.628ms` (PASS `<300ms`).
+- Bundle remoto de cierre (operación en 1 comando):
+  - nuevo script `scripts/run_remote_closeout_bundle.ps1`.
+  - ejecuta secuencialmente con una sola captura de `ADMIN_PASSWORD`:
+    - `check_storage_persistence.py --require-persistent`,
+    - `build_ops_snapshot.py --require-protected --label ops_block2_snapshot_final`,
+    - `benchmark_bots_overview.py` remoto con `--require-evidence` (y opcional `-RequireTargetPass`).
+
+### Handoff + soak tests operativos (traspaso corto)
+- Se creo `docs/reference/HANDOFF.md` con contexto de traspaso listo para abrir chat nuevo.
+- Se actualizo `docs/truth/SOURCE_OF_TRUTH.md` con estado operativo de hoy:
+  - persistencia Railway validada (`G10_STORAGE_PERSISTENCE=PASS`),
+  - testnet estable con `G1..G8=PASS`,
+  - LIVE sigue bloqueado por `G9` (runtime simulado).
+- Se agregaron scripts locales para soak:
+  - `scripts/soak_testnet.ps1` (parse fix + soporte `SOAK_ADMIN_PASSWORD`),
+  - `scripts/start_soak_20m_background.ps1`,
+  - `scripts/start_soak_6h_background.ps1`.
+- Smoke corto de soak validado con evidencia local:
+  - `ok=7`, `errors=0`, `g10_pass=7`.
+- Soak operativo de `20m` ejecutado y finalizado en background:
+  - `loops=80`, `ok=80`, `errors=0`, `g10_pass=80`.
+- Flujo operativo actualizado: se usa solo soak `20m` + `6h` (sin `8h`).
+- Adelanto de bloque (sin esperar cierre de soak 6h):
+  - `BacktestEngine` incorpora `strict_strategy_id` opt-in para fail-closed de `strategy_id` no soportado.
+  - default sigue compatible (`strict_strategy_id=false`) con fallback legacy a `trend_pullback`.
+  - `POST /api/v1/backtests/run` propaga `strict_strategy_id`.
+  - tests nuevos:
+    - `test_unknown_strategy_falls_back_to_trend_pullback_when_not_strict`
+    - `test_unknown_strategy_fails_closed_when_strict_mode_enabled`
+    - `test_backtests_run_forwards_strict_strategy_id_flag`
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_backtest_strategy_dispatch.py rtlab_autotrader/tests/test_web_live_ready.py -k "strict_strategy_id_flag or unknown_strategy_fails_closed_when_strict_mode_enabled or unknown_strategy_falls_back_to_trend_pullback_when_not_strict" -q` -> `3 passed`.
+- Adelanto de bloque performance `/api/v1/bots`:
+  - `ConsoleStore.get_bots_overview(...)` ahora registra timings por etapa (inputs/context/pool/runs_index/kpis/db_reads/db_process/assemble/total).
+  - cache interna de overview guarda tambien perf y lo devuelve en `debug_perf=true` (tanto `hit` como `miss`).
+  - `bots_overview_slow` agrega `overview_perf` al payload de log.
+  - tests actualizados:
+    - `test_bots_overview_perf_headers_and_debug_payload`
+    - `test_bots_overview_cache_hit_and_invalidation_on_create` (wrapper ajustado a nuevo arg `overview_perf`).
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_perf_headers_and_debug_payload or bots_overview_cache_hit_and_invalidation_on_create" -q` -> `2 passed`.
+- Adelanto de bloque `breaker_events` (integridad y diagnostico):
+  - nuevo endpoint `GET /api/v1/diagnostics/breaker-events` (auth requerido) con ventana configurable (`window_hours`).
+  - integra chequeo de integridad de catalogo `breaker_events`:
+    - volumen total/ventana,
+    - ratios de `unknown_bot`/`unknown_mode`/`unknown_any`,
+    - warning por umbral (`BREAKER_EVENTS_UNKNOWN_RATIO_WARN`) con minimo de eventos (`BREAKER_EVENTS_UNKNOWN_MIN_EVENTS`).
+  - tests nuevos:
+    - `test_breaker_events_integrity_endpoint_pass`
+    - `test_breaker_events_integrity_endpoint_warn_when_unknown_ratio_high`
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "breaker_events_integrity" -q` -> `2 passed`.
+- Adelanto de bloque seguridad auth interna:
+  - `current_user` ahora emite log de seguridad cuando detecta `x-rtlab-role/x-rtlab-user` sin proxy token valido.
+  - evento generado: `type=security_auth`, `severity=warn`, `module=auth`.
+  - payload incluye `reason` (`missing_proxy_token` o `invalid_proxy_token`), `client_ip`, `path`, `method`.
+  - anti-ruido: throttle por `SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC` (default `60s`) para no inundar logs.
+  - test ajustado:
+    - `test_internal_headers_require_proxy_token` ahora valida bloqueo + evidencia de logs `security_auth`.
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "internal_headers_require_proxy_token" -q` -> `1 passed`.
+- Adelanto de bloque rotacion `INTERNAL_PROXY_TOKEN`:
+  - soporte de rotacion con ventana de gracia:
+    - `INTERNAL_PROXY_TOKEN` (token activo),
+    - `INTERNAL_PROXY_TOKEN_PREVIOUS`,
+    - `INTERNAL_PROXY_TOKEN_PREVIOUS_EXPIRES_AT` (ISO8601).
+  - `current_user` ahora acepta token previo solo si no expiro; al expirar se rechaza (`reason=expired_previous_token`).
+  - nuevo endpoint admin: `GET /api/v1/auth/internal-proxy/status` para verificar estado de rotacion sin exponer secretos.
+  - tests nuevos:
+    - `test_internal_proxy_allows_previous_token_with_future_expiry`
+    - `test_internal_proxy_rejects_previous_token_when_expired`
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "internal_proxy" -q` -> `2 passed`.
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "internal_headers_require_proxy_token or internal_proxy_allows_previous_token_with_future_expiry or internal_proxy_rejects_previous_token_when_expired" -q` -> `3 passed`.
+- Adelanto de bloque performance `/api/v1/bots` (scope de KPIs):
+  - `ConsoleStore.get_bots_overview(...)` ahora calcula KPIs solo para estrategias presentes en pools de bots (`strategies_in_pool_count`) y no para todo el registry.
+  - objetivo: reducir CPU en `stage_kpis_ms` cuando hay muchas estrategias no asignadas.
+  - test nuevo:
+    - `test_bots_overview_only_computes_kpis_for_strategies_in_pool`
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_only_computes_kpis_for_strategies_in_pool" -q` -> `1 passed`.
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_perf_headers_and_debug_payload or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_only_computes_kpis_for_strategies_in_pool or bots_overview_scopes_kills_by_bot_and_mode" -q` -> `4 passed`.
+- Adelanto de bloque performance `/api/v1/bots` (logs prefiltrados por bot_ref):
+  - tabla `logs` incorpora flag materializado `has_bot_ref` (0/1).
+  - migracion incremental al boot:
+    - agrega columna si falta,
+    - crea indice `idx_logs_has_bot_ref_id`,
+    - backfill acotado por ventana reciente (`BOTS_LOGS_REF_BACKFILL_MAX_ROWS`, default `50000`).
+  - `add_log(...)` ahora persiste `has_bot_ref` en escritura.
+  - `get_bots_overview(...)` usa `WHERE has_bot_ref = 1` para cargar logs recientes de bots (fallback legacy si falta columna), reduciendo parseo de logs no relacionados.
+  - `debug_perf.overview` agrega:
+    - `logs_prefilter_has_bot_ref`
+    - `logs_rows_read`
+  - test nuevo:
+    - `test_logs_has_bot_ref_materialized_and_bots_recent_logs_ignore_unrelated`
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "logs_has_bot_ref_materialized_and_bots_recent_logs_ignore_unrelated" -q` -> `1 passed`.
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_perf_headers_and_debug_payload or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_only_computes_kpis_for_strategies_in_pool or logs_has_bot_ref_materialized_and_bots_recent_logs_ignore_unrelated or bots_overview_scopes_kills_by_bot_and_mode" -q` -> `5 passed`.
+- Adelanto de bloque performance `/api/v1/bots` (materializacion `log_bot_refs`):
+  - nueva tabla `log_bot_refs(log_id, bot_id)` + indice `idx_log_bot_refs_bot_id_log_id`.
+  - `add_log(...)` ahora indexa refs de bots en tiempo de escritura (desde `related_ids`, `payload.bot_id`, `payload.bot_ids[]`).
+  - migracion/backfill incremental para DB legacy (`_backfill_log_bot_refs`) con ventana controlada por `BOTS_LOGS_REF_BACKFILL_MAX_ROWS`.
+  - `get_bots_overview(...)` pasa a leer logs recientes via join `log_bot_refs -> logs` (prefilter por bots target), con fallback a `has_bot_ref`/legacy.
+  - `debug_perf.overview.logs_prefilter_mode` ahora distingue `log_bot_refs`, `has_bot_ref`, `legacy_full_logs`.
+  - tests nuevos:
+    - `test_log_bot_refs_table_is_populated_and_used_in_overview`
+  - validacion ejecutada:
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "log_bot_refs_table_is_populated_and_used_in_overview or logs_has_bot_ref_materialized_and_bots_recent_logs_ignore_unrelated" -q` -> `2 passed`.
+    - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_perf_headers_and_debug_payload or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_only_computes_kpis_for_strategies_in_pool or logs_has_bot_ref_materialized_and_bots_recent_logs_ignore_unrelated or log_bot_refs_table_is_populated_and_used_in_overview or bots_overview_scopes_kills_by_bot_and_mode" -q` -> `6 passed`.
+- Adelanto de bloque operativo soak 6h (resume fail-safe):
+  - `scripts/soak_testnet.ps1` ahora soporta reanudacion por segmento sin perder acumulados:
+    - `StartIter`, `TotalLoops`,
+    - offsets `OffsetOk/OffsetErrors/OffsetG10Pass`,
+    - override de rutas `StatusPath/LogPath/DonePath`,
+    - preservacion de `StartedAt`.
+  - nuevo launcher `scripts/resume_soak_6h_background.ps1`:
+    - detecta status existente (`soak_6h_bg_status.json`),
+    - calcula iteraciones restantes,
+    - evita duplicar ejecucion si ya hay proceso activo,
+    - relanza en background continuando counters y log principal.
+  - validacion de sintaxis PowerShell:
+    - parser OK en `scripts/soak_testnet.ps1`.
+    - parser OK en `scripts/resume_soak_6h_background.ps1`.
+- Adelanto de bloque 2 operativo (cierre provisional mientras corre soak 6h):
+  - nuevo script `scripts/build_ops_snapshot.py` para snapshot consolidado de operacion:
+    - consume health remoto (sin auth) + artefactos de soak locales,
+    - opcion `--assume-soak-6h-from-20m` para cierre temporal solicitado por usuario,
+    - opcion `--assume-soak-6h-from-1h` para cierre temporal basado en soak 1h,
+    - genera reporte JSON + Markdown en `artifacts/ops_block2_snapshot_<timestamp>.*`.
+  - corrida ejecutada (modo provisional):
+    - `python scripts/build_ops_snapshot.py --assume-soak-6h-from-20m`
+    - resultado: `block2_provisional_ready=true` con nota explicita de suposicion temporal.
+  - validacion ejecutada:
+    - `python -m py_compile scripts/build_ops_snapshot.py` -> `OK`.
+- Adelanto operativo soak abreviado 1h:
+  - nuevo launcher `scripts/start_soak_1h_background.ps1` (`240 loops x 15s`) para ejecucion en segundo plano.
+  - sintaxis PowerShell validada via parser: `OK`.
+- Cierre de tramo con criterio valedero `1h`:
+  - soak `1h` ejecutado y completado:
+    - `loops=240`, `ok=240`, `errors=0`, `g10_pass=240`, `done=true`.
+  - snapshot operativo de cierre generado con:
+    - `python scripts/build_ops_snapshot.py --assume-soak-6h-from-1h`
+  - evidencia:
+    - `artifacts/soak_1h_bg_status.json`
+    - `artifacts/soak_1h_bg_*_DONE.txt`
+    - `artifacts/ops_block2_snapshot_20260302_211848.json`
+    - `artifacts/ops_block2_snapshot_20260302_211848.md`
+  - `build_ops_snapshot.py` ahora reporta `g10_effective_pass` y permite inferencia `PASS_INFERRED_FROM_SOAK` cuando `gates` no esta disponible por falta de token.
+- Validacion integral no-live (backend + frontend):
+  - backend: `python -m pytest rtlab_autotrader/tests -q` -> `124 passed`.
+  - frontend: `npm --prefix rtlab_dashboard run test` -> `11 passed`.
+  - frontend lint: `npm --prefix rtlab_dashboard run lint` -> `0 errores, 0 warnings`.
+  - nota operativa: ejecutar pytest desde la raiz del repo para resolver correctamente `config/policies/*`.
+
 ## 2026-03-01
 
 ### Bloque 15: cierre hardening + limpieza de repo (commit limpio)

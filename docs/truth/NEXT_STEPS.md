@@ -1,9 +1,56 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-02-28
+Fecha: 2026-03-04
+
+## Referencias canonicas de reparacion (2026-03-04)
+- Registro maestro de problemas: `docs/audit/FINDINGS_MASTER_20260304.md`
+- Plan final de implementacion: `docs/audit/ACTION_PLAN_FINAL_20260304.md`
+
+## Cierre PARTE 7/7 (cerebro del bot)
+- Auditoria de cerebro cerrada: decision/learning/rollout validados por codigo.
+- Se mantiene politica operativa: **no conectar LIVE todavia**.
+- Checklist inmediato de cierre no-live (orden obligatorio):
+1. Acoplar runtime operativo real a OMS/risk/reconciliacion y reemplazar payloads sinteticos de `status`/`execution`.
+   - avance: AP-0001/AP-0002 + AP-1001/AP-1002/AP-1003/AP-1004 + AP-2001/AP-2002/AP-2003 implementados (`RuntimeBridge`, telemetry fail-closed, breaker strict y bloqueo de evaluate-phase sin telemetry real).
+   - pendiente: wiring broker/exchange real end-to-end.
+2. Versionar y activar `/.github/workflows/security-ci.yml` en GitHub Actions + branch protection.
+3. Ejecutar hardening final (alertas/recovery/e2e criticos) y volver a correr checks protegidos con evidencia.
+
+## Bloque 3 (quant/learning) - estado actual
+- [x] AP-3003: eliminado fallback silencioso de `_learning_eval_candidate` (fail-closed explicito).
+- [x] AP-3004: separadas salidas `anti_proxy` y `anti_advanced` en research (con alias legacy).
+- [x] AP-3005: `CompareEngine` fail-closed cuando `orderflow_feature_set` queda unknown.
+- [x] AP-3006: `strict_strategy_id=true` obligatorio en research/promotion no-demo.
+- [x] AP-3001: Purged CV + embargo real en learning/research rapido.
+- [x] AP-3002: CPCV real en learning/research.
+
+## Estimacion de bloques restantes (sin LIVE)
+- Objetivo declarado: terminar programa en modo no-live/testnet y dejar LIVE para el final.
+- Estimacion actual: **faltan 3 bloques tecnicos** para cierre no-live robusto.
+1. Bloque A - Runtime de verdad no-live:
+   - cerrar reconciliacion/heartbeat sobre broker real (hoy no-live interno).
+2. Bloque B - CI/seguridad protegida en root:
+   - versionar/activar workflow security root y exigirlo en branch protection.
+3. Bloque C - Hardening final de operacion:
+   - cerrar gaps de observabilidad/alertas y completar pruebas criticas faltantes (integration/e2e de flujos peligrosos).
+- Bloque LIVE real: **postergado por decision operativa** (configuracion de APIs y canary al final).
+
+## Estado de cierre no-live (2026-03-03)
+- [x] Benchmark remoto en GitHub VM en PASS (`p95_ms ~18ms`, `server_p95_ms ~0.068ms`, sin retries `429`).
+- [x] `Remote Protected Checks (GitHub VM)` en PASS con `strict=true`:
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en no-live)
+  - `breaker_ok=true`
+  - `internal_proxy_status_ok=true`
+- [x] Revalidacion de seguridad ejecutada en modo estricto (`scripts/security_scan.ps1 -Strict`) sin vulnerabilidades ni leaks.
+- [ ] `G9_RUNTIME_ENGINE_REAL` en `PASS` (pendiente runtime real OMS/broker) [POSTERGADO por decision operativa].
+- [ ] Habilitacion LIVE real (bloqueada hasta resolver item anterior) [POSTERGADO por decision operativa].
+- Criterio actual de tramo: priorizar estabilidad testnet/no-live; LIVE se retoma al final con APIs definitivas configuradas.
 
 ## Bloqueantes LIVE (auditoria comite)
-1. Implementar runtime de ejecucion real (OMS/broker paper-testnet con reconciliacion) y remover dependencias de payloads simulados.
+1. Completar runtime de ejecucion real contra broker/exchange (paper/testnet/live) con reconciliacion externa y telemetria estricta fail-closed.
 
 ## Prioridad 1 (RC operativo)
 1. Configurar `INTERNAL_PROXY_TOKEN` en Vercel + Railway y validar que requests directos al backend sin token fallen (hard check de T1 en entorno real).
