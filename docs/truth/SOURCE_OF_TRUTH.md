@@ -138,6 +138,27 @@ Fecha de actualizacion: 2026-03-04
   - runtime no-live ya refleja ordenes + balances + costos estimados por fill;
   - LIVE sigue **NO GO** (faltan cierre de wiring final de ejecucion y hardening operativo global).
 
+## Actualizacion tecnica AP-BOT-1009 (hardening `--password` + security CI) - 2026-03-04
+
+- `.github/workflows`:
+  - `security-ci.yml` agrega guard para bloquear `--password` en workflows/PowerShell de automatizacion.
+- `scripts`:
+  - `seed_bots_remote.py` y `check_storage_persistence.py`:
+    - `--password` pasa a DEPRECATED/inseguro;
+    - por defecto se bloquea uso CLI de password (se puede habilitar explicitamente con `ALLOW_INSECURE_PASSWORD_CLI=1`);
+    - login password prioriza entorno seguro (`RTLAB_ADMIN_PASSWORD`).
+  - `run_bots_benchmark_sweep_remote.ps1`:
+    - elimina paso de `--password` por CLI a scripts python;
+    - inyecta password temporalmente por variables de entorno y restaura al finalizar.
+- Evidencia:
+  - `python -m py_compile scripts/seed_bots_remote.py scripts/check_storage_persistence.py` -> PASS.
+  - `C:\Program Files\Git\bin\bash.exe scripts/security_scan.sh` -> PASS (`pip-audit` sin vulns conocidas + `gitleaks` sin leaks).
+  - `rg -n --glob '*.yml' --glob '!security-ci.yml' -- '--password([[:space:]]|=|\\\")' .github/workflows` -> sin matches.
+  - `rg -n --glob '*.ps1' -- '--password([[:space:]]|=|\\\")' scripts` -> sin matches.
+- Estado:
+  - riesgo de exposicion de secretos por CLI en automatizacion remota queda mitigado;
+  - LIVE sigue **NO GO** por pendientes funcionales finales fuera de seguridad (`runtime` end-to-end total + hardening final).
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

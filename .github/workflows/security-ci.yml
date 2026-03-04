@@ -16,6 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Guard insecure CLI password flags in automation
+        run: |
+          set -euo pipefail
+          workflow_files="$(ls .github/workflows/*.yml | grep -v 'security-ci.yml' || true)"
+          if [[ -n "${workflow_files}" ]] && grep -RInE -- '--password([[:space:]]|=|")' ${workflow_files}; then
+            echo "::error ::Detected --password usage in workflow files."
+            exit 1
+          fi
+          if ls scripts/*.ps1 >/dev/null 2>&1 && grep -RInE -- '--password([[:space:]]|=|")' scripts/*.ps1; then
+            echo "::error ::Detected --password usage in PowerShell automation scripts."
+            exit 1
+          fi
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:

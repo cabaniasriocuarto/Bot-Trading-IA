@@ -67,6 +67,19 @@ Fecha: 2026-03-04
 - Pendiente inmediato:
   - cerrar `AP-BOT-1009`: hardening de seguridad operativa restante (`--password` en workflows/scripts remotos y validacion CI security root).
 
+## Actualizacion tecnica AP-BOT-1009 (2026-03-04)
+- [x] Eliminado uso de `--password` en automatizacion remota (workflows + `scripts/*.ps1`).
+- [x] Scripts remotos endurecidos (`seed_bots_remote.py`, `check_storage_persistence.py`): `--password` queda deprecado y bloqueado por defecto (requiere `ALLOW_INSECURE_PASSWORD_CLI=1`).
+- [x] Security CI reforzado con guard fail-closed para detectar regresiones de `--password`.
+- [x] Revalidacion local de seguridad ejecutada en PASS (`pip-audit` + `gitleaks`).
+- Evidencia:
+  - `python -m py_compile scripts/seed_bots_remote.py scripts/check_storage_persistence.py` -> PASS.
+  - `C:\Program Files\Git\bin\bash.exe scripts/security_scan.sh` -> PASS.
+  - `rg -n --glob '*.yml' --glob '!security-ci.yml' -- '--password([[:space:]]|=|\\\")' .github/workflows` -> sin matches.
+  - `rg -n --glob '*.ps1' -- '--password([[:space:]]|=|\\\")' scripts` -> sin matches.
+- Pendiente inmediato:
+  - cerrar `AP-BOT-1010`: estabilizacion final operativa (latencia/soak/checklist no-live de cierre).
+
 ## Cierre de auditoria integral (2026-03-04)
 - Auditoria completa finalizada y documentada en:
   - `docs/audit/AUDIT_REPORT_20260304.md`

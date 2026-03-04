@@ -116,6 +116,21 @@
 - Evidencia:
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_execution_metrics_accumulate_costs_from_fill_deltas or execution_metrics_fail_closed_when_telemetry_source_is_synthetic or runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot or runtime_sync_testnet_account_positions_failure_falls_back_to_open_orders_positions or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS.
 
+### AP-BOT-1009 (hardening `--password` + guard CI)
+- `.github/workflows`:
+  - `security-ci.yml` agrega guard fail-closed para detectar `--password` en workflows/`scripts/*.ps1`.
+- `scripts`:
+  - `seed_bots_remote.py` y `check_storage_persistence.py`:
+    - `--password` pasa a deprecado/inseguro;
+    - uso por CLI queda bloqueado por defecto (solo se habilita con `ALLOW_INSECURE_PASSWORD_CLI=1`);
+    - fallback de password remoto prioriza `RTLAB_ADMIN_PASSWORD`.
+  - `run_bots_benchmark_sweep_remote.ps1` elimina `--password` en comandos python y usa env temporal.
+- Evidencia:
+  - `python -m py_compile scripts/seed_bots_remote.py scripts/check_storage_persistence.py` -> PASS.
+  - `C:\\Program Files\\Git\\bin\\bash.exe scripts/security_scan.sh` -> PASS.
+  - `rg -n --glob '*.yml' --glob '!security-ci.yml' -- '--password([[:space:]]|=|\\\")' .github/workflows` -> sin matches.
+  - `rg -n --glob '*.ps1' -- '--password([[:space:]]|=|\\\")' scripts` -> sin matches.
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`
