@@ -171,6 +171,20 @@ Fecha de actualizacion: 2026-03-04
   - `scripts/security_scan.sh`: PASS.
   - guard CI de `--password`: activo.
 
+## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
+
+- Se completo la revalidacion bibliografica integral por patch en:
+  - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.
+- Cobertura:
+  - `AP-BOT-1006`: idempotencia submit remoto (microestructura local + contrato API oficial).
+  - `AP-BOT-1007`: reconciliacion de posiciones por account snapshot (post-trade local + endpoints oficiales).
+  - `AP-BOT-1008`: costos runtime por fill-delta (impacto/spread/fees local + referencia API oficial).
+  - `AP-BOT-1009`: hardening de secretos CLI (tokenizacion local + fuentes primarias OS/CWE).
+  - `AP-BOT-1010`: cierre no-live (disciplina operativa local + rollout/rollback oficial).
+- Regla aplicada:
+  - local-first (`BIBLIO_INDEX` + `biblio_txt`);
+  - cuando falto especificidad local, se marco `NO EVIDENCIA LOCAL` y se complemento con fuentes primarias (no blogs).
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

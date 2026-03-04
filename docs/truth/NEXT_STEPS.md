@@ -88,6 +88,13 @@ Fecha: 2026-03-04
 - Pendiente inmediato:
   - preparar tramo final LIVE cuando se habilite la configuracion real de APIs.
 
+## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
+- [x] Cerrada validacion bibliografica completa por patch:
+  - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.
+- [x] En cada AP se declaro `NO EVIDENCIA LOCAL` cuando aplico y se uso solo fuente primaria oficial para cubrir el vacio.
+- Pendiente inmediato:
+  - mantener este criterio (local-first + fuentes primarias) para AP nuevos.
+
 ## Cierre de auditoria integral (2026-03-04)
 - Auditoria completa finalizada y documentada en:
   - `docs/audit/AUDIT_REPORT_20260304.md`

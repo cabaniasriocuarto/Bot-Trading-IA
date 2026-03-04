@@ -138,6 +138,15 @@
   - no-live/testnet: GO.
   - LIVE: NO GO (postergado por decision operativa, pendiente tramo final con APIs reales/canary).
 
+### Revalidacion bibliografica completa AP-BOT-1006..1010
+- Nuevo artefacto:
+  - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.
+- Incluye para cada AP:
+  - evidencia tecnica exacta en repo;
+  - soporte bibliografico local (`BIBLIO_INDEX` + `biblio_txt` con lineas);
+  - `NO EVIDENCIA LOCAL` cuando corresponde;
+  - complemento exclusivo con fuentes primarias oficiales (Binance, Linux man-pages, Microsoft, MITRE CWE, Kubernetes).
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`
