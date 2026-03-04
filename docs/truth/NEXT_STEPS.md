@@ -14,6 +14,8 @@ Fecha: 2026-03-04
    - avance: AP-0001/AP-0002 + AP-1001/AP-1002/AP-1003/AP-1004 + AP-2001/AP-2002/AP-2003 implementados (`RuntimeBridge`, telemetry fail-closed, breaker strict y bloqueo de evaluate-phase sin telemetry real).
    - pendiente: wiring broker/exchange real end-to-end.
 2. Versionar y activar `/.github/workflows/security-ci.yml` en GitHub Actions + branch protection.
+   - avance: AP-4001 versionado local en rama tecnica (`feature/runtime-contract-v1`, commit `0dbf55d`).
+   - pendiente: push remoto exitoso + activar required check `security` (AP-4002).
 3. Ejecutar hardening final (alertas/recovery/e2e criticos) y volver a correr checks protegidos con evidencia.
 
 ## Bloque 3 (quant/learning) - estado actual

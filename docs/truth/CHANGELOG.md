@@ -172,6 +172,19 @@
   - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `14 passed`.
   - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
 
+### AP-4001 (security CI root) - versionado tecnico
+- Se versiona `/.github/workflows/security-ci.yml` en rama tecnica (`feature/runtime-contract-v1`, commit `0dbf55d`).
+- Contenido del workflow:
+  - instala `pip-audit` + `gitleaks`,
+  - ejecuta `scripts/security_scan.sh` en modo estricto,
+  - sube artifacts `artifacts/security_audit/`.
+- Validacion local de sintaxis:
+  - parse YAML de workflow con `python + yaml.safe_load` -> `OK_WORKFLOW`.
+- Pendiente para cierre operativo:
+  - push remoto exitoso del branch,
+  - corrida verde en GitHub Actions,
+  - branch protection con required check `security` (AP-4002).
+
 ### Auditoria integral (comite senior) + evidencia operativa
 - Se ejecuto auditoria E2E del sistema (AppSec/DevSecOps, ejecucion, quant/backtests, risk, SRE, QA, UX) con evidencia por rutas y lineas.
 - Resultado de go/no-go actualizado: **NO GO para LIVE** por bloqueantes tecnicos de runtime real.
@@ -186,7 +199,7 @@
   - `breaker_events` queda fail-closed solo en modo estricto (`strict=true`).
 - CI/security:
   - en root siguen activos solo `remote-benchmark.yml` y `remote-protected-checks.yml`;
-  - `/.github/workflows/security-ci.yml` existe en working tree local pero aun no esta versionado (pendiente commit/push/corrida en GitHub Actions).
+  - `/.github/workflows/security-ci.yml` ya versionado en rama tecnica (`0dbf55d`); pendiente push + corrida en GitHub Actions.
 - Bibliografia:
   - se confirma `BIBLIO_INDEX.md`;
   - `docs/reference/biblio_raw/` en repo continua sin PDFs versionados (solo `.gitignore`), por lo que se registro faltante para trazabilidad local reproducible.
@@ -211,7 +224,7 @@
   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security_scan.ps1 -Strict`
   - resultado: `pip-audit` runtime/research sin vulnerabilidades conocidas y `gitleaks` baseline-aware sin leaks.
   - nota de CI: en GitHub Actions del repo root solo se observan workflows remotos (`Remote Bots Benchmark` y `Remote Protected Checks`), por lo que este cierre registra la verificacion estricta local como evidencia operativa de seguridad.
-  - para cerrar ese gap, se agrega workflow root `/.github/workflows/security-ci.yml` (security CI bloqueante); queda pendiente push + corrida en GitHub Actions.
+  - para cerrar ese gap, se versiona workflow root `/.github/workflows/security-ci.yml` (security CI bloqueante); queda pendiente push + corrida en GitHub Actions.
 - Estado no-live consolidado:
   - benchmark remoto GitHub VM previamente en PASS (`p95_ms ~18ms`, `server_p95_ms ~0.068ms`, sin `429` retries).
   - checks protegidos remotos en PASS.

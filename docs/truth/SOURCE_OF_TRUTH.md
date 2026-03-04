@@ -167,6 +167,21 @@ Fecha de actualizacion: 2026-03-04
   - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `14 passed`.
   - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> `14 passed`.
 
+## Actualizacion tecnica AP-4001 (security CI root) - 2026-03-04
+
+- Workflow de seguridad root versionado en rama tecnica:
+  - `/.github/workflows/security-ci.yml` (commit `0dbf55d`).
+- Job `security` definido para `push`, `pull_request` y `workflow_dispatch`:
+  - instala `pip-audit` + `gitleaks`;
+  - ejecuta `scripts/security_scan.sh` en modo estricto;
+  - publica artifacts `artifacts/security_audit/`.
+- Validacion local de workflow:
+  - parse YAML via `python + yaml.safe_load` -> `OK_WORKFLOW`.
+- Pendiente operativo (fuera de codigo local):
+  - push remoto exitoso del branch;
+  - primera corrida verde en GitHub Actions;
+  - branch protection con required check `security` (AP-4002).
+
 ## Cierre PARTE 7/7 (Cerebro del bot) - 2026-03-04
 
 - Auditoria del cerebro de decision/aprendizaje cerrada con evidencia en:
@@ -229,7 +244,8 @@ Fecha de actualizacion: 2026-03-04
   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security_scan.ps1 -Strict`
   - resultado: `pip-audit` runtime/research sin vulnerabilidades conocidas + `gitleaks` baseline-aware sin leaks.
   - nota de CI: en GitHub Actions del repo root solo figuran workflows activos de benchmark/checks remotos; la verificacion de seguridad de este cierre queda documentada por la corrida estricta local.
-  - avance adicional (repo local): nuevo workflow root `/.github/workflows/security-ci.yml` para security CI bloqueante (pendiente push + corrida en GitHub Actions).
+  - avance adicional: workflow root `/.github/workflows/security-ci.yml` versionado en rama tecnica (commit `0dbf55d`) para security CI bloqueante.
+  - pendiente operativo: push remoto + primera corrida verde en GitHub Actions + branch protection con required check `security`.
 - Estado de cierre no-live del tramo:
   - benchmark remoto GitHub VM: PASS (`p95_ms ~18ms`, `server_p95_ms ~0.068ms`, sin retries `429`).
   - checks protegidos remotos: PASS.
