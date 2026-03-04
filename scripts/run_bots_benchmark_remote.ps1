@@ -14,6 +14,8 @@ param(
     [ValidateSet("seed-only", "any")]
     [string]$DeletePolicy = "seed-only",
     [double]$SeedPaceSec = 0.8,
+    [ValidateSet("client", "server", "either")]
+    [string]$PassCriterion = "either",
     [switch]$AllowNoEvidence,
     [switch]$Retry429 = $true,
     [int]$MaxRetries429 = 20,
@@ -35,13 +37,19 @@ try {
     if ([string]::IsNullOrWhiteSpace($adminPass) -and [string]::IsNullOrWhiteSpace($token)) {
         $adminPass = Read-Host "ADMIN_PASSWORD"
     }
-    if ($AutoSeed -and [string]::IsNullOrWhiteSpace($adminPass)) {
-        if (-not [string]::IsNullOrWhiteSpace($token)) {
-            Write-Host "[WARN] AutoSeed omitido: sin password no se puede crear/borrar bots."
-            $AutoSeed = $false
-        } else {
-            throw "AutoSeed requiere password (o pasar -Password)."
-        }
+    if ($AutoSeed -and [string]::IsNullOrWhiteSpace($adminPass) -and [string]::IsNullOrWhiteSpace($token)) {
+        throw "AutoSeed requiere auth: -AuthToken o -Password."
+    }
+
+    $prevAuthToken = $env:RTLAB_AUTH_TOKEN
+    $prevPassword = $env:RTLAB_PASSWORD
+    $prevBenchPassword = $env:RTLAB_BENCH_PASSWORD
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        $env:RTLAB_AUTH_TOKEN = $token
+    }
+    if (-not [string]::IsNullOrWhiteSpace($adminPass)) {
+        $env:RTLAB_PASSWORD = $adminPass
+        $env:RTLAB_BENCH_PASSWORD = $adminPass
     }
 
     $effectiveTarget = [Math]::Max(1, [Math]::Max($TargetBots, $MinBotsRequired))
@@ -51,12 +59,15 @@ try {
             "scripts/seed_bots_remote.py",
             "--base-url", $BaseUrl,
             "--username", $Username,
-            "--password", $adminPass,
             "--target-bots", "$effectiveTarget",
             "--timeout-sec", "$TimeoutSec",
             "--max-retries-429", "$MaxRetries429",
             "--pace-sec", "$SeedPaceSec"
         )
+        if (-not [string]::IsNullOrWhiteSpace($token)) {
+            $seedArgs += "--auth-token"
+            $seedArgs += "$token"
+        }
         if ($Retry429) {
             $seedArgs += "--retry-429"
         }
@@ -82,6 +93,7 @@ try {
         "scripts/benchmark_bots_overview.py",
         "--base-url", $BaseUrl,
         "--username", $Username,
+        "--pass-criterion", "$PassCriterion",
         "--requests", "$Requests",
         "--warmup", "$Warmup",
         "--timeout-sec", "$TimeoutSec",
@@ -91,11 +103,8 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($token)) {
         $benchArgs += "--auth-token"
         $benchArgs += "$token"
-    } elseif (-not [string]::IsNullOrWhiteSpace($adminPass)) {
-        $benchArgs += "--password"
-        $benchArgs += "$adminPass"
     } else {
-        throw "Falta autenticacion: pasar -Password o -AuthToken."
+        throw "Falta autenticacion: pasar -AuthToken o -Password."
     }
     if (-not $AllowNoEvidence) {
         $benchArgs += "--require-evidence"
@@ -134,7 +143,13 @@ try {
     }
 }
 finally {
+    if ($null -ne $prevAuthToken) { $env:RTLAB_AUTH_TOKEN = $prevAuthToken } else { Remove-Item Env:RTLAB_AUTH_TOKEN -ErrorAction SilentlyContinue }
+    if ($null -ne $prevPassword) { $env:RTLAB_PASSWORD = $prevPassword } else { Remove-Item Env:RTLAB_PASSWORD -ErrorAction SilentlyContinue }
+    if ($null -ne $prevBenchPassword) { $env:RTLAB_BENCH_PASSWORD = $prevBenchPassword } else { Remove-Item Env:RTLAB_BENCH_PASSWORD -ErrorAction SilentlyContinue }
     Remove-Variable adminPass -ErrorAction SilentlyContinue
     Remove-Variable token -ErrorAction SilentlyContinue
+    Remove-Variable prevAuthToken -ErrorAction SilentlyContinue
+    Remove-Variable prevPassword -ErrorAction SilentlyContinue
+    Remove-Variable prevBenchPassword -ErrorAction SilentlyContinue
     Pop-Location
 }

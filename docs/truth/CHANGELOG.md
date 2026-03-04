@@ -2,6 +2,27 @@
 
 ## 2026-03-04
 
+### Auditoria integral de pe a pa (estado actualizado)
+- Nuevos artefactos de auditoria:
+  - `docs/audit/AUDIT_REPORT_20260304.md`
+  - `docs/audit/AUDIT_FINDINGS_ALL_20260304.md`
+  - `docs/audit/AUDIT_BACKLOG_20260304.md`
+- Consolidacion de estado real:
+  - `LIVE`: `NO GO` por runtime de ejecucion real no cerrado end-to-end.
+  - `No-live/testnet`: operativo con controles actuales (decision de proyecto: LIVE al final).
+- Hallazgos criticos/high registrados en reporte:
+  - runtime `testnet/live` aun con loop de fills simulados en `RuntimeBridge`.
+  - fallback mock del BFF si falta `BACKEND_API_URL`.
+  - scripts/workflows con rutas `--password` (exposicion de secretos en CLI).
+  - divergencia de policy `gates` entre `config` y `knowledge`.
+  - variabilidad de latencia `/api/v1/bots` en productivo.
+- Evidencia de corrida del dia:
+  - `./scripts/security_scan.ps1 -Strict` -> PASS.
+  - `python -m pytest -q rtlab_autotrader/tests` -> PASS.
+  - `npm test -- --run` -> PASS.
+  - `npm run lint` -> PASS.
+  - `npm run build` -> PASS (warning de charts pendiente).
+
 ### AP-7003 hotfix (G9 estricto por modo + evaluate_gates read-only)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - `RuntimeSnapshot.checks` cambia `exchange_mode_known` -> `exchange_mode_match` para exigir `runtime_exchange_mode == mode objetivo`.

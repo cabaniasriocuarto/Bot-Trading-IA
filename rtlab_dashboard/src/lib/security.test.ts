@@ -37,12 +37,12 @@ describe("shouldUseMockApi", () => {
     ).toBe(false);
   });
 
-  it("auto-enables mock when backend is missing (including production)", () => {
+  it("does not auto-enable mock in production when backend is missing", () => {
     expect(
       shouldUseMockApi({
         NODE_ENV: "production",
       } as NodeJS.ProcessEnv),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       shouldUseMockApi({
         NODE_ENV: "production",

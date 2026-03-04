@@ -2,6 +2,21 @@
 
 Fecha: 2026-03-04
 
+## Cierre de auditoria integral (2026-03-04)
+- Auditoria completa finalizada y documentada en:
+  - `docs/audit/AUDIT_REPORT_20260304.md`
+  - `docs/audit/AUDIT_FINDINGS_ALL_20260304.md`
+  - `docs/audit/AUDIT_BACKLOG_20260304.md`
+- Estado:
+  - `LIVE`: NO GO (bloqueante tecnico de ejecucion real end-to-end).
+  - `No-live/testnet`: GO y estable para continuar hardening antes de conectar APIs LIVE.
+- Proximo tramo recomendado (orden):
+1. `AP-8001` fail-closed de mock API en BFF.
+2. `AP-8002` eliminar `--password` en scripts/workflows remotos.
+3. `AP-8007` unificar thresholds de gates (`config` vs `knowledge`) con test de drift.
+4. `AP-8011` estabilizar `/api/v1/bots` a `p95 < 300ms` sostenido.
+5. `AP-8003` cerrar adapter de ejecucion real con idempotencia/reconciliacion.
+
 ## Referencias canonicas de reparacion (2026-03-04)
 - Registro maestro de problemas: `docs/audit/FINDINGS_MASTER_20260304.md`
 - Plan final de implementacion: `docs/audit/ACTION_PLAN_FINAL_20260304.md`

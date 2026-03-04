@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from dataclasses import dataclass
 from time import sleep
@@ -139,8 +140,9 @@ def _is_seed_bot(row: dict[str, Any]) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Crea bots por API hasta alcanzar una cardinalidad objetivo.")
     parser.add_argument("--base-url", required=True, help="URL base del backend.")
+    parser.add_argument("--auth-token", default=os.getenv("RTLAB_AUTH_TOKEN", ""), help="Bearer token admin (opcional).")
     parser.add_argument("--username", default="Wadmin", help="Usuario admin.")
-    parser.add_argument("--password", required=True, help="Password admin.")
+    parser.add_argument("--password", default=os.getenv("RTLAB_PASSWORD", ""), help="Password admin (si no hay token).")
     parser.add_argument("--target-bots", type=int, default=30, help="Cantidad objetivo de bots (recomendado Railway: 30).")
     parser.add_argument("--engine", default="bandit_thompson", help="Engine para bots creados.")
     parser.add_argument("--mode", default="paper", choices=["shadow", "paper", "testnet"], help="Modo para bots creados.")
@@ -164,7 +166,12 @@ def main() -> int:
     target = max(1, int(args.target_bots))
     timeout_sec = max(1.0, float(args.timeout_sec))
 
-    token = _login(base_url, username=args.username, password=args.password, timeout_sec=timeout_sec)
+    token = str(args.auth_token or "").strip()
+    if not token:
+        password = str(args.password or "").strip()
+        if not password:
+            raise RuntimeError("Falta auth: pasar --auth-token o --password / RTLAB_PASSWORD.")
+        token = _login(base_url, username=args.username, password=password, timeout_sec=timeout_sec)
     api = ApiClient(base_url=base_url, timeout_sec=timeout_sec, token=token)
 
     bots_payload = api.get_json("/api/v1/bots", retry_429=bool(args.retry_429), max_retries_429=int(args.max_retries_429))

@@ -79,6 +79,7 @@ jobs:
           STRICT: ${{ inputs.strict }}
           RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
           RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+          RTLAB_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -100,8 +101,6 @@ jobs:
 
           if [[ -n "${RTLAB_AUTH_TOKEN}" ]]; then
             cmd+=(--auth-token "${RTLAB_AUTH_TOKEN}")
-          else
-            cmd+=(--password "${RTLAB_ADMIN_PASSWORD}")
           fi
 
           "${cmd[@]}" | tee artifacts/protected_checks_stdout.log

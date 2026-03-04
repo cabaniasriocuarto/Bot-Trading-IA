@@ -2,6 +2,29 @@
 
 Fecha de actualizacion: 2026-03-04
 
+## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
+
+- Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.
+- Entregables creados:
+  - `docs/audit/AUDIT_REPORT_20260304.md`
+  - `docs/audit/AUDIT_FINDINGS_ALL_20260304.md`
+  - `docs/audit/AUDIT_BACKLOG_20260304.md`
+- Estado ejecutivo actualizado:
+  - LIVE: **NO GO** (bloqueante principal: runtime de ejecucion real todavia no completo end-to-end).
+  - No-live/testnet: **GO** con controles actuales, manteniendo politica de no conectar LIVE hasta cierre total.
+- Hallazgos principales confirmados:
+  - `CRITICAL`: runtime de fills/order loop sigue parcialmente simulado para `testnet/live` en `RuntimeBridge`.
+  - `HIGH`: fallback mock en BFF por ausencia de `BACKEND_API_URL`; uso de `--password` en scripts/workflows.
+  - `HIGH`: divergencia entre estrategias declaradas y comportamiento ejecutado por dispatcher/familia.
+  - `HIGH`: latencia `/api/v1/bots` no estable en todas las corridas productivas.
+  - `HIGH`: divergencia de thresholds de gates entre `config/policies` y `knowledge/policies`.
+- Evidencia de validacion corrida 2026-03-04:
+  - `./scripts/security_scan.ps1 -Strict` -> PASS.
+  - `python -m pytest -q rtlab_autotrader/tests` -> PASS.
+  - `npm test -- --run` -> PASS (11 tests).
+  - `npm run lint` -> PASS.
+  - `npm run build` -> PASS (warnings Recharts pendientes).
+
 ## Hotfix tecnico AP-7003 (G9 mode-binding + gate read-only) - 2026-03-04
 
 - Ajuste puntual en `rtlab_autotrader/rtlab_core/web/app.py`:

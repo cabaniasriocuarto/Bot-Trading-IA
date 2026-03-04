@@ -140,7 +140,9 @@ jobs:
         env:
           BASE_URL: ${{ inputs.base_url }}
           USERNAME: ${{ inputs.username }}
+          RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
           RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RTLAB_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
           RETRY_429: ${{ inputs.retry_429 }}
           MAX_RETRIES_429: ${{ inputs.max_retries_429 }}
           TARGET_BOTS: ${{ inputs.target_bots }}
@@ -152,20 +154,22 @@ jobs:
           DELETE_POLICY: ${{ inputs.delete_policy }}
         run: |
           set -euo pipefail
-          if [[ -z "${RTLAB_ADMIN_PASSWORD}" ]]; then
-            echo "RTLAB_ADMIN_PASSWORD is required for auto_seed." >&2
+          if [[ -z "${RTLAB_AUTH_TOKEN}" && -z "${RTLAB_ADMIN_PASSWORD}" ]]; then
+            echo "auto_seed requiere RTLAB_AUTH_TOKEN o RTLAB_ADMIN_PASSWORD." >&2
             exit 1
           fi
           cmd=(
             python scripts/seed_bots_remote.py
             --base-url "${BASE_URL}"
             --username "${USERNAME}"
-            --password "${RTLAB_ADMIN_PASSWORD}"
             --target-bots "${TARGET_BOTS}"
             --timeout-sec "${TIMEOUT_SEC}"
             --max-retries-429 "${MAX_RETRIES_429}"
             --pace-sec "${SEED_PACE_SEC}"
           )
+          if [[ -n "${RTLAB_AUTH_TOKEN}" ]]; then
+            cmd+=(--auth-token "${RTLAB_AUTH_TOKEN}")
+          fi
           if [[ "${RETRY_429}" == "true" ]]; then
             cmd+=(--retry-429)
           fi
@@ -197,6 +201,7 @@ jobs:
           REQUIRE_TARGET_PASS: ${{ inputs.require_target_pass }}
           RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
           RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+          RTLAB_BENCH_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -235,8 +240,6 @@ jobs:
 
           if [[ -n "${RTLAB_AUTH_TOKEN}" ]]; then
             cmd+=(--auth-token "${RTLAB_AUTH_TOKEN}")
-          else
-            cmd+=(--password "${RTLAB_ADMIN_PASSWORD}")
           fi
 
           "${cmd[@]}" | tee artifacts/benchmark_stdout.log
