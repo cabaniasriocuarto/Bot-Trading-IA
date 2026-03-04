@@ -186,6 +186,10 @@ BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRIT
 BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
 BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
 SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(1, _env_int("SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC", 60))
+OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(0.1, _env_float("OPS_ALERT_SLIPPAGE_P95_WARN_BPS", 8.0))
+OPS_ALERT_API_ERRORS_WARN = max(1, _env_int("OPS_ALERT_API_ERRORS_WARN", 1))
+OPS_ALERT_BREAKER_WINDOW_HOURS = max(1, _env_int("OPS_ALERT_BREAKER_WINDOW_HOURS", 24))
+OPS_ALERT_DRIFT_ENABLED = _env_bool("OPS_ALERT_DRIFT_ENABLED", True)
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -6064,6 +6068,120 @@ def build_execution_metrics_payload() -> dict[str, Any]:
     }
 
 
+def build_operational_alerts_payload() -> dict[str, Any]:
+    now_iso = utc_now_iso()
+    settings = store.load_settings()
+    runs = store.load_runs()
+    try:
+        drift_payload = learning_service.compute_drift(settings=settings, runs=runs)
+    except Exception as exc:
+        drift_payload = {"drift": False, "algo": "unknown", "error": str(exc)}
+    execution_payload = build_execution_metrics_payload()
+    breaker_payload = store.breaker_events_integrity(window_hours=OPS_ALERT_BREAKER_WINDOW_HOURS, strict=True)
+    alerts: list[dict[str, Any]] = []
+
+    def _push_ops_alert(
+        *,
+        alert_type: str,
+        severity: str,
+        module_name: str,
+        message: str,
+        data: dict[str, Any],
+    ) -> None:
+        alerts.append(
+            {
+                "id": f"ops_{alert_type}",
+                "ts": now_iso,
+                "type": alert_type,
+                "severity": severity,
+                "module": module_name,
+                "message": message,
+                "related_id": "",
+                "data": data,
+            }
+        )
+
+    drift_detected = bool(drift_payload.get("drift", False))
+    if OPS_ALERT_DRIFT_ENABLED and drift_detected:
+        _push_ops_alert(
+            alert_type="ops_drift",
+            severity="warn",
+            module_name="learning",
+            message="Drift detectado: revisar recommendation/research loop antes de promover.",
+            data={
+                "algo": drift_payload.get("algo"),
+                "research_loop_triggered": bool(drift_payload.get("research_loop_triggered", False)),
+            },
+        )
+
+    p95_slippage = _as_float(execution_payload.get("p95_slippage"), 0.0)
+    if p95_slippage >= OPS_ALERT_SLIPPAGE_P95_WARN_BPS:
+        _push_ops_alert(
+            alert_type="ops_slippage_anomaly",
+            severity="warn",
+            module_name="execution",
+            message="Slippage p95 anomalo sobre umbral operativo.",
+            data={
+                "p95_slippage": p95_slippage,
+                "threshold_bps": OPS_ALERT_SLIPPAGE_P95_WARN_BPS,
+            },
+        )
+
+    api_errors = int(_as_int(execution_payload.get("api_errors"), 0))
+    if api_errors >= OPS_ALERT_API_ERRORS_WARN:
+        _push_ops_alert(
+            alert_type="ops_api_errors",
+            severity="error",
+            module_name="execution",
+            message="Errores de API por encima del umbral operativo.",
+            data={
+                "api_errors": api_errors,
+                "threshold": OPS_ALERT_API_ERRORS_WARN,
+                "runtime_telemetry_source": execution_payload.get("runtime_telemetry_source"),
+            },
+        )
+
+    if not bool(breaker_payload.get("ok", False)):
+        _push_ops_alert(
+            alert_type="ops_breaker_integrity",
+            severity="warn",
+            module_name="risk",
+            message="Integridad de breaker_events no OK en modo estricto.",
+            data={
+                "status": breaker_payload.get("status"),
+                "window_hours": breaker_payload.get("window_hours"),
+                "strict_mode": bool(breaker_payload.get("strict_mode", True)),
+                "overall": breaker_payload.get("overall"),
+                "window": breaker_payload.get("window"),
+            },
+        )
+
+    return {
+        "ok": True,
+        "generated_at": now_iso,
+        "overall_status": "WARN" if alerts else "PASS",
+        "thresholds": {
+            "drift_enabled": bool(OPS_ALERT_DRIFT_ENABLED),
+            "slippage_p95_warn_bps": OPS_ALERT_SLIPPAGE_P95_WARN_BPS,
+            "api_errors_warn": OPS_ALERT_API_ERRORS_WARN,
+            "breaker_window_hours": OPS_ALERT_BREAKER_WINDOW_HOURS,
+        },
+        "signals": {
+            "drift": drift_payload,
+            "execution": {
+                "p95_slippage": p95_slippage,
+                "api_errors": api_errors,
+            },
+            "breaker_integrity": {
+                "status": breaker_payload.get("status"),
+                "ok": bool(breaker_payload.get("ok", False)),
+                "window_hours": breaker_payload.get("window_hours"),
+            },
+        },
+        "alerts": alerts,
+    }
+
+
 def parse_strategy_package(payload: bytes) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
@@ -9294,6 +9412,7 @@ def create_app() -> FastAPI:
         module: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        include_operational: bool = Query(default=True),
         _: dict[str, str] = Depends(current_user),
     ) -> list[dict[str, Any]]:
         payload = store.list_logs(severity=severity, module=module, since=since, until=until, page=1, page_size=250)
@@ -9312,6 +9431,11 @@ def create_app() -> FastAPI:
                         "data": item["payload"],
                     }
                 )
+        if include_operational:
+            ops_payload = build_operational_alerts_payload()
+            ops_alerts = ops_payload.get("alerts") if isinstance(ops_payload.get("alerts"), list) else []
+            rows.extend([row for row in ops_alerts if isinstance(row, dict)])
+        rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
         return rows
 
     @app.get("/api/v1/logs")

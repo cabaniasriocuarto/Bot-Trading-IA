@@ -248,6 +248,28 @@ Fecha de actualizacion: 2026-03-04
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or g9_live_fails_when_runtime_heartbeat_is_stale or exchange_diagnose_passes_with_env_keys_and_mocked_exchange" -q` -> `4 passed`.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_login_rate_limit_shared_sqlite_backend_across_instances or e2e_critical_flow_login_backtest_validate_promote_rollout or exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> `4 passed`.
 
+## Actualizacion tecnica AP-5003 (alertas operativas minimas) - 2026-03-04
+
+- Backend `rtlab_autotrader/rtlab_core/web/app.py`:
+  - nuevo `build_operational_alerts_payload`.
+  - `GET /api/v1/alerts` ahora soporta `include_operational=true|false` y agrega alertas derivadas:
+    - `ops_drift`
+    - `ops_slippage_anomaly`
+    - `ops_api_errors`
+    - `ops_breaker_integrity`
+  - umbrales configurables por ENV:
+    - `OPS_ALERT_SLIPPAGE_P95_WARN_BPS`
+    - `OPS_ALERT_API_ERRORS_WARN`
+    - `OPS_ALERT_BREAKER_WINDOW_HOURS`
+    - `OPS_ALERT_DRIFT_ENABLED`
+- Cobertura de tests:
+  - `test_alerts_include_operational_alerts_for_drift_slippage_api_and_breaker`.
+  - `test_alerts_operational_alerts_clear_when_runtime_recovers`.
+- Validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "alerts_include_operational_alerts_for_drift_slippage_api_and_breaker or alerts_operational_alerts_clear_when_runtime_recovers or breaker_events_integrity_endpoint_warn_when_unknown_ratio_high" -q` -> `3 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> `2 passed`.
+
 ## Cierre PARTE 7/7 (Cerebro del bot) - 2026-03-04
 
 - Auditoria del cerebro de decision/aprendizaje cerrada con evidencia en:

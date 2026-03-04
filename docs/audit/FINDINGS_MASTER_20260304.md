@@ -238,10 +238,13 @@ Leyenda de estado:
 
 ### FM-SRE-002 - Alertas operativas avanzadas de drift/costos/slippage en CI/monitoring externo
 - Severidad: MEDIUM
-- Estado: ABIERTO
+- Estado: MITIGADO
 - Impacto: observabilidad incompleta para canary/live.
 - Evidencia:
-  - `docs/truth/NEXT_STEPS.md:96`
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`build_operational_alerts_payload`, `GET /api/v1/alerts` con `include_operational`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_alerts_include_operational_alerts_for_drift_slippage_api_and_breaker`, `test_alerts_operational_alerts_clear_when_runtime_recovers`).
+- Brecha abierta:
+  - faltan integraciones de monitoreo externo (dashboards/alert routing) para canary/live.
 
 ### FM-QA-001 - E2E de flujo critico integral
 - Severidad: MEDIUM

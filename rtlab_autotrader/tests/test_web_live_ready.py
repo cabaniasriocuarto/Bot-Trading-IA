@@ -2501,6 +2501,105 @@ def test_breaker_events_integrity_endpoint_warn_when_unknown_ratio_high(tmp_path
   assert any("overall:" in str(msg) for msg in warnings)
 
 
+def test_alerts_include_operational_alerts_for_drift_slippage_api_and_breaker(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  monkeypatch.setattr(
+    module.learning_service,
+    "compute_drift",
+    lambda *, settings, runs: {"drift": True, "algo": "adwin", "research_loop_triggered": True},
+  )
+  monkeypatch.setattr(
+    module.runtime_bridge,
+    "execution_metrics_snapshot",
+    lambda: {
+      "series": [],
+      "maker_ratio": 0.4,
+      "fill_ratio": 0.65,
+      "latency_ms_p95": 120.0,
+      "rate_limit_hits": 2,
+      "api_errors": 4,
+      "avg_slippage": 11.5,
+      "p95_slippage": 14.2,
+      "notes": [],
+    },
+  )
+
+  res = client.get("/api/v1/alerts", headers=headers)
+  assert res.status_code == 200, res.text
+  items = res.json()
+  ops_types = {str(row.get("type") or "") for row in items if str(row.get("id") or "").startswith("ops_")}
+  assert "ops_drift" in ops_types
+  assert "ops_slippage_anomaly" in ops_types
+  assert "ops_api_errors" in ops_types
+  assert "ops_breaker_integrity" in ops_types
+
+
+def test_alerts_operational_alerts_clear_when_runtime_recovers(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  state = module.store.load_bot_state()
+  state.update(
+    {
+      "runtime_engine": "real",
+      "running": True,
+      "killed": False,
+      "bot_status": "RUNNING",
+      "runtime_contract_version": "runtime_snapshot_v1",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_heartbeat_at": module.utc_now_iso(),
+      "runtime_last_reconcile_at": module.utc_now_iso(),
+    }
+  )
+  module.store.save_bot_state(state)
+
+  monkeypatch.setattr(
+    module.learning_service,
+    "compute_drift",
+    lambda *, settings, runs: {"drift": False, "algo": "adwin", "research_loop_triggered": False},
+  )
+  monkeypatch.setattr(
+    module.runtime_bridge,
+    "execution_metrics_snapshot",
+    lambda: {
+      "series": [],
+      "maker_ratio": 0.55,
+      "fill_ratio": 0.8,
+      "latency_ms_p95": 45.0,
+      "rate_limit_hits": 0,
+      "api_errors": 0,
+      "avg_slippage": 1.2,
+      "p95_slippage": 1.8,
+      "notes": [],
+    },
+  )
+
+  module.store.add_log(
+    event_type="breaker_triggered",
+    severity="warn",
+    module="risk",
+    message="breaker known",
+    related_ids=["BOT-ALERT-OK"],
+    payload={"bot_id": "BOT-ALERT-OK", "mode": "paper", "reason": "test"},
+  )
+
+  res = client.get("/api/v1/alerts", headers=headers)
+  assert res.status_code == 200, res.text
+  items = res.json()
+  ops_types = {str(row.get("type") or "") for row in items if str(row.get("id") or "").startswith("ops_")}
+  assert "ops_drift" not in ops_types
+  assert "ops_slippage_anomaly" not in ops_types
+  assert "ops_api_errors" not in ops_types
+  assert "ops_breaker_integrity" not in ops_types
+
+
 def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
