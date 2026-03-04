@@ -270,6 +270,26 @@ Fecha de actualizacion: 2026-03-04
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "alerts_include_operational_alerts_for_drift_slippage_api_and_breaker or alerts_operational_alerts_clear_when_runtime_recovers or breaker_events_integrity_endpoint_warn_when_unknown_ratio_high" -q` -> `3 passed`.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> `2 passed`.
 
+## Actualizacion tecnica AP-6001 (decision final por hallazgo) - 2026-03-04
+
+- Se versiona matriz final de decisiones:
+  - `docs/audit/FINDINGS_DECISION_MATRIX_20260304.md`.
+- Estado consolidado del tramo (sobre `docs/audit/FINDINGS_MASTER_20260304.md`):
+  - `CERRADO`: `12`
+  - `MITIGADO`: `8`
+  - `ABIERTO`: `6`
+- Hallazgos abiertos al cierre de este plan:
+  - `FM-EXEC-001`, `FM-EXEC-002`, `FM-EXEC-005`, `FM-QUANT-008`, `FM-RISK-002`, `FM-RISK-003`.
+
+## Actualizacion tecnica AP-6002 (politica formal bibliografia local) - 2026-03-04
+
+- Se crea politica formal:
+  - `docs/reference/BIBLIO_ACCESS_POLICY.md`.
+- Politica aplicada:
+  - `biblio_raw` y `biblio_txt` se mantienen no versionados por licencia/volumen;
+  - `docs/reference/BIBLIO_INDEX.md` queda como fuente versionada de metadatos y hashes SHA256;
+  - regeneracion estandarizada con `python scripts/biblio_extract.py`.
+
 ## Cierre PARTE 7/7 (Cerebro del bot) - 2026-03-04
 
 - Auditoria del cerebro de decision/aprendizaje cerrada con evidencia en:
@@ -311,7 +331,7 @@ Fecha de actualizacion: 2026-03-04
   - `npm --prefix rtlab_dashboard run lint` -> PASS.
 - Bibliografia local:
   - `docs/reference/BIBLIO_INDEX.md` existe.
-  - `docs/reference/biblio_raw/` en el repo no contiene PDFs versionados (solo `.gitignore`): **FALTA BIBLIO_RAW** en repo para verificacion local reproducible.
+  - `docs/reference/biblio_raw/` no versiona PDFs por politica (`docs/reference/BIBLIO_ACCESS_POLICY.md`); reproducibilidad se mantiene via `BIBLIO_INDEX.md` + SHA256.
 - Decision operativa vigente (confirmada): cierre no-live/testnet primero; LIVE real postergado hasta completar runtime real + evidencias.
 
 ## Actualizacion operativa (2026-03-03)

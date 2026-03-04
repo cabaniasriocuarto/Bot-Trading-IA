@@ -250,6 +250,22 @@
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "alerts_include_operational_alerts_for_drift_slippage_api_and_breaker or alerts_operational_alerts_clear_when_runtime_recovers or breaker_events_integrity_endpoint_warn_when_unknown_ratio_high" -q` -> `3 passed`.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> `2 passed`.
 
+### AP-6001 completado (decision final de hallazgos)
+- Se versiona `docs/audit/FINDINGS_DECISION_MATRIX_20260304.md` con decision final por `FM-*`.
+- Snapshot de cierre del plan:
+  - `CERRADO=12`
+  - `MITIGADO=8`
+  - `ABIERTO=6`
+- Abiertos priorizados para fase siguiente:
+  - `FM-EXEC-001`, `FM-EXEC-002`, `FM-EXEC-005`, `FM-QUANT-008`, `FM-RISK-002`, `FM-RISK-003`.
+
+### AP-6002 completado (politica formal de biblio_raw/metadatos)
+- Nueva politica: `docs/reference/BIBLIO_ACCESS_POLICY.md`.
+- Se formaliza:
+  - `biblio_raw`/`biblio_txt` no versionados en git.
+  - versionado obligatorio de metadatos/hashes en `docs/reference/BIBLIO_INDEX.md`.
+  - flujo canonico de actualizacion con `python scripts/biblio_extract.py`.
+
 ### Auditoria integral (comite senior) + evidencia operativa
 - Se ejecuto auditoria E2E del sistema (AppSec/DevSecOps, ejecucion, quant/backtests, risk, SRE, QA, UX) con evidencia por rutas y lineas.
 - Resultado de go/no-go actualizado: **NO GO para LIVE** por bloqueantes tecnicos de runtime real.

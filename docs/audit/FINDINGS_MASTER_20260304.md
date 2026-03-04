@@ -264,12 +264,12 @@ Leyenda de estado:
 
 ### FM-DOC-001 - Bibliografia raw no versionada en repo
 - Severidad: MEDIUM
-- Estado: ABIERTO
+- Estado: MITIGADO
 - Impacto: reproducibilidad local parcial de auditoria bibliografica.
 - Evidencia:
   - `docs/reference/BIBLIO_INDEX.md`
   - `docs/reference/biblio_raw/.gitignore`
-  - `docs/truth/SOURCE_OF_TRUTH.md:27`
+  - `docs/reference/BIBLIO_ACCESS_POLICY.md`
 
 ## Resumen ejecutivo de abiertos reales (must-fix no-live)
 
