@@ -22,6 +22,15 @@ Fecha: 2026-03-04
 - Siguiente AP recomendado:
   - cerrar runtime real end-to-end (idempotencia submit/cancel/fill + reconciliacion de posiciones/ordenes externas).
 
+## Actualizacion tecnica AP-BOT-1004 (2026-03-04)
+- [x] Runtime `testnet/live` sin avance de fills simulados en loop local.
+- [x] OMS local sincronizado desde `openOrders` para mejorar coherencia de reconciliacion.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS (`9 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
+- Pendiente inmediato:
+  - wiring de submit/cancel/fill real con `client_order_id` idempotente y reconciliacion de posiciones (no solo open orders).
+
 ## Cierre de auditoria integral (2026-03-04)
 - Auditoria completa finalizada y documentada en:
   - `docs/audit/AUDIT_REPORT_20260304.md`

@@ -5144,6 +5144,37 @@ class RuntimeBridge:
                 canceled += 1
         return canceled
 
+    @staticmethod
+    def _exchange_side_to_runtime(value: Any) -> Side:
+        side_text = str(value or "").strip().upper()
+        if side_text == "SELL":
+            return Side.SHORT
+        return Side.LONG
+
+    def _sync_oms_with_exchange_open_orders(self, exchange_orders: dict[str, dict[str, Any]]) -> None:
+        # Runtime real: el estado local de OMS no debe inventar fills; refleja openOrders del exchange.
+        for order_id, payload in exchange_orders.items():
+            if not order_id:
+                continue
+            remote_qty = max(0.0, _as_float(payload.get("qty"), 0.0))
+            remote_filled = max(0.0, _as_float(payload.get("filled_qty"), 0.0))
+            if remote_qty <= 0.0:
+                continue
+            existing = self._oms.orders.get(order_id)
+            if existing is None:
+                symbol = str(payload.get("symbol") or "BTCUSDT")
+                side = RuntimeBridge._exchange_side_to_runtime(payload.get("side"))
+                self._oms.submit(Order(order_id=order_id, symbol=symbol, side=side, qty=remote_qty))
+                existing = self._oms.orders.get(order_id)
+            if existing is None:
+                continue
+            if abs(float(existing.qty) - remote_qty) > 1e-9:
+                existing.qty = float(remote_qty)
+                existing.updated_at = utc_now()
+            delta = max(0.0, remote_filled - float(existing.filled_qty))
+            if delta > 0.0:
+                self._oms.apply_fill(order_id, delta)
+
     def _ensure_seed_order(self, state: dict[str, Any]) -> None:
         if str(state.get("mode") or "paper").strip().lower() != "paper":
             return
@@ -5198,15 +5229,21 @@ class RuntimeBridge:
         return exposure_total, exposure_rows, max_symbol_exposure
 
     def _reconcile(self, *, mode: str) -> dict[str, Any]:
-        local_orders = {
-            str(order.order_id): {"filled_qty": float(order.filled_qty)}
-            for order in self._oms.orders.values()
-        }
         mode_n = str(mode or "paper").strip().lower()
         source = "local_mirror"
         source_ok = True
         source_reason = ""
-        exchange_orders = {oid: dict(payload) for oid, payload in local_orders.items()}
+        exchange_orders: dict[str, dict[str, Any]] = {}
+        if mode_n == "paper":
+            exchange_orders = {
+                str(order.order_id): {
+                    "filled_qty": float(order.filled_qty),
+                    "qty": float(order.qty),
+                    "symbol": str(order.symbol),
+                    "side": "BUY" if order.side == Side.LONG else "SELL",
+                }
+                for order in self._oms.orders.values()
+            }
         if mode_n in {"testnet", "live"}:
             creds = load_exchange_credentials(mode_n)
             if not bool(creds.get("has_keys", False)):
@@ -5237,9 +5274,13 @@ class RuntimeBridge:
                                 continue
                             parsed_orders[oid] = {
                                 "filled_qty": float(_as_float(row.get("executedQty"), 0.0)),
+                                "qty": float(_as_float(row.get("origQty"), 0.0)),
+                                "symbol": str(row.get("symbol") or ""),
+                                "side": str(row.get("side") or ""),
                             }
                         exchange_orders = parsed_orders
                         source = "exchange_api"
+                        self._sync_oms_with_exchange_open_orders(exchange_orders)
                     else:
                         source = "exchange_api_error"
                         source_ok = False
@@ -5252,6 +5293,10 @@ class RuntimeBridge:
                     source_ok = False
                     source_reason = str(exc)
                     exchange_orders = {}
+        local_orders = {
+            str(order.order_id): {"filled_qty": float(order.filled_qty)}
+            for order in self._oms.orders.values()
+        }
         report = reconcile_orders(exchange_orders=exchange_orders, local_orders=local_orders)
         self._last_reconcile = {
             "desync_count": int(report.desync_count),
@@ -5360,7 +5405,7 @@ class RuntimeBridge:
             if stale_ids:
                 self._stats["requotes"] = self._stats.get("requotes", 0) + len(stale_ids)
             open_orders = self._oms.open_orders()
-            if open_orders:
+            if active_mode == "paper" and open_orders:
                 target = open_orders[0]
                 remaining = max(0.0, float(target.qty) - float(target.filled_qty))
                 if remaining > 0:

@@ -508,6 +508,67 @@ def test_live_mode_blocked_when_runtime_engine_is_simulated(tmp_path: Path, monk
   assert "runtime simulado" in str(enable_live.json().get("detail") or "").lower()
 
 
+def test_runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    if path == "/api/v3/openOrders":
+      return True, {
+        "status_code": 200,
+        "payload": [
+          {
+            "clientOrderId": "oid-rt-sync-1",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "origQty": "2.0",
+            "executedQty": "0.5",
+          }
+        ],
+      }
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["running"] = True
+  state["killed"] = False
+  state["runtime_engine"] = "real"
+
+  synced_1 = module._sync_runtime_state(state, persist=False)
+  order_1 = module.runtime_bridge._oms.orders.get("oid-rt-sync-1")
+  assert order_1 is not None
+  assert float(order_1.qty) == pytest.approx(2.0)
+  assert float(order_1.filled_qty) == pytest.approx(0.5)
+  assert synced_1["runtime_telemetry_source"] == module.RUNTIME_TELEMETRY_SOURCE_REAL
+  assert bool(synced_1.get("runtime_reconciliation_ok")) is True
+
+  synced_2 = module._sync_runtime_state(synced_1, persist=False)
+  order_2 = module.runtime_bridge._oms.orders.get("oid-rt-sync-1")
+  assert order_2 is not None
+  # En testnet/live no debe avanzar fills por simulacion local.
+  assert float(order_2.filled_qty) == pytest.approx(0.5)
+  assert synced_2["runtime_telemetry_source"] == module.RUNTIME_TELEMETRY_SOURCE_REAL
+  assert bool(synced_2.get("runtime_reconciliation_ok")) is True
+
+
 def test_runtime_contract_snapshot_defaults_are_exposed_in_status(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="paper")
 

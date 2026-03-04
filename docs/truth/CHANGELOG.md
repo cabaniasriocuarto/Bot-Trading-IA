@@ -36,6 +36,17 @@
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_supports_recent_logs_query_overrides_and_cache_key or bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override or bots_overview_perf_headers_and_debug_payload" -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
 
+### AP-BOT-1004 (runtime testnet sin fill sintético)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `RuntimeBridge._reconcile(...)` ahora parsea `openOrders` con `qty/symbol/side` y sincroniza OMS local;
+  - `RuntimeBridge.sync_runtime_state(...)` deja progresion de fill incremental solo para `paper` (en `testnet/live` no simula fills);
+  - reconciliacion se calcula sobre snapshot OMS ya sincronizado con exchange.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - agregado `test_runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`

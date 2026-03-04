@@ -39,6 +39,21 @@ Fecha de actualizacion: 2026-03-04
 - Impacto esperado:
   - menos picos de latencia en cardinalidad alta de bots sin romper el contrato del endpoint.
 
+## Actualizacion tecnica AP-BOT-1004 (runtime testnet mas real) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `RuntimeBridge` ahora sincroniza OMS local con `openOrders` del exchange (`clientOrderId/orderId`, `origQty`, `executedQty`, `symbol`, `side`);
+  - en `testnet/live` se desactiva progresion de fills simulados locales (la simulacion de fill incremental queda solo para `paper`);
+  - reconciliacion usa estado OMS ya sincronizado contra exchange antes de evaluar desync.
+- Test nuevo de regresion:
+  - `test_runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS (`9 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
+- Estado:
+  - runtime no-live se acerca a fuente real de exchange;
+  - pendiente para cierre total: submit/cancel/fill real end-to-end con idempotencia de orden y reconciliacion completa de posiciones.
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.
