@@ -615,6 +615,54 @@ def test_g9_live_fails_when_runtime_heartbeat_is_stale(tmp_path: Path, monkeypat
   assert "heartbeat_fresh" in missing_checks
 
 
+def test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  set_live_primary = client.post(f"/api/v1/strategies/{strategy_id}/primary", headers=headers, json={"mode": "live"})
+  assert set_live_primary.status_code == 200, set_live_primary.text
+
+  stale_reconcile = (
+    module.utc_now() - module.timedelta(seconds=int(module.RUNTIME_RECONCILIATION_MAX_AGE_SEC) + 20)
+  ).isoformat()
+  state = module.store.load_bot_state()
+  state.update(
+    {
+      "runtime_engine": "real",
+      "runtime_contract_version": "runtime_snapshot_v1",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_heartbeat_at": module.utc_now_iso(),
+      "runtime_last_reconcile_at": stale_reconcile,
+    }
+  )
+  module.store.save_bot_state(state)
+
+  gates_fail = module.evaluate_gates("live", force_exchange_check=True)
+  g9_fail = {row["id"]: row for row in gates_fail["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9_fail["status"] == "FAIL"
+  runtime_contract_fail = (g9_fail.get("details") or {}).get("runtime_contract") or {}
+  missing_checks = set(str(x) for x in (runtime_contract_fail.get("missing_checks") or []))
+  assert "reconciliation_fresh" in missing_checks
+
+  refreshed = module.store.load_bot_state()
+  refreshed["runtime_last_reconcile_at"] = module.utc_now_iso()
+  module.store.save_bot_state(refreshed)
+
+  gates_pass = module.evaluate_gates("live", force_exchange_check=True)
+  g9_pass = {row["id"]: row for row in gates_pass["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9_pass["status"] == "PASS"
+
+
 def test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -1076,6 +1124,21 @@ def _mock_exchange_ok(module, monkeypatch) -> None:
   monkeypatch.setattr(module.socket, "create_connection", lambda *args, **kwargs: _DummySocket())
 
 
+def _mock_exchange_down(module, monkeypatch) -> None:
+  def fake_get(url, timeout=0, **kwargs):
+    return _DummyResponse(503, {"code": -1000, "msg": "exchange down"})
+
+  def fake_request(method, url, headers=None, timeout=0, **kwargs):
+    return _DummyResponse(503, {"code": -1000, "msg": "exchange down"})
+
+  def fake_socket(*args, **kwargs):
+    raise OSError("network down")
+
+  monkeypatch.setattr(module.requests, "get", fake_get)
+  monkeypatch.setattr(module.requests, "request", fake_request)
+  monkeypatch.setattr(module.socket, "create_connection", fake_socket)
+
+
 def test_exchange_diagnose_reports_missing_env_vars_for_testnet(tmp_path: Path, monkeypatch) -> None:
   monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
   module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
@@ -1121,6 +1184,42 @@ def test_exchange_diagnose_passes_with_env_keys_and_mocked_exchange(tmp_path: Pa
   gate_by_id = {row["id"]: row for row in gates["gates"]}
   assert gate_by_id["G4_EXCHANGE_CONNECTOR_READY"]["status"] == "PASS"
   assert gate_by_id["G7_ORDER_SIM_OR_PAPER_OK"]["status"] == "PASS"
+
+
+def test_exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_down(module, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  down = client.get("/api/v1/exchange/diagnose?mode=testnet&force=true", headers=headers)
+  assert down.status_code == 200, down.text
+  down_payload = down.json()
+  assert down_payload["ok"] is False
+  assert down_payload["connector_ok"] is False
+  assert down_payload["order_ok"] is False
+
+  gates_down = module.evaluate_gates("testnet", force_exchange_check=True)
+  gates_down_by_id = {row["id"]: row for row in gates_down["gates"]}
+  assert gates_down_by_id["G4_EXCHANGE_CONNECTOR_READY"]["status"] == "FAIL"
+  assert gates_down_by_id["G7_ORDER_SIM_OR_PAPER_OK"]["status"] == "FAIL"
+
+  _mock_exchange_ok(module, monkeypatch)
+  up = client.get("/api/v1/exchange/diagnose?mode=testnet&force=true", headers=headers)
+  assert up.status_code == 200, up.text
+  up_payload = up.json()
+  assert up_payload["ok"] is True
+  assert up_payload["connector_ok"] is True
+  assert up_payload["order_ok"] is True
+
+  gates_up = module.evaluate_gates("testnet", force_exchange_check=True)
+  gates_up_by_id = {row["id"]: row for row in gates_up["gates"]}
+  assert gates_up_by_id["G4_EXCHANGE_CONNECTOR_READY"]["status"] == "PASS"
+  assert gates_up_by_id["G7_ORDER_SIM_OR_PAPER_OK"]["status"] == "PASS"
 
 
 def test_exchange_diagnose_autocorrects_common_binance_testnet_url_typo(tmp_path: Path, monkeypatch) -> None:

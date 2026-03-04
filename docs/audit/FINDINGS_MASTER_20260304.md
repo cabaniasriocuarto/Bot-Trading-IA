@@ -253,10 +253,11 @@ Leyenda de estado:
 
 ### FM-QA-002 - Chaos/recovery tests de runtime
 - Severidad: MEDIUM
-- Estado: ABIERTO
+- Estado: CERRADO
 - Impacto: baja certeza ante fallas de exchange o storage.
 - Evidencia:
-  - NO EVIDENCIA de suite chaos para runtime operativo real.
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers`).
 
 ### FM-DOC-001 - Bibliografia raw no versionada en repo
 - Severidad: MEDIUM

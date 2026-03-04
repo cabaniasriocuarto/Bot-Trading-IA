@@ -234,6 +234,20 @@ Fecha de actualizacion: 2026-03-04
   - `python -m py_compile rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "e2e_critical_flow_login_backtest_validate_promote_rollout or runs_validate_and_promote_endpoints_smoke" -q` -> `2 passed`.
 
+## Actualizacion tecnica AP-5002 (chaos/recovery runtime) - 2026-03-04
+
+- Cobertura de caos/recovery agregada en `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo helper `_mock_exchange_down`.
+  - nuevo `test_exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect`.
+  - nuevo `test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers`.
+- Escenarios cubiertos:
+  - exchange/testnet no disponible (connector+order FAIL) y recuperacion por reconnect (PASS).
+  - desincronizacion de reconciliacion runtime (`runtime_last_reconcile_at` stale) con fail de `G9` y recuperacion tras refrescar reconcile timestamp.
+- Validacion:
+  - `python -m py_compile rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or g9_live_fails_when_runtime_heartbeat_is_stale or exchange_diagnose_passes_with_env_keys_and_mocked_exchange" -q` -> `4 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_login_rate_limit_shared_sqlite_backend_across_instances or e2e_critical_flow_login_backtest_validate_promote_rollout or exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> `4 passed`.
+
 ## Cierre PARTE 7/7 (Cerebro del bot) - 2026-03-04
 
 - Auditoria del cerebro de decision/aprendizaje cerrada con evidencia en:

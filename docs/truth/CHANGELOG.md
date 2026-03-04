@@ -223,6 +223,19 @@
   - `python -m py_compile rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "e2e_critical_flow_login_backtest_validate_promote_rollout or runs_validate_and_promote_endpoints_smoke" -q` -> `2 passed`.
 
+### AP-5002 completado (chaos/recovery runtime)
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - helper nuevo `_mock_exchange_down`.
+  - nuevo `test_exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect`.
+  - nuevo `test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers`.
+- Escenarios cerrados:
+  - exchange down/reconnect en testnet (diagnose + gates).
+  - desync de reconciliacion runtime (`G9` FAIL -> PASS tras refresh).
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or g9_live_fails_when_runtime_heartbeat_is_stale or exchange_diagnose_passes_with_env_keys_and_mocked_exchange" -q` -> `4 passed`.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_login_rate_limit_shared_sqlite_backend_across_instances or e2e_critical_flow_login_backtest_validate_promote_rollout or exchange_diagnose_degrades_when_exchange_is_down_and_recovers_after_reconnect or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> `4 passed`.
+
 ### Auditoria integral (comite senior) + evidencia operativa
 - Se ejecuto auditoria E2E del sistema (AppSec/DevSecOps, ejecucion, quant/backtests, risk, SRE, QA, UX) con evidencia por rutas y lineas.
 - Resultado de go/no-go actualizado: **NO GO para LIVE** por bloqueantes tecnicos de runtime real.
