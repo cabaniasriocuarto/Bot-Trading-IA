@@ -2,6 +2,21 @@
 
 Fecha de actualizacion: 2026-03-04
 
+## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
+
+- `rtlab_dashboard/src/lib/security.ts`:
+  - nueva regla centralizada `shouldFallbackToMockOnBackendError(...)`;
+  - `staging/production` quedan bloqueados para fallback mock aunque exista `ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR=true`;
+  - si `USE_MOCK_API=false`, el fallback queda bloqueado tambien en desarrollo.
+- `rtlab_dashboard/src/app/api/[...path]/route.ts` y `rtlab_dashboard/src/lib/events-stream.ts`:
+  - usan la regla centralizada (se elimina evaluacion local permisiva).
+- Tests:
+  - `rtlab_dashboard/src/lib/security.test.ts` agrega casos de entorno protegido (`NODE_ENV=production`, `APP_ENV=staging`), disable explicito y enable controlado en local.
+  - `npm test -- --run src/lib/security.test.ts` -> PASS (`9 passed`).
+- Estado:
+  - riesgo de fallback mock accidental en staging/prod queda mitigado en BFF;
+  - LIVE sigue **NO GO** por pendientes runtime end-to-end fuera de este AP.
+
 ## Actualizacion cleanroom docs + staging NO-LIVE (2026-03-04)
 
 - Se aplico limpieza de documentacion para reducir confusion operativa:

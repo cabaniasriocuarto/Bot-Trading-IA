@@ -2,6 +2,14 @@ export function isProductionEnv(env: NodeJS.ProcessEnv = process.env) {
   return env.NODE_ENV === "production";
 }
 
+export function isProtectedRuntimeEnv(env: NodeJS.ProcessEnv = process.env) {
+  if (isProductionEnv(env)) {
+    return true;
+  }
+  const appEnv = (env.APP_ENV || "").trim().toLowerCase();
+  return appEnv === "staging" || appEnv === "production" || appEnv === "prod";
+}
+
 export function shouldUseMockApi(env: NodeJS.ProcessEnv = process.env) {
   const explicit = env.USE_MOCK_API;
   if (explicit === "true") return true;
@@ -12,6 +20,16 @@ export function shouldUseMockApi(env: NodeJS.ProcessEnv = process.env) {
   }
 
   return !env.BACKEND_API_URL;
+}
+
+export function shouldFallbackToMockOnBackendError(env: NodeJS.ProcessEnv = process.env) {
+  if (isProtectedRuntimeEnv(env)) {
+    return false;
+  }
+  if (env.USE_MOCK_API === "false") {
+    return false;
+  }
+  return env.ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR === "true";
 }
 
 export function sanitizeNextPath(candidate: string | null | undefined, fallback = "/") {

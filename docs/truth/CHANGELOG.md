@@ -2,6 +2,22 @@
 
 ## 2026-03-04
 
+### AP-8001 (BFF fail-closed de mock fallback)
+- `rtlab_dashboard/src/lib/security.ts`:
+  - agregado `isProtectedRuntimeEnv` (`NODE_ENV=production` o `APP_ENV in {staging, production, prod}`).
+  - agregado `shouldFallbackToMockOnBackendError` con politica fail-closed:
+    - en entornos protegidos siempre `false`;
+    - con `USE_MOCK_API=false`, siempre `false`;
+    - solo permite fallback en no-protegido + flag `ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR=true`.
+- `rtlab_dashboard/src/app/api/[...path]/route.ts`:
+  - elimina helper local y usa regla centralizada.
+- `rtlab_dashboard/src/lib/events-stream.ts`:
+  - fallback a stream mock en error de backend ahora usa regla centralizada.
+- `rtlab_dashboard/src/lib/security.test.ts`:
+  - nuevos tests para bloqueo en `production`/`staging` y comportamiento en `local`.
+- Evidencia:
+  - `npm test -- --run src/lib/security.test.ts` -> PASS (`9 passed`).
+
 ### Cleanroom docs + staging no-live (docops/devops)
 - Limpieza de documentacion vigente/historica:
   - movidos a `docs/_archive/*`: `BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `MASS_BACKTEST_DATA.md`, `research_mass_backtests.md`, `research_stack.md`, `FINAL_RELEASE_REPORT.md`, `DEPENDENCIES_COMPAT.md`, `UI_UX_RESEARCH_FIRST_FINAL.md`, `CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`.

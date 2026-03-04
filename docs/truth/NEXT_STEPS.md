@@ -27,6 +27,18 @@ Fecha: 2026-03-04
 4. Revalidar security CI y branch protection en cada release de hardening.
 5. Preparar checklist final paper -> testnet -> canary -> live (sin ejecutar live hasta aprobacion explicita).
 
+## Actualizacion tecnica AP-8001 (2026-03-04)
+- [x] BFF fail-closed para fallback mock en error de backend:
+  - `production/staging` no permiten fallback mock.
+  - `USE_MOCK_API=false` bloquea fallback en cualquier entorno.
+- [x] Reglas centralizadas reutilizadas por:
+  - `src/app/api/[...path]/route.ts`
+  - `src/lib/events-stream.ts`
+- Evidencia:
+  - `npm test -- --run src/lib/security.test.ts` -> PASS (`9 passed`).
+- Pendiente inmediato:
+  - cerrar wiring runtime broker/exchange end-to-end (orden/fill/reconciliacion real) y corrida verde de `Security CI` root.
+
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
 - [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
 - [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.

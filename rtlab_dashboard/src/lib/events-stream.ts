@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getMockStore, pushAlert, pushLog, rotateExecutionSeries, saveMockStore } from "@/lib/mock-store";
-import { shouldUseMockApi } from "@/lib/security";
+import { shouldFallbackToMockOnBackendError, shouldUseMockApi } from "@/lib/security";
 
 interface SessionInfo {
   role: "admin" | "viewer";
@@ -229,7 +229,7 @@ export async function createEventsResponse(
   try {
     return await proxyEventStream(req, session, options.upstreamPath);
   } catch {
-    if (process.env.ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR === "true") {
+    if (shouldFallbackToMockOnBackendError()) {
       return createMockEventStream(req);
     }
     return NextResponse.json({ error: "No se pudo conectar al stream del backend." }, { status: 502 });
