@@ -61,6 +61,26 @@
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
 
+### AP-BOT-1006 (submit remoto idempotente, default-off)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - agregado submit remoto opcional para runtime `real` en `testnet/live` (`POST /api/v3/order`) con `newClientOrderId` estable por ventana;
+  - nuevo control idempotente local:
+    - `RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC` (default `60`),
+    - `RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS` (default `2000`);
+  - manejo idempotente de duplicate submit Binance (`code=-2010`, `duplicate order`);
+  - feature flag segura por defecto:
+    - `RUNTIME_REMOTE_ORDERS_ENABLED=false`,
+    - parametros de semilla `RUNTIME_REMOTE_ORDER_NOTIONAL_USD`, `RUNTIME_REMOTE_ORDER_SYMBOL`, `RUNTIME_REMOTE_ORDER_SIDE`;
+  - estado runtime ahora incluye:
+    - `runtime_last_remote_submit_at`,
+    - `runtime_last_remote_client_order_id`,
+    - `runtime_last_remote_submit_error`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default`;
+  - nuevo `test_runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or g9_live_passes_only_when_runtime_contract_is_fully_ready" -q` -> PASS.
+
 ### Auditoria integral de pe a pa (estado actualizado)
 - Nuevos artefactos de auditoria:
   - `docs/audit/AUDIT_REPORT_20260304.md`

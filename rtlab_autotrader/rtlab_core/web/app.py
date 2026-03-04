@@ -186,6 +186,12 @@ BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC = max(5, _env_int("BOTS_OVERVIEW_SLOW_LOG_TH
 BOTS_LOGS_REF_BACKFILL_MAX_ROWS = max(1000, _env_int("BOTS_LOGS_REF_BACKFILL_MAX_ROWS", 50000))
 RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC", 30))
 RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS", 2000))
+RUNTIME_REMOTE_ORDERS_ENABLED = _env_bool("RUNTIME_REMOTE_ORDERS_ENABLED", False)
+RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC", 60))
+RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS", 2000))
+RUNTIME_REMOTE_ORDER_NOTIONAL_USD = max(5.0, _env_float("RUNTIME_REMOTE_ORDER_NOTIONAL_USD", 15.0))
+RUNTIME_REMOTE_ORDER_SYMBOL = str(os.getenv("RUNTIME_REMOTE_ORDER_SYMBOL", os.getenv("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))).strip().upper()
+RUNTIME_REMOTE_ORDER_SIDE = str(os.getenv("RUNTIME_REMOTE_ORDER_SIDE", "BUY")).strip().upper()
 BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
 BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
 BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
@@ -2187,6 +2193,9 @@ class ConsoleStore:
                 "runtime_exchange_mode": "",
                 "runtime_exchange_verified_at": "",
                 "runtime_exchange_reason": "",
+                "runtime_last_remote_submit_at": "",
+                "runtime_last_remote_client_order_id": "",
+                "runtime_last_remote_submit_error": "",
                 "runtime_heartbeat_at": "",
                 "runtime_last_reconcile_at": "",
                 "bot_status": "PAUSED",
@@ -5043,6 +5052,7 @@ class RuntimeBridge:
             "asset_exposure_pct": 0.0,
         }
         self._recent_remote_cancel_request_at: dict[str, float] = {}
+        self._recent_remote_submit_request_at: dict[str, float] = {}
 
     @staticmethod
     def _symbol_mark_price(symbol: str) -> float:
@@ -5243,6 +5253,166 @@ class RuntimeBridge:
                 key: value for key, value in self._recent_remote_cancel_request_at.items() if float(value) >= floor
             }
         return True
+
+    @staticmethod
+    def _sanitize_exchange_symbol(value: Any) -> str:
+        return str(value or "").strip().upper().replace("/", "").replace("-", "")
+
+    def _remember_remote_submit_request(self, client_order_id: str) -> bool:
+        text = str(client_order_id or "").strip()
+        if not text:
+            return False
+        now_epoch = time.time()
+        ttl_sec = float(RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC)
+        last = float(self._recent_remote_submit_request_at.get(text, 0.0) or 0.0)
+        if last > 0.0 and (now_epoch - last) < ttl_sec:
+            return False
+        self._recent_remote_submit_request_at[text] = now_epoch
+        if len(self._recent_remote_submit_request_at) > int(RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS):
+            floor = now_epoch - ttl_sec
+            self._recent_remote_submit_request_at = {
+                key: value for key, value in self._recent_remote_submit_request_at.items() if float(value) >= floor
+            }
+        return True
+
+    def _build_remote_client_order_id(self, *, mode: str, symbol: str, side: str) -> str:
+        mode_n = str(mode or "testnet").strip().lower()
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        side_n = "buy" if str(side or "").strip().upper() != "SELL" else "sell"
+        slot = int(time.time() // max(1, int(RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC)))
+        base = re.sub(r"[^a-z0-9_-]", "", f"rt-{mode_n}-{symbol_n.lower()}-{side_n}-{slot}")
+        if len(base) <= 36:
+            return base
+        digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:8]
+        trimmed = base[:27].rstrip("-_")
+        return f"{trimmed}-{digest}"[:36]
+
+    def _submit_exchange_market_order(
+        self,
+        *,
+        mode: str,
+        symbol: str,
+        side: str,
+        qty: float,
+        client_order_id: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        mode_n = str(mode or "").strip().lower()
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return False, {"error": "missing_keys"}
+        side_n = "SELL" if str(side or "").strip().upper() == "SELL" else "BUY"
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        qty_n = max(0.000001, float(qty))
+        qty_text = f"{qty_n:.8f}".rstrip("0").rstrip(".")
+        params: dict[str, Any] = {
+            "symbol": symbol_n,
+            "side": side_n,
+            "type": "MARKET",
+            "quantity": qty_text,
+            "newClientOrderId": str(client_order_id),
+        }
+        timeout_sec = _exchange_timeout_seconds()
+        request_ok, result = _binance_signed_request(
+            method="POST",
+            base_url=str(creds.get("base_url") or ""),
+            path="/api/v3/order",
+            api_key=str(creds.get("api_key") or ""),
+            api_secret=str(creds.get("api_secret") or ""),
+            params=params,
+            timeout_sec=timeout_sec,
+        )
+        payload = result.get("payload")
+        if request_ok and isinstance(payload, dict):
+            return True, {
+                "client_order_id": str(payload.get("clientOrderId") or client_order_id),
+                "exchange_order_id": str(payload.get("orderId") or ""),
+                "executed_qty": float(_as_float(payload.get("executedQty"), 0.0)),
+                "orig_qty": float(_as_float(payload.get("origQty"), qty_n)),
+                "symbol": symbol_n,
+                "side": side_n,
+                "raw": payload,
+            }
+        error_code = int(_as_int((payload.get("code") if isinstance(payload, dict) else 0), 0))
+        error_text = str((payload.get("msg") if isinstance(payload, dict) else "") or "").strip().lower()
+        # Binance duplicate submit (idempotent semantics).
+        if error_code == -2010 and "duplicate order" in error_text:
+            return True, {
+                "client_order_id": str(client_order_id),
+                "exchange_order_id": "",
+                "executed_qty": 0.0,
+                "orig_qty": float(qty_n),
+                "symbol": symbol_n,
+                "side": side_n,
+                "idempotent_duplicate": True,
+                "raw": payload if isinstance(payload, dict) else {},
+            }
+        status_code = int(_as_int(result.get("status_code"), 0))
+        category, detail = _classify_exchange_error(status_code, payload)
+        return False, {"error": detail, "error_type": category, "status_code": status_code, "raw": payload}
+
+    def _maybe_submit_exchange_seed_order(self, *, state: dict[str, Any], mode: str) -> dict[str, Any]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return {"submitted": False, "reason": "skip_mode"}
+        if not bool(RUNTIME_REMOTE_ORDERS_ENABLED):
+            return {"submitted": False, "reason": "remote_orders_disabled"}
+
+        exchange_orders, _source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
+        if not source_ok:
+            self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            return {"submitted": False, "reason": "open_orders_fetch_failed", "error": source_reason}
+        self._sync_oms_with_exchange_open_orders(exchange_orders)
+        if exchange_orders:
+            return {"submitted": False, "reason": "open_orders_present", "open_orders": len(exchange_orders)}
+
+        symbol = RuntimeBridge._sanitize_exchange_symbol(RUNTIME_REMOTE_ORDER_SYMBOL or get_env("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))
+        if not symbol:
+            symbol = "BTCUSDT"
+        side = "SELL" if str(RUNTIME_REMOTE_ORDER_SIDE or "BUY").strip().upper() == "SELL" else "BUY"
+        mark_price = max(0.0001, RuntimeBridge._symbol_mark_price(symbol))
+        notional = max(5.0, float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD))
+        qty = max(0.000001, round(notional / mark_price, 8))
+        client_order_id = self._build_remote_client_order_id(mode=mode_n, symbol=symbol, side=side)
+        if not self._remember_remote_submit_request(client_order_id):
+            return {"submitted": False, "reason": "idempotent_skip", "client_order_id": client_order_id}
+
+        submitted, payload = self._submit_exchange_market_order(
+            mode=mode_n,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            client_order_id=client_order_id,
+        )
+        if not submitted:
+            self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            return {"submitted": False, "reason": "submit_failed", "error": str(payload.get("error") or ""), "client_order_id": client_order_id}
+
+        order_id = str(payload.get("client_order_id") or client_order_id)
+        existing = self._oms.orders.get(order_id)
+        if existing is None:
+            self._oms.submit(
+                Order(
+                    order_id=order_id,
+                    symbol=symbol,
+                    side=RuntimeBridge._exchange_side_to_runtime(side),
+                    qty=max(0.000001, float(payload.get("orig_qty") or qty)),
+                )
+            )
+            existing = self._oms.orders.get(order_id)
+        if existing is not None:
+            executed_qty = max(0.0, float(payload.get("executed_qty") or 0.0))
+            delta = max(0.0, executed_qty - float(existing.filled_qty))
+            if delta > 0.0:
+                self._oms.apply_fill(order_id, delta)
+
+        return {
+            "submitted": True,
+            "client_order_id": order_id,
+            "symbol": symbol,
+            "side": side,
+            "qty": float(payload.get("orig_qty") or qty),
+            "idempotent_duplicate": bool(payload.get("idempotent_duplicate", False)),
+        }
 
     def _cancel_exchange_open_orders(self, *, mode: str) -> int:
         mode_n = str(mode or "").strip().lower()
@@ -5456,6 +5626,9 @@ class RuntimeBridge:
                 if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
                     changed = self._set_state_value(state, "runtime_exchange_mode", "") or changed
                     changed = self._set_state_value(state, "runtime_exchange_verified_at", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_at", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_client_order_id", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
                 if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
                     changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                     changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
@@ -5473,6 +5646,7 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
                 changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                 changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
                 self._append_execution_point(settings=settings, mode=active_mode)
@@ -5481,6 +5655,21 @@ class RuntimeBridge:
             if event in {"start", "mode_change"} and self._kill_switch.is_triggered():
                 self._kill_switch.reset()
             self._ensure_seed_order(state)
+            if active_mode in {"testnet", "live"}:
+                submit_result = self._maybe_submit_exchange_seed_order(state=state, mode=active_mode)
+                submit_error = str(submit_result.get("error") or "")
+                submit_client_order_id = str(submit_result.get("client_order_id") or "")
+                if submit_client_order_id:
+                    changed = self._set_state_value(
+                        state,
+                        "runtime_last_remote_client_order_id",
+                        submit_client_order_id,
+                    ) or changed
+                if bool(submit_result.get("submitted", False)):
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                else:
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", submit_error) or changed
             stale_ids = self._oms.cancel_stale(max_age_seconds=max_age_for_stale)
             if stale_ids:
                 self._stats["requotes"] = self._stats.get("requotes", 0) + len(stale_ids)
@@ -6056,6 +6245,9 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_exchange_mode", "")
     runtime_state.setdefault("runtime_exchange_verified_at", "")
     runtime_state.setdefault("runtime_exchange_reason", "")
+    runtime_state.setdefault("runtime_last_remote_submit_at", "")
+    runtime_state.setdefault("runtime_last_remote_client_order_id", "")
+    runtime_state.setdefault("runtime_last_remote_submit_error", "")
     runtime_state.setdefault("runtime_heartbeat_at", "")
     runtime_state.setdefault("runtime_last_reconcile_at", "")
     runtime_settings = settings if isinstance(settings, dict) else store.load_settings()

@@ -72,6 +72,29 @@ Fecha de actualizacion: 2026-03-04
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS (`10 passed`).
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
 
+## Actualizacion tecnica AP-BOT-1006 (submit remoto idempotente, default off) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - runtime agrega submit remoto opcional (`POST /api/v3/order`) en `testnet/live` con `newClientOrderId` estable por ventana temporal;
+  - guardas nuevas de entorno (fail-safe): 
+    - `RUNTIME_REMOTE_ORDERS_ENABLED` (default `false`),
+    - `RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC` (default `60`),
+    - `RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS` (default `2000`),
+    - `RUNTIME_REMOTE_ORDER_NOTIONAL_USD` (default `15`),
+    - `RUNTIME_REMOTE_ORDER_SYMBOL` (default `BTCUSDT`),
+    - `RUNTIME_REMOTE_ORDER_SIDE` (default `BUY`);
+  - si Binance devuelve `duplicate order` (`-2010`) se trata como exito idempotente;
+  - `sync_runtime_state` expone trazabilidad:
+    - `runtime_last_remote_submit_at`,
+    - `runtime_last_remote_client_order_id`,
+    - `runtime_last_remote_submit_error`.
+- Tests nuevos:
+  - `test_runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default`.
+  - `test_runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency`.
+- Estado:
+  - submit remoto queda integrado pero apagado por defecto (sin impacto en no-live actual);
+  - LIVE sigue **NO GO** hasta cerrar pipeline completo de ejecucion/posiciones/fills reales end-to-end.
+
 ## Auditoria integral de pe a pa (bots/conexion/lag/seguridad/apis) - 2026-03-04
 
 - Se ejecuto auditoria transversal completa de backend + frontend + research + risk + ops + QA + UX + cerebro del bot.

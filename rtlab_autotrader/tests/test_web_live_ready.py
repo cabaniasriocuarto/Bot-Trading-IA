@@ -618,6 +618,131 @@ def test_runtime_stop_testnet_cancels_remote_open_orders_idempotently(tmp_path: 
   assert bool(stopped_2.get("running")) is False
 
 
+def test_runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disabled_by_default(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  calls = {"open_orders_get": 0, "order_post": 0}
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    if path == "/api/v3/openOrders" and str(method).upper() == "GET":
+      calls["open_orders_get"] += 1
+      return True, {"status_code": 200, "payload": []}
+    if path == "/api/v3/order" and str(method).upper() == "POST":
+      calls["order_post"] += 1
+      return True, {"status_code": 200, "payload": {"clientOrderId": "unexpected", "orderId": 1, "origQty": "0.001", "executedQty": "0.0"}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced = module._sync_runtime_state(state, persist=False)
+  assert calls["open_orders_get"] >= 1
+  assert calls["order_post"] == 0
+  assert str(synced.get("runtime_last_remote_submit_at") or "") == ""
+  assert str(synced.get("runtime_last_remote_client_order_id") or "") == ""
+  assert str(synced.get("runtime_last_remote_submit_error") or "") == ""
+
+
+def test_runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_REMOTE_ORDERS_ENABLED", "1")
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  calls = {"open_orders_get": 0, "order_post": 0}
+  open_orders_payload: list[dict[str, object]] = []
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      calls["open_orders_get"] += 1
+      return True, {"status_code": 200, "payload": list(open_orders_payload)}
+    if path == "/api/v3/order" and method_u == "POST":
+      calls["order_post"] += 1
+      client_order_id = str((params or {}).get("newClientOrderId") or "")
+      qty = str((params or {}).get("quantity") or "0.001")
+      symbol = str((params or {}).get("symbol") or "BTCUSDT")
+      side = str((params or {}).get("side") or "BUY")
+      assert client_order_id
+      open_orders_payload[:] = [
+        {
+          "clientOrderId": client_order_id,
+          "orderId": 998877,
+          "symbol": symbol,
+          "side": side,
+          "origQty": qty,
+          "executedQty": "0.0",
+        }
+      ]
+      return True, {
+        "status_code": 200,
+        "payload": {
+          "clientOrderId": client_order_id,
+          "orderId": 998877,
+          "origQty": qty,
+          "executedQty": "0.0",
+        },
+      }
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced_1 = module._sync_runtime_state(state, persist=False)
+  assert calls["order_post"] == 1
+  first_client_order_id = str(synced_1.get("runtime_last_remote_client_order_id") or "")
+  assert first_client_order_id
+  assert str(synced_1.get("runtime_last_remote_submit_at") or "")
+  assert str(synced_1.get("runtime_last_remote_submit_error") or "") == ""
+
+  synced_2 = module._sync_runtime_state(synced_1, persist=False)
+  assert calls["order_post"] == 1
+  assert str(synced_2.get("runtime_last_remote_client_order_id") or "") == first_client_order_id
+  assert str(synced_2.get("runtime_last_remote_submit_error") or "") == ""
+
+
 def test_runtime_contract_snapshot_defaults_are_exposed_in_status(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="paper")
 
