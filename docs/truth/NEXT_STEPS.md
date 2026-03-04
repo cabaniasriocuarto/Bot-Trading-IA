@@ -8,9 +8,9 @@ Fecha: 2026-03-04
 
 ## Progreso AP (plan final)
 - Total AP: `23`
-- AP cerrados: `18`
-- AP pendientes: `5` (`AP-5001`, `AP-5002`, `AP-5003`, `AP-6001`, `AP-6002`)
-- Avance global: `78%` (`18/23`)
+- AP cerrados: `19`
+- AP pendientes: `4` (`AP-5002`, `AP-5003`, `AP-6001`, `AP-6002`)
+- Avance global: `83%` (`19/23`)
 
 ## Cierre PARTE 7/7 (cerebro del bot)
 - Auditoria de cerebro cerrada: decision/learning/rollout validados por codigo.
@@ -103,7 +103,7 @@ Fecha: 2026-03-04
 4. Tooltips consistentes en acciones de runs (rerun/clone/export cuando existan)
 
 ## Prioridad 5 (robustez / automatizacion)
-1. Smoke/E2E frontend automatizados (runs table, paginacion, filtros, empty states)
+1. [x] AP-5001: suite E2E critica backend (`login -> backtest -> validate -> promote -> rollout`) cerrada.
 2. Integrar `deps_check` + `security_audit` a CI
 3. PBO/DSR completos (no solo proxy/fail-closed) en research masivo
 4. Extender `Fee/Funding` a multi-exchange avanzado (hoy Binance + Bybit base + fallback) con manejo de limites/errores por proveedor

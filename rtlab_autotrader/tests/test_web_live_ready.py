@@ -1400,6 +1400,94 @@ def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, 
   manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
+def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
+  shared_hash = str(candidate_run.get("dataset_hash") or baseline_run.get("dataset_hash") or "e2e-shared-hash")
+  shared_period = candidate_run.get("period") if isinstance(candidate_run.get("period"), dict) else (
+    baseline_run.get("period") if isinstance(baseline_run.get("period"), dict) else {"start": "2024-01-01", "end": "2024-03-31"}
+  )
+  for row in [candidate_run, baseline_run]:
+    row["status"] = "completed"
+    row["data_source"] = "binance_public"
+    row["dataset_hash"] = shared_hash
+    row["period"] = dict(shared_period)
+    row["use_orderflow_data"] = True
+    row["orderflow_feature_set"] = "orderflow_on"
+    row["feature_set"] = "orderflow_on"
+    row["fee_snapshot_id"] = row.get("fee_snapshot_id") or "fee-e2e"
+    row["funding_snapshot_id"] = row.get("funding_snapshot_id") or "funding-e2e"
+    row["fund_allow_trade"] = True
+    row["fund_status"] = "ok"
+    row["fund_promotion_blocked"] = False
+
+    flags = row.get("flags") if isinstance(row.get("flags"), dict) else {}
+    flags["OOS"] = True
+    flags["WFA"] = True
+    flags["ORDERFLOW_ENABLED"] = True
+    flags["ORDERFLOW_FEATURE_SET"] = "orderflow_on"
+    flags["FUNDAMENTALS_PROMOTION_BLOCKED"] = False
+    row["flags"] = flags
+
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    metadata["strict_strategy_id"] = True
+    metadata["orderflow_feature_set"] = "orderflow_on"
+    metadata["use_orderflow_data"] = True
+    row["metadata"] = metadata
+
+    params_json = row.get("params_json") if isinstance(row.get("params_json"), dict) else {}
+    params_json["strict_strategy_id"] = True
+    params_json["execution_mode"] = "paper"
+    params_json["use_orderflow_data"] = True
+    params_json["orderflow_feature_set"] = "orderflow_on"
+    row["params_json"] = params_json
+
+    provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+    provenance["strict_strategy_id"] = True
+    provenance["orderflow_feature_set"] = "orderflow_on"
+    row["provenance"] = provenance
+
+  baseline_metrics = baseline_run.get("metrics") if isinstance(baseline_run.get("metrics"), dict) else {}
+  baseline_metrics["trade_count"] = 220
+  baseline_metrics["expectancy"] = 10.0
+  baseline_metrics["expectancy_usd_per_trade"] = 10.0
+  baseline_metrics["max_dd"] = 0.12
+  baseline_metrics["winrate"] = 0.53
+  baseline_metrics["profit_factor"] = 1.25
+  baseline_metrics["sortino"] = 1.95
+  baseline_metrics["calmar"] = 1.05
+  baseline_metrics["sharpe"] = 1.2
+  baseline_metrics["pbo"] = 0.02
+  baseline_metrics["dsr"] = 1.0
+  baseline_run["metrics"] = baseline_metrics
+
+  baseline_costs = baseline_run.get("costs_breakdown") if isinstance(baseline_run.get("costs_breakdown"), dict) else {}
+  baseline_costs["gross_pnl_total"] = 2000.0
+  baseline_costs["total_cost"] = 520.0
+  baseline_costs["net_pnl_total"] = 1480.0
+  baseline_costs["net_pnl"] = 1480.0
+  baseline_run["costs_breakdown"] = baseline_costs
+
+  candidate_metrics = candidate_run.get("metrics") if isinstance(candidate_run.get("metrics"), dict) else {}
+  candidate_metrics["trade_count"] = 240
+  candidate_metrics["expectancy"] = 12.0
+  candidate_metrics["expectancy_usd_per_trade"] = 12.0
+  candidate_metrics["max_dd"] = 0.11
+  candidate_metrics["winrate"] = 0.56
+  candidate_metrics["profit_factor"] = 1.45
+  candidate_metrics["sortino"] = 2.35
+  candidate_metrics["calmar"] = 1.35
+  candidate_metrics["sharpe"] = 1.45
+  candidate_metrics["pbo"] = 0.02
+  candidate_metrics["dsr"] = 1.08
+  candidate_run["metrics"] = candidate_metrics
+
+  candidate_costs = candidate_run.get("costs_breakdown") if isinstance(candidate_run.get("costs_breakdown"), dict) else {}
+  candidate_costs["gross_pnl_total"] = 2200.0
+  candidate_costs["total_cost"] = 480.0
+  candidate_costs["net_pnl_total"] = 1720.0
+  candidate_costs["net_pnl"] = 1720.0
+  candidate_run["costs_breakdown"] = candidate_costs
+
+
 def test_event_backtest_engine_runs_for_crypto_forex_equities(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="paper")
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -1696,6 +1784,74 @@ def test_runs_validate_and_promote_endpoints_smoke(tmp_path: Path, monkeypatch) 
     assert isinstance((promote_payload.get("rollout") or {}).get("state"), dict)
   else:
     assert promote_payload.get("ok") is False
+
+
+def test_e2e_critical_flow_login_backtest_validate_promote_rollout(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  common_payload = {
+    "strategy_id": strategy_id,
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
+    "validation_mode": "walk-forward",
+    "use_orderflow_data": True,
+    "strict_strategy_id": True,
+  }
+
+  baseline_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**common_payload, "costs_model": {"fees_bps": 18.0, "spread_bps": 14.0, "slippage_bps": 10.0, "funding_bps": 1.0}},
+  )
+  assert baseline_res.status_code == 200, baseline_res.text
+  baseline_id = str(baseline_res.json()["run_id"])
+
+  candidate_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**common_payload, "costs_model": {"fees_bps": 5.0, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 0.5}},
+  )
+  assert candidate_res.status_code == 200, candidate_res.text
+  candidate_id = str(candidate_res.json()["run_id"])
+
+  runs = module.store.load_runs()
+  run_by_id = {str(row.get("id") or ""): row for row in runs if isinstance(row, dict)}
+  assert candidate_id in run_by_id
+  assert baseline_id in run_by_id
+  _force_runs_rollout_ready(run_by_id[candidate_id], run_by_id[baseline_id])
+  module.store.save_runs(runs)
+
+  validate_res = client.post(
+    f"/api/v1/runs/{candidate_id}/validate_promotion",
+    headers=headers,
+    json={"target_mode": "paper", "baseline_run_id": baseline_id},
+  )
+  assert validate_res.status_code == 200, validate_res.text
+  validate_payload = validate_res.json()
+  assert validate_payload.get("rollout_ready") is True
+
+  promote_res = client.post(
+    f"/api/v1/runs/{candidate_id}/promote",
+    headers=headers,
+    json={"target_mode": "paper", "baseline_run_id": baseline_id, "note": "e2e critical flow"},
+  )
+  assert promote_res.status_code == 200, promote_res.text
+  promote_payload = promote_res.json()
+  assert promote_payload.get("promoted") is True
+  rollout_state = (promote_payload.get("rollout") or {}).get("state") or {}
+  assert str(rollout_state.get("state") or "") == "OFFLINE_GATES_PASSED"
+
+  advance_res = client.post("/api/v1/rollout/advance", headers=headers, json={"note": "e2e advance"})
+  assert advance_res.status_code == 200, advance_res.text
+  assert str(((advance_res.json().get("state") or {}).get("state") or "")) == "PAPER_SOAK"
 
 
 def test_learning_recommend_uses_only_allow_learning_pool(tmp_path: Path, monkeypatch) -> None:

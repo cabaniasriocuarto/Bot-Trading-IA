@@ -213,6 +213,16 @@
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_login_rate_limit_and_lock_guard or auth_login_rate_limit_shared_sqlite_backend_across_instances" -q` -> `2 passed`.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_and_admin_protection or api_general_rate_limit_guard or api_expensive_rate_limit_guard" -q` -> `3 passed`.
 
+### AP-5001 completado (suite E2E critica backend)
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo test `test_e2e_critical_flow_login_backtest_validate_promote_rollout`.
+  - helper `_force_runs_rollout_ready` para datos deterministas en gates/compare durante la suite.
+- Flujo cubierto:
+  - `login -> backtests/run -> runs/validate_promotion -> runs/promote -> rollout/advance`.
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "e2e_critical_flow_login_backtest_validate_promote_rollout or runs_validate_and_promote_endpoints_smoke" -q` -> `2 passed`.
+
 ### Auditoria integral (comite senior) + evidencia operativa
 - Se ejecuto auditoria E2E del sistema (AppSec/DevSecOps, ejecucion, quant/backtests, risk, SRE, QA, UX) con evidencia por rutas y lineas.
 - Resultado de go/no-go actualizado: **NO GO para LIVE** por bloqueantes tecnicos de runtime real.

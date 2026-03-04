@@ -245,11 +245,11 @@ Leyenda de estado:
 
 ### FM-QA-001 - E2E de flujo critico integral
 - Severidad: MEDIUM
-- Estado: ABIERTO
+- Estado: CERRADO
 - Impacto: riesgo de regresion cross-layer (BFF + backend + UI).
 - Evidencia:
-  - NO EVIDENCIA de suite E2E integral versionada en repo para flujo completo.
-  - `docs/truth/NEXT_STEPS.md:91`
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_e2e_critical_flow_login_backtest_validate_promote_rollout`).
+  - Flujo cubierto: `login -> backtests/run -> runs/validate_promotion -> runs/promote -> rollout/advance`.
 
 ### FM-QA-002 - Chaos/recovery tests de runtime
 - Severidad: MEDIUM

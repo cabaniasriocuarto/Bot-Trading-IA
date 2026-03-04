@@ -218,6 +218,22 @@ Fecha de actualizacion: 2026-03-04
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_login_rate_limit_and_lock_guard or auth_login_rate_limit_shared_sqlite_backend_across_instances" -q` -> `2 passed`.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "auth_and_admin_protection or api_general_rate_limit_guard or api_expensive_rate_limit_guard" -q` -> `3 passed`.
 
+## Actualizacion tecnica AP-5001 (suite E2E critica backend) - 2026-03-04
+
+- Cobertura E2E integral agregada en `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_e2e_critical_flow_login_backtest_validate_promote_rollout`.
+- Flujo validado end-to-end:
+  - `login`
+  - `POST /api/v1/backtests/run` (baseline + candidate)
+  - `POST /api/v1/runs/{id}/validate_promotion`
+  - `POST /api/v1/runs/{id}/promote`
+  - `POST /api/v1/rollout/advance`
+- Ajuste de test helper:
+  - `_force_runs_rollout_ready` normaliza metadatos/metrics/costos para mantener determinismo de gates/compare en entorno de test.
+- Validacion:
+  - `python -m py_compile rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "e2e_critical_flow_login_backtest_validate_promote_rollout or runs_validate_and_promote_endpoints_smoke" -q` -> `2 passed`.
+
 ## Cierre PARTE 7/7 (Cerebro del bot) - 2026-03-04
 
 - Auditoria del cerebro de decision/aprendizaje cerrada con evidencia en:
