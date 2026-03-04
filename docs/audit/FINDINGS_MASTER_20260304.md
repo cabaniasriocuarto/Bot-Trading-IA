@@ -225,12 +225,13 @@ Leyenda de estado:
 
 ### FM-RISK-004 - Fuente canonica de gates (`config/policies`) con fallback permisivo en `knowledge`
 - Severidad: MEDIUM
-- Estado: MITIGADO
+- Estado: CERRADO
 - Impacto: riesgo de divergencia si faltan archivos de `config`.
 - Evidencia:
-  - `rtlab_autotrader/rtlab_core/learning/service.py:121`
-  - `rtlab_autotrader/rtlab_core/learning/service.py:137`
-  - `rtlab_autotrader/rtlab_core/rollout/gates.py:45`
+  - `rtlab_autotrader/rtlab_core/learning/service.py` (`_canonical_gates_thresholds` usa `config/policies/gates.yaml` y `default_fail_closed` sin fallback a knowledge).
+  - `rtlab_autotrader/rtlab_core/rollout/gates.py` (`source_path` canonico `config/policies/gates.yaml`, `source_mode=default_fail_closed` si falta config).
+  - `rtlab_autotrader/tests/test_gates_policy_source_fail_closed.py`.
+  - `rtlab_autotrader/tests/test_learning_service_gates_source.py`.
 
 ## SRE, QA, UX y documentacion
 
