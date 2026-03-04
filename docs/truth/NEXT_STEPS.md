@@ -7,28 +7,41 @@ Fecha: 2026-03-04
 - Plan final de implementacion: `docs/audit/ACTION_PLAN_FINAL_20260304.md`
 
 ## Progreso AP (plan final)
-- Total AP: `23`
-- AP cerrados: `23`
-- AP pendientes: `0`
-- Avance global: `100%` (`23/23`)
+- Total AP (plan original): `23`
+- AP cerrados (plan original): `23`
+- AP adicionales fase 2: `2` (`AP-7001`, `AP-7002`)
+- AP cerrados (total extendido): `25`
+- AP pendientes (total extendido): `0`
+- Avance global extendido: `100%` (`25/25`)
 
 ## Estado post-plan AP
 - El plan AP original queda ejecutado al `100%`, pero el programa **todavia NO esta listo para LIVE**.
 - Hallazgos criticos abiertos para fase siguiente:
   - `FM-EXEC-001`
-  - `FM-EXEC-002`
   - `FM-EXEC-005`
   - `FM-QUANT-008`
   - `FM-RISK-002`
-  - `FM-RISK-003`
+- Hallazgos cerrados en fase 2:
+  - `FM-EXEC-002` (G9 reforzado con sync runtime + evidencia exchange + freshness checks).
+  - `FM-RISK-003` (learning risk profile por defecto ahora policy-driven).
+
+## Evidencia tecnica fase 2 (2026-03-04)
+- Cambios aplicados:
+  - `AP-7001`: hardening runtime/gates (`exchange evidence`, `sync runtime`, reconciliacion `openOrders`, fail-closed sintetico).
+  - `AP-7002`: risk policy wiring en runtime + default risk profile policy-driven en learning.
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS.
 
 ## Cierre PARTE 7/7 (cerebro del bot)
 - Auditoria de cerebro cerrada: decision/learning/rollout validados por codigo.
 - Se mantiene politica operativa: **no conectar LIVE todavia**.
 - Checklist inmediato de cierre no-live (orden obligatorio):
 1. Acoplar runtime operativo real a OMS/risk/reconciliacion y reemplazar payloads sinteticos de `status`/`execution`.
-   - avance: AP-0001/AP-0002 + AP-1001/AP-1002/AP-1003/AP-1004 + AP-2001/AP-2002/AP-2003 implementados (`RuntimeBridge`, telemetry fail-closed, breaker strict y bloqueo de evaluate-phase sin telemetry real).
-   - pendiente: wiring broker/exchange real end-to-end.
+   - avance: AP-0001/AP-0002 + AP-1001/AP-1002/AP-1003/AP-1004 + AP-2001/AP-2002/AP-2003 + AP-7001/AP-7002 implementados (`RuntimeBridge`, telemetry fail-closed, breaker strict, bloqueo de evaluate-phase sin telemetry real, G9 con sync runtime/evidencia exchange y risk policy wiring).
+   - pendiente: wiring broker/exchange real end-to-end para ordenes/fills reales (no solo `diagnose` + `openOrders`).
 2. Versionar y activar `/.github/workflows/security-ci.yml` en GitHub Actions + branch protection.
    - avance: AP-4001 versionado en branch (`0dbf55d`) + AP-4002 aplicado en GitHub (`main` con required check `security`, `strict=true`) + AP-4003 cerrado (login lockout/rate-limit con backend compartido sqlite).
    - pendiente: corrida verde de `Security CI` tras fix de instalacion de `gitleaks` (run `22674323602` fallo en `Install security tooling`; fix aplicado en workflow, pendiente rerun).

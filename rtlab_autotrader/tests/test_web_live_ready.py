@@ -2770,6 +2770,25 @@ def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, 
   assert body["summary"]["vpin_soft_kill_cdf"] == 0.9
 
 
+def test_learning_default_risk_profile_prefers_policy_yaml(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  settings_res = client.get("/api/v1/settings", headers=headers)
+  assert settings_res.status_code == 200, settings_res.text
+  learning = (settings_res.json().get("learning") or {})
+  risk_profile = learning.get("risk_profile") or {}
+
+  assert risk_profile.get("source") == "config/policies/risk_policy.yaml"
+  paper = risk_profile.get("paper") or {}
+  live_initial = risk_profile.get("live_initial") or {}
+  assert float(paper.get("max_daily_loss_pct") or 0.0) == pytest.approx(1.0)
+  assert float(paper.get("max_drawdown_pct") or 0.0) == pytest.approx(8.0)
+  assert float(live_initial.get("max_daily_loss_pct") or 0.0) == pytest.approx(1.5)
+  assert float(live_initial.get("max_drawdown_pct") or 0.0) == pytest.approx(8.0)
+
+
 def test_change_points_smoke_endpoint_returns_breakpoints_or_segments(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

@@ -41,6 +41,49 @@ def _json_save(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _resolve_repo_root_for_policy() -> Path | None:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "config" / "policies" / "risk_policy.yaml").exists():
+            return parent
+    return None
+
+
+def _default_learning_risk_profile() -> dict[str, Any]:
+    repo_root = _resolve_repo_root_for_policy()
+    if repo_root is None:
+        return dict(MEDIUM_RISK_PROFILE)
+    policy_path = (repo_root / "config" / "policies" / "risk_policy.yaml").resolve()
+    try:
+        payload = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+        root = payload.get("risk_policy") if isinstance(payload.get("risk_policy"), dict) else {}
+        triggers = root.get("triggers") if isinstance(root.get("triggers"), dict) else {}
+        daily_cfg = triggers.get("daily_loss_pct") if isinstance(triggers.get("daily_loss_pct"), dict) else {}
+        dd_cfg = triggers.get("max_drawdown_pct") if isinstance(triggers.get("max_drawdown_pct"), dict) else {}
+
+        soft_daily = abs(float(daily_cfg.get("soft_kill_bot_at", 0.0))) if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_daily = abs(float(daily_cfg.get("hard_kill_bot_at", 0.0))) if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_dd = abs(float(dd_cfg.get("hard_kill_bot_at", 0.0))) if bool(dd_cfg.get("enabled", False)) else 0.0
+        base = dict(MEDIUM_RISK_PROFILE)
+        return {
+            **base,
+            "risk_profile": "policy_medium",
+            "source": "config/policies/risk_policy.yaml",
+            "paper": {
+                **(base.get("paper") if isinstance(base.get("paper"), dict) else {}),
+                "max_daily_loss_pct": soft_daily if soft_daily > 0 else float((base.get("paper") or {}).get("max_daily_loss_pct", 3.0)),
+                "max_drawdown_pct": hard_dd if hard_dd > 0 else float((base.get("paper") or {}).get("max_drawdown_pct", 15.0)),
+            },
+            "live_initial": {
+                **(base.get("live_initial") if isinstance(base.get("live_initial"), dict) else {}),
+                "max_daily_loss_pct": hard_daily if hard_daily > 0 else float((base.get("live_initial") or {}).get("max_daily_loss_pct", 2.0)),
+                "max_drawdown_pct": hard_dd if hard_dd > 0 else float((base.get("live_initial") or {}).get("max_drawdown_pct", 10.0)),
+            },
+        }
+    except Exception:
+        return dict(MEDIUM_RISK_PROFILE)
+
+
 class LearningService:
     def __init__(self, *, user_data_dir: Path, repo_root: Path) -> None:
         self.root = (user_data_dir / "learning").resolve()
@@ -72,7 +115,7 @@ class LearningService:
                 "allow_auto_apply": False,
                 "allow_live": False,
             },
-            "risk_profile": MEDIUM_RISK_PROFILE,
+            "risk_profile": _default_learning_risk_profile(),
         }
 
     def ensure_settings_shape(self, settings: dict[str, Any]) -> dict[str, Any]:

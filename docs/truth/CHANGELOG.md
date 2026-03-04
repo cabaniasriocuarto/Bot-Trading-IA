@@ -2,6 +2,25 @@
 
 ## 2026-03-04
 
+### AP-7001/AP-7002 completados (runtime exchange-evidence + risk policy wiring)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `evaluate_gates(...)` ahora sincroniza runtime state cuando no se pasa `runtime_state` (reduce bypass por estado stale).
+  - `RuntimeSnapshot` agrega checks de exchange (`exchange_connector_ok`, `exchange_order_ok`, `exchange_check_fresh`, `exchange_mode_known`).
+  - runtime fail-closed: si engine real no valida connector+order en exchange, fuerza `runtime_telemetry_source=synthetic_v1`.
+  - reconciliacion no-paper ahora consulta `GET /api/v3/openOrders` firmado y publica `source/source_ok/source_reason`.
+  - runtime risk ahora carga `config/policies/risk_policy.yaml` y aplica hard-kill policy-driven (`daily_loss`/`drawdown`).
+- `rtlab_autotrader/rtlab_core/learning/service.py`:
+  - `default_learning_settings().risk_profile` pasa a derivarse desde `config/policies/risk_policy.yaml` (fallback: `MEDIUM_RISK_PROFILE`).
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `_mock_exchange_ok` cubre `openOrders`.
+  - nuevo test `test_learning_default_risk_profile_prefers_policy_yaml`.
+  - ajustes en tests de `G9` y runtime real para contrato actualizado.
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS.
+
 ### Cierre auditoria PARTE 7/7 (cerebro del bot)
 - Se cerro la auditoria de aprendizaje/decision/rollout con evidencia de codigo en:
   - `learning/brain.py`, `learning/service.py`,

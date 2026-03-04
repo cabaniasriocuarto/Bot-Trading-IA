@@ -2,6 +2,41 @@
 
 Fecha de actualizacion: 2026-03-04
 
+## Actualizacion tecnica Fase 2 (AP-7001/AP-7002) - 2026-03-04
+
+- Runtime operativo reforzado en `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `evaluate_gates(...)` ahora usa estado runtime sincronizado cuando no recibe `runtime_state` (evita PASS de `G9` por snapshot viejo/manualmente inyectado).
+  - `RuntimeSnapshot` incorpora checks de evidencia externa:
+    - `exchange_connector_ok`
+    - `exchange_order_ok`
+    - `exchange_check_fresh`
+    - `exchange_mode_known`
+  - `sync_runtime_state` fail-closed:
+    - si `runtime_engine=real` pero `diagnose_exchange` no da `connector_ok && order_ok`, se fuerza `telemetry_source=synthetic_v1`;
+    - se exponen campos runtime nuevos (`runtime_exchange_*`) para trazabilidad.
+  - reconciliacion no-paper usa `GET /api/v3/openOrders` firmado (Binance) y marca `source/source_ok/source_reason`.
+- Riesgo operativo alineado a policy canonica:
+  - se carga `config/policies/risk_policy.yaml` en runtime (`_load_runtime_risk_policy_thresholds`).
+  - limites efectivos del `RiskEngine` toman el minimo entre settings y policy (soft/hard).
+  - hard-kill por policy (`daily_loss` / `drawdown`) aplicado en runtime loop.
+- Learning default sin hardcode ciego de perfil:
+  - `rtlab_autotrader/rtlab_core/learning/service.py` ahora deriva `learning.risk_profile` por defecto desde `config/policies/risk_policy.yaml` (fallback seguro a `MEDIUM_RISK_PROFILE`).
+- Cobertura de tests agregada/ajustada:
+  - `rtlab_autotrader/tests/test_web_live_ready.py`:
+    - `_mock_exchange_ok` ahora cubre `/api/v3/openOrders`;
+    - `test_learning_default_risk_profile_prefers_policy_yaml` (nuevo);
+    - ajustes en tests de `G9`/runtime real para contrato actualizado.
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS.
+- Estado de hallazgos tras esta fase:
+  - `FM-EXEC-002`: CERRADO (G9 ya no depende solo de estado/env stale).
+  - `FM-RISK-003`: CERRADO (risk profile default ahora policy-driven).
+  - `FM-EXEC-001`, `FM-EXEC-005`, `FM-RISK-002`: MITIGADOS (mejor wiring/runtime+policy; queda deuda para loop broker real full de ordenes/fills).
+  - `FM-QUANT-008`: ABIERTO (sin pipeline ML productivo `fit/predict`).
+
 ## Actualizacion tecnica Bloque 1 (AP-1001/AP-1002/AP-1003) - 2026-03-04
 
 - Backend runtime web ahora cableado internamente a:

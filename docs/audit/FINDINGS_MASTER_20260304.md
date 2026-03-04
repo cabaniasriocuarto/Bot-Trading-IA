@@ -53,7 +53,7 @@ Leyenda de estado:
 
 ### FM-EXEC-001 - Runtime real no acoplado end-to-end
 - Severidad: CRITICAL
-- Estado: ABIERTO
+- Estado: MITIGADO
 - Impacto: no hay garantia de loop OMS/risk/reconciliacion real en runtime web operativo.
 - Evidencia:
   - `rtlab_autotrader/rtlab_core/web/app.py:8339`
@@ -63,12 +63,14 @@ Leyenda de estado:
 
 ### FM-EXEC-002 - Gate G9 depende de estado/env y no de heartbeat real
 - Severidad: CRITICAL
-- Estado: ABIERTO
+- Estado: CERRADO
 - Impacto: posible PASS de G9 sin motor real comprobable.
 - Evidencia:
-  - `rtlab_autotrader/rtlab_core/web/app.py:900`
-  - `rtlab_autotrader/rtlab_core/web/app.py:4943`
-  - `rtlab_autotrader/rtlab_core/web/app.py:5185`
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`evaluate_gates` sincroniza runtime state cuando no recibe snapshot).
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`_runtime_contract_snapshot` agrega checks `exchange_*` + freshness).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_g9_live_passes_only_when_runtime_contract_is_fully_ready`).
+- Fix aplicado:
+  - `G9` ahora se evalua sobre estado runtime actualizado y requiere evidencia exchange + freshness (fail-closed si falta).
 
 ### FM-EXEC-003 - `breaker_events` con `NO_DATA` devuelve `ok=true`
 - Severidad: HIGH
@@ -89,17 +91,19 @@ Leyenda de estado:
   - `rtlab_autotrader/rtlab_core/web/app.py:7159`
   - `rtlab_autotrader/rtlab_core/web/app.py:7180`
 - Brecha abierta:
-  - el bloqueo fail-closed ya aplica a `evaluate-phase`, pero el cierre total depende todavia del runtime real end-to-end (FM-EXEC-001/FM-EXEC-002).
+  - el bloqueo fail-closed ya aplica a `evaluate-phase`, pero el cierre total depende todavia del runtime real end-to-end (FM-EXEC-001/FM-EXEC-005).
 
 ### FM-EXEC-005 - Modulos OMS/reconciliation/risk existen pero no wiring operativo completo en web runtime
 - Severidad: HIGH
-- Estado: ABIERTO
+- Estado: MITIGADO
 - Impacto: gap directo para cierre no-live real y paso posterior a live.
 - Evidencia:
   - `rtlab_autotrader/rtlab_core/execution/oms.py:21`
   - `rtlab_autotrader/rtlab_core/execution/reconciliation.py:17`
   - `rtlab_autotrader/rtlab_core/risk/risk_engine.py:19`
   - `rtlab_autotrader/rtlab_core/risk/kill_switch.py:15`
+- Brecha abierta:
+  - runtime ya consulta `openOrders` en no-paper para reconciliacion, pero falta loop broker/exchange completo de submit/fills reales para cierre total.
 
 ## Quant, research y cerebro del bot
 
@@ -202,19 +206,22 @@ Leyenda de estado:
 
 ### FM-RISK-002 - Enforcement de riesgo real depende de runtime real
 - Severidad: HIGH
-- Estado: ABIERTO
+- Estado: MITIGADO
 - Impacto: politicas de riesgo pueden quedar declarativas si no hay wiring runtime real.
 - Evidencia:
   - `config/policies/risk_policy.yaml`
   - `rtlab_autotrader/rtlab_core/risk/risk_engine.py:45`
-  - `rtlab_autotrader/rtlab_core/web/app.py:5262`
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`_load_runtime_risk_policy_thresholds`, hard-kill policy-driven en `RuntimeBridge.sync_runtime_state`).
+- Brecha abierta:
+  - conector de ordenes/fills reales del broker todavia pendiente para enforcement sobre fills reales de mercado.
 
 ### FM-RISK-003 - Perfil de riesgo base hardcodeado en learning
 - Severidad: LOW
-- Estado: ABIERTO
+- Estado: CERRADO
 - Impacto: posible drift respecto de policy canonica.
 - Evidencia:
-  - `rtlab_autotrader/rtlab_core/learning/brain.py:10`
+  - `rtlab_autotrader/rtlab_core/learning/service.py` (`_default_learning_risk_profile` deriva defaults desde `config/policies/risk_policy.yaml`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_learning_default_risk_profile_prefers_policy_yaml`).
 
 ### FM-RISK-004 - Fuente canonica de gates (`config/policies`) con fallback permisivo en `knowledge`
 - Severidad: MEDIUM
@@ -274,9 +281,7 @@ Leyenda de estado:
 ## Resumen ejecutivo de abiertos reales (must-fix no-live)
 
 1. FM-EXEC-001
-2. FM-EXEC-002
-3. FM-EXEC-003
-4. FM-EXEC-004
-5. FM-EXEC-005
-6. FM-QA-001
-7. FM-RISK-002
+2. FM-EXEC-005
+3. FM-RISK-002
+4. FM-SEC-004
+5. FM-QUANT-008
