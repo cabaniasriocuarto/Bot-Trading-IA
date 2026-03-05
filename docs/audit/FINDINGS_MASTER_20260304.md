@@ -217,8 +217,10 @@ Leyenda de estado:
   - `config/policies/risk_policy.yaml`
   - `rtlab_autotrader/rtlab_core/risk/risk_engine.py:45`
   - `rtlab_autotrader/rtlab_core/web/app.py` (`_load_runtime_risk_policy_thresholds`, hard-kill policy-driven en `RuntimeBridge.sync_runtime_state`).
+  - `rtlab_autotrader/rtlab_core/web/app.py` (submit remoto en `testnet/live` se ejecuta despues del calculo de riesgo del mismo ciclo).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_skips_submit_when_risk_blocks_current_cycle`).
 - Brecha abierta:
-  - conector de ordenes/fills reales del broker todavia pendiente para enforcement sobre fills reales de mercado.
+  - conector de ordenes/fills reales del broker todavia pendiente para enforcement completo sobre fills reales de mercado y escenarios avanzados de cancel-replace.
 
 ### FM-RISK-003 - Perfil de riesgo base hardcodeado en learning
 - Severidad: LOW

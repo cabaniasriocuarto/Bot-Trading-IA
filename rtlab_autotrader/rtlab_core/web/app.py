@@ -6248,31 +6248,6 @@ class RuntimeBridge:
             if event in {"start", "mode_change"}:
                 self._reset_runtime_costs()
             self._ensure_seed_order(state)
-            if active_mode in {"testnet", "live"}:
-                submit_result = self._maybe_submit_exchange_seed_order(state=state, mode=active_mode)
-                submit_error = str(submit_result.get("error") or "")
-                submit_client_order_id = str(submit_result.get("client_order_id") or "")
-                signal_action = str(submit_result.get("signal_action") or "")
-                signal_reason = str(submit_result.get("signal_reason") or "")
-                signal_strategy_id = str(submit_result.get("signal_strategy_id") or "")
-                signal_symbol = str(submit_result.get("signal_symbol") or "")
-                signal_side = str(submit_result.get("signal_side") or "")
-                changed = self._set_state_value(state, "runtime_last_signal_action", signal_action) or changed
-                changed = self._set_state_value(state, "runtime_last_signal_reason", signal_reason) or changed
-                changed = self._set_state_value(state, "runtime_last_signal_strategy_id", signal_strategy_id) or changed
-                changed = self._set_state_value(state, "runtime_last_signal_symbol", signal_symbol) or changed
-                changed = self._set_state_value(state, "runtime_last_signal_side", signal_side) or changed
-                if submit_client_order_id:
-                    changed = self._set_state_value(
-                        state,
-                        "runtime_last_remote_client_order_id",
-                        submit_client_order_id,
-                    ) or changed
-                if bool(submit_result.get("submitted", False)):
-                    changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
-                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
-                else:
-                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", submit_error) or changed
             stale_ids = self._oms.cancel_stale(max_age_seconds=max_age_for_stale)
             if stale_ids:
                 self._stats["requotes"] = self._stats.get("requotes", 0) + len(stale_ids)
@@ -6377,6 +6352,31 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            if active_mode in {"testnet", "live"} and not bool(decision.kill) and bool(state.get("running")) and not bool(state.get("killed")):
+                submit_result = self._maybe_submit_exchange_seed_order(state=state, mode=active_mode)
+                submit_error = str(submit_result.get("error") or "")
+                submit_client_order_id = str(submit_result.get("client_order_id") or "")
+                signal_action = str(submit_result.get("signal_action") or "")
+                signal_reason = str(submit_result.get("signal_reason") or "")
+                signal_strategy_id = str(submit_result.get("signal_strategy_id") or "")
+                signal_symbol = str(submit_result.get("signal_symbol") or "")
+                signal_side = str(submit_result.get("signal_side") or "")
+                changed = self._set_state_value(state, "runtime_last_signal_action", signal_action) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_reason", signal_reason) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_strategy_id", signal_strategy_id) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_symbol", signal_symbol) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_side", signal_side) or changed
+                if submit_client_order_id:
+                    changed = self._set_state_value(
+                        state,
+                        "runtime_last_remote_client_order_id",
+                        submit_client_order_id,
+                    ) or changed
+                if bool(submit_result.get("submitted", False)):
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                else:
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", submit_error) or changed
             self._append_execution_point(settings=settings, mode=active_mode)
             return changed
 

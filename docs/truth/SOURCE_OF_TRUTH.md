@@ -367,6 +367,33 @@ Fecha de actualizacion: 2026-03-04
   - primero bibliografia local indexada (`docs/reference/BIBLIO_INDEX.md`);
   - para contrato API de `order status`, uso de fuente primaria oficial de exchange.
 
+## Actualizacion tecnica AP-BOT-1013 (riesgo del mismo ciclo antes de submit) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `sync_runtime_state(...)` mueve submit remoto de `testnet/live` para despues del calculo de riesgo del mismo ciclo;
+  - submit queda condicionado a estado operativo seguro del mismo loop:
+    - `decision.kill=false`,
+    - `running=true`,
+    - `killed=false`;
+  - resultado: no se intenta orden remota cuando `runtime_risk_allow_new_positions=false` en ese mismo ciclo.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_skips_submit_when_risk_blocks_current_cycle`.
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_strategy_signal_flat_skips_remote_submit or runtime_sync_testnet_strategy_signal_meanreversion_submits_sell or runtime_sync_testnet_skips_submit_when_risk_blocks_current_cycle or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new"` -> PASS (`5 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or runtime_stop_testnet_cancels_remote_open_orders_idempotently or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers"` -> PASS (`15 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`94 passed`).
+- Estado:
+  - `FM-RISK-002` queda mas mitigado (enforcement de riesgo y submit ya no corren desfasados en el loop);
+  - LIVE sigue **NO GO** por brechas abiertas fuera de este AP.
+
+## Revalidacion bibliografica AP-BOT-1013 - 2026-03-04
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1013_BIBLIO_VALIDATION_20260304.md`.
+- Criterio aplicado:
+  - principios de risk management y fail-closed tomados de bibliografia local indexada.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:

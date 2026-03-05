@@ -308,6 +308,31 @@
 - Criterio:
   - local-first (`BIBLIO_INDEX` + `biblio_txt`) y fuentes primarias oficiales cuando falta contrato API especifico.
 
+### AP-BOT-1013 (riesgo del mismo ciclo antes de submit remoto)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `RuntimeBridge.sync_runtime_state(...)` reordena el flujo: el submit remoto en `testnet/live` ahora corre despues de recalcular riesgo del ciclo actual;
+  - el gate de submit usa `self._last_risk` ya actualizado del mismo ciclo (no snapshot atrasado);
+  - condicion de submit endurecida:
+    - solo si `decision.kill=false`,
+    - `running=true`,
+    - `killed=false`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_skips_submit_when_risk_blocks_current_cycle`.
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_strategy_signal_flat_skips_remote_submit or runtime_sync_testnet_strategy_signal_meanreversion_submits_sell or runtime_sync_testnet_skips_submit_when_risk_blocks_current_cycle or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new"` -> PASS (`5 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or runtime_stop_testnet_cancels_remote_open_orders_idempotently or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers"` -> PASS (`15 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`94 passed`).
+- Nota de estado:
+  - reduce la brecha de `FM-RISK-002` en no-live al evitar submits con riesgo bloqueado en el mismo loop;
+  - LIVE sigue `NO GO` por pendientes globales de cierre end-to-end.
+
+### Revalidacion bibliografica AP-BOT-1013
+- Nuevo artefacto:
+  - `docs/audit/AP_BOT_1013_BIBLIO_VALIDATION_20260304.md`.
+- Criterio:
+  - local-first (`BIBLIO_INDEX` + `biblio_txt`) para principios de risk management y gates fail-closed.
+
 ### Revalidacion bibliografica completa AP-BOT-1006..1010
 - Nuevo artefacto:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.
