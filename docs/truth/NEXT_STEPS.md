@@ -162,11 +162,14 @@ Fecha: 2026-03-05
 - [x] Revalidacion remota staging en verde:
   - run `22741088468` -> `success`
   - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22741088468_20260305.md`.
+- [x] Persistencia staging corregida sin crash:
+  - volumen operativo en `/app/user_data`;
+  - `RTLAB_USER_DATA_DIR=/app/user_data`;
+  - run `22741651051` en `success` con `g10_status=PASS`.
 - [x] Validacion bibliografica:
   - `docs/audit/AP_BOT_1035_BIBLIO_VALIDATION_20260305.md`.
-- [ ] Pendiente operativo:
-  - `RTLAB_USER_DATA_DIR` en staging sigue en `/tmp/rtlab_user_data` (warning informativo no-live);
-  - resolver persistencia real en staging solo cuando se defina ruta/permiso de volumen sin riesgo de crash.
+- [x] Pendiente operativo cerrado:
+  - staging ya no usa `/tmp` para user data.
 
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
@@ -618,7 +621,7 @@ Fecha: 2026-03-05
    - instrumentar timing interno por etapas en `get_bots_overview` (kpis/logs/kills/serialization),
    - agregar indice/materializacion para datos de overview de bots (si el costo principal viene de agregacion en request),
    - rerun remoto con `100` bots y objetivo `p95 < 300ms`.
-   - estabilizar storage persistente para `RTLAB_USER_DATA_DIR` (evitar `/tmp`) antes de benchmarks comparativos: hoy cada redeploy puede resetear bots/runs y contaminar evidencia.
+  - [x] storage persistente estabilizado en staging (`RTLAB_USER_DATA_DIR=/app/user_data`).
 5. Validar integridad de `breaker_events` (`bot_id/mode`) y monitorear volumen de `unknown`.
 6. Afinar thresholds/parametros por estrategia del dispatcher de `BacktestEngine` y agregar `fail-closed` explicito para strategy_ids no soportados en modo estricto.
 7. Validar en entorno desplegado que `surrogate_adjustments` se mantenga apagado fuera de `execution_mode=demo` y que promotion quede bloqueada cuando se active.

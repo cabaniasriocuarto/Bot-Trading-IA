@@ -2,6 +2,30 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion operativa staging persistence + checks (run 22741651051) - 2026-03-05
+
+- Infra staging:
+  - volumen adjunto en `/app/user_data`;
+  - permisos corregidos para runtime user (`uid=1000`):
+    - `chown -R 1000:1000 /app/user_data`
+    - `chmod 775 /app/user_data`
+  - `RTLAB_USER_DATA_DIR=/app/user_data`.
+- Health staging actual:
+  - `ok=true`
+  - `mode=paper`
+  - `runtime_ready_for_live=false`
+  - `storage.persistent_storage=true`.
+- Revalidacion remota (`strict=true`):
+  - run `22741651051` -> `success`
+  - campos canonicos:
+    - `overall_pass=true`
+    - `protected_checks_complete=true`
+    - `g10_status=PASS`
+    - `g9_status=WARN`
+    - `breaker_ok=true`
+    - `internal_proxy_status_ok=true`
+  - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22741651051_20260305.md`.
+
 ## Actualizacion tecnica AP-BOT-1035 (checks staging no-live con strict=true) - 2026-03-05
 
 - `scripts/ops_protected_checks_report.py`:

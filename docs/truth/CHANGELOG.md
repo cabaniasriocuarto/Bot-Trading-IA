@@ -2,6 +2,27 @@
 
 ## 2026-03-05
 
+### Staging persistence fix + protected checks PASS (run 22741651051)
+- Infra staging:
+  - volumen adjunto en `/app/user_data`;
+  - permisos de volumen corregidos para runtime (`uid=1000`):
+    - `chown -R 1000:1000 /app/user_data`
+    - `chmod 775 /app/user_data`
+  - variable activa: `RTLAB_USER_DATA_DIR=/app/user_data`.
+- Validacion health staging:
+  - `ok=true`, `mode=paper`, `runtime_ready_for_live=false`, `storage_persistent=true`.
+- Revalidacion remota `Remote Protected Checks (GitHub VM)`:
+  - run `22741651051` -> `success`
+  - campos canonicos:
+    - `overall_pass=true`
+    - `protected_checks_complete=true`
+    - `g10_status=PASS`
+    - `g9_status=WARN`
+    - `breaker_ok=true`
+    - `internal_proxy_status_ok=true`
+- Evidencia:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22741651051_20260305.md`.
+
 ### AP-BOT-1035 (staging strict=true sin falso negativo no-live)
 - `scripts/ops_protected_checks_report.py`:
   - nuevo flag `--allow-staging-warns` para aceptar en staging no-live:

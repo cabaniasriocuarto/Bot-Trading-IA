@@ -37,6 +37,13 @@ Nota:
 - Validacion 2026-03-05:
   - en este servicio, rutas con volumen (`/data/...` y `/app/user_data`) provocaron `sqlite3.OperationalError: unable to open database file` por permisos;
   - rollback aplicado a `RTLAB_USER_DATA_DIR=/tmp/rtlab_user_data` para mantener disponibilidad.
+  - fix operativo aplicado:
+    1. adjuntar volumen en `/app/user_data`;
+    2. ajustar owner/permisos en runtime: `chown -R 1000:1000 /app/user_data && chmod 775 /app/user_data`;
+    3. setear `RTLAB_USER_DATA_DIR=/app/user_data` y redeploy.
+  - estado final validado:
+    - `storage.persistent_storage=true`
+    - protected checks staging run `22741651051` en `success`.
 
 ## Comandos usados (CLI)
 ```bash
