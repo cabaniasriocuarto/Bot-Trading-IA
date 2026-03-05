@@ -70,6 +70,16 @@
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1026_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1027 (hardening no-fallback cross-env)
+- Workflows actualizados para evitar fallback cruzado de credenciales:
+  - `remote-protected-checks.yml`: staging usa solo `RTLAB_STAGING_*`, produccion solo `RTLAB_*`.
+  - `staging-smoke.yml`: auth en staging requiere solo `RTLAB_STAGING_*`.
+- Motivacion:
+  - prevenir login fallido por uso de password/token de produccion en staging;
+  - endurecer separacion de secretos por entorno.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1027_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - nueva variable `LIVE_TRADING_ENABLED` (default `false`);

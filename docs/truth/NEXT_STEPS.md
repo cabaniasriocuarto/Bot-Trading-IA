@@ -60,6 +60,15 @@ Fecha: 2026-03-05
   - cargar/validar `RTLAB_STAGING_AUTH_TOKEN` o `RTLAB_STAGING_ADMIN_PASSWORD` para runs autenticados de staging.
   - evidencia actual del faltante: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732896736_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1027 (2026-03-05)
+- [x] Hardening de workflows para separar secretos por entorno sin fallback cruzado:
+  - `remote-protected-checks.yml`
+  - `staging-smoke.yml`
+- [ ] Pendiente operativo:
+  - ejecutar runs remotos post-push y registrar evidencia:
+    - produccion `strict=true` sin regresion;
+    - staging con mensaje explicito de secreto faltante (si `RTLAB_STAGING_*` sigue vacio).
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:

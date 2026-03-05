@@ -67,20 +67,20 @@ jobs:
           RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
           RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
         run: |
-          selected_auth_token="${RTLAB_AUTH_TOKEN:-}"
-          selected_admin_password="${RTLAB_ADMIN_PASSWORD:-}"
           if [[ "${BASE_URL}" == *"staging"* ]]; then
-            if [[ -n "${RTLAB_STAGING_AUTH_TOKEN:-}" ]]; then
-              selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN}"
+            selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+            if [[ -z "${selected_admin_password}" && -z "${selected_auth_token}" ]]; then
+              echo "Missing staging secrets: define RTLAB_STAGING_AUTH_TOKEN or RTLAB_STAGING_ADMIN_PASSWORD." >&2
+              exit 1
             fi
-            if [[ -n "${RTLAB_STAGING_ADMIN_PASSWORD:-}" ]]; then
-              selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD}"
+          else
+            selected_auth_token="${RTLAB_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_ADMIN_PASSWORD:-}"
+            if [[ -z "${selected_admin_password}" && -z "${selected_auth_token}" ]]; then
+              echo "Missing production/default secrets: define RTLAB_AUTH_TOKEN or RTLAB_ADMIN_PASSWORD." >&2
+              exit 1
             fi
-          fi
-
-          if [[ -z "${selected_admin_password}" && -z "${selected_auth_token}" ]]; then
-            echo "Missing secrets: define auth token or admin password for selected environment." >&2
-            exit 1
           fi
 
       - name: Run protected checks
@@ -99,15 +99,12 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           report_prefix="artifacts/ops_protected_checks_gha_${GITHUB_RUN_ID}"
-          selected_auth_token="${RTLAB_AUTH_TOKEN:-}"
-          selected_admin_password="${RTLAB_ADMIN_PASSWORD:-}"
           if [[ "${BASE_URL}" == *"staging"* ]]; then
-            if [[ -n "${RTLAB_STAGING_AUTH_TOKEN:-}" ]]; then
-              selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN}"
-            fi
-            if [[ -n "${RTLAB_STAGING_ADMIN_PASSWORD:-}" ]]; then
-              selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD}"
-            fi
+            selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+          else
+            selected_auth_token="${RTLAB_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_ADMIN_PASSWORD:-}"
           fi
           export RTLAB_ADMIN_PASSWORD="${selected_admin_password}"
           export RTLAB_PASSWORD="${selected_admin_password}"

@@ -70,6 +70,20 @@ Fecha de actualizacion: 2026-03-05
   - se requiere cargar al menos uno para validar checks protegidos autenticados en staging.
   - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732896736_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1027 (hardening no-fallback cross-env de credenciales) - 2026-03-05
+
+- `/.github/workflows/remote-protected-checks.yml`:
+  - staging consume solo `RTLAB_STAGING_AUTH_TOKEN` / `RTLAB_STAGING_ADMIN_PASSWORD`;
+  - produccion consume solo `RTLAB_AUTH_TOKEN` / `RTLAB_ADMIN_PASSWORD`.
+- `/.github/workflows/staging-smoke.yml`:
+  - smoke de staging con auth requiere secretos `RTLAB_STAGING_*` (sin fallback a secretos globales).
+- Objetivo:
+  - evitar uso accidental de credenciales de produccion contra staging.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1027_BIBLIO_VALIDATION_20260305.md`.
+- Pendiente:
+  - registrar evidencia de runs remotos post-push con este hardening aplicado.
+
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
 - `rtlab_dashboard/src/lib/security.ts`:

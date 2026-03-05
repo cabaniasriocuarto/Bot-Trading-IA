@@ -65,10 +65,10 @@ jobs:
           RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
           RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
         run: |
-          selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-${RTLAB_AUTH_TOKEN:-}}"
-          selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-${RTLAB_ADMIN_PASSWORD:-}}"
+          selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+          selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
           if [[ "${REQUIRE_AUTH}" == "true" && -z "${selected_admin_password}" && -z "${selected_auth_token}" ]]; then
-            echo "Missing secrets: set staging auth token/password (or fallback default token/password)." >&2
+            echo "Missing staging secrets: set RTLAB_STAGING_AUTH_TOKEN or RTLAB_STAGING_ADMIN_PASSWORD." >&2
             exit 1
           fi
 
@@ -88,8 +88,8 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
           report_prefix="artifacts/staging_smoke_gha_${GITHUB_RUN_ID}"
-          selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-${RTLAB_AUTH_TOKEN:-}}"
-          selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-${RTLAB_ADMIN_PASSWORD:-}}"
+          selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+          selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
           export RTLAB_ADMIN_PASSWORD="${selected_admin_password}"
           export RTLAB_PASSWORD="${selected_admin_password}"
 
