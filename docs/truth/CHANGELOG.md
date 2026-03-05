@@ -49,6 +49,10 @@
     - `401 Invalid credentials`;
     - evidencia de ruta legacy con `--password`.
   - reporte: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732410544_20260305.md`.
+- Validacion del fix en rama tecnica:
+  - run `22732584979` (`success`) con `expect_g9=PASS` y `strict=false`;
+  - `overall_pass=false` pero job exitoso, confirmando aplicacion de `--no-strict`.
+  - reporte: `docs/audit/PROTECTED_CHECKS_GHA_22732584979_NON_STRICT_20260305.md`.
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1025_BIBLIO_VALIDATION_20260305.md`.
 

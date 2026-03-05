@@ -46,6 +46,8 @@ Fecha: 2026-03-05
   - eliminado fallback insecure `--password` por CLI.
 - [x] Evidencia del hallazgo previo en `main`:
   - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732410544_20260305.md`
+- [x] Validacion del fix en corrida real (rama tecnica):
+  - `docs/audit/PROTECTED_CHECKS_GHA_22732584979_NON_STRICT_20260305.md`
 - [ ] Pendiente operativo:
   - re-run remoto del workflow ya corregido (tras merge) para validar staging con flujo actualizado.
 

@@ -43,6 +43,9 @@ Fecha de actualizacion: 2026-03-05
 - Evidencia operativa del hallazgo:
   - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732410544_20260305.md`
   - run staging en `main` fallo (`401 Invalid credentials`) y mostro uso legacy de `--password`.
+- Validacion operativa del fix (rama tecnica):
+  - `docs/audit/PROTECTED_CHECKS_GHA_22732584979_NON_STRICT_20260305.md`
+  - run `22732584979` en `success` con `strict=false` y `overall_pass=false` (esperado por `expect_g9=PASS`).
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1025_BIBLIO_VALIDATION_20260305.md`.
 - Estado:
