@@ -15,6 +15,30 @@
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1034_BIBLIO_VALIDATION_20260305.md`.
 
+### Revalidacion staging auth + checks operativos (run 22739570506)
+- `Remote Protected Checks (GitHub VM)` contra staging:
+  - run `22739570506` -> `failure`.
+- Resultado:
+  - login/auth staging ya operativo (sin `401`);
+  - fallo por checks operativos:
+    - `g10_status=WARN` (`storage_persistent=false`)
+    - `breaker_ok=false` (`breaker_status=NO_DATA`, `strict_mode=true`)
+  - `g9_status=WARN` esperado en no-live.
+- Evidencia:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22739570506_20260305.md`.
+
+### Revalidacion staging auth + checks operativos (run 22740010128)
+- `Remote Protected Checks (GitHub VM)` contra staging:
+  - run `22740010128` -> `failure`.
+- Resultado:
+  - auth staging confirmada (sin `401 Invalid credentials`);
+  - falla operativa mantenida:
+    - `g10_status=WARN` (`storage_persistent=false`)
+    - `breaker_ok=false` (`breaker_status=NO_DATA`, `strict_mode=true`)
+  - `g9_status=WARN` esperado en no-live.
+- Evidencia:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22740010128_20260305.md`.
+
 ### AP-BOT-1033 (submit bloqueado con reconciliacion no valida)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - `_maybe_submit_exchange_runtime_order(...)` ahora bloquea submit cuando `runtime_reconciliation_ok=false` (`reason=reconciliation_not_ok`).

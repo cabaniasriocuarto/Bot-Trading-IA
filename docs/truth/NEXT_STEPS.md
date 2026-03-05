@@ -147,9 +147,12 @@ Fecha: 2026-03-05
   - `docs/audit/PROTECTED_CHECKS_GHA_22738228159_20260305.md`
 - [x] Validacion bibliografica:
   - `docs/audit/AP_BOT_1034_BIBLIO_VALIDATION_20260305.md`
-- [ ] Pendiente operativo (requiere accion manual):
-  - alinear `RTLAB_STAGING_ADMIN_PASSWORD` con `ADMIN_PASSWORD` real de Railway staging;
-  - correr workflow con `username=ADMIN_USERNAME` real de staging;
+- [x] Revalidacion de credenciales staging completada:
+  - re-run `22740010128` confirma auth staging OK con `username=Wadmin`;
+  - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22740010128_20260305.md`.
+- [ ] Pendiente operativo:
+  - resolver `G10_STORAGE_PERSISTENCE` en staging (`storage_persistent=false`);
+  - definir criterio operativo para `breaker_status=NO_DATA` en `strict=true` (poblar eventos o ajustar politica de validacion no-live);
   - repetir run y registrar los 6 campos canonicos en `docs/audit/`.
 
 ## Actualizacion operativa (2026-03-05)

@@ -15,13 +15,50 @@ Fecha de actualizacion: 2026-03-05
   - campos canonicos: `overall_pass=true`, `protected_checks_complete=true`, `g10_status=PASS`, `g9_status=WARN`, `breaker_ok=true`, `internal_proxy_status_ok=true`
   - documento: `docs/audit/PROTECTED_CHECKS_GHA_22738228159_20260305.md`.
 - Estado:
-  - el secreto `RTLAB_STAGING_ADMIN_PASSWORD` existe en GitHub, pero no coincide con credencial valida en backend staging (o `username` no coincide con `ADMIN_USERNAME` real).
-- Accion requerida (bloqueante para checks staging autenticados):
-  1. verificar `ADMIN_USERNAME` y `ADMIN_PASSWORD` activos en Railway staging;
-  2. actualizar `RTLAB_STAGING_ADMIN_PASSWORD` con `ADMIN_PASSWORD` real;
-  3. ejecutar workflow con `username=ADMIN_USERNAME` real.
+  - `RTLAB_STAGING_ADMIN_PASSWORD` ya fue alineado con Railway staging;
+  - `username=Wadmin` sigue vigente en staging.
+- Bloqueante actual de staging:
+  - no es auth; es operativo (`G10 WARN` + `breaker NO_DATA` en `strict=true`).
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1034_BIBLIO_VALIDATION_20260305.md`.
+
+## Actualizacion operativa staging checks (run 22739570506) - 2026-03-05
+
+- `Remote Protected Checks (GitHub VM)` contra staging:
+  - run `22739570506` completado en `failure`.
+- Estado post-ajuste de secreto:
+  - autenticacion staging funcional (sin `401 Invalid credentials`);
+  - bloqueo actual no-live en staging:
+    - `g10_status=WARN` por `storage_persistent=false`;
+    - `breaker_ok=false` por `breaker_status=NO_DATA` en modo `strict=true`.
+- Campos canonicos:
+  - `overall_pass=false`
+  - `protected_checks_complete=true`
+  - `g10_status=WARN`
+  - `g9_status=WARN`
+  - `breaker_ok=false`
+  - `internal_proxy_status_ok=true`
+- Evidencia:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22739570506_20260305.md`.
+
+## Actualizacion operativa staging checks (run 22740010128) - 2026-03-05
+
+- `Remote Protected Checks (GitHub VM)` contra staging:
+  - run `22740010128` completado en `failure`.
+- Resultado:
+  - autenticacion staging confirmada (sin `401`);
+  - persisten bloqueos operativos no-live:
+    - `g10_status=WARN` por `storage_persistent=false`;
+    - `breaker_ok=false` por `breaker_status=NO_DATA` en `strict=true`.
+- Campos canonicos:
+  - `overall_pass=false`
+  - `protected_checks_complete=true`
+  - `g10_status=WARN`
+  - `g9_status=WARN`
+  - `breaker_ok=false`
+  - `internal_proxy_status_ok=true`
+- Evidencia:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22740010128_20260305.md`.
 
 ## Actualizacion tecnica AP-BOT-1033 (submit fail-closed sin reconciliacion valida) - 2026-03-05
 
