@@ -83,6 +83,8 @@ Fecha: 2026-03-05
   - `RuntimeBridge._runtime_exchange_ready(...)`
 - [x] Tests runtime agregados y en PASS:
   - `docs/audit/AP_BOT_1029_BIBLIO_VALIDATION_20260305.md`
+- [x] Revalidacion remota post-patch:
+  - `docs/audit/PROTECTED_CHECKS_GHA_22733869311_20260305.md`
 - [ ] Pendiente operativo:
   - seguir cerrando tramo runtime real para `G9_RUNTIME_ENGINE_REAL=PASS` en fase final.
 

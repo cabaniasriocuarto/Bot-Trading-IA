@@ -102,6 +102,9 @@
   - `test_runtime_exchange_ready_uses_cached_success_without_forced_refresh`
 - Evidencia:
   - `docs/audit/AP_BOT_1029_BIBLIO_VALIDATION_20260305.md`.
+- Revalidacion remota post-patch:
+  - run `22733869311` -> `success` (`strict=true`, `expect_g9=WARN`).
+  - reporte: `docs/audit/PROTECTED_CHECKS_GHA_22733869311_20260305.md`.
 
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:

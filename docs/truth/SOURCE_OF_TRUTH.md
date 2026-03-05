@@ -110,6 +110,8 @@ Fecha de actualizacion: 2026-03-05
   - `test_runtime_exchange_ready_uses_cached_success_without_forced_refresh`
 - Evidencia:
   - `docs/audit/AP_BOT_1029_BIBLIO_VALIDATION_20260305.md`
+- Revalidacion remota:
+  - `docs/audit/PROTECTED_CHECKS_GHA_22733869311_20260305.md` (`success`).
 - Estado:
   - cambio interno de runtime, sin impacto en contrato API.
 
