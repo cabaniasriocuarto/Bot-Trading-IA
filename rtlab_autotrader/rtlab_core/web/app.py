@@ -193,6 +193,7 @@ RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_ORD
 RUNTIME_REMOTE_ORDER_NOTIONAL_USD = max(5.0, _env_float("RUNTIME_REMOTE_ORDER_NOTIONAL_USD", 15.0))
 RUNTIME_REMOTE_ORDER_SYMBOL = str(os.getenv("RUNTIME_REMOTE_ORDER_SYMBOL", os.getenv("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))).strip().upper()
 RUNTIME_REMOTE_ORDER_SIDE = str(os.getenv("RUNTIME_REMOTE_ORDER_SIDE", "BUY")).strip().upper()
+RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC = max(1, _env_int("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", 20))
 BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
 BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
 BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
@@ -5310,6 +5311,30 @@ class RuntimeBridge:
             if delta > 0.0:
                 self._oms.apply_fill(order_id, delta)
 
+    def _close_absent_local_open_orders(
+        self,
+        *,
+        exchange_orders: dict[str, dict[str, Any]],
+    ) -> int:
+        if not isinstance(exchange_orders, dict):
+            return 0
+        remote_ids = {str(oid) for oid in exchange_orders.keys() if str(oid)}
+        if not remote_ids and not self._oms.open_orders():
+            return 0
+        now_dt = utc_now()
+        grace_sec = int(RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC)
+        closed = 0
+        for order in list(self._oms.open_orders()):
+            order_id = str(order.order_id or "")
+            if not order_id or order_id in remote_ids:
+                continue
+            age_sec = max(0.0, (now_dt - order.updated_at).total_seconds())
+            if age_sec < float(grace_sec):
+                continue
+            self._oms.cancel(order_id)
+            closed += 1
+        return int(closed)
+
     @staticmethod
     def _parse_exchange_open_orders_payload(payload: list[Any]) -> dict[str, dict[str, Any]]:
         parsed_orders: dict[str, dict[str, Any]] = {}
@@ -5727,9 +5752,12 @@ class RuntimeBridge:
             exchange_orders, source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
             if source_ok:
                 self._sync_oms_with_exchange_open_orders(exchange_orders)
+                closed_absent = self._close_absent_local_open_orders(exchange_orders=exchange_orders)
+                if closed_absent > 0:
+                    self._stats["requotes"] = self._stats.get("requotes", 0) + int(closed_absent)
         local_orders = {
             str(order.order_id): {"filled_qty": float(order.filled_qty)}
-            for order in self._oms.orders.values()
+            for order in self._oms.open_orders()
         }
         report = reconcile_orders(exchange_orders=exchange_orders, local_orders=local_orders)
         self._last_reconcile = {

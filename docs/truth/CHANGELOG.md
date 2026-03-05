@@ -50,6 +50,18 @@
 - Nota:
   - requiere rerun remoto de benchmark para verificar impacto final de `p95` en entorno productivo.
 
+### AP-8003 (runtime reconcile: open orders + cierre de ausentes)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_reconcile` usa `OMS.open_orders()` como espejo local para comparar contra `GET /api/v3/openOrders`.
+  - agregado cierre local de ordenes abiertas ausentes en exchange luego de `RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC` (default `20`).
+  - evita desync falso por ordenes locales ya cerradas (`FILLED`/terminal) fuera de `openOrders`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`.
+  - nuevo `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or runtime_stop_testnet_cancels_remote_open_orders_idempotently" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS (`11 passed`).
+
 ### Cleanroom docs + staging no-live (docops/devops)
 - Limpieza de documentacion vigente/historica:
   - movidos a `docs/_archive/*`: `BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `MASS_BACKTEST_DATA.md`, `research_mass_backtests.md`, `research_stack.md`, `FINAL_RELEASE_REPORT.md`, `DEPENDENCIES_COMPAT.md`, `UI_UX_RESEARCH_FIRST_FINAL.md`, `CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`.

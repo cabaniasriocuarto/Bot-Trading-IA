@@ -102,8 +102,10 @@ Leyenda de estado:
   - `rtlab_autotrader/rtlab_core/execution/reconciliation.py:17`
   - `rtlab_autotrader/rtlab_core/risk/risk_engine.py:19`
   - `rtlab_autotrader/rtlab_core/risk/kill_switch.py:15`
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`_reconcile` usa `open_orders` locales y cierra ausentes tras grace `RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`, `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`).
 - Brecha abierta:
-  - runtime ya consulta `openOrders` en no-paper para reconciliacion, pero falta loop broker/exchange completo de submit/fills reales para cierre total.
+  - runtime ya consulta `openOrders` en no-paper para reconciliacion y reduce desyncs falsos, pero falta loop broker/exchange completo de submit por señales + fills reales para cierre total.
 
 ## Quant, research y cerebro del bot
 

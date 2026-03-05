@@ -62,6 +62,23 @@ Fecha de actualizacion: 2026-03-04
   - optimizacion aplicada sin cambio de contrato API;
   - pendiente: rerun remoto de benchmark para confirmar impacto en `p95` productivo de forma estable.
 
+## Actualizacion tecnica AP-8003 (runtime reconcile open-orders fail-closed) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - reconciliacion runtime (`_reconcile`) compara `openOrders` del exchange contra `OMS.open_orders()` (no contra ordenes locales cerradas);
+  - nuevo cierre local de ordenes abiertas ausentes en exchange tras grace configurable:
+    - `RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC` (default `20`);
+  - objetivo: evitar desync falso persistente por ordenes ya cerradas/finalizadas.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`.
+  - nuevo `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or runtime_stop_testnet_cancels_remote_open_orders_idempotently" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS (`11 passed`).
+- Estado:
+  - mitigacion adicional sobre `FM-EXEC-001/FM-EXEC-005/FM-RISK-002`;
+  - LIVE permanece **NO GO** hasta cierre completo del loop broker/exchange end-to-end.
+
 ## Actualizacion cleanroom docs + staging NO-LIVE (2026-03-04)
 
 - Se aplico limpieza de documentacion para reducir confusion operativa:

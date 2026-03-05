@@ -64,6 +64,20 @@ Fecha: 2026-03-04
 - [ ] Pendiente de cierre:
   - rerun benchmark remoto para confirmar `p95` estable en entorno productivo (objetivo `< 300ms` sostenido).
 
+## Actualizacion tecnica AP-8003 (2026-03-04)
+- [x] Reconciliacion runtime alineada a semantica real de `openOrders`:
+  - compara exchange vs `OMS.open_orders()` (no incluye ordenes locales cerradas).
+- [x] Cierre de ordenes locales abiertas ausentes en exchange con grace:
+  - `RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC` (default `20`).
+- [x] Tests nuevos de regresion runtime en verde:
+  - `test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`
+  - `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or runtime_stop_testnet_cancels_remote_open_orders_idempotently" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS (`11 passed`).
+- Pendiente inmediato:
+  - completar wiring de ejecucion real por señales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
+
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
 - [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
 - [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.

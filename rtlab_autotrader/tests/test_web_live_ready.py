@@ -5,6 +5,7 @@ import io
 import json
 import time
 import zipfile
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -567,6 +568,101 @@ def test_runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progres
   assert float(order_2.filled_qty) == pytest.approx(0.5)
   assert synced_2["runtime_telemetry_source"] == module.RUNTIME_TELEMETRY_SOURCE_REAL
   assert bool(synced_2.get("runtime_reconciliation_ok")) is True
+
+
+def test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      return True, {"status_code": 200, "payload": []}
+    if path == "/api/v3/account" and method_u == "GET":
+      return True, {"status_code": 200, "payload": {"balances": []}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+  module.runtime_bridge._oms.submit(
+    module.Order(order_id="oid-filled-local-1", symbol="BTCUSDT", side=module.Side.LONG, qty=1.0)
+  )
+  module.runtime_bridge._oms.apply_fill("oid-filled-local-1", 1.0)
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced = module._sync_runtime_state(state, persist=False)
+  assert bool(synced.get("runtime_reconciliation_ok")) is True
+  assert synced["runtime_telemetry_source"] == module.RUNTIME_TELEMETRY_SOURCE_REAL
+  reconcile = module.runtime_bridge._last_reconcile
+  assert list(reconcile.get("missing_exchange") or []) == []
+
+
+def test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", "1")
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      return True, {"status_code": 200, "payload": []}
+    if path == "/api/v3/account" and method_u == "GET":
+      return True, {"status_code": 200, "payload": {"balances": []}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+  old_order = module.runtime_bridge._oms.submit(
+    module.Order(order_id="oid-open-stale-1", symbol="BTCUSDT", side=module.Side.LONG, qty=1.0)
+  )
+  old_order.updated_at = old_order.updated_at - timedelta(seconds=120)
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced = module._sync_runtime_state(state, persist=False)
+  assert bool(synced.get("runtime_reconciliation_ok")) is True
+  closed = module.runtime_bridge._oms.orders.get("oid-open-stale-1")
+  assert closed is not None
+  assert closed.status in {module.OrderStatus.CANCELED, module.OrderStatus.STALE}
 
 
 def test_runtime_stop_testnet_cancels_remote_open_orders_idempotently(tmp_path: Path, monkeypatch) -> None:
