@@ -96,6 +96,15 @@
   - `breaker_ok=true`
   - `internal_proxy_status_ok=true`
 
+### AP-BOT-1022 (refresh de closeout no-live)
+- `docs/audit/NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md`:
+  - agregado refresh de evidencia del dia (`2026-03-05`) con runs:
+    - benchmark `22706414197` (`PASS`),
+    - protected checks `22731722376` (`PASS`).
+- Estado operativo consolidado:
+  - no-live/testnet se mantiene `GO`;
+  - LIVE permanece `NO GO` por decision operativa (fase final).
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)

@@ -353,6 +353,15 @@ Fecha: 2026-03-05
 - Pendiente inmediato:
   - cierre final de runtime real para mover `G9_RUNTIME_ENGINE_REAL` a `PASS` (sin habilitar LIVE aun).
 
+## Actualizacion tecnica AP-BOT-1022 (2026-03-05)
+- [x] Refresh del closeout no-live completado:
+  - `docs/audit/NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md` actualizado con evidencia fresh:
+    - benchmark `22706414197` PASS;
+    - protected checks `22731722376` PASS.
+- [x] Estado no-live/testnet consolidado en `GO` con evidencia actualizada.
+- [ ] Pendiente unico de tramo final:
+  - mover `G9_RUNTIME_ENGINE_REAL` a `PASS` al final del programa, junto con habilitacion live controlada (APIs + canary + rollback).
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
 - [x] Cerrada validacion bibliografica completa por patch:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.

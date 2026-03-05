@@ -28,3 +28,32 @@ Estado objetivo: cierre no-live/testnet con LIVE postergado por decision operati
 1. Cierre final end-to-end de ejecucion real en entorno LIVE con APIs finales configuradas.
 2. Canary + rollback + observabilidad de produccion para etapa LIVE.
 3. Validacion operativa final con credenciales definitivas (fuera de este tramo no-live).
+
+---
+
+## Refresh de evidencia (2026-03-05)
+
+- Benchmark remoto GitHub VM: PASS
+  - run: `22706414197`
+  - `p95_ms=184.546`
+  - `server_p95_ms=0.07`
+  - `rate_limit_retries=0`
+  - evidencia: `docs/audit/BOTS_OVERVIEW_BENCHMARK_GHA_22706414197_20260305.md`
+
+- Protected checks remotos GitHub VM (`strict=true`): PASS
+  - run: `22731722376`
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en no-live)
+  - `breaker_ok=true`
+  - `internal_proxy_status_ok=true`
+  - evidencia: `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`
+
+- Runtime hardening adicional aplicado:
+  - `AP-BOT-1019`: limpieza de `runtime_last_remote_submit_reason` fuera de runtime real.
+  - `AP-BOT-1020`: reconciliacion avanzada `PENDING_CANCEL` / `EXPIRED_IN_MATCH`.
+
+Conclusion refresh:
+- No-live/testnet se mantiene `GO` con evidencia actualizada.
+- LIVE sigue `NO GO` por decision operativa (tramo final con APIs/canary).
