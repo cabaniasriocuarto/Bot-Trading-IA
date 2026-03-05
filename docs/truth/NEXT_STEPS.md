@@ -46,6 +46,7 @@ Fecha: 2026-03-04
 - [x] Baseline canónica versionada para CI:
   - `docs/security/gitleaks-baseline.json`
   - `scripts/security_scan.sh` actualizado para usarla por defecto.
+- [x] `setup-python` en Security CI alineado a `3.11`.
 - [ ] Pendiente validar corrida verde en GitHub Actions (`Security CI`) para cerrar `FM-SEC-004`.
 - Evidencia local:
   - cambio en `/.github/workflows/security-ci.yml` (paso `Install security tooling`).

@@ -20,6 +20,7 @@
 
 ### AP-8002 (security CI: instalacion robusta de gitleaks)
 - `.github/workflows/security-ci.yml`:
+  - `setup-python` alineado a `3.11` (coherente con workflows operativos remotos).
   - reemplazada instalacion via script `master/install.sh` por descarga de release oficial:
     - `gitleaks_8.30.0_linux_x64.tar.gz`
   - agregado `curl` con retries y timeout para runners GitHub.
