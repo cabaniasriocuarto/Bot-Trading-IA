@@ -34,6 +34,9 @@
   - `docs/security/gitleaks-baseline.json` (redactado).
 - Resultado esperado:
   - reducir fallos espurios en `Install security tooling` y en `Run security scan (strict)` por baseline/history mismatch, facilitando cierre de `FM-SEC-004` al rerun del workflow.
+- Evidencia de cierre:
+  - GitHub Actions `Security CI` run `22697627615` en `success` (job `security` id `65807494809`).
+  - `FM-SEC-004` actualizado a `CERRADO` en `docs/audit/FINDINGS_MASTER_20260304.md`.
 
 ### AP-8007 (unificacion de thresholds de gates)
 - `rtlab_autotrader/rtlab_core/learning/service.py`:

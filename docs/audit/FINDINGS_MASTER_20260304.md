@@ -40,14 +40,12 @@ Leyenda de estado:
 
 ### FM-SEC-004 - Security CI en repo root y branch protection
 - Severidad: HIGH
-- Estado: MITIGADO
-- Impacto: gate bloqueante de seguridad ya aplicado en `main`; resta estabilizar corrida verde inicial del workflow.
+- Estado: CERRADO
+- Impacto: gate bloqueante de seguridad activo y estable en branch protegida.
 - Evidencia:
   - `/.github/workflows/security-ci.yml` versionado en repo.
   - Branch protection API: `required_status_checks.strict=true`, `contexts=["security"]`.
-  - Run inicial `Security CI`: `22674323602` (`failure` en paso `Install security tooling`).
-- Brecha abierta:
-  - falta una corrida verde post-fix del workflow (`gitleaks` en `RUNNER_TEMP/bin`).
+  - Run `Security CI` verde post-fix: `22697627615` (`success`, job `security` id `65807494809`).
 
 ## Ejecucion y runtime operativo
 

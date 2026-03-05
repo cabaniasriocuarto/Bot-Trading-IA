@@ -31,7 +31,9 @@ Fecha de actualizacion: 2026-03-04
   - `scripts/security_scan.sh` usa baseline canonica versionada en `docs/security/gitleaks-baseline.json` (con override opcional por `GITLEAKS_BASELINE_PATH`).
 - Estado:
   - root-cause del fail en `Security CI` identificado: clone shallow (`fetch-depth=1`) + baseline historica de gitleaks;
-  - fix aplicado en workflow (`fetch-depth: 0`), pendiente rerun verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
+  - fix aplicado en workflow (`fetch-depth: 0`) y validado en GitHub Actions:
+    - run `22697627615`: `success` (job `security` `65807494809`);
+  - `FM-SEC-004` queda en `CERRADO`;
   - no se toco runtime ni logica de trading.
 
 ## Actualizacion tecnica AP-8007 (gates canonicos sin fallback permisivo) - 2026-03-04
