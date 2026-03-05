@@ -2,6 +2,31 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion tecnica AP-BOT-1030 (automatizacion checks protegidos GH VM) - 2026-03-05
+
+- Nuevo script:
+  - `scripts/run_protected_checks_github_vm.ps1`
+- Objetivo:
+  - ejecutar `Remote Protected Checks (GitHub VM)` desde PowerShell local sin depender de `gh` en `PATH`;
+  - extraer automaticamente los 6 campos de cierre desde artifacts oficiales del run.
+- Flujo implementado:
+  - dispatch por `workflow_dispatch` (`remote-protected-checks.yml`);
+  - polling de estado hasta completion;
+  - descarga de artifact `protected-checks-<run_id>`;
+  - parseo del JSON `ops_protected_checks_gha_<run_id>_*.json`;
+  - emision de resumen `artifacts/protected_checks_gha_<run_id>/protected_checks_summary_<run_id>.json`.
+- Revalidacion operativa:
+  - run `22734260830` en `success`:
+    - `overall_pass=true`
+    - `protected_checks_complete=true`
+    - `g10_status=PASS`
+    - `g9_status=WARN`
+    - `breaker_ok=true`
+    - `internal_proxy_status_ok=true`
+  - evidencia: `docs/audit/PROTECTED_CHECKS_GHA_22734260830_20260305.md`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1030_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-BOT-1023 (smoke staging automatizado) - 2026-03-05
 
 - `scripts/staging_smoke_report.py` (nuevo):

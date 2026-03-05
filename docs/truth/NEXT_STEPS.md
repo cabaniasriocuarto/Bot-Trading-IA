@@ -39,6 +39,7 @@ Fecha: 2026-03-05
   - `docs/audit/AP_BOT_1024_BIBLIO_VALIDATION_20260305.md`
 - [ ] Pendiente operativo:
   - correr al menos 1 run remoto del workflow y registrar artefacto en `docs/audit/`.
+  - nota: hoy el workflow todavia no existe en `main`; `gh workflow run staging-smoke.yml` devuelve `404` hasta merge a branch por defecto.
 
 ## Actualizacion tecnica AP-BOT-1025 (2026-03-05)
 - [x] Fix workflow `remote-protected-checks` en rama tecnica:
@@ -87,6 +88,23 @@ Fecha: 2026-03-05
   - `docs/audit/PROTECTED_CHECKS_GHA_22733869311_20260305.md`
 - [ ] Pendiente operativo:
   - seguir cerrando tramo runtime real para `G9_RUNTIME_ENGINE_REAL=PASS` en fase final.
+
+## Actualizacion tecnica AP-BOT-1030 (2026-03-05)
+- [x] Script de automatizacion GitHub VM agregado:
+  - `scripts/run_protected_checks_github_vm.ps1`
+- [x] Revalidacion remota automatizada en `success`:
+  - `docs/audit/PROTECTED_CHECKS_GHA_22734260830_20260305.md`
+  - campos canonicos:
+    - `overall_pass=true`
+    - `protected_checks_complete=true`
+    - `g10_status=PASS`
+    - `g9_status=WARN`
+    - `breaker_ok=true`
+    - `internal_proxy_status_ok=true`
+- [x] Validacion bibliografica del patch:
+  - `docs/audit/AP_BOT_1030_BIBLIO_VALIDATION_20260305.md`
+- [ ] Pendiente operativo:
+  - mantener este script como runner canonico de checks protegidos en releases no-live.
 
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.

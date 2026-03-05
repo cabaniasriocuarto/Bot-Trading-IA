@@ -2,6 +2,26 @@
 
 ## 2026-03-05
 
+### AP-BOT-1030 (automatizacion de protected checks en GitHub VM)
+- Nuevo script operativo:
+  - `scripts/run_protected_checks_github_vm.ps1`.
+- Cobertura:
+  - detecta `gh.exe` aun si no esta en `PATH` (rutas tipicas Windows);
+  - dispara `remote-protected-checks.yml` por `workflow_dispatch`;
+  - espera completion, descarga artifacts y parsea JSON del reporte;
+  - extrae automaticamente los 6 campos canonicos:
+    - `overall_pass`
+    - `protected_checks_complete`
+    - `g10_status`
+    - `g9_status`
+    - `breaker_ok`
+    - `internal_proxy_status_ok`
+- Revalidacion operativa post-patch:
+  - run `22734260830` -> `success`.
+  - evidencia: `docs/audit/PROTECTED_CHECKS_GHA_22734260830_20260305.md`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1030_BIBLIO_VALIDATION_20260305.md`.
+
 ### Remote protected checks (rerun estricto)
 - Workflow `Remote Protected Checks (GitHub VM)` re-ejecutado con defaults y `strict=true`:
   - run `22704105623` -> `success`.
