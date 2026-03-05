@@ -188,6 +188,7 @@ BOTS_LOGS_REF_BACKFILL_MAX_ROWS = max(1000, _env_int("BOTS_LOGS_REF_BACKFILL_MAX
 RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC", 30))
 RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS", 2000))
 RUNTIME_REMOTE_ORDERS_ENABLED = _env_bool("RUNTIME_REMOTE_ORDERS_ENABLED", False)
+LIVE_TRADING_ENABLED = _env_bool("LIVE_TRADING_ENABLED", False)
 RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC", 60))
 RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS", 2000))
 RUNTIME_REMOTE_ORDER_NOTIONAL_USD = max(5.0, _env_float("RUNTIME_REMOTE_ORDER_NOTIONAL_USD", 15.0))
@@ -5821,6 +5822,18 @@ class RuntimeBridge:
         signal_side = str(intent.get("side") or "").strip().upper()
         signal_action = str(intent.get("action") or "flat").strip().lower()
         signal_reason = str(intent.get("reason") or "").strip()
+
+        if mode_n == "live" and not bool(LIVE_TRADING_ENABLED):
+            return {
+                "submitted": False,
+                "reason": "live_trading_disabled",
+                "error": "LIVE_TRADING_ENABLED=false",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
 
         if signal_action != "trade":
             return {

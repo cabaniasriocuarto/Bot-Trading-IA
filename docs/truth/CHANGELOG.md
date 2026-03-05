@@ -16,6 +16,19 @@
   - se confirma continuidad del cierre no-live en verde;
   - LIVE permanece en `NO GO` hasta cierre de runtime real end-to-end y activacion final de APIs live.
 
+### AP-BOT-1016 (guard fail-closed para submit en `live`)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - nueva variable `LIVE_TRADING_ENABLED` (default `false`);
+  - `RuntimeBridge._maybe_submit_exchange_runtime_order(...)` bloquea submit remoto en `mode=live` cuando `LIVE_TRADING_ENABLED=false`;
+  - retorna `reason=live_trading_disabled` + `error=LIVE_TRADING_ENABLED=false` para trazabilidad operativa.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo test `test_runtime_sync_live_skips_submit_when_live_trading_disabled`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "strategy_signal_flat_skips_remote_submit or strategy_signal_meanreversion_submits_sell or skips_submit_when_risk_blocks_current_cycle or live_skips_submit_when_live_trading_disabled" -q` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new or runtime_sync_testnet_updates_absent_open_order_partial_fill_from_order_status or runtime_sync_testnet_marks_absent_open_order_rejected_from_order_status" -q` -> PASS (`6 passed`).
+- Revalidacion bibliografica:
+  - `docs/audit/AP_BOT_1016_BIBLIO_VALIDATION_20260305.md`.
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)

@@ -439,6 +439,27 @@ Fecha de actualizacion: 2026-03-05
 - Criterio aplicado:
   - misma base bibliografica de AP-BOT-1012 para semantica de estados de orden.
 
+## Actualizacion tecnica AP-BOT-1016 (guard no-live para submit en `live`) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - nueva bandera canonica: `LIVE_TRADING_ENABLED` (default `false`);
+  - en `RuntimeBridge._maybe_submit_exchange_runtime_order(...)`:
+    - para `mode=live`, bloquea submit de orden remota cuando `LIVE_TRADING_ENABLED=false`;
+    - devuelve `reason=live_trading_disabled` y `error=LIVE_TRADING_ENABLED=false` (fail-closed), preservando trazabilidad de senal.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - agregado `test_runtime_sync_live_skips_submit_when_live_trading_disabled`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "strategy_signal_flat_skips_remote_submit or strategy_signal_meanreversion_submits_sell or skips_submit_when_risk_blocks_current_cycle or live_skips_submit_when_live_trading_disabled" -q` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new or runtime_sync_testnet_updates_absent_open_order_partial_fill_from_order_status or runtime_sync_testnet_marks_absent_open_order_rejected_from_order_status" -q` -> PASS (`6 passed`).
+- Estado:
+  - staging/no-live queda mas robusto contra activacion accidental de submit en `live`;
+  - LIVE sigue **NO GO** por decision operativa hasta tramo final con APIs reales/canary.
+
+## Revalidacion bibliografica AP-BOT-1016 - 2026-03-05
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1016_BIBLIO_VALIDATION_20260305.md`.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:
