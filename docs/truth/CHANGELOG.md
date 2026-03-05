@@ -2,6 +2,19 @@
 
 ## 2026-03-05
 
+### AP-BOT-1031 (fail-closed por orden local no verificada)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_close_absent_local_open_orders(...)` ya no cierra localmente si falla `order status`; conserva la orden abierta.
+  - `_maybe_submit_exchange_runtime_order(...)` bloquea submit remoto cuando existen ordenes locales abiertas no verificadas (`local_open_orders_present`).
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - renombrado/ajustado test de reconciliacion por fallo de `order status`;
+  - nuevo test que verifica bloqueo de submit con orden local abierta no verificada.
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1031_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1030 (automatizacion de protected checks en GitHub VM)
 - Nuevo script operativo:
   - `scripts/run_protected_checks_github_vm.ps1`.

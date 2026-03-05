@@ -2,6 +2,22 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion tecnica AP-BOT-1031 (runtime fail-closed ante orden no verificada) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_close_absent_local_open_orders(...)` ahora preserva orden local cuando falla `GET /api/v3/order` (sin cierre ciego);
+  - `_maybe_submit_exchange_runtime_order(...)` agrega guard `local_open_orders_present` para bloquear submit remoto si queda orden local abierta no verificada.
+- Objetivo:
+  - evitar duplicacion de ordenes por vacio transitorio de `openOrders` + error de `order status`.
+- Tests de regresion:
+  - `test_runtime_sync_testnet_keeps_absent_local_open_order_when_order_status_fetch_fails`
+  - `test_runtime_sync_testnet_skips_submit_when_local_open_orders_remain_unverified`
+- Evidencia de validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1031_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-BOT-1030 (automatizacion checks protegidos GH VM) - 2026-03-05
 
 - Nuevo script:

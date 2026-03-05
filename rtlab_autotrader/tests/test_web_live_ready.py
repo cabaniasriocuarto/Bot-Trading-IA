@@ -617,7 +617,7 @@ def test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconci
   assert list(reconcile.get("missing_exchange") or []) == []
 
 
-def test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace(tmp_path: Path, monkeypatch) -> None:
+def test_runtime_sync_testnet_keeps_absent_local_open_order_when_order_status_fetch_fails(tmp_path: Path, monkeypatch) -> None:
   monkeypatch.setenv("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", "1")
   module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
   monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
@@ -659,10 +659,10 @@ def test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace(tmp_pa
   state["killed"] = False
 
   synced = module._sync_runtime_state(state, persist=False)
-  assert bool(synced.get("runtime_reconciliation_ok")) is True
+  assert bool(synced.get("runtime_reconciliation_ok")) is False
   closed = module.runtime_bridge._oms.orders.get("oid-open-stale-1")
   assert closed is not None
-  assert closed.status in {module.OrderStatus.CANCELED, module.OrderStatus.STALE}
+  assert closed.status in {module.OrderStatus.SUBMITTED, module.OrderStatus.PARTIALLY_FILLED}
 
 
 def test_runtime_sync_testnet_marks_absent_open_order_filled_from_order_status(tmp_path: Path, monkeypatch) -> None:
@@ -1155,6 +1155,81 @@ def test_runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disable
   assert str(synced.get("runtime_last_remote_submit_at") or "") == ""
   assert str(synced.get("runtime_last_remote_client_order_id") or "") == ""
   assert str(synced.get("runtime_last_remote_submit_error") or "") == ""
+
+
+def test_runtime_sync_testnet_skips_submit_when_local_open_orders_remain_unverified(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", "1")
+  monkeypatch.setenv("RUNTIME_REMOTE_ORDERS_ENABLED", "1")
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+
+  monkeypatch.setattr(
+    module.runtime_bridge,
+    "_runtime_order_intent",
+    lambda mode: {
+      "action": "trade",
+      "strategy_id": "mean_reversion",
+      "symbol": "BTCUSDT",
+      "side": "BUY",
+      "notional_usd": 25.0,
+      "reason": "test_intent",
+    },
+  )
+
+  calls = {"open_orders_get": 0, "account_get": 0, "order_status_get": 0, "order_post": 0}
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      calls["open_orders_get"] += 1
+      return True, {"status_code": 200, "payload": []}
+    if path == "/api/v3/account" and method_u == "GET":
+      calls["account_get"] += 1
+      return True, {"status_code": 200, "payload": {"balances": []}}
+    if path == "/api/v3/order" and method_u == "GET":
+      calls["order_status_get"] += 1
+      return False, {"status_code": 502, "payload": {"msg": "upstream timeout"}}
+    if path == "/api/v3/order" and method_u == "POST":
+      calls["order_post"] += 1
+      return True, {"status_code": 200, "payload": {"clientOrderId": "unexpected", "orderId": 1, "origQty": "0.001", "executedQty": "0.0"}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+  stale_local = module.runtime_bridge._oms.submit(
+    module.Order(order_id="oid-open-unverified-1", symbol="BTCUSDT", side=module.Side.LONG, qty=0.001)
+  )
+  stale_local.updated_at = stale_local.updated_at - timedelta(seconds=10)
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced = module._sync_runtime_state(state, persist=False)
+  assert calls["order_status_get"] >= 1
+  assert calls["order_post"] == 0
+  assert str(synced.get("runtime_last_remote_submit_reason") or "") == "local_open_orders_present"
+  assert bool(synced.get("runtime_reconciliation_ok")) is False
+  kept = module.runtime_bridge._oms.orders.get("oid-open-unverified-1")
+  assert kept is not None
+  assert kept.status in {module.OrderStatus.SUBMITTED, module.OrderStatus.PARTIALLY_FILLED}
 
 
 def test_runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency(tmp_path: Path, monkeypatch) -> None:

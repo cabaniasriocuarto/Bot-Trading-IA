@@ -106,6 +106,17 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - mantener este script como runner canonico de checks protegidos en releases no-live.
 
+## Actualizacion tecnica AP-BOT-1031 (2026-03-05)
+- [x] Runtime fail-closed ante orden local no verificada:
+  - no cerrar localmente cuando `order status` falla;
+  - bloquear submit remoto si hay orden local abierta no verificada.
+- [x] Tests de regresion en verde:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q`
+- [x] Validacion bibliografica:
+  - `docs/audit/AP_BOT_1031_BIBLIO_VALIDATION_20260305.md`
+- [ ] Pendiente operativo:
+  - completar tramo runtime real restante para llevar `G9_RUNTIME_ENGINE_REAL` a `PASS` al final del programa.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:

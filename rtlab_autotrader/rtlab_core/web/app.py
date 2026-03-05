@@ -5381,6 +5381,9 @@ class RuntimeBridge:
                     continue
                 if not status_ok and str(status_reason or "").strip():
                     self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                # Fail-closed: si no podemos confirmar estado remoto, no cerrar localmente.
+                order.updated_at = now_dt
+                continue
             self._oms.cancel(order_id)
             closed += 1
         return int(closed)
@@ -5927,6 +5930,18 @@ class RuntimeBridge:
                 "submitted": False,
                 "reason": "open_orders_present",
                 "open_orders": len(exchange_orders),
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+        local_open_orders = self._oms.open_orders()
+        if local_open_orders:
+            return {
+                "submitted": False,
+                "reason": "local_open_orders_present",
+                "open_orders": len(local_open_orders),
                 "signal_action": signal_action,
                 "signal_reason": signal_reason,
                 "signal_strategy_id": signal_strategy_id,
