@@ -6,6 +6,7 @@ Este archivo centraliza la documentacion vigente del proyecto.
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/NEXT_STEPS.md`
 - `docs/truth/CHANGELOG.md`
+- `docs/audit/STAGING_SMOKE_20260305.md`
 - `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`
 - `docs/audit/AP_BOT_1020_BIBLIO_VALIDATION_20260305.md`
 - `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`

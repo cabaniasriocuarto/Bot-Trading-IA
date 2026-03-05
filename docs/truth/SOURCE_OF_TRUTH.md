@@ -2,6 +2,26 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion tecnica AP-BOT-1023 (smoke staging automatizado) - 2026-03-05
+
+- `scripts/staging_smoke_report.py` (nuevo):
+  - smoke no-live para staging con salida `json/md` en `artifacts/`;
+  - valida `frontend /login`, `backend /api/v1/health`, modo no-live (`paper/testnet`) y `runtime_ready_for_live=false`;
+  - valida `/api/v1/bots` solo cuando hay token/credenciales disponibles.
+- Evidencia operativa:
+  - `docs/audit/STAGING_SMOKE_20260305.md`
+  - corrida: `python scripts/staging_smoke_report.py --report-prefix artifacts/staging_smoke_ghafree`.
+- Resultado de la corrida de referencia:
+  - `front_login_status_code=200`
+  - `health_ok=true`
+  - `health_mode=paper`
+  - `runtime_ready_for_live=false`
+  - `overall_pass=true`
+- Trazabilidad de autenticacion:
+  - en esta corrida local: `NO_EVIDENCE_NO_SECRET` para checks autenticados (sin `RTLAB_AUTH_TOKEN`/`RTLAB_ADMIN_PASSWORD` locales).
+  - cobertura autenticada completa mantenida por reporte remoto:
+    - `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`.
+
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
 - `rtlab_dashboard/src/lib/security.ts`:

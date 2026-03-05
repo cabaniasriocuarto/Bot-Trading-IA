@@ -18,14 +18,18 @@ Fecha: 2026-03-05
   - `docs/security/LOGGING_POLICY.md` (CWE-532).
 
 ## Proximo tramo operativo (sin habilitar LIVE)
-1. Ejecutar smoke diario en staging (login + `/api/v1/health` + `/api/v1/bots`) y registrar evidencia en `docs/audit/`.
-2. Mantener enforcement no-live en entornos de prueba:
+1. [x] Ejecutado smoke de staging del dia y evidencia registrada:
+   - `docs/audit/STAGING_SMOKE_20260305.md`
+   - comando: `python scripts/staging_smoke_report.py --report-prefix artifacts/staging_smoke_ghafree`
+2. Mantener smoke diario en staging (login + `/api/v1/health` + `/api/v1/bots`) y registrar evidencia en `docs/audit/`.
+   - Nota: si faltan secretos locales, el script marca `NO_EVIDENCE_NO_SECRET` para checks autenticados.
+3. Mantener enforcement no-live en entornos de prueba:
    - `LIVE_TRADING_ENABLED=false`
    - `KILL_SWITCH_ENABLED=true`
    - `MODE/TRADING_MODE=paper` (o `testnet` cuando aplique).
-3. Cerrar pendientes tecnicos de runtime end-to-end (orden/fill/reconciliacion/costos) antes de cualquier canary LIVE.
-4. Revalidar security CI y branch protection en cada release de hardening.
-5. Preparar checklist final paper -> testnet -> canary -> live (sin ejecutar live hasta aprobacion explicita).
+4. Cerrar pendientes tecnicos de runtime end-to-end (orden/fill/reconciliacion/costos) antes de cualquier canary LIVE.
+5. Revalidar security CI y branch protection en cada release de hardening.
+6. Preparar checklist final paper -> testnet -> canary -> live (sin ejecutar live hasta aprobacion explicita).
 
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.

@@ -16,6 +16,19 @@
   - se confirma continuidad del cierre no-live en verde;
   - LIVE permanece en `NO GO` hasta cierre de runtime real end-to-end y activacion final de APIs live.
 
+### AP-BOT-1023 (smoke staging automatizado + evidencia)
+- Nuevo script de smoke no-live:
+  - `scripts/staging_smoke_report.py`
+  - verifica `frontend /login`, `backend /api/v1/health`, guardas de modo no-live y, cuando hay credenciales, `/api/v1/bots`.
+  - salida en `json` + `md` bajo `artifacts/staging_smoke_*`.
+- Evidencia registrada:
+  - `docs/audit/STAGING_SMOKE_20260305.md`.
+- Corrida validada:
+  - `python scripts/staging_smoke_report.py --report-prefix artifacts/staging_smoke_ghafree` -> PASS (`overall_pass=true`).
+- Nota de seguridad/operacion:
+  - en esta corrida local no hubo secretos cargados (`RTLAB_AUTH_TOKEN`/`RTLAB_ADMIN_PASSWORD`), por eso el check autenticado queda explicitado como `NO_EVIDENCE_NO_SECRET`.
+  - la validacion autenticada completa sigue cubierta por `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`.
+
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - nueva variable `LIVE_TRADING_ENABLED` (default `false`);
