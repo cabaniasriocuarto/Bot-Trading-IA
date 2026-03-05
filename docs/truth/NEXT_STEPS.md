@@ -41,6 +41,7 @@ Fecha: 2026-03-04
 
 ## Actualizacion tecnica AP-8002 (2026-03-04)
 - [x] Workflow `security-ci` endurecido para instalar `gitleaks` desde release oficial versionado (`8.30.0`) con retries.
+- [x] Fallback agregado a install script versionado (`v8.30.0`) + check fail-closed de binario instalado.
 - [ ] Pendiente validar corrida verde en GitHub Actions (`Security CI`) para cerrar `FM-SEC-004`.
 - Evidencia local:
   - cambio en `/.github/workflows/security-ci.yml` (paso `Install security tooling`).

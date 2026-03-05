@@ -22,7 +22,9 @@ Fecha de actualizacion: 2026-03-04
 - `.github/workflows/security-ci.yml`:
   - instalacion de `gitleaks` cambia a binario oficial versionado (`8.30.0`) desde release de GitHub;
   - se elimina dependencia del install script remoto `master/install.sh` (mas fragil);
-  - descarga con `curl --retry` + `tar` + `chmod` para reducir fallos transitorios en runners.
+  - descarga con `curl --retry` + `tar` + `chmod` para reducir fallos transitorios en runners;
+  - fallback a install script versionado (`v8.30.0`) si el tarball falla;
+  - verificacion fail-closed de binario instalado (`$RUNNER_TEMP/bin/gitleaks`).
 - Estado:
   - queda pendiente validar corrida verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
   - no se toco runtime ni logica de trading.

@@ -23,6 +23,8 @@
   - reemplazada instalacion via script `master/install.sh` por descarga de release oficial:
     - `gitleaks_8.30.0_linux_x64.tar.gz`
   - agregado `curl` con retries y timeout para runners GitHub.
+  - agregado fallback a install script versionado (`v8.30.0`) si la descarga tarball falla.
+  - agregado check explicito de binario ejecutable (`$RUNNER_TEMP/bin/gitleaks`) con error claro si no queda instalado.
   - extraccion directa a `RUNNER_TEMP/bin` y validacion de `gitleaks version`.
 - Resultado esperado:
   - reducir fallos espurios en `Install security tooling` y facilitar cierre de `FM-SEC-004` al rerun del workflow.

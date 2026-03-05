@@ -36,15 +36,24 @@ jobs:
 
       - name: Install security tooling
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install pip-audit
           mkdir -p "$RUNNER_TEMP/bin"
           GITLEAKS_VERSION="8.30.0"
           GITLEAKS_TAR="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           GITLEAKS_URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${GITLEAKS_TAR}"
-          curl -sSfL --retry 4 --retry-delay 2 --connect-timeout 20 "${GITLEAKS_URL}" -o "/tmp/${GITLEAKS_TAR}"
-          tar -xzf "/tmp/${GITLEAKS_TAR}" -C "$RUNNER_TEMP/bin" gitleaks
-          chmod +x "$RUNNER_TEMP/bin/gitleaks"
+          if curl -sSfL --retry 4 --retry-delay 2 --connect-timeout 20 "${GITLEAKS_URL}" -o "/tmp/${GITLEAKS_TAR}"; then
+            tar -xzf "/tmp/${GITLEAKS_TAR}" -C "$RUNNER_TEMP/bin" gitleaks || true
+          fi
+          if [[ ! -x "$RUNNER_TEMP/bin/gitleaks" ]]; then
+            curl -sSfL "https://raw.githubusercontent.com/gitleaks/gitleaks/v${GITLEAKS_VERSION}/install.sh" | bash -s -- -b "$RUNNER_TEMP/bin" "v${GITLEAKS_VERSION}"
+          fi
+          if [[ ! -x "$RUNNER_TEMP/bin/gitleaks" ]]; then
+            echo "::error ::No se pudo instalar gitleaks."
+            ls -la "$RUNNER_TEMP/bin" || true
+            exit 1
+          fi
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           gitleaks version
 
