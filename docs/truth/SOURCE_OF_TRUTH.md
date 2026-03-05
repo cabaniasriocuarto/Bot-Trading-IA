@@ -460,6 +460,26 @@ Fecha de actualizacion: 2026-03-05
 - Se agrega respaldo bibliografico local-first del AP en:
   - `docs/audit/AP_BOT_1016_BIBLIO_VALIDATION_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1017 (telemetria de motivo de submit runtime) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `RuntimeBridge.sync_runtime_state(...)` persiste `runtime_last_remote_submit_reason` en cada ciclo de submit/skip;
+  - `_maybe_submit_exchange_runtime_order(...)` retorna `reason=submitted` cuando la orden se envia correctamente (ademas de razones de skip fail-closed ya existentes).
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell` valida `runtime_last_remote_submit_reason=submitted`;
+  - `test_runtime_sync_live_skips_submit_when_live_trading_disabled` valida `runtime_last_remote_submit_reason=live_trading_disabled`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "strategy_signal_meanreversion_submits_sell or live_skips_submit_when_live_trading_disabled or strategy_signal_flat_skips_remote_submit or skips_submit_when_risk_blocks_current_cycle" -q` -> PASS (`4 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Estado:
+  - mejora observabilidad operativa del runtime para diagnostico de por que se envio/no se envio orden en cada loop;
+  - LIVE sigue **NO GO** por decision operativa hasta cierre final.
+
+## Revalidacion bibliografica AP-BOT-1017 - 2026-03-05
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1017_BIBLIO_VALIDATION_20260305.md`.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:

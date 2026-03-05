@@ -5988,6 +5988,7 @@ class RuntimeBridge:
 
         return {
             "submitted": True,
+            "reason": "submitted",
             "client_order_id": order_id,
             "symbol": symbol,
             "side": side,
@@ -6397,6 +6398,7 @@ class RuntimeBridge:
                     account_positions=account_positions,
                     account_positions_ok=account_ok,
                 )
+                submit_reason = str(submit_result.get("reason") or "")
                 submit_error = str(submit_result.get("error") or "")
                 submit_client_order_id = str(submit_result.get("client_order_id") or "")
                 signal_action = str(submit_result.get("signal_action") or "")
@@ -6409,6 +6411,7 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_last_signal_strategy_id", signal_strategy_id) or changed
                 changed = self._set_state_value(state, "runtime_last_signal_symbol", signal_symbol) or changed
                 changed = self._set_state_value(state, "runtime_last_signal_side", signal_side) or changed
+                changed = self._set_state_value(state, "runtime_last_remote_submit_reason", submit_reason) or changed
                 if submit_client_order_id:
                     changed = self._set_state_value(
                         state,

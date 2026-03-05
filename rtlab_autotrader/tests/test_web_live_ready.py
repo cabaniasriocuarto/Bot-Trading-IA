@@ -1243,6 +1243,7 @@ def test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell(tmp_pat
   assert str(synced.get("runtime_last_signal_action") or "") == "trade"
   assert str(synced.get("runtime_last_signal_side") or "") == "SELL"
   assert str(synced.get("runtime_last_signal_strategy_id") or "") == "meanreversion_runtime_v2"
+  assert str(synced.get("runtime_last_remote_submit_reason") or "") == "submitted"
 
 
 def test_runtime_sync_testnet_skips_submit_when_risk_blocks_current_cycle(tmp_path: Path, monkeypatch) -> None:
@@ -1365,6 +1366,7 @@ def test_runtime_sync_live_skips_submit_when_live_trading_disabled(tmp_path: Pat
   synced = module._sync_runtime_state(state, persist=False)
   assert calls["order_post"] == 0
   assert str(synced.get("runtime_last_signal_action") or "") == "trade"
+  assert str(synced.get("runtime_last_remote_submit_reason") or "") == "live_trading_disabled"
   assert str(synced.get("runtime_last_remote_submit_error") or "") == "LIVE_TRADING_ENABLED=false"
 
 

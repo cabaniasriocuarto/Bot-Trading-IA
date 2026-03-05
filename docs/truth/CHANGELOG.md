@@ -29,6 +29,20 @@
 - Revalidacion bibliografica:
   - `docs/audit/AP_BOT_1016_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1017 (telemetria de `submit_reason` en runtime)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - nuevo estado `runtime_last_remote_submit_reason` persistido por ciclo;
+  - `_maybe_submit_exchange_runtime_order(...)` retorna `reason=submitted` cuando el envio remoto fue exitoso.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - assertions nuevas para `runtime_last_remote_submit_reason` en casos:
+    - submit exitoso testnet (`submitted`);
+    - bloqueo live por flag (`live_trading_disabled`).
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "strategy_signal_meanreversion_submits_sell or live_skips_submit_when_live_trading_disabled or strategy_signal_flat_skips_remote_submit or skips_submit_when_risk_blocks_current_cycle" -q` -> PASS (`4 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Revalidacion bibliografica:
+  - `docs/audit/AP_BOT_1017_BIBLIO_VALIDATION_20260305.md`.
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)
