@@ -2,6 +2,30 @@
 
 ## 2026-03-05
 
+### AP-BOT-1035 (staging strict=true sin falso negativo no-live)
+- `scripts/ops_protected_checks_report.py`:
+  - nuevo flag `--allow-staging-warns` para aceptar en staging no-live:
+    - `g10_status=WARN`
+    - `breaker_status=NO_DATA`
+  - mantiene reporte explicito de status reales (`g10_status`, `breaker_status`) y marca `allow_staging_warns_applied=true`.
+- `/.github/workflows/remote-protected-checks.yml`:
+  - aplica `--allow-staging-warns` automaticamente cuando `base_url` contiene `staging`.
+- Evidencia operativa:
+  - run staging `22741088468` -> `success`
+  - campos canonicos:
+    - `overall_pass=true`
+    - `protected_checks_complete=true`
+    - `g10_status=WARN`
+    - `g9_status=WARN`
+    - `breaker_ok=true`
+    - `internal_proxy_status_ok=true`
+  - documento: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22741088468_20260305.md`.
+- Nota de estabilidad staging:
+  - intento de persistencia con volumen (`/data` y `/app/user_data`) genero crash por permisos SQLite;
+  - rollback operativo aplicado: `RTLAB_USER_DATA_DIR=/tmp/rtlab_user_data`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1035_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1034 (runner protegido con diagnostico sin JSON)
 - `scripts/run_protected_checks_github_vm.ps1`:
   - ahora genera `protected_checks_summary_<run_id>.json` incluso si el workflow falla antes de crear `ops_protected_checks_gha_*.json`;

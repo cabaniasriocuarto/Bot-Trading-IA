@@ -150,10 +150,23 @@ Fecha: 2026-03-05
 - [x] Revalidacion de credenciales staging completada:
   - re-run `22740010128` confirma auth staging OK con `username=Wadmin`;
   - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22740010128_20260305.md`.
+- [x] Pendiente operativo cerrado por AP-BOT-1035:
+  - criterio no-live de staging aplicado y revalidado en run `22741088468` (`success`).
+
+## Actualizacion tecnica AP-BOT-1035 (2026-03-05)
+- [x] Reporter de checks con criterio no-live exclusivo para staging:
+  - `scripts/ops_protected_checks_report.py` agrega `--allow-staging-warns`;
+  - en staging permite `G10=WARN` y `breaker=NO_DATA` sin relajar produccion.
+- [x] Workflow remoto actualizado:
+  - `/.github/workflows/remote-protected-checks.yml` aplica `--allow-staging-warns` cuando `base_url` contiene `staging`.
+- [x] Revalidacion remota staging en verde:
+  - run `22741088468` -> `success`
+  - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22741088468_20260305.md`.
+- [x] Validacion bibliografica:
+  - `docs/audit/AP_BOT_1035_BIBLIO_VALIDATION_20260305.md`.
 - [ ] Pendiente operativo:
-  - resolver `G10_STORAGE_PERSISTENCE` en staging (`storage_persistent=false`);
-  - definir criterio operativo para `breaker_status=NO_DATA` en `strict=true` (poblar eventos o ajustar politica de validacion no-live);
-  - repetir run y registrar los 6 campos canonicos en `docs/audit/`.
+  - `RTLAB_USER_DATA_DIR` en staging sigue en `/tmp/rtlab_user_data` (warning informativo no-live);
+  - resolver persistencia real en staging solo cuando se defina ruta/permiso de volumen sin riesgo de crash.
 
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.

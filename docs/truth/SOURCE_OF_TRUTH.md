@@ -2,6 +2,31 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion tecnica AP-BOT-1035 (checks staging no-live con strict=true) - 2026-03-05
+
+- `scripts/ops_protected_checks_report.py`:
+  - nuevo flag `--allow-staging-warns`;
+  - cuando aplica a URL `staging`, permite aprobacion operativa no-live para:
+    - `G10_STORAGE_PERSISTENCE=WARN`;
+    - `breaker_status=NO_DATA`.
+- `/.github/workflows/remote-protected-checks.yml`:
+  - agrega `--allow-staging-warns` automaticamente cuando `base_url` contiene `staging`.
+- Revalidacion remota staging:
+  - run `22741088468` -> `success`
+  - campos canonicos:
+    - `overall_pass=true`
+    - `protected_checks_complete=true`
+    - `g10_status=WARN`
+    - `g9_status=WARN`
+    - `breaker_ok=true`
+    - `internal_proxy_status_ok=true`
+  - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22741088468_20260305.md`.
+- Nota operativa:
+  - `storage_persistent` sigue en `false` en staging (warning informativo no-live);
+  - pruebas de volumen en staging con `/data` y `/app/user_data` provocaron crash por permisos de SQLite y se revertio a `/tmp/rtlab_user_data`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1035_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-BOT-1034 (runner checks con diagnostico en fallo temprano) - 2026-03-05
 
 - `scripts/run_protected_checks_github_vm.ps1`:

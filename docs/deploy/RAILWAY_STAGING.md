@@ -34,6 +34,9 @@ Levantar backend online en entorno `staging` con guard-rails NO-LIVE.
 
 Nota:
 - Para persistencia real en staging, montar volumen y usar `/data/rtlab_user_data`.
+- Validacion 2026-03-05:
+  - en este servicio, rutas con volumen (`/data/...` y `/app/user_data`) provocaron `sqlite3.OperationalError: unable to open database file` por permisos;
+  - rollback aplicado a `RTLAB_USER_DATA_DIR=/tmp/rtlab_user_data` para mantener disponibilidad.
 
 ## Comandos usados (CLI)
 ```bash
