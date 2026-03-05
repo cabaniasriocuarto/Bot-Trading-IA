@@ -173,8 +173,44 @@ try {
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
     }
+    $summaryPath = Join-Path $artifactDir ("protected_checks_summary_{0}.json" -f $runId)
     if (-not $jsonReport) {
-        throw "No se encontro JSON de reporte protegido en artifacts descargados."
+        $stdoutLog = Get-ChildItem -Path $artifactDir -Recurse -Filter "protected_checks_stdout.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        $errorExcerpt = ""
+        if ($stdoutLog) {
+            $errorLine = Select-String -Path $stdoutLog.FullName -Pattern "ERROR:|Invalid credentials|Missing staging secrets|401" |
+                Select-Object -First 1
+            if ($errorLine) {
+                $errorExcerpt = [string]$errorLine.Line
+            }
+        }
+        $summary = [ordered]@{
+            run_id                     = $runId
+            run_url                    = [string]$view.url
+            workflow_status            = [string]$view.status
+            workflow_conclusion        = [string]$view.conclusion
+            base_url                   = [string]$BaseUrl
+            overall_pass               = $false
+            protected_checks_complete  = $false
+            g10_status                 = "NO_EVIDENCE"
+            g9_status                  = "NO_EVIDENCE"
+            breaker_ok                 = $false
+            internal_proxy_status_ok   = $false
+            json_report                = ""
+            artifact_dir               = [string]$artifactDir
+            diagnostic_error_excerpt   = $errorExcerpt
+            diagnostic_no_json_report  = $true
+        }
+        $summary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+        Write-Host "Resultado (sin JSON de reporte):"
+        Write-Host ("- run_id: {0}" -f $summary.run_id)
+        Write-Host ("- run_url: {0}" -f $summary.run_url)
+        Write-Host ("- workflow_conclusion: {0}" -f $summary.workflow_conclusion)
+        Write-Host ("- diagnostic_error_excerpt: {0}" -f $summary.diagnostic_error_excerpt)
+        Write-Host ("- summary_json: {0}" -f $summaryPath)
+        exit 3
     }
 
     $report = Get-Content -LiteralPath $jsonReport.FullName -Raw | ConvertFrom-Json
@@ -196,7 +232,6 @@ try {
         artifact_dir               = [string]$artifactDir
     }
 
-    $summaryPath = Join-Path $artifactDir ("protected_checks_summary_{0}.json" -f $runId)
     $summary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $summaryPath -Encoding UTF8
 
     Write-Host "Resultado:"

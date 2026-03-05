@@ -2,6 +2,19 @@
 
 ## 2026-03-05
 
+### AP-BOT-1034 (runner protegido con diagnostico sin JSON)
+- `scripts/run_protected_checks_github_vm.ps1`:
+  - ahora genera `protected_checks_summary_<run_id>.json` incluso si el workflow falla antes de crear `ops_protected_checks_gha_*.json`;
+  - reporta `NO_EVIDENCE` en campos canonicos cuando no hay reporte estructurado.
+- Evidencia operativa:
+  - run staging `22738098708` (`failure`) documentado en:
+    - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22738098708_20260305.md`
+  - causa: `401 Invalid credentials` en login.
+  - sanity run produccion `22738228159` (`success`) documentado en:
+    - `docs/audit/PROTECTED_CHECKS_GHA_22738228159_20260305.md`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1034_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1033 (submit bloqueado con reconciliacion no valida)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - `_maybe_submit_exchange_runtime_order(...)` ahora bloquea submit cuando `runtime_reconciliation_ok=false` (`reason=reconciliation_not_ok`).

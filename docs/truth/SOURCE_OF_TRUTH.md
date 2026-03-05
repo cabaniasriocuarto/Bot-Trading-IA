@@ -2,6 +2,27 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion tecnica AP-BOT-1034 (runner checks con diagnostico en fallo temprano) - 2026-03-05
+
+- `scripts/run_protected_checks_github_vm.ps1`:
+  - ante workflow `failure` sin JSON de checks, ahora emite `protected_checks_summary_<run_id>.json` con `NO_EVIDENCE` en campos canonicos.
+- Evidencia staging:
+  - run `22738098708` -> `failure` por login:
+    - `ERROR: Login fallo: 401 {"detail":"Invalid credentials"}`
+  - documento: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22738098708_20260305.md`.
+- Sanity run en produccion tras patch del runner:
+  - run `22738228159` -> `success`
+  - campos canonicos: `overall_pass=true`, `protected_checks_complete=true`, `g10_status=PASS`, `g9_status=WARN`, `breaker_ok=true`, `internal_proxy_status_ok=true`
+  - documento: `docs/audit/PROTECTED_CHECKS_GHA_22738228159_20260305.md`.
+- Estado:
+  - el secreto `RTLAB_STAGING_ADMIN_PASSWORD` existe en GitHub, pero no coincide con credencial valida en backend staging (o `username` no coincide con `ADMIN_USERNAME` real).
+- Accion requerida (bloqueante para checks staging autenticados):
+  1. verificar `ADMIN_USERNAME` y `ADMIN_PASSWORD` activos en Railway staging;
+  2. actualizar `RTLAB_STAGING_ADMIN_PASSWORD` con `ADMIN_PASSWORD` real;
+  3. ejecutar workflow con `username=ADMIN_USERNAME` real.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1034_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-BOT-1033 (submit fail-closed sin reconciliacion valida) - 2026-03-05
 
 - `rtlab_autotrader/rtlab_core/web/app.py`:

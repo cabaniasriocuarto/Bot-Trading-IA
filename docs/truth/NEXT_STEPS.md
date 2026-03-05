@@ -137,6 +137,21 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - desplegar rama tecnica y confirmar en entorno remoto que el guard mantiene `no-live` estable sin falsos positivos de submit.
 
+## Actualizacion tecnica AP-BOT-1034 (2026-03-05)
+- [x] Runner de checks protegidos robustecido para fallo temprano sin JSON:
+  - `scripts/run_protected_checks_github_vm.ps1` ahora emite resumen diagnostico `NO_EVIDENCE`.
+- [x] Evidencia de bloqueo staging registrada:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22738098708_20260305.md`
+  - causa: `401 Invalid credentials`.
+- [x] Sanity run produccion post-patch en verde:
+  - `docs/audit/PROTECTED_CHECKS_GHA_22738228159_20260305.md`
+- [x] Validacion bibliografica:
+  - `docs/audit/AP_BOT_1034_BIBLIO_VALIDATION_20260305.md`
+- [ ] Pendiente operativo (requiere accion manual):
+  - alinear `RTLAB_STAGING_ADMIN_PASSWORD` con `ADMIN_PASSWORD` real de Railway staging;
+  - correr workflow con `username=ADMIN_USERNAME` real de staging;
+  - repetir run y registrar los 6 campos canonicos en `docs/audit/`.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:
