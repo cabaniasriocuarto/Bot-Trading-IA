@@ -6,6 +6,7 @@ Este archivo centraliza la documentacion vigente del proyecto.
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/NEXT_STEPS.md`
 - `docs/truth/CHANGELOG.md`
+- `docs/audit/AP_BOT_1028_BIBLIO_VALIDATION_20260305.md`
 - `docs/audit/AP_BOT_1027_BIBLIO_VALIDATION_20260305.md`
 - `docs/audit/AP_BOT_1026_BIBLIO_VALIDATION_20260305.md`
 - `docs/audit/AP_BOT_1025_BIBLIO_VALIDATION_20260305.md`
@@ -42,6 +43,7 @@ Este archivo centraliza la documentacion vigente del proyecto.
 ## Runbooks de despliegue y rollback
 - `docs/deploy/VERCEL_STAGING.md`
 - `docs/deploy/RAILWAY_STAGING.md`
+- `docs/deploy/GITHUB_ACTIONS_SECRETS.md`
 
 ## Seguridad operacional
 - `docs/SECURITY.md`

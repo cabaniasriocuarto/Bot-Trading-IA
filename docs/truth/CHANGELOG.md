@@ -83,6 +83,16 @@
   - produccion: run `22733438064` -> `success` (`docs/audit/PROTECTED_CHECKS_GHA_22733438064_20260305.md`).
   - staging: run `22733461982` -> `failure` fail-fast por secreto faltante (`docs/audit/PROTECTED_CHECKS_STAGING_GHA_22733461982_20260305.md`).
 
+### AP-BOT-1028 (runbook de secrets GitHub Actions)
+- Nuevo documento:
+  - `docs/deploy/GITHUB_ACTIONS_SECRETS.md`
+- Incluye:
+  - separacion de secretos staging/produccion;
+  - comandos `gh secret list` y `gh secret set`;
+  - checklist de validacion post-configuracion.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1028_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - nueva variable `LIVE_TRADING_ENABLED` (default `false`);

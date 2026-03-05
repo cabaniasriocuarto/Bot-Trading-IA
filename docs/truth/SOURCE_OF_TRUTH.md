@@ -89,6 +89,17 @@ Fecha de actualizacion: 2026-03-05
 - Pendiente:
   - cargar `RTLAB_STAGING_AUTH_TOKEN` o `RTLAB_STAGING_ADMIN_PASSWORD` y repetir run staging.
 
+## Actualizacion tecnica AP-BOT-1028 (runbook de secrets GitHub Actions) - 2026-03-05
+
+- Nuevo runbook:
+  - `docs/deploy/GITHUB_ACTIONS_SECRETS.md`
+- Contenido:
+  - secrets requeridos por entorno (`RTLAB_*` vs `RTLAB_STAGING_*`);
+  - comandos `gh secret list/set`;
+  - validacion operativa posterior de workflows remotos.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1028_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
 - `rtlab_dashboard/src/lib/security.ts`:

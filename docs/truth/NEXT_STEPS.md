@@ -72,6 +72,12 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - cargar `RTLAB_STAGING_AUTH_TOKEN` o `RTLAB_STAGING_ADMIN_PASSWORD` y re-ejecutar check staging.
 
+## Actualizacion tecnica AP-BOT-1028 (2026-03-05)
+- [x] Runbook de secrets publicado:
+  - `docs/deploy/GITHUB_ACTIONS_SECRETS.md`
+- [ ] Pendiente operativo:
+  - aplicar `gh secret set RTLAB_STAGING_ADMIN_PASSWORD` (o token staging) y repetir run staging.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:
