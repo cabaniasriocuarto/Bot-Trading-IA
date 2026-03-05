@@ -253,7 +253,7 @@ jobs:
             {
               echo "## Remote Benchmark (GitHub VM)"
               echo
-              grep -E "^- Railway edge:|^- Estado:|`p95_ms`|`p95_no_backoff_ms`|`server_p95_ms`|`rate_limit_retries`|`pass_criterion`" "${REPORT_PATH}" || true
+              grep -E '^- Railway edge:|^- Estado:|`p95_ms`|`p95_no_backoff_ms`|`server_p95_ms`|`rate_limit_retries`|`pass_criterion`' "${REPORT_PATH}" || true
               echo
               echo "Report file: ${REPORT_PATH}"
             } >> "${GITHUB_STEP_SUMMARY}"

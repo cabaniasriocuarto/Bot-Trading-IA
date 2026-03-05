@@ -297,6 +297,19 @@ Fecha: 2026-03-05
 - Pendiente inmediato:
   - mantener cierre de runtime real restante (cancel-replace/fills avanzados/reconciliacion final) para `G9_RUNTIME_ENGINE_REAL=PASS`.
 
+## Actualizacion tecnica AP-BOT-1018 (2026-03-05)
+- [x] Revalidacion remota de latencia en GitHub VM:
+  - workflow `Remote Bots Benchmark (GitHub VM)` run `22706414197` en `success`.
+  - evidencia: `docs/audit/BOTS_OVERVIEW_BENCHMARK_GHA_22706414197_20260305.md`.
+- [x] Resultado objetivo:
+  - `p95_ms=184.546` (`PASS` contra `<300ms`),
+  - `server_p95_ms=0.07`,
+  - `rate_limit_retries=0`.
+- [x] Hardening menor del workflow:
+  - fix de quoting en `/.github/workflows/remote-benchmark.yml` (`Build summary`) para evitar ruido no bloqueante por backticks.
+- Pendiente inmediato:
+  - cerrar tramo runtime real restante para `G9_RUNTIME_ENGINE_REAL=PASS` (sin habilitar LIVE en esta fase).
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
 - [x] Cerrada validacion bibliografica completa por patch:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.

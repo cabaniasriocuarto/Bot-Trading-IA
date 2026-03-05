@@ -11,6 +11,7 @@
 - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`
 
 ## Artefactos vigentes de soporte
+- `docs/audit/BOTS_OVERVIEW_BENCHMARK_GHA_22706414197_20260305.md`
 - `docs/audit/NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md`
 - `docs/audit/AUDIT_REPORT_20260304.md`
 - `docs/audit/AUDIT_FINDINGS_ALL_20260304.md`

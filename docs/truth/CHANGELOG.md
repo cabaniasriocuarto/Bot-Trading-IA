@@ -43,6 +43,21 @@
 - Revalidacion bibliografica:
   - `docs/audit/AP_BOT_1017_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1018 (revalidacion benchmark remoto + fix summary workflow)
+- Operativo:
+  - ejecutado `Remote Bots Benchmark (GitHub VM)` con defaults:
+    - run `22706414197` -> `success`.
+  - evidencia registrada en:
+    - `docs/audit/BOTS_OVERVIEW_BENCHMARK_GHA_22706414197_20260305.md`.
+  - metricas clave:
+    - `p95_ms=184.546`
+    - `server_p95_ms=0.07`
+    - `rate_limit_retries=0`
+    - objetivo `p95<300ms`: `PASS`.
+- CI workflow:
+  - `/.github/workflows/remote-benchmark.yml`:
+    - `Build summary` pasa regex de `grep -E` a comillas simples para evitar evaluacion de backticks como comandos shell.
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)

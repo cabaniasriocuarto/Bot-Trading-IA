@@ -914,6 +914,22 @@ Fecha de actualizacion: 2026-03-05
   - checks protegidos remotos en PASS.
   - LIVE real sigue bloqueado por decision operativa hasta cierre final de runtime real + activacion APIs live.
 
+## Actualizacion operativa benchmark (2026-03-05)
+
+- Workflow remoto `Remote Bots Benchmark (GitHub VM)` con defaults:
+  - run: `22706414197` (`success`).
+  - evidencia: `docs/audit/BOTS_OVERVIEW_BENCHMARK_GHA_22706414197_20260305.md`.
+- Resultado canonico:
+  - `p50_ms=106.54`
+  - `p95_ms=184.546`
+  - `p99_ms=351.142`
+  - `server_p95_ms=0.07`
+  - `rate_limit_retries=0`
+  - `cache_hit_ratio=1.0` (`20/20` hits)
+  - estado objetivo `p95<300ms`: `PASS`
+- Hardening CI menor:
+  - `/.github/workflows/remote-benchmark.yml` corrige quoting en `Build summary` (`grep -E` con comillas simples) para evitar errores de shell por backticks en la regex.
+
 ## Actualizacion operativa (2026-03-03)
 
 - Workflow remoto `Remote Protected Checks (GitHub VM)` ejecutado con defaults (`strict=true`):
