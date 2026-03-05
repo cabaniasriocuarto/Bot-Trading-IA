@@ -1,6 +1,6 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-04
+Fecha de actualizacion: 2026-03-05
 
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
@@ -857,6 +857,21 @@ Fecha de actualizacion: 2026-03-04
   - `docs/reference/BIBLIO_INDEX.md` existe.
   - `docs/reference/biblio_raw/` no versiona PDFs por politica (`docs/reference/BIBLIO_ACCESS_POLICY.md`); reproducibilidad se mantiene via `BIBLIO_INDEX.md` + SHA256.
 - Decision operativa vigente (confirmada): cierre no-live/testnet primero; LIVE real postergado hasta completar runtime real + evidencias.
+
+## Actualizacion operativa (2026-03-05)
+
+- Re-run remoto de `Remote Protected Checks (GitHub VM)` con defaults y `strict=true`:
+  - run: `22704105623` (`success`).
+  - evidencias extraidas de log GHA del run:
+    - `overall_pass=true`
+    - `protected_checks_complete=true`
+    - `g10_status=PASS`
+    - `g9_status=WARN` (esperado en no-live)
+    - `breaker_ok=true`
+    - `internal_proxy_status_ok=true`
+- Estado no-live:
+  - checks protegidos remotos en PASS.
+  - LIVE real sigue bloqueado por decision operativa hasta cierre final de runtime real + activacion APIs live.
 
 ## Actualizacion operativa (2026-03-03)
 

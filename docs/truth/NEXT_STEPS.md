@@ -1,6 +1,6 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-04
+Fecha: 2026-03-05
 
 ## Tramo vigente (cleanroom + staging online, sin LIVE)
 - [x] Documentacion ordenada con indice unico:
@@ -26,6 +26,17 @@ Fecha: 2026-03-04
 3. Cerrar pendientes tecnicos de runtime end-to-end (orden/fill/reconciliacion/costos) antes de cualquier canary LIVE.
 4. Revalidar security CI y branch protection en cada release de hardening.
 5. Preparar checklist final paper -> testnet -> canary -> live (sin ejecutar live hasta aprobacion explicita).
+
+## Actualizacion operativa (2026-03-05)
+- [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
+- [x] Campos de cierre verificados:
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en no-live)
+  - `breaker_ok=true`
+  - `internal_proxy_status_ok=true`
+- [ ] Pendiente mantenido: `G9_RUNTIME_ENGINE_REAL=PASS` para habilitacion LIVE al final del programa.
 
 ## Actualizacion tecnica AP-8001 (2026-03-04)
 - [x] BFF fail-closed para fallback mock en error de backend:

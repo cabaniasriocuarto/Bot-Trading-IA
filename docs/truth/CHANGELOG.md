@@ -1,5 +1,21 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-05
+
+### Remote protected checks (rerun estricto)
+- Workflow `Remote Protected Checks (GitHub VM)` re-ejecutado con defaults y `strict=true`:
+  - run `22704105623` -> `success`.
+- Resultado canonico del reporte remoto:
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en no-live)
+  - `breaker_ok=true`
+  - `internal_proxy_status_ok=true`
+- Impacto operativo:
+  - se confirma continuidad del cierre no-live en verde;
+  - LIVE permanece en `NO GO` hasta cierre de runtime real end-to-end y activacion final de APIs live.
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)
