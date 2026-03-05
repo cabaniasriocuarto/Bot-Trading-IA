@@ -82,6 +82,20 @@
 - Revalidacion bibliografica:
   - `docs/audit/AP_BOT_1020_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1021 (revalidacion remota protected checks post runtime)
+- Operativo:
+  - ejecutado `Remote Protected Checks (GitHub VM)` con defaults y `strict=true`:
+    - run `22731722376` -> `success`.
+  - evidencia registrada en:
+    - `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`.
+- Campos de cierre:
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en no-live)
+  - `breaker_ok=true`
+  - `internal_proxy_status_ok=true`
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)

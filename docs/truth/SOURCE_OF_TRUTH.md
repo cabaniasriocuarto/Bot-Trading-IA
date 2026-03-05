@@ -970,6 +970,22 @@ Fecha de actualizacion: 2026-03-05
 - Hardening CI menor:
   - `/.github/workflows/remote-benchmark.yml` corrige quoting en `Build summary` (`grep -E` con comillas simples) para evitar errores de shell por backticks en la regex.
 
+## Actualizacion operativa protected checks (2026-03-05, post AP-BOT-1020)
+
+- Workflow remoto `Remote Protected Checks (GitHub VM)` con defaults y `strict=true`:
+  - run: `22731722376` (`success`).
+  - evidencia: `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`.
+- Resultado canonico:
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en no-live)
+  - `breaker_ok=true`
+  - `internal_proxy_status_ok=true`
+- Estado:
+  - no-live/testnet se mantiene en verde tras AP-BOT-1020;
+  - LIVE sigue bloqueado por decision operativa hasta cierre final de runtime real + activacion APIs live.
+
 ## Actualizacion operativa (2026-03-03)
 
 - Workflow remoto `Remote Protected Checks (GitHub VM)` ejecutado con defaults (`strict=true`):

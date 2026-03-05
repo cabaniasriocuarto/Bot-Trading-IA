@@ -339,6 +339,20 @@ Fecha: 2026-03-05
 - Pendiente inmediato:
   - continuar con cierre de runtime real restante para `G9_RUNTIME_ENGINE_REAL=PASS` (sin habilitar LIVE en esta fase).
 
+## Actualizacion tecnica AP-BOT-1021 (2026-03-05)
+- [x] Revalidacion remota de checks protegidos post AP-BOT-1020:
+  - workflow `Remote Protected Checks (GitHub VM)` run `22731722376` en `success`.
+  - evidencia: `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`.
+- [x] Campos canonicos confirmados:
+  - `overall_pass=true`
+  - `protected_checks_complete=true`
+  - `g10_status=PASS`
+  - `g9_status=WARN` (esperado en no-live)
+  - `breaker_ok=true`
+  - `internal_proxy_status_ok=true`
+- Pendiente inmediato:
+  - cierre final de runtime real para mover `G9_RUNTIME_ENGINE_REAL` a `PASS` (sin habilitar LIVE aun).
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
 - [x] Cerrada validacion bibliografica completa por patch:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.
