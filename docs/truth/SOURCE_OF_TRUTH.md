@@ -24,7 +24,8 @@ Fecha de actualizacion: 2026-03-04
   - se elimina dependencia del install script remoto `master/install.sh` (mas fragil);
   - descarga con `curl --retry` + `tar` + `chmod` para reducir fallos transitorios en runners;
   - fallback a install script versionado (`v8.30.0`) si el tarball falla;
-  - verificacion fail-closed de binario instalado (`$RUNNER_TEMP/bin/gitleaks`).
+  - verificacion fail-closed de binario instalado (`$RUNNER_TEMP/bin/gitleaks`);
+  - export de `PATH` en el mismo step para validar `gitleaks version` sin depender de step siguiente.
 - Estado:
   - queda pendiente validar corrida verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
   - no se toco runtime ni logica de trading.

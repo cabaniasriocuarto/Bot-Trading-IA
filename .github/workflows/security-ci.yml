@@ -54,6 +54,7 @@ jobs:
             ls -la "$RUNNER_TEMP/bin" || true
             exit 1
           fi
+          export PATH="$RUNNER_TEMP/bin:$PATH"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           gitleaks version
 
