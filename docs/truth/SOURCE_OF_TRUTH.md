@@ -81,8 +81,13 @@ Fecha de actualizacion: 2026-03-05
   - evitar uso accidental de credenciales de produccion contra staging.
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1027_BIBLIO_VALIDATION_20260305.md`.
+- Evidencia operativa post-push:
+  - produccion: run `22733438064` en `success`
+    - `docs/audit/PROTECTED_CHECKS_GHA_22733438064_20260305.md`
+  - staging: run `22733461982` en `failure` fail-fast por secreto faltante
+    - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22733461982_20260305.md`
 - Pendiente:
-  - registrar evidencia de runs remotos post-push con este hardening aplicado.
+  - cargar `RTLAB_STAGING_AUTH_TOKEN` o `RTLAB_STAGING_ADMIN_PASSWORD` y repetir run staging.
 
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 

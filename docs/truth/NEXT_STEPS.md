@@ -64,10 +64,13 @@ Fecha: 2026-03-05
 - [x] Hardening de workflows para separar secretos por entorno sin fallback cruzado:
   - `remote-protected-checks.yml`
   - `staging-smoke.yml`
+- [x] Runs remotos post-push registrados:
+  - produccion `strict=true` sin regresion:
+    - `docs/audit/PROTECTED_CHECKS_GHA_22733438064_20260305.md`
+  - staging fail-fast con mensaje explicito de secreto faltante:
+    - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22733461982_20260305.md`
 - [ ] Pendiente operativo:
-  - ejecutar runs remotos post-push y registrar evidencia:
-    - produccion `strict=true` sin regresion;
-    - staging con mensaje explicito de secreto faltante (si `RTLAB_STAGING_*` sigue vacio).
+  - cargar `RTLAB_STAGING_AUTH_TOKEN` o `RTLAB_STAGING_ADMIN_PASSWORD` y re-ejecutar check staging.
 
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
