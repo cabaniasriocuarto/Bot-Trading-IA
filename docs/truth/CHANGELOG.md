@@ -56,6 +56,17 @@
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1025_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1026 (secretos por entorno en workflows remotos)
+- `/.github/workflows/remote-protected-checks.yml`:
+  - seleccion de auth por entorno (`RTLAB_STAGING_*` con fallback a `RTLAB_*`).
+- `/.github/workflows/staging-smoke.yml`:
+  - staging smoke prioriza secretos `RTLAB_STAGING_*`.
+- Validacion de no-regresion:
+  - run `22732769817` (`success`) con `strict=true` y `expect_g9=WARN`.
+  - evidencia: `docs/audit/PROTECTED_CHECKS_GHA_22732769817_20260305.md`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1026_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - nueva variable `LIVE_TRADING_ENABLED` (default `false`);

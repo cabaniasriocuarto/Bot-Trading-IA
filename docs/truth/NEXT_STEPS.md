@@ -51,6 +51,14 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - re-run remoto del workflow ya corregido (tras merge) para validar staging con flujo actualizado.
 
+## Actualizacion tecnica AP-BOT-1026 (2026-03-05)
+- [x] Workflows remotos con seleccion de secretos por entorno:
+  - `remote-protected-checks.yml` y `staging-smoke.yml` priorizan `RTLAB_STAGING_*` en staging.
+- [x] No-regresion validada en produccion:
+  - `docs/audit/PROTECTED_CHECKS_GHA_22732769817_20260305.md` (`success`).
+- [ ] Pendiente operativo:
+  - cargar/validar `RTLAB_STAGING_AUTH_TOKEN` o `RTLAB_STAGING_ADMIN_PASSWORD` para runs autenticados de staging.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:

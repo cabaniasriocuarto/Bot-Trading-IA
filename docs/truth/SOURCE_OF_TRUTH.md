@@ -52,6 +52,22 @@ Fecha de actualizacion: 2026-03-05
   - fix versionado en rama tecnica;
   - pendiente re-run remoto tras merge para confirmar flujo corregido en default branch.
 
+## Actualizacion tecnica AP-BOT-1026 (secretos por entorno en workflows remotos) - 2026-03-05
+
+- `/.github/workflows/remote-protected-checks.yml`:
+  - selecciona credenciales por entorno segun `base_url`:
+    - staging: `RTLAB_STAGING_AUTH_TOKEN` / `RTLAB_STAGING_ADMIN_PASSWORD`;
+    - fallback: `RTLAB_AUTH_TOKEN` / `RTLAB_ADMIN_PASSWORD`.
+- `/.github/workflows/staging-smoke.yml`:
+  - prioriza secretos de staging con fallback seguro a secretos globales.
+- Validacion operativa:
+  - `docs/audit/PROTECTED_CHECKS_GHA_22732769817_20260305.md`
+  - run `22732769817` en `success` (`strict=true`, `expect_g9=WARN`) sin regression.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1026_BIBLIO_VALIDATION_20260305.md`.
+- Pendiente:
+  - confirmar run staging autenticado con secretos `RTLAB_STAGING_*` cuando esten configurados.
+
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
 - `rtlab_dashboard/src/lib/security.ts`:
