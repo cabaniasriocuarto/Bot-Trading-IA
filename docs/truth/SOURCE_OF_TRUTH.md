@@ -35,6 +35,20 @@ Fecha de actualizacion: 2026-03-05
 - Trazabilidad de fuentes:
   - `docs/audit/AP_BOT_1024_BIBLIO_VALIDATION_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1025 (fix workflow protected-checks no-strict/password-cli) - 2026-03-05
+
+- `/.github/workflows/remote-protected-checks.yml`:
+  - corrige semantica de `strict=false` agregando `--no-strict` explicito;
+  - elimina fallback legacy `--password` por CLI.
+- Evidencia operativa del hallazgo:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732410544_20260305.md`
+  - run staging en `main` fallo (`401 Invalid credentials`) y mostro uso legacy de `--password`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1025_BIBLIO_VALIDATION_20260305.md`.
+- Estado:
+  - fix versionado en rama tecnica;
+  - pendiente re-run remoto tras merge para confirmar flujo corregido en default branch.
+
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
 - `rtlab_dashboard/src/lib/security.ts`:

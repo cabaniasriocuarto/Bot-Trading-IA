@@ -79,7 +79,6 @@ jobs:
           STRICT: ${{ inputs.strict }}
           RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
           RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
-          RTLAB_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -97,6 +96,8 @@ jobs:
 
           if [[ "${STRICT}" == "true" ]]; then
             cmd+=(--strict)
+          else
+            cmd+=(--no-strict)
           fi
 
           if [[ -n "${RTLAB_AUTH_TOKEN}" ]]; then

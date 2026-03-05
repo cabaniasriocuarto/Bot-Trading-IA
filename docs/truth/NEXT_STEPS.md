@@ -40,6 +40,15 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - correr al menos 1 run remoto del workflow y registrar artefacto en `docs/audit/`.
 
+## Actualizacion tecnica AP-BOT-1025 (2026-03-05)
+- [x] Fix workflow `remote-protected-checks` en rama tecnica:
+  - `strict=false` ahora usa `--no-strict`.
+  - eliminado fallback insecure `--password` por CLI.
+- [x] Evidencia del hallazgo previo en `main`:
+  - `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732410544_20260305.md`
+- [ ] Pendiente operativo:
+  - re-run remoto del workflow ya corregido (tras merge) para validar staging con flujo actualizado.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:

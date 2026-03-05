@@ -40,6 +40,18 @@
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1024_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1025 (fix de workflow protected checks)
+- `/.github/workflows/remote-protected-checks.yml`:
+  - se agrega `--no-strict` cuando input `strict=false`;
+  - se elimina fallback legacy de `--password` por CLI.
+- Evidencia del hallazgo en staging:
+  - run `22732410544` (`failure`) en `main`:
+    - `401 Invalid credentials`;
+    - evidencia de ruta legacy con `--password`.
+  - reporte: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732410544_20260305.md`.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1025_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - nueva variable `LIVE_TRADING_ENABLED` (default `false`);
