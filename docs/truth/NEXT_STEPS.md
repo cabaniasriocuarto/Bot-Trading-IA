@@ -58,6 +58,7 @@ Fecha: 2026-03-05
   - `docs/audit/PROTECTED_CHECKS_GHA_22732769817_20260305.md` (`success`).
 - [ ] Pendiente operativo:
   - cargar/validar `RTLAB_STAGING_AUTH_TOKEN` o `RTLAB_STAGING_ADMIN_PASSWORD` para runs autenticados de staging.
+  - evidencia actual del faltante: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732896736_20260305.md`.
 
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.

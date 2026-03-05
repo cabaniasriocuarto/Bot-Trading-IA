@@ -66,7 +66,9 @@ Fecha de actualizacion: 2026-03-05
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1026_BIBLIO_VALIDATION_20260305.md`.
 - Pendiente:
-  - confirmar run staging autenticado con secretos `RTLAB_STAGING_*` cuando esten configurados.
+  - run staging `22732896736` confirma que `RTLAB_STAGING_AUTH_TOKEN` y `RTLAB_STAGING_ADMIN_PASSWORD` estan vacios;
+  - se requiere cargar al menos uno para validar checks protegidos autenticados en staging.
+  - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732896736_20260305.md`.
 
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 

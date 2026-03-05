@@ -64,6 +64,9 @@
 - Validacion de no-regresion:
   - run `22732769817` (`success`) con `strict=true` y `expect_g9=WARN`.
   - evidencia: `docs/audit/PROTECTED_CHECKS_GHA_22732769817_20260305.md`.
+- Validacion staging:
+  - run `22732896736` (`failure`) por credenciales staging ausentes (`RTLAB_STAGING_*` vacios).
+  - evidencia: `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732896736_20260305.md`.
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1026_BIBLIO_VALIDATION_20260305.md`.
 
