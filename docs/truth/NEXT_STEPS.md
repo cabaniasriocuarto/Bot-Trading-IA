@@ -23,6 +23,7 @@ Fecha: 2026-03-05
    - comando: `python scripts/staging_smoke_report.py --report-prefix artifacts/staging_smoke_ghafree`
 2. Mantener smoke diario en staging (login + `/api/v1/health` + `/api/v1/bots`) y registrar evidencia en `docs/audit/`.
    - Nota: si faltan secretos locales, el script marca `NO_EVIDENCE_NO_SECRET` para checks autenticados.
+   - workflow automatizado: `Staging Smoke (GitHub VM)` (`/.github/workflows/staging-smoke.yml`).
 3. Mantener enforcement no-live en entornos de prueba:
    - `LIVE_TRADING_ENABLED=false`
    - `KILL_SWITCH_ENABLED=true`
@@ -30,6 +31,14 @@ Fecha: 2026-03-05
 4. Cerrar pendientes tecnicos de runtime end-to-end (orden/fill/reconciliacion/costos) antes de cualquier canary LIVE.
 5. Revalidar security CI y branch protection en cada release de hardening.
 6. Preparar checklist final paper -> testnet -> canary -> live (sin ejecutar live hasta aprobacion explicita).
+
+## Actualizacion tecnica AP-BOT-1024 (2026-03-05)
+- [x] Workflow diario de smoke staging agregado:
+  - `/.github/workflows/staging-smoke.yml`
+- [x] Validacion bibliografica del patch:
+  - `docs/audit/AP_BOT_1024_BIBLIO_VALIDATION_20260305.md`
+- [ ] Pendiente operativo:
+  - correr al menos 1 run remoto del workflow y registrar artefacto en `docs/audit/`.
 
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.

@@ -29,6 +29,17 @@
   - en esta corrida local no hubo secretos cargados (`RTLAB_AUTH_TOKEN`/`RTLAB_ADMIN_PASSWORD`), por eso el check autenticado queda explicitado como `NO_EVIDENCE_NO_SECRET`.
   - la validacion autenticada completa sigue cubierta por `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`.
 
+### AP-BOT-1024 (workflow diario de staging smoke)
+- Nuevo workflow:
+  - `/.github/workflows/staging-smoke.yml`.
+- Cobertura:
+  - trigger programado diario (`schedule`) y trigger manual (`workflow_dispatch`);
+  - ejecucion de `scripts/staging_smoke_report.py`;
+  - validacion fail-closed de secretos cuando se exigen checks autenticados;
+  - publicacion de artefactos (`staging_smoke_gha_<run_id>_*.md/json` + stdout).
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1024_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - nueva variable `LIVE_TRADING_ENABLED` (default `false`);

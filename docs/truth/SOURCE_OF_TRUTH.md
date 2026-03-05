@@ -22,6 +22,19 @@ Fecha de actualizacion: 2026-03-05
   - cobertura autenticada completa mantenida por reporte remoto:
     - `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1024 (workflow diario staging smoke) - 2026-03-05
+
+- `/.github/workflows/staging-smoke.yml` (nuevo):
+  - ejecuta smoke en GitHub VM por `schedule` diario y `workflow_dispatch`;
+  - usa `scripts/staging_smoke_report.py` para checks de frontend/backend;
+  - exige secretos cuando `require_auth_checks=true` (fail-closed);
+  - publica artefactos `json/md` + `stdout` por run.
+- Cobertura de controles:
+  - smoke diario deja evidencia online de NO-LIVE (`mode=paper/testnet`, `runtime_ready_for_live=false`);
+  - check autenticado `/api/v1/bots` queda forzado en corridas programadas.
+- Trazabilidad de fuentes:
+  - `docs/audit/AP_BOT_1024_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
 - `rtlab_dashboard/src/lib/security.ts`:
