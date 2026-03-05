@@ -27,6 +27,9 @@
   - agregado check explicito de binario ejecutable (`$RUNNER_TEMP/bin/gitleaks`) con error claro si no queda instalado.
   - export `PATH` en el mismo step antes de `gitleaks version` (evita falso fail por `GITHUB_PATH` no aplicado aun).
   - extraccion directa a `RUNNER_TEMP/bin` y validacion de `gitleaks version`.
+  - `scripts/security_scan.sh` ahora toma baseline canónica en `docs/security/gitleaks-baseline.json` (o `GITLEAKS_BASELINE_PATH`), evitando depender de archivos `artifacts/` no versionados en CI.
+- Nuevo archivo versionado:
+  - `docs/security/gitleaks-baseline.json` (redactado).
 - Resultado esperado:
   - reducir fallos espurios en `Install security tooling` y facilitar cierre de `FM-SEC-004` al rerun del workflow.
 

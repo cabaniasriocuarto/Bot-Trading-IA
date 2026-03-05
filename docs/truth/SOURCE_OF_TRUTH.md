@@ -26,6 +26,7 @@ Fecha de actualizacion: 2026-03-04
   - fallback a install script versionado (`v8.30.0`) si el tarball falla;
   - verificacion fail-closed de binario instalado (`$RUNNER_TEMP/bin/gitleaks`);
   - export de `PATH` en el mismo step para validar `gitleaks version` sin depender de step siguiente.
+  - `scripts/security_scan.sh` usa baseline canonica versionada en `docs/security/gitleaks-baseline.json` (con override opcional por `GITLEAKS_BASELINE_PATH`).
 - Estado:
   - queda pendiente validar corrida verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
   - no se toco runtime ni logica de trading.
