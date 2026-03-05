@@ -93,6 +93,16 @@
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1028_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1029 (runtime readiness refresh sobre cache negativo)
+- `RuntimeBridge._runtime_exchange_ready(...)`:
+  - cuando el diagnostico cacheado falla, fuerza `diagnose_exchange(..., force_refresh=true)`.
+  - mantiene cache hit directo cuando el diagnostico inicial es OK.
+- Tests nuevos:
+  - `test_runtime_exchange_ready_forces_refresh_after_cached_failure`
+  - `test_runtime_exchange_ready_uses_cached_success_without_forced_refresh`
+- Evidencia:
+  - `docs/audit/AP_BOT_1029_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1016 (guard fail-closed para submit en `live`)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - nueva variable `LIVE_TRADING_ENABLED` (default `false`);

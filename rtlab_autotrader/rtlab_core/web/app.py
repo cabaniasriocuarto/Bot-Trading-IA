@@ -5270,6 +5270,10 @@ class RuntimeBridge:
                 "checked_at": checked_at,
             }
         diag = diagnose_exchange(mode_n, force_refresh=False)
+        # Evita quedar pegado al cache negativo: si el check cacheado falla,
+        # se fuerza un refresh inmediato para capturar recuperaciones de exchange.
+        if not (bool(diag.get("connector_ok", False)) and bool(diag.get("order_ok", False))):
+            diag = diagnose_exchange(mode_n, force_refresh=True)
         connector_ok = bool(diag.get("connector_ok", False))
         order_ok = bool(diag.get("order_ok", False))
         ok = connector_ok and order_ok

@@ -78,6 +78,14 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - aplicar `gh secret set RTLAB_STAGING_ADMIN_PASSWORD` (o token staging) y repetir run staging.
 
+## Actualizacion tecnica AP-BOT-1029 (2026-03-05)
+- [x] Runtime readiness con refresh inmediato tras cache negativo:
+  - `RuntimeBridge._runtime_exchange_ready(...)`
+- [x] Tests runtime agregados y en PASS:
+  - `docs/audit/AP_BOT_1029_BIBLIO_VALIDATION_20260305.md`
+- [ ] Pendiente operativo:
+  - seguir cerrando tramo runtime real para `G9_RUNTIME_ENGINE_REAL=PASS` en fase final.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:

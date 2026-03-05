@@ -100,6 +100,19 @@ Fecha de actualizacion: 2026-03-05
 - Trazabilidad bibliografica:
   - `docs/audit/AP_BOT_1028_BIBLIO_VALIDATION_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1029 (runtime exchange readiness refresh) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `RuntimeBridge._runtime_exchange_ready(...)` ahora fuerza refresh de diagnostico si el cache previo da fail.
+  - objetivo: reducir latencia de recuperacion cuando exchange vuelve a estar operativo.
+- Tests agregados:
+  - `test_runtime_exchange_ready_forces_refresh_after_cached_failure`
+  - `test_runtime_exchange_ready_uses_cached_success_without_forced_refresh`
+- Evidencia:
+  - `docs/audit/AP_BOT_1029_BIBLIO_VALIDATION_20260305.md`
+- Estado:
+  - cambio interno de runtime, sin impacto en contrato API.
+
 ## Actualizacion tecnica AP-8001 (BFF mock fallback fail-closed) - 2026-03-04
 
 - `rtlab_dashboard/src/lib/security.ts`:

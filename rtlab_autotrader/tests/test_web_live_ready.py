@@ -1563,6 +1563,58 @@ def test_runtime_sync_clears_submit_reason_when_runtime_exits_real_mode(tmp_path
   assert str(synced_off.get("runtime_last_remote_submit_error") or "") == ""
 
 
+def test_runtime_exchange_ready_forces_refresh_after_cached_failure(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  calls: list[bool] = []
+
+  def _fake_diagnose(mode: str | None = None, *, force_refresh: bool = False):
+    calls.append(bool(force_refresh))
+    if not force_refresh:
+      return {
+        "connector_ok": False,
+        "order_ok": False,
+        "connector_reason": "cached_fail",
+        "order_reason": "cached_fail",
+        "last_error": "cached_fail",
+      }
+    return {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "fresh_ok",
+      "order_reason": "fresh_ok",
+      "last_error": "",
+    }
+
+  monkeypatch.setattr(module, "diagnose_exchange", _fake_diagnose)
+  ready = module.runtime_bridge._runtime_exchange_ready(mode="testnet")
+  assert calls == [False, True]
+  assert ready["ok"] is True
+  assert ready["connector_ok"] is True
+  assert ready["order_ok"] is True
+
+
+def test_runtime_exchange_ready_uses_cached_success_without_forced_refresh(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  calls: list[bool] = []
+
+  def _fake_diagnose(mode: str | None = None, *, force_refresh: bool = False):
+    calls.append(bool(force_refresh))
+    return {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "cached_ok",
+      "order_reason": "cached_ok",
+      "last_error": "",
+    }
+
+  monkeypatch.setattr(module, "diagnose_exchange", _fake_diagnose)
+  ready = module.runtime_bridge._runtime_exchange_ready(mode="testnet")
+  assert calls == [False]
+  assert ready["ok"] is True
+  assert ready["connector_ok"] is True
+  assert ready["order_ok"] is True
+
+
 def test_runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
   monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
