@@ -334,6 +334,39 @@ Fecha de actualizacion: 2026-03-04
   - primero bibliografia local indexada (`docs/reference/BIBLIO_INDEX.md`);
   - cuando no hay regla teorica explicita, se declara `NO EVIDENCIA LOCAL` y se justifica como decision de ingenieria fail-closed de runtime.
 
+## Actualizacion tecnica AP-BOT-1012 (resolver orden ausente por `order status`) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_close_absent_local_open_orders(...)` ahora consulta `GET /api/v3/order` antes de cancelar localmente una orden ausente en `openOrders`;
+  - nuevo `_fetch_exchange_order_status(...)` para obtener `status/origQty/executedQty` de la orden;
+  - nuevo `_apply_remote_order_status_to_local(...)` para cerrar correctamente segun estado remoto:
+    - `FILLED` -> cierre `FILLED` y ajuste de `filled_qty`;
+    - `CANCELED/EXPIRED/EXPIRED_IN_MATCH` -> terminal cancelado;
+    - `REJECTED` -> terminal rechazado;
+    - `NEW/PARTIALLY_FILLED/PENDING_CANCEL` -> mantiene orden abierta;
+  - cuando estado remoto confirma que la orden sigue abierta, se reinyecta en snapshot de reconciliacion para evitar desync falso en ese ciclo;
+  - parser de `openOrders` guarda tambien `status` remoto si viene en payload.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_runtime_sync_testnet_marks_absent_open_order_filled_from_order_status`;
+  - `test_runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new`;
+  - ajuste de regresion en `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`.
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new or runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression"` -> PASS (`5 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or runtime_stop_testnet_cancels_remote_open_orders_idempotently or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers"` -> PASS (`14 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`93 passed`).
+- Estado:
+  - se reduce el gap de lifecycle de orden en no-live (menos cierres ciegos por ausencia transitoria);
+  - LIVE sigue **NO GO** hasta cierre de pendientes globales (`FM-EXEC-001`, `FM-EXEC-005`, `FM-RISK-002`, `FM-QUANT-008`).
+
+## Revalidacion bibliografica AP-BOT-1012 - 2026-03-04
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1012_BIBLIO_VALIDATION_20260304.md`.
+- Criterio aplicado:
+  - primero bibliografia local indexada (`docs/reference/BIBLIO_INDEX.md`);
+  - para contrato API de `order status`, uso de fuente primaria oficial de exchange.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:

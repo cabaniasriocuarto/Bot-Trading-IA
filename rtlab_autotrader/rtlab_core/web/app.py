@@ -5325,10 +5325,12 @@ class RuntimeBridge:
     def _close_absent_local_open_orders(
         self,
         *,
+        mode: str,
         exchange_orders: dict[str, dict[str, Any]],
     ) -> int:
         if not isinstance(exchange_orders, dict):
             return 0
+        mode_n = str(mode or "").strip().lower()
         remote_ids = {str(oid) for oid in exchange_orders.keys() if str(oid)}
         if not remote_ids and not self._oms.open_orders():
             return 0
@@ -5342,6 +5344,38 @@ class RuntimeBridge:
             age_sec = max(0.0, (now_dt - order.updated_at).total_seconds())
             if age_sec < float(grace_sec):
                 continue
+            status_payload: dict[str, Any] = {}
+            status_ok = False
+            if mode_n in {"testnet", "live"}:
+                symbol = RuntimeBridge._sanitize_exchange_symbol(order.symbol)
+                client_order_id = order_id
+                exchange_order_id = ""
+                if re.fullmatch(r"\d+", order_id):
+                    client_order_id = ""
+                    exchange_order_id = order_id
+                status_payload, _status_source, status_ok, status_reason = self._fetch_exchange_order_status(
+                    mode=mode_n,
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    exchange_order_id=exchange_order_id,
+                )
+                if status_ok and status_payload:
+                    terminal = RuntimeBridge._apply_remote_order_status_to_local(order, status_payload)
+                    if terminal:
+                        closed += 1
+                    else:
+                        exchange_orders[order_id] = {
+                            "filled_qty": float(_as_float(status_payload.get("filled_qty"), order.filled_qty)),
+                            "qty": float(_as_float(status_payload.get("qty"), order.qty)),
+                            "symbol": str(status_payload.get("symbol") or order.symbol),
+                            "side": str(status_payload.get("side") or ("BUY" if order.side == Side.LONG else "SELL")),
+                            "status": str(status_payload.get("status") or ""),
+                            "client_order_id": str(status_payload.get("client_order_id") or client_order_id),
+                            "exchange_order_id": str(status_payload.get("exchange_order_id") or exchange_order_id),
+                        }
+                    continue
+                if not status_ok and str(status_reason or "").strip():
+                    self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
             self._oms.cancel(order_id)
             closed += 1
         return int(closed)
@@ -5362,6 +5396,7 @@ class RuntimeBridge:
                 "qty": float(_as_float(row.get("origQty"), 0.0)),
                 "symbol": str(row.get("symbol") or ""),
                 "side": str(row.get("side") or ""),
+                "status": str(row.get("status") or "NEW").strip().upper(),
                 "client_order_id": client_order_id,
                 "exchange_order_id": exchange_order_id,
             }
@@ -5457,6 +5492,105 @@ class RuntimeBridge:
             return [], "exchange_api_error", False, reason
         except Exception as exc:
             return [], "exchange_api_exception", False, str(exc)
+
+    def _fetch_exchange_order_status(
+        self,
+        *,
+        mode: str,
+        symbol: str,
+        client_order_id: str,
+        exchange_order_id: str,
+    ) -> tuple[dict[str, Any], str, bool, str]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return {}, "exchange_api_skip_mode", False, f"Modo no soportado para exchange order status: {mode_n or 'unknown'}"
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        client_id_n = str(client_order_id or "").strip()
+        exchange_id_n = str(exchange_order_id or "").strip()
+        if not symbol_n:
+            return {}, "exchange_api_missing_symbol", False, "symbol missing for exchange order status."
+        if not client_id_n and not exchange_id_n:
+            return {}, "exchange_api_missing_order_id", False, "order identifier missing for exchange order status."
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return {}, "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para order status."
+
+        timeout_sec = _exchange_timeout_seconds()
+        params: dict[str, Any] = {"symbol": symbol_n}
+        if client_id_n:
+            params["origClientOrderId"] = client_id_n
+        else:
+            params["orderId"] = exchange_id_n
+        try:
+            request_ok, result = _binance_signed_request(
+                method="GET",
+                base_url=str(creds.get("base_url") or ""),
+                path="/api/v3/order",
+                api_key=str(creds.get("api_key") or ""),
+                api_secret=str(creds.get("api_secret") or ""),
+                params=params,
+                timeout_sec=timeout_sec,
+            )
+            payload = result.get("payload")
+            if request_ok and isinstance(payload, dict):
+                return {
+                    "status": str(payload.get("status") or "").strip().upper(),
+                    "filled_qty": float(_as_float(payload.get("executedQty"), 0.0)),
+                    "qty": float(_as_float(payload.get("origQty"), 0.0)),
+                    "symbol": str(payload.get("symbol") or symbol_n).strip().upper(),
+                    "side": str(payload.get("side") or "").strip().upper(),
+                    "client_order_id": str(payload.get("clientOrderId") or client_id_n).strip(),
+                    "exchange_order_id": str(payload.get("orderId") or exchange_id_n).strip(),
+                }, "exchange_api", True, ""
+            status_code = int(_as_int(result.get("status_code"), 0))
+            category, detail = _classify_exchange_error(status_code, payload)
+            reason = detail if detail else f"Exchange order status failed ({category})"
+            return {}, "exchange_api_error", False, reason
+        except Exception as exc:
+            return {}, "exchange_api_exception", False, str(exc)
+
+    @staticmethod
+    def _apply_remote_order_status_to_local(order: Order, status_payload: dict[str, Any]) -> bool:
+        remote_qty = max(0.0, _as_float(status_payload.get("qty"), 0.0))
+        remote_filled = max(0.0, _as_float(status_payload.get("filled_qty"), 0.0))
+        remote_status = str(status_payload.get("status") or "").strip().upper()
+        if remote_qty > 0.0 and abs(float(order.qty) - remote_qty) > 1e-9:
+            order.qty = float(remote_qty)
+            order.updated_at = utc_now()
+        if remote_filled > float(order.filled_qty):
+            delta = max(0.0, remote_filled - float(order.filled_qty))
+            if delta > 0.0:
+                order.filled_qty = min(float(order.qty), float(order.filled_qty) + delta)
+                order.status = OrderStatus.FILLED if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED
+                order.updated_at = utc_now()
+        if remote_status == "FILLED":
+            if float(order.filled_qty) < float(order.qty):
+                remaining = max(0.0, float(order.qty) - float(order.filled_qty))
+                if remaining > 0.0:
+                    order.filled_qty = float(order.qty)
+            order.status = OrderStatus.FILLED
+            order.updated_at = utc_now()
+            return True
+        if remote_status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}:
+            if float(order.filled_qty) >= float(order.qty) and float(order.qty) > 0.0:
+                order.status = OrderStatus.FILLED
+            else:
+                order.status = OrderStatus.CANCELED
+            order.updated_at = utc_now()
+            return True
+        if remote_status == "REJECTED":
+            order.status = OrderStatus.REJECTED
+            order.updated_at = utc_now()
+            return True
+        if remote_status == "PARTIALLY_FILLED":
+            order.status = OrderStatus.PARTIALLY_FILLED
+            order.updated_at = utc_now()
+            return False
+        if remote_status in {"NEW", "PENDING_CANCEL"}:
+            order.status = OrderStatus.SUBMITTED
+            order.updated_at = utc_now()
+            return False
+        return False
 
     def _remember_remote_cancel_request(self, order_id: str) -> bool:
         text = str(order_id or "").strip()
@@ -5972,7 +6106,7 @@ class RuntimeBridge:
             exchange_orders, source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
             if source_ok:
                 self._sync_oms_with_exchange_open_orders(exchange_orders)
-                closed_absent = self._close_absent_local_open_orders(exchange_orders=exchange_orders)
+                closed_absent = self._close_absent_local_open_orders(mode=mode_n, exchange_orders=exchange_orders)
                 if closed_absent > 0:
                     self._stats["requotes"] = self._stats.get("requotes", 0) + int(closed_absent)
         local_orders = {

@@ -55,9 +55,10 @@ Leyenda de estado:
 - Impacto: no hay garantia de loop OMS/risk/reconciliacion real en runtime web operativo.
 - Evidencia:
   - `rtlab_autotrader/rtlab_core/web/app.py` (`RuntimeBridge._runtime_order_intent` + `_maybe_submit_exchange_runtime_order` con decision por estrategia principal y guardas fail-closed).
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`_fetch_exchange_order_status` + `_apply_remote_order_status_to_local` para resolver orden ausente por estado remoto).
   - `rtlab_autotrader/rtlab_core/web/app.py` (estado runtime con `runtime_last_signal_*` para trazabilidad de decision/accion).
-  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`, `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`).
-  - `rtlab_autotrader/tests/test_web_live_ready.py` (`91 passed`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`, `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`, `test_runtime_sync_testnet_marks_absent_open_order_filled_from_order_status`, `test_runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`93 passed`).
 - Brecha abierta:
   - falta cierre end-to-end del lifecycle de orden real (partial fills/cancel-replace/final states) para declarar runtime totalmente acoplado.
 
@@ -104,9 +105,10 @@ Leyenda de estado:
   - `rtlab_autotrader/rtlab_core/risk/kill_switch.py:15`
   - `rtlab_autotrader/rtlab_core/web/app.py` (`_reconcile` usa `open_orders` locales y cierra ausentes tras grace `RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC`).
   - `rtlab_autotrader/rtlab_core/web/app.py` (submit runtime cableado por estrategia/risk/account/open-orders/cooldown antes de `POST /api/v3/order`).
-  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`, `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`, `test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`, `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`).
+  - `rtlab_autotrader/rtlab_core/web/app.py` (orden ausente en `openOrders` se resuelve via `GET /api/v3/order` antes de cierre local).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`, `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`, `test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`, `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`, `test_runtime_sync_testnet_marks_absent_open_order_filled_from_order_status`, `test_runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new`).
 - Brecha abierta:
-  - runtime ya decide por senal y envia orden idempotente con guardas, pero todavia falta cierre completo de fills parciales/replace/finalizacion para declarar wiring operativo total.
+  - runtime ya decide por senal y consulta `order status` para ausentes, pero todavia falta cierre completo de cancel-replace/fills parciales avanzados + wiring de riesgo en el mismo ciclo para declarar wiring operativo total.
 
 ## Quant, research y cerebro del bot
 
