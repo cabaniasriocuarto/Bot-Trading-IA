@@ -499,6 +499,27 @@ Fecha de actualizacion: 2026-03-05
 - Se agrega respaldo bibliografico local-first del AP en:
   - `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1020 (estados remotos avanzados en lifecycle) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - ajuste en `_apply_remote_order_status_to_local(...)`:
+    - para `NEW/PENDING_CANCEL` conserva `PARTIALLY_FILLED` si hay `filled_qty>0` (evita degradar a `SUBMITTED`);
+    - si `filled_qty>=qty`, cierra en `FILLED` (terminal) aun con estado remoto transitorio.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_keeps_partial_state_when_order_status_is_pending_cancel`;
+  - nuevo `test_runtime_sync_testnet_marks_absent_open_order_expired_in_match_terminal`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "keeps_absent_open_order_open_when_order_status_is_new or keeps_partial_state_when_order_status_is_pending_cancel or updates_absent_open_order_partial_fill_from_order_status or marks_absent_open_order_expired_in_match_terminal or marks_absent_open_order_rejected_from_order_status" -q` -> PASS (`5 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Estado:
+  - reduce gap de lifecycle avanzado en reconciliacion runtime para `PENDING_CANCEL/EXPIRED_IN_MATCH`;
+  - mejora coherencia de fills parciales en no-live.
+
+## Revalidacion bibliografica AP-BOT-1020 - 2026-03-05
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1020_BIBLIO_VALIDATION_20260305.md`.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:

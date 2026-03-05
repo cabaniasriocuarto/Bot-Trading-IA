@@ -69,6 +69,19 @@
 - Revalidacion bibliografica:
   - `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`.
 
+### AP-BOT-1020 (reconciliacion avanzada `PENDING_CANCEL` / `EXPIRED_IN_MATCH`)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `NEW/PENDING_CANCEL` ya no pisa `PARTIALLY_FILLED` cuando existe fill parcial;
+  - si `filled_qty>=qty`, cierra terminal en `FILLED`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_testnet_keeps_partial_state_when_order_status_is_pending_cancel`;
+  - nuevo `test_runtime_sync_testnet_marks_absent_open_order_expired_in_match_terminal`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "keeps_absent_open_order_open_when_order_status_is_new or keeps_partial_state_when_order_status_is_pending_cancel or updates_absent_open_order_partial_fill_from_order_status or marks_absent_open_order_expired_in_match_terminal or marks_absent_open_order_rejected_from_order_status" -q` -> PASS (`5 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Revalidacion bibliografica:
+  - `docs/audit/AP_BOT_1020_BIBLIO_VALIDATION_20260305.md`.
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)

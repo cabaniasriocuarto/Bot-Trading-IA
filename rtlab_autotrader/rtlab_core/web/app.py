@@ -5588,7 +5588,14 @@ class RuntimeBridge:
             order.updated_at = utc_now()
             return False
         if remote_status in {"NEW", "PENDING_CANCEL"}:
-            order.status = OrderStatus.SUBMITTED
+            if float(order.filled_qty) >= float(order.qty) and float(order.qty) > 0.0:
+                order.status = OrderStatus.FILLED
+                order.updated_at = utc_now()
+                return True
+            if float(order.filled_qty) > 0.0:
+                order.status = OrderStatus.PARTIALLY_FILLED
+            else:
+                order.status = OrderStatus.SUBMITTED
             order.updated_at = utc_now()
             return False
         return False

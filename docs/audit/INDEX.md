@@ -1,6 +1,7 @@
 # Audit Index
 
 ## Ultima auditoria vigente
+- `docs/audit/AP_BOT_1020_BIBLIO_VALIDATION_20260305.md`
 - `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`
 - `docs/audit/AP_BOT_1017_BIBLIO_VALIDATION_20260305.md`
 - `docs/audit/AP_BOT_1016_BIBLIO_VALIDATION_20260305.md`

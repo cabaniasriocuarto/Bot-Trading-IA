@@ -324,6 +324,21 @@ Fecha: 2026-03-05
 - Pendiente inmediato:
   - seguir con cierre runtime real restante (cancel-replace/fills avanzados/reconciliacion final) para `G9_RUNTIME_ENGINE_REAL=PASS`.
 
+## Actualizacion tecnica AP-BOT-1020 (2026-03-05)
+- [x] Reconciliacion avanzada de estados remotos:
+  - `PENDING_CANCEL` conserva `PARTIALLY_FILLED` cuando hay fill parcial;
+  - `EXPIRED_IN_MATCH` queda cubierto con cierre terminal correcto.
+- [x] Tests de regresion agregados:
+  - `test_runtime_sync_testnet_keeps_partial_state_when_order_status_is_pending_cancel`;
+  - `test_runtime_sync_testnet_marks_absent_open_order_expired_in_match_terminal`.
+- [x] Revalidacion bibliografica local-first por patch:
+  - `docs/audit/AP_BOT_1020_BIBLIO_VALIDATION_20260305.md`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "keeps_absent_open_order_open_when_order_status_is_new or keeps_partial_state_when_order_status_is_pending_cancel or updates_absent_open_order_partial_fill_from_order_status or marks_absent_open_order_expired_in_match_terminal or marks_absent_open_order_rejected_from_order_status" -q` -> PASS (`5 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Pendiente inmediato:
+  - continuar con cierre de runtime real restante para `G9_RUNTIME_ENGINE_REAL=PASS` (sin habilitar LIVE en esta fase).
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
 - [x] Cerrada validacion bibliografica completa por patch:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.
