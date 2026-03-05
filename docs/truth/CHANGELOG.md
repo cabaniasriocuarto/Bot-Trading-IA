@@ -20,6 +20,7 @@
 
 ### AP-8002 (security CI: instalacion robusta de gitleaks)
 - `.github/workflows/security-ci.yml`:
+  - `actions/checkout@v4` pasa a `fetch-depth: 0` para evitar falsos positivos de `gitleaks` al usar baseline historica sobre clones shallow.
   - `setup-python` alineado a `3.11` (coherente con workflows operativos remotos).
   - reemplazada instalacion via script `master/install.sh` por descarga de release oficial:
     - `gitleaks_8.30.0_linux_x64.tar.gz`
@@ -32,7 +33,7 @@
 - Nuevo archivo versionado:
   - `docs/security/gitleaks-baseline.json` (redactado).
 - Resultado esperado:
-  - reducir fallos espurios en `Install security tooling` y facilitar cierre de `FM-SEC-004` al rerun del workflow.
+  - reducir fallos espurios en `Install security tooling` y en `Run security scan (strict)` por baseline/history mismatch, facilitando cierre de `FM-SEC-004` al rerun del workflow.
 
 ### AP-8007 (unificacion de thresholds de gates)
 - `rtlab_autotrader/rtlab_core/learning/service.py`:

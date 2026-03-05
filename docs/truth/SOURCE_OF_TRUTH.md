@@ -21,6 +21,7 @@ Fecha de actualizacion: 2026-03-04
 
 - `.github/workflows/security-ci.yml`:
   - `setup-python` unificado en `3.11` para coherencia con workflows remotos existentes;
+  - `actions/checkout` ahora usa `fetch-depth: 0` para que `gitleaks git` escanee historial completo y aplique baseline canonica sin falsos positivos por clone shallow;
   - instalacion de `gitleaks` cambia a binario oficial versionado (`8.30.0`) desde release de GitHub;
   - se elimina dependencia del install script remoto `master/install.sh` (mas fragil);
   - descarga con `curl --retry` + `tar` + `chmod` para reducir fallos transitorios en runners;
@@ -29,7 +30,8 @@ Fecha de actualizacion: 2026-03-04
   - export de `PATH` en el mismo step para validar `gitleaks version` sin depender de step siguiente.
   - `scripts/security_scan.sh` usa baseline canonica versionada en `docs/security/gitleaks-baseline.json` (con override opcional por `GITLEAKS_BASELINE_PATH`).
 - Estado:
-  - queda pendiente validar corrida verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
+  - root-cause del fail en `Security CI` identificado: clone shallow (`fetch-depth=1`) + baseline historica de gitleaks;
+  - fix aplicado en workflow (`fetch-depth: 0`), pendiente rerun verde en GitHub Actions para cerrar formalmente `FM-SEC-004`;
   - no se toco runtime ni logica de trading.
 
 ## Actualizacion tecnica AP-8007 (gates canonicos sin fallback permisivo) - 2026-03-04

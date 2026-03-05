@@ -47,9 +47,11 @@ Fecha: 2026-03-04
   - `docs/security/gitleaks-baseline.json`
   - `scripts/security_scan.sh` actualizado para usarla por defecto.
 - [x] `setup-python` en Security CI alineado a `3.11`.
+- [x] `actions/checkout` actualizado a `fetch-depth: 0` para alinear `gitleaks git` con baseline historica.
 - [ ] Pendiente validar corrida verde en GitHub Actions (`Security CI`) para cerrar `FM-SEC-004`.
 - Evidencia local:
-  - cambio en `/.github/workflows/security-ci.yml` (paso `Install security tooling`).
+  - cambio en `/.github/workflows/security-ci.yml` (checkout + install tooling).
+  - reproduccion del fallo en clone shallow (`1 commit scanned`, `leaks found: 1`) y validacion PASS al convertir a historial completo (`88 commits scanned`, `no leaks found`).
 
 ## Actualizacion tecnica AP-8007 (2026-03-04)
 - [x] Thresholds de gates unificados a fuente canonica `config/policies/gates.yaml`.
