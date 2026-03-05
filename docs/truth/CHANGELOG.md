@@ -333,6 +333,28 @@
 - Criterio:
   - local-first (`BIBLIO_INDEX` + `biblio_txt`) para principios de risk management y gates fail-closed.
 
+### AP-BOT-1014 (reuso de account snapshot en submit runtime)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_maybe_submit_exchange_runtime_order(...)` acepta snapshot de cuenta ya resuelto en el ciclo (`account_positions`, `account_positions_ok`);
+  - `sync_runtime_state(...)` pasa ese snapshot al submit remoto para evitar segunda llamada a `/api/v3/account` en el mismo loop;
+  - mantiene mismo comportamiento funcional (bloqueo si hay posiciones abiertas) con menos llamadas remotas.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell` ahora verifica `account_get == 1` (sin doble fetch de cuenta).
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_strategy_signal_meanreversion_submits_sell or runtime_sync_testnet_skips_submit_when_risk_blocks_current_cycle or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new"` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or runtime_stop_testnet_cancels_remote_open_orders_idempotently or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers"` -> PASS (`15 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`94 passed`).
+- Nota de estado:
+  - reduce overhead de API por ciclo en runtime real no-live;
+  - LIVE sigue `NO GO`.
+
+### Revalidacion bibliografica AP-BOT-1014
+- Nuevo artefacto:
+  - `docs/audit/AP_BOT_1014_BIBLIO_VALIDATION_20260304.md`.
+- Criterio:
+  - local-first en principios de eficiencia operativa + contrato API oficial para account/order endpoints.
+
 ### Revalidacion bibliografica completa AP-BOT-1006..1010
 - Nuevo artefacto:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.

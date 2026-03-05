@@ -105,6 +105,7 @@ Leyenda de estado:
   - `rtlab_autotrader/rtlab_core/risk/kill_switch.py:15`
   - `rtlab_autotrader/rtlab_core/web/app.py` (`_reconcile` usa `open_orders` locales y cierra ausentes tras grace `RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC`).
   - `rtlab_autotrader/rtlab_core/web/app.py` (submit runtime cableado por estrategia/risk/account/open-orders/cooldown antes de `POST /api/v3/order`).
+  - `rtlab_autotrader/rtlab_core/web/app.py` (submit runtime reutiliza account snapshot del ciclo para evitar doble `GET /api/v3/account`).
   - `rtlab_autotrader/rtlab_core/web/app.py` (orden ausente en `openOrders` se resuelve via `GET /api/v3/order` antes de cierre local).
   - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`, `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`, `test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`, `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`, `test_runtime_sync_testnet_marks_absent_open_order_filled_from_order_status`, `test_runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new`).
 - Brecha abierta:

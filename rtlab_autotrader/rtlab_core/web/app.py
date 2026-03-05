@@ -5801,7 +5801,14 @@ class RuntimeBridge:
         category, detail = _classify_exchange_error(status_code, payload)
         return False, {"error": detail, "error_type": category, "status_code": status_code, "raw": payload}
 
-    def _maybe_submit_exchange_runtime_order(self, *, state: dict[str, Any], mode: str) -> dict[str, Any]:
+    def _maybe_submit_exchange_runtime_order(
+        self,
+        *,
+        state: dict[str, Any],
+        mode: str,
+        account_positions: list[dict[str, Any]] | None = None,
+        account_positions_ok: bool | None = None,
+    ) -> dict[str, Any]:
         mode_n = str(mode or "").strip().lower()
         if mode_n not in {"testnet", "live"}:
             return {"submitted": False, "reason": "skip_mode"}
@@ -5858,9 +5865,15 @@ class RuntimeBridge:
             except Exception:
                 pass
 
-        account_positions, _account_source, account_ok, _account_reason = self._fetch_exchange_account_positions(mode=mode_n)
-        if account_ok and account_positions:
-            self._remote_positions = account_positions
+        account_rows: list[dict[str, Any]]
+        account_ok: bool
+        if account_positions is not None:
+            account_rows = list(account_positions)
+            account_ok = bool(account_positions_ok) if account_positions_ok is not None else True
+        else:
+            account_rows, _account_source, account_ok, _account_reason = self._fetch_exchange_account_positions(mode=mode_n)
+        if account_ok and account_rows:
+            self._remote_positions = account_rows
             return {
                 "submitted": False,
                 "reason": "account_positions_open",
@@ -5974,9 +5987,21 @@ class RuntimeBridge:
             "signal_side": side,
         }
 
-    def _maybe_submit_exchange_seed_order(self, *, state: dict[str, Any], mode: str) -> dict[str, Any]:
+    def _maybe_submit_exchange_seed_order(
+        self,
+        *,
+        state: dict[str, Any],
+        mode: str,
+        account_positions: list[dict[str, Any]] | None = None,
+        account_positions_ok: bool | None = None,
+    ) -> dict[str, Any]:
         # Backward-compatible wrapper: seed order logic now strategy-intent driven.
-        return self._maybe_submit_exchange_runtime_order(state=state, mode=mode)
+        return self._maybe_submit_exchange_runtime_order(
+            state=state,
+            mode=mode,
+            account_positions=account_positions,
+            account_positions_ok=account_positions_ok,
+        )
 
     def _cancel_exchange_open_orders(self, *, mode: str) -> int:
         mode_n = str(mode or "").strip().lower()
@@ -6353,7 +6378,12 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
             if active_mode in {"testnet", "live"} and not bool(decision.kill) and bool(state.get("running")) and not bool(state.get("killed")):
-                submit_result = self._maybe_submit_exchange_seed_order(state=state, mode=active_mode)
+                submit_result = self._maybe_submit_exchange_seed_order(
+                    state=state,
+                    mode=active_mode,
+                    account_positions=account_positions,
+                    account_positions_ok=account_ok,
+                )
                 submit_error = str(submit_result.get("error") or "")
                 submit_client_order_id = str(submit_result.get("client_order_id") or "")
                 signal_action = str(submit_result.get("signal_action") or "")

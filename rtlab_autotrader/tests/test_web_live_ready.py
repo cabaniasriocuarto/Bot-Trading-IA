@@ -865,7 +865,7 @@ def test_runtime_sync_testnet_does_not_submit_remote_orders_when_feature_disable
     },
   )
 
-  calls = {"open_orders_get": 0, "order_post": 0}
+  calls = {"open_orders_get": 0, "account_get": 0, "order_post": 0}
 
   def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
     if path == "/api/v3/openOrders" and str(method).upper() == "GET":
@@ -913,7 +913,7 @@ def test_runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency(tm
     },
   )
 
-  calls = {"open_orders_get": 0, "order_post": 0}
+  calls = {"open_orders_get": 0, "account_get": 0, "order_post": 0}
   open_orders_payload: list[dict[str, object]] = []
 
   def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
@@ -1002,7 +1002,7 @@ def test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit(tmp_path:
     },
   )
 
-  calls = {"open_orders_get": 0, "order_post": 0}
+  calls = {"open_orders_get": 0, "account_get": 0, "order_post": 0}
 
   def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
     method_u = str(method).upper()
@@ -1063,7 +1063,7 @@ def test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell(tmp_pat
     },
   )
 
-  calls = {"open_orders_get": 0, "order_post": 0}
+  calls = {"open_orders_get": 0, "account_get": 0, "order_post": 0}
   observed: dict[str, str] = {"side": "", "symbol": ""}
   open_orders_payload: list[dict[str, object]] = []
 
@@ -1073,6 +1073,7 @@ def test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell(tmp_pat
       calls["open_orders_get"] += 1
       return True, {"status_code": 200, "payload": list(open_orders_payload)}
     if path == "/api/v3/account" and method_u == "GET":
+      calls["account_get"] += 1
       return True, {"status_code": 200, "payload": {"balances": []}}
     if path == "/api/v3/order" and method_u == "POST":
       calls["order_post"] += 1
@@ -1104,6 +1105,7 @@ def test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell(tmp_pat
 
   synced = module._sync_runtime_state(state, persist=False)
   assert calls["order_post"] == 1
+  assert calls["account_get"] == 1
   assert observed["side"] == "SELL"
   assert observed["symbol"] == "ETHUSDT"
   assert str(synced.get("runtime_last_signal_action") or "") == "trade"
