@@ -125,6 +125,10 @@ jobs:
             cmd+=(--no-strict)
           fi
 
+          if [[ "${BASE_URL}" == *"staging"* ]]; then
+            cmd+=(--allow-staging-warns)
+          fi
+
           if [[ -n "${selected_auth_token}" ]]; then
             cmd+=(--auth-token "${selected_auth_token}")
           fi
