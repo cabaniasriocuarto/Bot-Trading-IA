@@ -5823,6 +5823,7 @@ class RuntimeBridge:
         mode: str,
         account_positions: list[dict[str, Any]] | None = None,
         account_positions_ok: bool | None = None,
+        account_positions_reason: str | None = None,
     ) -> dict[str, Any]:
         mode_n = str(mode or "").strip().lower()
         if mode_n not in {"testnet", "live"}:
@@ -5894,11 +5895,25 @@ class RuntimeBridge:
 
         account_rows: list[dict[str, Any]]
         account_ok: bool
+        account_reason: str
         if account_positions is not None:
             account_rows = list(account_positions)
             account_ok = bool(account_positions_ok) if account_positions_ok is not None else True
+            account_reason = str(account_positions_reason or "")
         else:
             account_rows, _account_source, account_ok, _account_reason = self._fetch_exchange_account_positions(mode=mode_n)
+            account_reason = str(_account_reason or _account_source or "")
+        if not account_ok:
+            return {
+                "submitted": False,
+                "reason": "account_positions_fetch_failed",
+                "error": account_reason or "account_positions_fetch_failed",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
         if account_ok and account_rows:
             self._remote_positions = account_rows
             return {
@@ -6034,6 +6049,7 @@ class RuntimeBridge:
         mode: str,
         account_positions: list[dict[str, Any]] | None = None,
         account_positions_ok: bool | None = None,
+        account_positions_reason: str | None = None,
     ) -> dict[str, Any]:
         # Backward-compatible wrapper: seed order logic now strategy-intent driven.
         return self._maybe_submit_exchange_runtime_order(
@@ -6041,6 +6057,7 @@ class RuntimeBridge:
             mode=mode,
             account_positions=account_positions,
             account_positions_ok=account_positions_ok,
+            account_positions_reason=account_positions_reason,
         )
 
     def _cancel_exchange_open_orders(self, *, mode: str) -> int:
@@ -6425,6 +6442,7 @@ class RuntimeBridge:
                     mode=active_mode,
                     account_positions=account_positions,
                     account_positions_ok=account_ok,
+                    account_positions_reason=account_reason,
                 )
                 submit_reason = str(submit_result.get("reason") or "")
                 submit_error = str(submit_result.get("error") or "")

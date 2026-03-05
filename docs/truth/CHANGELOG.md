@@ -2,6 +2,19 @@
 
 ## 2026-03-05
 
+### AP-BOT-1032 (submit bloqueado si falla account snapshot)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_maybe_submit_exchange_runtime_order(...)` ahora aplica fail-closed con `reason=account_positions_fetch_failed` cuando `runtime_account_positions_ok=false`.
+  - `sync_runtime_state(...)` propaga `account_positions_reason` al submitter para trazabilidad.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo test `test_runtime_sync_testnet_skips_submit_when_account_positions_fetch_fails`;
+  - ajuste del test de idempotencia para mockear `GET /api/v3/account`.
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1032_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1031 (fail-closed por orden local no verificada)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - `_close_absent_local_open_orders(...)` ya no cierra localmente si falla `order status`; conserva la orden abierta.

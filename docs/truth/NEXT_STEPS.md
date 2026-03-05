@@ -117,6 +117,16 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - completar tramo runtime real restante para llevar `G9_RUNTIME_ENGINE_REAL` a `PASS` al final del programa.
 
+## Actualizacion tecnica AP-BOT-1032 (2026-03-05)
+- [x] Submit runtime bloqueado sin snapshot de cuenta valido:
+  - `reason=account_positions_fetch_failed` en `testnet/live`.
+- [x] Tests de regresion en verde:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q`
+- [x] Validacion bibliografica:
+  - `docs/audit/AP_BOT_1032_BIBLIO_VALIDATION_20260305.md`
+- [ ] Pendiente operativo:
+  - cerrar wiring runtime real restante y revalidar remoto post-deploy para mover `G9_RUNTIME_ENGINE_REAL` a `PASS`.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:

@@ -2,6 +2,23 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion tecnica AP-BOT-1032 (submit fail-closed sin account snapshot) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_maybe_submit_exchange_runtime_order(...)` bloquea submit remoto cuando `account_positions_ok=false`;
+  - expone `reason=account_positions_fetch_failed` + `error` con motivo operativo;
+  - `sync_runtime_state(...)` ahora pasa `account_positions_reason` al submitter.
+- Objetivo:
+  - evitar apertura de nuevas ordenes remotas sin estado de cuenta verificado.
+- Tests de regresion:
+  - `test_runtime_sync_testnet_skips_submit_when_account_positions_fetch_fails`
+  - ajuste de `test_runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency`.
+- Evidencia de validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1032_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-BOT-1031 (runtime fail-closed ante orden no verificada) - 2026-03-05
 
 - `rtlab_autotrader/rtlab_core/web/app.py`:
