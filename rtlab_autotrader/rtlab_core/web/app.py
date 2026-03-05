@@ -191,6 +191,7 @@ RUNTIME_REMOTE_ORDERS_ENABLED = _env_bool("RUNTIME_REMOTE_ORDERS_ENABLED", False
 RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC", 60))
 RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS", 2000))
 RUNTIME_REMOTE_ORDER_NOTIONAL_USD = max(5.0, _env_float("RUNTIME_REMOTE_ORDER_NOTIONAL_USD", 15.0))
+RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC", 120))
 RUNTIME_REMOTE_ORDER_SYMBOL = str(os.getenv("RUNTIME_REMOTE_ORDER_SYMBOL", os.getenv("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))).strip().upper()
 RUNTIME_REMOTE_ORDER_SIDE = str(os.getenv("RUNTIME_REMOTE_ORDER_SIDE", "BUY")).strip().upper()
 RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC = max(1, _env_int("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", 20))
@@ -2201,6 +2202,11 @@ class ConsoleStore:
                 "runtime_last_remote_submit_at": "",
                 "runtime_last_remote_client_order_id": "",
                 "runtime_last_remote_submit_error": "",
+                "runtime_last_signal_action": "",
+                "runtime_last_signal_reason": "",
+                "runtime_last_signal_strategy_id": "",
+                "runtime_last_signal_symbol": "",
+                "runtime_last_signal_side": "",
                 "runtime_heartbeat_at": "",
                 "runtime_last_reconcile_at": "",
                 "bot_status": "PAUSED",
@@ -2985,6 +2991,11 @@ def risk_hooks(context):
             "runtime_exchange_verified_at",
             "runtime_exchange_mode",
             "runtime_exchange_reason",
+            "runtime_last_signal_action",
+            "runtime_last_signal_reason",
+            "runtime_last_signal_strategy_id",
+            "runtime_last_signal_symbol",
+            "runtime_last_signal_side",
         ):
             if key not in state:
                 state[key] = ""
@@ -5468,6 +5479,102 @@ class RuntimeBridge:
     def _sanitize_exchange_symbol(value: Any) -> str:
         return str(value or "").strip().upper().replace("/", "").replace("-", "")
 
+    def _runtime_order_intent(self, *, mode: str) -> dict[str, Any]:
+        mode_n = str(mode or "").strip().lower()
+        principal = store.registry.get_principal(mode_n)
+        strategy_id = str((principal or {}).get("name") or "").strip()
+        if not strategy_id:
+            return {
+                "action": "flat",
+                "reason": "no_primary_strategy",
+                "strategy_id": "",
+                "symbol": "",
+                "side": "",
+                "notional_usd": float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD),
+            }
+
+        try:
+            strategy = store.strategy_or_404(strategy_id)
+        except Exception:
+            return {
+                "action": "flat",
+                "reason": "primary_strategy_not_found",
+                "strategy_id": strategy_id,
+                "symbol": "",
+                "side": "",
+                "notional_usd": float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD),
+            }
+
+        enabled_for_trading = bool(strategy.get("enabled_for_trading", strategy.get("enabled", False)))
+        if not enabled_for_trading:
+            return {
+                "action": "flat",
+                "reason": "primary_strategy_disabled",
+                "strategy_id": strategy_id,
+                "symbol": "",
+                "side": "",
+                "notional_usd": float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD),
+            }
+
+        params = strategy.get("params") if isinstance(strategy.get("params"), dict) else {}
+        tags = {str(tag or "").strip().lower() for tag in (strategy.get("tags") or []) if str(tag or "").strip()}
+
+        symbol = RuntimeBridge._sanitize_exchange_symbol(
+            params.get("runtime_symbol")
+            or params.get("symbol")
+            or params.get("pair")
+            or params.get("market_symbol")
+            or RUNTIME_REMOTE_ORDER_SYMBOL
+            or get_env("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT")
+        )
+        if not symbol:
+            symbol = "BTCUSDT"
+
+        action_override = str(params.get("runtime_action") or params.get("action") or "").strip().lower()
+        side_override = str(params.get("runtime_side") or params.get("side") or "").strip().upper()
+
+        action = "trade"
+        side = "SELL" if str(RUNTIME_REMOTE_ORDER_SIDE or "BUY").strip().upper() == "SELL" else "BUY"
+        reason = "strategy_default_side"
+
+        if action_override in {"flat", "hold", "none", "pause"}:
+            action = "flat"
+            side = ""
+            reason = "strategy_action_override_flat"
+        elif side_override in {"BUY", "SELL"}:
+            side = side_override
+            reason = "strategy_side_override"
+        else:
+            defensive_tags = {"defensive", "liquidity", "cash", "safe_mode", "capital_preservation"}
+            meanrev_tags = {"meanreversion", "mean_reversion", "reversion", "range"}
+            trend_tags = {"trend", "breakout", "momentum", "orderflow", "trend_scanning"}
+            if tags & defensive_tags:
+                action = "flat"
+                side = ""
+                reason = "strategy_tags_defensive_flat"
+            elif tags & meanrev_tags:
+                side = "SELL"
+                reason = "strategy_tags_meanreversion"
+            elif tags & trend_tags:
+                side = "BUY"
+                reason = "strategy_tags_trend"
+
+        notional = float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD)
+        for key in ("runtime_notional_usd", "order_notional_usd", "notional_usd"):
+            if key in params:
+                notional = RuntimeBridge._safe_positive(params.get(key), notional)
+                break
+        notional = max(5.0, float(notional))
+
+        return {
+            "action": action,
+            "reason": reason,
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "side": side,
+            "notional_usd": notional,
+        }
+
     def _remember_remote_submit_request(self, client_order_id: str) -> bool:
         text = str(client_order_id or "").strip()
         if not text:
@@ -5560,31 +5667,125 @@ class RuntimeBridge:
         category, detail = _classify_exchange_error(status_code, payload)
         return False, {"error": detail, "error_type": category, "status_code": status_code, "raw": payload}
 
-    def _maybe_submit_exchange_seed_order(self, *, state: dict[str, Any], mode: str) -> dict[str, Any]:
+    def _maybe_submit_exchange_runtime_order(self, *, state: dict[str, Any], mode: str) -> dict[str, Any]:
         mode_n = str(mode or "").strip().lower()
         if mode_n not in {"testnet", "live"}:
             return {"submitted": False, "reason": "skip_mode"}
         if not bool(RUNTIME_REMOTE_ORDERS_ENABLED):
             return {"submitted": False, "reason": "remote_orders_disabled"}
 
+        intent = self._runtime_order_intent(mode=mode_n)
+        signal_strategy_id = str(intent.get("strategy_id") or "")
+        signal_symbol = RuntimeBridge._sanitize_exchange_symbol(intent.get("symbol") or "")
+        signal_side = str(intent.get("side") or "").strip().upper()
+        signal_action = str(intent.get("action") or "flat").strip().lower()
+        signal_reason = str(intent.get("reason") or "").strip()
+
+        if signal_action != "trade":
+            return {
+                "submitted": False,
+                "reason": "strategy_signal_flat",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
+        if not bool((self._last_risk or {}).get("allow_new_positions", True)):
+            return {
+                "submitted": False,
+                "reason": "risk_blocked",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
+        last_submit_at_raw = str(state.get("runtime_last_remote_submit_at") or "").strip()
+        if last_submit_at_raw:
+            try:
+                if last_submit_at_raw.endswith("Z"):
+                    last_submit_at_raw = last_submit_at_raw.replace("Z", "+00:00")
+                last_submit_dt = datetime.fromisoformat(last_submit_at_raw)
+                cooldown_sec = int(RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC)
+                age_sec = max(0.0, (utc_now() - last_submit_dt).total_seconds())
+                if age_sec < float(cooldown_sec):
+                    return {
+                        "submitted": False,
+                        "reason": "submit_cooldown_active",
+                        "signal_action": signal_action,
+                        "signal_reason": signal_reason,
+                        "signal_strategy_id": signal_strategy_id,
+                        "signal_symbol": signal_symbol,
+                        "signal_side": signal_side,
+                    }
+            except Exception:
+                pass
+
+        account_positions, _account_source, account_ok, _account_reason = self._fetch_exchange_account_positions(mode=mode_n)
+        if account_ok and account_positions:
+            self._remote_positions = account_positions
+            return {
+                "submitted": False,
+                "reason": "account_positions_open",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
         exchange_orders, _source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
         if not source_ok:
             self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-            return {"submitted": False, "reason": "open_orders_fetch_failed", "error": source_reason}
+            return {
+                "submitted": False,
+                "reason": "open_orders_fetch_failed",
+                "error": source_reason,
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
         self._sync_oms_with_exchange_open_orders(exchange_orders)
         if exchange_orders:
-            return {"submitted": False, "reason": "open_orders_present", "open_orders": len(exchange_orders)}
+            return {
+                "submitted": False,
+                "reason": "open_orders_present",
+                "open_orders": len(exchange_orders),
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
 
-        symbol = RuntimeBridge._sanitize_exchange_symbol(RUNTIME_REMOTE_ORDER_SYMBOL or get_env("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))
+        symbol = signal_symbol or RuntimeBridge._sanitize_exchange_symbol(
+            RUNTIME_REMOTE_ORDER_SYMBOL or get_env("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT")
+        )
         if not symbol:
             symbol = "BTCUSDT"
-        side = "SELL" if str(RUNTIME_REMOTE_ORDER_SIDE or "BUY").strip().upper() == "SELL" else "BUY"
+        side = signal_side if signal_side in {"BUY", "SELL"} else (
+            "SELL" if str(RUNTIME_REMOTE_ORDER_SIDE or "BUY").strip().upper() == "SELL" else "BUY"
+        )
         mark_price = max(0.0001, RuntimeBridge._symbol_mark_price(symbol))
-        notional = max(5.0, float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD))
+        notional = max(5.0, float(intent.get("notional_usd") or RUNTIME_REMOTE_ORDER_NOTIONAL_USD))
         qty = max(0.000001, round(notional / mark_price, 8))
         client_order_id = self._build_remote_client_order_id(mode=mode_n, symbol=symbol, side=side)
         if not self._remember_remote_submit_request(client_order_id):
-            return {"submitted": False, "reason": "idempotent_skip", "client_order_id": client_order_id}
+            return {
+                "submitted": False,
+                "reason": "idempotent_skip",
+                "client_order_id": client_order_id,
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": symbol,
+                "signal_side": side,
+            }
 
         submitted, payload = self._submit_exchange_market_order(
             mode=mode_n,
@@ -5595,7 +5796,17 @@ class RuntimeBridge:
         )
         if not submitted:
             self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-            return {"submitted": False, "reason": "submit_failed", "error": str(payload.get("error") or ""), "client_order_id": client_order_id}
+            return {
+                "submitted": False,
+                "reason": "submit_failed",
+                "error": str(payload.get("error") or ""),
+                "client_order_id": client_order_id,
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": symbol,
+                "signal_side": side,
+            }
 
         order_id = str(payload.get("client_order_id") or client_order_id)
         existing = self._oms.orders.get(order_id)
@@ -5622,7 +5833,16 @@ class RuntimeBridge:
             "side": side,
             "qty": float(payload.get("orig_qty") or qty),
             "idempotent_duplicate": bool(payload.get("idempotent_duplicate", False)),
+            "signal_action": signal_action,
+            "signal_reason": signal_reason,
+            "signal_strategy_id": signal_strategy_id,
+            "signal_symbol": symbol,
+            "signal_side": side,
         }
+
+    def _maybe_submit_exchange_seed_order(self, *, state: dict[str, Any], mode: str) -> dict[str, Any]:
+        # Backward-compatible wrapper: seed order logic now strategy-intent driven.
+        return self._maybe_submit_exchange_runtime_order(state=state, mode=mode)
 
     def _cancel_exchange_open_orders(self, *, mode: str) -> int:
         mode_n = str(mode or "").strip().lower()
@@ -5849,6 +6069,11 @@ class RuntimeBridge:
                     changed = self._set_state_value(state, "runtime_last_remote_submit_at", "") or changed
                     changed = self._set_state_value(state, "runtime_last_remote_client_order_id", "") or changed
                     changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_action", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_reason", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_strategy_id", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_symbol", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_side", "") or changed
                 if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
                     changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                     changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
@@ -5873,6 +6098,11 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
                 changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_action", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_strategy_id", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_symbol", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_side", "") or changed
                 changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
                 changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
                 self._remote_positions = []
@@ -5888,6 +6118,16 @@ class RuntimeBridge:
                 submit_result = self._maybe_submit_exchange_seed_order(state=state, mode=active_mode)
                 submit_error = str(submit_result.get("error") or "")
                 submit_client_order_id = str(submit_result.get("client_order_id") or "")
+                signal_action = str(submit_result.get("signal_action") or "")
+                signal_reason = str(submit_result.get("signal_reason") or "")
+                signal_strategy_id = str(submit_result.get("signal_strategy_id") or "")
+                signal_symbol = str(submit_result.get("signal_symbol") or "")
+                signal_side = str(submit_result.get("signal_side") or "")
+                changed = self._set_state_value(state, "runtime_last_signal_action", signal_action) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_reason", signal_reason) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_strategy_id", signal_strategy_id) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_symbol", signal_symbol) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_side", signal_side) or changed
                 if submit_client_order_id:
                     changed = self._set_state_value(
                         state,
@@ -6524,6 +6764,11 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_last_remote_submit_at", "")
     runtime_state.setdefault("runtime_last_remote_client_order_id", "")
     runtime_state.setdefault("runtime_last_remote_submit_error", "")
+    runtime_state.setdefault("runtime_last_signal_action", "")
+    runtime_state.setdefault("runtime_last_signal_reason", "")
+    runtime_state.setdefault("runtime_last_signal_strategy_id", "")
+    runtime_state.setdefault("runtime_last_signal_symbol", "")
+    runtime_state.setdefault("runtime_last_signal_side", "")
     runtime_state.setdefault("runtime_heartbeat_at", "")
     runtime_state.setdefault("runtime_last_reconcile_at", "")
     runtime_settings = settings if isinstance(settings, dict) else store.load_settings()

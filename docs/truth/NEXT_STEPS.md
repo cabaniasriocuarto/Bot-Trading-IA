@@ -183,7 +183,29 @@ Fecha: 2026-03-04
 - [x] Tramo no-live/testnet consolidado en estado GO.
 - [ ] LIVE postergado hasta fase final (configuracion APIs/canary/rollback).
 - Pendiente inmediato:
-  - preparar tramo final LIVE cuando se habilite la configuracion real de APIs.
+  - avanzar con runtime orientado por senales de estrategia para reducir brecha FM-EXEC-001/FM-EXEC-005.
+
+## Actualizacion tecnica AP-BOT-1011 (2026-03-04)
+- [x] Runtime remoto ahora decide submit desde estrategia principal (no semilla ciega).
+- [x] Guardas fail-closed previas al submit:
+  - estrategia principal valida y habilitada;
+  - `risk.allow_new_positions=true`;
+  - sin posiciones abiertas reconciliadas;
+  - sin cooldown activo ni open orders pendientes.
+- [x] Trazabilidad de senal runtime agregada:
+  - `runtime_last_signal_action`,
+  - `runtime_last_signal_reason`,
+  - `runtime_last_signal_strategy_id`,
+  - `runtime_last_signal_symbol`,
+  - `runtime_last_signal_side`.
+- [x] Revalidacion bibliografica local-first por patch:
+  - `docs/audit/AP_BOT_1011_BIBLIO_VALIDATION_20260304.md`.
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_strategy_signal_flat_skips_remote_submit or runtime_sync_testnet_strategy_signal_meanreversion_submits_sell or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot"` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`91 passed`).
+- Pendiente inmediato:
+  - cerrar lifecycle final de ejecucion real (partial fills/cancel-replace/estado final de orden) para pasar FM-EXEC-001/FM-EXEC-005 a CERRADO.
 
 ## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
 - [x] Cerrada validacion bibliografica completa por patch:

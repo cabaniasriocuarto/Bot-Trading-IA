@@ -296,6 +296,44 @@ Fecha de actualizacion: 2026-03-04
   - `scripts/security_scan.sh`: PASS.
   - guard CI de `--password`: activo.
 
+## Actualizacion tecnica AP-BOT-1011 (runtime por senal de estrategia, fail-closed) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - submit remoto runtime deja de ser semilla ciega y pasa a intencion derivada de estrategia principal (`store.registry.get_principal(mode)` + `strategy_or_404`);
+  - nuevo derivador `_runtime_order_intent(...)`:
+    - fail-closed si no hay estrategia principal, no existe o esta deshabilitada;
+    - usa `tags`/`params` para decidir `action=trade|flat`, `side`, `symbol`, `notional`;
+  - nuevo guard temporal de submit:
+    - `RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC` (default `120`);
+  - submit runtime aplica guardas previas antes de enviar orden:
+    - `risk.allow_new_positions` debe estar habilitado;
+    - si hay posiciones abiertas en account snapshot, no envia nueva orden;
+    - si hay cooldown activo o `openOrders` existentes, no envia nueva orden;
+  - trazabilidad runtime ampliada:
+    - `runtime_last_signal_action`,
+    - `runtime_last_signal_reason`,
+    - `runtime_last_signal_strategy_id`,
+    - `runtime_last_signal_symbol`,
+    - `runtime_last_signal_side`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`;
+  - `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`.
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_strategy_signal_flat_skips_remote_submit or runtime_sync_testnet_strategy_signal_meanreversion_submits_sell or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot"` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`91 passed`).
+- Estado:
+  - `FM-EXEC-001` y `FM-EXEC-005` quedan mas mitigados en no-live (decision runtime ahora alineada a estrategia+risk);
+  - LIVE sigue **NO GO** hasta cierre total del ciclo de ejecucion real (fills/partial fills/cancel-replace/reconciliacion final end-to-end).
+
+## Revalidacion bibliografica AP-BOT-1011 - 2026-03-04
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1011_BIBLIO_VALIDATION_20260304.md`.
+- Criterio aplicado:
+  - primero bibliografia local indexada (`docs/reference/BIBLIO_INDEX.md`);
+  - cuando no hay regla teorica explicita, se declara `NO EVIDENCIA LOCAL` y se justifica como decision de ingenieria fail-closed de runtime.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:

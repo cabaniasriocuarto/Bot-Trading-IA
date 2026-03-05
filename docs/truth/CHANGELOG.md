@@ -241,6 +241,40 @@
   - no-live/testnet: GO.
   - LIVE: NO GO (postergado por decision operativa, pendiente tramo final con APIs reales/canary).
 
+### AP-BOT-1011 (submit runtime por intencion de estrategia, fail-closed)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - nuevo `RuntimeBridge._runtime_order_intent(...)` para derivar `action/side/symbol/notional` desde estrategia principal por modo;
+  - fail-closed cuando no hay estrategia principal valida o esta deshabilitada (`action=flat`);
+  - nuevo control de enfriamiento de submit:
+    - `RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC` (default `120`);
+  - nuevo flujo `RuntimeBridge._maybe_submit_exchange_runtime_order(...)`:
+    - bloquea submit si `risk.allow_new_positions=false`;
+    - bloquea submit si ya hay posiciones abiertas por account snapshot;
+    - bloquea submit si hay `openOrders` o cooldown activo;
+    - conserva idempotencia de `client_order_id` ya implementada en AP previos.
+  - estado runtime ampliado con trazabilidad de senal:
+    - `runtime_last_signal_action`,
+    - `runtime_last_signal_reason`,
+    - `runtime_last_signal_strategy_id`,
+    - `runtime_last_signal_symbol`,
+    - `runtime_last_signal_side`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - agregado `test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`;
+  - agregado `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`.
+- Evidencia:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_strategy_signal_flat_skips_remote_submit or runtime_sync_testnet_strategy_signal_meanreversion_submits_sell or runtime_sync_testnet_submits_remote_seed_order_once_with_idempotency or runtime_sync_testnet_reconciles_positions_from_exchange_account_snapshot"` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`91 passed`).
+- Nota de estado:
+  - reduce brecha de `FM-EXEC-001/FM-EXEC-005` en no-live;
+  - LIVE permanece `NO GO` hasta cerrar lifecycle real completo (fills/partial fills/cancel-replace/reconciliacion final).
+
+### Revalidacion bibliografica AP-BOT-1011
+- Nuevo artefacto:
+  - `docs/audit/AP_BOT_1011_BIBLIO_VALIDATION_20260304.md`.
+- Criterio:
+  - local-first (`BIBLIO_INDEX` + `biblio_txt`) y declaracion explicita de `NO EVIDENCIA LOCAL` cuando corresponde.
+
 ### Revalidacion bibliografica completa AP-BOT-1006..1010
 - Nuevo artefacto:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.

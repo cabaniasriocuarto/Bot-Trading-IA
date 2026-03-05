@@ -54,10 +54,12 @@ Leyenda de estado:
 - Estado: MITIGADO
 - Impacto: no hay garantia de loop OMS/risk/reconciliacion real en runtime web operativo.
 - Evidencia:
-  - `rtlab_autotrader/rtlab_core/web/app.py:8339`
-  - `rtlab_autotrader/rtlab_core/web/app.py:8360`
-  - `rtlab_autotrader/rtlab_core/web/app.py:5262`
-  - `rtlab_autotrader/rtlab_core/web/app.py:5320`
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`RuntimeBridge._runtime_order_intent` + `_maybe_submit_exchange_runtime_order` con decision por estrategia principal y guardas fail-closed).
+  - `rtlab_autotrader/rtlab_core/web/app.py` (estado runtime con `runtime_last_signal_*` para trazabilidad de decision/accion).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`, `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`91 passed`).
+- Brecha abierta:
+  - falta cierre end-to-end del lifecycle de orden real (partial fills/cancel-replace/final states) para declarar runtime totalmente acoplado.
 
 ### FM-EXEC-002 - Gate G9 depende de estado/env y no de heartbeat real
 - Severidad: CRITICAL
@@ -101,9 +103,10 @@ Leyenda de estado:
   - `rtlab_autotrader/rtlab_core/risk/risk_engine.py:19`
   - `rtlab_autotrader/rtlab_core/risk/kill_switch.py:15`
   - `rtlab_autotrader/rtlab_core/web/app.py` (`_reconcile` usa `open_orders` locales y cierra ausentes tras grace `RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC`).
-  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`, `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`).
+  - `rtlab_autotrader/rtlab_core/web/app.py` (submit runtime cableado por estrategia/risk/account/open-orders/cooldown antes de `POST /api/v3/order`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py` (`test_runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation`, `test_runtime_sync_testnet_closes_absent_local_open_orders_after_grace`, `test_runtime_sync_testnet_strategy_signal_flat_skips_remote_submit`, `test_runtime_sync_testnet_strategy_signal_meanreversion_submits_sell`).
 - Brecha abierta:
-  - runtime ya consulta `openOrders` en no-paper para reconciliacion y reduce desyncs falsos, pero falta loop broker/exchange completo de submit por señales + fills reales para cierre total.
+  - runtime ya decide por senal y envia orden idempotente con guardas, pero todavia falta cierre completo de fills parciales/replace/finalizacion para declarar wiring operativo total.
 
 ## Quant, research y cerebro del bot
 
@@ -284,5 +287,5 @@ Leyenda de estado:
 1. FM-EXEC-001
 2. FM-EXEC-005
 3. FM-RISK-002
-4. FM-SEC-004
-5. FM-QUANT-008
+4. FM-QUANT-008
+
