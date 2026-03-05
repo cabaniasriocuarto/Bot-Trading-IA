@@ -6,6 +6,7 @@ Este archivo centraliza la documentacion vigente del proyecto.
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/NEXT_STEPS.md`
 - `docs/truth/CHANGELOG.md`
+- `docs/audit/AP_BOT_1015_BIBLIO_VALIDATION_20260304.md`
 - `docs/audit/AP_BOT_1014_BIBLIO_VALIDATION_20260304.md`
 - `docs/audit/AP_BOT_1013_BIBLIO_VALIDATION_20260304.md`
 - `docs/audit/AP_BOT_1012_BIBLIO_VALIDATION_20260304.md`

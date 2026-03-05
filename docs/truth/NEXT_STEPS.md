@@ -248,6 +248,18 @@ Fecha: 2026-03-04
 - Pendiente inmediato:
   - completar cierre de runtime end-to-end restante (cancel-replace/fills parciales avanzados) y ejecutar checks protegidos remotos.
 
+## Actualizacion tecnica AP-BOT-1015 (2026-03-04)
+- [x] Cobertura de regresion agregada para estados remotos:
+  - `PARTIALLY_FILLED`,
+  - `REJECTED`.
+- [x] Revalidacion bibliografica local-first por patch:
+  - `docs/audit/AP_BOT_1015_BIBLIO_VALIDATION_20260304.md`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_updates_absent_open_order_partial_fill_from_order_status or runtime_sync_testnet_marks_absent_open_order_rejected_from_order_status or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new"` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`96 passed`).
+- Pendiente inmediato:
+  - completar bloque de runtime real restante (cancel-replace avanzado + revalidacion remota protegida).
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
 - [x] Cerrada validacion bibliografica completa por patch:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.

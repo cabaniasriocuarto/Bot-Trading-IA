@@ -355,6 +355,24 @@
 - Criterio:
   - local-first en principios de eficiencia operativa + contrato API oficial para account/order endpoints.
 
+### AP-BOT-1015 (cobertura de estados remotos PARTIALLY_FILLED/REJECTED)
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - agregado `test_runtime_sync_testnet_updates_absent_open_order_partial_fill_from_order_status`;
+  - agregado `test_runtime_sync_testnet_marks_absent_open_order_rejected_from_order_status`.
+- Objetivo:
+  - fijar regresion para mapping de estados remotos ya implementados en runtime (`PARTIALLY_FILLED`, `REJECTED`).
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_updates_absent_open_order_partial_fill_from_order_status or runtime_sync_testnet_marks_absent_open_order_rejected_from_order_status or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new"` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`96 passed`).
+- Nota de estado:
+  - mejora cobertura de lifecycle runtime y reduce riesgo de regresion en reconciliacion no-live.
+
+### Revalidacion bibliografica AP-BOT-1015
+- Nuevo artefacto:
+  - `docs/audit/AP_BOT_1015_BIBLIO_VALIDATION_20260304.md`.
+- Criterio:
+  - misma base local-first usada en AP-BOT-1012 (microestructura de open orders + contrato API oficial).
+
 ### Revalidacion bibliografica completa AP-BOT-1006..1010
 - Nuevo artefacto:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.

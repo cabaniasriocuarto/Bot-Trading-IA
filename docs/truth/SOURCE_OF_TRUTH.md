@@ -418,6 +418,27 @@ Fecha de actualizacion: 2026-03-04
 - Criterio aplicado:
   - principios de eficiencia operativa local + contrato API oficial para endpoints de cuenta/orden.
 
+## Actualizacion tecnica AP-BOT-1015 (cobertura de estados remotos) - 2026-03-04
+
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - `test_runtime_sync_testnet_updates_absent_open_order_partial_fill_from_order_status`;
+  - `test_runtime_sync_testnet_marks_absent_open_order_rejected_from_order_status`.
+- Alcance:
+  - valida explicitamente que los estados remotos `PARTIALLY_FILLED` y `REJECTED` se reflejan correctamente en OMS local cuando la orden no aparece en `openOrders`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_updates_absent_open_order_partial_fill_from_order_status or runtime_sync_testnet_marks_absent_open_order_rejected_from_order_status or runtime_sync_testnet_marks_absent_open_order_filled_from_order_status or runtime_sync_testnet_keeps_absent_open_order_open_when_order_status_is_new"` -> PASS (`4 passed`).
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py` -> PASS (`96 passed`).
+- Estado:
+  - se refuerza cobertura de regresion del lifecycle runtime no-live;
+  - LIVE sigue **NO GO**.
+
+## Revalidacion bibliografica AP-BOT-1015 - 2026-03-04
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1015_BIBLIO_VALIDATION_20260304.md`.
+- Criterio aplicado:
+  - misma base bibliografica de AP-BOT-1012 para semantica de estados de orden.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:
