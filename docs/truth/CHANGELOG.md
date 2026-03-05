@@ -2,6 +2,18 @@
 
 ## 2026-03-05
 
+### AP-BOT-1033 (submit bloqueado con reconciliacion no valida)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_maybe_submit_exchange_runtime_order(...)` ahora bloquea submit cuando `runtime_reconciliation_ok=false` (`reason=reconciliation_not_ok`).
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo test `test_runtime_sync_testnet_skips_submit_when_reconciliation_not_ok`;
+  - ajuste de test de orden local no verificada para reflejar guard de reconciliacion.
+- Validacion ejecutada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1033_BIBLIO_VALIDATION_20260305.md`.
+
 ### AP-BOT-1032 (submit bloqueado si falla account snapshot)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - `_maybe_submit_exchange_runtime_order(...)` ahora aplica fail-closed con `reason=account_positions_fetch_failed` cuando `runtime_account_positions_ok=false`.

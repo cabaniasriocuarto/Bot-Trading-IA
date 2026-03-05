@@ -2,6 +2,22 @@
 
 Fecha de actualizacion: 2026-03-05
 
+## Actualizacion tecnica AP-BOT-1033 (submit fail-closed sin reconciliacion valida) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `_maybe_submit_exchange_runtime_order(...)` ahora exige `runtime_reconciliation_ok=true` para submit remoto;
+  - cuando falla, retorna `reason=reconciliation_not_ok`.
+- Objetivo:
+  - impedir operacion remota sobre estado desincronizado.
+- Tests de regresion:
+  - `test_runtime_sync_testnet_skips_submit_when_reconciliation_not_ok`
+  - ajuste de `test_runtime_sync_testnet_skips_submit_when_local_open_orders_remain_unverified`.
+- Evidencia de validacion:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS.
+- Trazabilidad bibliografica:
+  - `docs/audit/AP_BOT_1033_BIBLIO_VALIDATION_20260305.md`.
+
 ## Actualizacion tecnica AP-BOT-1032 (submit fail-closed sin account snapshot) - 2026-03-05
 
 - `rtlab_autotrader/rtlab_core/web/app.py`:

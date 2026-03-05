@@ -127,6 +127,16 @@ Fecha: 2026-03-05
 - [ ] Pendiente operativo:
   - cerrar wiring runtime real restante y revalidar remoto post-deploy para mover `G9_RUNTIME_ENGINE_REAL` a `PASS`.
 
+## Actualizacion tecnica AP-BOT-1033 (2026-03-05)
+- [x] Submit runtime bloqueado con reconciliacion no valida:
+  - `reason=reconciliation_not_ok` cuando `runtime_reconciliation_ok=false`.
+- [x] Tests de regresion en verde:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q`
+- [x] Validacion bibliografica:
+  - `docs/audit/AP_BOT_1033_BIBLIO_VALIDATION_20260305.md`
+- [ ] Pendiente operativo:
+  - desplegar rama tecnica y confirmar en entorno remoto que el guard mantiene `no-live` estable sin falsos positivos de submit.
+
 ## Actualizacion operativa (2026-03-05)
 - [x] Re-run `Remote Protected Checks (GitHub VM)` en `success` (run `22704105623`) con `strict=true`.
 - [x] Campos de cierre verificados:

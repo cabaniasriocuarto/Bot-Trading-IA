@@ -5871,6 +5871,16 @@ class RuntimeBridge:
                 "signal_symbol": signal_symbol,
                 "signal_side": signal_side,
             }
+        if not bool(state.get("runtime_reconciliation_ok", False)):
+            return {
+                "submitted": False,
+                "reason": "reconciliation_not_ok",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
 
         last_submit_at_raw = str(state.get("runtime_last_remote_submit_at") or "").strip()
         if last_submit_at_raw:

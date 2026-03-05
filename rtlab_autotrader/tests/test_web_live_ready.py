@@ -1225,7 +1225,7 @@ def test_runtime_sync_testnet_skips_submit_when_local_open_orders_remain_unverif
   synced = module._sync_runtime_state(state, persist=False)
   assert calls["order_status_get"] >= 1
   assert calls["order_post"] == 0
-  assert str(synced.get("runtime_last_remote_submit_reason") or "") == "local_open_orders_present"
+  assert str(synced.get("runtime_last_remote_submit_reason") or "") == "reconciliation_not_ok"
   assert bool(synced.get("runtime_reconciliation_ok")) is False
   kept = module.runtime_bridge._oms.orders.get("oid-open-unverified-1")
   assert kept is not None
@@ -1577,6 +1577,68 @@ def test_runtime_sync_testnet_skips_submit_when_account_positions_fetch_fails(tm
   assert calls["order_post"] == 0
   assert str(synced.get("runtime_last_remote_submit_reason") or "") == "account_positions_fetch_failed"
   assert str(synced.get("runtime_last_remote_submit_error") or "").strip() != ""
+
+
+def test_runtime_sync_testnet_skips_submit_when_reconciliation_not_ok(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_REMOTE_ORDERS_ENABLED", "1")
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  _mock_exchange_ok(module, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "connector_ok": True,
+      "order_ok": True,
+      "connector_reason": "",
+      "order_reason": "",
+      "last_error": "",
+    },
+  )
+  monkeypatch.setattr(module.store.registry, "get_principal", lambda mode: {"name": "meanreversion_runtime_v2"})
+  monkeypatch.setattr(
+    module.store,
+    "strategy_or_404",
+    lambda strategy_id: {
+      "id": strategy_id,
+      "enabled_for_trading": True,
+      "params": {"runtime_symbol": "ETHUSDT"},
+      "tags": ["mean_reversion", "range"],
+    },
+  )
+
+  calls = {"open_orders_get": 0, "account_get": 0, "order_post": 0}
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    method_u = str(method).upper()
+    if path == "/api/v3/openOrders" and method_u == "GET":
+      calls["open_orders_get"] += 1
+      return False, {"status_code": 503, "payload": {"msg": "open orders unavailable"}}
+    if path == "/api/v3/account" and method_u == "GET":
+      calls["account_get"] += 1
+      return True, {"status_code": 200, "payload": {"balances": []}}
+    if path == "/api/v3/order" and method_u == "POST":
+      calls["order_post"] += 1
+      return True, {"status_code": 200, "payload": {"clientOrderId": "unexpected", "orderId": 888, "origQty": "0.001", "executedQty": "0.0"}}
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+  module.runtime_bridge._oms.orders.clear()
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+
+  synced = module._sync_runtime_state(state, persist=False)
+  assert calls["open_orders_get"] >= 1
+  assert calls["order_post"] == 0
+  assert bool(synced.get("runtime_reconciliation_ok")) is False
+  assert str(synced.get("runtime_last_remote_submit_reason") or "") == "reconciliation_not_ok"
 
 
 def test_runtime_sync_live_skips_submit_when_live_trading_disabled(tmp_path: Path, monkeypatch) -> None:
