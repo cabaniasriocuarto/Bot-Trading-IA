@@ -310,6 +310,20 @@ Fecha: 2026-03-05
 - Pendiente inmediato:
   - cerrar tramo runtime real restante para `G9_RUNTIME_ENGINE_REAL=PASS` (sin habilitar LIVE en esta fase).
 
+## Actualizacion tecnica AP-BOT-1019 (2026-03-05)
+- [x] Higiene de telemetria runtime:
+  - `runtime_last_remote_submit_reason` se limpia al salir de runtime real;
+  - tambien se limpia cuando `exchange_ready` falla.
+- [x] Test de regresion agregado:
+  - `test_runtime_sync_clears_submit_reason_when_runtime_exits_real_mode`.
+- [x] Revalidacion bibliografica local-first por patch:
+  - `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_skips_submit_when_live_trading_disabled or clears_submit_reason_when_runtime_exits_real_mode or strategy_signal_meanreversion_submits_sell or skips_submit_when_risk_blocks_current_cycle" -q` -> PASS (`4 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Pendiente inmediato:
+  - seguir con cierre runtime real restante (cancel-replace/fills avanzados/reconciliacion final) para `G9_RUNTIME_ENGINE_REAL=PASS`.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 (2026-03-04)
 - [x] Cerrada validacion bibliografica completa por patch:
   - `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`.

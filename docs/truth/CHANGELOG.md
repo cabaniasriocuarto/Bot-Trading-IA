@@ -58,6 +58,17 @@
   - `/.github/workflows/remote-benchmark.yml`:
     - `Build summary` pasa regex de `grep -E` a comillas simples para evitar evaluacion de backticks como comandos shell.
 
+### AP-BOT-1019 (limpieza de `runtime_last_remote_submit_reason`)
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - limpia `runtime_last_remote_submit_reason` al salir de runtime real y cuando `exchange_ready` falla.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo test `test_runtime_sync_clears_submit_reason_when_runtime_exits_real_mode`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_skips_submit_when_live_trading_disabled or clears_submit_reason_when_runtime_exits_real_mode or strategy_signal_meanreversion_submits_sell or skips_submit_when_risk_blocks_current_cycle" -q` -> PASS (`4 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Revalidacion bibliografica:
+  - `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`.
+
 ## 2026-03-04
 
 ### AP-8001 (BFF fail-closed de mock fallback)

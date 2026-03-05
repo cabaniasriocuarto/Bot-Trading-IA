@@ -6242,6 +6242,7 @@ class RuntimeBridge:
                     changed = self._set_state_value(state, "runtime_last_remote_submit_at", "") or changed
                     changed = self._set_state_value(state, "runtime_last_remote_client_order_id", "") or changed
                     changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_reason", "") or changed
                     changed = self._set_state_value(state, "runtime_last_signal_action", "") or changed
                     changed = self._set_state_value(state, "runtime_last_signal_reason", "") or changed
                     changed = self._set_state_value(state, "runtime_last_signal_strategy_id", "") or changed
@@ -6271,6 +6272,7 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
                 changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                changed = self._set_state_value(state, "runtime_last_remote_submit_reason", "") or changed
                 changed = self._set_state_value(state, "runtime_last_signal_action", "") or changed
                 changed = self._set_state_value(state, "runtime_last_signal_reason", "") or changed
                 changed = self._set_state_value(state, "runtime_last_signal_strategy_id", "") or changed

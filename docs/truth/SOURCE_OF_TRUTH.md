@@ -480,6 +480,25 @@ Fecha de actualizacion: 2026-03-05
 - Se agrega respaldo bibliografico local-first del AP en:
   - `docs/audit/AP_BOT_1017_BIBLIO_VALIDATION_20260305.md`.
 
+## Actualizacion tecnica AP-BOT-1019 (higiene de telemetria submit runtime) - 2026-03-05
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - al salir de runtime real (`runtime_engine!=real` o `running=false`) se limpia tambien `runtime_last_remote_submit_reason`;
+  - cuando el exchange no esta listo (`exchange_ready.ok=false`) tambien se limpia `runtime_last_remote_submit_reason`.
+- `rtlab_autotrader/tests/test_web_live_ready.py`:
+  - nuevo `test_runtime_sync_clears_submit_reason_when_runtime_exits_real_mode`.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_skips_submit_when_live_trading_disabled or clears_submit_reason_when_runtime_exits_real_mode or strategy_signal_meanreversion_submits_sell or skips_submit_when_risk_blocks_current_cycle" -q` -> PASS (`4 passed`).
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS.
+- Estado:
+  - evita arrastre de motivo de submit de ciclos previos cuando runtime queda fuera de modo real;
+  - mejora trazabilidad de diagnostico y reduce falsos positivos operativos.
+
+## Revalidacion bibliografica AP-BOT-1019 - 2026-03-05
+
+- Se agrega respaldo bibliografico local-first del AP en:
+  - `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`.
+
 ## Revalidacion bibliografica AP-BOT-1006..1010 - 2026-03-04
 
 - Se completo la revalidacion bibliografica integral por patch en:
