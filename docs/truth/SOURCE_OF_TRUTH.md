@@ -54,6 +54,20 @@ Fecha de actualizacion: 2026-03-04
   - se reduce la divergencia `config` vs `knowledge` para thresholds de gates;
   - LIVE sigue **NO GO** (pendiente runtime real end-to-end + cierre security CI run green).
 
+## Actualizacion tecnica AP-8012 (breaker-events strict default fail-closed) - 2026-03-04
+
+- `rtlab_autotrader/rtlab_core/web/app.py`:
+  - `breaker_events_integrity(..., strict=True)` ahora es estricto por default;
+  - endpoint `/api/v1/diagnostics/breaker-events` pasa a `strict=true` por default.
+- `scripts/ops_protected_checks_report.py`:
+  - `--strict` queda habilitado por default;
+  - se agrega override explicito `--no-strict` para compatibilidad legacy controlada.
+- Tests de regresion:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "breaker_events_integrity_endpoint" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "alerts_include_operational_alerts_for_drift_slippage_api_and_breaker or alerts_operational_alerts_clear_when_runtime_recovers" -q` -> PASS.
+- Estado:
+  - `FM-EXEC-003` queda en `CERRADO`.
+
 ## Actualizacion tecnica AP-8011 (latencia `/api/v1/bots`: optimizacion incremental) - 2026-03-04
 
 - `rtlab_autotrader/rtlab_core/web/app.py`:

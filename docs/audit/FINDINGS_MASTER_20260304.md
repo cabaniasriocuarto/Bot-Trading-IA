@@ -72,14 +72,14 @@ Leyenda de estado:
 
 ### FM-EXEC-003 - `breaker_events` con `NO_DATA` devuelve `ok=true`
 - Severidad: HIGH
-- Estado: MITIGADO
-- Impacto: checks protegidos pueden pasar sin evidencia real de eventos.
+- Estado: CERRADO
+- Impacto: checks protegidos ahora fallan cerrado por defecto cuando `breaker_events` no tiene evidencia.
 - Evidencia:
-  - `rtlab_autotrader/rtlab_core/web/app.py:1806`
-  - `rtlab_autotrader/rtlab_core/web/app.py:8850`
-  - `scripts/ops_protected_checks_report.py:166`
-- Brecha abierta:
-  - el endpoint mantiene `strict=false` por default para compatibilidad; si un consumidor externo no usa `strict=true`, `NO_DATA` puede seguir no-bloqueante.
+  - `rtlab_autotrader/rtlab_core/web/app.py` (`breaker_events_integrity(..., strict=True)` y endpoint `/api/v1/diagnostics/breaker-events` con `strict=true` por default).
+  - `scripts/ops_protected_checks_report.py` (`--strict` default `true`; override explicito `--no-strict`).
+  - `rtlab_autotrader/tests/test_web_live_ready.py`:
+    - `test_breaker_events_integrity_endpoint_no_data_strict_fail_closed_by_default`
+    - `test_breaker_events_integrity_endpoint_no_data_non_strict_ok`.
 
 ### FM-EXEC-004 - Evaluacion de rollout consume payloads sinteticos
 - Severidad: HIGH

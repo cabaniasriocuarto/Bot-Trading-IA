@@ -87,6 +87,18 @@ Fecha: 2026-03-04
 - Pendiente inmediato:
   - completar wiring de ejecucion real por señales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
 
+
+## Actualizacion tecnica AP-8012 (2026-03-04)
+- [x] `breaker_events` en modo fail-closed por defecto:
+  - `store.breaker_events_integrity(..., strict=True)` default estricto.
+  - endpoint `/api/v1/diagnostics/breaker-events` con `strict=true` default.
+- [x] `ops_protected_checks_report.py` endurecido:
+  - `--strict` default `true`.
+  - `--no-strict` agregado como override explicito.
+- [x] `FM-EXEC-003` cerrado.
+- Evidencia:
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "breaker_events_integrity_endpoint" -q` -> PASS.
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "alerts_include_operational_alerts_for_drift_slippage_api_and_breaker or alerts_operational_alerts_clear_when_runtime_recovers" -q` -> PASS.
 ## Actualizacion tecnica AP-BOT-1001/AP-BOT-1002 (2026-03-04)
 - [x] AP-BOT-1001: coherencia de ejecucion por estrategia/familia en BacktestEngine.
 - [x] AP-BOT-1002: inferencia `orderflow_feature_set` fail-closed + check `known_feature_set` en promotion.

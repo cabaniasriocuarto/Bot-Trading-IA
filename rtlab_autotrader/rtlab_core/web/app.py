@@ -1943,7 +1943,7 @@ class ConsoleStore:
                 source_log_id=int(row["id"]),
             )
 
-    def breaker_events_integrity(self, *, window_hours: int | None = None, strict: bool = False) -> dict[str, Any]:
+    def breaker_events_integrity(self, *, window_hours: int | None = None, strict: bool = True) -> dict[str, Any]:
         window_h = max(1, int(window_hours or BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS))
         since = (utc_now() - timedelta(hours=window_h)).isoformat()
         ratio_warn = float(BREAKER_EVENTS_UNKNOWN_RATIO_WARN)
@@ -10155,7 +10155,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/diagnostics/breaker-events")
     def diagnostics_breaker_events(
         window_hours: int = Query(default=BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS, ge=1, le=168),
-        strict: bool = Query(default=False),
+        strict: bool = Query(default=True),
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
         return store.breaker_events_integrity(window_hours=window_hours, strict=bool(strict))

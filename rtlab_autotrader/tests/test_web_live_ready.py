@@ -3090,7 +3090,7 @@ def test_breaker_events_integrity_endpoint_no_data_non_strict_ok(tmp_path: Path,
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
-  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24", headers=headers)
+  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24&strict=false", headers=headers)
   assert res.status_code == 200, res.text
   payload = res.json()
   assert payload["status"] == "NO_DATA"
@@ -3098,13 +3098,13 @@ def test_breaker_events_integrity_endpoint_no_data_non_strict_ok(tmp_path: Path,
   assert payload["ok"] is True
 
 
-def test_breaker_events_integrity_endpoint_no_data_strict_fail_closed(tmp_path: Path, monkeypatch) -> None:
+def test_breaker_events_integrity_endpoint_no_data_strict_fail_closed_by_default(tmp_path: Path, monkeypatch) -> None:
   monkeypatch.setenv("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", "24")
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
-  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24&strict=true", headers=headers)
+  res = client.get("/api/v1/diagnostics/breaker-events?window_hours=24", headers=headers)
   assert res.status_code == 200, res.text
   payload = res.json()
   assert payload["status"] == "NO_DATA"
