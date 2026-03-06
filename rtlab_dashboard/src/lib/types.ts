@@ -163,6 +163,23 @@ export interface BotInstanceMetrics {
   kills_by_mode_24h?: Record<string, number>;
   last_kill_at?: string | null;
   by_mode?: Record<string, { trade_count: number; winrate: number; net_pnl: number; avg_sharpe: number; expectancy_value?: number; run_count: number }>;
+  experience_by_source?: Record<
+    "backtest" | "shadow" | "paper" | "testnet",
+    {
+      episode_count: number;
+      run_count: number;
+      trade_count: number;
+      decision_count: number;
+      enter_count: number;
+      exit_count: number;
+      hold_count: number;
+      skip_count: number;
+      reduce_count: number;
+      add_count: number;
+      avg_source_weight: number;
+      last_end_ts?: string | null;
+    }
+  >;
   last_run_at?: string | null;
   recommendations_pending?: number;
   recommendations_approved?: number;
@@ -740,6 +757,76 @@ export interface BeastModeJobsResponse {
     cancel_reason?: string;
   }>;
   count: number;
+}
+
+export interface LearningExperienceSummaryResponse {
+  generated_at?: string;
+  total_episodes?: number;
+  total_events?: number;
+  eligible_contexts?: number;
+  proposals_pending?: number;
+  sources?: Record<string, { episodes?: number; events?: number; source_weight_avg?: number }>;
+  by_regime?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface LearningProposal {
+  id: string;
+  created_ts?: string;
+  asset?: string;
+  timeframe?: string;
+  regime_label?: string;
+  proposed_strategy_id: string;
+  replaces_strategy_id?: string | null;
+  confidence?: number;
+  rationale?: string;
+  status?: "pending" | "approved" | "rejected" | "needs_validation" | string;
+  score_json?: Record<string, unknown>;
+  metrics?: {
+    reasons?: string[];
+    [key: string]: unknown;
+  };
+  required_gates_json?: Record<string, unknown> | string[] | null;
+  needs_validation?: boolean;
+}
+
+export interface LearningGuidanceRow {
+  strategy_id: string;
+  preferred_regimes_json?: string[] | Record<string, unknown>;
+  avoid_regimes_json?: string[] | Record<string, unknown>;
+  min_confidence_to_recommend?: number;
+  max_risk_multiplier?: number;
+  max_spread_bps_allowed?: number;
+  max_vpin_allowed?: number;
+  cost_stress_result?: string;
+  notes?: string;
+}
+
+export interface ShadowStatusResponse {
+  running: boolean;
+  thread_alive: boolean;
+  stop_requested: boolean;
+  stop_reason?: string;
+  allow_live: boolean;
+  orders_sent: boolean;
+  marketdata_base_url?: string;
+  timeframe?: string;
+  lookback_bars?: number;
+  poll_sec?: number;
+  symbol_requested?: string | null;
+  active_bot_ids?: string[];
+  active_strategy_ids?: string[];
+  targets_count?: number;
+  warnings?: string[];
+  last_started_at?: string | null;
+  last_cycle_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string;
+  last_run_ids?: string[];
+  cycles_total?: number;
+  runs_created?: number;
+  episodes_written?: number;
+  skipped_duplicate_cycles?: number;
 }
 
 export interface CatalogRunKpis {

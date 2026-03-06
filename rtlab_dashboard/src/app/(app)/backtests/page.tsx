@@ -27,6 +27,7 @@ import type {
   MassBacktestStatusResponse,
   BeastModeStatusResponse,
   BeastModeJobsResponse,
+  BotInstance,
   Strategy,
 } from "@/lib/types";
 import { fmtNum, fmtPct } from "@/lib/utils";
@@ -404,6 +405,8 @@ export default function BacktestsPage() {
   const [massRunning, setMassRunning] = useState(false);
   const [massError, setMassError] = useState("");
   const [massMessage, setMassMessage] = useState("");
+  const [bots, setBots] = useState<BotInstance[]>([]);
+  const [selectedBotId, setSelectedBotId] = useState("");
   const [massShortlistBusy, setMassShortlistBusy] = useState(false);
   const [massSelectedStrategies, setMassSelectedStrategies] = useState<string[]>([]);
   const [massRunId, setMassRunId] = useState("");
@@ -457,19 +460,21 @@ export default function BacktestsPage() {
   });
 
   const refresh = useCallback(async () => {
-    const [stg, bt] = await Promise.all([
+    const [stg, bt, botsRes] = await Promise.all([
       apiGet<Strategy[]>("/api/v1/strategies"),
       apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
+      apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
     ]);
     setStrategies(stg);
     setRuns(bt);
+    setBots(Array.isArray(botsRes?.items) ? botsRes.items : []);
     if (!form.strategy_id && stg[0]) {
       setForm((prev) => ({ ...prev, strategy_id: stg[0].id }));
     }
     if (!massSelectedStrategies.length && stg.length) {
       setMassSelectedStrategies(stg.slice(0, Math.min(5, stg.length)).map((row) => row.id));
     }
-  }, [form.strategy_id]);
+  }, [form.strategy_id, massSelectedStrategies.length]);
 
   const refreshCatalogRuns = useCallback(async () => {
     setCatalogLoading(true);
@@ -487,7 +492,7 @@ export default function BacktestsPage() {
       if (catalogFilters.sharpe.trim()) params.set("sharpe", catalogFilters.sharpe.trim());
       params.set("sort_by", catalogFilters.sort_by);
       params.set("sort_dir", catalogFilters.sort_dir);
-      params.set("limit", "5000");
+      params.set("limit", "2000");
       const path = `/api/v1/runs?${params.toString()}`;
       const payload = await apiGet<BacktestCatalogRunsResponse>(path);
       setCatalogRuns(payload.items || []);
@@ -673,6 +678,52 @@ export default function BacktestsPage() {
       // best effort
     }
   }, []);
+
+  const selectedMassBot = useMemo(
+    () => bots.find((row) => row.id === selectedBotId) || null,
+    [bots, selectedBotId],
+  );
+
+  useEffect(() => {
+    if (selectedBotId || !bots.length) return;
+    const preferred =
+      bots.find((row) => row.status === "active" && row.mode === "shadow") ||
+      bots.find((row) => row.status === "active") ||
+      bots[0];
+    if (preferred) setSelectedBotId(preferred.id);
+  }, [bots, selectedBotId]);
+
+  const applyBotPoolToMass = useCallback(() => {
+    if (!selectedMassBot) {
+      setMassError("Elegi un bot para cargar su pool al research.");
+      return;
+    }
+    const poolIds = (selectedMassBot.pool_strategy_ids || []).filter((id) => strategies.some((row) => row.id === id));
+    if (!poolIds.length) {
+      setMassError("El bot elegido no tiene estrategias validas en su pool.");
+      return;
+    }
+    setMassSelectedStrategies(poolIds);
+    const firstUniverseSymbol = (selectedMassBot.universe || []).find((row) => String(row || "").trim());
+    if (firstUniverseSymbol) {
+      setForm((prev) => ({ ...prev, symbol: String(firstUniverseSymbol).replace("/", "").replace("-", "").toUpperCase() }));
+    }
+    setMassMessage(`Pool del bot ${selectedMassBot.name} cargado: ${poolIds.length} estrategias.`);
+  }, [selectedMassBot, strategies]);
+
+  const beastEnabledState = beastStatus == null ? "loading" : beastStatus.enabled ? "enabled" : "blocked";
+
+  const massErrorHint = useMemo(() => {
+    const msg = String(massError || "");
+    if (!msg) return "";
+    if (msg.toLowerCase().includes("no hay dataset real disponible")) {
+      return "Falta dataset real reproducible para ese simbolo/timeframe. Usa dataset local o corre scripts/download_crypto_binance_public.py y reintenta.";
+    }
+    if (msg.toLowerCase().includes("research batch solo acepta datos reales")) {
+      return "Research/Bestia no aceptan sinteticos. Elegi dataset_source=auto o dataset con datos reales.";
+    }
+    return "";
+  }, [massError]);
 
   useEffect(() => {
     if (massRunId) return;
@@ -931,6 +982,10 @@ export default function BacktestsPage() {
   const startBeastBatch = async () => {
     if (!massSelectedStrategies.length) {
       setMassError("Seleccioná al menos una estrategia para Modo Bestia.");
+      return;
+    }
+    if (beastStatus && !beastStatus.enabled) {
+      setMassError("Modo Bestia está bloqueado por la policy actual. No es un error de UI: hay que habilitarlo en config/policies/beast_mode.yaml.");
       return;
     }
     setBeastBusy(true);
@@ -1254,7 +1309,7 @@ export default function BacktestsPage() {
     }));
   }, [focusRun]);
 
-  const focusTrades = focusRun?.trades || [];
+  const focusTrades = useMemo(() => focusRun?.trades || [], [focusRun]);
 
   const focusTradeAnalysis = useMemo(() => {
     const trades = focusTrades;
@@ -1542,8 +1597,6 @@ export default function BacktestsPage() {
       byMetric("top_cost_aware", "Top Cost-aware", (a, b) => num(a, "costs_ratio") - num(b, "costs_ratio")),
     ];
   }, [catalogRuns]);
-
-  const selectedRankingPresetPreview = rankingPresets.find((p) => p.id === `top_${catalogRankingPreset}`) || null;
 
   const deepCompareRows = (catalogComparePreview?.items || []).slice(0, 4);
   const deepCompareEquityOverlay = useMemo(() => {
@@ -2587,7 +2640,7 @@ export default function BacktestsPage() {
                       <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Equity (si hay detalle legacy)</p>
                       {deepCompareEquityOverlay.length ? (
                         <div className="h-56">
-                          <ResponsiveContainer width="100%" height="100%">
+                          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={224}>
                             <LineChart data={deepCompareEquityOverlay}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                               <XAxis dataKey="index" stroke="#94a3b8" />
@@ -2615,7 +2668,7 @@ export default function BacktestsPage() {
                       <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Drawdown (si hay detalle legacy)</p>
                       {deepCompareDdOverlay.length ? (
                         <div className="h-56">
-                          <ResponsiveContainer width="100%" height="100%">
+                          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={224}>
                             <LineChart data={deepCompareDdOverlay}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                               <XAxis dataKey="index" stroke="#94a3b8" />
@@ -2752,6 +2805,7 @@ export default function BacktestsPage() {
         <CardContent className="space-y-4">
           {massMessage ? <p className="text-sm text-emerald-300">{massMessage}</p> : null}
           {massError ? <p className="text-sm text-rose-300">{massError}</p> : null}
+          {massErrorHint ? <p className="text-xs text-amber-300">{massErrorHint}</p> : null}
 
           <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2765,6 +2819,50 @@ export default function BacktestsPage() {
             </div>
 
           <div className="grid gap-3 xl:grid-cols-4">
+            <div className="space-y-1 xl:col-span-2">
+              <label className="text-xs uppercase tracking-wide text-slate-400">Bot / pool aplicado</label>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <Select value={selectedBotId} onChange={(e) => setSelectedBotId(e.target.value)} disabled={!bots.length}>
+                    <option value="">Elegí un bot del registry</option>
+                    {bots.map((bot) => (
+                      <option key={`mass-bot-${bot.id}`} value={bot.id}>
+                        {`${bot.name} | ${bot.mode.toUpperCase()} | ${bot.status}`}
+                      </option>
+                    ))}
+                  </Select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={role !== "admin" || !selectedMassBot}
+                    onClick={applyBotPoolToMass}
+                    title="Carga al batch el pool del bot seleccionado para medir cómo rendiría con histórico reproducible."
+                  >
+                    Usar pool del bot
+                  </Button>
+                </div>
+                {selectedMassBot ? (
+                  <div className="mt-2 space-y-1 text-xs text-slate-300">
+                    <p>
+                      <strong>{selectedMassBot.name}</strong> usa modo <strong>{selectedMassBot.mode.toUpperCase()}</strong> y engine{" "}
+                      <strong>{selectedMassBot.engine}</strong>.
+                    </p>
+                    <p>
+                      Pool: <strong>{selectedMassBot.pool_strategy_ids.length}</strong> estrategias · trades acumulados:{" "}
+                      <strong>{selectedMassBot.metrics?.trade_count ?? 0}</strong> · runs:{" "}
+                      <strong>{selectedMassBot.metrics?.run_count ?? 0}</strong>
+                    </p>
+                    <p className="text-slate-400">
+                      Backtest masivo evalúa ese pool con histórico. Shadow/mock mide experiencia en vivo sin órdenes. Son fuentes distintas y ambas alimentan aprendizaje.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Elegí un bot si querés reproducir su pool actual en research batch y ver cómo rendiría por estrategia, activo y régimen.
+                  </p>
+                )}
+              </div>
+            </div>
             <div className="space-y-1 xl:col-span-2">
               <label className="text-xs uppercase tracking-wide text-slate-400">Grupo de backtests (Research Batch / BX)</label>
               <Select
@@ -3071,9 +3169,13 @@ export default function BacktestsPage() {
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={role !== "admin" || beastBusy}
+                  disabled={role !== "admin" || beastBusy || beastEnabledState === "loading"}
                   onClick={startBeastBatch}
-                  title="Encola el batch en Modo Bestia (scheduler local fase 1, con budget governor y limites de concurrencia)"
+                  title={
+                    beastEnabledState === "blocked"
+                      ? "La policy actual bloquea Modo Bestia. Ajustá config/policies/beast_mode.yaml si realmente querés habilitarlo."
+                      : "Encola el batch en Modo Bestia (scheduler local fase 1, con budget governor y limites de concurrencia)"
+                  }
                 >
                   {beastBusy ? "Encolando Bestia..." : "Ejecutar en Modo Bestia"}
                 </Button>
@@ -3093,10 +3195,25 @@ export default function BacktestsPage() {
                       Scheduler local fase 1 (sin Celery/Redis todavia). Encola batches grandes con limites de concurrencia y budget diario.
                     </p>
                   </div>
-                  <Badge variant={beastStatus?.enabled ? "success" : "warn"}>
-                    {beastStatus?.enabled ? "habilitado" : "deshabilitado"}
+                  <Badge
+                    variant={
+                      beastEnabledState === "enabled"
+                        ? "success"
+                        : beastEnabledState === "blocked"
+                          ? "danger"
+                          : "neutral"
+                    }
+                  >
+                    {beastEnabledState === "enabled"
+                      ? "habilitado"
+                      : beastEnabledState === "blocked"
+                        ? "bloqueado por policy"
+                        : "cargando policy"}
                   </Badge>
                 </div>
+                <p className="mt-2 text-[11px] text-slate-400">
+                  Si aparece bloqueado, no es un bug visual. La policy actual de `beast_mode` lo está cerrando de forma intencional.
+                </p>
 
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                   <div className="space-y-1">
@@ -3211,6 +3328,7 @@ export default function BacktestsPage() {
                   {massStatus?.progress?.completed_tasks ?? 0}/{massStatus?.progress?.total_tasks ?? 0} tareas
                 </p>
                 {massStatus?.error ? <p className="mt-2 text-xs text-rose-300 whitespace-pre-wrap">{String(massStatus.error)}</p> : null}
+                {massStatus?.error && massErrorHint ? <p className="mt-2 text-xs text-amber-300">{massErrorHint}</p> : null}
               </div>
 
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
@@ -4121,3 +4239,4 @@ function MetricTile({
     </div>
   );
 }
+
