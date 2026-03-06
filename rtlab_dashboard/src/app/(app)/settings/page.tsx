@@ -258,11 +258,11 @@ export default function SettingsPage() {
     };
 
     void hydrateRolloutPanel();
-    let timer: ReturnType<typeof window.setTimeout> | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
       if (cancelled) return;
       const waitMs = isPageVisible ? ROLLOUT_POLL_ACTIVE_MS : ROLLOUT_POLL_HIDDEN_MS;
-      timer = window.setTimeout(() => {
+      timer = setTimeout(() => {
         void apiGet<RolloutStatusResponse>("/api/v1/rollout/status")
           .then((payload) => {
             if (!cancelled) setRollout(payload);
@@ -279,7 +279,7 @@ export default function SettingsPage() {
 
     return () => {
       cancelled = true;
-      if (timer) window.clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     };
   }, [rolloutBaselineRunId, rolloutCandidateRunId, isPageVisible]);
 
