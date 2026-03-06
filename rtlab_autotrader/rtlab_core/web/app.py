@@ -9892,16 +9892,13 @@ def create_app() -> FastAPI:
                 )
             except FileNotFoundError as exc:
                 mk = str(market).strip().lower()
-                script_name = (
-                    "scripts/download_crypto_binance_public.py"
-                    if mk == "crypto"
-                    else "scripts/download_forex_dukascopy.py"
-                    if mk == "forex"
-                    else "scripts/download_equities_alpaca.py"
-                )
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Faltan datos para {mk}/{str(symbol).upper()}/{str(timeframe).lower()}. Descarga con {script_name} y reintenta. Detalle: {exc}",
+                    detail=(
+                        f"Faltan datos para {mk}/{str(symbol).upper()}/{str(timeframe).lower()}. "
+                        "Cargá un dataset real reproducible en user_data/datasets o user_data/data y reintentá. "
+                        f"Detalle: {exc}"
+                    ),
                 ) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
