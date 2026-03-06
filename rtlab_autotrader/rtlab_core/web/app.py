@@ -17,7 +17,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock, RLock
+from threading import Event, Lock, RLock, Thread
 from typing import Any, Literal
 from urllib.parse import urlencode, urlparse
 
@@ -32,7 +32,10 @@ from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, Fundamenta
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
 from rtlab_core.learning import LearningService
+from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.knowledge import KnowledgeLoader
+from rtlab_core.learning.option_b_engine import OptionBLearningEngine
+from rtlab_core.learning.shadow_runner import BINANCE_PUBLIC_MARKETDATA_BASE_URL, ShadowRunConfig, ShadowRunner
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
@@ -204,6 +207,10 @@ OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(0.1, _env_float("OPS_ALERT_SLIPPAGE_P95_WA
 OPS_ALERT_API_ERRORS_WARN = max(1, _env_int("OPS_ALERT_API_ERRORS_WARN", 1))
 OPS_ALERT_BREAKER_WINDOW_HOURS = max(1, _env_int("OPS_ALERT_BREAKER_WINDOW_HOURS", 24))
 OPS_ALERT_DRIFT_ENABLED = _env_bool("OPS_ALERT_DRIFT_ENABLED", True)
+SHADOW_MARKETDATA_BASE_URL = str(os.getenv("SHADOW_MARKETDATA_BASE_URL", BINANCE_PUBLIC_MARKETDATA_BASE_URL)).strip() or BINANCE_PUBLIC_MARKETDATA_BASE_URL
+SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 240))
+SHADOW_DEFAULT_POLL_SEC = max(10, _env_int("SHADOW_DEFAULT_POLL_SEC", 30))
+SHADOW_DEFAULT_TIMEFRAME = str(os.getenv("SHADOW_DEFAULT_TIMEFRAME", "5m")).strip().lower() or "5m"
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -326,6 +333,15 @@ class LearningDecisionBody(BaseModel):
     note: str | None = None
 
 
+class OptionBRecalculateBody(BaseModel):
+    pbo_max: float | None = None
+    dsr_min: float | None = None
+
+
+class OptionBDecisionBody(BaseModel):
+    note: str | None = None
+
+
 class RolloutStartBody(BaseModel):
     candidate_run_id: str
     baseline_run_id: str | None = None
@@ -439,6 +455,18 @@ class BotBulkPatchBody(BaseModel):
     pool_strategy_ids: list[str] | None = None
     universe: list[str] | None = None
     notes: str | None = None
+
+
+class ShadowStartBody(BaseModel):
+    bot_id: str | None = None
+    timeframe: Literal["5m", "10m", "15m"] = "5m"
+    lookback_bars: int = 240
+    poll_sec: int = 30
+    symbol: str | None = None
+
+
+class ShadowStopBody(BaseModel):
+    reason: str | None = None
 
 
 class BatchCreateBody(BaseModel):
@@ -1741,11 +1769,23 @@ class ConsoleStore:
     def __init__(self) -> None:
         ensure_paths()
         self.registry = RegistryDB(REGISTRY_DB_PATH)
+        self.experience_store = ExperienceStore(self.registry)
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self._init_console_db()
         self._ensure_defaults()
+
+    def record_experience_run(
+        self,
+        run: dict[str, Any],
+        *,
+        source_override: str | None = None,
+        bot_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(run, dict):
+            return None
+        return self.experience_store.record_run(run, source_override=source_override, bot_id=bot_id)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(CONSOLE_DB_PATH)
@@ -3171,6 +3211,99 @@ def risk_hooks(context):
             "run_count": run_count_total,
         }
 
+    @staticmethod
+    def _empty_experience_source_metrics() -> dict[str, Any]:
+        return {
+            "episode_count": 0,
+            "run_count": 0,
+            "trade_count": 0,
+            "decision_count": 0,
+            "enter_count": 0,
+            "exit_count": 0,
+            "hold_count": 0,
+            "skip_count": 0,
+            "reduce_count": 0,
+            "add_count": 0,
+            "avg_source_weight": 0.0,
+            "last_end_ts": None,
+        }
+
+    def _aggregate_strategy_experience_by_source(
+        self,
+        *,
+        strategy_ids: list[str],
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        valid_sources = ("backtest", "shadow", "paper", "testnet")
+        out: dict[str, dict[str, dict[str, Any]]] = {
+            strategy_id: {source: self._empty_experience_source_metrics() for source in valid_sources}
+            for strategy_id in strategy_ids
+        }
+        if not strategy_ids:
+            return out
+        episodes = self.registry.list_experience_episodes(strategy_ids=strategy_ids, sources=list(valid_sources))
+        if not episodes:
+            return out
+        episode_ids = [str(row.get("id") or "") for row in episodes if str(row.get("id") or "")]
+        events = self.registry.list_experience_events(episode_ids=episode_ids) if episode_ids else []
+        episode_meta: dict[str, tuple[str, str]] = {}
+        source_weight_sums: dict[tuple[str, str], float] = {}
+        for episode in episodes:
+            strategy_id = str(episode.get("strategy_id") or "")
+            source = str(episode.get("source") or "backtest").strip().lower()
+            episode_id = str(episode.get("id") or "")
+            if strategy_id not in out or source not in out[strategy_id] or not episode_id:
+                continue
+            summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+            metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+            source_row = out[strategy_id][source]
+            source_row["episode_count"] += 1
+            source_row["run_count"] += 1
+            source_row["trade_count"] += int(
+                summary.get("trade_count")
+                or metrics.get("trade_count")
+                or metrics.get("roundtrips")
+                or 0
+            )
+            end_ts = str(episode.get("end_ts") or episode.get("created_at") or "").strip() or None
+            if end_ts and (
+                source_row["last_end_ts"] is None
+                or str(end_ts) > str(source_row["last_end_ts"] or "")
+            ):
+                source_row["last_end_ts"] = end_ts
+            source_weight_sums[(strategy_id, source)] = source_weight_sums.get((strategy_id, source), 0.0) + float(
+                episode.get("source_weight") or 0.0
+            )
+            episode_meta[episode_id] = (strategy_id, source)
+        for event in events:
+            episode_id = str(event.get("episode_id") or "")
+            mapped = episode_meta.get(episode_id)
+            if not mapped:
+                continue
+            strategy_id, source = mapped
+            source_row = out[strategy_id][source]
+            action = str(event.get("action") or "").strip().lower()
+            source_row["decision_count"] += 1
+            if action == "enter":
+                source_row["enter_count"] += 1
+            elif action == "exit":
+                source_row["exit_count"] += 1
+            elif action == "hold":
+                source_row["hold_count"] += 1
+            elif action == "skip":
+                source_row["skip_count"] += 1
+            elif action == "reduce":
+                source_row["reduce_count"] += 1
+            elif action == "add":
+                source_row["add_count"] += 1
+        for strategy_id, per_source in out.items():
+            for source, source_row in per_source.items():
+                episode_count = int(source_row.get("episode_count") or 0)
+                source_row["avg_source_weight"] = round(
+                    (source_weight_sums.get((strategy_id, source), 0.0) / episode_count) if episode_count else 0.0,
+                    4,
+                )
+        return out
+
     def get_bots_overview(
         self,
         bot_ids: list[str] | None = None,
@@ -3194,7 +3327,7 @@ def risk_hooks(context):
             "recommendations_count": 0,
         }
 
-        mode_to_kpi_mode = {"shadow": "backtest", "paper": "paper", "testnet": "testnet", "live": "live"}
+        mode_to_kpi_mode = {"shadow": "shadow", "paper": "paper", "testnet": "testnet", "live": "live"}
         kills_mode_keys = ("shadow", "paper", "testnet", "live", "unknown")
 
         t_stage = time.perf_counter()
@@ -3268,6 +3401,10 @@ def risk_hooks(context):
             for mode_key, kpi_mode in mode_to_kpi_mode.items():
                 kpis_by_mode[mode_key][sid] = self._aggregate_strategy_kpis(runs_by_strategy_mode.get((sid, kpi_mode), []))
         perf_stages["stage_kpis_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+
+        t_stage = time.perf_counter()
+        experience_by_strategy = self._aggregate_strategy_experience_by_source(strategy_ids=sorted(strategy_ids_in_pool))
+        perf_stages["stage_experience_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
 
         bot_ids_ordered = [str(bot.get("id") or "") for bot in bots_rows if str(bot.get("id") or "")]
         bot_ids_set = set(bot_ids_ordered)
@@ -3448,6 +3585,39 @@ def risk_hooks(context):
             for mode_key in mode_to_kpi_mode:
                 mode_rows = [{"strategy_id": sid, "kpis": kpis_by_mode[mode_key].get(sid, {})} for sid in pool]
                 by_mode_metrics[mode_key] = self._aggregate_bot_metric_rows(mode_rows)
+            experience_by_source = {
+                source: self._empty_experience_source_metrics()
+                for source in ("backtest", "shadow", "paper", "testnet")
+            }
+            for sid in pool:
+                strategy_sources = experience_by_strategy.get(sid) or {}
+                for source, incoming in strategy_sources.items():
+                    target = experience_by_source.setdefault(source, self._empty_experience_source_metrics())
+                    target["episode_count"] += int(incoming.get("episode_count") or 0)
+                    target["run_count"] += int(incoming.get("run_count") or 0)
+                    target["trade_count"] += int(incoming.get("trade_count") or 0)
+                    target["decision_count"] += int(incoming.get("decision_count") or 0)
+                    target["enter_count"] += int(incoming.get("enter_count") or 0)
+                    target["exit_count"] += int(incoming.get("exit_count") or 0)
+                    target["hold_count"] += int(incoming.get("hold_count") or 0)
+                    target["skip_count"] += int(incoming.get("skip_count") or 0)
+                    target["reduce_count"] += int(incoming.get("reduce_count") or 0)
+                    target["add_count"] += int(incoming.get("add_count") or 0)
+                    target["avg_source_weight"] += float(incoming.get("avg_source_weight") or 0.0) * int(
+                        incoming.get("episode_count") or 0
+                    )
+                    incoming_last = str(incoming.get("last_end_ts") or "").strip() or None
+                    if incoming_last and (
+                        target["last_end_ts"] is None
+                        or str(incoming_last) > str(target["last_end_ts"] or "")
+                    ):
+                        target["last_end_ts"] = incoming_last
+            for source, target in experience_by_source.items():
+                episode_count = int(target.get("episode_count") or 0)
+                target["avg_source_weight"] = round(
+                    (float(target.get("avg_source_weight") or 0.0) / episode_count) if episode_count else 0.0,
+                    4,
+                )
             active = by_mode_metrics.get(
                 mode,
                 {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
@@ -3496,6 +3666,7 @@ def risk_hooks(context):
                 "kills_by_mode_24h": kills_by_mode_24h,
                 "last_kill_at": last_kill_by_bot.get(bot_id),
                 "by_mode": by_mode_metrics,
+                "experience_by_source": experience_by_source,
                 "last_run_at": last_run_at,
                 "recommendations_pending": rec_pending,
                 "recommendations_approved": rec_approved,
@@ -3555,6 +3726,12 @@ def risk_hooks(context):
                 "paper": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
                 "testnet": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
                 "live": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
+            },
+            "experience_by_source": {
+                "backtest": self._empty_experience_source_metrics(),
+                "shadow": self._empty_experience_source_metrics(),
+                "paper": self._empty_experience_source_metrics(),
+                "testnet": self._empty_experience_source_metrics(),
             },
             "last_run_at": None,
             "recommendations_pending": 0,
@@ -4534,6 +4711,7 @@ def risk_hooks(context):
             metrics=run["metrics"],
             artifacts_path=f"/api/v1/backtests/runs/{run_id}",
         )
+        self.record_experience_run(run, source_override="backtest")
         self.add_log(
             event_type="backtest_finished",
             severity="info",
@@ -4836,6 +5014,7 @@ def risk_hooks(context):
             },
             artifacts_path=f"/api/v1/backtests/runs/{run_id}",
         )
+        self.record_experience_run(run, source_override="backtest")
         self.add_log(
             event_type="backtest_finished",
             severity="info",
@@ -4851,6 +5030,202 @@ def risk_hooks(context):
                 "dataset_hash": loaded.dataset_hash,
                 "data_source": loaded.source,
                 "metadata": run.get("metadata") if isinstance(run.get("metadata"), dict) else {},
+            },
+        )
+        return run
+
+    def create_shadow_live_run(
+        self,
+        *,
+        bot_id: str,
+        strategy_id: str,
+        symbol: str,
+        timeframe: str,
+        lookback_bars: int,
+        simulation: dict[str, Any],
+        use_orderflow_data: bool = True,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        strategy = self.strategy_or_404(strategy_id)
+        dataset = simulation.get("dataset")
+        engine_result = simulation.get("engine_result") if isinstance(simulation.get("engine_result"), dict) else {}
+        manifest = simulation.get("manifest") if isinstance(simulation.get("manifest"), dict) else {}
+        costs_model = simulation.get("costs") if isinstance(simulation.get("costs"), dict) else {}
+        if not dataset or not engine_result:
+            raise ValueError("Shadow simulation incompleta.")
+        market_n = str(getattr(dataset, "market", "crypto") or "crypto")
+        symbol_n = str(getattr(dataset, "symbol", symbol) or symbol).upper()
+        timeframe_n = str(getattr(dataset, "timeframe", timeframe) or timeframe)
+        run_id = self.backtest_catalog.next_formatted_id("SH")
+        metrics = dict(engine_result.get("metrics") or {})
+        metrics["expectancy_unit"] = "usd_per_trade"
+        metrics["expectancy_pct_unit"] = "pct_per_trade"
+        strategy_structured_id = self._catalog_strategy_structured_id(strategy_id, strategy)
+        cost_meta = self._resolve_backtest_cost_metadata(
+            market=market_n,
+            symbol=symbol_n,
+            costs_model=costs_model,
+            df=getattr(dataset, "df", None),
+        )
+        orderflow_enabled = bool(use_orderflow_data)
+        orderflow_feature_set = "orderflow_on" if orderflow_enabled else "orderflow_off"
+        started_at = str(manifest.get("start") or utc_now_iso())
+        finished_at = str(manifest.get("end") or utc_now_iso())
+        decision_events = engine_result.get("decision_events") if isinstance(engine_result.get("decision_events"), list) else []
+        if not decision_events:
+            decision_events = [
+                {
+                    "ts": finished_at,
+                    "action": "hold" if engine_result.get("trades") else "skip",
+                    "side": "flat",
+                    "regime_label": "unknown",
+                    "features_json": {
+                        "symbol": symbol_n,
+                        "timeframe": timeframe_n,
+                        "lookback_bars": int(max(1, lookback_bars)),
+                    },
+                    "notes": "shadow_runner_closed_candle",
+                }
+            ]
+        run = {
+            "id": run_id,
+            "catalog_run_id": run_id,
+            "run_type": "single",
+            "batch_id": None,
+            "parent_run_id": None,
+            "strategy_id": strategy_id,
+            "strategy_structured_id": strategy_structured_id,
+            "strategy_name": str(strategy.get("name") or strategy_id),
+            "strategy_version": str(strategy.get("version") or "1.0.0"),
+            "mode": "shadow",
+            "market": market_n,
+            "symbol": symbol_n,
+            "timeframe": timeframe_n,
+            "period": {"start": started_at, "end": finished_at},
+            "universe": [symbol_n],
+            "validation_mode": "shadow_live",
+            "validation_summary": {
+                "mode": "shadow_live",
+                "no_orders_sent": True,
+                "requires_human_approval": True,
+                "allow_live": False,
+            },
+            "data_source": str(getattr(dataset, "source", "binance_public_klines") or "binance_public_klines"),
+            "dataset_hash": str(getattr(dataset, "dataset_hash", "") or ""),
+            "dataset_manifest": manifest,
+            "dataset_range": {"start": started_at, "end": finished_at},
+            "costs_model": {
+                "fees_bps": float(costs_model.get("fees_bps", 0.0) or 0.0),
+                "spread_bps": float(costs_model.get("spread_bps", 0.0) or 0.0),
+                "slippage_bps": float(costs_model.get("slippage_bps", 0.0) or 0.0),
+                "funding_bps": float(costs_model.get("funding_bps", 0.0) or 0.0),
+                "rollover_bps": float(costs_model.get("rollover_bps", 0.0) or 0.0),
+            },
+            "fee_snapshot_id": cost_meta.get("fee_snapshot_id"),
+            "funding_snapshot_id": cost_meta.get("funding_snapshot_id"),
+            "spread_model_params": cost_meta.get("spread_model_params") or {},
+            "slippage_model_params": cost_meta.get("slippage_model_params") or {},
+            "use_orderflow_data": orderflow_enabled,
+            "orderflow_feature_set": orderflow_feature_set,
+            "feature_set": orderflow_feature_set,
+            "fee_model": f"maker_taker_bps:{float(costs_model.get('fees_bps', 0.0) or 0.0):.4f}",
+            "spread_model": f"observed_or_static:{float(costs_model.get('spread_bps', 0.0) or 0.0):.4f}",
+            "slippage_model": f"static:{float(costs_model.get('slippage_bps', 0.0) or 0.0):.4f}",
+            "funding_model": f"static:{float(costs_model.get('funding_bps', 0.0) or 0.0):.4f}",
+            "git_commit": get_env("GIT_COMMIT", "local"),
+            "metrics": metrics,
+            "costs_breakdown": engine_result.get("costs_breakdown") or {},
+            "status": "completed",
+            "created_by": "shadow_runner",
+            "created_at": utc_now_iso(),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_sec": max(1, int(engine_result.get("duration_sec") or 1)),
+            "metadata": {
+                "shadow": True,
+                "bot_id": bot_id,
+                "lookback_bars": int(max(1, lookback_bars)),
+                "marketdata_base_url": str(manifest.get("marketdata_base_url") or SHADOW_MARKETDATA_BASE_URL),
+                "observed_spread_bps": float(manifest.get("observed_spread_bps") or 0.0),
+                "base_interval": str(manifest.get("base_interval") or timeframe_n),
+                "resampled": bool(manifest.get("resampled", False)),
+                "allow_live": False,
+                "orders_sent": False,
+            },
+            "tags": [f"feature_set:{orderflow_feature_set}", "source:shadow", "mode:shadow", f"bot:{bot_id}"],
+            "flags": {
+                "IS": False,
+                "OOS": False,
+                "WFA": False,
+                "PASO_GATES": False,
+                "BASELINE": False,
+                "FAVORITO": False,
+                "ARCHIVADO": False,
+                "ORDERFLOW_ENABLED": bool(orderflow_enabled),
+                "ORDERFLOW_FEATURE_SET": orderflow_feature_set,
+                "LIVE_BLOCKED": True,
+            },
+            "params_json": {
+                "validation_mode": "shadow_live",
+                "costs_model": costs_model,
+                "lookback_bars": int(max(1, lookback_bars)),
+                "use_orderflow_data": bool(orderflow_enabled),
+                "orderflow_feature_set": orderflow_feature_set,
+                "bot_id": bot_id,
+            },
+            "equity_curve": engine_result.get("equity_curve") or [],
+            "drawdown_curve": engine_result.get("drawdown_curve") or [],
+            "trades": engine_result.get("trades") or [],
+            "decision_events": decision_events,
+            "artifacts_links": {
+                "report_json": f"/api/v1/backtests/runs/{run_id}?format=report_json",
+                "trades_csv": f"/api/v1/backtests/runs/{run_id}?format=trades_csv",
+                "equity_curve_csv": f"/api/v1/backtests/runs/{run_id}?format=equity_curve_csv",
+            },
+            "notes": str(note or ""),
+        }
+        for trade in run.get("trades", []) or []:
+            if isinstance(trade, dict) and not trade.get("regime_label"):
+                trade["regime_label"] = self._infer_trade_regime_label(trade, run, strategy=strategy)
+        run["provenance"] = {
+            "run_id": run_id,
+            "strategy_id": strategy_id,
+            "mode": "shadow",
+            "from": started_at,
+            "to": finished_at,
+            "dataset_source": run["data_source"],
+            "dataset_hash": run["dataset_hash"],
+            "costs_used": run["costs_model"],
+            "commit_hash": run["git_commit"],
+            "bot_id": bot_id,
+            "use_orderflow_data": bool(orderflow_enabled),
+            "orderflow_feature_set": orderflow_feature_set,
+            "created_at": run["created_at"],
+        }
+        artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
+        run["artifacts_local"] = artifact_local
+        runs = self.load_runs()
+        runs.insert(0, run)
+        self.save_runs(runs)
+        self._record_run_provenance(run)
+        self._record_backtest_catalog(run, strategy_meta=strategy, created_by="shadow_runner")
+        self.record_experience_run(run, source_override="shadow", bot_id=bot_id)
+        self.add_log(
+            event_type="shadow_run_completed",
+            severity="info",
+            module="learning",
+            message=f"Shadow run completado: {run_id}",
+            related_ids=[bot_id, strategy_id, run_id, symbol_n],
+            payload={
+                "bot_id": bot_id,
+                "strategy_id": strategy_id,
+                "symbol": symbol_n,
+                "timeframe": timeframe_n,
+                "metrics": run["metrics"],
+                "costs_breakdown": run["costs_breakdown"],
+                "dataset_hash": run["dataset_hash"],
+                "data_source": run["data_source"],
+                "allow_live": False,
             },
         )
         return run
@@ -5002,6 +5377,7 @@ _validate_auth_config_for_production()
 
 store = ConsoleStore()
 learning_service = LearningService(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT)
+option_b_engine = OptionBLearningEngine(store.registry)
 rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
 mass_backtest_engine = MassBacktestEngine(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT, knowledge_loader=KnowledgeLoader(repo_root=MONOREPO_ROOT))
 mass_backtest_coordinator = MassBacktestCoordinator(engine=mass_backtest_engine)
@@ -6624,6 +7000,318 @@ class RuntimeBridge:
 runtime_bridge = RuntimeBridge()
 
 
+class ShadowRunCoordinator:
+    def __init__(self, *, store: ConsoleStore) -> None:
+        self.store = store
+        self._lock = RLock()
+        self._stop_event = Event()
+        self._thread: Thread | None = None
+        self._last_closed_by_target: dict[str, str] = {}
+        self._state = self._empty_state()
+
+    @staticmethod
+    def _empty_state() -> dict[str, Any]:
+        return {
+            "running": False,
+            "thread_alive": False,
+            "stop_requested": False,
+            "stop_reason": "",
+            "allow_live": False,
+            "orders_sent": False,
+            "marketdata_base_url": SHADOW_MARKETDATA_BASE_URL,
+            "timeframe": SHADOW_DEFAULT_TIMEFRAME,
+            "lookback_bars": int(SHADOW_DEFAULT_LOOKBACK_BARS),
+            "poll_sec": int(SHADOW_DEFAULT_POLL_SEC),
+            "symbol_requested": None,
+            "active_bot_ids": [],
+            "active_strategy_ids": [],
+            "targets_count": 0,
+            "warnings": [],
+            "last_started_at": None,
+            "last_cycle_at": None,
+            "last_success_at": None,
+            "last_error": "",
+            "last_run_ids": [],
+            "cycles_total": 0,
+            "runs_created": 0,
+            "episodes_written": 0,
+            "skipped_duplicate_cycles": 0,
+        }
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            payload = dict(self._state)
+            payload["active_bot_ids"] = list(self._state.get("active_bot_ids") or [])
+            payload["active_strategy_ids"] = list(self._state.get("active_strategy_ids") or [])
+            payload["warnings"] = list(self._state.get("warnings") or [])
+            payload["last_run_ids"] = list(self._state.get("last_run_ids") or [])
+            thread_alive = bool(self._thread and self._thread.is_alive())
+            payload["thread_alive"] = thread_alive
+            payload["running"] = bool(self._state.get("running", False)) and thread_alive
+            return payload
+
+    def start(
+        self,
+        *,
+        bot_id: str | None,
+        timeframe: str,
+        lookback_bars: int,
+        poll_sec: int,
+        symbol: str | None,
+    ) -> dict[str, Any]:
+        timeframe_n = str(timeframe or SHADOW_DEFAULT_TIMEFRAME).strip().lower() or SHADOW_DEFAULT_TIMEFRAME
+        if timeframe_n not in {"5m", "10m", "15m"}:
+            raise ValueError("Shadow solo soporta timeframes 5m, 10m o 15m.")
+        poll_sec_n = max(10, int(poll_sec or SHADOW_DEFAULT_POLL_SEC))
+        lookback_n = max(60, int(lookback_bars or SHADOW_DEFAULT_LOOKBACK_BARS))
+        symbol_n = str(symbol or "").replace("/", "").replace("-", "").strip().upper() or None
+        targets, warnings = self._resolve_targets(
+            bot_id=(str(bot_id).strip() or None) if bot_id is not None else None,
+            symbol=symbol_n,
+            timeframe=timeframe_n,
+            lookback_bars=lookback_n,
+        )
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("Ya hay un shadow-run en ejecución.")
+            self._stop_event = Event()
+            self._state = self._empty_state()
+            self._state.update(
+                {
+                    "running": True,
+                    "thread_alive": True,
+                    "stop_requested": False,
+                    "stop_reason": "",
+                    "marketdata_base_url": SHADOW_MARKETDATA_BASE_URL,
+                    "timeframe": timeframe_n,
+                    "lookback_bars": int(lookback_n),
+                    "poll_sec": int(poll_sec_n),
+                    "symbol_requested": symbol_n,
+                    "active_bot_ids": sorted({str(target["bot_id"]) for target in targets}),
+                    "active_strategy_ids": sorted({str(target["strategy_id"]) for target in targets}),
+                    "targets_count": len(targets),
+                    "warnings": warnings,
+                    "last_started_at": utc_now_iso(),
+                    "last_error": "",
+                }
+            )
+            self._thread = Thread(
+                target=self._run_loop,
+                kwargs={
+                    "targets": targets,
+                    "timeframe": timeframe_n,
+                    "lookback_bars": lookback_n,
+                    "poll_sec": poll_sec_n,
+                    "symbol": symbol_n,
+                },
+                name="rtlab-shadow-runner",
+                daemon=True,
+            )
+            self._thread.start()
+        self.store.add_log(
+            event_type="shadow_runner_start",
+            severity="info",
+            module="learning",
+            message="Shadow runner iniciado.",
+            related_ids=[str(target["bot_id"]) for target in targets[:10]],
+            payload={
+                "bot_id": (str(bot_id).strip() or None) if bot_id is not None else None,
+                "symbol": symbol_n,
+                "timeframe": timeframe_n,
+                "lookback_bars": int(lookback_n),
+                "poll_sec": int(poll_sec_n),
+                "targets_count": len(targets),
+                "allow_live": False,
+                "orders_sent": False,
+            },
+        )
+        return self.status()
+
+    def stop(self, *, reason: str | None = None) -> dict[str, Any]:
+        stop_reason = str(reason or "manual_stop").strip() or "manual_stop"
+        with self._lock:
+            self._state["stop_requested"] = True
+            self._state["stop_reason"] = stop_reason
+            thread = self._thread
+            self._stop_event.set()
+        self.store.add_log(
+            event_type="shadow_runner_stop",
+            severity="info",
+            module="learning",
+            message="Shadow runner stop solicitado.",
+            related_ids=[],
+            payload={"reason": stop_reason, "allow_live": False, "orders_sent": False},
+        )
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+        return self.status()
+
+    def _resolve_targets(
+        self,
+        *,
+        bot_id: str | None,
+        symbol: str | None,
+        timeframe: str,
+        lookback_bars: int,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        bots = self.store.load_bots()
+        if bot_id:
+            bots = [row for row in bots if str(row.get("id") or "") == bot_id]
+            if not bots:
+                raise ValueError("Bot no encontrado para shadow.")
+        eligible_bots: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for row in bots:
+            status = str(row.get("status") or "active").strip().lower()
+            mode = str(row.get("mode") or "paper").strip().lower()
+            if status != "active":
+                continue
+            if mode != "shadow":
+                if bot_id and str(row.get("id") or "") == bot_id:
+                    raise ValueError("Poné el bot en modo SHADOW para correr mock en vivo sin órdenes.")
+                continue
+            eligible_bots.append(row)
+        if not eligible_bots:
+            raise ValueError("No hay bots activos en modo SHADOW.")
+
+        strategies = {str(row.get("id") or ""): row for row in self.store.list_strategies() if str(row.get("id") or "")}
+        targets: list[dict[str, Any]] = []
+        for bot in eligible_bots:
+            pool_ids = [str(sid) for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategies]
+            allowed_ids: list[str] = []
+            for strategy_id in pool_ids:
+                strategy = strategies.get(strategy_id) or {}
+                if str(strategy.get("status") or "active").strip().lower() == "archived":
+                    continue
+                if not bool(strategy.get("allow_learning", True)):
+                    continue
+                allowed_ids.append(strategy_id)
+            if not allowed_ids:
+                warnings.append(f"{bot.get('id')}: sin estrategias Pool=true para shadow.")
+                continue
+            resolved_symbol = symbol or next(
+                (str(item).replace("/", "").replace("-", "").strip().upper() for item in (bot.get("universe") or []) if str(item).strip()),
+                RUNTIME_REMOTE_ORDER_SYMBOL,
+            )
+            for strategy_id in allowed_ids:
+                strategy = strategies.get(strategy_id) or {}
+                params = strategy.get("params") if isinstance(strategy.get("params"), dict) else {}
+                tags = {str(tag or "").strip().lower() for tag in (strategy.get("tags") or [])}
+                use_orderflow = True
+                if isinstance(params.get("use_orderflow_data"), bool):
+                    use_orderflow = bool(params.get("use_orderflow_data"))
+                elif "feature_set:orderflow_off" in tags or "orderflow_off" in tags:
+                    use_orderflow = False
+                targets.append(
+                    {
+                        "bot_id": str(bot.get("id") or ""),
+                        "strategy_id": strategy_id,
+                        "symbol": resolved_symbol,
+                        "timeframe": timeframe,
+                        "lookback_bars": int(lookback_bars),
+                        "use_orderflow_data": bool(use_orderflow),
+                    }
+                )
+        if not targets:
+            raise ValueError("No hay estrategias elegibles (Pool=true) para correr shadow.")
+        return targets, warnings
+
+    def _run_loop(
+        self,
+        *,
+        targets: list[dict[str, Any]],
+        timeframe: str,
+        lookback_bars: int,
+        poll_sec: int,
+        symbol: str | None,
+    ) -> None:
+        runner = ShadowRunner(marketdata_base_url=SHADOW_MARKETDATA_BASE_URL)
+        while not self._stop_event.is_set():
+            cycle_runs: list[str] = []
+            cycle_errors: list[str] = []
+            with self._lock:
+                self._state["cycles_total"] = int(self._state.get("cycles_total") or 0) + 1
+                self._state["last_cycle_at"] = utc_now_iso()
+            for target in targets:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    simulation = runner.simulate(
+                        ShadowRunConfig(
+                            strategy_id=str(target["strategy_id"]),
+                            symbol=str(target["symbol"]),
+                            timeframe=str(target["timeframe"]),
+                            lookback_bars=int(target["lookback_bars"]),
+                            use_orderflow_data=bool(target.get("use_orderflow_data", True)),
+                        )
+                    )
+                    manifest = simulation.get("manifest") if isinstance(simulation.get("manifest"), dict) else {}
+                    last_closed = str(manifest.get("end") or "").strip()
+                    feature_set = "orderflow_on" if bool(target.get("use_orderflow_data", True)) else "orderflow_off"
+                    target_key = "|".join(
+                        [
+                            str(target["bot_id"]),
+                            str(target["strategy_id"]),
+                            str(target["symbol"]).upper(),
+                            str(target["timeframe"]).lower(),
+                            feature_set,
+                        ]
+                    )
+                    if last_closed:
+                        with self._lock:
+                            previous_closed = str(self._last_closed_by_target.get(target_key) or "")
+                            if previous_closed == last_closed:
+                                self._state["skipped_duplicate_cycles"] = int(self._state.get("skipped_duplicate_cycles") or 0) + 1
+                                continue
+                            self._last_closed_by_target[target_key] = last_closed
+                    run = self.store.create_shadow_live_run(
+                        bot_id=str(target["bot_id"]),
+                        strategy_id=str(target["strategy_id"]),
+                        symbol=str(target["symbol"]),
+                        timeframe=str(target["timeframe"]),
+                        lookback_bars=int(target["lookback_bars"]),
+                        simulation=simulation,
+                        use_orderflow_data=bool(target.get("use_orderflow_data", True)),
+                        note="shadow_runner_closed_candle",
+                    )
+                    cycle_runs.append(str(run.get("id") or ""))
+                except Exception as exc:
+                    message = f"{target.get('bot_id')}:{target.get('strategy_id')} -> {exc}"
+                    cycle_errors.append(message)
+                    self.store.add_log(
+                        event_type="shadow_runner_error",
+                        severity="warn",
+                        module="learning",
+                        message="Shadow runner con error en simulación.",
+                        related_ids=[str(target.get("bot_id") or ""), str(target.get("strategy_id") or "")],
+                        payload={
+                            "error": str(exc),
+                            "symbol": str(target.get("symbol") or ""),
+                            "timeframe": str(target.get("timeframe") or ""),
+                            "allow_live": False,
+                            "orders_sent": False,
+                        },
+                    )
+            if cycle_runs:
+                _invalidate_bots_overview_cache()
+            with self._lock:
+                if cycle_runs:
+                    self._state["runs_created"] = int(self._state.get("runs_created") or 0) + len(cycle_runs)
+                    self._state["episodes_written"] = int(self._state.get("episodes_written") or 0) + len(cycle_runs)
+                    self._state["last_success_at"] = utc_now_iso()
+                    self._state["last_run_ids"] = (cycle_runs + list(self._state.get("last_run_ids") or []))[:10]
+                if cycle_errors:
+                    self._state["last_error"] = " | ".join(cycle_errors[:3])
+            if self._stop_event.wait(max(10, int(poll_sec))):
+                break
+        with self._lock:
+            self._state["running"] = False
+            self._state["thread_alive"] = False
+
+
+shadow_coordinator = ShadowRunCoordinator(store=store)
+
+
 def _invalidate_bots_overview_cache() -> None:
     with _BOTS_OVERVIEW_CACHE_LOCK:
         _BOTS_OVERVIEW_CACHE["entries"] = {}
@@ -8073,11 +8761,152 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/learning/status")
     def learning_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         settings_payload = learning_service.ensure_settings_shape(store.load_settings())
-        return learning_service.build_status(
+        strategies = store.list_strategies()
+        payload = learning_service.build_status(
             settings=settings_payload,
-            strategies=store.list_strategies(),
+            strategies=strategies,
             runs=store.load_runs(),
         )
+        payload["experience_learning"] = option_b_engine.summarize(strategies=strategies)
+        option_b_cfg = payload.get("option_b") if isinstance(payload.get("option_b"), dict) else {}
+        payload["option_b"] = {
+            **option_b_cfg,
+            "allow_live": False,
+            "requires_human_approval": True,
+            "experience_store_enabled": True,
+        }
+        return payload
+
+    @app.get("/api/v1/learning/experience/summary")
+    def learning_experience_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return option_b_engine.summarize(strategies=store.list_strategies())
+
+    @app.get("/api/v1/learning/guidance")
+    def learning_guidance(
+        strategy_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        rows = option_b_engine.list_guidance()
+        if strategy_id:
+            rows = [row for row in rows if str(row.get("strategy_id") or "") == str(strategy_id)]
+        return {"items": rows}
+
+    @app.get("/api/v1/learning/proposals")
+    def learning_proposals(
+        status: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        rows = option_b_engine.list_proposals(status=status)
+        return {"items": rows, "status": status}
+
+    @app.get("/api/v1/learning/proposals/{proposal_id}")
+    def learning_proposal_detail(proposal_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        row = option_b_engine.get_proposal(proposal_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning proposal not found")
+        return row
+
+    @app.get("/api/v1/learning/shadow/status")
+    def learning_shadow_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return shadow_coordinator.status()
+
+    @app.post("/api/v1/learning/shadow/start")
+    def learning_shadow_start(
+        body: ShadowStartBody | None = None,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        payload = body or ShadowStartBody()
+        try:
+            status = shadow_coordinator.start(
+                bot_id=payload.bot_id,
+                timeframe=payload.timeframe,
+                lookback_bars=int(payload.lookback_bars),
+                poll_sec=int(payload.poll_sec),
+                symbol=payload.symbol,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, **status}
+
+    @app.post("/api/v1/learning/shadow/stop")
+    def learning_shadow_stop(
+        body: ShadowStopBody | None = None,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        status = shadow_coordinator.stop(reason=(body.reason if body else None))
+        return {"ok": True, **status}
+
+    @app.post("/api/v1/learning/proposals/recalculate")
+    def learning_proposals_recalculate(body: OptionBRecalculateBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        thresholds = learning_service._canonical_gates_thresholds()
+        result = option_b_engine.recalculate(
+            strategies=store.list_strategies(),
+            pbo_max=float((body.pbo_max if body else None) or thresholds.get("pbo_max") or 0.25),
+            dsr_min=float((body.dsr_min if body else None) or thresholds.get("dsr_min") or 0.95),
+        )
+        store.add_log(
+            event_type="learning_option_b_recalculate",
+            severity="info",
+            module="learning",
+            message="Opcion B recalculada desde Experience Store.",
+            related_ids=[str(row.get("id") or "") for row in (result.get("proposals") or [])[:20]],
+            payload={
+                "contexts": result.get("contexts"),
+                "generated_at": result.get("generated_at"),
+                "allow_live": False,
+            },
+        )
+        return result
+
+    @app.post("/api/v1/learning/proposals/{proposal_id}/approve")
+    def learning_proposal_approve(
+        proposal_id: str,
+        body: OptionBDecisionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        row = option_b_engine.set_proposal_status(proposal_id, status="approved", note=(body.note if body else None))
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning proposal not found")
+        store.add_log(
+            event_type="learning_option_b_approve",
+            severity="info",
+            module="learning",
+            message=f"Propuesta Opcion B aprobada: {proposal_id}",
+            related_ids=[proposal_id, str(row.get("proposed_strategy_id") or "")],
+            payload={
+                "reviewer": user.get("username", "admin"),
+                "note": (body.note if body else None) or "",
+                "allow_live": False,
+                "shadow_first": True,
+            },
+        )
+        return {
+            "ok": True,
+            "proposal": row,
+            "option_b": {"applied_live": False, "requires_shadow_first": True, "requires_human_approval": True},
+            "canary_plan": ["shadow_5", "shadow_15", "shadow_35", "shadow_60", "shadow_100"],
+        }
+
+    @app.post("/api/v1/learning/proposals/{proposal_id}/reject")
+    def learning_proposal_reject(
+        proposal_id: str,
+        body: OptionBDecisionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        row = option_b_engine.set_proposal_status(proposal_id, status="rejected", note=(body.note if body else None))
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning proposal not found")
+        store.add_log(
+            event_type="learning_option_b_reject",
+            severity="info",
+            module="learning",
+            message=f"Propuesta Opcion B rechazada: {proposal_id}",
+            related_ids=[proposal_id],
+            payload={"reviewer": user.get("username", "admin"), "note": (body.note if body else None) or ""},
+        )
+        return {"ok": True, "proposal": row}
 
     @app.post("/api/v1/learning/recommend")
     def learning_recommend(body: LearningRecommendBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

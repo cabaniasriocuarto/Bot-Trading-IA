@@ -6,7 +6,7 @@ import json
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.research.data_provider import build_data_provider
-from rtlab_core.src.research.mass_backtest_engine import FoldWindow, MassBacktestEngine
+from rtlab_core.src.research.mass_backtest_engine import FoldWindow, MassBacktestCoordinator, MassBacktestEngine
 
 
 def _dummy_run_factory(strategy_id: str, fold: FoldWindow) -> dict:
@@ -138,6 +138,11 @@ def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> N
   assert results["query_backend"]["engine"] in {"duckdb", "python"}
   first_row = results["results"][0]
   assert "microstructure" in first_row
+  assert isinstance(first_row.get("anti_proxy"), dict)
+  assert isinstance(first_row.get("anti_advanced"), dict)
+  assert str((first_row.get("anti_proxy") or {}).get("method") or "") == "proxy_fail_closed_for_promotion"
+  assert str((first_row.get("anti_advanced") or {}).get("method") or "") == "batch_cscv_pbo_and_dsr_proxy"
+  assert (first_row.get("anti_overfitting") or {}) == (first_row.get("anti_advanced") or {})
   assert isinstance(first_row.get("microstructure"), dict)
   assert "gates_eval" in first_row
   assert isinstance(first_row.get("gates_eval"), dict)
@@ -419,3 +424,63 @@ def test_advanced_gates_block_promotion_when_surrogate_adjustments_enabled(tmp_p
   assert row.get("promotable") is False
   assert row.get("recommendable_option_b") is False
   assert ((row.get("anti_overfitting") or {}).get("promotion_block_reason")) == "surrogate_adjustments_enabled"
+
+
+def test_advanced_gates_exposes_anti_proxy_and_anti_advanced_separately(tmp_path: Path) -> None:
+  engine = _engine(tmp_path)
+  row = _gate_row_with_symbol_counts({"BTCUSDT": 200, "ETHUSDT": 180})
+  row["anti_overfitting"] = {
+    "method": "proxy_fail_closed_for_promotion",
+    "pbo": 0.41,
+    "dsr": 0.12,
+    "promotion_blocked": True,
+  }
+  cfg = _min_trade_quality_policy(min_trades_per_run=150, min_trades_per_symbol=30)
+
+  engine._apply_advanced_gates(rows=[row], cfg=cfg)
+
+  anti_proxy = row.get("anti_proxy") or {}
+  anti_advanced = row.get("anti_advanced") or {}
+  assert anti_proxy.get("method") == "proxy_fail_closed_for_promotion"
+  assert anti_advanced.get("method") == "batch_cscv_pbo_and_dsr_proxy"
+  assert anti_proxy.get("pbo") == 0.41
+  assert (row.get("anti_overfitting") or {}) == anti_advanced
+
+
+def test_beast_status_uses_repo_policy_when_queue_empty(tmp_path: Path, monkeypatch) -> None:
+  coordinator = MassBacktestCoordinator(engine=_engine(tmp_path))
+  monkeypatch.setattr(
+    coordinator,
+    "_default_beast_policy_cfg",
+    lambda: {
+      "policy_snapshot": {
+        "beast_mode": {
+          "beast_mode": {
+            "enabled": True,
+            "requires_postgres": True,
+            "max_trials_per_batch": 321,
+            "max_concurrent_jobs": 7,
+            "per_exchange_rate_limit": {"enabled": True, "max_requests_per_minute": 456},
+            "budget_governor": {
+              "enabled": True,
+              "daily_job_cap_hobby": 12,
+              "daily_job_cap_pro": 34,
+              "stop_at_budget_pct": 75,
+            },
+          }
+        }
+      }
+    },
+  )
+  coordinator._beast_jobs_meta["BT-BEAST-001"] = {"run_id": "BT-BEAST-001", "tier": "pro", "state": "COMPLETED"}
+
+  status = coordinator.beast_status()
+
+  assert status["enabled"] is True
+  assert status["requires_postgres"] is True
+  assert status["scheduler"]["max_concurrent_jobs"] == 7
+  assert status["scheduler"]["rate_limit_enabled"] is True
+  assert status["scheduler"]["max_requests_per_minute"] == 456
+  assert status["budget"]["tier"] == "pro"
+  assert status["budget"]["daily_cap"] == 34
+  assert status["budget"]["stop_at_budget_pct"] == 75.0
