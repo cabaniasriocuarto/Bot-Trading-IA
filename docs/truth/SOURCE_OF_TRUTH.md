@@ -1,6 +1,96 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-05
+Fecha de actualizacion: 2026-03-06
+
+## Actualizacion tecnica experience learning + shadow + backtests UX - 2026-03-06
+
+- Backend de aprendizaje:
+  - `RegistryDB` ya persiste:
+    - `experience_episode`
+    - `experience_event`
+    - `regime_kpi`
+    - `learning_proposal`
+    - `strategy_policy_guidance`
+  - `ConsoleStore.record_experience_run(...)` cablea experiencia al cerrar runs de backtest/shadow.
+- Generacion de experiencia:
+  - backtest puntual:
+    - `create_event_backtest_run(...)` -> `record_experience_run(..., source_override="backtest")`
+  - batch/bestia:
+    - `_mass_backtest_eval_fold(...)` llama a `create_event_backtest_run(...)`
+    - cada sub-run de batch genera experiencia y catalogo `batch_child`
+    - batch/bestia bloquean sinteticos y exigen datos reales
+  - shadow/mock:
+    - `ShadowRunner` usa market data publico de Binance Spot
+    - no envia ordenes
+    - persiste experiencia `source=shadow`
+    - endpoints:
+      - `GET /api/v1/learning/shadow/status`
+      - `POST /api/v1/learning/shadow/start`
+      - `POST /api/v1/learning/shadow/stop`
+- Opcion B:
+  - `OptionBLearningEngine` solo considera estrategias con `allow_learning=true`
+  - pesos por fuente implementados:
+    - `shadow=1.00`
+    - `testnet=0.90`
+    - `paper=0.80`
+    - `backtest=0.60`
+  - score real:
+    - `0.45 expectancy_net_z`
+    - `0.20 profit_factor_z`
+    - `0.10 sharpe_z`
+    - `0.10 psr_z`
+    - `0.05 dsr_z`
+    - `-0.10 max_dd_z`
+    - `-0.05 turnover_cost_z`
+  - bloqueos reales:
+    - `n_trades_total<120`
+    - `n_days_total<90`
+    - `n_trades_regime<30`
+    - `expectancy_net<=0`
+    - `cost_stress_1_5x<0`
+    - `pbo>threshold`
+    - `dsr<threshold`
+    - `mixed_feature_set`
+    - mismatch contra baseline feature set
+  - NO activa estrategias sola; crea propuestas Opcion B.
+- Frontend `Strategies`:
+  - muestra experiencia resumida
+  - muestra propuestas Opcion B
+  - muestra guidance por estrategia
+  - muestra estado/control de shadow
+  - muestra experiencia por fuente por bot (`shadow/backtest/...`)
+  - agrega ayuda textual para modos:
+    - `shadow`
+    - `paper`
+    - `testnet`
+    - `live` visible solo como referencia, NO GO
+- Frontend `Backtests`:
+  - agrega selector de bot para research batch
+  - agrega accion `Usar pool del bot`
+  - explica diferencia entre batch y shadow/mock
+  - muestra estado de scheduler/budget de Modo Bestia
+  - fix real:
+    - `GET /api/v1/runs` ya no pide `limit=5000`
+    - ahora usa `limit=2000`, alineado con el maximo permitido por API y corrige el `422` de la vista `Backtests / Runs`
+- Policy `Modo Bestia`:
+  - `config/policies/beast_mode.yaml` actual:
+    - `enabled: true`
+    - `requires_postgres: true`
+  - en esta fase el scheduler sigue como `local_scheduler_phase1`; Postgres queda marcado como recomendado, no como requisito duro de ejecucion local.
+- Documentacion nueva:
+  - `docs/research/EXPERIENCE_LEARNING.md`
+  - `docs/research/BRAIN_OF_BOTS.md`
+  - `docs/runbooks/SHADOW_MODE.md`
+- Validacion local ejecutada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/learning/shadow_runner.py rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/learning/option_b_engine.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+  - `npm run lint -- "src/app/(app)/backtests/page.tsx" "src/app/(app)/strategies/page.tsx" "src/lib/types.ts"` -> PASS
+  - `npm run build` (`rtlab_dashboard`) -> PASS
+- Riesgos abiertos:
+  - LIVE sigue `NO GO`
+  - NO EVIDENCIA de RL offline serio como motor core
+  - NO EVIDENCIA de OPE robusto (`IPS/DR/SWITCH`) integrado al promotion path
+  - parte de la bibliografia TXT local esta vacia/danada; cuando eso pasa se usa otra fuente local valida o fuente oficial del mismo nivel
 
 ## Actualizacion operativa staging persistence + checks (run 22741651051) - 2026-03-05
 

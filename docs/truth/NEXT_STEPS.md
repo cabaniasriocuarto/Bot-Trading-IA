@@ -1,6 +1,50 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-05
+Fecha: 2026-03-06
+
+## Tramo vigente (experience learning + shadow + no-live)
+- [x] Experience store persistente integrado al registry SQLite.
+- [x] Opcion B con proposals, rationale y gating conservador.
+- [x] Shadow/mock en vivo sin ordenes, con experiencia `source=shadow`.
+- [x] UI de estrategias ampliada con:
+  - propuestas
+  - guidance
+  - estado shadow
+  - experiencia por fuente por bot
+- [x] UI de backtests ampliada con:
+  - selector de bot
+  - `Usar pool del bot`
+  - fix del `422` en `Backtests / Runs`
+- [x] Documentacion base creada:
+  - `docs/research/EXPERIENCE_LEARNING.md`
+  - `docs/research/BRAIN_OF_BOTS.md`
+  - `docs/runbooks/SHADOW_MODE.md`
+
+## Proximo tramo tecnico real
+1. Verificar deploy fresco de frontend/backends para que la UI publicada refleje:
+   - fix de `Backtests / Runs`
+   - panel de Opcion B
+   - estado real de `Modo Bestia`
+2. Ejecutar un shadow run controlado y registrar evidencia en `docs/audit/`:
+   - status inicial
+   - start
+   - episodio generado
+   - proposal/guidance recalculados
+3. Correr research batch con dataset real disponible y confirmar experiencia persistida en:
+   - `experience_episode`
+   - `experience_event`
+   - `regime_kpi`
+4. Revalidar `Modo Bestia` publicado:
+   - la policy actual esta en `enabled: true`
+   - si la UI sigue mostrando "deshabilitado", revisar snapshot viejo de deploy o API stale, no el YAML del repo
+5. Agregar evidencia visual/operativa de la pestaña de aprendizaje en `docs/audit/`.
+6. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
+
+## Riesgos abiertos del tramo
+- NO EVIDENCIA de OPE conservador (`IPS/DR/SWITCH`) cableado al motor de promotion.
+- NO EVIDENCIA de RL offline serio en produccion.
+- Shadow sigue siendo simulacion de ejecucion, no orden real.
+- Parte de la bibliografia TXT local sigue vacia/danada y reduce trazabilidad automatica.
 
 ## Tramo vigente (cleanroom + staging online, sin LIVE)
 - [x] Documentacion ordenada con indice unico:

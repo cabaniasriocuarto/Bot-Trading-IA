@@ -1,5 +1,54 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-06
+
+### Experience learning + shadow + backtests UX
+- Backend:
+  - se consolido persistencia de experiencia en `RegistryDB`:
+    - `experience_episode`
+    - `experience_event`
+    - `regime_kpi`
+    - `learning_proposal`
+    - `strategy_policy_guidance`
+  - `ConsoleStore.record_experience_run(...)` queda cableado para runs de backtest y shadow.
+- Shadow/mock:
+  - `ShadowRunner` usa market data publico de Binance Spot;
+  - no envia ordenes;
+  - expone endpoints:
+    - `GET /api/v1/learning/shadow/status`
+    - `POST /api/v1/learning/shadow/start`
+    - `POST /api/v1/learning/shadow/stop`
+  - persiste episodios `source=shadow`.
+- Opcion B:
+  - `OptionBLearningEngine` filtra `allow_learning=true`;
+  - aplica pesos por fuente:
+    - `shadow=1.00`
+    - `testnet=0.90`
+    - `paper=0.80`
+    - `backtest=0.60`
+  - bloquea propuestas cuando falla evidencia/costos/feature-set/baseline.
+- Batch / Modo Bestia:
+  - `_mass_backtest_eval_fold(...)` genera sub-runs via `create_event_backtest_run(...)`;
+  - los sub-runs del batch dejan experiencia persistente;
+  - se mantiene bloqueo de datos sinteticos para research/bestia.
+- Frontend `Strategies`:
+  - nuevas secciones de experiencia, propuestas Opcion B, guidance y shadow;
+  - nuevas ayudas para modo/engine;
+  - bots muestran experiencia por fuente.
+- Frontend `Backtests`:
+  - selector de bot y accion `Usar pool del bot`;
+  - mensajes mas claros para batch vs shadow/mock;
+  - `GET /api/v1/runs` pasa de `limit=5000` a `limit=2000` y corrige `422` en `Backtests / Runs`.
+- Docs nuevas:
+  - `docs/research/EXPERIENCE_LEARNING.md`
+  - `docs/research/BRAIN_OF_BOTS.md`
+  - `docs/runbooks/SHADOW_MODE.md`
+- Validacion:
+  - `py_compile` backend learning/shadow -> PASS
+  - `pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+  - `npm run lint -- "src/app/(app)/backtests/page.tsx" "src/app/(app)/strategies/page.tsx" "src/lib/types.ts"` -> PASS
+  - `npm run build` (`rtlab_dashboard`) -> PASS
+
 ## 2026-03-05
 
 ### Staging persistence fix + protected checks PASS (run 22741651051)
