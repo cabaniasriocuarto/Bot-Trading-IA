@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveRole, SESSION_COOKIE, signSessionToken } from "@/lib/auth";
+import { resolveRoleViaBackend } from "@/lib/auth-backend";
 
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as { username?: string; password?: string };
@@ -11,15 +12,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Usuario y contrasena son obligatorios." }, { status: 400 });
   }
 
-  let role = null;
-  try {
-    role = resolveRole(username, password);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Configuracion de autenticacion invalida.";
-    return NextResponse.json({ error: message }, { status: 500 });
+  let role: "admin" | "viewer" | null = null;
+  const backendAuth = await resolveRoleViaBackend(username, password);
+  if (backendAuth && !backendAuth.ok) {
+    return NextResponse.json({ error: backendAuth.error }, { status: backendAuth.status });
   }
+  if (backendAuth?.ok) {
+    role = backendAuth.role;
+  } else {
+    try {
+      role = resolveRole(username, password);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Configuracion de autenticacion invalida.";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+  }
+
   if (!role) {
-    return NextResponse.json({ error: "Credenciales inválidas." }, { status: 401 });
+    return NextResponse.json({ error: "Credenciales invalidas." }, { status: 401 });
   }
 
   let token = "";
