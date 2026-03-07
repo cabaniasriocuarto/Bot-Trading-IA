@@ -12,3 +12,8 @@ docs/reference/biblio_raw/*
 !docs/reference/biblio_raw/.gitignore
 
 .vercel
+
+# Runtime SQLite databases (NO subir)
+rtlab_autotrader/user_data/*.sqlite3
+rtlab_autotrader/user_data/*.sqlite3-wal
+rtlab_autotrader/user_data/*.sqlite3-shm
