@@ -19,6 +19,7 @@ from typing import Any, Callable
 import yaml
 
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.policy_paths import resolve_policy_root
 from rtlab_core.src.data.catalog import DataCatalog
 from .data_provider import build_data_provider
 
@@ -2118,7 +2119,8 @@ class MassBacktestCoordinator:
         )
 
     def _default_beast_policy_cfg(self) -> dict[str, Any]:
-        policy_path = (self.engine.repo_root / "config" / "policies" / "beast_mode.yaml").resolve()
+        policies_root = resolve_policy_root(self.engine.repo_root)
+        policy_path = (policies_root / "beast_mode.yaml").resolve()
         beast_file = _yaml_load(policy_path, {})
         if not isinstance(beast_file, dict):
             return {}

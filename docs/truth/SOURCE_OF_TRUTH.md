@@ -1861,6 +1861,10 @@ El proyecto tiene:
   - `GET /api/v1/research/beast/status` expone `policy_state`, `policy_source_root`, `policy_warnings`
   - UI distingue `habilitado`, `bloqueado por policy` y `runtime sin policy`
   - `mass-backtest` y `beast` envian `data_mode=dataset` de forma explicita
+- La resolucion de roots de `config/policies` en backend ahora es fail-safe por presencia real de YAML:
+  - `rtlab_core/policy_paths.py` rankea candidatos por archivos canonicos disponibles
+  - `app.py`, `mass_backtest_engine.py`, `cost_providers.py` y `credit_filter.py` usan esa misma resolucion
+  - caso cubierto: si `/app/config/policies` existe vacio pero `/app/rtlab_autotrader/config/policies` tiene los YAML, runtime toma la segunda raiz y deja de publicar `Modo Bestia deshabilitado` falso
 - El hueco real que sigue abierto NO es de UI basica sino de trazabilidad historica fuerte:
   - persistir relacion exacta `run_id/episode_id -> bot_id`
   - hoy la vista bot-centrica usa pool/metadata actual derivada
@@ -1869,6 +1873,9 @@ El proyecto tiene:
 - `eslint` de `backtests/execution/strategies/client-api/types`: PASS
 - `next build` en `rtlab_dashboard`: PASS
 - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py`: PASS
+- `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q`: PASS
+- `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py -q`: PASS
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle" -q`: PASS
 - Warnings remanentes: Recharts en prerender (`width/height(-1)`), no bloqueantes
 
 ### Nota de bibliografia para este bloque

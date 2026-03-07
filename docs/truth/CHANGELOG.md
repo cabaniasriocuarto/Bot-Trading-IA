@@ -1937,9 +1937,18 @@
 - `app.py` + `types.ts`: `/api/v1/research/beast/status` expone metadata de policy (`policy_state`, `policy_source_root`, `policy_warnings`).
 - `backtests/page.tsx`: `Research Batch / Beast` ahora distingue `policy faltante` vs `policy deshabilitada` y envia `data_mode=dataset` explicitamente.
 - `backtests/page.tsx`: nuevo panel `Dataset real para batch` muestra si existe dataset exacto, si hay fallback `1m + resample`, y el comando sugerido cuando falta dataset real.
+- `policy_paths.py` + wiring backend (`app.py`, `mass_backtest_engine.py`, `cost_providers.py`, `credit_filter.py`):
+  - la raiz `config/policies` ya no se resuelve solo porque exista una carpeta;
+  - ahora se elige la raiz con YAML reales disponibles;
+  - se corrige el caso de deploy donde `/app/config/policies` existe vacio y la policy valida vive en `/app/rtlab_autotrader/config/policies`;
+  - esto evita falsos `Modo Bestia deshabilitado` por snapshot vacio en runtime.
 
 ### Validacion
 - `eslint src/app/(app)/backtests/page.tsx src/app/(app)/execution/page.tsx src/app/(app)/strategies/page.tsx src/lib/client-api.ts src/lib/types.ts` -> PASS
 - `npm run build` en `rtlab_dashboard` -> PASS
 - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
 - Warnings no bloqueantes: Recharts en prerender
+- `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS (`17 passed`)
+- `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py -q` -> PASS (`10 passed`)
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS (`2 passed`)
+- `python -m py_compile rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/backtest/cost_providers.py rtlab_autotrader/rtlab_core/fundamentals/credit_filter.py` -> PASS

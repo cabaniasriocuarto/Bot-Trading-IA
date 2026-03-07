@@ -7,6 +7,7 @@ from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.research.data_provider import build_data_provider
 from rtlab_core.src.research.mass_backtest_engine import FoldWindow, MassBacktestCoordinator, MassBacktestEngine
+from rtlab_core.policy_paths import resolve_policy_root
 
 
 def _dummy_run_factory(strategy_id: str, fold: FoldWindow) -> dict:
@@ -484,3 +485,40 @@ def test_beast_status_uses_repo_policy_when_queue_empty(tmp_path: Path, monkeypa
   assert status["budget"]["tier"] == "pro"
   assert status["budget"]["daily_cap"] == 34
   assert status["budget"]["stop_at_budget_pct"] == 75.0
+
+
+def test_resolve_policy_root_prefers_candidate_with_real_yaml(tmp_path: Path) -> None:
+  repo_root = tmp_path / "repo"
+  empty_root = repo_root / "config" / "policies"
+  nested_root = repo_root / "rtlab_autotrader" / "config" / "policies"
+  empty_root.mkdir(parents=True, exist_ok=True)
+  nested_root.mkdir(parents=True, exist_ok=True)
+  (nested_root / "beast_mode.yaml").write_text("beast_mode:\n  enabled: true\n", encoding="utf-8")
+
+  resolved = resolve_policy_root(repo_root, explicit=empty_root)
+
+  assert resolved == nested_root.resolve()
+
+
+def test_default_beast_policy_cfg_uses_nested_runtime_policies_when_root_is_empty(tmp_path: Path) -> None:
+  repo_root = tmp_path / "repo"
+  (repo_root / "config" / "policies").mkdir(parents=True, exist_ok=True)
+  nested_root = repo_root / "rtlab_autotrader" / "config" / "policies"
+  nested_root.mkdir(parents=True, exist_ok=True)
+  (nested_root / "beast_mode.yaml").write_text(
+    "beast_mode:\n  enabled: true\n  max_concurrent_jobs: 9\n",
+    encoding="utf-8",
+  )
+
+  class _DummyEngine:
+    def __init__(self) -> None:
+      self.root = tmp_path / "user_data"
+      self.repo_root = repo_root
+
+  coordinator = MassBacktestCoordinator(engine=_DummyEngine())
+
+  payload = coordinator._default_beast_policy_cfg()
+
+  beast = ((payload.get("policy_snapshot") or {}).get("beast_mode") or {}).get("beast_mode") or {}
+  assert beast.get("enabled") is True
+  assert beast.get("max_concurrent_jobs") == 9

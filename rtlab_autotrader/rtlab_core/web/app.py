@@ -36,6 +36,7 @@ from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.learning.option_b_engine import OptionBLearningEngine
 from rtlab_core.learning.shadow_runner import BINANCE_PUBLIC_MARKETDATA_BASE_URL, ShadowRunConfig, ShadowRunner
+from rtlab_core.policy_paths import resolve_policy_root
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
@@ -51,7 +52,8 @@ from rtlab_core.types import OrderStatus, Side
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 MONOREPO_ROOT = (PROJECT_ROOT.parent if (PROJECT_ROOT.parent / "knowledge").exists() else PROJECT_ROOT).resolve()
-CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
+DEFAULT_CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
+CONFIG_POLICIES_ROOT = resolve_policy_root(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
 
 
 def _resolve_user_data_dir() -> Path:
@@ -580,14 +582,7 @@ def _yaml_file_or_default(path: Path, default: Any) -> Any:
 
 
 def _resolve_config_policies_root() -> Path:
-    candidates = [
-        CONFIG_POLICIES_ROOT,
-        (Path(__file__).resolve().parents[3] / "config" / "policies").resolve(),
-    ]
-    for path in candidates:
-        if path.exists():
-            return path
-    return candidates[0]
+    return resolve_policy_root(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
 
 
 def _config_policy_files() -> tuple[Path, dict[str, Path]]:

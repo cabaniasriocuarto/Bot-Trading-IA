@@ -12,6 +12,8 @@ from urllib.parse import urlencode
 import requests
 import yaml
 
+from rtlab_core.policy_paths import resolve_policy_root
+
 from .catalog_db import BacktestCatalogDB
 
 
@@ -45,7 +47,7 @@ def _safe_yaml(path: Path) -> dict[str, Any]:
 def _resolve_policies_root() -> Path:
     project_root = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
     monorepo_root = (project_root.parent if (project_root.parent / "knowledge").exists() else project_root).resolve()
-    return (monorepo_root / "config" / "policies").resolve()
+    return resolve_policy_root(monorepo_root, explicit=(monorepo_root / "config" / "policies").resolve())
 
 
 def _load_policies_bundle(policies_root: Path | None = None) -> dict[str, Any]:

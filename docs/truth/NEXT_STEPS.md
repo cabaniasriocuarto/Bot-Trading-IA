@@ -23,20 +23,19 @@ Fecha: 2026-03-06
   - `docs/audit/LEARNING_EXPERIENCE_VALIDATION_20260306.md`
   - bestia real `BX-000001` completado
   - shadow/mock con default corregido persistiendo experiencia real
+- [x] Root de `config/policies` resuelto por YAML reales en backend:
+  - evita elegir `/app/config/policies` vacio en deploy
+  - habilita que `Modo Bestia` refleje la policy publicada correcta
 
 ## Proximo tramo tecnico real
-1. Resolver el preview/deploy Vercel de `feature/learning-experience-v1` para que la UI publicada refleje:
-   - fix de `Backtests / Runs`
-   - panel de Opcion B
-   - estado real de `Modo Bestia`
-2. Revalidar `Modo Bestia` publicado:
-   - la policy actual esta en `enabled: true`
-   - si la UI sigue mostrando "deshabilitado", revisar snapshot viejo de deploy o API stale, no el YAML del repo
-3. Persistir atribucion historica exacta `run_id -> bot_id` / `episode_id -> bot_id`:
+1. Revalidar backend publicado despues del deploy de este fix:
+   - `GET /api/v1/research/beast/status` debe dejar de reportar snapshot vacio si el runtime tiene los YAML nested
+   - la UI no debe mostrar `Modo Bestia deshabilitado` salvo que la policy real este en `enabled: false`
+2. Persistir atribucion historica exacta `run_id -> bot_id` / `episode_id -> bot_id`:
    - hoy la vista bot-centrica de runs usa el pool actual del bot
    - falta guardar la relacion historica explicita para no depender de cambios futuros del pool
-4. Agregar evidencia visual/operativa de la pestana de aprendizaje en `docs/audit/`.
-5. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
+3. Agregar evidencia visual/operativa de la pestana de aprendizaje en `docs/audit/`.
+4. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
 
 ## Riesgos abiertos del tramo
 - NO EVIDENCIA de OPE conservador (`IPS/DR/SWITCH`) cableado al motor de promotion.
