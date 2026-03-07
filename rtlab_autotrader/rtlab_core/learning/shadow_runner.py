@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -45,15 +45,17 @@ class ShadowRunConfig:
     symbol: str
     timeframe: str = "5m"
     market: str = "crypto"
-    lookback_bars: int = 240
+    lookback_bars: int = 300
     use_orderflow_data: bool = True
     validation_mode: str = "shadow_live"
-    costs: BacktestCosts = BacktestCosts(
-        fees_bps=5.5,
-        spread_bps=4.0,
-        slippage_bps=3.0,
-        funding_bps=1.0,
-        rollover_bps=0.0,
+    costs: BacktestCosts = field(
+        default_factory=lambda: BacktestCosts(
+            fees_bps=5.5,
+            spread_bps=4.0,
+            slippage_bps=3.0,
+            funding_bps=1.0,
+            rollover_bps=0.0,
+        )
     )
 
 

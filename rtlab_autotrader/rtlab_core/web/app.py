@@ -208,7 +208,7 @@ OPS_ALERT_API_ERRORS_WARN = max(1, _env_int("OPS_ALERT_API_ERRORS_WARN", 1))
 OPS_ALERT_BREAKER_WINDOW_HOURS = max(1, _env_int("OPS_ALERT_BREAKER_WINDOW_HOURS", 24))
 OPS_ALERT_DRIFT_ENABLED = _env_bool("OPS_ALERT_DRIFT_ENABLED", True)
 SHADOW_MARKETDATA_BASE_URL = str(os.getenv("SHADOW_MARKETDATA_BASE_URL", BINANCE_PUBLIC_MARKETDATA_BASE_URL)).strip() or BINANCE_PUBLIC_MARKETDATA_BASE_URL
-SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 240))
+SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 300))
 SHADOW_DEFAULT_POLL_SEC = max(10, _env_int("SHADOW_DEFAULT_POLL_SEC", 30))
 SHADOW_DEFAULT_TIMEFRAME = str(os.getenv("SHADOW_DEFAULT_TIMEFRAME", "5m")).strip().lower() or "5m"
 
@@ -460,7 +460,7 @@ class BotBulkPatchBody(BaseModel):
 class ShadowStartBody(BaseModel):
     bot_id: str | None = None
     timeframe: Literal["5m", "10m", "15m"] = "5m"
-    lookback_bars: int = 240
+    lookback_bars: int = 300
     poll_sec: int = 30
     symbol: str | None = None
 

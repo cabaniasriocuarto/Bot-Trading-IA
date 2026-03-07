@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.option_b_engine import OptionBLearningEngine
+from rtlab_core.learning.shadow_runner import ShadowRunConfig
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 
 
@@ -212,3 +213,15 @@ def test_option_b_engine_blocks_negative_cost_stress(tmp_path: Path) -> None:
     assert proposal["needs_validation"] is True
     assert proposal["status"] == "needs_validation"
     assert "cost_stress_1_5x<0" in proposal["metrics"]["reasons"]
+
+
+def test_shadow_run_config_uses_safe_defaults() -> None:
+    left = ShadowRunConfig(strategy_id="trend_pullback_orderflow_v2", symbol="BTCUSDT")
+    right = ShadowRunConfig(strategy_id="trend_pullback_orderflow_v2", symbol="ETHUSDT")
+
+    assert left.lookback_bars == 300
+    assert right.lookback_bars == 300
+    assert left.costs is not right.costs
+
+    left.costs.fees_bps = 9.0
+    assert right.costs.fees_bps == 5.5

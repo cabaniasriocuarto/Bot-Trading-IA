@@ -2118,7 +2118,7 @@ class MassBacktestCoordinator:
         )
 
     def _default_beast_policy_cfg(self) -> dict[str, Any]:
-        policy_path = (self.repo_root / "config" / "policies" / "beast_mode.yaml").resolve()
+        policy_path = (self.engine.repo_root / "config" / "policies" / "beast_mode.yaml").resolve()
         beast_file = _yaml_load(policy_path, {})
         if not isinstance(beast_file, dict):
             return {}
