@@ -711,6 +711,12 @@ export interface MassBacktestArtifactsResponse {
 
 export interface BeastModeStatusResponse {
   enabled: boolean;
+  policy_state?: "enabled" | "disabled" | "missing" | string;
+  policy_available?: boolean;
+  policy_enabled_declared?: boolean;
+  policy_source_root?: string;
+  policy_warnings?: string[];
+  policy_files?: Record<string, { path?: string; exists?: boolean; valid?: boolean }>;
   scheduler?: {
     thread_alive?: boolean;
     stop_requested?: boolean;

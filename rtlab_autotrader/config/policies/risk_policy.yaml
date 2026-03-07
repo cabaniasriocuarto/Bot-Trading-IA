@@ -1,0 +1,31 @@
+risk_policy:
+  scope: ["bot", "strategy", "symbol"]
+
+  soft_kill:
+    block_new_entries: true
+    cancel_entry_orders: true
+    allow_reduce_only_exits: true
+    cooldown_minutes: 120
+
+  hard_kill:
+    cancel_all_orders: true
+    flatten_positions: true
+    use_reduce_only: true
+
+  triggers:
+    loss_streak:
+      enabled: true
+      soft_kill_strategy_at: 6
+      hard_kill_strategy_at: 10
+    daily_loss_pct:
+      enabled: true
+      soft_kill_bot_at: -1.0
+      hard_kill_bot_at: -1.5
+    max_drawdown_pct:
+      enabled: true
+      hard_kill_bot_at: 8.0
+    infra:
+      enabled: true
+      stale_feed_seconds: 120
+      reject_rate_soft_pct: 5
+      reject_rate_hard_pct: 15

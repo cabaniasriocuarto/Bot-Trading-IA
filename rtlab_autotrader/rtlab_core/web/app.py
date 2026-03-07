@@ -9510,7 +9510,32 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/research/beast/status")
     def research_beast_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        return mass_backtest_coordinator.beast_status()
+        payload = mass_backtest_coordinator.beast_status()
+        bundle = load_numeric_policies_bundle()
+        beast_meta = bundle.get("files", {}).get("beast_mode") if isinstance(bundle.get("files"), dict) else {}
+        beast_policy = (
+            bundle.get("policies", {}).get("beast_mode", {}).get("beast_mode")
+            if isinstance(bundle.get("policies"), dict)
+            and isinstance(bundle.get("policies", {}).get("beast_mode"), dict)
+            else {}
+        )
+        policy_enabled_declared = bool(beast_policy.get("enabled")) if isinstance(beast_policy, dict) else False
+        policy_state = "enabled"
+        if not bundle.get("available") or not isinstance(beast_meta, dict) or not beast_meta.get("exists") or not beast_meta.get("valid"):
+            policy_state = "missing"
+        elif not policy_enabled_declared:
+            policy_state = "disabled"
+        payload.update(
+            {
+                "policy_state": policy_state,
+                "policy_available": bool(bundle.get("available")),
+                "policy_enabled_declared": policy_enabled_declared,
+                "policy_source_root": str(bundle.get("source_root") or ""),
+                "policy_warnings": list(bundle.get("warnings") or []),
+                "policy_files": bundle.get("files") if isinstance(bundle.get("files"), dict) else {},
+            }
+        )
+        return payload
 
     @app.get("/api/v1/research/beast/jobs")
     def research_beast_jobs(limit: int = Query(default=50, ge=1, le=500), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

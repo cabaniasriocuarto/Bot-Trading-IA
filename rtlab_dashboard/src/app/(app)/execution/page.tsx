@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { useSession } from "@/components/providers/session-provider";
 import { Badge } from "@/components/ui/badge";
@@ -69,6 +69,7 @@ export default function ExecutionPage() {
   const [botModeFilter, setBotModeFilter] = useState<"all" | "shadow" | "paper" | "testnet" | "live">("all");
   const [botStatusFilter, setBotStatusFilter] = useState<"all" | "active" | "paused" | "archived">("all");
   const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
+  const [selectedExecutionBotId, setSelectedExecutionBotId] = useState("");
   const [botBulkBusy, setBotBulkBusy] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState<boolean>(() => (typeof document === "undefined" ? true : document.visibilityState === "visible"));
   const pollInFlightRef = useRef(false);
@@ -343,6 +344,10 @@ export default function ExecutionPage() {
 
   const visibleBotIds = useMemo(() => botRowsFiltered.map((row) => String(row.id)), [botRowsFiltered]);
   const selectedBotIdsSet = useMemo(() => new Set(botSelectedIds), [botSelectedIds]);
+  const selectedExecutionBot = useMemo(
+    () => botInstances.find((row) => row.id === selectedExecutionBotId) || null,
+    [botInstances, selectedExecutionBotId],
+  );
 
   const statusVariant = botStatus
     ? botStatus.bot_status === "RUNNING"
@@ -504,6 +509,20 @@ export default function ExecutionPage() {
     setBotSelectedIds(ids);
   };
 
+  useEffect(() => {
+    if (botSelectedIds.length === 1) {
+      const only = String(botSelectedIds[0] || "");
+      if (only && only !== selectedExecutionBotId) setSelectedExecutionBotId(only);
+      return;
+    }
+    if (selectedExecutionBotId && botInstances.some((row) => row.id === selectedExecutionBotId)) return;
+    const preferred =
+      botInstances.find((row) => row.status === "active" && row.mode === runtimeModeKey) ||
+      botInstances.find((row) => row.status === "active") ||
+      botInstances[0];
+    if (preferred) setSelectedExecutionBotId(preferred.id);
+  }, [botInstances, botSelectedIds, runtimeModeKey, selectedExecutionBotId]);
+
   return (
     <div className="space-y-4">
       <Card>
@@ -658,6 +677,82 @@ export default function ExecutionPage() {
                 Cooldown critico activo por unos segundos para evitar ejecuciones repetidas del kill switch / safe mode.
               </p>
             ) : null}
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Operador seleccionado</p>
+                  <p className="text-[11px] text-slate-400">
+                    Este selector administra bots del registry desde Ejecucion. El runtime global se sigue controlando en el bloque superior.
+                  </p>
+                </div>
+                {selectedExecutionBot ? (
+                  <Badge variant={selectedExecutionBot.status === "active" ? "success" : selectedExecutionBot.status === "paused" ? "warn" : "neutral"}>
+                    {selectedExecutionBot.status}
+                  </Badge>
+                ) : (
+                  <Badge variant="neutral">sin bot</Badge>
+                )}
+              </div>
+              <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_repeat(5,minmax(0,1fr))]">
+                <div>
+                  <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Bot / operador</label>
+                  <Select value={selectedExecutionBotId} onChange={(e) => setSelectedExecutionBotId(e.target.value)} disabled={!botInstances.length}>
+                    <option value="">Seleccionar bot...</option>
+                    {botInstances.map((bot) => (
+                      <option key={`execution-bot-${bot.id}`} value={bot.id}>
+                        {`${bot.name} | ${bot.mode.toUpperCase()} | ${bot.status}`}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <Metric title="Modo bot" value={selectedExecutionBot ? selectedExecutionBot.mode.toUpperCase() : "--"} compact />
+                <Metric title="Engine" value={selectedExecutionBot?.engine || "--"} compact />
+                <Metric title="Pool" value={selectedExecutionBot ? String(selectedExecutionBot.metrics?.strategy_count ?? selectedExecutionBot.pool_strategy_ids.length) : "--"} compact />
+                <Metric title="Trades" value={selectedExecutionBot ? String(selectedExecutionBot.metrics?.trade_count ?? 0) : "--"} compact />
+                <Metric title="WinRate" value={selectedExecutionBot ? fmtPct(selectedExecutionBot.metrics?.winrate ?? 0) : "--"} compact />
+              </div>
+              {selectedExecutionBot ? (
+                <>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || botBulkBusy}
+                      onClick={() =>
+                        void patchSingleBot(
+                          selectedExecutionBot.id,
+                          { status: selectedExecutionBot.status === "active" ? "paused" : "active" },
+                          selectedExecutionBot.status === "active" ? "Pausar bot" : "Activar bot",
+                        )
+                      }
+                    >
+                      {selectedExecutionBot.status === "active" ? "Pausar bot" : "Activar bot"}
+                    </Button>
+                    <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "shadow" }, "Cambiar bot a SHADOW")}>
+                      Modo SHADOW
+                    </Button>
+                    <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "paper" }, "Cambiar bot a PAPER")}>
+                      Modo PAPER
+                    </Button>
+                    <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "testnet" }, "Cambiar bot a TESTNET")}>
+                      Modo TESTNET
+                    </Button>
+                    <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { status: "archived" }, "Archivar bot")}>
+                      Archivar bot
+                    </Button>
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-400">
+                    Pool actual: <strong>{selectedExecutionBot.pool_strategy_ids.length}</strong> estrategias
+                    {selectedExecutionBot.metrics?.last_run_at ? ` · último run ${new Date(selectedExecutionBot.metrics.last_run_at).toLocaleString()}` : ""}
+                    {selectedExecutionBot.metrics?.experience_by_source
+                      ? ` · shadow ${selectedExecutionBot.metrics.experience_by_source.shadow?.episode_count ?? 0} / backtest ${selectedExecutionBot.metrics.experience_by_source.backtest?.episode_count ?? 0}`
+                      : ""}
+                  </p>
+                </>
+              ) : (
+                <p className="mt-3 text-xs text-slate-400">No hay bots cargados todavía. Crealos o editalos desde Estrategias.</p>
+              )}
+            </div>
 
             <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -1063,12 +1158,22 @@ export default function ExecutionPage() {
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={latencySeries}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis yAxisId="left" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis yAxisId="right" orientation="right" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                  <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: "Tiempo / muestra", position: "insideBottom", offset: -5, fill: "#94a3b8", fontSize: 11 }} />
+                  <YAxis
+                    yAxisId="left"
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    label={{ value: "Latencia p95 (ms)", angle: -90, position: "insideLeft", fill: "#94a3b8", fontSize: 11 }}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    label={{ value: "Spread (bps)", angle: 90, position: "insideRight", fill: "#94a3b8", fontSize: 11 }}
+                  />
                   <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
-                  <Line yAxisId="left" type="monotone" dataKey="latency" stroke="#22d3ee" strokeWidth={2} dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="spread" stroke="#f97316" strokeWidth={2} dot={false} />
+                  <Legend wrapperStyle={{ color: "#cbd5e1", fontSize: 11 }} />
+                  <Line yAxisId="left" type="monotone" dataKey="latency" name="Latencia p95 (ms)" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="spread" name="Spread (bps)" stroke="#f97316" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

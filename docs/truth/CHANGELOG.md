@@ -1926,3 +1926,19 @@
 - `docs/_archive/UI_UX_RESEARCH_FIRST_FINAL.md`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/NEXT_STEPS.md`
+
+## 2026-03-07
+
+### UX bots + backtests + beast
+- `execution/page.tsx`: nuevo selector de bot en `Ejecucion` con KPIs basicos y acciones de modo/estado sin tocar LIVE.
+- `execution/page.tsx`: grafica `Traza de Latencia y Spread` ahora muestra nombres de ejes (`Tiempo / muestra`, `Latencia p95 (ms)`, `Spread (bps)`) y leyenda.
+- `strategies/page.tsx`: seleccion multiple de estrategias, creacion de bot desde seleccion, envio a bot existente, pool editable, borrado de bot y export JSON de conocimiento.
+- `strategies/page.tsx`: las sugerencias/recomendaciones del bot ya pueden agregarse a un bot destino.
+- `app.py` + `types.ts`: `/api/v1/research/beast/status` expone metadata de policy (`policy_state`, `policy_source_root`, `policy_warnings`).
+- `backtests/page.tsx`: `Research Batch / Beast` ahora distingue `policy faltante` vs `policy deshabilitada` y envia `data_mode=dataset` explicitamente.
+
+### Validacion
+- `eslint src/app/(app)/backtests/page.tsx src/app/(app)/execution/page.tsx src/app/(app)/strategies/page.tsx src/lib/client-api.ts src/lib/types.ts` -> PASS
+- `npm run build` en `rtlab_dashboard` -> PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+- Warnings no bloqueantes: Recharts en prerender

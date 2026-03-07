@@ -52,3 +52,13 @@ export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
   });
   return parseResponse<T>(res);
 }
+
+export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "DELETE",
+    credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return parseResponse<T>(res);
+}

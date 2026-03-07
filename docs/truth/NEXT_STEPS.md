@@ -708,3 +708,10 @@ Fecha: 2026-03-06
 2. SBOM firmado por release
 3. Dashboards externos para canary live (Prometheus/Grafana)
 4. Modo Bestia fase 2 (Celery + Redis + workers distribuidos + rate limit real por exchange)
+
+## Siguiente bloque tecnico (2026-03-07)
+1. Persistir relacion historica exacta `run_id/episode_id -> bot_id` para que `Backtests / Runs` y `Experience` no dependan del pool actual derivado.
+2. Validar preview/deploy de `feature/learning-experience-v1` y confirmar en web los fixes de bots/backtests/beast.
+3. Resolver el error funcional restante de `Research Batch / Backtests Masivos` cuando falta dataset real, dejando CTA directo y mensaje exacto por `market/symbol/timeframe`.
+4. Revisar simplificacion UX adicional en `Strategies` para evitar exceso de botones visibles por fila (mantener acciones masivas arriba y acciones finas en menu contextual).
+5. Evaluar export adicional de conocimiento por lote de bots/estrategias (no solo por bot individual) sin tocar LIVE.

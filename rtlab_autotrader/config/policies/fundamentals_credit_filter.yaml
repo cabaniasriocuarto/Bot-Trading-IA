@@ -1,0 +1,70 @@
+fundamentals_credit_filter:
+  enabled: true
+  fail_closed: true
+  apply_markets: ["equities"]
+  freshness_max_days: 120
+  data_source:
+    mode: "local_json"
+    # relativo al root del repo
+    local_snapshot_dir: "user_data/fundamentals"
+    # fallback automatico solo cuando source viene en unknown/auto/local_snapshot
+    auto_load_when_source_unknown: true
+    remote:
+      enabled: false
+      base_url_env: "FUNDAMENTALS_API_BASE_URL"
+      base_url: ""
+      endpoint_template: "/api/v1/fundamentals/{market}/{symbol}"
+      timeout_seconds: 8
+      auth_header_name: "Authorization"
+      auth_header_env: "FUNDAMENTALS_API_TOKEN"
+      auth_header_prefix: "Bearer "
+
+  scoring:
+    weights:
+      liquidity: 40
+      solvency: 30
+      margin_of_safety: 30
+    thresholds:
+      current_ratio_min: 2.0
+      working_capital_to_bonds_outstanding_min: 1.0
+      discount_pct: null
+
+  policy_by_instrument:
+    common:
+      live_allow_statuses: ["STRONG"]
+      paper_allow_statuses: ["STRONG", "BASIC"]
+      testnet_allow_statuses: ["STRONG", "BASIC"]
+      backtest_allow_statuses: ["STRONG", "BASIC"]
+    preferred:
+      treat_as_speculative_default: true
+      allow_auto_live: false
+      require_human_approval_for_promotion: true
+      expected_rarity_pct: 0.05
+      firm_requirements: []
+      live_allow_statuses: []
+      paper_allow_statuses: []
+      testnet_allow_statuses: []
+      backtest_allow_statuses: []
+    bond:
+      covenant_monitor:
+        enabled: true
+        states: ["COV_OK", "COV_BREACH_SOFT", "COV_BREACH_HARD", "COV_WAIVER", "COV_UNKNOWN"]
+        wc_covenant_example_pct: 1.50
+        on_soft_breach:
+          treat_as: "risk_flag"
+          block_new_entries: true
+          reduce_exposure_multiplier: 0.5
+          require_human_approval: true
+    fund_bond:
+      collateral_buffer_pct: 0.25
+      on_breach:
+        block_new_entries: true
+        reduce_exposure_multiplier: 0.25
+        require_human_approval: true
+
+  snapshots:
+    persist: true
+    storage: "sqlite"
+    include_raw_payload_hash: true
+    include_source_id: true
+    snapshot_ttl_hours: 24

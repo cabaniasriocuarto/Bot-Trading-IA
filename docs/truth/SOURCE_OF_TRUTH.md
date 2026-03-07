@@ -1834,3 +1834,44 @@ El proyecto tiene:
 3. Usar `Backtests -> Research Batch -> Ejecutar en Modo Bestia`
 4. Monitorear panel `Modo Bestia` (cola/jobs/budget/stop-all)
 
+
+## Evidencia UX + Bots + Backtests (2026-03-07)
+
+- `execution/page.tsx` ya permite seleccionar y administrar bots desde `Ejecucion`:
+  - selector de bot activo
+  - cambio de modo `SHADOW/PAPER/TESTNET`
+  - activar/pausar
+  - archivar
+  - KPIs basicos del bot seleccionado
+- La grafica `Traza de Latencia y Spread` quedo aclarada:
+  - eje X: `Tiempo / muestra`
+  - eje Y izquierdo: `Latencia p95 (ms)`
+  - eje Y derecho: `Spread (bps)`
+  - leyenda visible
+- `strategies/page.tsx` ya soporta operacion bot-centrica incremental:
+  - seleccion multiple de estrategias por checkbox
+  - `Seleccionar pagina` / `Seleccionar filtradas` / `Limpiar seleccion`
+  - `Crear bot con seleccion`
+  - enviar estrategias seleccionadas a un bot existente (`Agregar a bot`, `Reemplazar pool`)
+  - editar pool del bot con checkboxes
+  - borrar bot
+  - exportar conocimiento del bot a JSON
+  - agregar sugerencias/recomendaciones del bot a un bot destino
+- `backtests/page.tsx` ya no confunde `Modo Bestia bloqueado` con `policy faltante`:
+  - `GET /api/v1/research/beast/status` expone `policy_state`, `policy_source_root`, `policy_warnings`
+  - UI distingue `habilitado`, `bloqueado por policy` y `runtime sin policy`
+  - `mass-backtest` y `beast` envian `data_mode=dataset` de forma explicita
+- El hueco real que sigue abierto NO es de UI basica sino de trazabilidad historica fuerte:
+  - persistir relacion exacta `run_id/episode_id -> bot_id`
+  - hoy la vista bot-centrica usa pool/metadata actual derivada
+
+### Validacion local cerrada (2026-03-07)
+- `eslint` de `backtests/execution/strategies/client-api/types`: PASS
+- `next build` en `rtlab_dashboard`: PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py`: PASS
+- Warnings remanentes: Recharts en prerender (`width/height(-1)`), no bloqueantes
+
+### Nota de bibliografia para este bloque
+- Este bloque fue de wiring UI/API, estado runtime y mensajes operativos.
+- No introdujo formulas nuevas ni cambios teoricos de microestructura/aprendizaje.
+- Base conceptual vigente: bibliografia local del proyecto (31 PDF + 1 TXT).
