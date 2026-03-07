@@ -85,6 +85,11 @@ Fecha de actualizacion: 2026-03-06
   - agrega accion `Usar pool del bot`
   - explica diferencia entre batch y shadow/mock
   - muestra estado de scheduler/budget de Modo Bestia
+  - `Backtests / Runs` ya soporta vista centrica por bot:
+    - filtro `bot_id`
+    - chips `related_bot_ids/related_bots` por run
+    - historial por fuente (`backtest/shadow/paper/testnet`) usando `bots.metrics.experience_by_source`
+    - metricas acumuladas por bot en la misma pantalla
   - fix real:
     - `GET /api/v1/runs` ya no pide `limit=5000`
     - ahora usa `limit=2000`, alineado con el maximo permitido por API y corrige el `422` de la vista `Backtests / Runs`
@@ -106,6 +111,7 @@ Fecha de actualizacion: 2026-03-06
   - LIVE sigue `NO GO`
   - NO EVIDENCIA de RL offline serio como motor core
   - NO EVIDENCIA de OPE robusto (`IPS/DR/SWITCH`) integrado al promotion path
+  - la vista bot-centrica de runs hoy relaciona un run con un bot por las estrategias que estan en el pool actual del bot; NO EVIDENCIA de atribucion historica exacta `run_id -> bot_id` persistida en catalogo
   - parte de la bibliografia TXT local esta vacia/danada; cuando eso pasa se usa otra fuente local valida o fuente oficial del mismo nivel
   - preview Vercel de `feature/learning-experience-v1` sigue fallando; la validacion positiva de este bloque es local, no por preview web
 

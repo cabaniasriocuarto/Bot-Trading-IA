@@ -52,6 +52,7 @@ type RunsListFilters = {
   run_type: "" | "single" | "batch_child";
   status: string;
   strategy_id: string;
+  bot_id: string;
   symbol: string;
   timeframe: string;
   min_trades: string;
@@ -79,6 +80,7 @@ type MassTopMetric = "score" | "winrate" | "sharpe" | "calmar" | "expectancy" | 
 type MassLeaderboardTab = "score_neto" | "winrate";
 
 const chartColors = ["#22d3ee", "#f97316", "#facc15", "#4ade80", "#f472b6"];
+const BOT_EXPERIENCE_SOURCES = ["backtest", "shadow", "paper", "testnet"] as const;
 const CATALOG_PRO_VIEWPORT_PX = 560;
 const CATALOG_PRO_ROW_HEIGHT = 148;
 const CATALOG_PRO_OVERSCAN_ROWS = 8;
@@ -221,6 +223,34 @@ function parseFeePctLabel(feeModel: string | null | undefined): string {
   const num = Number(raw.split(":")[1] ?? "");
   if (!Number.isFinite(num)) return raw || "-";
   return `${fmtNum(num)} bps`;
+}
+
+function sourceLabel(source: (typeof BOT_EXPERIENCE_SOURCES)[number]): string {
+  switch (source) {
+    case "shadow":
+      return "Shadow";
+    case "paper":
+      return "Paper";
+    case "testnet":
+      return "Testnet";
+    case "backtest":
+    default:
+      return "Backtest";
+  }
+}
+
+function sourceVariant(source: (typeof BOT_EXPERIENCE_SOURCES)[number]): "success" | "warn" | "info" | "neutral" {
+  switch (source) {
+    case "shadow":
+      return "success";
+    case "testnet":
+      return "info";
+    case "paper":
+      return "warn";
+    case "backtest":
+    default:
+      return "neutral";
+  }
 }
 
 function massSummaryNum(row: MassBacktestResultRow, key: "trade_count_oos" | "winrate_oos" | "sharpe_oos" | "calmar_oos" | "expectancy_net_usd" | "max_dd_oos_pct" | "costs_ratio"): number {
@@ -392,6 +422,7 @@ export default function BacktestsPage() {
     run_type: "",
     status: "",
     strategy_id: "",
+    bot_id: "",
     symbol: "",
     timeframe: "",
     min_trades: "",
@@ -485,6 +516,7 @@ export default function BacktestsPage() {
       if (catalogFilters.run_type) params.set("run_type", catalogFilters.run_type);
       if (catalogFilters.status) params.set("status", catalogFilters.status);
       if (catalogFilters.strategy_id) params.set("strategy_id", catalogFilters.strategy_id);
+      if (catalogFilters.bot_id) params.set("bot_id", catalogFilters.bot_id);
       if (catalogFilters.symbol) params.set("symbol", catalogFilters.symbol);
       if (catalogFilters.timeframe) params.set("timeframe", catalogFilters.timeframe);
       if (catalogFilters.min_trades.trim()) params.set("min_trades", catalogFilters.min_trades.trim());
@@ -683,6 +715,25 @@ export default function BacktestsPage() {
     () => bots.find((row) => row.id === selectedBotId) || null,
     [bots, selectedBotId],
   );
+  const selectedCatalogBot = useMemo(
+    () => bots.find((row) => row.id === catalogFilters.bot_id) || null,
+    [bots, catalogFilters.bot_id],
+  );
+  const selectedCatalogBotExperience = useMemo(() => {
+    if (!selectedCatalogBot?.metrics?.experience_by_source) return [];
+    return BOT_EXPERIENCE_SOURCES.map((source) => ({
+      source,
+      metrics: selectedCatalogBot.metrics?.experience_by_source?.[source],
+    })).filter((row) => row.metrics);
+  }, [selectedCatalogBot]);
+  const selectedCatalogBotPoolNames = useMemo(() => {
+    if (!selectedCatalogBot) return [];
+    const byId = new Map(strategies.map((row) => [row.id, row.name]));
+    return (selectedCatalogBot.pool_strategy_ids || []).map((id) => ({
+      id,
+      name: byId.get(id) || id,
+    }));
+  }, [selectedCatalogBot, strategies]);
 
   useEffect(() => {
     if (selectedBotId || !bots.length) return;
@@ -1441,6 +1492,7 @@ export default function BacktestsPage() {
   });
   const batchChildrenCount = catalogRuns.filter((r) => r.run_type === "batch_child").length;
   const quickRunsCount = catalogRuns.filter((r) => r.run_type !== "batch_child").length;
+  const selectedCatalogBotModeMetrics = selectedCatalogBot?.metrics?.by_mode?.[selectedCatalogBot.mode];
   const catalogProRows = catalogRuns.slice(0, Number(catalogProLimit));
   const catalogProRowsPerViewport = Math.max(1, Math.ceil(CATALOG_PRO_VIEWPORT_PX / CATALOG_PRO_ROW_HEIGHT));
   const catalogProStartIndex = Math.max(0, Math.floor(catalogProScrollTop / CATALOG_PRO_ROW_HEIGHT) - CATALOG_PRO_OVERSCAN_ROWS);
@@ -1751,7 +1803,7 @@ export default function BacktestsPage() {
         <CardContent className="space-y-4">
           {catalogError ? <p className="text-sm text-rose-300">{catalogError}</p> : null}
 
-          <div className="grid gap-3 xl:grid-cols-6">
+          <div className="grid gap-3 xl:grid-cols-7">
             <div className="space-y-1 xl:col-span-2">
               <label className="text-xs uppercase tracking-wide text-slate-400">Buscar</label>
               <Input
@@ -1789,6 +1841,17 @@ export default function BacktestsPage() {
                 {strategies.map((row) => (
                   <option key={`cat-filter-st-${row.id}`} value={row.id}>
                     {row.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs uppercase tracking-wide text-slate-400">Bot</label>
+              <Select value={catalogFilters.bot_id} onChange={(e) => setCatalogFilters((p) => ({ ...p, bot_id: e.target.value }))}>
+                <option value="">Todos los bots</option>
+                {bots.map((row) => (
+                  <option key={`cat-filter-bot-${row.id}`} value={row.id}>
+                    {row.name} · {row.id}
                   </option>
                 ))}
               </Select>
@@ -1858,6 +1921,7 @@ export default function BacktestsPage() {
                     run_type: "",
                     status: "",
                     strategy_id: "",
+                    bot_id: "",
                     symbol: "",
                     timeframe: "",
                     min_trades: "",
@@ -1880,6 +1944,11 @@ export default function BacktestsPage() {
                 Total filtrados: <span className="font-semibold">{catalogRunCount}</span>
               </p>
               <p className="text-xs text-slate-400">Quick Backtest: {quickRunsCount} | Child de Research Batch: {batchChildrenCount}</p>
+              {selectedCatalogBot ? (
+                <p className="text-xs text-slate-400">
+                  Bot filtrado: {selectedCatalogBot.name} ({selectedCatalogBot.id}) · pool actual: {selectedCatalogBot.pool_strategy_ids.length} estrategias
+                </p>
+              ) : null}
               <p className="text-xs text-slate-400">
                 Mostrando {catalogRuns.length ? catalogPageStart + 1 : 0}-{catalogPageEnd} de {catalogRuns.length} runs cargados en esta vista.
               </p>
@@ -1929,6 +1998,84 @@ export default function BacktestsPage() {
               </div>
             </div>
           </div>
+
+          {selectedCatalogBot ? (
+            <div className="grid gap-3 xl:grid-cols-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Vista centrica por bot</p>
+                  <Badge variant="info">{selectedCatalogBot.id}</Badge>
+                  <Badge variant={selectedCatalogBot.status === "active" ? "success" : selectedCatalogBot.status === "paused" ? "warn" : "danger"}>
+                    {selectedCatalogBot.status}
+                  </Badge>
+                </div>
+                <p className="mt-2 text-sm font-semibold text-slate-100">{selectedCatalogBot.name}</p>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                  <p>Engine: <span className="text-slate-100">{selectedCatalogBot.engine}</span></p>
+                  <p>Modo: <span className="text-slate-100">{selectedCatalogBot.mode}</span></p>
+                  <p>Pool actual: <span className="text-slate-100">{selectedCatalogBot.pool_strategy_ids.length}</span></p>
+                  <p>Runs filtrados: <span className="text-slate-100">{catalogRunCount}</span></p>
+                  <p>Trades acumulados: <span className="text-slate-100">{selectedCatalogBot.metrics?.trade_count ?? 0}</span></p>
+                  <p>WinRate: <span className="text-slate-100">{fmtPct(selectedCatalogBot.metrics?.winrate ?? 0)}</span></p>
+                  <p>PnL neto: <span className="text-slate-100">{fmtNum(selectedCatalogBot.metrics?.net_pnl ?? 0)}</span></p>
+                  <p>Sharpe prom.: <span className="text-slate-100">{fmtNum(selectedCatalogBot.metrics?.avg_sharpe ?? 0)}</span></p>
+                  <p>Expectancy: <span className="text-slate-100">{fmtNum(selectedCatalogBot.metrics?.expectancy_value ?? 0)} {selectedCatalogBot.metrics?.expectancy_unit ?? ""}</span></p>
+                  <p>Ultimo run: <span className="text-slate-100">{compactDate(selectedCatalogBot.metrics?.last_run_at ?? "")}</span></p>
+                </div>
+                <p className="mt-3 text-xs text-slate-400">
+                  Esta vista relaciona runs con el bot por las estrategias que hoy estan en su pool. No reescribe historial ni activa live.
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Historial por fuente</p>
+                <div className="mt-3 space-y-2">
+                  {selectedCatalogBotExperience.map(({ source, metrics }) => (
+                    <div key={`bot-source-${selectedCatalogBot.id}-${source}`} className="rounded border border-slate-800 bg-slate-950/40 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant={sourceVariant(source)}>{sourceLabel(source)}</Badge>
+                        <span className="text-[11px] text-slate-500">{compactDate(metrics?.last_end_ts ?? "")}</span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                        <p>Episodios: <span className="text-slate-100">{metrics?.episode_count ?? 0}</span></p>
+                        <p>Runs: <span className="text-slate-100">{metrics?.run_count ?? 0}</span></p>
+                        <p>Trades: <span className="text-slate-100">{metrics?.trade_count ?? 0}</span></p>
+                        <p>Decisiones: <span className="text-slate-100">{metrics?.decision_count ?? 0}</span></p>
+                        <p>Enter: <span className="text-slate-100">{metrics?.enter_count ?? 0}</span></p>
+                        <p>Skip: <span className="text-slate-100">{metrics?.skip_count ?? 0}</span></p>
+                        <p>Hold: <span className="text-slate-100">{metrics?.hold_count ?? 0}</span></p>
+                        <p>Peso prom.: <span className="text-slate-100">{fmtNum(metrics?.avg_source_weight ?? 0)}</span></p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Pool y performance activa</p>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                  <p>Run count ({selectedCatalogBot.mode}): <span className="text-slate-100">{selectedCatalogBotModeMetrics?.run_count ?? 0}</span></p>
+                  <p>Trades ({selectedCatalogBot.mode}): <span className="text-slate-100">{selectedCatalogBotModeMetrics?.trade_count ?? 0}</span></p>
+                  <p>WinRate ({selectedCatalogBot.mode}): <span className="text-slate-100">{fmtPct(selectedCatalogBotModeMetrics?.winrate ?? 0)}</span></p>
+                  <p>PnL neto ({selectedCatalogBot.mode}): <span className="text-slate-100">{fmtNum(selectedCatalogBotModeMetrics?.net_pnl ?? 0)}</span></p>
+                  <p>Sharpe ({selectedCatalogBot.mode}): <span className="text-slate-100">{fmtNum(selectedCatalogBotModeMetrics?.avg_sharpe ?? 0)}</span></p>
+                  <p>Expectancy ({selectedCatalogBot.mode}): <span className="text-slate-100">{fmtNum(selectedCatalogBotModeMetrics?.expectancy_value ?? 0)}</span></p>
+                  <p>Recs pendientes: <span className="text-slate-100">{selectedCatalogBot.metrics?.recommendations_pending ?? 0}</span></p>
+                  <p>Kills 24h: <span className="text-slate-100">{selectedCatalogBot.metrics?.kills_24h ?? 0}</span></p>
+                </div>
+                <div className="mt-3 flex max-h-40 flex-wrap gap-1 overflow-y-auto">
+                  {selectedCatalogBotPoolNames.map((row) => (
+                    <Badge key={`catalog-bot-pool-${row.id}`} variant="neutral">
+                      {row.name}
+                    </Badge>
+                  ))}
+                  {!selectedCatalogBotPoolNames.length ? <p className="text-xs text-slate-500">Sin estrategias en el pool actual.</p> : null}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3 text-xs text-slate-400">
+              Elegi un bot en el filtro de Runs para ver historial por fuente, metricas acumuladas y chips de bot por run.
+            </div>
+          )}
 
           <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/40">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2 text-xs">
@@ -1999,6 +2146,7 @@ export default function BacktestsPage() {
                       Estrategia{catalogSortLabel("strategy")}
                     </button>
                   </TH>
+                  <TH>Bots</TH>
                   <TH>Mercado / TF</TH>
                   <TH>Rango</TH>
                   <TH>Dataset</TH>
@@ -2073,6 +2221,27 @@ export default function BacktestsPage() {
                       <TD className="align-top">
                         <p className="text-xs text-slate-200">{row.strategy_name}</p>
                         <p className="text-xs text-slate-400">{row.strategy_id} · v{row.strategy_version}</p>
+                      </TD>
+                      <TD className="align-top">
+                        <div className="flex max-w-[220px] flex-wrap gap-1">
+                          {(row.related_bots || []).length ? (
+                            (row.related_bots || []).map((bot) => (
+                              <Badge
+                                key={`${row.run_id}-bot-${bot.id}`}
+                                variant={catalogFilters.bot_id && bot.id === catalogFilters.bot_id ? "info" : bot.status === "active" ? "success" : bot.status === "paused" ? "warn" : "danger"}
+                              >
+                                {bot.name}
+                              </Badge>
+                            ))
+                          ) : (
+                            <span className="text-xs text-slate-500">Sin bot vinculado</span>
+                          )}
+                        </div>
+                        {(row.related_bots || []).length ? (
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            {(row.related_bots || []).map((bot) => bot.id).join(", ")}
+                          </p>
+                        ) : null}
                       </TD>
                       <TD className="text-xs">
                         {symbols}
@@ -2157,7 +2326,7 @@ export default function BacktestsPage() {
                 })}
                 {!catalogPageRows.length ? (
                   <TR>
-                    <TD colSpan={19} className="py-6">
+                    <TD colSpan={20} className="py-6">
                       <div className="mx-auto max-w-2xl rounded-lg border border-slate-800 bg-slate-900/60 p-4 text-left">
                         <p className="text-sm font-semibold text-slate-100">Todavia no hay datos para esta vista</p>
                         <p className="mt-1 text-sm text-slate-400">
@@ -2179,6 +2348,7 @@ export default function BacktestsPage() {
                                 run_type: "",
                                 status: "",
                                 strategy_id: "",
+                                bot_id: "",
                                 symbol: "",
                                 timeframe: "",
                                 min_trades: "",

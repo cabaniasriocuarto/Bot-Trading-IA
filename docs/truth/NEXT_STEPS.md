@@ -32,10 +32,9 @@ Fecha: 2026-03-06
 2. Revalidar `Modo Bestia` publicado:
    - la policy actual esta en `enabled: true`
    - si la UI sigue mostrando "deshabilitado", revisar snapshot viejo de deploy o API stale, no el YAML del repo
-3. Agregar vista bot-centrica en `Backtests / Runs`:
-   - filtro por `bot_id`
-   - historial por fuente (`backtest/shadow/paper/testnet`)
-   - metricas acumuladas por bot
+3. Persistir atribucion historica exacta `run_id -> bot_id` / `episode_id -> bot_id`:
+   - hoy la vista bot-centrica de runs usa el pool actual del bot
+   - falta guardar la relacion historica explicita para no depender de cambios futuros del pool
 4. Agregar evidencia visual/operativa de la pestana de aprendizaje en `docs/audit/`.
 5. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
 

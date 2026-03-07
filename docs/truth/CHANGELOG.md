@@ -2,6 +2,23 @@
 
 ## 2026-03-06
 
+### Vista bot-centrica en Backtests / Runs
+- Backend:
+  - `GET /api/v1/runs` acepta `bot_id`;
+  - cada run devuelve `related_bot_ids` y `related_bots` derivados del pool actual de estrategias.
+- Frontend `Backtests / Runs`:
+  - agrega filtro por bot;
+  - muestra chips de bots por run;
+  - agrega panel centrico por bot con:
+    - metricas acumuladas,
+    - historial por fuente,
+    - performance por modo,
+    - pool actual.
+- Tests:
+  - smoke de `runs` valida metadatos `related_bot_ids/related_bots` y filtro `bot_id`.
+- Limite actual conocido:
+  - la atribucion run -> bot sigue siendo por pool actual del bot; todavia no se persiste relacion historica exacta en catalogo.
+
 ### Hotfix shadow/beast + evidencia local controlada
 - `ShadowRunConfig`:
   - corrige default mutable de `costs` con `default_factory(...)` para no romper import en Python 3.13;

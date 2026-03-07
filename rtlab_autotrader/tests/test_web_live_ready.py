@@ -3326,17 +3326,34 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
+  bots_res = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0", headers=headers)
+  assert bots_res.status_code == 200, bots_res.text
+  bot_items = bots_res.json()["items"]
+  assert bot_items
+  first_bot_id = str(bot_items[0]["id"])
+
   runs_list = client.get("/api/v1/runs", headers=headers)
   assert runs_list.status_code == 200, runs_list.text
   items = runs_list.json()["items"]
   assert items
   first = items[0]
   assert str(first["run_id"]).startswith("BT-")
+  assert "related_bot_ids" in first
+  assert "related_bots" in first
+
+  bot_runs = client.get(f"/api/v1/runs?bot_id={first_bot_id}", headers=headers)
+  assert bot_runs.status_code == 200, bot_runs.text
+  bot_runs_payload = bot_runs.json()
+  assert isinstance(bot_runs_payload["items"], list)
+  assert bot_runs_payload["count"] >= len(bot_runs_payload["items"])
+  for row in bot_runs_payload["items"]:
+    assert first_bot_id in row.get("related_bot_ids", [])
 
   detail = client.get(f"/api/v1/runs/{first['run_id']}", headers=headers)
   assert detail.status_code == 200, detail.text
   detail_payload = detail.json()
   assert detail_payload["run_id"] == first["run_id"]
+  assert "related_bot_ids" in detail_payload
   assert "title_structured" in detail_payload
   assert "fee_snapshot_id" in detail_payload
   assert "funding_snapshot_id" in detail_payload

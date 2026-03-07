@@ -854,6 +854,14 @@ export interface CatalogRunKpis {
   funding_total?: number;
 }
 
+export interface BacktestCatalogRunRelatedBot {
+  id: string;
+  name: string;
+  engine: string;
+  mode: "shadow" | "paper" | "testnet" | "live" | string;
+  status: "active" | "paused" | "archived" | string;
+}
+
 export interface BacktestCatalogRun {
   run_id: string;
   legacy_json_id?: string | null;
@@ -908,6 +916,8 @@ export interface BacktestCatalogRun {
   updated_at: string;
   composite_score?: number;
   rank?: number;
+  related_bot_ids?: string[];
+  related_bots?: BacktestCatalogRunRelatedBot[];
 }
 
 export interface BacktestCatalogRunsResponse {

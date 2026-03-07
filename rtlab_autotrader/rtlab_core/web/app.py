@@ -3182,6 +3182,59 @@ def risk_hooks(context):
         )
         self.save_bots([default_row])
 
+    def _index_bots_by_strategy(
+        self,
+        *,
+        bots: list[dict[str, Any]] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        rows = bots if isinstance(bots, list) else self.load_bots()
+        out: dict[str, list[dict[str, Any]]] = {}
+        for bot in rows:
+            bot_id = str(bot.get("id") or "").strip()
+            if not bot_id:
+                continue
+            ref = {
+                "id": bot_id,
+                "name": str(bot.get("name") or bot_id),
+                "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
+                "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
+                "status": self._normalize_bot_status(str(bot.get("status") or "")),
+            }
+            for strategy_id in bot.get("pool_strategy_ids") or []:
+                sid = str(strategy_id or "").strip()
+                if not sid:
+                    continue
+                refs = out.setdefault(sid, [])
+                refs.append(ref)
+        for strategy_id, refs in out.items():
+            refs.sort(key=lambda row: (str(row.get("name") or ""), str(row.get("id") or "")))
+            out[strategy_id] = refs
+        return out
+
+    def annotate_runs_with_related_bots(
+        self,
+        runs: list[dict[str, Any]],
+        *,
+        bot_id: str | None = None,
+        bots: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        requested_bot_id = str(bot_id or "").strip()
+        bots_by_strategy = self._index_bots_by_strategy(bots=bots)
+        out: list[dict[str, Any]] = []
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            strategy_id = str(run.get("strategy_id") or "").strip()
+            related_bots = [dict(row) for row in (bots_by_strategy.get(strategy_id) or [])]
+            related_bot_ids = [str(row.get("id") or "") for row in related_bots if str(row.get("id") or "")]
+            if requested_bot_id and requested_bot_id not in related_bot_ids:
+                continue
+            payload = dict(run)
+            payload["related_bot_ids"] = related_bot_ids
+            payload["related_bots"] = related_bots
+            out.append(payload)
+        return out
+
     @staticmethod
     def _aggregate_bot_metric_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         trades_total = 0
@@ -10617,6 +10670,7 @@ def create_app() -> FastAPI:
         run_type: str | None = Query(default=None),
         status: str | None = Query(default=None),
         strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
         symbol: str | None = Query(default=None),
         timeframe: str | None = Query(default=None),
         mode: str | None = Query(default=None),
@@ -10632,7 +10686,7 @@ def create_app() -> FastAPI:
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
         flags_any = [x.strip().upper() for x in str(flags or "").split(",") if x.strip()]
-        items = store.backtest_catalog.query_runs(
+        raw_items = store.backtest_catalog.query_runs(
             q=q,
             run_type=run_type,
             status=status,
@@ -10648,13 +10702,18 @@ def create_app() -> FastAPI:
             flags_any=flags_any,
             sort_by=sort_by,
             sort_dir=sort_dir,
-            limit=limit,
+            limit=max(int(limit), 50000) if str(bot_id or "").strip() else limit,
         )
-        return {"items": items, "count": len(items)}
+        items = store.annotate_runs_with_related_bots(raw_items, bot_id=bot_id)
+        limited_items = items[: max(1, int(limit))]
+        return {"items": limited_items, "count": len(items)}
 
     @app.get("/api/v1/runs/{run_id}")
     def runs_detail(run_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         row = _catalog_run_or_404(run_id)
+        annotated_rows = store.annotate_runs_with_related_bots([row])
+        if annotated_rows:
+            row = annotated_rows[0]
         row["artifacts_index"] = store.backtest_catalog.get_artifacts_for_run(str(row.get("run_id") or ""))
         legacy_id = str(row.get("legacy_json_id") or "")
         if legacy_id:
