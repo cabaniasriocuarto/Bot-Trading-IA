@@ -4046,6 +4046,55 @@ def test_log_bot_refs_table_is_populated_and_used_in_overview(tmp_path: Path, mo
   assert "MARK_MULTI_BOT_REFS" in msgs2
 
 
+def test_bots_overview_prefers_exact_bot_experience_over_current_pool(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  bots_payload = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0", headers=headers)
+  assert bots_payload.status_code == 200, bots_payload.text
+  bot_id = str((bots_payload.json().get("items") or [])[0]["id"])
+
+  strategies = client.get("/api/v1/strategies", headers=headers).json()
+  assert strategies
+  strategy_id = str(strategies[0]["id"])
+  other_strategy_ids = [str(row["id"]) for row in strategies[1:] if str(row.get("id") or "").strip()]
+
+  run_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": strategy_id,
+      "bot_id": bot_id,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "validation_mode": "walk-forward",
+    },
+  )
+  assert run_res.status_code == 200, run_res.text
+
+  patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}",
+    headers=headers,
+    json={"pool_strategy_ids": other_strategy_ids[:1]},
+  )
+  assert patch_res.status_code == 200, patch_res.text
+
+  overview_res = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0", headers=headers)
+  assert overview_res.status_code == 200, overview_res.text
+  row = next(item for item in (overview_res.json().get("items") or []) if str(item.get("id") or "") == bot_id)
+  metrics = row.get("metrics") or {}
+  exp = (metrics.get("experience_by_source") or {}).get("backtest") or {}
+  assert metrics.get("experience_history_scope") == "exact_bot_history"
+  assert int(exp.get("episode_count") or 0) >= 1
+  assert int(exp.get("run_count") or 0) >= 1
+
+
 def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

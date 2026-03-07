@@ -3451,6 +3451,83 @@ def risk_hooks(context):
                 )
         return out
 
+    def _aggregate_exact_bot_experience_by_source(
+        self,
+        *,
+        bot_ids: list[str],
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        valid_sources = ("backtest", "shadow", "paper", "testnet")
+        out: dict[str, dict[str, dict[str, Any]]] = {
+            bot_id: {source: self._empty_experience_source_metrics() for source in valid_sources}
+            for bot_id in bot_ids
+            if str(bot_id).strip()
+        }
+        if not out:
+            return out
+        episodes = self.registry.list_experience_episodes(bot_ids=list(out.keys()), sources=list(valid_sources))
+        if not episodes:
+            return out
+        episode_ids = [str(row.get("id") or "") for row in episodes if str(row.get("id") or "")]
+        events = self.registry.list_experience_events(episode_ids=episode_ids) if episode_ids else []
+        episode_meta: dict[str, tuple[str, str]] = {}
+        source_weight_sums: dict[tuple[str, str], float] = {}
+        for episode in episodes:
+            bot_id = str(episode.get("bot_id") or "").strip()
+            source = str(episode.get("source") or "backtest").strip().lower()
+            episode_id = str(episode.get("id") or "")
+            if bot_id not in out or source not in out[bot_id] or not episode_id:
+                continue
+            summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+            metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+            source_row = out[bot_id][source]
+            source_row["episode_count"] += 1
+            source_row["run_count"] += 1
+            source_row["trade_count"] += int(
+                summary.get("trade_count")
+                or metrics.get("trade_count")
+                or metrics.get("roundtrips")
+                or 0
+            )
+            end_ts = str(episode.get("end_ts") or episode.get("created_at") or "").strip() or None
+            if end_ts and (
+                source_row["last_end_ts"] is None
+                or str(end_ts) > str(source_row["last_end_ts"] or "")
+            ):
+                source_row["last_end_ts"] = end_ts
+            source_weight_sums[(bot_id, source)] = source_weight_sums.get((bot_id, source), 0.0) + float(
+                episode.get("source_weight") or 0.0
+            )
+            episode_meta[episode_id] = (bot_id, source)
+        for event in events:
+            episode_id = str(event.get("episode_id") or "")
+            mapped = episode_meta.get(episode_id)
+            if not mapped:
+                continue
+            bot_id, source = mapped
+            source_row = out[bot_id][source]
+            action = str(event.get("action") or "").strip().lower()
+            source_row["decision_count"] += 1
+            if action == "enter":
+                source_row["enter_count"] += 1
+            elif action == "exit":
+                source_row["exit_count"] += 1
+            elif action == "hold":
+                source_row["hold_count"] += 1
+            elif action == "skip":
+                source_row["skip_count"] += 1
+            elif action == "reduce":
+                source_row["reduce_count"] += 1
+            elif action == "add":
+                source_row["add_count"] += 1
+        for bot_id, per_source in out.items():
+            for source, source_row in per_source.items():
+                episode_count = int(source_row.get("episode_count") or 0)
+                source_row["avg_source_weight"] = round(
+                    (source_weight_sums.get((bot_id, source), 0.0) / episode_count) if episode_count else 0.0,
+                    4,
+                )
+        return out
+
     def get_bots_overview(
         self,
         bot_ids: list[str] | None = None,
@@ -3552,6 +3629,12 @@ def risk_hooks(context):
         t_stage = time.perf_counter()
         experience_by_strategy = self._aggregate_strategy_experience_by_source(strategy_ids=sorted(strategy_ids_in_pool))
         perf_stages["stage_experience_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+
+        t_stage = time.perf_counter()
+        exact_experience_by_bot = self._aggregate_exact_bot_experience_by_source(
+            bot_ids=[str(bot.get("id") or "") for bot in bots_rows]
+        )
+        perf_stages["stage_bot_experience_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
 
         bot_ids_ordered = [str(bot.get("id") or "") for bot in bots_rows if str(bot.get("id") or "")]
         bot_ids_set = set(bot_ids_ordered)
@@ -3765,6 +3848,16 @@ def risk_hooks(context):
                     (float(target.get("avg_source_weight") or 0.0) / episode_count) if episode_count else 0.0,
                     4,
                 )
+            exact_experience_by_source = exact_experience_by_bot.get(bot_id) or {}
+            has_exact_experience = any(
+                int((row or {}).get("episode_count") or 0) > 0
+                for row in exact_experience_by_source.values()
+            )
+            if has_exact_experience:
+                experience_by_source = {
+                    source: dict(exact_experience_by_source.get(source) or self._empty_experience_source_metrics())
+                    for source in ("backtest", "shadow", "paper", "testnet")
+                }
             active = by_mode_metrics.get(
                 mode,
                 {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
@@ -3814,6 +3907,7 @@ def risk_hooks(context):
                 "last_kill_at": last_kill_by_bot.get(bot_id),
                 "by_mode": by_mode_metrics,
                 "experience_by_source": experience_by_source,
+                "experience_history_scope": "exact_bot_history" if has_exact_experience else "pool_approximation",
                 "last_run_at": last_run_at,
                 "recommendations_pending": rec_pending,
                 "recommendations_approved": rec_approved,

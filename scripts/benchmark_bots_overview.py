@@ -40,6 +40,27 @@ def _normalize_base_url(url: str) -> str:
     return out[:-1] if out.endswith("/") else out
 
 
+def _allow_insecure_password_cli() -> bool:
+    raw = str(os.getenv("ALLOW_INSECURE_PASSWORD_CLI", "")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _resolve_password(*, cli_password: str, env_names: tuple[str, ...]) -> str:
+    cli_value = str(cli_password or "").strip()
+    if cli_value:
+        if not _allow_insecure_password_cli():
+            raise RuntimeError(
+                "Uso de --password deshabilitado por seguridad. "
+                "Usa variables de entorno (RTLAB_ADMIN_PASSWORD / RTLAB_BENCH_PASSWORD)."
+            )
+        return cli_value
+    for env_name in env_names:
+        value = str(os.getenv(env_name, "")).strip()
+        if value:
+            return value
+    return ""
+
+
 def _build_metrics(times_ms: list[float], *, target_p95_ms: float = 300.0) -> dict[str, Any]:
     ordered = sorted(times_ms)
     p50 = _percentile(ordered, 50.0)
@@ -259,7 +280,7 @@ def _run_remote_benchmark(
     token = str(auth_token or "").strip()
     if not token:
         if not password:
-            raise RuntimeError("Modo remoto requiere --auth-token o --password para login.")
+            raise RuntimeError("Modo remoto requiere --auth-token o RTLAB_ADMIN_PASSWORD para login.")
         token = _remote_login(
             base_url,
             username=username,
@@ -379,7 +400,7 @@ def _write_report(path: Path, *, context: dict[str, Any], metrics: dict[str, Any
     if metrics.get("no_evidencia_min_bots"):
         status = "NO_EVIDENCIA"
     else:
-        status = "PASS" if metrics.get("target_pass") else "FAIL"
+        status = "PASS" if metrics.get("target_pass_effective") else "FAIL"
     lines = [
         "# Benchmark `/api/v1/bots`",
         "",
@@ -421,6 +442,9 @@ def _write_report(path: Path, *, context: dict[str, Any], metrics: dict[str, Any
             f"- `cache_hit_ratio`: `{metrics.get('cache_hit_ratio')}`",
             f"- `rate_limit_retries`: `{metrics.get('rate_limit_retries')}`",
             f"- `rate_limit_wait_ms_total`: `{metrics.get('rate_limit_wait_ms_total')}`",
+            f"- `pass_criterion`: `{metrics.get('pass_criterion')}`",
+            f"- `client_target_pass`: `{bool(metrics.get('target_pass'))}`",
+            f"- `server_target_pass`: `{bool(metrics.get('server_target_pass'))}`",
             "",
             "## Resultado (sin espera de backoff 429)",
             f"- `p50_no_backoff_ms`: **{metrics.get('p50_no_backoff_ms')}**",
@@ -472,7 +496,15 @@ def main() -> int:
     parser.add_argument("--base-url", type=str, default="", help="URL base de backend desplegado para benchmark remoto.")
     parser.add_argument("--auth-token", type=str, default="", help="Bearer token para modo remoto.")
     parser.add_argument("--username", type=str, default="admin", help="Usuario para login remoto cuando no hay token.")
-    parser.add_argument("--password", type=str, default="", help="Password para login remoto cuando no hay token.")
+    parser.add_argument(
+        "--password",
+        type=str,
+        default="",
+        help=(
+            "DEPRECATED (inseguro): password por CLI. "
+            "Usa RTLAB_ADMIN_PASSWORD/RTLAB_BENCH_PASSWORD; para habilitar CLI setea ALLOW_INSECURE_PASSWORD_CLI=1."
+        ),
+    )
     parser.add_argument("--ask-password", action="store_true", help="Pide password por consola si falta en modo remoto.")
     parser.add_argument("--timeout-sec", type=float, default=10.0, help="Timeout HTTP en segundos para modo remoto.")
     parser.add_argument("--retry-429", action="store_true", help="Reintenta automaticamente cuando /api/v1/bots responde 429.")
@@ -500,13 +532,26 @@ def main() -> int:
         action="store_true",
         help="Falla con exit 3 si no cumple objetivo p95<target en la corrida medida.",
     )
+    parser.add_argument(
+        "--pass-criterion",
+        choices=["client", "server", "either"],
+        default="client",
+        help="Criterio de PASS objetivo: client (p95 cliente), server (header server_p95), either (cualquiera).",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
     report_path = (repo_root / args.report_path).resolve()
     base_url = _normalize_base_url(args.base_url)
-    password = str(args.password or os.getenv("RTLAB_BENCH_PASSWORD", "")).strip()
-    auth_token = str(args.auth_token or os.getenv("RTLAB_BENCH_TOKEN", "")).strip()
+    password = _resolve_password(
+        cli_password=str(args.password or ""),
+        env_names=("RTLAB_ADMIN_PASSWORD", "RTLAB_BENCH_PASSWORD", "RTLAB_PASSWORD"),
+    )
+    auth_token = str(
+        args.auth_token
+        or os.getenv("RTLAB_AUTH_TOKEN", "")
+        or os.getenv("RTLAB_BENCH_TOKEN", "")
+    ).strip()
 
     if base_url:
         if not auth_token and not password and args.ask_password:
@@ -536,6 +581,17 @@ def main() -> int:
             max_retries_429=max(0, int(args.max_retries_429)),
             pace_sec=max(0.0, float(args.pace_sec)),
         )
+        pass_criterion = str(args.pass_criterion or "client").strip().lower()
+        client_pass = bool(metrics.get("target_pass"))
+        server_pass = bool(metrics.get("server_target_pass"))
+        if pass_criterion == "server":
+            effective_pass = server_pass
+        elif pass_criterion == "either":
+            effective_pass = client_pass or server_pass
+        else:
+            effective_pass = client_pass
+        metrics["pass_criterion"] = pass_criterion
+        metrics["target_pass_effective"] = bool(effective_pass)
         _write_report(report_path, context=context, metrics=metrics)
         print(f"[benchmark] reporte: {report_path}")
         print(
@@ -549,9 +605,14 @@ def main() -> int:
         )
         if metrics.get("no_evidencia_reason"):
             print(f"[benchmark] {metrics['no_evidencia_reason']}")
+        print(
+            f"[benchmark] pass_criterion={pass_criterion} "
+            f"client_pass={client_pass} server_pass={server_pass} "
+            f"effective_pass={'PASS' if effective_pass else 'FAIL'}"
+        )
         if args.require_evidence and metrics.get("no_evidencia_min_bots"):
             return 2
-        if args.require_target_pass and not metrics.get("target_pass"):
+        if args.require_target_pass and not bool(metrics.get("target_pass_effective")):
             return 3
         return 0
 
@@ -580,6 +641,8 @@ def main() -> int:
             breakers_per_bot=max(0, args.breakers_per_bot),
         )
         metrics = _run_local_benchmark(module, requests_n=max(1, args.requests), warmup_n=max(0, args.warmup))
+        metrics["pass_criterion"] = "client"
+        metrics["target_pass_effective"] = bool(metrics.get("target_pass"))
         context = {
             "base_url": "",
             "warmup": max(0, args.warmup),

@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS experience_episode (
     source TEXT NOT NULL CHECK (source IN ('backtest', 'shadow', 'paper', 'testnet')),
     source_weight REAL NOT NULL DEFAULT 1.0,
     strategy_id TEXT NOT NULL,
+    bot_id TEXT,
     asset TEXT NOT NULL,
     timeframe TEXT NOT NULL,
     start_ts TEXT,
@@ -92,6 +93,9 @@ CREATE TABLE IF NOT EXISTS experience_episode (
 
 CREATE INDEX IF NOT EXISTS idx_experience_episode_strategy_source
 ON experience_episode(strategy_id, source, asset, timeframe, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_experience_episode_bot_source
+ON experience_episode(bot_id, source, asset, timeframe, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS experience_event (
     id TEXT PRIMARY KEY,
@@ -214,10 +218,17 @@ class RegistryDB:
         self._ensure_column(conn, "experience_episode", "validation_quality", "TEXT NOT NULL DEFAULT 'unknown'")
         self._ensure_column(conn, "experience_episode", "cost_fidelity_level", "TEXT NOT NULL DEFAULT 'standard'")
         self._ensure_column(conn, "experience_episode", "feature_set", "TEXT NOT NULL DEFAULT 'unknown'")
+        self._ensure_column(conn, "experience_episode", "bot_id", "TEXT")
         self._ensure_column(conn, "experience_episode", "notes", "TEXT")
         self._ensure_column(conn, "experience_episode", "summary_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column(conn, "experience_episode", "created_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
         self._ensure_column(conn, "experience_episode", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_experience_episode_bot_source
+            ON experience_episode(bot_id, source, asset, timeframe, created_at DESC)
+            """
+        )
         self._ensure_column(conn, "experience_event", "realized_pnl_gross", "REAL")
         self._ensure_column(conn, "experience_event", "latency_ms", "REAL")
         self._ensure_column(conn, "experience_event", "spread_bps", "REAL")
@@ -678,6 +689,7 @@ class RegistryDB:
         source: str,
         source_weight: float = 1.0,
         strategy_id: str,
+        bot_id: str | None = None,
         asset: str,
         timeframe: str,
         start_ts: str | None,
@@ -697,17 +709,18 @@ class RegistryDB:
             conn.execute(
                 """
                 INSERT INTO experience_episode (
-                    id, run_id, source, source_weight, strategy_id, asset, timeframe, start_ts, end_ts,
+                    id, run_id, source, source_weight, strategy_id, bot_id, asset, timeframe, start_ts, end_ts,
                     dataset_source, dataset_hash, commit_hash, costs_profile_id,
                     validation_quality, cost_fidelity_level, feature_set, notes, summary_json,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
                 ON CONFLICT(id) DO UPDATE SET
                     run_id=excluded.run_id,
                     source=excluded.source,
                     source_weight=excluded.source_weight,
                     strategy_id=excluded.strategy_id,
+                    bot_id=excluded.bot_id,
                     asset=excluded.asset,
                     timeframe=excluded.timeframe,
                     start_ts=excluded.start_ts,
@@ -729,6 +742,7 @@ class RegistryDB:
                     source,
                     float(source_weight),
                     strategy_id,
+                    str(bot_id or "").strip() or None,
                     asset,
                     timeframe,
                     start_ts,
@@ -789,6 +803,7 @@ class RegistryDB:
         self,
         *,
         strategy_ids: list[str] | None = None,
+        bot_ids: list[str] | None = None,
         sources: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM experience_episode WHERE 1=1"
@@ -805,12 +820,17 @@ class RegistryDB:
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
         out: list[dict[str, Any]] = []
+        requested_bot_ids = {str(x).strip() for x in (bot_ids or []) if str(x).strip()}
         for row in rows:
             item = dict(row)
             try:
                 item["summary"] = json.loads(item.pop("summary_json", "{}") or "{}")
             except Exception:
                 item["summary"] = {}
+            summary = item["summary"] if isinstance(item.get("summary"), dict) else {}
+            item["bot_id"] = str(item.get("bot_id") or summary.get("bot_id") or "").strip() or None
+            if requested_bot_ids and item["bot_id"] not in requested_bot_ids:
+                continue
             out.append(item)
         return out
 

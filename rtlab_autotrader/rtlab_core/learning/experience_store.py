@@ -257,6 +257,7 @@ class ExperienceStore:
             source=source,
             source_weight=source_weight,
             strategy_id=strategy_id,
+            bot_id=str(bot_id or "").strip() or None,
             asset=asset or "UNKNOWN",
             timeframe=timeframe or "unknown",
             start_ts=start_ts or None,

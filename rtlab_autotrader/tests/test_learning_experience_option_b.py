@@ -168,6 +168,43 @@ def test_experience_store_record_run_is_idempotent(tmp_path: Path) -> None:
     assert len(events) == 3
 
 
+def test_experience_store_persists_and_filters_bot_id(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    start_dt = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    run = {
+        "id": "run-bot-linked",
+        "strategy_id": strategy_id,
+        "mode": "backtest",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "dataset",
+        "dataset_hash": "dataset-bot-linked",
+        "git_commit": "deadbeef",
+        "feature_set": "orderflow_on",
+        "period": {
+            "start": start_dt.isoformat(),
+            "end": (start_dt + timedelta(minutes=5)).isoformat(),
+        },
+        "metrics": {"trade_count": 1, "roundtrips": 1},
+        "trades": [],
+    }
+    store.record_run(run, source_override="backtest", bot_id="BOT-ALPHA")
+
+    all_episodes = registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest"])
+    assert len(all_episodes) == 1
+    assert all_episodes[0]["bot_id"] == "BOT-ALPHA"
+
+    filtered = registry.list_experience_episodes(bot_ids=["BOT-ALPHA"], sources=["backtest"])
+    assert len(filtered) == 1
+    assert filtered[0]["run_id"] == "run-bot-linked"
+
+    empty = registry.list_experience_episodes(bot_ids=["BOT-BETA"], sources=["backtest"])
+    assert empty == []
+
+
 def test_option_b_engine_filters_pool_true(tmp_path: Path) -> None:
     registry = RegistryDB(tmp_path / "registry.sqlite")
     store = ExperienceStore(registry)
