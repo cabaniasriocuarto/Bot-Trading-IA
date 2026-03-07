@@ -852,7 +852,12 @@ export default function BacktestsPage() {
 
   const beastEnabledState = useMemo(() => {
     if (beastStatus == null) return "loading";
-    if (String(beastStatus.policy_state || "").toLowerCase() === "missing") return "missing";
+    const policyState = String(beastStatus.policy_state || "").toLowerCase();
+    if (policyState === "missing") return "missing";
+    if (policyState === "disabled") return "blocked";
+    if (policyState === "enabled") return "enabled";
+    if (beastStatus.policy_enabled_declared === true) return "enabled";
+    if (beastStatus.policy_enabled_declared === false) return "blocked";
     return beastStatus.enabled ? "enabled" : "blocked";
   }, [beastStatus]);
 
@@ -871,7 +876,7 @@ export default function BacktestsPage() {
     const msg = String(massError || "");
     if (!msg) return "";
     if (msg.toLowerCase().includes("no hay dataset real disponible")) {
-      return "Falta dataset real reproducible para ese simbolo/timeframe. Usa dataset local o corre scripts/download_crypto_binance_public.py y reintenta.";
+      return "Falta dataset real reproducible para ese simbolo/timeframe. Cargalo en el catalogo local (`user_data/data` o `user_data/datasets`) y reintenta.";
     }
     if (msg.toLowerCase().includes("research batch solo acepta datos reales")) {
       return "Research/Bestia no aceptan sinteticos. Elegi dataset_source=auto o dataset con datos reales.";
@@ -881,14 +886,6 @@ export default function BacktestsPage() {
     }
     return "";
   }, [massError]);
-
-  useEffect(() => {
-    if (massRunId) return;
-    const firstBatch = (catalogBatches || []).find((b) => String(b.batch_id || "").startsWith("BX-"));
-    if (!firstBatch) return;
-    setMassRunId(firstBatch.batch_id);
-    void refreshMassPayload(firstBatch.batch_id, massOnlyPass).catch(() => undefined);
-  }, [catalogBatches, massOnlyPass, massRunId, refreshMassPayload]);
 
   useEffect(() => {
     if (!massRunId) return;
@@ -905,7 +902,7 @@ export default function BacktestsPage() {
       } catch {
         // best effort polling
       }
-      if (!cancelled) window.setTimeout(() => void tick(), 1200);
+      if (!cancelled) window.setTimeout(() => void tick(), 4000);
     };
     void tick();
     return () => {
@@ -921,7 +918,7 @@ export default function BacktestsPage() {
       } catch {
         // best effort
       }
-      if (!cancelled) window.setTimeout(() => void tick(), 2000);
+      if (!cancelled) window.setTimeout(() => void tick(), 10000);
     };
     void tick();
     return () => {
@@ -1098,6 +1095,10 @@ export default function BacktestsPage() {
       setMassError("SeleccionÃ¡ al menos una estrategia para research masivo.");
       return;
     }
+    if (dataStatusLoading || datasetReadyState === "loading") {
+      setMassError("Espera a que termine la validacion de dataset real antes de iniciar el Research Batch.");
+      return;
+    }
     if (dataStatus && datasetReadyState === "missing") {
       const hint = selectedDatasetMissing?.hint ? ` ${selectedDatasetMissing.hint}` : "";
       const cmd = datasetDownloadCommand ? ` Comando sugerido: ${datasetDownloadCommand}` : "";
@@ -1146,6 +1147,10 @@ export default function BacktestsPage() {
   const startBeastBatch = async () => {
     if (!massSelectedStrategies.length) {
       setMassError("SeleccionÃ¡ al menos una estrategia para Modo Bestia.");
+      return;
+    }
+    if (dataStatusLoading || datasetReadyState === "loading") {
+      setMassError("Espera a que termine la validacion de dataset real antes de iniciar Modo Bestia.");
       return;
     }
     if (dataStatus && datasetReadyState === "missing") {
@@ -3524,7 +3529,7 @@ export default function BacktestsPage() {
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={role !== "admin" || beastBusy || beastEnabledState === "loading"}
+                  disabled={role !== "admin" || beastBusy || beastEnabledState === "loading" || dataStatusLoading}
                   onClick={startBeastBatch}
                   title={
                     beastEnabledState === "blocked"
@@ -3541,6 +3546,11 @@ export default function BacktestsPage() {
                 </Button>
                 {massRunId ? <Badge variant="warn">run_id: {massRunId}</Badge> : null}
               </div>
+              {!massRunId ? (
+                <p className="text-xs text-slate-400">
+                  Todavia no hay un batch BX seleccionado. Elegilo desde la lista de batches para inspeccionar estado/resultados y no confundir un fallo historico con el intento actual.
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-3">

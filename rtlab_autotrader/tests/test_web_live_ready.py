@@ -398,6 +398,25 @@ def test_api_bots_overview_uses_general_bucket(tmp_path: Path, monkeypatch) -> N
   assert "rate limit general" in str(limited.json().get("detail") or "").lower()
 
 
+def test_api_research_readonly_endpoints_use_general_bucket(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  module.API_RATE_LIMITER = module.ApiRateLimiter(
+    enabled=True,
+    general_per_minute=1,
+    expensive_per_minute=1,
+    window_seconds=60,
+  )
+  token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(token)
+
+  first = client.get("/api/v1/research/beast/status", headers=headers)
+  assert first.status_code == 200, first.text
+  limited = client.get("/api/v1/research/beast/status", headers=headers)
+  assert limited.status_code == 429
+  assert limited.headers.get("X-RTLAB-RateLimit-Bucket") == "general"
+  assert "rate limit general" in str(limited.json().get("detail") or "").lower()
+
+
 def test_auth_validation_fails_in_production_with_default_credentials(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch)
   monkeypatch.setenv("NODE_ENV", "production")

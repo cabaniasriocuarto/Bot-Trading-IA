@@ -1865,6 +1865,16 @@ El proyecto tiene:
   - `MassBacktestCoordinator` hace preflight de dataset antes de escribir estado `QUEUED`
   - `POST /api/v1/research/mass-backtest/start` y `POST /api/v1/research/beast/start` devuelven `400` con detalle accionable
   - se evita el patron engañoso `QUEUED -> FAILED` por traceback interno solo porque faltaba `market/symbol/timeframe`
+- El polling de `Backtests` ya no consume el bucket `expensive` de la API:
+  - `GET` read-only de research/catálogo (`mass status/results/artifacts`, `beast status/jobs`, `batches`, `runs`, `backtests/runs`, `bots`) usan bucket `general`
+  - los `POST`/acciones que disparan trabajo siguen en `expensive`
+  - el frontend bajó la frecuencia de polling (`mass status: 4s`, `beast panel: 10s`) para evitar `429` autoinducidos y estados viejos en pantalla
+- La limpieza local conservadora de 2026-03-07 removió solo artefactos no versionados que confundían la lectura:
+  - `tmp/`
+  - `rtlab_autotrader/tmp_test_ud/`
+  - `rtlab_autotrader/user_data/backtests/` con runs `synthetic_seeded`
+  - `rtlab_autotrader/user_data/research/mass_backtests/` vacio
+- No se limpiaron `learning/` ni DB/config locales mientras no exista evidencia fuerte de obsolescencia.
 - La resolucion de roots de `config/policies` en backend ahora es fail-safe por presencia real de YAML:
   - `rtlab_core/policy_paths.py` rankea candidatos por archivos canonicos disponibles
   - `app.py`, `mass_backtest_engine.py`, `cost_providers.py` y `credit_filter.py` usan esa misma resolucion
@@ -1880,6 +1890,7 @@ El proyecto tiene:
 - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q`: PASS
 - `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py -q`: PASS
 - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle or mass_backtest_start_rejects_missing_dataset or research_beast_start_rejects_missing_dataset or mass_backtest_research_endpoints_and_mark_candidate or research_beast_endpoints_smoke" -q`: PASS
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "api_general_rate_limit_guard or api_expensive_rate_limit_guard or api_bots_overview_uses_general_bucket or api_research_readonly_endpoints_use_general_bucket or mass_backtest_research_endpoints_and_mark_candidate" -q`: PASS
 - Warnings remanentes: Recharts en prerender (`width/height(-1)`), no bloqueantes
 
 ### Nota de bibliografia para este bloque

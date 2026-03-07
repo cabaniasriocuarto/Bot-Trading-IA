@@ -1164,6 +1164,17 @@ class ApiRateLimiter:
             "/api/v1/stream",
             "/api/v1/auth/login",
         )
+        self._general_get_prefixes = (
+            "/api/v1/bots",
+            "/api/v1/batches",
+            "/api/v1/runs",
+            "/api/v1/backtests/runs",
+            "/api/v1/research/mass-backtest/status",
+            "/api/v1/research/mass-backtest/results",
+            "/api/v1/research/mass-backtest/artifacts",
+            "/api/v1/research/beast/status",
+            "/api/v1/research/beast/jobs",
+        )
         self._expensive_prefixes = (
             "/api/v1/research/",
             "/api/v1/backtests/",
@@ -1178,9 +1189,10 @@ class ApiRateLimiter:
         return any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._exempt_prefixes)
 
     def _bucket_for_path(self, *, path: str, method: str) -> str:
-        # /api/v1/bots es polling de UI/BFF; no debe caer en bucket "expensive"
-        # porque con 5 req/min dispara 429 aun en uso normal (10-15s polling).
-        if method.upper() == "GET" and path == "/api/v1/bots":
+        method_upper = method.upper()
+        # GET read-only de paneles/catálogos se usan en polling y navegación normal.
+        # Si caen en "expensive" (5 req/min) la propia UI termina generando 429.
+        if method_upper == "GET" and any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._general_get_prefixes):
             return "general"
         if any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._expensive_prefixes):
             return "expensive"

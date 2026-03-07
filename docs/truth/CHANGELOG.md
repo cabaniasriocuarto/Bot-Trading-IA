@@ -1955,3 +1955,21 @@
 - `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py -q` -> PASS (`10 passed`)
 - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle or mass_backtest_start_rejects_missing_dataset or research_beast_start_rejects_missing_dataset or mass_backtest_research_endpoints_and_mark_candidate or research_beast_endpoints_smoke" -q` -> PASS (`6 passed`)
 - `python -m py_compile rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/backtest/cost_providers.py rtlab_autotrader/rtlab_core/fundamentals/credit_filter.py` -> PASS
+
+### Rate limit research/backtests (2026-03-07)
+- `app.py`: los `GET` read-only usados por polling/catalogo (`research mass status/results/artifacts`, `beast status/jobs`, `batches`, `runs`, `backtests/runs`, `bots`) pasan a bucket `general`; solo las acciones que disparan trabajo quedan en `expensive`.
+- `backtests/page.tsx`: polling reducido de `mass status` (`1.2s -> 4s`) y panel `Beast` (`2s -> 10s`) para no autogenerar `429`.
+- Se corrige el falso estado viejo de UI cuando el propio polling consumia el bucket `expensive`.
+
+### Validacion adicional (2026-03-07)
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "api_general_rate_limit_guard or api_expensive_rate_limit_guard or api_bots_overview_uses_general_bucket or api_research_readonly_endpoints_use_general_bucket or mass_backtest_research_endpoints_and_mark_candidate" -q` -> PASS (`5 passed`)
+- `eslint src/app/(app)/backtests/page.tsx` -> PASS
+- `npm run build` en `rtlab_dashboard` -> PASS
+
+### Limpieza local conservadora (2026-03-07)
+- Se removieron solo artefactos locales no versionados y engañosos:
+  - `tmp/`
+  - `rtlab_autotrader/tmp_test_ud/`
+  - `rtlab_autotrader/user_data/backtests/` (6 runs `synthetic_seeded`)
+  - `rtlab_autotrader/user_data/research/mass_backtests/` (metadata local vacia)
+- No se tocaron `learning/`, `console_api.sqlite3`, `console_settings.json` ni metadata local de estrategias por no existir evidencia suficiente de que sobraran.
