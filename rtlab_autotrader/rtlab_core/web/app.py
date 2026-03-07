@@ -385,6 +385,7 @@ class ResearchChangePointsBody(BaseModel):
 
 class ResearchMassBacktestStartBody(BaseModel):
     strategy_ids: list[str] | None = None
+    bot_id: str | None = None
     market: Literal["crypto", "forex", "equities"] = "crypto"
     symbol: str = "BTCUSDT"
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -474,6 +475,7 @@ class ShadowStopBody(BaseModel):
 class BatchCreateBody(BaseModel):
     objective: str | None = None
     strategy_ids: list[str] | None = None
+    bot_id: str | None = None
     market: Literal["crypto", "forex", "equities"] = "crypto"
     symbol: str = "BTCUSDT"
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -3218,6 +3220,59 @@ def risk_hooks(context):
             out[strategy_id] = refs
         return out
 
+    @staticmethod
+    def _normalize_related_bot_ids(values: Any) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def _add(value: Any) -> None:
+            ref = str(value or "").strip()
+            if ref and ref not in seen:
+                seen.add(ref)
+                out.append(ref)
+
+        if isinstance(values, (list, tuple, set)):
+            for item in values:
+                if isinstance(item, dict):
+                    _add(item.get("id"))
+                else:
+                    _add(item)
+        elif isinstance(values, dict):
+            _add(values.get("id"))
+        else:
+            _add(values)
+        return out
+
+    @classmethod
+    def _extract_related_bot_ids_from_run(cls, run: dict[str, Any]) -> list[str]:
+        refs: list[str] = []
+        seen: set[str] = set()
+
+        def _extend(values: Any) -> None:
+            for ref in cls._normalize_related_bot_ids(values):
+                if ref not in seen:
+                    seen.add(ref)
+                    refs.append(ref)
+
+        if not isinstance(run, dict):
+            return refs
+
+        payload_sources: list[dict[str, Any]] = [run]
+        for key in ("metadata", "params_json", "provenance", "artifacts"):
+            value = run.get(key)
+            if isinstance(value, dict):
+                payload_sources.append(value)
+        for payload in payload_sources:
+            _extend(payload.get("bot_id"))
+            _extend(payload.get("bot_ids"))
+            _extend(payload.get("related_bot_ids"))
+            _extend(payload.get("related_bots"))
+        for tag in run.get("tags") or []:
+            tag_text = str(tag or "").strip()
+            if tag_text.startswith("bot:"):
+                _extend(tag_text.split(":", 1)[1])
+        return refs
+
     def annotate_runs_with_related_bots(
         self,
         runs: list[dict[str, Any]],
@@ -3226,14 +3281,46 @@ def risk_hooks(context):
         bots: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         requested_bot_id = str(bot_id or "").strip()
-        bots_by_strategy = self._index_bots_by_strategy(bots=bots)
+        bots_rows = bots if isinstance(bots, list) else self.load_bots()
+        bots_by_strategy = self._index_bots_by_strategy(bots=bots_rows)
+        bots_by_id: dict[str, dict[str, Any]] = {}
+        for bot in bots_rows:
+            bid = str(bot.get("id") or "").strip()
+            if not bid:
+                continue
+            bots_by_id[bid] = {
+                "id": bid,
+                "name": str(bot.get("name") or bid),
+                "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
+                "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
+                "status": self._normalize_bot_status(str(bot.get("status") or "")),
+            }
         out: list[dict[str, Any]] = []
         for run in runs:
             if not isinstance(run, dict):
                 continue
             strategy_id = str(run.get("strategy_id") or "").strip()
-            related_bots = [dict(row) for row in (bots_by_strategy.get(strategy_id) or [])]
-            related_bot_ids = [str(row.get("id") or "") for row in related_bots if str(row.get("id") or "")]
+            explicit_bot_ids = self._extract_related_bot_ids_from_run(run)
+            if explicit_bot_ids:
+                related_bot_ids = explicit_bot_ids
+                related_bots = [
+                    dict(
+                        bots_by_id.get(
+                            bid,
+                            {
+                                "id": bid,
+                                "name": bid,
+                                "engine": "unknown",
+                                "mode": "unknown",
+                                "status": "unknown",
+                            },
+                        )
+                    )
+                    for bid in related_bot_ids
+                ]
+            else:
+                related_bots = [dict(row) for row in (bots_by_strategy.get(strategy_id) or [])]
+                related_bot_ids = [str(row.get("id") or "") for row in related_bots if str(row.get("id") or "")]
             if requested_bot_id and requested_bot_id not in related_bot_ids:
                 continue
             payload = dict(run)
@@ -4786,6 +4873,7 @@ def risk_hooks(context):
         self,
         *,
         strategy_id: str,
+        bot_id: str | None = None,
         market: str,
         symbol: str,
         timeframe: str,
@@ -4806,6 +4894,7 @@ def risk_hooks(context):
         cpcv_max_paths: int | None = None,
     ) -> dict[str, Any]:
         strategy = self.strategy_or_404(strategy_id)
+        bot_id_n = str(bot_id or "").strip() or None
         market_n = normalize_market(market)
         symbol_n = normalize_symbol(symbol)
         timeframe_n = normalize_timeframe(timeframe)
@@ -4913,12 +5002,16 @@ def risk_hooks(context):
             run_metadata["required_missing"] = fund_required_missing
         if fund_reasons:
             run_metadata["fundamentals_reasons"] = fund_reasons
+        if bot_id_n:
+            run_metadata["bot_id"] = bot_id_n
         run_tags = []
         if fund_quality == "ohlc_only":
             run_tags.append("fundamentals_quality:ohlc_only")
         if fund_promotion_blocked:
             run_tags.append("promotion_blocked:fundamentals")
         run_tags.append(f"feature_set:{orderflow_feature_set}")
+        if bot_id_n:
+            run_tags.append(f"bot:{bot_id_n}")
         validation_mode_norm = str(validation_mode or "").strip().lower()
         is_wfa = validation_mode_norm == "walk-forward"
         is_oos = validation_mode_norm in {"walk-forward", "purged-cv", "cpcv"}
@@ -4996,6 +5089,7 @@ def risk_hooks(context):
             },
             "params_json": {
                 "validation_mode": validation_mode,
+                "bot_id": bot_id_n,
                 "costs_model": costs_model,
                 "dataset_range": {"start": loaded.start, "end": loaded.end},
                 "period": {"start": start, "end": end},
@@ -5023,6 +5117,7 @@ def risk_hooks(context):
         run["provenance"] = {
             "run_id": run_id,
             "strategy_id": strategy_id,
+            "bot_id": bot_id_n,
             "mode": "backtest",
             "from": start,
             "to": end,
@@ -5074,14 +5169,15 @@ def risk_hooks(context):
             },
             artifacts_path=f"/api/v1/backtests/runs/{run_id}",
         )
-        self.record_experience_run(run, source_override="backtest")
+        self.record_experience_run(run, source_override="backtest", bot_id=bot_id_n)
         self.add_log(
             event_type="backtest_finished",
             severity="info",
             module="backtest",
             message=f"Backtest finished: {run_id}",
-            related_ids=[strategy_id, run_id, symbol_n],
+            related_ids=[x for x in [strategy_id, run_id, symbol_n, bot_id_n] if x],
             payload={
+                "bot_id": bot_id_n,
                 "market": market_n,
                 "symbol": symbol_n,
                 "timeframe": timeframe_n,
@@ -9284,6 +9380,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/research/mass-backtest/start")
     def research_mass_backtest_start(body: ResearchMassBacktestStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
         cfg["execution_mode"] = str(cfg.get("execution_mode") or "research")
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
@@ -9320,7 +9417,7 @@ def create_app() -> FastAPI:
             severity="info",
             module="research",
             message="Mass backtests iniciados",
-            related_ids=[str(started.get("run_id") or "")],
+            related_ids=[x for x in [str(started.get("run_id") or ""), cfg.get("bot_id")] if x],
             payload={"config": cfg, "no_auto_live": True},
         )
         return started
@@ -9328,6 +9425,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/batches")
     def create_research_batch(body: BatchCreateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
         cfg["execution_mode"] = str(cfg.get("execution_mode") or "research")
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
@@ -9366,7 +9464,7 @@ def create_app() -> FastAPI:
             severity="info",
             module="research",
             message="Research Batch creado",
-            related_ids=[batch_id],
+            related_ids=[x for x in [batch_id, cfg.get("bot_id")] if x],
             payload={"config": cfg, "batch_id": batch_id},
         )
         return {"ok": True, "batch_id": batch_id, **started}
@@ -9479,6 +9577,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/research/beast/start")
     def research_beast_start(body: ResearchBeastStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
         cfg["execution_mode"] = "beast"
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
@@ -9516,7 +9615,7 @@ def create_app() -> FastAPI:
             severity="info",
             module="research",
             message="Modo Bestia encolado",
-            related_ids=[str(started.get("run_id") or "")],
+            related_ids=[x for x in [str(started.get("run_id") or ""), cfg.get("bot_id")] if x],
             payload={"tier": body.tier, "estimated_trial_units": started.get("estimated_trial_units"), "config": cfg, "no_auto_live": True},
         )
         return started
@@ -9952,6 +10051,7 @@ def create_app() -> FastAPI:
         market = body.get("market")
         symbol = body.get("symbol")
         timeframe = body.get("timeframe")
+        bot_id = str(body.get("bot_id") or "").strip() or None
         data_source = str(body.get("data_source") or "auto").lower()
         if data_source in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
@@ -9962,6 +10062,7 @@ def create_app() -> FastAPI:
             try:
                 run = store.create_event_backtest_run(
                     strategy_id=strategy_id,
+                    bot_id=bot_id,
                     market=str(market),
                     symbol=str(symbol),
                     timeframe=str(timeframe),

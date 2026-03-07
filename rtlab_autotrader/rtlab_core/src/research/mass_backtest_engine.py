@@ -1518,6 +1518,7 @@ class MassBacktestEngine:
                     "max_open_positions": _i(cfg.get("max_open_positions"), 1),
                     "params_json": json.dumps(
                         {
+                            "bot_id": str(cfg.get("bot_id") or "").strip() or None,
                             "variant_id": row.get("variant_id"),
                             "params": params,
                             "batch_rank": idx,
@@ -1533,7 +1534,15 @@ class MassBacktestEngine:
                     ),
                     "seed": _i(row.get("seed")) if row.get("seed") is not None else None,
                     "alias": None,
-                    "tags_json": json.dumps(["batch_child", "research", f"feature_set:{orderflow_feature_set}"], ensure_ascii=True),
+                    "tags_json": json.dumps(
+                        [
+                            "batch_child",
+                            "research",
+                            f"feature_set:{orderflow_feature_set}",
+                            *([f"bot:{str(cfg.get('bot_id') or '').strip()}"] if str(cfg.get("bot_id") or "").strip() else []),
+                        ],
+                        ensure_ascii=True,
+                    ),
                     "kpi_summary_json": json.dumps(
                         {
                             "sharpe": summary.get("sharpe_oos"),

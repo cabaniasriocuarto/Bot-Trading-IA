@@ -932,6 +932,7 @@ export default function BacktestsPage() {
     try {
       await apiPost("/api/v1/backtests/run", {
         strategy_id: form.strategy_id,
+        bot_id: selectedBotId || undefined,
         market: form.market,
         symbol: form.symbol,
         timeframe: form.timeframe,
@@ -1111,6 +1112,7 @@ export default function BacktestsPage() {
     try {
       const res = await apiPost<{ ok: boolean; run_id: string; state: string }>("/api/v1/research/mass-backtest/start", {
         strategy_ids: massSelectedStrategies,
+        bot_id: selectedBotId || undefined,
         market: form.market,
         symbol: form.symbol,
         timeframe: form.timeframe,
@@ -1175,6 +1177,7 @@ export default function BacktestsPage() {
         "/api/v1/research/beast/start",
         {
           strategy_ids: massSelectedStrategies,
+          bot_id: selectedBotId || undefined,
           market: form.market,
           symbol: form.symbol,
           timeframe: form.timeframe,
@@ -4256,8 +4259,15 @@ export default function BacktestsPage() {
                       <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={250}>
                         <LineChart data={focusRunChartData}>
                           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                          <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <XAxis
+                            dataKey="index"
+                            tick={{ fill: "#94a3b8", fontSize: 11 }}
+                            label={{ value: "Paso / muestra", position: "insideBottom", offset: -4, fill: "#94a3b8" }}
+                          />
+                          <YAxis
+                            tick={{ fill: "#94a3b8", fontSize: 11 }}
+                            label={{ value: "Equity neta", angle: -90, position: "insideLeft", fill: "#94a3b8" }}
+                          />
                           <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
                           <Line type="monotone" dataKey="equity" stroke="#22d3ee" strokeWidth={2} dot={false} />
                         </LineChart>
@@ -4273,8 +4283,15 @@ export default function BacktestsPage() {
                       <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={250}>
                         <LineChart data={focusRunChartData}>
                           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                          <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                          <XAxis
+                            dataKey="index"
+                            tick={{ fill: "#94a3b8", fontSize: 11 }}
+                            label={{ value: "Paso / muestra", position: "insideBottom", offset: -4, fill: "#94a3b8" }}
+                          />
+                          <YAxis
+                            tick={{ fill: "#94a3b8", fontSize: 11 }}
+                            label={{ value: "Drawdown", angle: -90, position: "insideLeft", fill: "#94a3b8" }}
+                          />
                           <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
                           <Line type="monotone" dataKey="drawdown" stroke="#f97316" strokeWidth={2} dot={false} />
                         </LineChart>
@@ -4501,8 +4518,15 @@ export default function BacktestsPage() {
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={overlayData}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                  <XAxis
+                    dataKey="index"
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    label={{ value: "Paso / muestra", position: "insideBottom", offset: -4, fill: "#94a3b8" }}
+                  />
+                  <YAxis
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    label={{ value: "Equity neta", angle: -90, position: "insideLeft", fill: "#94a3b8" }}
+                  />
                   <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
                   <Legend />
                   {selectedRuns.map((run, idx) => (
@@ -4521,8 +4545,15 @@ export default function BacktestsPage() {
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={overlayDDData}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="index" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                  <XAxis
+                    dataKey="index"
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    label={{ value: "Paso / muestra", position: "insideBottom", offset: -4, fill: "#94a3b8" }}
+                  />
+                  <YAxis
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    label={{ value: "Drawdown", angle: -90, position: "insideLeft", fill: "#94a3b8" }}
+                  />
                   <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
                   <Legend />
                   {selectedRuns.map((run, idx) => (

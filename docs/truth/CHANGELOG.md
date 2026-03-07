@@ -1973,3 +1973,12 @@
   - `rtlab_autotrader/user_data/backtests/` (6 runs `synthetic_seeded`)
   - `rtlab_autotrader/user_data/research/mass_backtests/` (metadata local vacia)
 - No se tocaron `learning/`, `console_api.sqlite3`, `console_settings.json` ni metadata local de estrategias por no existir evidencia suficiente de que sobraran.
+
+- `app.py`: `backtests/run`, `research/mass-backtest/start`, `batches` y `research/beast/start` ahora aceptan `bot_id` explicito y lo propagan al runtime.
+- `app.py`: `create_event_backtest_run(...)` persiste `bot_id` en metadata, params, provenance y tags (`bot:<id>`).
+- `app.py`: `annotate_runs_with_related_bots(...)` prioriza referencias historicas del run antes de inferir bots por pool actual.
+- `mass_backtest_engine.py`: los child runs de research/batch guardan `bot_id` en `params_json` y tag estructurado `bot:<id>`.
+- `backtests/page.tsx`: quick backtest, research batch y beast envian `bot_id` del selector activo.
+- `backtests/page.tsx`: overlays/equity/drawdown ahora muestran ejes con nombre (`Paso / muestra`, `Equity neta`, `Drawdown`).
+- `test_web_live_ready.py`: nuevas validaciones para `run -> bot` persistente aun si cambia el pool del bot, y forwarding de `bot_id` en mass/beast.
+- Limpieza local conservadora: eliminados solo `tmp/`, `tmp_test_ud/`, runs `synthetic_seeded` no versionados y metadata vacia de `mass_backtests/`.

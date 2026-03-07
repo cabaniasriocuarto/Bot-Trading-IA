@@ -1897,3 +1897,39 @@ El proyecto tiene:
 - Este bloque fue de wiring UI/API, estado runtime y mensajes operativos.
 - No introdujo formulas nuevas ni cambios teoricos de microestructura/aprendizaje.
 - Base conceptual vigente: bibliografia local del proyecto (31 PDF + 1 TXT).
+
+
+### Persistencia exacta run -> bot + Beast validado localmente (2026-03-07)
+- `Backtests / Runs` ya no depende solo del pool actual para inferir bots relacionados.
+- `POST /api/v1/backtests/run`, `POST /api/v1/research/mass-backtest/start`, `POST /api/v1/batches` y `POST /api/v1/research/beast/start` aceptan `bot_id` explicito.
+- `create_event_backtest_run(...)` persiste `bot_id` en:
+  - `metadata.bot_id`
+  - `params_json.bot_id`
+  - `provenance.bot_id`
+  - `tags += bot:<bot_id>`
+- `annotate_runs_with_related_bots(...)` ahora prioriza referencias explicitas del run (`metadata/params_json/provenance/tags`) y solo usa fallback por pool actual si el run historico no trae bot asociado.
+- Si un bot historico ya no existe en registry, la UI mantiene el vinculo con placeholder `unknown` en vez de perder la trazabilidad del run.
+- Validacion local cerrada:
+  - `GET /api/v1/research/beast/status` -> `200`, `policy_state=enabled`, `policy_enabled_declared=true`
+  - `POST /api/v1/research/beast/start` con dataset real seed -> `200`, `run_id=BX-000001`, `mode=beast`
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "strict_strategy_id_flag or preserves_explicit_bot_link_after_pool_change or mass_backtest_start_forwards_bot_id or beast_start_accepts_orderflow_toggle or runs_batches_catalog_endpoints_smoke" -q` -> PASS (`5 passed`)
+- Lectura operativa correcta:
+  - si la web publica sigue mostrando `Modo Bestia deshabilitado`, el problema restante ya no es esta rama local sino deploy/runtime viejo o entorno remoto sin este commit.
+
+### Limpieza conservadora clasificada (2026-03-07)
+- Se removio solo lo claramente obsoleto/no versionado y enga?oso para el trabajo actual:
+  - `tmp/`
+  - `rtlab_autotrader/tmp_test_ud/`
+  - `rtlab_autotrader/user_data/backtests/` con corridas `synthetic_seeded`
+  - `rtlab_autotrader/user_data/research/mass_backtests/` vacio
+- Se clasifico como `mantener por ahora` todo lo que no tiene evidencia fuerte de obsolescencia:
+  - `rtlab_autotrader/user_data/console_api.sqlite3`
+  - `rtlab_autotrader/user_data/console_settings.json`
+  - `rtlab_autotrader/user_data/learning/`
+  - metadata local de estrategias
+- Regla vigente de limpieza:
+  - identificar
+  - clasificar
+  - proponer limpieza
+  - borrar/mover solo lo claramente obsoleto, redundante o enga?oso
+  - no tocar artefactos actuales/ambiguos solo por estar viejos o ser locales

@@ -2993,6 +2993,7 @@ def test_backtests_run_forwards_strict_strategy_id_flag(tmp_path: Path, monkeypa
 
   payload = {
     "strategy_id": "trend_pullback_orderflow_confirm_v1",
+    "bot_id": "BOT-TEST-STRICT",
     "market": "crypto",
     "symbol": "BTCUSDT",
     "timeframe": "5m",
@@ -3004,6 +3005,57 @@ def test_backtests_run_forwards_strict_strategy_id_flag(tmp_path: Path, monkeypa
   assert res.status_code == 200, res.text
   assert res.json()["run_id"] == "BT-STRICT-FLAG"
   assert captured.get("strict_strategy_id") is True
+  assert captured.get("bot_id") == "BOT-TEST-STRICT"
+
+
+def test_runs_catalog_preserves_explicit_bot_link_after_pool_change(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  bot_items = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0", headers=headers).json()["items"]
+  assert bot_items
+  bot_id = str(bot_items[0]["id"])
+
+  strategies = client.get("/api/v1/strategies", headers=headers).json()
+  assert strategies
+  strategy_id = str(strategies[0]["id"])
+  other_strategy_ids = [str(row["id"]) for row in strategies[1:] if str(row.get("id") or "").strip()]
+
+  run_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": strategy_id,
+      "bot_id": bot_id,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "validation_mode": "walk-forward",
+    },
+  )
+  assert run_res.status_code == 200, run_res.text
+  run_id = str(run_res.json()["run_id"])
+
+  patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}",
+    headers=headers,
+    json={"pool_strategy_ids": other_strategy_ids[:1]},
+  )
+  assert patch_res.status_code == 200, patch_res.text
+
+  bot_runs = client.get(f"/api/v1/runs?bot_id={bot_id}", headers=headers)
+  assert bot_runs.status_code == 200, bot_runs.text
+  rows = bot_runs.json()["items"]
+  match = next((row for row in rows if str(row.get("run_id") or "") == run_id), None)
+  assert match is not None, rows
+  assert bot_id in (match.get("related_bot_ids") or [])
+  assert any(str(tag or "") == f"bot:{bot_id}" for tag in (match.get("tags") or []))
+  assert str(((match.get("params_json") or {}).get("bot_id") or "")) == bot_id
 
 
 def test_validate_promotion_blocks_mixed_orderflow_feature_set(tmp_path: Path, monkeypatch) -> None:
@@ -3341,9 +3393,10 @@ def test_strategy_kpis_endpoints_and_run_provenance(tmp_path: Path, monkeypatch)
 
 
 def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
-  _, client = _build_app(tmp_path, monkeypatch)
+  module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  _seed_local_backtest_dataset(Path(module.USER_DATA_DIR), "crypto", "BTCUSDT", source="binance_public")
 
   bots_res = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0", headers=headers)
   assert bots_res.status_code == 200, bots_res.text
@@ -4760,6 +4813,45 @@ def test_research_mass_backtest_start_rejects_missing_dataset(tmp_path: Path, mo
   assert "no hay dataset real disponible" in str((start.json() or {}).get("detail") or "").lower()
 
 
+def test_research_mass_backtest_start_forwards_bot_id(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  captured: dict[str, object] = {}
+
+  def _fake_start_async(**kwargs):
+    captured["config"] = kwargs.get("config")
+    return {"ok": True, "run_id": "BX-TEST-BOT", "state": "QUEUED"}
+
+  monkeypatch.setattr(module.mass_backtest_coordinator, "start_async", _fake_start_async)
+
+  start = client.post(
+    "/api/v1/research/mass-backtest/start",
+    headers=headers,
+    json={
+      "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
+      "bot_id": "BOT-TEST-MASS",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "validation_mode": "walk-forward",
+      "max_variants_per_strategy": 1,
+      "max_folds": 2,
+      "train_days": 30,
+      "test_days": 30,
+      "top_n": 2,
+      "seed": 7,
+    },
+  )
+  assert start.status_code == 200, start.text
+  assert start.json()["ok"] is True
+  assert isinstance(captured.get("config"), dict)
+  assert str((captured["config"] or {}).get("bot_id") or "") == "BOT-TEST-MASS"
+
+
 def test_mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -4894,6 +4986,7 @@ def test_research_beast_start_rejects_missing_dataset(tmp_path: Path, monkeypatc
     headers=headers,
     json={
       "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
+      "bot_id": "BOT-TEST-BEAST",
       "market": "crypto",
       "symbol": "BTCUSDT",
       "timeframe": "5m",
@@ -4938,6 +5031,7 @@ def test_research_beast_start_accepts_orderflow_toggle(tmp_path: Path, monkeypat
     "/api/v1/research/beast/start",
     headers=headers,
     json={
+      "bot_id": "BOT-TEST-BEAST",
       "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
       "market": "crypto",
       "symbol": "BTCUSDT",
@@ -4960,6 +5054,7 @@ def test_research_beast_start_accepts_orderflow_toggle(tmp_path: Path, monkeypat
   assert start.json()["ok"] is True
   assert isinstance(captured.get("config"), dict)
   assert bool((captured["config"] or {}).get("use_orderflow_data")) is False
+  assert str((captured["config"] or {}).get("bot_id") or "") == "BOT-TEST-BEAST"
 
 
 def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
