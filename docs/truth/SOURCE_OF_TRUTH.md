@@ -2,6 +2,22 @@
 
 Fecha de actualizacion: 2026-03-06
 
+## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
+
+- `ShadowRunConfig` ya no rompe import en Python 3.13:
+  - `costs` pasa a `default_factory(...)` en vez de usar un default mutable directo.
+- Shadow/mock queda alineado a lo que el motor necesita hoy:
+  - default real `lookback_bars=300` en runner + API + env default;
+  - evidencia local: con `120` el ciclo falla por dataset corto; con `300` crea `1` episodio `source=shadow` y `5` trades persistidos.
+- `Modo Bestia`:
+  - `_default_beast_policy_cfg()` lee la policy desde `self.engine.repo_root`;
+  - evidencia local: `beast/status` responde `enabled=true` y el batch real `BX-000001` termina `COMPLETED` sobre `BTCUSDT 5m`.
+- Evidencia escrita de este tramo:
+  - `docs/audit/LEARNING_EXPERIENCE_VALIDATION_20260306.md`
+- Estado remoto abierto:
+  - el preview Vercel del commit `ffabe9e` sigue fallando;
+  - por lo tanto, la rama tecnica hoy esta validada localmente para este bloque, pero no tiene preview web sano.
+
 ## Actualizacion tecnica experience learning + shadow + backtests UX - 2026-03-06
 
 - Backend de aprendizaje:
@@ -91,6 +107,7 @@ Fecha de actualizacion: 2026-03-06
   - NO EVIDENCIA de RL offline serio como motor core
   - NO EVIDENCIA de OPE robusto (`IPS/DR/SWITCH`) integrado al promotion path
   - parte de la bibliografia TXT local esta vacia/danada; cuando eso pasa se usa otra fuente local valida o fuente oficial del mismo nivel
+  - preview Vercel de `feature/learning-experience-v1` sigue fallando; la validacion positiva de este bloque es local, no por preview web
 
 ## Actualizacion operativa staging persistence + checks (run 22741651051) - 2026-03-05
 

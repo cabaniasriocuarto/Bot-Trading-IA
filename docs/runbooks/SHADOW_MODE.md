@@ -66,7 +66,7 @@ Base operativa:
 
 Defaults actuales del runner:
 
-- `lookback_bars = 240`
+- `lookback_bars = 300`
 - `validation_mode = shadow_live`
 - `use_orderflow_data = true`
 - costos base:
@@ -77,6 +77,11 @@ Defaults actuales del runner:
   - `rollover_bps = 0.0`
 
 Si el spread observado en `bookTicker` existe, reemplaza el spread base.
+
+Nota operativa:
+
+- con ventanas cortas (ej. `120`) puede fallar el primer ciclo si la estrategia necesita warmup real de ~250 velas;
+- el default se deja en `300` para que el modo mock funcione sin ajuste manual en esta version.
 
 ## Que guarda
 

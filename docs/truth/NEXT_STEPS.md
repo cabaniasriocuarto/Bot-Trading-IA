@@ -19,26 +19,25 @@ Fecha: 2026-03-06
   - `docs/research/EXPERIENCE_LEARNING.md`
   - `docs/research/BRAIN_OF_BOTS.md`
   - `docs/runbooks/SHADOW_MODE.md`
+- [x] Evidencia local escrita del tramo:
+  - `docs/audit/LEARNING_EXPERIENCE_VALIDATION_20260306.md`
+  - bestia real `BX-000001` completado
+  - shadow/mock con default corregido persistiendo experiencia real
 
 ## Proximo tramo tecnico real
-1. Verificar deploy fresco de frontend/backends para que la UI publicada refleje:
+1. Resolver el preview/deploy Vercel de `feature/learning-experience-v1` para que la UI publicada refleje:
    - fix de `Backtests / Runs`
    - panel de Opcion B
    - estado real de `Modo Bestia`
-2. Ejecutar un shadow run controlado y registrar evidencia en `docs/audit/`:
-   - status inicial
-   - start
-   - episodio generado
-   - proposal/guidance recalculados
-3. Correr research batch con dataset real disponible y confirmar experiencia persistida en:
-   - `experience_episode`
-   - `experience_event`
-   - `regime_kpi`
-4. Revalidar `Modo Bestia` publicado:
+2. Revalidar `Modo Bestia` publicado:
    - la policy actual esta en `enabled: true`
    - si la UI sigue mostrando "deshabilitado", revisar snapshot viejo de deploy o API stale, no el YAML del repo
-5. Agregar evidencia visual/operativa de la pestaña de aprendizaje en `docs/audit/`.
-6. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
+3. Agregar vista bot-centrica en `Backtests / Runs`:
+   - filtro por `bot_id`
+   - historial por fuente (`backtest/shadow/paper/testnet`)
+   - metricas acumuladas por bot
+4. Agregar evidencia visual/operativa de la pestana de aprendizaje en `docs/audit/`.
+5. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
 
 ## Riesgos abiertos del tramo
 - NO EVIDENCIA de OPE conservador (`IPS/DR/SWITCH`) cableado al motor de promotion.

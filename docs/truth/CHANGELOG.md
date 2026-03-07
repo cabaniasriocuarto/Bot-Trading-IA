@@ -2,6 +2,21 @@
 
 ## 2026-03-06
 
+### Hotfix shadow/beast + evidencia local controlada
+- `ShadowRunConfig`:
+  - corrige default mutable de `costs` con `default_factory(...)` para no romper import en Python 3.13;
+  - sube `lookback_bars` default de `240` a `300`.
+- API/runtime shadow:
+  - `SHADOW_DEFAULT_LOOKBACK_BARS` y `ShadowStartBody.lookback_bars` quedan en `300`.
+- `MassBacktestCoordinator`:
+  - corrige fallback de `beast_mode.yaml` cuando la cola esta vacia (`self.engine.repo_root`).
+- Evidencia local agregada:
+  - `docs/audit/LEARNING_EXPERIENCE_VALIDATION_20260306.md`
+  - bestia real `BX-000001` -> `COMPLETED`
+  - shadow real con default corregido -> `1` episodio persistido (`source=shadow`)
+- Estado abierto:
+  - previews Vercel del commit `ffabe9e` siguen en `failure`.
+
 ### Experience learning + shadow + backtests UX
 - Backend:
   - se consolido persistencia de experiencia en `RegistryDB`:
