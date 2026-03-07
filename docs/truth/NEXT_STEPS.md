@@ -31,11 +31,14 @@ Fecha: 2026-03-06
 1. Revalidar backend publicado despues del deploy de este fix:
    - `GET /api/v1/research/beast/status` debe dejar de reportar snapshot vacio si el runtime tiene los YAML nested
    - la UI no debe mostrar `Modo Bestia deshabilitado` salvo que la policy real este en `enabled: false`
-2. Persistir atribucion historica exacta `run_id -> bot_id` / `episode_id -> bot_id`:
+2. Validar en deploy publicado que `Research Batch` / `Modo Bestia` devuelven `400` fail-closed cuando falta dataset real:
+   - no debe crearse un batch nuevo en estado `FAILED` solo por dataset ausente
+   - el detalle debe exponer `market/symbol/timeframe` y la accion recomendada
+3. Persistir atribucion historica exacta `run_id -> bot_id` / `episode_id -> bot_id`:
    - hoy la vista bot-centrica de runs usa el pool actual del bot
    - falta guardar la relacion historica explicita para no depender de cambios futuros del pool
-3. Agregar evidencia visual/operativa de la pestana de aprendizaje en `docs/audit/`.
-4. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
+4. Agregar evidencia visual/operativa de la pestana de aprendizaje en `docs/audit/`.
+5. Mantener `LIVE_TRADING_ENABLED=false` y cerrar runtime real solo al final del programa.
 
 ## Riesgos abiertos del tramo
 - NO EVIDENCIA de OPE conservador (`IPS/DR/SWITCH`) cableado al motor de promotion.

@@ -2239,10 +2239,43 @@ class MassBacktestCoordinator:
     def _run_id(self) -> str:
         return self.engine.backtest_catalog.next_formatted_id("BX")
 
+    def _preflight_dataset_ready(self, *, cfg: dict[str, Any], historical_runs: list[dict[str, Any]]) -> dict[str, Any]:
+        preview_cfg = copy.deepcopy(cfg)
+        universe = self.engine.build_universe(config=preview_cfg, historical_runs=historical_runs)
+        preview_cfg["resolved_universe"] = universe
+        market = str(preview_cfg.get("market") or "crypto")
+        symbol = str(preview_cfg.get("symbol") or (universe[0] if universe else "BTCUSDT")).upper()
+        timeframe = str(preview_cfg.get("timeframe") or "5m")
+        start = str(preview_cfg.get("start") or "2024-01-01")
+        end = str(preview_cfg.get("end") or "2024-12-31")
+        data_mode = str(preview_cfg.get("data_mode") or "dataset").lower()
+        provider = build_data_provider(mode=data_mode, user_data_dir=self.engine.user_data_dir, catalog=self.engine.catalog)
+        dataset_info = provider.resolve(
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+        )
+        if not bool(getattr(dataset_info, "ready", False)):
+            hints = [str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()]
+            hint_text = " | ".join(hints) if hints else "Verificá dataset_source, symbol, timeframe y rango."
+            raise ValueError(
+                f"No hay dataset real disponible para {market}/{symbol}/{timeframe} en modo {data_mode}. {hint_text}"
+            )
+        updates = {
+            "resolved_universe": universe,
+            "data_provider": dataset_info.to_dict(),
+        }
+        if not str(preview_cfg.get("symbol") or "").strip():
+            updates["symbol"] = symbol
+        return updates
+
     def start_async(self, *, config: dict[str, Any], strategies: list[dict[str, Any]], historical_runs: list[dict[str, Any]], backtest_callback: Callable[[dict[str, Any], FoldWindow, dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
         run_id = self._run_id()
         cfg = copy.deepcopy(config)
         cfg["run_id"] = run_id
+        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs))
         self.engine._write_status(run_id, state="QUEUED", config=cfg, progress={"pct": 0, "total_tasks": 0, "completed_tasks": 0}, logs=["Job encolado."])
         with self._lock:
             self._spawn_job_thread_locked(
@@ -2275,6 +2308,7 @@ class MassBacktestCoordinator:
         est_trials = self._beast_estimated_trial_units(cfg=cfg, strategies=strategies)
         if est_trials > _i(policy.get("max_trials_per_batch"), 5000):
             raise ValueError(f"Batch excede max_trials_per_batch ({est_trials} > {_i(policy.get('max_trials_per_batch'), 5000)}).")
+        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs))
 
         with self._lock:
             self._beast_roll_day_if_needed_locked()

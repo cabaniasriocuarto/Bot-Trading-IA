@@ -1861,6 +1861,10 @@ El proyecto tiene:
   - `GET /api/v1/research/beast/status` expone `policy_state`, `policy_source_root`, `policy_warnings`
   - UI distingue `habilitado`, `bloqueado por policy` y `runtime sin policy`
   - `mass-backtest` y `beast` envian `data_mode=dataset` de forma explicita
+- `Research Batch` y `Modo Bestia` ya no encolan jobs inviables cuando falta dataset real:
+  - `MassBacktestCoordinator` hace preflight de dataset antes de escribir estado `QUEUED`
+  - `POST /api/v1/research/mass-backtest/start` y `POST /api/v1/research/beast/start` devuelven `400` con detalle accionable
+  - se evita el patron engañoso `QUEUED -> FAILED` por traceback interno solo porque faltaba `market/symbol/timeframe`
 - La resolucion de roots de `config/policies` en backend ahora es fail-safe por presencia real de YAML:
   - `rtlab_core/policy_paths.py` rankea candidatos por archivos canonicos disponibles
   - `app.py`, `mass_backtest_engine.py`, `cost_providers.py` y `credit_filter.py` usan esa misma resolucion
@@ -1875,7 +1879,7 @@ El proyecto tiene:
 - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py`: PASS
 - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q`: PASS
 - `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py -q`: PASS
-- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle" -q`: PASS
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle or mass_backtest_start_rejects_missing_dataset or research_beast_start_rejects_missing_dataset or mass_backtest_research_endpoints_and_mark_candidate or research_beast_endpoints_smoke" -q`: PASS
 - Warnings remanentes: Recharts en prerender (`width/height(-1)`), no bloqueantes
 
 ### Nota de bibliografia para este bloque

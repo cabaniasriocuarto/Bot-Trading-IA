@@ -4708,6 +4708,39 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   assert any(row["id"] == draft["id"] for row in recs.json())
 
 
+def test_research_mass_backtest_start_rejects_missing_dataset(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  assert strategies.status_code == 200, strategies.text
+  strategy_ids = [row["id"] for row in strategies.json()[:2]]
+
+  start = client.post(
+    "/api/v1/research/mass-backtest/start",
+    headers=headers,
+    json={
+      "strategy_ids": strategy_ids,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "data_mode": "dataset",
+      "max_variants_per_strategy": 1,
+      "max_folds": 2,
+      "train_days": 30,
+      "test_days": 30,
+      "top_n": 2,
+      "seed": 7,
+    },
+  )
+  assert start.status_code == 400, start.text
+  assert "no hay dataset real disponible" in str((start.json() or {}).get("detail") or "").lower()
+
+
 def test_mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -4814,6 +4847,52 @@ def test_research_beast_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
   resume = client.post("/api/v1/research/beast/resume", headers=headers, json={})
   assert resume.status_code == 200, resume.text
   assert resume.json()["ok"] is True
+
+
+def test_research_beast_start_rejects_missing_dataset(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": False,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": False,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": False,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+
+  start = client.post(
+    "/api/v1/research/beast/start",
+    headers=headers,
+    json={
+      "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "data_mode": "dataset",
+      "max_variants_per_strategy": 1,
+      "max_folds": 2,
+      "train_days": 30,
+      "test_days": 30,
+      "top_n": 2,
+      "seed": 7,
+      "tier": "hobby",
+    },
+  )
+  assert start.status_code == 400, start.text
+  assert "no hay dataset real disponible" in str((start.json() or {}).get("detail") or "").lower()
 
 
 def test_research_beast_start_accepts_orderflow_toggle(tmp_path: Path, monkeypatch) -> None:

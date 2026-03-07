@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import pytest
 
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.src.data.catalog import DataCatalog
@@ -522,3 +523,82 @@ def test_default_beast_policy_cfg_uses_nested_runtime_policies_when_root_is_empt
   beast = ((payload.get("policy_snapshot") or {}).get("beast_mode") or {}).get("beast_mode") or {}
   assert beast.get("enabled") is True
   assert beast.get("max_concurrent_jobs") == 9
+
+
+def test_start_async_rejects_missing_dataset_before_enqueue(tmp_path: Path) -> None:
+  engine = _engine(tmp_path)
+  coordinator = MassBacktestCoordinator(engine=engine)
+  cfg = {
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
+    "dataset_source": "auto",
+    "data_mode": "dataset",
+    "max_variants_per_strategy": 1,
+    "max_folds": 2,
+    "train_days": 30,
+    "test_days": 30,
+    "top_n": 2,
+    "seed": 7,
+  }
+  strategies = [{"id": "trend_pullback_orderflow_v2", "name": "Trend", "status": "active", "tags": ["trend"]}]
+
+  with pytest.raises(ValueError, match="No hay dataset real disponible"):
+    coordinator.start_async(
+      config=cfg,
+      strategies=strategies,
+      historical_runs=[],
+      backtest_callback=lambda variant, fold, costs: _dummy_run_factory(str(variant["strategy_id"]), fold),
+    )
+
+  assert engine.backtest_catalog.list_batches() == []
+
+
+def test_start_beast_async_rejects_missing_dataset_before_enqueue(tmp_path: Path, monkeypatch) -> None:
+  engine = _engine(tmp_path)
+  coordinator = MassBacktestCoordinator(engine=engine)
+  monkeypatch.setattr(
+    coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": False,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": False,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": False,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+  cfg = {
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
+    "dataset_source": "auto",
+    "data_mode": "dataset",
+    "max_variants_per_strategy": 1,
+    "max_folds": 2,
+    "train_days": 30,
+    "test_days": 30,
+    "top_n": 2,
+    "seed": 7,
+  }
+  strategies = [{"id": "trend_pullback_orderflow_v2", "name": "Trend", "status": "active", "tags": ["trend"]}]
+
+  with pytest.raises(ValueError, match="No hay dataset real disponible"):
+    coordinator.start_beast_async(
+      config=cfg,
+      strategies=strategies,
+      historical_runs=[],
+      backtest_callback=lambda variant, fold, costs: _dummy_run_factory(str(variant["strategy_id"]), fold),
+      tier="hobby",
+    )
+
+  assert coordinator.beast_status()["scheduler"]["queue_depth"] == 0

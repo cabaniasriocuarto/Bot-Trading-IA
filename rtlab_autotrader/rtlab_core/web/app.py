@@ -9294,12 +9294,15 @@ def create_app() -> FastAPI:
         cfg["policy_snapshot_source_root"] = str(_policies_bundle.get("source_root") or "")
         if _policies_bundle.get("warnings"):
             cfg["policy_snapshot_warnings"] = list(_policies_bundle.get("warnings") or [])
-        started = mass_backtest_coordinator.start_async(
-            config=cfg,
-            strategies=store.list_strategies(),
-            historical_runs=store.load_runs(),
-            backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
-        )
+        try:
+            started = mass_backtest_coordinator.start_async(
+                config=cfg,
+                strategies=store.list_strategies(),
+                historical_runs=store.load_runs(),
+                backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         store.add_log(
             event_type="research_mass_backtest_start",
             severity="info",
@@ -9336,12 +9339,15 @@ def create_app() -> FastAPI:
         cfg["policy_snapshot_source_root"] = str(_policies_bundle.get("source_root") or "")
         if _policies_bundle.get("warnings"):
             cfg["policy_snapshot_warnings"] = list(_policies_bundle.get("warnings") or [])
-        started = mass_backtest_coordinator.start_async(
-            config=cfg,
-            strategies=store.list_strategies(),
-            historical_runs=store.load_runs(),
-            backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
-        )
+        try:
+            started = mass_backtest_coordinator.start_async(
+                config=cfg,
+                strategies=store.list_strategies(),
+                historical_runs=store.load_runs(),
+                backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         batch_id = str(started.get("run_id") or "")
         store.add_log(
             event_type="batch_created",

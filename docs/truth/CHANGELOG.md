@@ -1942,6 +1942,9 @@
   - ahora se elige la raiz con YAML reales disponibles;
   - se corrige el caso de deploy donde `/app/config/policies` existe vacio y la policy valida vive en `/app/rtlab_autotrader/config/policies`;
   - esto evita falsos `Modo Bestia deshabilitado` por snapshot vacio en runtime.
+- `mass_backtest_engine.py` + `app.py`:
+  - `Research Batch` y `Modo Bestia` ahora hacen preflight de dataset real antes de encolar;
+  - si falta dataset, responden `400` con detalle accionable y no crean un batch `FAILED` por traceback interno.
 
 ### Validacion
 - `eslint src/app/(app)/backtests/page.tsx src/app/(app)/execution/page.tsx src/app/(app)/strategies/page.tsx src/lib/client-api.ts src/lib/types.ts` -> PASS
@@ -1950,5 +1953,5 @@
 - Warnings no bloqueantes: Recharts en prerender
 - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS (`17 passed`)
 - `python -m pytest rtlab_autotrader/tests/test_cost_providers.py rtlab_autotrader/tests/test_fundamentals_credit_filter.py -q` -> PASS (`10 passed`)
-- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS (`2 passed`)
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle or mass_backtest_start_rejects_missing_dataset or research_beast_start_rejects_missing_dataset or mass_backtest_research_endpoints_and_mark_candidate or research_beast_endpoints_smoke" -q` -> PASS (`6 passed`)
 - `python -m py_compile rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/backtest/cost_providers.py rtlab_autotrader/rtlab_core/fundamentals/credit_filter.py` -> PASS
