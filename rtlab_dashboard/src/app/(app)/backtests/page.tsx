@@ -47,6 +47,33 @@ type RunForm = {
   validation_mode: "walk-forward" | "purged-cv" | "cpcv";
 };
 
+type DataStatusEntry = {
+  market: string;
+  symbol: string;
+  timeframe: string;
+  source?: string;
+  start?: string;
+  end?: string;
+  dataset_hash?: string;
+  processed_path?: string | null;
+  manifest_path?: string;
+};
+
+type DataStatusMissing = {
+  market: string;
+  symbol: string;
+  timeframe: string;
+  hint?: string;
+};
+
+type DataStatusResponse = {
+  data_root: string;
+  available_count: number;
+  available: DataStatusEntry[];
+  missing_count: number;
+  missing: DataStatusMissing[];
+};
+
 type RunsListFilters = {
   q: string;
   run_type: "" | "single" | "batch_child";
@@ -474,6 +501,9 @@ export default function BacktestsPage() {
     use_orderflow_data: true,
   });
   const [focusRunTab, setFocusRunTab] = useState<FocusRunTab>("overview");
+  const [dataStatus, setDataStatus] = useState<DataStatusResponse | null>(null);
+  const [dataStatusLoading, setDataStatusLoading] = useState(false);
+  const [dataStatusError, setDataStatusError] = useState("");
 
   const [form, setForm] = useState<RunForm>({
     strategy_id: "",
@@ -491,14 +521,20 @@ export default function BacktestsPage() {
   });
 
   const refresh = useCallback(async () => {
-    const [stg, bt, botsRes] = await Promise.all([
+    setDataStatusLoading(true);
+    setDataStatusError("");
+    const [stg, bt, botsRes, dataStatusRes] = await Promise.all([
       apiGet<Strategy[]>("/api/v1/strategies"),
       apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
+      apiGet<DataStatusResponse>("/api/v1/data/status").catch(() => null),
     ]);
     setStrategies(stg);
     setRuns(bt);
     setBots(Array.isArray(botsRes?.items) ? botsRes.items : []);
+    setDataStatus(dataStatusRes);
+    if (!dataStatusRes) setDataStatusError("No se pudo consultar el catalogo de datasets reales.");
+    setDataStatusLoading(false);
     if (!form.strategy_id && stg[0]) {
       setForm((prev) => ({ ...prev, strategy_id: stg[0].id }));
     }
@@ -506,6 +542,58 @@ export default function BacktestsPage() {
       setMassSelectedStrategies(stg.slice(0, Math.min(5, stg.length)).map((row) => row.id));
     }
   }, [form.strategy_id, massSelectedStrategies.length]);
+
+  const selectedDatasetEntry = useMemo(() => {
+    const items = dataStatus?.available || [];
+    return (
+      items.find(
+        (row) =>
+          String(row.market || "").toLowerCase() === String(form.market || "").toLowerCase() &&
+          String(row.symbol || "").toUpperCase() === String(form.symbol || "").toUpperCase() &&
+          String(row.timeframe || "").toLowerCase() === String(form.timeframe || "").toLowerCase(),
+      ) || null
+    );
+  }, [dataStatus, form.market, form.symbol, form.timeframe]);
+
+  const datasetFallback1mEntry = useMemo(() => {
+    const items = dataStatus?.available || [];
+    if (selectedDatasetEntry) return null;
+    return (
+      items.find(
+        (row) =>
+          String(row.market || "").toLowerCase() === String(form.market || "").toLowerCase() &&
+          String(row.symbol || "").toUpperCase() === String(form.symbol || "").toUpperCase() &&
+          String(row.timeframe || "").toLowerCase() === "1m",
+      ) || null
+    );
+  }, [dataStatus, form.market, form.symbol, selectedDatasetEntry]);
+
+  const selectedDatasetMissing = useMemo(() => {
+    const items = dataStatus?.missing || [];
+    return (
+      items.find(
+        (row) =>
+          String(row.market || "").toLowerCase() === String(form.market || "").toLowerCase() &&
+          String(row.symbol || "").toUpperCase() === String(form.symbol || "").toUpperCase() &&
+          String(row.timeframe || "").toLowerCase() === String(form.timeframe || "").toLowerCase(),
+      ) || null
+    );
+  }, [dataStatus, form.market, form.symbol, form.timeframe]);
+
+  const datasetReadyState = useMemo(() => {
+    if (selectedDatasetEntry) return "exact";
+    if (datasetFallback1mEntry) return "resample_1m";
+    if (dataStatusLoading) return "loading";
+    return "missing";
+  }, [dataStatusLoading, datasetFallback1mEntry, selectedDatasetEntry]);
+
+  const datasetDownloadCommand = useMemo(() => {
+    if (String(form.market || "").toLowerCase() !== "crypto") return "";
+    const startMonth = String(form.start || "").slice(0, 7);
+    const endMonth = String(form.end || "").slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(startMonth) || !/^\d{4}-\d{2}$/.test(endMonth)) return "";
+    return `python rtlab_autotrader/scripts/download_crypto_binance_public.py --symbols ${String(form.symbol || "").toUpperCase()} --start-month ${startMonth} --end-month ${endMonth}`;
+  }, [form.end, form.market, form.start, form.symbol]);
 
   const refreshCatalogRuns = useCallback(async () => {
     setCatalogLoading(true);
@@ -1010,6 +1098,12 @@ export default function BacktestsPage() {
       setMassError("SeleccionÃ¡ al menos una estrategia para research masivo.");
       return;
     }
+    if (dataStatus && datasetReadyState === "missing") {
+      const hint = selectedDatasetMissing?.hint ? ` ${selectedDatasetMissing.hint}` : "";
+      const cmd = datasetDownloadCommand ? ` Comando sugerido: ${datasetDownloadCommand}` : "";
+      setMassError(`No hay dataset real disponible para ${form.market}/${form.symbol}/${form.timeframe}.${hint}${cmd}`);
+      return;
+    }
     setMassRunning(true);
     setMassError("");
     setMassMessage("");
@@ -1052,6 +1146,12 @@ export default function BacktestsPage() {
   const startBeastBatch = async () => {
     if (!massSelectedStrategies.length) {
       setMassError("SeleccionÃ¡ al menos una estrategia para Modo Bestia.");
+      return;
+    }
+    if (dataStatus && datasetReadyState === "missing") {
+      const hint = selectedDatasetMissing?.hint ? ` ${selectedDatasetMissing.hint}` : "";
+      const cmd = datasetDownloadCommand ? ` Comando sugerido: ${datasetDownloadCommand}` : "";
+      setMassError(`Modo Bestia requiere dataset real para ${form.market}/${form.symbol}/${form.timeframe}.${hint}${cmd}`);
       return;
     }
     if (beastEnabledState === "missing") {
@@ -3335,6 +3435,67 @@ export default function BacktestsPage() {
                   <label className="text-xs uppercase tracking-wide text-slate-400">Politica de datos</label>
                   <div className="h-10 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
                     Sin sinteticos: usa datos reales o devuelve error con la accion recomendada.
+                  </div>
+                </div>
+                <div className="space-y-1 md:col-span-2 xl:col-span-4">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-slate-400">Dataset real para batch</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Estado del catalogo para {form.market}/{form.symbol}/{form.timeframe}. Research Batch y Beast no usan sinteticos.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant={
+                            datasetReadyState === "exact"
+                              ? "success"
+                              : datasetReadyState === "resample_1m"
+                                ? "warn"
+                                : datasetReadyState === "missing"
+                                  ? "danger"
+                                  : "neutral"
+                          }
+                        >
+                          {datasetReadyState === "exact"
+                            ? "dataset exacto listo"
+                            : datasetReadyState === "resample_1m"
+                              ? "listo via 1m + resample"
+                              : datasetReadyState === "missing"
+                                ? "faltante"
+                                : "cargando"}
+                        </Badge>
+                        <Button type="button" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void refresh()} disabled={dataStatusLoading}>
+                          {dataStatusLoading ? "Consultando..." : "Refrescar datasets"}
+                        </Button>
+                      </div>
+                    </div>
+                    {selectedDatasetEntry ? (
+                      <p className="mt-2 text-[11px] text-slate-300">
+                        Fuente: <strong>{selectedDatasetEntry.source || "dataset"}</strong>
+                        {" "}· hash: <strong>{shortHash(selectedDatasetEntry.dataset_hash, 12)}</strong>
+                        {" "}· rango: <strong>{selectedDatasetEntry.start || "-"} {"->"} {selectedDatasetEntry.end || "-"}</strong>
+                      </p>
+                    ) : datasetFallback1mEntry ? (
+                      <p className="mt-2 text-[11px] text-amber-200">
+                        No hay dataset {form.timeframe} exacto, pero existe 1m reproducible para {form.symbol}. El backend puede reusar 1m y resamplear en runtime.
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-[11px] text-rose-300">
+                        Falta dataset real reproducible para este contexto. {selectedDatasetMissing?.hint || "Cargá dataset en user_data/data o user_data/datasets antes de correr el batch."}
+                      </p>
+                    )}
+                    {dataStatus?.data_root ? (
+                      <p className="mt-1 text-[11px] text-slate-500">Data root runtime: {dataStatus.data_root}</p>
+                    ) : null}
+                    {datasetReadyState === "missing" && datasetDownloadCommand ? (
+                      <div className="mt-2 rounded border border-slate-800 bg-slate-900/70 p-2 text-[11px] text-slate-300">
+                        <p className="font-semibold text-slate-100">Comando sugerido</p>
+                        <code className="mt-1 block break-all text-cyan-300">{datasetDownloadCommand}</code>
+                      </div>
+                    ) : null}
+                    {dataStatusError ? <p className="mt-2 text-[11px] text-amber-300">{dataStatusError}</p> : null}
                   </div>
                 </div>
                 <div className="space-y-1">

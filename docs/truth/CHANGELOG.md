@@ -1936,6 +1936,7 @@
 - `strategies/page.tsx`: las sugerencias/recomendaciones del bot ya pueden agregarse a un bot destino.
 - `app.py` + `types.ts`: `/api/v1/research/beast/status` expone metadata de policy (`policy_state`, `policy_source_root`, `policy_warnings`).
 - `backtests/page.tsx`: `Research Batch / Beast` ahora distingue `policy faltante` vs `policy deshabilitada` y envia `data_mode=dataset` explicitamente.
+- `backtests/page.tsx`: nuevo panel `Dataset real para batch` muestra si existe dataset exacto, si hay fallback `1m + resample`, y el comando sugerido cuando falta dataset real.
 
 ### Validacion
 - `eslint src/app/(app)/backtests/page.tsx src/app/(app)/execution/page.tsx src/app/(app)/strategies/page.tsx src/lib/client-api.ts src/lib/types.ts` -> PASS
