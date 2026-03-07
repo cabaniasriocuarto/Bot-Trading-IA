@@ -158,11 +158,12 @@ export default function ExecutionPage() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     const tick = async () => {
       if (cancelled) return;
       if (pollInFlightRef.current) {
-        timer = window.setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
+        timer = setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
         return;
       }
       pollInFlightRef.current = true;
@@ -178,13 +179,13 @@ export default function ExecutionPage() {
       } finally {
         pollInFlightRef.current = false;
       }
-      timer = window.setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
+      timer = setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
     };
 
-    timer = window.setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
+    timer = setTimeout(tick, isPageVisible ? ACTIVE_POLL_MS : HIDDEN_POLL_MS);
     return () => {
       cancelled = true;
-      if (timer) window.clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     };
   }, [isPageVisible, loadExecutionMetrics, loadTradingPanel]);
 
