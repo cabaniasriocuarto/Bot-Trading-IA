@@ -156,7 +156,7 @@ export default function ExecutionPage() {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof window.setTimeout> | null = null;
+    let timer: number | null = null;
 
     const tick = async () => {
       if (cancelled) return;
