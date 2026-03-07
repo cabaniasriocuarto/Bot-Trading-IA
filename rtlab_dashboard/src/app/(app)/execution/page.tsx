@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
-import { apiGet, apiPost } from "@/lib/client-api";
+import { apiDelete, apiGet, apiPost } from "@/lib/client-api";
 import type { BotInstance, BotStatusResponse, ExchangeDiagnoseResponse, ExecutionStats, HealthResponse, SettingsResponse, Strategy, TradingMode } from "@/lib/types";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/utils";
 
@@ -200,10 +200,10 @@ export default function ExecutionPage() {
 
   const qualityBars = useMemo(
     () => [
-      { metric: "maker_ratio", value: (stats?.maker_ratio || 0) * 100 },
-      { metric: "fill_ratio", value: (stats?.fill_ratio || 0) * 100 },
-      { metric: "p95_slippage", value: stats?.p95_slippage || 0 },
-      { metric: "p95_spread", value: stats?.p95_spread || 0 },
+      { metric: "Maker ratio (%)", value: (stats?.maker_ratio || 0) * 100, unit: "%" },
+      { metric: "Fill ratio (%)", value: (stats?.fill_ratio || 0) * 100, unit: "%" },
+      { metric: "Slippage p95 (bps)", value: stats?.p95_slippage || 0, unit: "bps" },
+      { metric: "Spread p95 (bps)", value: stats?.p95_spread || 0, unit: "bps" },
     ],
     [stats],
   );
@@ -463,6 +463,54 @@ export default function ExecutionPage() {
     }
   };
 
+  const deleteBot = async (bot: BotInstance) => {
+    if (!window.confirm(`Eliminar bot "${bot.name}"? Esta accion borra su registro activo.`)) return;
+    setBotBulkBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      await apiDelete(`/api/v1/bots/${encodeURIComponent(bot.id)}`);
+      setBotSelectedIds((prev) => prev.filter((id) => id !== bot.id));
+      if (selectedExecutionBotId === bot.id) setSelectedExecutionBotId("");
+      setMessage(`Bot "${bot.name}" eliminado.`);
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo borrar el bot.");
+    } finally {
+      setBotBulkBusy(false);
+    }
+  };
+
+  const deleteBotsBulk = async () => {
+    if (role !== "admin") return;
+    if (!botSelectedIds.length) {
+      setControlError("Selecciona al menos un bot para borrar.");
+      return;
+    }
+    if (!window.confirm(`Borrar ${botSelectedIds.length} bot(s) seleccionado(s)? Esta accion es irreversible.`)) return;
+    setBotBulkBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      let okCount = 0;
+      let errCount = 0;
+      for (const id of botSelectedIds) {
+        try {
+          await apiDelete(`/api/v1/bots/${encodeURIComponent(id)}`);
+          okCount++;
+        } catch {
+          errCount++;
+        }
+      }
+      setBotSelectedIds([]);
+      if (botSelectedIds.includes(selectedExecutionBotId)) setSelectedExecutionBotId("");
+      setMessage(`Borrados: ${okCount} bot(s)${errCount ? ` · Errores: ${errCount}` : ""}.`);
+      await refreshAll(false);
+    } finally {
+      setBotBulkBusy(false);
+    }
+  };
+
   const applyMode = async () => {
     setModeBusy(true);
     setControlError("");
@@ -604,9 +652,9 @@ export default function ExecutionPage() {
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <ActionButton
                 label={actionLoading === "/api/v1/bot/start" ? "Iniciando..." : "Iniciar"}
-                help="Inicia el bot con la estrategia principal configurada para el modo actual."
+                help={selectedExecutionBot ? `Inicia usando el pool del bot: ${selectedExecutionBot.name}` : "Inicia el bot con la estrategia principal del modo actual."}
                 disabled={role !== "admin" || !!actionLoading}
-                onClick={() => void runControlAction("/api/v1/bot/start", undefined, { successMessage: "Bot iniciado." })}
+                onClick={() => void runControlAction("/api/v1/bot/start", selectedExecutionBotId ? { bot_id: selectedExecutionBotId } : undefined, { successMessage: "Bot iniciado." })}
               />
               <ActionButton
                 label={actionLoading === "/api/v1/bot/stop" ? "Deteniendo..." : "Detener"}
@@ -624,9 +672,9 @@ export default function ExecutionPage() {
               />
               <ActionButton
                 label={actionLoading === "/api/v1/control/resume" ? "Reanudando..." : "Reanudar"}
-                help="Reanuda la operativa usando la estrategia principal del modo actual."
+                help={selectedExecutionBot ? `Reanuda usando el pool del bot: ${selectedExecutionBot.name}` : "Reanuda la operativa usando la estrategia principal del modo actual."}
                 disabled={role !== "admin" || !!actionLoading}
-                onClick={() => void runControlAction("/api/v1/control/resume", undefined, { successMessage: "Bot reanudado." })}
+                onClick={() => void runControlAction("/api/v1/control/resume", selectedExecutionBotId ? { bot_id: selectedExecutionBotId } : undefined, { successMessage: "Bot reanudado." })}
               />
               <ActionButton
                 label="Modo seguro ON"
@@ -739,6 +787,12 @@ export default function ExecutionPage() {
                     </Button>
                     <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { status: "archived" }, "Archivar bot")}>
                       Archivar bot
+                    </Button>
+                    <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void deleteBot(selectedExecutionBot)}>
+                      Borrar bot
+                    </Button>
+                    <Button variant="ghost" className="text-[11px]" onClick={() => { window.location.href = "/strategies"; }}>
+                      Editar pool →
                     </Button>
                   </div>
                   <p className="mt-2 text-[11px] text-slate-400">
@@ -1010,6 +1064,9 @@ export default function ExecutionPage() {
             <Button variant="danger" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "archived" }, "Archivar operadores")}>
               Archivar
             </Button>
+            <Button variant="danger" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void deleteBotsBulk()}>
+              Borrar
+            </Button>
           </div>
 
           <div className="overflow-x-auto">
@@ -1068,8 +1125,11 @@ export default function ExecutionPage() {
                           <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(bot.id, { status: bot.status === "active" ? "paused" : "active" }, bot.status === "active" ? "Pausar operador" : "Activar operador")}>
                             {bot.status === "active" ? "Pausar" : "Activar"}
                           </Button>
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(bot.id, { pool_strategy_ids: bot.pool_strategy_ids }, "Sincronizar pool")}>
-                            Pool
+                          <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => { window.location.href = "/strategies"; }}>
+                            Pool →
+                          </Button>
+                          <Button size="sm" variant="danger" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void deleteBot(bot)}>
+                            Borrar
                           </Button>
                         </div>
                       </TD>
@@ -1141,9 +1201,12 @@ export default function ExecutionPage() {
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <BarChart data={qualityBars}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="metric" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
+                  <XAxis dataKey="metric" tick={{ fill: "#94a3b8", fontSize: 10 }} interval={0} />
+                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: "% / bps", angle: -90, position: "insideLeft", offset: 10, fill: "#94a3b8", fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }}
+                    formatter={(val, _name, props) => [`${Number(val ?? 0).toFixed(2)} ${(props.payload as { unit?: string } | undefined)?.unit ?? ""}`, "Valor"]}
+                  />
                   <Bar dataKey="value" fill="#22d3ee" />
                 </BarChart>
               </ResponsiveContainer>

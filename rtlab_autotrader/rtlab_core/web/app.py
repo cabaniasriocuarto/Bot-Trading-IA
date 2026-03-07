@@ -460,6 +460,10 @@ class BotBulkPatchBody(BaseModel):
     notes: str | None = None
 
 
+class BotStartBody(BaseModel):
+    bot_id: str | None = None
+
+
 class ShadowStartBody(BaseModel):
     bot_id: str | None = None
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -7739,6 +7743,7 @@ def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str
     data_source = str(base_cfg.get("dataset_source") or "auto").lower()
     execution_mode = str(base_cfg.get("execution_mode") or "research").strip().lower()
     validation_mode = str(base_cfg.get("validation_mode") or "walk-forward")
+    bot_id_n = str(base_cfg.get("bot_id") or "").strip() or None
     strict_strategy_id = execution_mode != "demo"
     if data_source in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
         raise ValueError(
@@ -7746,6 +7751,7 @@ def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str
         )
     return store.create_event_backtest_run(
         strategy_id=strategy_id,
+        bot_id=bot_id_n,
         market=market,
         symbol=symbol,
         timeframe=timeframe,
@@ -11792,13 +11798,27 @@ def create_app() -> FastAPI:
         )
         return {"ok": True, "mode": mode}
 
-    @app.post("/api/v1/bot/start")
-    def bot_start(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
-        principal = store.registry.get_principal(state["mode"])
-        if not principal:
-            raise HTTPException(status_code=400, detail=f"No principals configured for mode {state['mode']}")
+        # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
+        strategy_name: str | None = None
+        active_bot_id = str(bot_id or "").strip() or None
+        if active_bot_id:
+            bots = store.load_bots()
+            bot_row = next((b for b in bots if str(b.get("id") or "") == active_bot_id), None)
+            if bot_row:
+                pool = bot_row.get("pool_strategy_ids") or []
+                if pool:
+                    strategy_name = str(pool[0])
+        if not strategy_name:
+            principal = store.registry.get_principal(state["mode"])
+            if not principal:
+                raise HTTPException(status_code=400, detail=f"No principals configured for mode {state['mode']}")
+            strategy_name = str(principal["name"])
+            active_bot_id = None
+        if active_bot_id:
+            state["active_bot_id"] = active_bot_id
         state["running"] = True
         state["killed"] = False
         state["bot_status"] = "RUNNING"
@@ -11809,10 +11829,14 @@ def create_app() -> FastAPI:
             severity="info",
             module="control",
             message=f"Bot started in {state['mode']}",
-            related_ids=[principal["name"]],
-            payload={"mode": state["mode"], "strategy": principal["name"]},
+            related_ids=[x for x in [strategy_name, active_bot_id] if x],
+            payload={"mode": state["mode"], "strategy": strategy_name, "bot_id": active_bot_id},
         )
-        return {"ok": True, "state": state["bot_status"], "mode": state["mode"]}
+        return {"ok": True, "state": state["bot_status"], "mode": state["mode"], "strategy": strategy_name, "bot_id": active_bot_id}
+
+    @app.post("/api/v1/bot/start")
+    def bot_start(body: BotStartBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        return _do_bot_start(bot_id=(body.bot_id if body else None))
 
     @app.post("/api/v1/bot/stop")
     def bot_stop(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -11868,8 +11892,8 @@ def create_app() -> FastAPI:
         return {"ok": True, "state": state["bot_status"]}
 
     @app.post("/api/v1/control/resume")
-    def control_resume(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        return bot_start(_)
+    def control_resume(body: BotStartBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        return _do_bot_start(bot_id=(body.bot_id if body else None))
 
     @app.post("/api/v1/control/safe-mode")
     async def control_safe_mode(request: Request, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
