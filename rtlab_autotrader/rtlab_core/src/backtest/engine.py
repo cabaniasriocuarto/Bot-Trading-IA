@@ -471,20 +471,27 @@ class StrategyRunner:
                 take_px = float(position["take_px"])
                 exit_reason: str | None = None
                 exit_px: float | None = None
+                bar_open = float(bar["open"])
                 if side == "long":
                     if float(bar["low"]) <= stop_px:
-                        exit_reason, exit_px = "sl", stop_px
+                        exit_reason = "sl"
+                        # Gap-pessimistic: if bar opens below stop, fill at open (worse than stop)
+                        exit_px = min(stop_px, bar_open)
                     elif float(bar["high"]) >= take_px:
                         exit_reason, exit_px = "tp", take_px
                 else:
                     if float(bar["high"]) >= stop_px:
-                        exit_reason, exit_px = "sl", stop_px
+                        exit_reason = "sl"
+                        # Gap-pessimistic: if bar opens above stop, fill at open (worse than stop)
+                        exit_px = max(stop_px, bar_open)
                     elif float(bar["low"]) <= take_px:
                         exit_reason, exit_px = "tp", take_px
 
                 if exit_reason is None and bool(position.get("use_ema20_take_profit", False)):
-                    ema20 = bar.get("ema20")
-                    if not pd.isna(ema20):
+                    # Use previous bar's EMA to avoid look-ahead bias (signal on bar i-1, fill on bar i)
+                    _prev_bar = rows[i - 1][1] if i > 0 else bar
+                    ema20 = _prev_bar.get("ema20")
+                    if ema20 is not None and not pd.isna(ema20):
                         ema_target = float(ema20)
                         if side == "long" and float(bar["high"]) >= ema_target:
                             exit_reason, exit_px = "tp_ema20", ema_target

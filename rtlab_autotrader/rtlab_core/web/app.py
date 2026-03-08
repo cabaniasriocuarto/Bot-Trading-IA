@@ -124,9 +124,9 @@ ROLE_VIEWER = "viewer"
 ALLOWED_ROLES = {ROLE_ADMIN, ROLE_VIEWER}
 ALLOWED_MODES = {"paper", "testnet", "live"}
 DEFAULT_ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123!"
+DEFAULT_ADMIN_PASSWORD = ""  # No hay default seguro — configurar ADMIN_PASSWORD en variables de entorno
 DEFAULT_VIEWER_USERNAME = "viewer"
-DEFAULT_VIEWER_PASSWORD = "viewer123!"
+DEFAULT_VIEWER_PASSWORD = ""  # No hay default seguro — configurar VIEWER_PASSWORD en variables de entorno
 RUNTIME_ENGINE_REAL = "real"
 RUNTIME_ENGINE_SIMULATED = "simulated"
 RUNTIME_CONTRACT_VERSION = "runtime_snapshot_v1"
@@ -1233,14 +1233,16 @@ class ApiRateLimiter:
 API_RATE_LIMITER = ApiRateLimiter()
 
 
+_KNOWN_INSECURE_PASSWORDS: frozenset[str] = frozenset(
+    {"", "admin123!", "viewer123!", "admin", "password", "test123", "changeme"}
+)
+
+
 def _has_default_credentials() -> bool:
-    admin_is_default = (
-        admin_username() == DEFAULT_ADMIN_USERNAME and admin_password() == DEFAULT_ADMIN_PASSWORD
-    )
-    viewer_is_default = (
-        viewer_username() == DEFAULT_VIEWER_USERNAME and viewer_password() == DEFAULT_VIEWER_PASSWORD
-    )
-    return admin_is_default or viewer_is_default
+    """Detecta contraseñas vacías, no configuradas, o conocidamente débiles."""
+    admin_is_insecure = admin_password() in _KNOWN_INSECURE_PASSWORDS
+    viewer_is_insecure = viewer_password() in _KNOWN_INSECURE_PASSWORDS
+    return admin_is_insecure or viewer_is_insecure
 
 
 def _validate_auth_config_for_production() -> None:

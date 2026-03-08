@@ -445,7 +445,11 @@ class OptionBLearningEngine:
                     reasons.append("feature_set_vs_baseline_fail")
                 if needs_validation:
                     reasons.append("needs_validation")
-                eligible = len([reason for reason in reasons if reason != "needs_validation"]) == 0
+                # Hard-block gates: cost stress failure and negative expectancy are non-negotiable.
+                # A proposal with these reasons must NOT become eligible even for "needs_validation" review.
+                _HARD_BLOCK = {"cost_stress_1_5x<0", "expectancy_net<=0"}
+                hard_blocked = any(r in _HARD_BLOCK for r in reasons)
+                eligible = (not hard_blocked) and len([r for r in reasons if r != "needs_validation"]) == 0
                 status = "pending" if eligible and not needs_validation else "needs_validation"
                 rationale = (
                     f"Régimen {regime} | activo {asset or '-'} | timeframe {timeframe or '-'} | "
