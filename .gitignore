@@ -17,3 +17,12 @@ docs/reference/biblio_raw/*
 rtlab_autotrader/user_data/*.sqlite3
 rtlab_autotrader/user_data/*.sqlite3-wal
 rtlab_autotrader/user_data/*.sqlite3-shm
+
+# Estado runtime generado (NO subir — se regenera en arranque)
+rtlab_autotrader/user_data/learning/bots.json
+rtlab_autotrader/user_data/strategy_packs/results/
+
+# Datos de mercado descargados (NO subir — grandes, reproducibles)
+rtlab_autotrader/user_data/data/crypto/processed/*.csv
+rtlab_autotrader/user_data/data/crypto/binance_public/
+rtlab_autotrader/user_data/data/crypto/manifests/

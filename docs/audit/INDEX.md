@@ -1,53 +1,20 @@
 # Audit Index
 
-## Ultima auditoria vigente
-- `docs/audit/AP_BOT_1034_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1033_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1032_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1031_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1030_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1029_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1028_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1027_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1026_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1025_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1024_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1020_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1019_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1017_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1016_BIBLIO_VALIDATION_20260305.md`
-- `docs/audit/AP_BOT_1015_BIBLIO_VALIDATION_20260304.md`
-- `docs/audit/AP_BOT_1014_BIBLIO_VALIDATION_20260304.md`
-- `docs/audit/AP_BOT_1013_BIBLIO_VALIDATION_20260304.md`
-- `docs/audit/AP_BOT_1012_BIBLIO_VALIDATION_20260304.md`
-- `docs/audit/AP_BOT_1011_BIBLIO_VALIDATION_20260304.md`
-- `docs/audit/AP_BOT_1006_1010_BIBLIO_VALIDATION_20260304.md`
-
-## Artefactos vigentes de soporte
-- `docs/audit/PROTECTED_CHECKS_GHA_22738228159_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22738098708_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_GHA_22734260830_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_GHA_22733869311_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_GHA_22733438064_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22733461982_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732896736_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_GHA_22732769817_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_GHA_22732584979_NON_STRICT_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_STAGING_GHA_22732410544_20260305.md`
-- `docs/audit/STAGING_SMOKE_20260305.md`
-- `docs/audit/PROTECTED_CHECKS_GHA_22731722376_20260305.md`
-- `docs/audit/BOTS_OVERVIEW_BENCHMARK_GHA_22706414197_20260305.md`
-- `docs/audit/NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md`
-- `docs/audit/AUDIT_REPORT_20260304.md`
-- `docs/audit/AUDIT_FINDINGS_ALL_20260304.md`
-- `docs/audit/AUDIT_BACKLOG_20260304.md`
-- `docs/audit/FINDINGS_MASTER_20260304.md`
-- `docs/audit/FINDINGS_DECISION_MATRIX_20260304.md`
+## Documentos sustantivos vigentes
+- `ACTION_PLAN_FINAL_20260304.md` — Plan de accion final
+- `AP0001_AP0002_RUNTIME_CONTRACT_V1.md` — Contratos de runtime AP0001/AP0002
+- `AUDIT_FINDINGS_ALL_20260304.md` — Hallazgos consolidados (version definitiva)
+- `AUDIT_REPORT_20260304.md` — Reporte de auditoria (version definitiva)
+- `BOT_LINK_BEAST_CLEANUP_20260307.md` — Limpieza beast/bot links
+- `FINDINGS_DECISION_MATRIX_20260304.md` — Matriz de decisiones
+- `FINDINGS_MASTER_20260304.md` — Master de hallazgos
+- `LEARNING_EXPERIENCE_VALIDATION_20260306.md` — Validacion experience learning
+- `NON_LIVE_CLOSEOUT_CHECKLIST_20260304.md` — Checklist cierre no-live
 
 ## Regla de lectura
-- Para decisiones actuales: usar solo los archivos de "vigentes" y `docs/truth/*`.
-- Reportes de benchmark y auditorias antiguas se consideran contexto historico.
+- Para decisiones actuales: usar los archivos de esta seccion y `docs/truth/*`.
+- Los reportes de runs (benchmarks, protected checks, biblio validations) fueron movidos a `docs/_archive/audit_runs/`.
 
 ## Historico
-- Archivos previos de auditoria/benchmark permanecen para trazabilidad y comparacion.
-- Material legacy no vigente fuera de `docs/audit/` fue movido a `docs/_archive/`.
+- 73 logs operativos de runs (benchmarks, protected checks, staging smoke, biblio validations) en `docs/_archive/audit_runs/`.
+- Versiones 20260228 de audit report y findings en `docs/_archive/audit_runs/` (supersedidas por versiones 20260304).
