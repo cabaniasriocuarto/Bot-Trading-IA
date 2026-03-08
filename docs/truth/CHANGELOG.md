@@ -1,5 +1,21 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-08
+
+### Release limpia v2 - deploy Beast + charts legibles
+- Backend deploy:
+  - `rtlab_autotrader/docker/Dockerfile` ahora copia `config/` al contenedor (`/app/config`) y fija `RTLAB_CONFIG_POLICIES_ROOT=/app/config/policies`.
+  - objetivo: evitar que Railway publique `policy_snapshot` vacio cuando el servicio se despliega con `rtlab_autotrader` como root.
+- Frontend Backtests:
+  - los overlays de `Deep Compare` (`Equity` y `Drawdown`) ahora muestran ejes con nombre y unidad contextual:
+    - X: `Paso / muestra`
+    - Y: `Equity neta` / `Drawdown`
+- Validacion local del bloque:
+  - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
+  - `npx eslint "src/app/(app)/backtests/page.tsx"` -> PASS
+  - `npm run build` -> PASS
+  - persisten warnings no bloqueantes de Recharts en prerender.
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

@@ -1,6 +1,22 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-06
+Fecha de actualizacion: 2026-03-08
+
+## Release limpia v2 - estado real de Beast/backtests en deploy
+
+- La causa mas probable del falso `Modo Bestia deshabilitado` observado en web no era el YAML local:
+  - era el empaquetado del backend desplegado sin `config/policies` dentro del contenedor.
+- Estado actual del codigo:
+  - `rtlab_autotrader/docker/Dockerfile` copia `config/` a `/app/config`.
+  - el runtime fija `RTLAB_CONFIG_POLICIES_ROOT=/app/config/policies`.
+  - esto alinea el deploy con la resolucion de `load_numeric_policies_bundle()` y evita `policy_snapshot` vacio por falta de archivos empaquetados.
+- Frontend Backtests:
+  - los overlays de `Deep Compare` ya no quedan con ejes mudos;
+  - ahora muestran `Paso / muestra` en X y `Equity neta` / `Drawdown` en Y.
+- Validacion local confirmada:
+  - backend test masivo: PASS
+  - build frontend: PASS
+  - el warning remanente de Recharts en prerender no bloquea deploy.
 
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 
