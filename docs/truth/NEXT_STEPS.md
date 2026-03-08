@@ -1,6 +1,19 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-08
+
+## Tramo inmediato (release limpia v2)
+1. Desplegar backend con el Dockerfile actualizado y revalidar:
+   - `GET /api/v1/research/beast/status`
+   - `policy_state=enabled` cuando `beast_mode.yaml` publicado tenga `enabled: true`
+   - `policy_source_root=/app/config/policies`
+2. Verificar en web publicada que los overlays de `Deep Compare` muestren:
+   - eje X: `Paso / muestra`
+   - eje Y: `Equity neta` / `Drawdown`
+3. Confirmar que los fallos nuevos de `Research Batch` / `Modo Bestia` respondan a causas reales:
+   - dataset faltante
+   - policy bloqueada
+   - y no a falta de `config/policies` en el contenedor.
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.
