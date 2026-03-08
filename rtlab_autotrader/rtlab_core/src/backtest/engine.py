@@ -502,12 +502,16 @@ class StrategyRunner:
                     exit_reason, exit_px = "time", float(bar["close"])
 
                 if exit_reason and exit_px is not None:
-                    # Model exit as a fill on this bar with market costs and capped to bar range.
-                    synthetic_bar = bar.copy()
-                    synthetic_bar["open"] = float(min(max(exit_px, float(bar["low"])), float(bar["high"])))
-                    exit_fill_side = "short" if side == "long" else "long"
-                    exit_fill = simulator.market_fill(synthetic_bar, exit_fill_side, qty, fee_bps=self.fee_bps)
-                    realized_exit_px = float(exit_fill["fill_px"])
+                    # ERR-005: Exits (SL/TP/time/EMA) are stop/limit-type fills at exit_px.
+                    # market_fill would displace fill_px by spread/slippage AND produce
+                    # spread_cost/slippage_cost records — double-counting the same cost.
+                    # Fix: apply costs at exit_px without price displacement.
+                    realized_exit_px = exit_px
+                    _exit_spread_bps = simulator.cost_model.spread_bps_for_bar(bar)
+                    _exit_slip_bps = float(simulator.cost_model.costs.slippage_bps)
+                    _exit_fees, _exit_spread_cost, _exit_slip_cost = simulator.cost_model.apply_fill_costs(
+                        realized_exit_px, qty, self.fee_bps, _exit_spread_bps / 2.0, _exit_slip_bps
+                    )
                     if side == "long":
                         gross = (realized_exit_px - float(position["entry_px"])) * qty
                     else:
@@ -516,11 +520,25 @@ class StrategyRunner:
                     avg_notional = (abs(float(position["entry_px"]) * qty) + abs(realized_exit_px * qty)) / 2.0
                     funding = avg_notional * (self.request.costs.funding_bps / 10000.0) * (hold_minutes / 480.0)
                     rollover = avg_notional * (self.request.costs.rollover_bps / 10000.0) * (hold_minutes / (24 * 60))
-                    fee_total = float(position["entry_fees"]) + float(exit_fill["fees"])
-                    spread_total = float(position["entry_spread_cost"]) + float(exit_fill["spread_cost"])
-                    slippage_total = float(position["entry_slippage_cost"]) + float(exit_fill["slippage_cost"])
+                    fee_total = float(position["entry_fees"]) + _exit_fees
+                    spread_total = float(position["entry_spread_cost"]) + _exit_spread_cost
+                    slippage_total = float(position["entry_slippage_cost"]) + _exit_slip_cost
                     cost_total = fee_total + spread_total + slippage_total + funding + rollover
                     net = gross - cost_total
+
+                    # ERR-002: MAE/MFE from actual bar extremes during holding period,
+                    # not fake 0.6x/1.1x gross multipliers.
+                    _entry_idx = int(position["entry_index"])
+                    _entry_px = float(position["entry_px"])
+                    _hold_bars = rows[_entry_idx : i + 1]
+                    _hold_lows = [float(r[1]["low"]) for r in _hold_bars]
+                    _hold_highs = [float(r[1]["high"]) for r in _hold_bars]
+                    if side == "long":
+                        _mae = max(0.0, _entry_px - min(_hold_lows)) * qty
+                        _mfe = max(0.0, max(_hold_highs) - _entry_px) * qty
+                    else:
+                        _mae = max(0.0, max(_hold_highs) - _entry_px) * qty
+                        _mfe = max(0.0, _entry_px - min(_hold_lows)) * qty
 
                     total_fees += fee_total
                     total_spread += spread_total
@@ -550,8 +568,8 @@ class StrategyRunner:
                             "slippage": round(spread_total + slippage_total, 6),
                             "pnl": round(gross, 6),
                             "pnl_net": round(net, 6),
-                            "mae": round(abs(gross) * 0.6, 6),
-                            "mfe": round(abs(gross) * 1.1, 6),
+                            "mae": round(_mae, 6),
+                            "mfe": round(_mfe, 6),
                             "reason_code": str(position.get("strategy_family") or self._family),
                             "exit_reason": exit_reason,
                             "events": [
