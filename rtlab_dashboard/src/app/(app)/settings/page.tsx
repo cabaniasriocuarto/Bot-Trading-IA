@@ -258,7 +258,7 @@ export default function SettingsPage() {
     };
 
     void hydrateRolloutPanel();
-    let timer: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
       if (cancelled) return;
       const waitMs = isPageVisible ? ROLLOUT_POLL_ACTIVE_MS : ROLLOUT_POLL_HIDDEN_MS;

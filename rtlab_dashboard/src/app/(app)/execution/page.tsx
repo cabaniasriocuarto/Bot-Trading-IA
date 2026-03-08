@@ -157,9 +157,7 @@ export default function ExecutionPage() {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: number | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
-
     const tick = async () => {
       if (cancelled) return;
       if (pollInFlightRef.current) {
