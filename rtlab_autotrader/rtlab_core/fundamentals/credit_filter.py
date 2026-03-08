@@ -12,6 +12,8 @@ from urllib.request import Request, urlopen
 
 import yaml
 
+from rtlab_core.policy_paths import resolve_policy_root
+
 from rtlab_core.backtest.catalog_db import BacktestCatalogDB
 
 
@@ -122,9 +124,9 @@ def _resolve_repo_root(explicit_policies_root: Path | None = None) -> Path:
 
 def _resolve_policies_root(explicit: Path | None = None) -> Path:
     if explicit:
-        return explicit.resolve()
+        return resolve_policy_root(_resolve_repo_root(explicit), explicit=explicit)
     monorepo_root = _resolve_repo_root(None)
-    return (monorepo_root / "config" / "policies").resolve()
+    return resolve_policy_root(monorepo_root, explicit=(monorepo_root / "config" / "policies").resolve())
 
 
 class FundamentalsCreditFilter:

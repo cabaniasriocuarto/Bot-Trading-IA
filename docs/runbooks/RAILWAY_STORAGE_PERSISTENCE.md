@@ -34,10 +34,10 @@ Evitar que un redeploy resetee estado runtime (bots/runs/logs) por usar `/tmp`.
 
 5. Verificar con script local (opcional recomendado)
 ```bash
+export RTLAB_ADMIN_PASSWORD="<PASSWORD_ADMIN>"
 python scripts/check_storage_persistence.py \
   --base-url https://bot-trading-ia-production.up.railway.app \
   --username Wadmin \
-  --password "<PASSWORD_ADMIN>" \
   --require-persistent
 ```
 

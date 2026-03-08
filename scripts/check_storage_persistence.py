@@ -17,6 +17,27 @@ def _normalize_base_url(url: str) -> str:
     return value[:-1] if value.endswith("/") else value
 
 
+def _allow_insecure_password_cli() -> bool:
+    raw = str(os.getenv("ALLOW_INSECURE_PASSWORD_CLI", "")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _resolve_password(*, cli_password: str) -> str:
+    cli_value = str(cli_password or "").strip()
+    if cli_value:
+        if not _allow_insecure_password_cli():
+            raise RuntimeError(
+                "Uso de --password deshabilitado por seguridad. "
+                "Usa RTLAB_ADMIN_PASSWORD/RTLAB_PASSWORD o token."
+            )
+        return cli_value
+    for env_name in ("RTLAB_ADMIN_PASSWORD", "RTLAB_PASSWORD"):
+        value = str(os.getenv(env_name, "")).strip()
+        if value:
+            return value
+    return ""
+
+
 def _fetch_json(
     *,
     base_url: str,
@@ -88,8 +109,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--password",
-        default=os.getenv("RTLAB_PASSWORD", ""),
-        help="Password para login si no hay token.",
+        default="",
+        help=(
+            "DEPRECATED (inseguro): password por CLI. "
+            "Usa RTLAB_ADMIN_PASSWORD/RTLAB_PASSWORD; para habilitar CLI setea ALLOW_INSECURE_PASSWORD_CLI=1."
+        ),
     )
     parser.add_argument("--timeout-sec", type=float, default=15.0, help="Timeout HTTP por request.")
     parser.add_argument(
@@ -110,7 +134,7 @@ def main() -> int:
         base_url=base_url,
         auth_token=args.auth_token,
         username=args.username,
-        password=args.password,
+        password=_resolve_password(cli_password=str(args.password or "")),
         timeout_sec=float(args.timeout_sec),
     )
     health = _fetch_json(base_url=base_url, path="/api/v1/health", token=token, timeout_sec=float(args.timeout_sec))

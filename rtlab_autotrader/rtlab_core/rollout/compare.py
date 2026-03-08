@@ -64,8 +64,8 @@ def _extract_orderflow_feature_set(report: dict[str, Any]) -> tuple[str, str]:
     if "feature_set:orderflow_on" in tag_values:
         return "orderflow_on", "tags"
 
-    # Backward compatibility: historic runs assumed order flow ON when missing.
-    return "orderflow_on", "default_backward_compat"
+    # AP-3005 fail-closed: si no hay evidencia explicita, queda UNKNOWN.
+    return "orderflow_unknown", "missing_fail_closed"
 
 
 class CompareEngine:
@@ -85,6 +85,16 @@ class CompareEngine:
 
         b_feature_set, b_feature_source = _extract_orderflow_feature_set(baseline_report)
         c_feature_set, c_feature_source = _extract_orderflow_feature_set(candidate_report)
+        feature_set_known = b_feature_set != "orderflow_unknown" and c_feature_set != "orderflow_unknown"
+        check(
+            "known_feature_set",
+            feature_set_known,
+            "Baseline y candidato deben declarar orderflow_feature_set explicito (no UNKNOWN)",
+            baseline=b_feature_set,
+            candidate=c_feature_set,
+            baseline_source=b_feature_source,
+            candidate_source=c_feature_source,
+        )
         check(
             "same_feature_set",
             b_feature_set == c_feature_set,

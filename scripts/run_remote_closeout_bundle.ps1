@@ -7,6 +7,7 @@ param(
     [int]$TargetBots = 30,
     [double]$TimeoutSec = 10.0,
     [string]$Password = "",
+    [string]$AuthToken = "",
     [switch]$AutoSeed = $true,
     [switch]$Exact = $false,
     [switch]$AllowDelete = $false,
@@ -14,6 +15,8 @@ param(
     [string]$DeletePolicy = "seed-only",
     [double]$SeedPaceSec = 0.8,
     [switch]$RequireTargetPass,
+    [ValidateSet("client", "server", "either")]
+    [string]$PassCriterion = "server",
     [switch]$AllowProtected404Fallback,
     [switch]$AllowNoEvidence,
     [switch]$Retry429 = $true,
@@ -32,11 +35,23 @@ try {
     }
 
     $adminPass = [string]$Password
-    if ([string]::IsNullOrWhiteSpace($adminPass)) {
+    $token = [string]$AuthToken
+    if ([string]::IsNullOrWhiteSpace($adminPass) -and [string]::IsNullOrWhiteSpace($token)) {
         $adminPass = Read-Host "ADMIN_PASSWORD"
     }
-    if ([string]::IsNullOrWhiteSpace($adminPass)) {
-        throw "ADMIN_PASSWORD vacio. Cancelado."
+    if ([string]::IsNullOrWhiteSpace($adminPass) -and [string]::IsNullOrWhiteSpace($token)) {
+        throw "Falta auth: pasar -AuthToken o -Password."
+    }
+
+    $prevAuthToken = $env:RTLAB_AUTH_TOKEN
+    $prevPassword = $env:RTLAB_PASSWORD
+    $prevBenchPassword = $env:RTLAB_BENCH_PASSWORD
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        $env:RTLAB_AUTH_TOKEN = $token
+    }
+    if (-not [string]::IsNullOrWhiteSpace($adminPass)) {
+        $env:RTLAB_PASSWORD = $adminPass
+        $env:RTLAB_BENCH_PASSWORD = $adminPass
     }
 
     $effectiveTarget = [Math]::Max(1, [Math]::Max($TargetBots, $MinBotsRequired))
@@ -46,12 +61,15 @@ try {
             "scripts/seed_bots_remote.py",
             "--base-url", $BaseUrl,
             "--username", $Username,
-            "--password", $adminPass,
             "--target-bots", "$effectiveTarget",
             "--timeout-sec", "$TimeoutSec",
             "--max-retries-429", "$MaxRetries429",
             "--pace-sec", "$SeedPaceSec"
         )
+        if (-not [string]::IsNullOrWhiteSpace($token)) {
+            $seedArgs += "--auth-token"
+            $seedArgs += "$token"
+        }
         if ($Retry429) {
             $seedArgs += "--retry-429"
         }
@@ -76,7 +94,6 @@ try {
     & python scripts/check_storage_persistence.py `
         --base-url $BaseUrl `
         --username $Username `
-        --password $adminPass `
         --timeout-sec $TimeoutSec `
         --require-persistent
     if ($LASTEXITCODE -ne 0) {
@@ -87,7 +104,6 @@ try {
     & python scripts/build_ops_snapshot.py `
         --base-url $BaseUrl `
         --username $Username `
-        --password $adminPass `
         --timeout-sec $TimeoutSec `
         --require-protected `
         --label ops_block2_snapshot_final
@@ -110,7 +126,6 @@ try {
             & python scripts/build_ops_snapshot.py `
                 --base-url $BaseUrl `
                 --username $Username `
-                --password $adminPass `
                 --timeout-sec $TimeoutSec `
                 --label ops_block2_snapshot_final_legacy
             if ($LASTEXITCODE -ne 0) {
@@ -126,13 +141,17 @@ try {
         "scripts/benchmark_bots_overview.py",
         "--base-url", $BaseUrl,
         "--username", $Username,
-        "--password", $adminPass,
         "--requests", "$Requests",
         "--warmup", "$Warmup",
         "--timeout-sec", "$TimeoutSec",
+        "--pass-criterion", "$PassCriterion",
         "--min-bots-required", "$MinBotsRequired",
         "--report-path", $benchmarkReport
     )
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        $benchArgs += "--auth-token"
+        $benchArgs += "$token"
+    }
     if (-not $AllowNoEvidence) {
         $benchArgs += "--require-evidence"
     }
@@ -173,6 +192,13 @@ try {
     }
 }
 finally {
+    if ($null -ne $prevAuthToken) { $env:RTLAB_AUTH_TOKEN = $prevAuthToken } else { Remove-Item Env:RTLAB_AUTH_TOKEN -ErrorAction SilentlyContinue }
+    if ($null -ne $prevPassword) { $env:RTLAB_PASSWORD = $prevPassword } else { Remove-Item Env:RTLAB_PASSWORD -ErrorAction SilentlyContinue }
+    if ($null -ne $prevBenchPassword) { $env:RTLAB_BENCH_PASSWORD = $prevBenchPassword } else { Remove-Item Env:RTLAB_BENCH_PASSWORD -ErrorAction SilentlyContinue }
     Remove-Variable adminPass -ErrorAction SilentlyContinue
+    Remove-Variable token -ErrorAction SilentlyContinue
+    Remove-Variable prevAuthToken -ErrorAction SilentlyContinue
+    Remove-Variable prevPassword -ErrorAction SilentlyContinue
+    Remove-Variable prevBenchPassword -ErrorAction SilentlyContinue
     Pop-Location
 }

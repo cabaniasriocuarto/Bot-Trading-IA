@@ -91,3 +91,8 @@ Si no hay tooling instalado:
 - Rotación recomendada de claves:
   - `INTERNAL_PROXY_TOKEN`: mensual o ante incidente.
   - API keys de exchange: trimestral o ante sospecha.
+
+## Logging seguro (CWE-532)
+- Aplicar `docs/security/LOGGING_POLICY.md` en backend, BFF y scripts de automatizacion.
+- No loguear secretos, tokens completos ni credenciales.
+- Mantener bloqueo de patrones inseguros (`--password`) en CI/automation.

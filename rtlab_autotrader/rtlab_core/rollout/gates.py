@@ -43,18 +43,18 @@ class GateEvaluator:
     def __init__(self, *, repo_root: Path) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.gates_path_primary = (self.repo_root / "config" / "policies" / "gates.yaml").resolve()
-        self.gates_path_fallback = (self.repo_root / "knowledge" / "policies" / "gates.yaml").resolve()
 
     def _load_thresholds(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        gates_path = self.gates_path_primary if self.gates_path_primary.exists() else self.gates_path_fallback
-        if gates_path.exists():
+        source_mode = "default_fail_closed"
+        if self.gates_path_primary.exists():
             try:
-                raw = yaml.safe_load(gates_path.read_text(encoding="utf-8")) or {}
+                raw = yaml.safe_load(self.gates_path_primary.read_text(encoding="utf-8")) or {}
             except Exception:
                 raw = {}
-            if isinstance(raw, dict):
+            if isinstance(raw, dict) and raw:
                 payload = raw
+                source_mode = "config"
         offline = payload.get("offline_rollout") if isinstance(payload.get("offline_rollout"), dict) else {}
         offline_numeric = {
             key: _safe_float(offline[key], DEFAULT_OFFLINE_GATES[key])
@@ -71,9 +71,10 @@ class GateEvaluator:
             merged["pbo_max"] = _safe_float(pbo_threshold, merged["pbo_max"])
         if "dsr_min" not in offline_numeric and isinstance(dsr_threshold, (int, float)):
             merged["dsr_min"] = _safe_float(dsr_threshold, merged["dsr_min"])
-        merged["pbo_required"] = bool(pbo_cfg.get("enabled", False))
-        merged["dsr_required"] = bool(dsr_cfg.get("enabled", False))
-        merged["source_path"] = str(gates_path)
+        merged["pbo_required"] = bool(pbo_cfg.get("enabled", source_mode != "config"))
+        merged["dsr_required"] = bool(dsr_cfg.get("enabled", source_mode != "config"))
+        merged["source_path"] = str(self.gates_path_primary)
+        merged["source_mode"] = source_mode
         return merged
 
     def evaluate(self, candidate_report: dict[str, Any]) -> dict[str, Any]:

@@ -1,0 +1,147 @@
+name: Staging Smoke (GitHub VM)
+
+on:
+  schedule:
+    - cron: "20 5 * * *"
+  workflow_dispatch:
+    inputs:
+      backend_base_url:
+        description: Backend staging base URL
+        required: true
+        default: https://bot-trading-ia-staging.up.railway.app
+        type: string
+      frontend_login_url:
+        description: Frontend staging login URL
+        required: true
+        default: https://bot-trading-ia-staging.vercel.app/login
+        type: string
+      username:
+        description: Admin username
+        required: true
+        default: Wadmin
+        type: string
+      timeout_sec:
+        description: HTTP timeout seconds
+        required: true
+        default: 20
+        type: number
+      require_auth_checks:
+        description: Require authenticated /api/v1/bots checks
+        required: true
+        default: true
+        type: boolean
+      strict:
+        description: Fail workflow when smoke checks fail
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Validate auth configuration
+        env:
+          REQUIRE_AUTH: ${{ github.event_name == 'schedule' && 'true' || inputs.require_auth_checks }}
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+          RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
+        run: |
+          selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+          selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+          if [[ "${REQUIRE_AUTH}" == "true" && -z "${selected_admin_password}" && -z "${selected_auth_token}" ]]; then
+            echo "Missing staging secrets: set RTLAB_STAGING_AUTH_TOKEN or RTLAB_STAGING_ADMIN_PASSWORD." >&2
+            exit 1
+          fi
+
+      - name: Run staging smoke
+        env:
+          BACKEND_BASE_URL: ${{ github.event_name == 'schedule' && 'https://bot-trading-ia-staging.up.railway.app' || inputs.backend_base_url }}
+          FRONTEND_LOGIN_URL: ${{ github.event_name == 'schedule' && 'https://bot-trading-ia-staging.vercel.app/login' || inputs.frontend_login_url }}
+          USERNAME: ${{ github.event_name == 'schedule' && 'Wadmin' || inputs.username }}
+          TIMEOUT_SEC: ${{ github.event_name == 'schedule' && 20 || inputs.timeout_sec }}
+          REQUIRE_AUTH: ${{ github.event_name == 'schedule' && 'true' || inputs.require_auth_checks }}
+          STRICT: ${{ github.event_name == 'schedule' && 'true' || inputs.strict }}
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+          RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+          RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          report_prefix="artifacts/staging_smoke_gha_${GITHUB_RUN_ID}"
+          selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+          selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+          export RTLAB_ADMIN_PASSWORD="${selected_admin_password}"
+          export RTLAB_PASSWORD="${selected_admin_password}"
+
+          cmd=(
+            python scripts/staging_smoke_report.py
+            --backend-base-url "${BACKEND_BASE_URL}"
+            --frontend-login-url "${FRONTEND_LOGIN_URL}"
+            --username "${USERNAME}"
+            --timeout-sec "${TIMEOUT_SEC}"
+            --report-prefix "${report_prefix}"
+          )
+
+          if [[ "${REQUIRE_AUTH}" == "true" ]]; then
+            cmd+=(--require-auth-checks)
+          fi
+
+          if [[ "${STRICT}" == "true" ]]; then
+            cmd+=(--strict)
+          else
+            cmd+=(--no-strict)
+          fi
+
+          if [[ -n "${selected_auth_token}" ]]; then
+            cmd+=(--auth-token "${selected_auth_token}")
+          fi
+
+          "${cmd[@]}" | tee artifacts/staging_smoke_stdout.log
+
+      - name: Build summary
+        if: always()
+        run: |
+          set -euo pipefail
+          latest_md="$(ls -1t artifacts/staging_smoke_gha_${GITHUB_RUN_ID}_*.md 2>/dev/null | head -n 1 || true)"
+          if [[ -n "${latest_md}" && -f "${latest_md}" ]]; then
+            {
+              echo "## Staging Smoke"
+              echo
+              grep -E "^- front_login_ok:|^- health_ok:|^- health_mode:|^- runtime_ready_for_live:|^- bots_check_status:|^- overall_pass:" "${latest_md}" || true
+              echo
+              echo "Report file: ${latest_md}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "No staging-smoke report generated." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-smoke-${{ github.run_id }}
+          path: |
+            artifacts/staging_smoke_gha_${{ github.run_id }}_*.md
+            artifacts/staging_smoke_gha_${{ github.run_id }}_*.json
+            artifacts/staging_smoke_stdout.log
+          if-no-files-found: warn

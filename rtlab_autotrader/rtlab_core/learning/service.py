@@ -41,6 +41,49 @@ def _json_save(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _resolve_repo_root_for_policy() -> Path | None:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "config" / "policies" / "risk_policy.yaml").exists():
+            return parent
+    return None
+
+
+def _default_learning_risk_profile() -> dict[str, Any]:
+    repo_root = _resolve_repo_root_for_policy()
+    if repo_root is None:
+        return dict(MEDIUM_RISK_PROFILE)
+    policy_path = (repo_root / "config" / "policies" / "risk_policy.yaml").resolve()
+    try:
+        payload = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+        root = payload.get("risk_policy") if isinstance(payload.get("risk_policy"), dict) else {}
+        triggers = root.get("triggers") if isinstance(root.get("triggers"), dict) else {}
+        daily_cfg = triggers.get("daily_loss_pct") if isinstance(triggers.get("daily_loss_pct"), dict) else {}
+        dd_cfg = triggers.get("max_drawdown_pct") if isinstance(triggers.get("max_drawdown_pct"), dict) else {}
+
+        soft_daily = abs(float(daily_cfg.get("soft_kill_bot_at", 0.0))) if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_daily = abs(float(daily_cfg.get("hard_kill_bot_at", 0.0))) if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_dd = abs(float(dd_cfg.get("hard_kill_bot_at", 0.0))) if bool(dd_cfg.get("enabled", False)) else 0.0
+        base = dict(MEDIUM_RISK_PROFILE)
+        return {
+            **base,
+            "risk_profile": "policy_medium",
+            "source": "config/policies/risk_policy.yaml",
+            "paper": {
+                **(base.get("paper") if isinstance(base.get("paper"), dict) else {}),
+                "max_daily_loss_pct": soft_daily if soft_daily > 0 else float((base.get("paper") or {}).get("max_daily_loss_pct", 3.0)),
+                "max_drawdown_pct": hard_dd if hard_dd > 0 else float((base.get("paper") or {}).get("max_drawdown_pct", 15.0)),
+            },
+            "live_initial": {
+                **(base.get("live_initial") if isinstance(base.get("live_initial"), dict) else {}),
+                "max_daily_loss_pct": hard_daily if hard_daily > 0 else float((base.get("live_initial") or {}).get("max_daily_loss_pct", 2.0)),
+                "max_drawdown_pct": hard_dd if hard_dd > 0 else float((base.get("live_initial") or {}).get("max_drawdown_pct", 10.0)),
+            },
+        }
+    except Exception:
+        return dict(MEDIUM_RISK_PROFILE)
+
+
 class LearningService:
     def __init__(self, *, user_data_dir: Path, repo_root: Path) -> None:
         self.root = (user_data_dir / "learning").resolve()
@@ -72,7 +115,7 @@ class LearningService:
                 "allow_auto_apply": False,
                 "allow_live": False,
             },
-            "risk_profile": MEDIUM_RISK_PROFILE,
+            "risk_profile": _default_learning_risk_profile(),
         }
 
     def ensure_settings_shape(self, settings: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +162,11 @@ class LearningService:
         return next((row for row in engines if str(row.get("id")) == fallback_id), None)
 
     def _canonical_gates_thresholds(self) -> dict[str, Any]:
+        default_fail_closed = {
+            "source": "config/policies/gates.yaml:default_fail_closed",
+            "pbo_max": 0.05,
+            "dsr_min": 0.95,
+        }
         config_path = (self.knowledge.repo_root / "config" / "policies" / "gates.yaml").resolve()
         if config_path.exists():
             try:
@@ -133,13 +181,8 @@ class LearningService:
                         "dsr_min": float(dsr_cfg.get("min_dsr", 0.95) or 0.95),
                     }
             except Exception:
-                pass
-        gates = self.knowledge.get_gates()
-        return {
-            "source": "knowledge/policies/gates.yaml",
-            "pbo_max": float(((gates.get("pbo") or {}).get("max_allowed")) or 0.55),
-            "dsr_min": float(((gates.get("dsr") or {}).get("min_allowed")) or 0.10),
-        }
+                return dict(default_fail_closed)
+        return dict(default_fail_closed)
 
     def _streams_from_runs(self, runs: list[dict[str, Any]]) -> dict[str, list[float]]:
         latest = runs[:50]
@@ -442,8 +485,16 @@ class LearningService:
                 "pbo": pbo_value,
                 "dsr": dsr_value,
                 "gates_source": str(gates_thresholds.get("source") or "config/policies/gates.yaml"),
-                "cpcv": {"implemented": False, "enforce": False, "note": "hook_only"},
-                "purged_cv": {"implemented": False, "enforce": False, "note": "hook_only"},
+                "cpcv": {
+                    "implemented": True,
+                    "enforce": bool((learning.get("validation") or {}).get("enforce_cpcv", False)),
+                    "note": "backtest_engine_cpcv",
+                },
+                "purged_cv": {
+                    "implemented": True,
+                    "enforce": bool((learning.get("validation") or {}).get("enforce_purged_cv", False)),
+                    "note": "backtest_engine_purged_cv",
+                },
             }
             row["status"] = "APPROVED" if accepted else "REJECTED"
             row["status_reason"] = "; ".join(reasons) if reasons else "Validacion OK"

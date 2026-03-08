@@ -17,7 +17,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock, RLock, Thread
 from typing import Any, Literal
 from urllib.parse import urlencode, urlparse
 
@@ -29,8 +29,16 @@ from pydantic import BaseModel
 
 from rtlab_core.config import load_config
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.execution.oms import OMS, Order
+from rtlab_core.execution.reconciliation import reconcile_orders
 from rtlab_core.learning import LearningService
+from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.knowledge import KnowledgeLoader
+from rtlab_core.learning.option_b_engine import OptionBLearningEngine
+from rtlab_core.learning.shadow_runner import BINANCE_PUBLIC_MARKETDATA_BASE_URL, ShadowRunConfig, ShadowRunner
+from rtlab_core.policy_paths import resolve_policy_root
+from rtlab_core.risk.kill_switch import KillSwitch
+from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
 from rtlab_core.src.data.catalog import DataCatalog
@@ -39,11 +47,13 @@ from rtlab_core.src.data.universes import MARKET_UNIVERSES, SUPPORTED_TIMEFRAMES
 from rtlab_core.src.research import MassBacktestCoordinator, MassBacktestEngine
 from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngine
 from rtlab_core.strategy_packs.registry_db import RegistryDB
+from rtlab_core.types import OrderStatus, Side
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 MONOREPO_ROOT = (PROJECT_ROOT.parent if (PROJECT_ROOT.parent / "knowledge").exists() else PROJECT_ROOT).resolve()
-CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
+DEFAULT_CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
+CONFIG_POLICIES_ROOT = resolve_policy_root(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
 
 
 def _resolve_user_data_dir() -> Path:
@@ -114,11 +124,14 @@ ROLE_VIEWER = "viewer"
 ALLOWED_ROLES = {ROLE_ADMIN, ROLE_VIEWER}
 ALLOWED_MODES = {"paper", "testnet", "live"}
 DEFAULT_ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123!"
+DEFAULT_ADMIN_PASSWORD = ""  # No hay default seguro — configurar ADMIN_PASSWORD en variables de entorno
 DEFAULT_VIEWER_USERNAME = "viewer"
-DEFAULT_VIEWER_PASSWORD = "viewer123!"
+DEFAULT_VIEWER_PASSWORD = ""  # No hay default seguro — configurar VIEWER_PASSWORD en variables de entorno
 RUNTIME_ENGINE_REAL = "real"
 RUNTIME_ENGINE_SIMULATED = "simulated"
+RUNTIME_CONTRACT_VERSION = "runtime_snapshot_v1"
+RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = "synthetic_v1"
+RUNTIME_TELEMETRY_SOURCE_REAL = "runtime_loop_v1"
 BINANCE_TESTNET_BASE_URL_DEFAULT = "https://testnet.binance.vision"
 BINANCE_TESTNET_WS_URL_DEFAULT = "wss://testnet.binance.vision/ws"
 BINANCE_LIVE_BASE_URL_DEFAULT = "https://api.binance.com"
@@ -157,21 +170,49 @@ LOGIN_RATE_LIMIT_ATTEMPTS = _env_int("RATE_LIMIT_LOGIN_ATTEMPTS", 10)
 LOGIN_RATE_LIMIT_WINDOW_MIN = _env_int("RATE_LIMIT_LOGIN_WINDOW_MIN", 10)
 LOGIN_LOCKOUT_MIN = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_MIN", 30)
 LOGIN_LOCKOUT_AFTER_FAILS = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_AFTER_FAILS", 20)
+LOGIN_RATE_LIMIT_BACKEND = str(os.getenv("RATE_LIMIT_LOGIN_BACKEND", "sqlite")).strip().lower()
+LOGIN_RATE_LIMIT_SQLITE_PATH = Path(
+    str(os.getenv("RATE_LIMIT_LOGIN_SQLITE_PATH", "")).strip() or str(CONSOLE_DB_PATH)
+).resolve()
 API_RATE_LIMIT_ENABLED = _env_bool("RATE_LIMIT_GENERAL_ENABLED", True)
 API_RATE_LIMIT_GENERAL_PER_MIN = max(1, _env_int("RATE_LIMIT_GENERAL_REQ_PER_MIN", 60))
 API_RATE_LIMIT_EXPENSIVE_PER_MIN = max(1, _env_int("RATE_LIMIT_EXPENSIVE_REQ_PER_MIN", 5))
 API_RATE_LIMIT_WINDOW_SEC = max(10, _env_int("RATE_LIMIT_WINDOW_SEC", 60))
+RUNTIME_HEARTBEAT_MAX_AGE_SEC = max(5, _env_int("RUNTIME_HEARTBEAT_MAX_AGE_SEC", 90))
+RUNTIME_RECONCILIATION_MAX_AGE_SEC = max(5, _env_int("RUNTIME_RECONCILIATION_MAX_AGE_SEC", 120))
+RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC = max(5, _env_int("RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC", 120))
 BOTS_OVERVIEW_CACHE_TTL_SEC = max(1, _env_int("BOTS_OVERVIEW_CACHE_TTL_SEC", 10))
 BOTS_MAX_INSTANCES = max(1, _env_int("BOTS_MAX_INSTANCES", 30))
 BOTS_OVERVIEW_INCLUDE_RECENT_LOGS = _env_bool("BOTS_OVERVIEW_INCLUDE_RECENT_LOGS", True)
 BOTS_OVERVIEW_RECENT_LOGS_PER_BOT = max(0, _env_int("BOTS_OVERVIEW_RECENT_LOGS_PER_BOT", 5))
+BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT = max(0, _env_int("BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT", 40))
+BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE = max(10, _env_int("BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE", 250))
 BOTS_OVERVIEW_PROFILE_SLOW_MS = max(50, _env_int("BOTS_OVERVIEW_PROFILE_SLOW_MS", 500))
 BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC = max(5, _env_int("BOTS_OVERVIEW_SLOW_LOG_THROTTLE_SEC", 30))
 BOTS_LOGS_REF_BACKFILL_MAX_ROWS = max(1000, _env_int("BOTS_LOGS_REF_BACKFILL_MAX_ROWS", 50000))
+RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC", 30))
+RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS", 2000))
+RUNTIME_REMOTE_ORDERS_ENABLED = _env_bool("RUNTIME_REMOTE_ORDERS_ENABLED", False)
+LIVE_TRADING_ENABLED = _env_bool("LIVE_TRADING_ENABLED", False)
+RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC", 60))
+RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS = max(200, _env_int("RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS", 2000))
+RUNTIME_REMOTE_ORDER_NOTIONAL_USD = max(5.0, _env_float("RUNTIME_REMOTE_ORDER_NOTIONAL_USD", 15.0))
+RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC", 120))
+RUNTIME_REMOTE_ORDER_SYMBOL = str(os.getenv("RUNTIME_REMOTE_ORDER_SYMBOL", os.getenv("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))).strip().upper()
+RUNTIME_REMOTE_ORDER_SIDE = str(os.getenv("RUNTIME_REMOTE_ORDER_SIDE", "BUY")).strip().upper()
+RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC = max(1, _env_int("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", 20))
 BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
 BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
 BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
 SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(1, _env_int("SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC", 60))
+OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(0.1, _env_float("OPS_ALERT_SLIPPAGE_P95_WARN_BPS", 8.0))
+OPS_ALERT_API_ERRORS_WARN = max(1, _env_int("OPS_ALERT_API_ERRORS_WARN", 1))
+OPS_ALERT_BREAKER_WINDOW_HOURS = max(1, _env_int("OPS_ALERT_BREAKER_WINDOW_HOURS", 24))
+OPS_ALERT_DRIFT_ENABLED = _env_bool("OPS_ALERT_DRIFT_ENABLED", True)
+SHADOW_MARKETDATA_BASE_URL = str(os.getenv("SHADOW_MARKETDATA_BASE_URL", BINANCE_PUBLIC_MARKETDATA_BASE_URL)).strip() or BINANCE_PUBLIC_MARKETDATA_BASE_URL
+SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 300))
+SHADOW_DEFAULT_POLL_SEC = max(10, _env_int("SHADOW_DEFAULT_POLL_SEC", 30))
+SHADOW_DEFAULT_TIMEFRAME = str(os.getenv("SHADOW_DEFAULT_TIMEFRAME", "5m")).strip().lower() or "5m"
 
 DEFAULT_STRATEGY_ID = "trend_pullback_orderflow_confirm_v1"
 DEFAULT_STRATEGY_NAME = "Trend Pullback + Orderflow Confirm"
@@ -294,6 +335,15 @@ class LearningDecisionBody(BaseModel):
     note: str | None = None
 
 
+class OptionBRecalculateBody(BaseModel):
+    pbo_max: float | None = None
+    dsr_min: float | None = None
+
+
+class OptionBDecisionBody(BaseModel):
+    note: str | None = None
+
+
 class RolloutStartBody(BaseModel):
     candidate_run_id: str
     baseline_run_id: str | None = None
@@ -335,6 +385,7 @@ class ResearchChangePointsBody(BaseModel):
 
 class ResearchMassBacktestStartBody(BaseModel):
     strategy_ids: list[str] | None = None
+    bot_id: str | None = None
     market: Literal["crypto", "forex", "equities"] = "crypto"
     symbol: str = "BTCUSDT"
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -409,9 +460,26 @@ class BotBulkPatchBody(BaseModel):
     notes: str | None = None
 
 
+class BotStartBody(BaseModel):
+    bot_id: str | None = None
+
+
+class ShadowStartBody(BaseModel):
+    bot_id: str | None = None
+    timeframe: Literal["5m", "10m", "15m"] = "5m"
+    lookback_bars: int = 300
+    poll_sec: int = 30
+    symbol: str | None = None
+
+
+class ShadowStopBody(BaseModel):
+    reason: str | None = None
+
+
 class BatchCreateBody(BaseModel):
     objective: str | None = None
     strategy_ids: list[str] | None = None
+    bot_id: str | None = None
     market: Literal["crypto", "forex", "equities"] = "crypto"
     symbol: str = "BTCUSDT"
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -520,14 +588,7 @@ def _yaml_file_or_default(path: Path, default: Any) -> Any:
 
 
 def _resolve_config_policies_root() -> Path:
-    candidates = [
-        CONFIG_POLICIES_ROOT,
-        (Path(__file__).resolve().parents[3] / "config" / "policies").resolve(),
-    ]
-    for path in candidates:
-        if path.exists():
-            return path
-    return candidates[0]
+    return resolve_policy_root(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
 
 
 def _config_policy_files() -> tuple[Path, dict[str, Path]]:
@@ -910,13 +971,128 @@ class LoginRateLimiter:
         window_minutes: int = LOGIN_RATE_LIMIT_WINDOW_MIN,
         lockout_minutes: int = LOGIN_LOCKOUT_MIN,
         lockout_after_failures: int = LOGIN_LOCKOUT_AFTER_FAILS,
+        backend: str = LOGIN_RATE_LIMIT_BACKEND,
+        sqlite_path: str | Path | None = None,
     ) -> None:
         self.attempts_per_window = max(1, int(attempts_per_window))
         self.window = timedelta(minutes=max(1, int(window_minutes)))
         self.lockout = timedelta(minutes=max(1, int(lockout_minutes)))
         self.lockout_after_failures = max(self.attempts_per_window, int(lockout_after_failures))
+        normalized_backend = str(backend or "memory").strip().lower()
+        self.backend = normalized_backend if normalized_backend in {"memory", "sqlite"} else "memory"
+        configured_sqlite = str(sqlite_path).strip() if sqlite_path is not None else ""
+        self.sqlite_path = Path(configured_sqlite).resolve() if configured_sqlite else LOGIN_RATE_LIMIT_SQLITE_PATH
         self._lock = Lock()
         self._state: dict[str, dict[str, Any]] = {}
+        if self.backend == "sqlite":
+            self._ensure_sqlite_schema()
+
+    def _connect_sqlite(self) -> sqlite3.Connection:
+        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.sqlite_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_sqlite_schema(self) -> None:
+        with self._connect_sqlite() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_login_rate_limit (
+                    limiter_key TEXT PRIMARY KEY,
+                    failures_json TEXT NOT NULL,
+                    lock_until TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_login_rate_limit_updated_at ON auth_login_rate_limit(updated_at)")
+            conn.commit()
+
+    @staticmethod
+    def _serialize_failures(failures: list[datetime]) -> str:
+        payload = [ts.isoformat() for ts in failures if isinstance(ts, datetime)]
+        return json.dumps(payload, separators=(",", ":"))
+
+    @staticmethod
+    def _deserialize_failures(raw: str | None) -> list[datetime]:
+        if not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return []
+        values = payload if isinstance(payload, list) else []
+        out: list[datetime] = []
+        for item in values:
+            parsed = _parse_iso_datetime_utc(str(item))
+            if isinstance(parsed, datetime):
+                out.append(parsed)
+        return out
+
+    def _load_entry_sqlite(self, key: str) -> dict[str, Any]:
+        with self._connect_sqlite() as conn:
+            row = conn.execute(
+                "SELECT failures_json, lock_until FROM auth_login_rate_limit WHERE limiter_key = ?",
+                (key,),
+            ).fetchone()
+        if row is None:
+            return {"failures": [], "lock_until": None}
+        return {
+            "failures": self._deserialize_failures(str(row["failures_json"] or "")),
+            "lock_until": _parse_iso_datetime_utc(str(row["lock_until"] or "")),
+        }
+
+    def _delete_entry_sqlite(self, key: str) -> None:
+        with self._connect_sqlite() as conn:
+            conn.execute("DELETE FROM auth_login_rate_limit WHERE limiter_key = ?", (key,))
+            conn.commit()
+
+    def _persist_entry_sqlite(self, key: str, entry: dict[str, Any]) -> None:
+        failures = [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)]
+        lock_until = entry.get("lock_until")
+        if not failures and not isinstance(lock_until, datetime):
+            self._delete_entry_sqlite(key)
+            return
+        with self._connect_sqlite() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO auth_login_rate_limit
+                (limiter_key, failures_json, lock_until, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    self._serialize_failures(failures),
+                    lock_until.isoformat() if isinstance(lock_until, datetime) else None,
+                    utc_now_iso(),
+                ),
+            )
+            conn.commit()
+
+    def _load_entry(self, key: str) -> dict[str, Any]:
+        if self.backend == "sqlite":
+            return self._load_entry_sqlite(key)
+        entry = self._state.get(key)
+        if not isinstance(entry, dict):
+            return {"failures": [], "lock_until": None}
+        return {
+            "failures": [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)],
+            "lock_until": entry.get("lock_until"),
+        }
+
+    def _persist_entry(self, key: str, entry: dict[str, Any]) -> None:
+        if self.backend == "sqlite":
+            self._persist_entry_sqlite(key, entry)
+            return
+        failures = [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)]
+        lock_until = entry.get("lock_until")
+        if not failures and not isinstance(lock_until, datetime):
+            self._state.pop(key, None)
+            return
+        self._state[key] = {
+            "failures": failures,
+            "lock_until": lock_until if isinstance(lock_until, datetime) else None,
+        }
 
     def _prune(self, *, entry: dict[str, Any], now: datetime) -> None:
         fails = [
@@ -932,8 +1108,9 @@ class LoginRateLimiter:
     def check(self, key: str) -> tuple[bool, int, str]:
         now = utc_now()
         with self._lock:
-            entry = self._state.setdefault(key, {"failures": [], "lock_until": None})
+            entry = self._load_entry(key)
             self._prune(entry=entry, now=now)
+            self._persist_entry(key, entry)
             lock_until = entry.get("lock_until")
             if isinstance(lock_until, datetime) and now < lock_until:
                 wait_sec = max(1, int((lock_until - now).total_seconds()))
@@ -952,16 +1129,20 @@ class LoginRateLimiter:
     def register_failure(self, key: str) -> None:
         now = utc_now()
         with self._lock:
-            entry = self._state.setdefault(key, {"failures": [], "lock_until": None})
+            entry = self._load_entry(key)
             self._prune(entry=entry, now=now)
             fails = [ts for ts in (entry.get("failures") or []) if isinstance(ts, datetime)]
             fails.append(now)
             entry["failures"] = fails
             if len(fails) >= self.lockout_after_failures:
                 entry["lock_until"] = now + self.lockout
+            self._persist_entry(key, entry)
 
     def register_success(self, key: str) -> None:
         with self._lock:
+            if self.backend == "sqlite":
+                self._delete_entry_sqlite(key)
+                return
             if key in self._state:
                 self._state.pop(key, None)
 
@@ -989,6 +1170,17 @@ class ApiRateLimiter:
             "/api/v1/stream",
             "/api/v1/auth/login",
         )
+        self._general_get_prefixes = (
+            "/api/v1/bots",
+            "/api/v1/batches",
+            "/api/v1/runs",
+            "/api/v1/backtests/runs",
+            "/api/v1/research/mass-backtest/status",
+            "/api/v1/research/mass-backtest/results",
+            "/api/v1/research/mass-backtest/artifacts",
+            "/api/v1/research/beast/status",
+            "/api/v1/research/beast/jobs",
+        )
         self._expensive_prefixes = (
             "/api/v1/research/",
             "/api/v1/backtests/",
@@ -1003,9 +1195,10 @@ class ApiRateLimiter:
         return any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._exempt_prefixes)
 
     def _bucket_for_path(self, *, path: str, method: str) -> str:
-        # /api/v1/bots es polling de UI/BFF; no debe caer en bucket "expensive"
-        # porque con 5 req/min dispara 429 aun en uso normal (10-15s polling).
-        if method.upper() == "GET" and path == "/api/v1/bots":
+        method_upper = method.upper()
+        # GET read-only de paneles/catálogos se usan en polling y navegación normal.
+        # Si caen en "expensive" (5 req/min) la propia UI termina generando 429.
+        if method_upper == "GET" and any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._general_get_prefixes):
             return "general"
         if any(path == prefix or path.startswith(f"{prefix}/") for prefix in self._expensive_prefixes):
             return "expensive"
@@ -1040,14 +1233,16 @@ class ApiRateLimiter:
 API_RATE_LIMITER = ApiRateLimiter()
 
 
+_KNOWN_INSECURE_PASSWORDS: frozenset[str] = frozenset(
+    {"", "admin123!", "viewer123!", "admin", "password", "test123", "changeme"}
+)
+
+
 def _has_default_credentials() -> bool:
-    admin_is_default = (
-        admin_username() == DEFAULT_ADMIN_USERNAME and admin_password() == DEFAULT_ADMIN_PASSWORD
-    )
-    viewer_is_default = (
-        viewer_username() == DEFAULT_VIEWER_USERNAME and viewer_password() == DEFAULT_VIEWER_PASSWORD
-    )
-    return admin_is_default or viewer_is_default
+    """Detecta contraseñas vacías, no configuradas, o conocidamente débiles."""
+    admin_is_insecure = admin_password() in _KNOWN_INSECURE_PASSWORDS
+    viewer_is_insecure = viewer_password() in _KNOWN_INSECURE_PASSWORDS
+    return admin_is_insecure or viewer_is_insecure
 
 
 def _validate_auth_config_for_production() -> None:
@@ -1589,11 +1784,23 @@ class ConsoleStore:
     def __init__(self) -> None:
         ensure_paths()
         self.registry = RegistryDB(REGISTRY_DB_PATH)
+        self.experience_store = ExperienceStore(self.registry)
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self._init_console_db()
         self._ensure_defaults()
+
+    def record_experience_run(
+        self,
+        run: dict[str, Any],
+        *,
+        source_override: str | None = None,
+        bot_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(run, dict):
+            return None
+        return self.experience_store.record_run(run, source_override=source_override, bot_id=bot_id)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(CONSOLE_DB_PATH)
@@ -1793,11 +2000,12 @@ class ConsoleStore:
                 source_log_id=int(row["id"]),
             )
 
-    def breaker_events_integrity(self, *, window_hours: int | None = None) -> dict[str, Any]:
+    def breaker_events_integrity(self, *, window_hours: int | None = None, strict: bool = True) -> dict[str, Any]:
         window_h = max(1, int(window_hours or BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS))
         since = (utc_now() - timedelta(hours=window_h)).isoformat()
         ratio_warn = float(BREAKER_EVENTS_UNKNOWN_RATIO_WARN)
         min_events_warn = int(BREAKER_EVENTS_UNKNOWN_MIN_EVENTS)
+        strict_mode = bool(strict)
 
         def _query_counts(conn: sqlite3.Connection, *, since_ts: str | None = None) -> dict[str, Any]:
             where_sql = "WHERE ts >= ?" if since_ts else ""
@@ -1864,9 +2072,15 @@ class ConsoleStore:
         else:
             status = "PASS"
 
+        if strict_mode:
+            ok = status == "PASS"
+        else:
+            ok = status != "WARN"
+
         return {
             "status": status,
-            "ok": status != "WARN",
+            "ok": ok,
+            "strict_mode": strict_mode,
             "generated_at": utc_now_iso(),
             "window_hours": window_h,
             "thresholds": {
@@ -2028,6 +2242,29 @@ class ConsoleStore:
             state = {
                 "mode": default_mode(),
                 "runtime_engine": runtime_engine_default(),
+                "runtime_contract_version": RUNTIME_CONTRACT_VERSION,
+                "runtime_telemetry_source": RUNTIME_TELEMETRY_SOURCE_SYNTHETIC,
+                "runtime_loop_alive": False,
+                "runtime_executor_connected": False,
+                "runtime_reconciliation_ok": False,
+                "runtime_exchange_connector_ok": False,
+                "runtime_exchange_order_ok": False,
+                "runtime_exchange_mode": "",
+                "runtime_exchange_verified_at": "",
+                "runtime_exchange_reason": "",
+                "runtime_account_positions_ok": False,
+                "runtime_account_positions_verified_at": "",
+                "runtime_account_positions_reason": "",
+                "runtime_last_remote_submit_at": "",
+                "runtime_last_remote_client_order_id": "",
+                "runtime_last_remote_submit_error": "",
+                "runtime_last_signal_action": "",
+                "runtime_last_signal_reason": "",
+                "runtime_last_signal_strategy_id": "",
+                "runtime_last_signal_symbol": "",
+                "runtime_last_signal_side": "",
+                "runtime_heartbeat_at": "",
+                "runtime_last_reconcile_at": "",
                 "bot_status": "PAUSED",
                 "running": False,
                 "safe_mode": False,
@@ -2787,6 +3024,38 @@ def risk_hooks(context):
         if str(state.get("runtime_engine") or "").strip().lower() not in {RUNTIME_ENGINE_REAL, RUNTIME_ENGINE_SIMULATED}:
             state["runtime_engine"] = runtime_engine_default()
             changed = True
+        if str(state.get("runtime_contract_version") or "").strip() != RUNTIME_CONTRACT_VERSION:
+            state["runtime_contract_version"] = RUNTIME_CONTRACT_VERSION
+            changed = True
+        telemetry_source = str(state.get("runtime_telemetry_source") or "").strip().lower()
+        if telemetry_source not in {RUNTIME_TELEMETRY_SOURCE_SYNTHETIC, RUNTIME_TELEMETRY_SOURCE_REAL}:
+            state["runtime_telemetry_source"] = RUNTIME_TELEMETRY_SOURCE_SYNTHETIC
+            changed = True
+        for key in (
+            "runtime_loop_alive",
+            "runtime_executor_connected",
+            "runtime_reconciliation_ok",
+            "runtime_exchange_connector_ok",
+            "runtime_exchange_order_ok",
+        ):
+            if key not in state or not isinstance(state.get(key), bool):
+                state[key] = bool(state.get(key, False))
+                changed = True
+        for key in (
+            "runtime_heartbeat_at",
+            "runtime_last_reconcile_at",
+            "runtime_exchange_verified_at",
+            "runtime_exchange_mode",
+            "runtime_exchange_reason",
+            "runtime_last_signal_action",
+            "runtime_last_signal_reason",
+            "runtime_last_signal_strategy_id",
+            "runtime_last_signal_symbol",
+            "runtime_last_signal_side",
+        ):
+            if key not in state:
+                state[key] = ""
+                changed = True
         if changed:
             json_save(BOT_STATE_PATH, state)
         return state
@@ -2928,6 +3197,144 @@ def risk_hooks(context):
         )
         self.save_bots([default_row])
 
+    def _index_bots_by_strategy(
+        self,
+        *,
+        bots: list[dict[str, Any]] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        rows = bots if isinstance(bots, list) else self.load_bots()
+        out: dict[str, list[dict[str, Any]]] = {}
+        for bot in rows:
+            bot_id = str(bot.get("id") or "").strip()
+            if not bot_id:
+                continue
+            ref = {
+                "id": bot_id,
+                "name": str(bot.get("name") or bot_id),
+                "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
+                "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
+                "status": self._normalize_bot_status(str(bot.get("status") or "")),
+            }
+            for strategy_id in bot.get("pool_strategy_ids") or []:
+                sid = str(strategy_id or "").strip()
+                if not sid:
+                    continue
+                refs = out.setdefault(sid, [])
+                refs.append(ref)
+        for strategy_id, refs in out.items():
+            refs.sort(key=lambda row: (str(row.get("name") or ""), str(row.get("id") or "")))
+            out[strategy_id] = refs
+        return out
+
+    @staticmethod
+    def _normalize_related_bot_ids(values: Any) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def _add(value: Any) -> None:
+            ref = str(value or "").strip()
+            if ref and ref not in seen:
+                seen.add(ref)
+                out.append(ref)
+
+        if isinstance(values, (list, tuple, set)):
+            for item in values:
+                if isinstance(item, dict):
+                    _add(item.get("id"))
+                else:
+                    _add(item)
+        elif isinstance(values, dict):
+            _add(values.get("id"))
+        else:
+            _add(values)
+        return out
+
+    @classmethod
+    def _extract_related_bot_ids_from_run(cls, run: dict[str, Any]) -> list[str]:
+        refs: list[str] = []
+        seen: set[str] = set()
+
+        def _extend(values: Any) -> None:
+            for ref in cls._normalize_related_bot_ids(values):
+                if ref not in seen:
+                    seen.add(ref)
+                    refs.append(ref)
+
+        if not isinstance(run, dict):
+            return refs
+
+        payload_sources: list[dict[str, Any]] = [run]
+        for key in ("metadata", "params_json", "provenance", "artifacts"):
+            value = run.get(key)
+            if isinstance(value, dict):
+                payload_sources.append(value)
+        for payload in payload_sources:
+            _extend(payload.get("bot_id"))
+            _extend(payload.get("bot_ids"))
+            _extend(payload.get("related_bot_ids"))
+            _extend(payload.get("related_bots"))
+        for tag in run.get("tags") or []:
+            tag_text = str(tag or "").strip()
+            if tag_text.startswith("bot:"):
+                _extend(tag_text.split(":", 1)[1])
+        return refs
+
+    def annotate_runs_with_related_bots(
+        self,
+        runs: list[dict[str, Any]],
+        *,
+        bot_id: str | None = None,
+        bots: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        requested_bot_id = str(bot_id or "").strip()
+        bots_rows = bots if isinstance(bots, list) else self.load_bots()
+        bots_by_strategy = self._index_bots_by_strategy(bots=bots_rows)
+        bots_by_id: dict[str, dict[str, Any]] = {}
+        for bot in bots_rows:
+            bid = str(bot.get("id") or "").strip()
+            if not bid:
+                continue
+            bots_by_id[bid] = {
+                "id": bid,
+                "name": str(bot.get("name") or bid),
+                "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
+                "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
+                "status": self._normalize_bot_status(str(bot.get("status") or "")),
+            }
+        out: list[dict[str, Any]] = []
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            strategy_id = str(run.get("strategy_id") or "").strip()
+            explicit_bot_ids = self._extract_related_bot_ids_from_run(run)
+            if explicit_bot_ids:
+                related_bot_ids = explicit_bot_ids
+                related_bots = [
+                    dict(
+                        bots_by_id.get(
+                            bid,
+                            {
+                                "id": bid,
+                                "name": bid,
+                                "engine": "unknown",
+                                "mode": "unknown",
+                                "status": "unknown",
+                            },
+                        )
+                    )
+                    for bid in related_bot_ids
+                ]
+            else:
+                related_bots = [dict(row) for row in (bots_by_strategy.get(strategy_id) or [])]
+                related_bot_ids = [str(row.get("id") or "") for row in related_bots if str(row.get("id") or "")]
+            if requested_bot_id and requested_bot_id not in related_bot_ids:
+                continue
+            payload = dict(run)
+            payload["related_bot_ids"] = related_bot_ids
+            payload["related_bots"] = related_bots
+            out.append(payload)
+        return out
+
     @staticmethod
     def _aggregate_bot_metric_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         trades_total = 0
@@ -2957,6 +3364,176 @@ def risk_hooks(context):
             "run_count": run_count_total,
         }
 
+    @staticmethod
+    def _empty_experience_source_metrics() -> dict[str, Any]:
+        return {
+            "episode_count": 0,
+            "run_count": 0,
+            "trade_count": 0,
+            "decision_count": 0,
+            "enter_count": 0,
+            "exit_count": 0,
+            "hold_count": 0,
+            "skip_count": 0,
+            "reduce_count": 0,
+            "add_count": 0,
+            "avg_source_weight": 0.0,
+            "last_end_ts": None,
+        }
+
+    def _aggregate_strategy_experience_by_source(
+        self,
+        *,
+        strategy_ids: list[str],
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        valid_sources = ("backtest", "shadow", "paper", "testnet")
+        out: dict[str, dict[str, dict[str, Any]]] = {
+            strategy_id: {source: self._empty_experience_source_metrics() for source in valid_sources}
+            for strategy_id in strategy_ids
+        }
+        if not strategy_ids:
+            return out
+        episodes = self.registry.list_experience_episodes(strategy_ids=strategy_ids, sources=list(valid_sources))
+        if not episodes:
+            return out
+        episode_ids = [str(row.get("id") or "") for row in episodes if str(row.get("id") or "")]
+        events = self.registry.list_experience_events(episode_ids=episode_ids) if episode_ids else []
+        episode_meta: dict[str, tuple[str, str]] = {}
+        source_weight_sums: dict[tuple[str, str], float] = {}
+        for episode in episodes:
+            strategy_id = str(episode.get("strategy_id") or "")
+            source = str(episode.get("source") or "backtest").strip().lower()
+            episode_id = str(episode.get("id") or "")
+            if strategy_id not in out or source not in out[strategy_id] or not episode_id:
+                continue
+            summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+            metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+            source_row = out[strategy_id][source]
+            source_row["episode_count"] += 1
+            source_row["run_count"] += 1
+            source_row["trade_count"] += int(
+                summary.get("trade_count")
+                or metrics.get("trade_count")
+                or metrics.get("roundtrips")
+                or 0
+            )
+            end_ts = str(episode.get("end_ts") or episode.get("created_at") or "").strip() or None
+            if end_ts and (
+                source_row["last_end_ts"] is None
+                or str(end_ts) > str(source_row["last_end_ts"] or "")
+            ):
+                source_row["last_end_ts"] = end_ts
+            source_weight_sums[(strategy_id, source)] = source_weight_sums.get((strategy_id, source), 0.0) + float(
+                episode.get("source_weight") or 0.0
+            )
+            episode_meta[episode_id] = (strategy_id, source)
+        for event in events:
+            episode_id = str(event.get("episode_id") or "")
+            mapped = episode_meta.get(episode_id)
+            if not mapped:
+                continue
+            strategy_id, source = mapped
+            source_row = out[strategy_id][source]
+            action = str(event.get("action") or "").strip().lower()
+            source_row["decision_count"] += 1
+            if action == "enter":
+                source_row["enter_count"] += 1
+            elif action == "exit":
+                source_row["exit_count"] += 1
+            elif action == "hold":
+                source_row["hold_count"] += 1
+            elif action == "skip":
+                source_row["skip_count"] += 1
+            elif action == "reduce":
+                source_row["reduce_count"] += 1
+            elif action == "add":
+                source_row["add_count"] += 1
+        for strategy_id, per_source in out.items():
+            for source, source_row in per_source.items():
+                episode_count = int(source_row.get("episode_count") or 0)
+                source_row["avg_source_weight"] = round(
+                    (source_weight_sums.get((strategy_id, source), 0.0) / episode_count) if episode_count else 0.0,
+                    4,
+                )
+        return out
+
+    def _aggregate_exact_bot_experience_by_source(
+        self,
+        *,
+        bot_ids: list[str],
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        valid_sources = ("backtest", "shadow", "paper", "testnet")
+        out: dict[str, dict[str, dict[str, Any]]] = {
+            bot_id: {source: self._empty_experience_source_metrics() for source in valid_sources}
+            for bot_id in bot_ids
+            if str(bot_id).strip()
+        }
+        if not out:
+            return out
+        episodes = self.registry.list_experience_episodes(bot_ids=list(out.keys()), sources=list(valid_sources))
+        if not episodes:
+            return out
+        episode_ids = [str(row.get("id") or "") for row in episodes if str(row.get("id") or "")]
+        events = self.registry.list_experience_events(episode_ids=episode_ids) if episode_ids else []
+        episode_meta: dict[str, tuple[str, str]] = {}
+        source_weight_sums: dict[tuple[str, str], float] = {}
+        for episode in episodes:
+            bot_id = str(episode.get("bot_id") or "").strip()
+            source = str(episode.get("source") or "backtest").strip().lower()
+            episode_id = str(episode.get("id") or "")
+            if bot_id not in out or source not in out[bot_id] or not episode_id:
+                continue
+            summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+            metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+            source_row = out[bot_id][source]
+            source_row["episode_count"] += 1
+            source_row["run_count"] += 1
+            source_row["trade_count"] += int(
+                summary.get("trade_count")
+                or metrics.get("trade_count")
+                or metrics.get("roundtrips")
+                or 0
+            )
+            end_ts = str(episode.get("end_ts") or episode.get("created_at") or "").strip() or None
+            if end_ts and (
+                source_row["last_end_ts"] is None
+                or str(end_ts) > str(source_row["last_end_ts"] or "")
+            ):
+                source_row["last_end_ts"] = end_ts
+            source_weight_sums[(bot_id, source)] = source_weight_sums.get((bot_id, source), 0.0) + float(
+                episode.get("source_weight") or 0.0
+            )
+            episode_meta[episode_id] = (bot_id, source)
+        for event in events:
+            episode_id = str(event.get("episode_id") or "")
+            mapped = episode_meta.get(episode_id)
+            if not mapped:
+                continue
+            bot_id, source = mapped
+            source_row = out[bot_id][source]
+            action = str(event.get("action") or "").strip().lower()
+            source_row["decision_count"] += 1
+            if action == "enter":
+                source_row["enter_count"] += 1
+            elif action == "exit":
+                source_row["exit_count"] += 1
+            elif action == "hold":
+                source_row["hold_count"] += 1
+            elif action == "skip":
+                source_row["skip_count"] += 1
+            elif action == "reduce":
+                source_row["reduce_count"] += 1
+            elif action == "add":
+                source_row["add_count"] += 1
+        for bot_id, per_source in out.items():
+            for source, source_row in per_source.items():
+                episode_count = int(source_row.get("episode_count") or 0)
+                source_row["avg_source_weight"] = round(
+                    (source_weight_sums.get((bot_id, source), 0.0) / episode_count) if episode_count else 0.0,
+                    4,
+                )
+        return out
+
     def get_bots_overview(
         self,
         bot_ids: list[str] | None = None,
@@ -2980,7 +3557,7 @@ def risk_hooks(context):
             "recommendations_count": 0,
         }
 
-        mode_to_kpi_mode = {"shadow": "backtest", "paper": "paper", "testnet": "testnet", "live": "live"}
+        mode_to_kpi_mode = {"shadow": "shadow", "paper": "paper", "testnet": "testnet", "live": "live"}
         kills_mode_keys = ("shadow", "paper", "testnet", "live", "unknown")
 
         t_stage = time.perf_counter()
@@ -3020,11 +3597,17 @@ def risk_hooks(context):
 
         t_stage = time.perf_counter()
         runs_by_strategy_mode: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        indexed_runs = 0
+        skipped_runs_outside_pool = 0
+        max_runs_per_key = int(BOTS_OVERVIEW_MAX_RUNS_PER_STRATEGY_MODE)
         for run in runs_rows:
             if not isinstance(run, dict):
                 continue
             sid = str(run.get("strategy_id") or "")
             if not sid:
+                continue
+            if strategy_ids_in_pool and sid not in strategy_ids_in_pool:
+                skipped_runs_outside_pool += 1
                 continue
             run_mode = str(run.get("mode") or "backtest").lower()
             key = (sid, run_mode)
@@ -3033,7 +3616,13 @@ def risk_hooks(context):
                 runs_by_strategy_mode[key] = [run]
             else:
                 rows.append(run)
+                if len(rows) > max_runs_per_key:
+                    rows.pop(0)
+            indexed_runs += 1
         perf_stages["stage_runs_index_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+        perf_stages["runs_indexed"] = int(indexed_runs)
+        perf_stages["runs_skipped_outside_pool"] = int(skipped_runs_outside_pool)
+        perf_stages["max_runs_per_strategy_mode"] = int(max_runs_per_key)
 
         t_stage = time.perf_counter()
         kpis_by_mode: dict[str, dict[str, dict[str, Any]]] = {mode_key: {} for mode_key in mode_to_kpi_mode}
@@ -3042,6 +3631,16 @@ def risk_hooks(context):
             for mode_key, kpi_mode in mode_to_kpi_mode.items():
                 kpis_by_mode[mode_key][sid] = self._aggregate_strategy_kpis(runs_by_strategy_mode.get((sid, kpi_mode), []))
         perf_stages["stage_kpis_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+
+        t_stage = time.perf_counter()
+        experience_by_strategy = self._aggregate_strategy_experience_by_source(strategy_ids=sorted(strategy_ids_in_pool))
+        perf_stages["stage_experience_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
+
+        t_stage = time.perf_counter()
+        exact_experience_by_bot = self._aggregate_exact_bot_experience_by_source(
+            bot_ids=[str(bot.get("id") or "") for bot in bots_rows]
+        )
+        perf_stages["stage_bot_experience_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
 
         bot_ids_ordered = [str(bot.get("id") or "") for bot in bots_rows if str(bot.get("id") or "")]
         bot_ids_set = set(bot_ids_ordered)
@@ -3222,6 +3821,49 @@ def risk_hooks(context):
             for mode_key in mode_to_kpi_mode:
                 mode_rows = [{"strategy_id": sid, "kpis": kpis_by_mode[mode_key].get(sid, {})} for sid in pool]
                 by_mode_metrics[mode_key] = self._aggregate_bot_metric_rows(mode_rows)
+            experience_by_source = {
+                source: self._empty_experience_source_metrics()
+                for source in ("backtest", "shadow", "paper", "testnet")
+            }
+            for sid in pool:
+                strategy_sources = experience_by_strategy.get(sid) or {}
+                for source, incoming in strategy_sources.items():
+                    target = experience_by_source.setdefault(source, self._empty_experience_source_metrics())
+                    target["episode_count"] += int(incoming.get("episode_count") or 0)
+                    target["run_count"] += int(incoming.get("run_count") or 0)
+                    target["trade_count"] += int(incoming.get("trade_count") or 0)
+                    target["decision_count"] += int(incoming.get("decision_count") or 0)
+                    target["enter_count"] += int(incoming.get("enter_count") or 0)
+                    target["exit_count"] += int(incoming.get("exit_count") or 0)
+                    target["hold_count"] += int(incoming.get("hold_count") or 0)
+                    target["skip_count"] += int(incoming.get("skip_count") or 0)
+                    target["reduce_count"] += int(incoming.get("reduce_count") or 0)
+                    target["add_count"] += int(incoming.get("add_count") or 0)
+                    target["avg_source_weight"] += float(incoming.get("avg_source_weight") or 0.0) * int(
+                        incoming.get("episode_count") or 0
+                    )
+                    incoming_last = str(incoming.get("last_end_ts") or "").strip() or None
+                    if incoming_last and (
+                        target["last_end_ts"] is None
+                        or str(incoming_last) > str(target["last_end_ts"] or "")
+                    ):
+                        target["last_end_ts"] = incoming_last
+            for source, target in experience_by_source.items():
+                episode_count = int(target.get("episode_count") or 0)
+                target["avg_source_weight"] = round(
+                    (float(target.get("avg_source_weight") or 0.0) / episode_count) if episode_count else 0.0,
+                    4,
+                )
+            exact_experience_by_source = exact_experience_by_bot.get(bot_id) or {}
+            has_exact_experience = any(
+                int((row or {}).get("episode_count") or 0) > 0
+                for row in exact_experience_by_source.values()
+            )
+            if has_exact_experience:
+                experience_by_source = {
+                    source: dict(exact_experience_by_source.get(source) or self._empty_experience_source_metrics())
+                    for source in ("backtest", "shadow", "paper", "testnet")
+                }
             active = by_mode_metrics.get(
                 mode,
                 {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
@@ -3270,6 +3912,8 @@ def risk_hooks(context):
                 "kills_by_mode_24h": kills_by_mode_24h,
                 "last_kill_at": last_kill_by_bot.get(bot_id),
                 "by_mode": by_mode_metrics,
+                "experience_by_source": experience_by_source,
+                "experience_history_scope": "exact_bot_history" if has_exact_experience else "pool_approximation",
                 "last_run_at": last_run_at,
                 "recommendations_pending": rec_pending,
                 "recommendations_approved": rec_approved,
@@ -3330,6 +3974,12 @@ def risk_hooks(context):
                 "testnet": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
                 "live": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
             },
+            "experience_by_source": {
+                "backtest": self._empty_experience_source_metrics(),
+                "shadow": self._empty_experience_source_metrics(),
+                "paper": self._empty_experience_source_metrics(),
+                "testnet": self._empty_experience_source_metrics(),
+            },
             "last_run_at": None,
             "recommendations_pending": 0,
             "recommendations_approved": 0,
@@ -3345,7 +3995,27 @@ def risk_hooks(context):
         overview_perf: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         effective_recent_logs = bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS if include_recent_logs is None else include_recent_logs)
+        effective_recent_logs_per_bot = max(
+            0,
+            int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT if recent_logs_per_bot is None else recent_logs_per_bot),
+        )
         rows = self.load_bots()
+        logs_auto_disabled = False
+        if (
+            include_recent_logs is None
+            and effective_recent_logs
+            and int(BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT) > 0
+            and len(rows) > int(BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT)
+        ):
+            effective_recent_logs = False
+            logs_auto_disabled = True
+            effective_recent_logs_per_bot = 0
+        if isinstance(overview_perf, dict):
+            overview_perf["logs_auto_disabled"] = bool(logs_auto_disabled)
+            overview_perf["logs_auto_disable_threshold"] = int(BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT)
+            overview_perf["bots_count"] = len(rows)
+            overview_perf["effective_recent_logs"] = bool(effective_recent_logs)
+            overview_perf["logs_per_bot_effective"] = int(effective_recent_logs_per_bot)
         strategies = self.list_strategies()
         runs = self.load_runs()
         by_id = {str(s.get("id") or ""): s for s in strategies}
@@ -3355,7 +4025,7 @@ def risk_hooks(context):
             strategies=strategies,
             runs=runs,
             include_recent_logs=effective_recent_logs,
-            recent_logs_per_bot=recent_logs_per_bot,
+            recent_logs_per_bot=effective_recent_logs_per_bot,
             perf=overview_perf,
         )
         out: list[dict[str, Any]] = []
@@ -4288,6 +4958,7 @@ def risk_hooks(context):
             metrics=run["metrics"],
             artifacts_path=f"/api/v1/backtests/runs/{run_id}",
         )
+        self.record_experience_run(run, source_override="backtest")
         self.add_log(
             event_type="backtest_finished",
             severity="info",
@@ -4302,6 +4973,7 @@ def risk_hooks(context):
         self,
         *,
         strategy_id: str,
+        bot_id: str | None = None,
         market: str,
         symbol: str,
         timeframe: str,
@@ -4315,8 +4987,14 @@ def risk_hooks(context):
         validation_mode: str,
         use_orderflow_data: bool = True,
         strict_strategy_id: bool = False,
+        purge_bars: int | None = None,
+        embargo_bars: int | None = None,
+        cpcv_n_splits: int | None = None,
+        cpcv_k_test_groups: int | None = None,
+        cpcv_max_paths: int | None = None,
     ) -> dict[str, Any]:
         strategy = self.strategy_or_404(strategy_id)
+        bot_id_n = str(bot_id or "").strip() or None
         market_n = normalize_market(market)
         symbol_n = normalize_symbol(symbol)
         timeframe_n = normalize_timeframe(timeframe)
@@ -4335,6 +5013,11 @@ def risk_hooks(context):
                 validation_mode=validation_mode,
                 use_orderflow_data=bool(use_orderflow_data),
                 strict_strategy_id=bool(strict_strategy_id),
+                purge_bars=purge_bars,
+                embargo_bars=embargo_bars,
+                cpcv_n_splits=cpcv_n_splits,
+                cpcv_k_test_groups=cpcv_k_test_groups,
+                cpcv_max_paths=cpcv_max_paths,
                 costs=BacktestCosts(
                     fees_bps=fees_bps,
                     spread_bps=spread_bps,
@@ -4403,19 +5086,35 @@ def risk_hooks(context):
             "orderflow_feature_set": orderflow_feature_set,
             "orderflow_feature_source": "request",
         }
+        if isinstance(purge_bars, int):
+            run_metadata["purge_bars"] = int(max(0, purge_bars))
+        if isinstance(embargo_bars, int):
+            run_metadata["embargo_bars"] = int(max(0, embargo_bars))
+        if isinstance(cpcv_n_splits, int):
+            run_metadata["cpcv_n_splits"] = int(max(0, cpcv_n_splits))
+        if isinstance(cpcv_k_test_groups, int):
+            run_metadata["cpcv_k_test_groups"] = int(max(0, cpcv_k_test_groups))
+        if isinstance(cpcv_max_paths, int):
+            run_metadata["cpcv_max_paths"] = int(max(0, cpcv_max_paths))
         if bool(use_orderflow_data) and market_n == "equities":
             run_metadata["warnings"] = list(run_metadata.get("warnings") or []) + ["orderflow_not_available_for_market"]
         if fund_required_missing:
             run_metadata["required_missing"] = fund_required_missing
         if fund_reasons:
             run_metadata["fundamentals_reasons"] = fund_reasons
+        if bot_id_n:
+            run_metadata["bot_id"] = bot_id_n
         run_tags = []
         if fund_quality == "ohlc_only":
             run_tags.append("fundamentals_quality:ohlc_only")
         if fund_promotion_blocked:
             run_tags.append("promotion_blocked:fundamentals")
         run_tags.append(f"feature_set:{orderflow_feature_set}")
-        is_wfa = str(validation_mode or "").strip().lower() == "walk-forward"
+        if bot_id_n:
+            run_tags.append(f"bot:{bot_id_n}")
+        validation_mode_norm = str(validation_mode or "").strip().lower()
+        is_wfa = validation_mode_norm == "walk-forward"
+        is_oos = validation_mode_norm in {"walk-forward", "purged-cv", "cpcv"}
         run = {
             "id": run_id,
             "catalog_run_id": run_id,
@@ -4478,7 +5177,7 @@ def risk_hooks(context):
             "tags": run_tags,
             "flags": {
                 "IS": False,
-                "OOS": bool(is_wfa),
+                "OOS": bool(is_oos),
                 "WFA": bool(is_wfa),
                 "PASO_GATES": False,
                 "BASELINE": False,
@@ -4490,12 +5189,18 @@ def risk_hooks(context):
             },
             "params_json": {
                 "validation_mode": validation_mode,
+                "bot_id": bot_id_n,
                 "costs_model": costs_model,
                 "dataset_range": {"start": loaded.start, "end": loaded.end},
                 "period": {"start": start, "end": end},
                 "use_orderflow_data": bool(orderflow_enabled),
                 "strict_strategy_id": bool(strict_strategy_id),
                 "orderflow_feature_set": orderflow_feature_set,
+                "purge_bars": int(max(0, purge_bars)) if isinstance(purge_bars, int) else None,
+                "embargo_bars": int(max(0, embargo_bars)) if isinstance(embargo_bars, int) else None,
+                "cpcv_n_splits": int(max(0, cpcv_n_splits)) if isinstance(cpcv_n_splits, int) else None,
+                "cpcv_k_test_groups": int(max(0, cpcv_k_test_groups)) if isinstance(cpcv_k_test_groups, int) else None,
+                "cpcv_max_paths": int(max(0, cpcv_max_paths)) if isinstance(cpcv_max_paths, int) else None,
             },
             "equity_curve": engine_result["equity_curve"],
             "drawdown_curve": engine_result["drawdown_curve"],
@@ -4512,6 +5217,7 @@ def risk_hooks(context):
         run["provenance"] = {
             "run_id": run_id,
             "strategy_id": strategy_id,
+            "bot_id": bot_id_n,
             "mode": "backtest",
             "from": start,
             "to": end,
@@ -4529,6 +5235,11 @@ def risk_hooks(context):
             "use_orderflow_data": bool(orderflow_enabled),
             "strict_strategy_id": bool(strict_strategy_id),
             "orderflow_feature_set": orderflow_feature_set,
+            "purge_bars": int(max(0, purge_bars)) if isinstance(purge_bars, int) else None,
+            "embargo_bars": int(max(0, embargo_bars)) if isinstance(embargo_bars, int) else None,
+            "cpcv_n_splits": int(max(0, cpcv_n_splits)) if isinstance(cpcv_n_splits, int) else None,
+            "cpcv_k_test_groups": int(max(0, cpcv_k_test_groups)) if isinstance(cpcv_k_test_groups, int) else None,
+            "cpcv_max_paths": int(max(0, cpcv_max_paths)) if isinstance(cpcv_max_paths, int) else None,
             "created_at": run["created_at"],
         }
         artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
@@ -4558,13 +5269,15 @@ def risk_hooks(context):
             },
             artifacts_path=f"/api/v1/backtests/runs/{run_id}",
         )
+        self.record_experience_run(run, source_override="backtest", bot_id=bot_id_n)
         self.add_log(
             event_type="backtest_finished",
             severity="info",
             module="backtest",
             message=f"Backtest finished: {run_id}",
-            related_ids=[strategy_id, run_id, symbol_n],
+            related_ids=[x for x in [strategy_id, run_id, symbol_n, bot_id_n] if x],
             payload={
+                "bot_id": bot_id_n,
                 "market": market_n,
                 "symbol": symbol_n,
                 "timeframe": timeframe_n,
@@ -4573,6 +5286,202 @@ def risk_hooks(context):
                 "dataset_hash": loaded.dataset_hash,
                 "data_source": loaded.source,
                 "metadata": run.get("metadata") if isinstance(run.get("metadata"), dict) else {},
+            },
+        )
+        return run
+
+    def create_shadow_live_run(
+        self,
+        *,
+        bot_id: str,
+        strategy_id: str,
+        symbol: str,
+        timeframe: str,
+        lookback_bars: int,
+        simulation: dict[str, Any],
+        use_orderflow_data: bool = True,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        strategy = self.strategy_or_404(strategy_id)
+        dataset = simulation.get("dataset")
+        engine_result = simulation.get("engine_result") if isinstance(simulation.get("engine_result"), dict) else {}
+        manifest = simulation.get("manifest") if isinstance(simulation.get("manifest"), dict) else {}
+        costs_model = simulation.get("costs") if isinstance(simulation.get("costs"), dict) else {}
+        if not dataset or not engine_result:
+            raise ValueError("Shadow simulation incompleta.")
+        market_n = str(getattr(dataset, "market", "crypto") or "crypto")
+        symbol_n = str(getattr(dataset, "symbol", symbol) or symbol).upper()
+        timeframe_n = str(getattr(dataset, "timeframe", timeframe) or timeframe)
+        run_id = self.backtest_catalog.next_formatted_id("SH")
+        metrics = dict(engine_result.get("metrics") or {})
+        metrics["expectancy_unit"] = "usd_per_trade"
+        metrics["expectancy_pct_unit"] = "pct_per_trade"
+        strategy_structured_id = self._catalog_strategy_structured_id(strategy_id, strategy)
+        cost_meta = self._resolve_backtest_cost_metadata(
+            market=market_n,
+            symbol=symbol_n,
+            costs_model=costs_model,
+            df=getattr(dataset, "df", None),
+        )
+        orderflow_enabled = bool(use_orderflow_data)
+        orderflow_feature_set = "orderflow_on" if orderflow_enabled else "orderflow_off"
+        started_at = str(manifest.get("start") or utc_now_iso())
+        finished_at = str(manifest.get("end") or utc_now_iso())
+        decision_events = engine_result.get("decision_events") if isinstance(engine_result.get("decision_events"), list) else []
+        if not decision_events:
+            decision_events = [
+                {
+                    "ts": finished_at,
+                    "action": "hold" if engine_result.get("trades") else "skip",
+                    "side": "flat",
+                    "regime_label": "unknown",
+                    "features_json": {
+                        "symbol": symbol_n,
+                        "timeframe": timeframe_n,
+                        "lookback_bars": int(max(1, lookback_bars)),
+                    },
+                    "notes": "shadow_runner_closed_candle",
+                }
+            ]
+        run = {
+            "id": run_id,
+            "catalog_run_id": run_id,
+            "run_type": "single",
+            "batch_id": None,
+            "parent_run_id": None,
+            "strategy_id": strategy_id,
+            "strategy_structured_id": strategy_structured_id,
+            "strategy_name": str(strategy.get("name") or strategy_id),
+            "strategy_version": str(strategy.get("version") or "1.0.0"),
+            "mode": "shadow",
+            "market": market_n,
+            "symbol": symbol_n,
+            "timeframe": timeframe_n,
+            "period": {"start": started_at, "end": finished_at},
+            "universe": [symbol_n],
+            "validation_mode": "shadow_live",
+            "validation_summary": {
+                "mode": "shadow_live",
+                "no_orders_sent": True,
+                "requires_human_approval": True,
+                "allow_live": False,
+            },
+            "data_source": str(getattr(dataset, "source", "binance_public_klines") or "binance_public_klines"),
+            "dataset_hash": str(getattr(dataset, "dataset_hash", "") or ""),
+            "dataset_manifest": manifest,
+            "dataset_range": {"start": started_at, "end": finished_at},
+            "costs_model": {
+                "fees_bps": float(costs_model.get("fees_bps", 0.0) or 0.0),
+                "spread_bps": float(costs_model.get("spread_bps", 0.0) or 0.0),
+                "slippage_bps": float(costs_model.get("slippage_bps", 0.0) or 0.0),
+                "funding_bps": float(costs_model.get("funding_bps", 0.0) or 0.0),
+                "rollover_bps": float(costs_model.get("rollover_bps", 0.0) or 0.0),
+            },
+            "fee_snapshot_id": cost_meta.get("fee_snapshot_id"),
+            "funding_snapshot_id": cost_meta.get("funding_snapshot_id"),
+            "spread_model_params": cost_meta.get("spread_model_params") or {},
+            "slippage_model_params": cost_meta.get("slippage_model_params") or {},
+            "use_orderflow_data": orderflow_enabled,
+            "orderflow_feature_set": orderflow_feature_set,
+            "feature_set": orderflow_feature_set,
+            "fee_model": f"maker_taker_bps:{float(costs_model.get('fees_bps', 0.0) or 0.0):.4f}",
+            "spread_model": f"observed_or_static:{float(costs_model.get('spread_bps', 0.0) or 0.0):.4f}",
+            "slippage_model": f"static:{float(costs_model.get('slippage_bps', 0.0) or 0.0):.4f}",
+            "funding_model": f"static:{float(costs_model.get('funding_bps', 0.0) or 0.0):.4f}",
+            "git_commit": get_env("GIT_COMMIT", "local"),
+            "metrics": metrics,
+            "costs_breakdown": engine_result.get("costs_breakdown") or {},
+            "status": "completed",
+            "created_by": "shadow_runner",
+            "created_at": utc_now_iso(),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_sec": max(1, int(engine_result.get("duration_sec") or 1)),
+            "metadata": {
+                "shadow": True,
+                "bot_id": bot_id,
+                "lookback_bars": int(max(1, lookback_bars)),
+                "marketdata_base_url": str(manifest.get("marketdata_base_url") or SHADOW_MARKETDATA_BASE_URL),
+                "observed_spread_bps": float(manifest.get("observed_spread_bps") or 0.0),
+                "base_interval": str(manifest.get("base_interval") or timeframe_n),
+                "resampled": bool(manifest.get("resampled", False)),
+                "allow_live": False,
+                "orders_sent": False,
+            },
+            "tags": [f"feature_set:{orderflow_feature_set}", "source:shadow", "mode:shadow", f"bot:{bot_id}"],
+            "flags": {
+                "IS": False,
+                "OOS": False,
+                "WFA": False,
+                "PASO_GATES": False,
+                "BASELINE": False,
+                "FAVORITO": False,
+                "ARCHIVADO": False,
+                "ORDERFLOW_ENABLED": bool(orderflow_enabled),
+                "ORDERFLOW_FEATURE_SET": orderflow_feature_set,
+                "LIVE_BLOCKED": True,
+            },
+            "params_json": {
+                "validation_mode": "shadow_live",
+                "costs_model": costs_model,
+                "lookback_bars": int(max(1, lookback_bars)),
+                "use_orderflow_data": bool(orderflow_enabled),
+                "orderflow_feature_set": orderflow_feature_set,
+                "bot_id": bot_id,
+            },
+            "equity_curve": engine_result.get("equity_curve") or [],
+            "drawdown_curve": engine_result.get("drawdown_curve") or [],
+            "trades": engine_result.get("trades") or [],
+            "decision_events": decision_events,
+            "artifacts_links": {
+                "report_json": f"/api/v1/backtests/runs/{run_id}?format=report_json",
+                "trades_csv": f"/api/v1/backtests/runs/{run_id}?format=trades_csv",
+                "equity_curve_csv": f"/api/v1/backtests/runs/{run_id}?format=equity_curve_csv",
+            },
+            "notes": str(note or ""),
+        }
+        for trade in run.get("trades", []) or []:
+            if isinstance(trade, dict) and not trade.get("regime_label"):
+                trade["regime_label"] = self._infer_trade_regime_label(trade, run, strategy=strategy)
+        run["provenance"] = {
+            "run_id": run_id,
+            "strategy_id": strategy_id,
+            "mode": "shadow",
+            "from": started_at,
+            "to": finished_at,
+            "dataset_source": run["data_source"],
+            "dataset_hash": run["dataset_hash"],
+            "costs_used": run["costs_model"],
+            "commit_hash": run["git_commit"],
+            "bot_id": bot_id,
+            "use_orderflow_data": bool(orderflow_enabled),
+            "orderflow_feature_set": orderflow_feature_set,
+            "created_at": run["created_at"],
+        }
+        artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
+        run["artifacts_local"] = artifact_local
+        runs = self.load_runs()
+        runs.insert(0, run)
+        self.save_runs(runs)
+        self._record_run_provenance(run)
+        self._record_backtest_catalog(run, strategy_meta=strategy, created_by="shadow_runner")
+        self.record_experience_run(run, source_override="shadow", bot_id=bot_id)
+        self.add_log(
+            event_type="shadow_run_completed",
+            severity="info",
+            module="learning",
+            message=f"Shadow run completado: {run_id}",
+            related_ids=[bot_id, strategy_id, run_id, symbol_n],
+            payload={
+                "bot_id": bot_id,
+                "strategy_id": strategy_id,
+                "symbol": symbol_n,
+                "timeframe": timeframe_n,
+                "metrics": run["metrics"],
+                "costs_breakdown": run["costs_breakdown"],
+                "dataset_hash": run["dataset_hash"],
+                "data_source": run["data_source"],
+                "allow_live": False,
             },
         )
         return run
@@ -4724,10 +5633,1939 @@ _validate_auth_config_for_production()
 
 store = ConsoleStore()
 learning_service = LearningService(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT)
+option_b_engine = OptionBLearningEngine(store.registry)
 rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
 mass_backtest_engine = MassBacktestEngine(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT, knowledge_loader=KnowledgeLoader(repo_root=MONOREPO_ROOT))
 mass_backtest_coordinator = MassBacktestCoordinator(engine=mass_backtest_engine)
 rollout_gates = GateEvaluator(repo_root=MONOREPO_ROOT)
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _load_runtime_risk_policy_thresholds() -> dict[str, Any]:
+    defaults = {
+        "source": "settings",
+        "soft_daily_loss_pct": None,
+        "hard_daily_loss_pct": None,
+        "hard_drawdown_pct": None,
+    }
+    policy_path = (CONFIG_POLICIES_ROOT / "risk_policy.yaml").resolve()
+    if not policy_path.exists():
+        return defaults
+    try:
+        payload = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+        root = payload.get("risk_policy") if isinstance(payload.get("risk_policy"), dict) else {}
+        triggers = root.get("triggers") if isinstance(root.get("triggers"), dict) else {}
+        daily_cfg = triggers.get("daily_loss_pct") if isinstance(triggers.get("daily_loss_pct"), dict) else {}
+        dd_cfg = triggers.get("max_drawdown_pct") if isinstance(triggers.get("max_drawdown_pct"), dict) else {}
+        soft_daily = abs(_as_float(daily_cfg.get("soft_kill_bot_at"), 0.0)) / 100.0 if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_daily = abs(_as_float(daily_cfg.get("hard_kill_bot_at"), 0.0)) / 100.0 if bool(daily_cfg.get("enabled", False)) else 0.0
+        hard_dd = abs(_as_float(dd_cfg.get("hard_kill_bot_at"), 0.0)) / 100.0 if bool(dd_cfg.get("enabled", False)) else 0.0
+        return {
+            "source": "config/policies/risk_policy.yaml",
+            "soft_daily_loss_pct": soft_daily if soft_daily > 0 else None,
+            "hard_daily_loss_pct": hard_daily if hard_daily > 0 else None,
+            "hard_drawdown_pct": hard_dd if hard_dd > 0 else None,
+        }
+    except Exception:
+        return defaults
+
+
+class RuntimeBridge:
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._oms = OMS()
+        self._kill_switch = KillSwitch()
+        self._risk_engine: RiskEngine | None = None
+        self._risk_limits_fingerprint: tuple[float, float, int, float, float, float] | None = None
+        self._risk_policy_thresholds: dict[str, Any] = _load_runtime_risk_policy_thresholds()
+        self._series: list[dict[str, Any]] = []
+        self._stats: dict[str, int] = {
+            "requotes": 0,
+            "rate_limit_hits": 0,
+            "api_errors": 0,
+        }
+        self._last_reconcile: dict[str, Any] = {
+            "desync_count": 0,
+            "missing_local": [],
+            "missing_exchange": [],
+            "qty_mismatches": [],
+        }
+        self._last_risk: dict[str, Any] = {
+            "allow_new_positions": True,
+            "reason": "",
+            "safe_mode": False,
+            "kill": False,
+            "open_positions": 0,
+            "total_exposure_pct": 0.0,
+            "asset_exposure_pct": 0.0,
+        }
+        self._recent_remote_cancel_request_at: dict[str, float] = {}
+        self._recent_remote_submit_request_at: dict[str, float] = {}
+        self._remote_positions: list[dict[str, Any]] = []
+        self._active_mode: str = "paper"
+        self._last_filled_qty_by_order: dict[str, float] = {}
+        self._runtime_costs: dict[str, float] = {
+            "fills_count": 0.0,
+            "fills_notional_usd": 0.0,
+            "fees_total_usd": 0.0,
+            "spread_total_usd": 0.0,
+            "slippage_total_usd": 0.0,
+            "funding_total_usd": 0.0,
+            "total_cost_usd": 0.0,
+        }
+
+    @staticmethod
+    def _symbol_mark_price(symbol: str) -> float:
+        text = str(symbol or "").upper()
+        if "BTC" in text:
+            return 100000.0
+        if "ETH" in text:
+            return 3500.0
+        if "SOL" in text:
+            return 150.0
+        return 100.0
+
+    @staticmethod
+    def _safe_positive(value: Any, default: float) -> float:
+        parsed = _as_float(value, default)
+        if parsed <= 0:
+            return float(default)
+        return parsed
+
+    def _reset_runtime_costs(self) -> None:
+        self._last_filled_qty_by_order = {}
+        self._runtime_costs = {
+            "fills_count": 0.0,
+            "fills_notional_usd": 0.0,
+            "fees_total_usd": 0.0,
+            "spread_total_usd": 0.0,
+            "slippage_total_usd": 0.0,
+            "funding_total_usd": 0.0,
+            "total_cost_usd": 0.0,
+        }
+
+    def _estimate_runtime_fill_costs(
+        self,
+        *,
+        symbol: str,
+        fill_qty: float,
+        settings: dict[str, Any],
+    ) -> dict[str, float]:
+        qty = max(0.0, float(fill_qty))
+        if qty <= 0.0:
+            return {
+                "notional_usd": 0.0,
+                "fees_usd": 0.0,
+                "spread_usd": 0.0,
+                "slippage_usd": 0.0,
+                "funding_usd": 0.0,
+                "total_cost_usd": 0.0,
+            }
+        execution_cfg = settings.get("execution") if isinstance(settings.get("execution"), dict) else {}
+        post_only = bool(execution_cfg.get("post_only", True))
+        maker_fee_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("maker_fee_bps"), 2.0))
+        taker_fee_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("taker_fee_bps"), 5.5))
+        spread_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("spread_proxy_bps"), 4.0))
+        slippage_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("slippage_base_bps"), 3.0))
+        funding_bps = max(0.0, RuntimeBridge._safe_positive(execution_cfg.get("funding_proxy_bps"), 1.0))
+        fee_bps = maker_fee_bps if post_only else taker_fee_bps
+        mark_price = max(0.0001, RuntimeBridge._symbol_mark_price(symbol))
+        notional_usd = qty * mark_price
+        fees_usd = notional_usd * (fee_bps / 10000.0)
+        spread_usd = notional_usd * ((spread_bps / 2.0) / 10000.0)
+        slippage_usd = notional_usd * (slippage_bps / 10000.0)
+        funding_usd = notional_usd * (funding_bps / 10000.0) * 0.1
+        total_cost_usd = fees_usd + spread_usd + slippage_usd + funding_usd
+        return {
+            "notional_usd": float(notional_usd),
+            "fees_usd": float(fees_usd),
+            "spread_usd": float(spread_usd),
+            "slippage_usd": float(slippage_usd),
+            "funding_usd": float(funding_usd),
+            "total_cost_usd": float(total_cost_usd),
+        }
+
+    def _capture_runtime_fill_costs(self, *, settings: dict[str, Any]) -> None:
+        active_ids: set[str] = set()
+        for order in self._oms.orders.values():
+            order_id = str(order.order_id or "").strip()
+            if not order_id:
+                continue
+            active_ids.add(order_id)
+            filled_now = max(0.0, float(order.filled_qty))
+            filled_prev = max(0.0, float(self._last_filled_qty_by_order.get(order_id, 0.0) or 0.0))
+            fill_delta = max(0.0, filled_now - filled_prev)
+            self._last_filled_qty_by_order[order_id] = filled_now
+            if fill_delta <= 0.0:
+                continue
+            estimate = self._estimate_runtime_fill_costs(symbol=str(order.symbol or "BTCUSDT"), fill_qty=fill_delta, settings=settings)
+            self._runtime_costs["fills_count"] = self._runtime_costs.get("fills_count", 0.0) + 1.0
+            self._runtime_costs["fills_notional_usd"] = self._runtime_costs.get("fills_notional_usd", 0.0) + float(
+                estimate.get("notional_usd", 0.0)
+            )
+            self._runtime_costs["fees_total_usd"] = self._runtime_costs.get("fees_total_usd", 0.0) + float(
+                estimate.get("fees_usd", 0.0)
+            )
+            self._runtime_costs["spread_total_usd"] = self._runtime_costs.get("spread_total_usd", 0.0) + float(
+                estimate.get("spread_usd", 0.0)
+            )
+            self._runtime_costs["slippage_total_usd"] = self._runtime_costs.get("slippage_total_usd", 0.0) + float(
+                estimate.get("slippage_usd", 0.0)
+            )
+            self._runtime_costs["funding_total_usd"] = self._runtime_costs.get("funding_total_usd", 0.0) + float(
+                estimate.get("funding_usd", 0.0)
+            )
+            self._runtime_costs["total_cost_usd"] = self._runtime_costs.get("total_cost_usd", 0.0) + float(
+                estimate.get("total_cost_usd", 0.0)
+            )
+
+        if active_ids:
+            self._last_filled_qty_by_order = {
+                oid: qty for oid, qty in self._last_filled_qty_by_order.items() if oid in active_ids
+            }
+        else:
+            self._last_filled_qty_by_order = {}
+
+    def _risk_limits_from_settings(self, settings: dict[str, Any]) -> RiskLimits:
+        risk_defaults = settings.get("risk_defaults") if isinstance(settings.get("risk_defaults"), dict) else {}
+        self._risk_policy_thresholds = _load_runtime_risk_policy_thresholds()
+        soft_daily = _as_float(self._risk_policy_thresholds.get("soft_daily_loss_pct"), 0.0)
+        hard_daily = _as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0)
+        hard_dd = _as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0)
+        settings_daily = abs(_as_float(risk_defaults.get("max_daily_loss"), 5.0)) / 100.0
+        settings_dd = abs(_as_float(risk_defaults.get("max_dd"), 22.0)) / 100.0
+        daily_limit = settings_daily
+        if soft_daily > 0:
+            daily_limit = min(daily_limit, soft_daily)
+        if hard_daily > 0:
+            daily_limit = min(daily_limit, hard_daily)
+        dd_limit = settings_dd
+        if hard_dd > 0:
+            dd_limit = min(dd_limit, hard_dd)
+        safe_factor = RuntimeBridge._safe_positive((settings.get("safety") or {}).get("safe_factor"), 0.5)
+        return RiskLimits(
+            daily_loss_limit_pct=max(0.001, daily_limit),
+            max_drawdown_pct=max(0.001, dd_limit),
+            max_positions=max(1, _as_int(risk_defaults.get("max_positions"), 20)),
+            max_total_exposure_pct=max(0.01, RuntimeBridge._safe_positive(risk_defaults.get("max_total_exposure_pct"), 1.0)),
+            max_asset_exposure_pct=max(0.01, RuntimeBridge._safe_positive(risk_defaults.get("max_asset_exposure_pct"), 0.2)),
+            risk_per_trade=max(0.0001, abs(_as_float(risk_defaults.get("risk_per_trade"), 0.5)) / 100.0),
+            safe_factor=max(0.05, safe_factor),
+        )
+
+    def _ensure_risk_engine(self, settings: dict[str, Any], state: dict[str, Any]) -> RiskEngine:
+        limits = self._risk_limits_from_settings(settings)
+        fingerprint = (
+            limits.daily_loss_limit_pct,
+            limits.max_drawdown_pct,
+            limits.max_positions,
+            limits.max_total_exposure_pct,
+            limits.max_asset_exposure_pct,
+            limits.risk_per_trade,
+        )
+        starting_equity = max(1.0, RuntimeBridge._safe_positive(state.get("equity"), 10000.0))
+        if self._risk_engine is None or self._risk_limits_fingerprint != fingerprint:
+            self._risk_engine = RiskEngine(limits=limits, starting_equity=starting_equity)
+            self._risk_limits_fingerprint = fingerprint
+        return self._risk_engine
+
+    def _set_state_value(self, state: dict[str, Any], key: str, value: Any) -> bool:
+        if state.get(key) == value:
+            return False
+        state[key] = value
+        return True
+
+    def _runtime_exchange_ready(self, *, mode: str) -> dict[str, Any]:
+        mode_n = str(mode or "paper").strip().lower()
+        checked_at = utc_now_iso()
+        if mode_n == "paper":
+            return {
+                "ok": True,
+                "mode": mode_n,
+                "connector_ok": True,
+                "order_ok": True,
+                "reason": "Paper connector operativo (simulador).",
+                "source": "paper_simulator",
+                "checked_at": checked_at,
+            }
+        diag = diagnose_exchange(mode_n, force_refresh=False)
+        # Evita quedar pegado al cache negativo: si el check cacheado falla,
+        # se fuerza un refresh inmediato para capturar recuperaciones de exchange.
+        if not (bool(diag.get("connector_ok", False)) and bool(diag.get("order_ok", False))):
+            diag = diagnose_exchange(mode_n, force_refresh=True)
+        connector_ok = bool(diag.get("connector_ok", False))
+        order_ok = bool(diag.get("order_ok", False))
+        ok = connector_ok and order_ok
+        reason = str(diag.get("order_reason") or diag.get("connector_reason") or diag.get("last_error") or "")
+        return {
+            "ok": ok,
+            "mode": mode_n,
+            "connector_ok": connector_ok,
+            "order_ok": order_ok,
+            "reason": reason if reason else ("Exchange runtime check ok" if ok else "Exchange runtime check failed"),
+            "source": "exchange_diagnose_v1",
+            "checked_at": checked_at,
+        }
+
+    def _cancel_open_orders(self) -> int:
+        canceled = 0
+        for order in list(self._oms.orders.values()):
+            if order.status in {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}:
+                self._oms.cancel(order.order_id)
+                canceled += 1
+        return canceled
+
+    @staticmethod
+    def _exchange_side_to_runtime(value: Any) -> Side:
+        side_text = str(value or "").strip().upper()
+        if side_text == "SELL":
+            return Side.SHORT
+        return Side.LONG
+
+    def _sync_oms_with_exchange_open_orders(self, exchange_orders: dict[str, dict[str, Any]]) -> None:
+        # Runtime real: el estado local de OMS no debe inventar fills; refleja openOrders del exchange.
+        for order_id, payload in exchange_orders.items():
+            if not order_id:
+                continue
+            remote_qty = max(0.0, _as_float(payload.get("qty"), 0.0))
+            remote_filled = max(0.0, _as_float(payload.get("filled_qty"), 0.0))
+            if remote_qty <= 0.0:
+                continue
+            existing = self._oms.orders.get(order_id)
+            if existing is None:
+                symbol = str(payload.get("symbol") or "BTCUSDT")
+                side = RuntimeBridge._exchange_side_to_runtime(payload.get("side"))
+                self._oms.submit(Order(order_id=order_id, symbol=symbol, side=side, qty=remote_qty))
+                existing = self._oms.orders.get(order_id)
+            if existing is None:
+                continue
+            if abs(float(existing.qty) - remote_qty) > 1e-9:
+                existing.qty = float(remote_qty)
+                existing.updated_at = utc_now()
+            delta = max(0.0, remote_filled - float(existing.filled_qty))
+            if delta > 0.0:
+                self._oms.apply_fill(order_id, delta)
+
+    def _close_absent_local_open_orders(
+        self,
+        *,
+        mode: str,
+        exchange_orders: dict[str, dict[str, Any]],
+    ) -> int:
+        if not isinstance(exchange_orders, dict):
+            return 0
+        mode_n = str(mode or "").strip().lower()
+        remote_ids = {str(oid) for oid in exchange_orders.keys() if str(oid)}
+        if not remote_ids and not self._oms.open_orders():
+            return 0
+        now_dt = utc_now()
+        grace_sec = int(RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC)
+        closed = 0
+        for order in list(self._oms.open_orders()):
+            order_id = str(order.order_id or "")
+            if not order_id or order_id in remote_ids:
+                continue
+            age_sec = max(0.0, (now_dt - order.updated_at).total_seconds())
+            if age_sec < float(grace_sec):
+                continue
+            status_payload: dict[str, Any] = {}
+            status_ok = False
+            if mode_n in {"testnet", "live"}:
+                symbol = RuntimeBridge._sanitize_exchange_symbol(order.symbol)
+                client_order_id = order_id
+                exchange_order_id = ""
+                if re.fullmatch(r"\d+", order_id):
+                    client_order_id = ""
+                    exchange_order_id = order_id
+                status_payload, _status_source, status_ok, status_reason = self._fetch_exchange_order_status(
+                    mode=mode_n,
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    exchange_order_id=exchange_order_id,
+                )
+                if status_ok and status_payload:
+                    terminal = RuntimeBridge._apply_remote_order_status_to_local(order, status_payload)
+                    if terminal:
+                        closed += 1
+                    else:
+                        exchange_orders[order_id] = {
+                            "filled_qty": float(_as_float(status_payload.get("filled_qty"), order.filled_qty)),
+                            "qty": float(_as_float(status_payload.get("qty"), order.qty)),
+                            "symbol": str(status_payload.get("symbol") or order.symbol),
+                            "side": str(status_payload.get("side") or ("BUY" if order.side == Side.LONG else "SELL")),
+                            "status": str(status_payload.get("status") or ""),
+                            "client_order_id": str(status_payload.get("client_order_id") or client_order_id),
+                            "exchange_order_id": str(status_payload.get("exchange_order_id") or exchange_order_id),
+                        }
+                    continue
+                if not status_ok and str(status_reason or "").strip():
+                    self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                # Fail-closed: si no podemos confirmar estado remoto, no cerrar localmente.
+                order.updated_at = now_dt
+                continue
+            self._oms.cancel(order_id)
+            closed += 1
+        return int(closed)
+
+    @staticmethod
+    def _parse_exchange_open_orders_payload(payload: list[Any]) -> dict[str, dict[str, Any]]:
+        parsed_orders: dict[str, dict[str, Any]] = {}
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            client_order_id = str(row.get("clientOrderId") or "").strip()
+            exchange_order_id = str(row.get("orderId") or "").strip()
+            oid = client_order_id or exchange_order_id
+            if not oid:
+                continue
+            parsed_orders[oid] = {
+                "filled_qty": float(_as_float(row.get("executedQty"), 0.0)),
+                "qty": float(_as_float(row.get("origQty"), 0.0)),
+                "symbol": str(row.get("symbol") or ""),
+                "side": str(row.get("side") or ""),
+                "status": str(row.get("status") or "NEW").strip().upper(),
+                "client_order_id": client_order_id,
+                "exchange_order_id": exchange_order_id,
+            }
+        return parsed_orders
+
+    def _fetch_exchange_open_orders(self, *, mode: str) -> tuple[dict[str, dict[str, Any]], str, bool, str]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return {}, "exchange_api_skip_mode", False, f"Modo no soportado para exchange open orders: {mode_n or 'unknown'}"
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return {}, "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para cancel/reconcile real."
+        timeout_sec = _exchange_timeout_seconds()
+        try:
+            request_ok, result = _binance_signed_request(
+                method="GET",
+                base_url=str(creds.get("base_url") or ""),
+                path="/api/v3/openOrders",
+                api_key=str(creds.get("api_key") or ""),
+                api_secret=str(creds.get("api_secret") or ""),
+                params={},
+                timeout_sec=timeout_sec,
+            )
+            payload = result.get("payload")
+            if request_ok and isinstance(payload, list):
+                return RuntimeBridge._parse_exchange_open_orders_payload(payload), "exchange_api", True, ""
+            status_code = int(_as_int(result.get("status_code"), 0))
+            category, detail = _classify_exchange_error(status_code, payload)
+            reason = detail if detail else f"Exchange openOrders failed ({category})"
+            return {}, "exchange_api_error", False, reason
+        except Exception as exc:
+            return {}, "exchange_api_exception", False, str(exc)
+
+    @staticmethod
+    def _parse_exchange_account_positions_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        balances = payload.get("balances") if isinstance(payload.get("balances"), list) else []
+        positions: list[dict[str, Any]] = []
+        for row in balances:
+            if not isinstance(row, dict):
+                continue
+            asset = str(row.get("asset") or "").strip().upper()
+            if not asset or asset in {"USDT", "USDC", "BUSD", "FDUSD"}:
+                continue
+            free_qty = max(0.0, _as_float(row.get("free"), 0.0))
+            locked_qty = max(0.0, _as_float(row.get("locked"), 0.0))
+            qty = free_qty + locked_qty
+            if qty <= 0.0:
+                continue
+            symbol = f"{asset}USDT"
+            mark_px = RuntimeBridge._symbol_mark_price(symbol)
+            entry_px = mark_px * 0.998
+            pnl_unrealized = (mark_px - entry_px) * qty
+            positions.append(
+                {
+                    "symbol": symbol,
+                    "side": "long",
+                    "qty": round(qty, 8),
+                    "entry_px": round(entry_px, 6),
+                    "mark_px": round(mark_px, 6),
+                    "pnl_unrealized": round(pnl_unrealized, 6),
+                    "exposure_usd": round(abs(qty * mark_px), 6),
+                    "strategy_id": DEFAULT_STRATEGY_ID,
+                    "order_id": f"BAL-{asset}",
+                }
+            )
+        positions.sort(key=lambda row: str(row.get("symbol") or ""))
+        return positions
+
+    def _fetch_exchange_account_positions(self, *, mode: str) -> tuple[list[dict[str, Any]], str, bool, str]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return [], "exchange_api_skip_mode", False, f"Modo no soportado para exchange account: {mode_n or 'unknown'}"
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return [], "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para account snapshot."
+        timeout_sec = _exchange_timeout_seconds()
+        try:
+            request_ok, result = _binance_signed_request(
+                method="GET",
+                base_url=str(creds.get("base_url") or ""),
+                path="/api/v3/account",
+                api_key=str(creds.get("api_key") or ""),
+                api_secret=str(creds.get("api_secret") or ""),
+                params={},
+                timeout_sec=timeout_sec,
+            )
+            payload = result.get("payload")
+            if request_ok and isinstance(payload, dict):
+                return RuntimeBridge._parse_exchange_account_positions_payload(payload), "exchange_api", True, ""
+            status_code = int(_as_int(result.get("status_code"), 0))
+            category, detail = _classify_exchange_error(status_code, payload)
+            reason = detail if detail else f"Exchange account failed ({category})"
+            return [], "exchange_api_error", False, reason
+        except Exception as exc:
+            return [], "exchange_api_exception", False, str(exc)
+
+    def _fetch_exchange_order_status(
+        self,
+        *,
+        mode: str,
+        symbol: str,
+        client_order_id: str,
+        exchange_order_id: str,
+    ) -> tuple[dict[str, Any], str, bool, str]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return {}, "exchange_api_skip_mode", False, f"Modo no soportado para exchange order status: {mode_n or 'unknown'}"
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        client_id_n = str(client_order_id or "").strip()
+        exchange_id_n = str(exchange_order_id or "").strip()
+        if not symbol_n:
+            return {}, "exchange_api_missing_symbol", False, "symbol missing for exchange order status."
+        if not client_id_n and not exchange_id_n:
+            return {}, "exchange_api_missing_order_id", False, "order identifier missing for exchange order status."
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return {}, "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para order status."
+
+        timeout_sec = _exchange_timeout_seconds()
+        params: dict[str, Any] = {"symbol": symbol_n}
+        if client_id_n:
+            params["origClientOrderId"] = client_id_n
+        else:
+            params["orderId"] = exchange_id_n
+        try:
+            request_ok, result = _binance_signed_request(
+                method="GET",
+                base_url=str(creds.get("base_url") or ""),
+                path="/api/v3/order",
+                api_key=str(creds.get("api_key") or ""),
+                api_secret=str(creds.get("api_secret") or ""),
+                params=params,
+                timeout_sec=timeout_sec,
+            )
+            payload = result.get("payload")
+            if request_ok and isinstance(payload, dict):
+                return {
+                    "status": str(payload.get("status") or "").strip().upper(),
+                    "filled_qty": float(_as_float(payload.get("executedQty"), 0.0)),
+                    "qty": float(_as_float(payload.get("origQty"), 0.0)),
+                    "symbol": str(payload.get("symbol") or symbol_n).strip().upper(),
+                    "side": str(payload.get("side") or "").strip().upper(),
+                    "client_order_id": str(payload.get("clientOrderId") or client_id_n).strip(),
+                    "exchange_order_id": str(payload.get("orderId") or exchange_id_n).strip(),
+                }, "exchange_api", True, ""
+            status_code = int(_as_int(result.get("status_code"), 0))
+            category, detail = _classify_exchange_error(status_code, payload)
+            reason = detail if detail else f"Exchange order status failed ({category})"
+            return {}, "exchange_api_error", False, reason
+        except Exception as exc:
+            return {}, "exchange_api_exception", False, str(exc)
+
+    @staticmethod
+    def _apply_remote_order_status_to_local(order: Order, status_payload: dict[str, Any]) -> bool:
+        remote_qty = max(0.0, _as_float(status_payload.get("qty"), 0.0))
+        remote_filled = max(0.0, _as_float(status_payload.get("filled_qty"), 0.0))
+        remote_status = str(status_payload.get("status") or "").strip().upper()
+        if remote_qty > 0.0 and abs(float(order.qty) - remote_qty) > 1e-9:
+            order.qty = float(remote_qty)
+            order.updated_at = utc_now()
+        if remote_filled > float(order.filled_qty):
+            delta = max(0.0, remote_filled - float(order.filled_qty))
+            if delta > 0.0:
+                order.filled_qty = min(float(order.qty), float(order.filled_qty) + delta)
+                order.status = OrderStatus.FILLED if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED
+                order.updated_at = utc_now()
+        if remote_status == "FILLED":
+            if float(order.filled_qty) < float(order.qty):
+                remaining = max(0.0, float(order.qty) - float(order.filled_qty))
+                if remaining > 0.0:
+                    order.filled_qty = float(order.qty)
+            order.status = OrderStatus.FILLED
+            order.updated_at = utc_now()
+            return True
+        if remote_status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"}:
+            if float(order.filled_qty) >= float(order.qty) and float(order.qty) > 0.0:
+                order.status = OrderStatus.FILLED
+            else:
+                order.status = OrderStatus.CANCELED
+            order.updated_at = utc_now()
+            return True
+        if remote_status == "REJECTED":
+            order.status = OrderStatus.REJECTED
+            order.updated_at = utc_now()
+            return True
+        if remote_status == "PARTIALLY_FILLED":
+            order.status = OrderStatus.PARTIALLY_FILLED
+            order.updated_at = utc_now()
+            return False
+        if remote_status in {"NEW", "PENDING_CANCEL"}:
+            if float(order.filled_qty) >= float(order.qty) and float(order.qty) > 0.0:
+                order.status = OrderStatus.FILLED
+                order.updated_at = utc_now()
+                return True
+            if float(order.filled_qty) > 0.0:
+                order.status = OrderStatus.PARTIALLY_FILLED
+            else:
+                order.status = OrderStatus.SUBMITTED
+            order.updated_at = utc_now()
+            return False
+        return False
+
+    def _remember_remote_cancel_request(self, order_id: str) -> bool:
+        text = str(order_id or "").strip()
+        if not text:
+            return False
+        now_epoch = time.time()
+        ttl_sec = float(RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_TTL_SEC)
+        last = float(self._recent_remote_cancel_request_at.get(text, 0.0) or 0.0)
+        if last > 0.0 and (now_epoch - last) < ttl_sec:
+            return False
+        self._recent_remote_cancel_request_at[text] = now_epoch
+        if len(self._recent_remote_cancel_request_at) > int(RUNTIME_REMOTE_CANCEL_IDEMPOTENCY_MAX_IDS):
+            floor = now_epoch - ttl_sec
+            self._recent_remote_cancel_request_at = {
+                key: value for key, value in self._recent_remote_cancel_request_at.items() if float(value) >= floor
+            }
+        return True
+
+    @staticmethod
+    def _sanitize_exchange_symbol(value: Any) -> str:
+        return str(value or "").strip().upper().replace("/", "").replace("-", "")
+
+    def _runtime_order_intent(self, *, mode: str) -> dict[str, Any]:
+        mode_n = str(mode or "").strip().lower()
+        principal = store.registry.get_principal(mode_n)
+        strategy_id = str((principal or {}).get("name") or "").strip()
+        if not strategy_id:
+            return {
+                "action": "flat",
+                "reason": "no_primary_strategy",
+                "strategy_id": "",
+                "symbol": "",
+                "side": "",
+                "notional_usd": float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD),
+            }
+
+        try:
+            strategy = store.strategy_or_404(strategy_id)
+        except Exception:
+            return {
+                "action": "flat",
+                "reason": "primary_strategy_not_found",
+                "strategy_id": strategy_id,
+                "symbol": "",
+                "side": "",
+                "notional_usd": float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD),
+            }
+
+        enabled_for_trading = bool(strategy.get("enabled_for_trading", strategy.get("enabled", False)))
+        if not enabled_for_trading:
+            return {
+                "action": "flat",
+                "reason": "primary_strategy_disabled",
+                "strategy_id": strategy_id,
+                "symbol": "",
+                "side": "",
+                "notional_usd": float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD),
+            }
+
+        params = strategy.get("params") if isinstance(strategy.get("params"), dict) else {}
+        tags = {str(tag or "").strip().lower() for tag in (strategy.get("tags") or []) if str(tag or "").strip()}
+
+        symbol = RuntimeBridge._sanitize_exchange_symbol(
+            params.get("runtime_symbol")
+            or params.get("symbol")
+            or params.get("pair")
+            or params.get("market_symbol")
+            or RUNTIME_REMOTE_ORDER_SYMBOL
+            or get_env("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT")
+        )
+        if not symbol:
+            symbol = "BTCUSDT"
+
+        action_override = str(params.get("runtime_action") or params.get("action") or "").strip().lower()
+        side_override = str(params.get("runtime_side") or params.get("side") or "").strip().upper()
+
+        action = "trade"
+        side = "SELL" if str(RUNTIME_REMOTE_ORDER_SIDE or "BUY").strip().upper() == "SELL" else "BUY"
+        reason = "strategy_default_side"
+
+        if action_override in {"flat", "hold", "none", "pause"}:
+            action = "flat"
+            side = ""
+            reason = "strategy_action_override_flat"
+        elif side_override in {"BUY", "SELL"}:
+            side = side_override
+            reason = "strategy_side_override"
+        else:
+            defensive_tags = {"defensive", "liquidity", "cash", "safe_mode", "capital_preservation"}
+            meanrev_tags = {"meanreversion", "mean_reversion", "reversion", "range"}
+            trend_tags = {"trend", "breakout", "momentum", "orderflow", "trend_scanning"}
+            if tags & defensive_tags:
+                action = "flat"
+                side = ""
+                reason = "strategy_tags_defensive_flat"
+            elif tags & meanrev_tags:
+                side = "SELL"
+                reason = "strategy_tags_meanreversion"
+            elif tags & trend_tags:
+                side = "BUY"
+                reason = "strategy_tags_trend"
+
+        notional = float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD)
+        for key in ("runtime_notional_usd", "order_notional_usd", "notional_usd"):
+            if key in params:
+                notional = RuntimeBridge._safe_positive(params.get(key), notional)
+                break
+        notional = max(5.0, float(notional))
+
+        return {
+            "action": action,
+            "reason": reason,
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "side": side,
+            "notional_usd": notional,
+        }
+
+    def _remember_remote_submit_request(self, client_order_id: str) -> bool:
+        text = str(client_order_id or "").strip()
+        if not text:
+            return False
+        now_epoch = time.time()
+        ttl_sec = float(RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC)
+        last = float(self._recent_remote_submit_request_at.get(text, 0.0) or 0.0)
+        if last > 0.0 and (now_epoch - last) < ttl_sec:
+            return False
+        self._recent_remote_submit_request_at[text] = now_epoch
+        if len(self._recent_remote_submit_request_at) > int(RUNTIME_REMOTE_ORDER_IDEMPOTENCY_MAX_IDS):
+            floor = now_epoch - ttl_sec
+            self._recent_remote_submit_request_at = {
+                key: value for key, value in self._recent_remote_submit_request_at.items() if float(value) >= floor
+            }
+        return True
+
+    def _build_remote_client_order_id(self, *, mode: str, symbol: str, side: str) -> str:
+        mode_n = str(mode or "testnet").strip().lower()
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        side_n = "buy" if str(side or "").strip().upper() != "SELL" else "sell"
+        slot = int(time.time() // max(1, int(RUNTIME_REMOTE_ORDER_IDEMPOTENCY_TTL_SEC)))
+        base = re.sub(r"[^a-z0-9_-]", "", f"rt-{mode_n}-{symbol_n.lower()}-{side_n}-{slot}")
+        if len(base) <= 36:
+            return base
+        digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:8]
+        trimmed = base[:27].rstrip("-_")
+        return f"{trimmed}-{digest}"[:36]
+
+    def _submit_exchange_market_order(
+        self,
+        *,
+        mode: str,
+        symbol: str,
+        side: str,
+        qty: float,
+        client_order_id: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        mode_n = str(mode or "").strip().lower()
+        creds = load_exchange_credentials(mode_n)
+        if not bool(creds.get("has_keys", False)):
+            return False, {"error": "missing_keys"}
+        side_n = "SELL" if str(side or "").strip().upper() == "SELL" else "BUY"
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        qty_n = max(0.000001, float(qty))
+        qty_text = f"{qty_n:.8f}".rstrip("0").rstrip(".")
+        params: dict[str, Any] = {
+            "symbol": symbol_n,
+            "side": side_n,
+            "type": "MARKET",
+            "quantity": qty_text,
+            "newClientOrderId": str(client_order_id),
+        }
+        timeout_sec = _exchange_timeout_seconds()
+        request_ok, result = _binance_signed_request(
+            method="POST",
+            base_url=str(creds.get("base_url") or ""),
+            path="/api/v3/order",
+            api_key=str(creds.get("api_key") or ""),
+            api_secret=str(creds.get("api_secret") or ""),
+            params=params,
+            timeout_sec=timeout_sec,
+        )
+        payload = result.get("payload")
+        if request_ok and isinstance(payload, dict):
+            return True, {
+                "client_order_id": str(payload.get("clientOrderId") or client_order_id),
+                "exchange_order_id": str(payload.get("orderId") or ""),
+                "executed_qty": float(_as_float(payload.get("executedQty"), 0.0)),
+                "orig_qty": float(_as_float(payload.get("origQty"), qty_n)),
+                "symbol": symbol_n,
+                "side": side_n,
+                "raw": payload,
+            }
+        error_code = int(_as_int((payload.get("code") if isinstance(payload, dict) else 0), 0))
+        error_text = str((payload.get("msg") if isinstance(payload, dict) else "") or "").strip().lower()
+        # Binance duplicate submit (idempotent semantics).
+        if error_code == -2010 and "duplicate order" in error_text:
+            return True, {
+                "client_order_id": str(client_order_id),
+                "exchange_order_id": "",
+                "executed_qty": 0.0,
+                "orig_qty": float(qty_n),
+                "symbol": symbol_n,
+                "side": side_n,
+                "idempotent_duplicate": True,
+                "raw": payload if isinstance(payload, dict) else {},
+            }
+        status_code = int(_as_int(result.get("status_code"), 0))
+        category, detail = _classify_exchange_error(status_code, payload)
+        return False, {"error": detail, "error_type": category, "status_code": status_code, "raw": payload}
+
+    def _maybe_submit_exchange_runtime_order(
+        self,
+        *,
+        state: dict[str, Any],
+        mode: str,
+        account_positions: list[dict[str, Any]] | None = None,
+        account_positions_ok: bool | None = None,
+        account_positions_reason: str | None = None,
+    ) -> dict[str, Any]:
+        mode_n = str(mode or "").strip().lower()
+        if mode_n not in {"testnet", "live"}:
+            return {"submitted": False, "reason": "skip_mode"}
+        if not bool(RUNTIME_REMOTE_ORDERS_ENABLED):
+            return {"submitted": False, "reason": "remote_orders_disabled"}
+
+        intent = self._runtime_order_intent(mode=mode_n)
+        signal_strategy_id = str(intent.get("strategy_id") or "")
+        signal_symbol = RuntimeBridge._sanitize_exchange_symbol(intent.get("symbol") or "")
+        signal_side = str(intent.get("side") or "").strip().upper()
+        signal_action = str(intent.get("action") or "flat").strip().lower()
+        signal_reason = str(intent.get("reason") or "").strip()
+
+        if mode_n == "live" and not bool(LIVE_TRADING_ENABLED):
+            return {
+                "submitted": False,
+                "reason": "live_trading_disabled",
+                "error": "LIVE_TRADING_ENABLED=false",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
+        if signal_action != "trade":
+            return {
+                "submitted": False,
+                "reason": "strategy_signal_flat",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
+        if not bool((self._last_risk or {}).get("allow_new_positions", True)):
+            return {
+                "submitted": False,
+                "reason": "risk_blocked",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+        if not bool(state.get("runtime_reconciliation_ok", False)):
+            return {
+                "submitted": False,
+                "reason": "reconciliation_not_ok",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
+        last_submit_at_raw = str(state.get("runtime_last_remote_submit_at") or "").strip()
+        if last_submit_at_raw:
+            try:
+                if last_submit_at_raw.endswith("Z"):
+                    last_submit_at_raw = last_submit_at_raw.replace("Z", "+00:00")
+                last_submit_dt = datetime.fromisoformat(last_submit_at_raw)
+                cooldown_sec = int(RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC)
+                age_sec = max(0.0, (utc_now() - last_submit_dt).total_seconds())
+                if age_sec < float(cooldown_sec):
+                    return {
+                        "submitted": False,
+                        "reason": "submit_cooldown_active",
+                        "signal_action": signal_action,
+                        "signal_reason": signal_reason,
+                        "signal_strategy_id": signal_strategy_id,
+                        "signal_symbol": signal_symbol,
+                        "signal_side": signal_side,
+                    }
+            except Exception:
+                pass
+
+        account_rows: list[dict[str, Any]]
+        account_ok: bool
+        account_reason: str
+        if account_positions is not None:
+            account_rows = list(account_positions)
+            account_ok = bool(account_positions_ok) if account_positions_ok is not None else True
+            account_reason = str(account_positions_reason or "")
+        else:
+            account_rows, _account_source, account_ok, _account_reason = self._fetch_exchange_account_positions(mode=mode_n)
+            account_reason = str(_account_reason or _account_source or "")
+        if not account_ok:
+            return {
+                "submitted": False,
+                "reason": "account_positions_fetch_failed",
+                "error": account_reason or "account_positions_fetch_failed",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+        if account_ok and account_rows:
+            self._remote_positions = account_rows
+            return {
+                "submitted": False,
+                "reason": "account_positions_open",
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
+        exchange_orders, _source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
+        if not source_ok:
+            self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            return {
+                "submitted": False,
+                "reason": "open_orders_fetch_failed",
+                "error": source_reason,
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+        self._sync_oms_with_exchange_open_orders(exchange_orders)
+        if exchange_orders:
+            return {
+                "submitted": False,
+                "reason": "open_orders_present",
+                "open_orders": len(exchange_orders),
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+        local_open_orders = self._oms.open_orders()
+        if local_open_orders:
+            return {
+                "submitted": False,
+                "reason": "local_open_orders_present",
+                "open_orders": len(local_open_orders),
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
+        symbol = signal_symbol or RuntimeBridge._sanitize_exchange_symbol(
+            RUNTIME_REMOTE_ORDER_SYMBOL or get_env("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT")
+        )
+        if not symbol:
+            symbol = "BTCUSDT"
+        side = signal_side if signal_side in {"BUY", "SELL"} else (
+            "SELL" if str(RUNTIME_REMOTE_ORDER_SIDE or "BUY").strip().upper() == "SELL" else "BUY"
+        )
+        mark_price = max(0.0001, RuntimeBridge._symbol_mark_price(symbol))
+        notional = max(5.0, float(intent.get("notional_usd") or RUNTIME_REMOTE_ORDER_NOTIONAL_USD))
+        qty = max(0.000001, round(notional / mark_price, 8))
+        client_order_id = self._build_remote_client_order_id(mode=mode_n, symbol=symbol, side=side)
+        if not self._remember_remote_submit_request(client_order_id):
+            return {
+                "submitted": False,
+                "reason": "idempotent_skip",
+                "client_order_id": client_order_id,
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": symbol,
+                "signal_side": side,
+            }
+
+        submitted, payload = self._submit_exchange_market_order(
+            mode=mode_n,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            client_order_id=client_order_id,
+        )
+        if not submitted:
+            self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            return {
+                "submitted": False,
+                "reason": "submit_failed",
+                "error": str(payload.get("error") or ""),
+                "client_order_id": client_order_id,
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": symbol,
+                "signal_side": side,
+            }
+
+        order_id = str(payload.get("client_order_id") or client_order_id)
+        existing = self._oms.orders.get(order_id)
+        if existing is None:
+            self._oms.submit(
+                Order(
+                    order_id=order_id,
+                    symbol=symbol,
+                    side=RuntimeBridge._exchange_side_to_runtime(side),
+                    qty=max(0.000001, float(payload.get("orig_qty") or qty)),
+                )
+            )
+            existing = self._oms.orders.get(order_id)
+        if existing is not None:
+            executed_qty = max(0.0, float(payload.get("executed_qty") or 0.0))
+            delta = max(0.0, executed_qty - float(existing.filled_qty))
+            if delta > 0.0:
+                self._oms.apply_fill(order_id, delta)
+
+        return {
+            "submitted": True,
+            "reason": "submitted",
+            "client_order_id": order_id,
+            "symbol": symbol,
+            "side": side,
+            "qty": float(payload.get("orig_qty") or qty),
+            "idempotent_duplicate": bool(payload.get("idempotent_duplicate", False)),
+            "signal_action": signal_action,
+            "signal_reason": signal_reason,
+            "signal_strategy_id": signal_strategy_id,
+            "signal_symbol": symbol,
+            "signal_side": side,
+        }
+
+    def _maybe_submit_exchange_seed_order(
+        self,
+        *,
+        state: dict[str, Any],
+        mode: str,
+        account_positions: list[dict[str, Any]] | None = None,
+        account_positions_ok: bool | None = None,
+        account_positions_reason: str | None = None,
+    ) -> dict[str, Any]:
+        # Backward-compatible wrapper: seed order logic now strategy-intent driven.
+        return self._maybe_submit_exchange_runtime_order(
+            state=state,
+            mode=mode,
+            account_positions=account_positions,
+            account_positions_ok=account_positions_ok,
+            account_positions_reason=account_positions_reason,
+        )
+
+    def _cancel_exchange_open_orders(self, *, mode: str) -> int:
+        mode_n = str(mode or "").strip().lower()
+        exchange_orders, source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
+        if not source_ok:
+            if mode_n in {"testnet", "live"}:
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            return 0
+        creds = load_exchange_credentials(mode_n)
+        timeout_sec = _exchange_timeout_seconds()
+        canceled_remote = 0
+        for oid, payload in exchange_orders.items():
+            if not self._remember_remote_cancel_request(oid):
+                continue
+            symbol = str(payload.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            client_order_id = str(payload.get("client_order_id") or "").strip()
+            exchange_order_id = str(payload.get("exchange_order_id") or "").strip()
+            cancel_params: dict[str, Any] = {"symbol": symbol}
+            if client_order_id:
+                cancel_params["origClientOrderId"] = client_order_id
+            elif exchange_order_id:
+                cancel_params["orderId"] = exchange_order_id
+            else:
+                continue
+            try:
+                request_ok, result = _binance_signed_request(
+                    method="DELETE",
+                    base_url=str(creds.get("base_url") or ""),
+                    path="/api/v3/order",
+                    api_key=str(creds.get("api_key") or ""),
+                    api_secret=str(creds.get("api_secret") or ""),
+                    params=cancel_params,
+                    timeout_sec=timeout_sec,
+                )
+                payload_raw = result.get("payload")
+                if request_ok:
+                    canceled_remote += 1
+                    continue
+                error_code = int(_as_int((payload_raw.get("code") if isinstance(payload_raw, dict) else 0), 0))
+                error_text = str((payload_raw.get("msg") if isinstance(payload_raw, dict) else "") or "").strip().lower()
+                # Idempotencia remota: si ya no existe, treat as already canceled.
+                if error_code == -2011 or "unknown order" in error_text:
+                    canceled_remote += 1
+                    continue
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            except Exception:
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+        self._last_reconcile["cancel_source"] = source
+        self._last_reconcile["cancel_source_reason"] = source_reason
+        return canceled_remote
+
+    def _ensure_seed_order(self, state: dict[str, Any]) -> None:
+        if str(state.get("mode") or "paper").strip().lower() != "paper":
+            return
+        if self._oms.open_orders():
+            return
+        qty = max(0.001, round(RuntimeBridge._safe_positive(state.get("equity"), 10000.0) / 1_000_000.0, 6))
+        seed = Order(
+            order_id=f"RT-{int(time.time() * 1000)}",
+            symbol="BTC/USDT",
+            side=Side.LONG,
+            qty=qty,
+        )
+        self._oms.submit(seed)
+
+    def _positions_snapshot(self, *, mode: str | None = None) -> list[dict[str, Any]]:
+        mode_n = str(mode or self._active_mode or "paper").strip().lower()
+        if mode_n in {"testnet", "live"} and self._remote_positions:
+            return [dict(row) for row in self._remote_positions]
+        rows: list[dict[str, Any]] = []
+        for order in self._oms.open_orders():
+            remaining = max(0.0, float(order.qty) - float(order.filled_qty))
+            if remaining <= 0:
+                continue
+            mark_px = RuntimeBridge._symbol_mark_price(order.symbol)
+            entry_px = mark_px * 0.998
+            sign = 1.0 if order.side == Side.LONG else -1.0
+            pnl_unrealized = (mark_px - entry_px) * remaining * sign
+            rows.append(
+                {
+                    "symbol": order.symbol,
+                    "side": "long" if order.side == Side.LONG else "short",
+                    "qty": round(remaining, 8),
+                    "entry_px": round(entry_px, 6),
+                    "mark_px": round(mark_px, 6),
+                    "pnl_unrealized": round(pnl_unrealized, 6),
+                    "exposure_usd": round(abs(remaining * mark_px), 6),
+                    "strategy_id": DEFAULT_STRATEGY_ID,
+                    "order_id": order.order_id,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _aggregate_exposure(positions: list[dict[str, Any]]) -> tuple[float, list[dict[str, Any]], float]:
+        exposure_total = 0.0
+        by_symbol: dict[str, float] = {}
+        for row in positions:
+            symbol = str(row.get("symbol") or "")
+            exposure = abs(_as_float(row.get("exposure_usd"), 0.0))
+            exposure_total += exposure
+            if symbol:
+                by_symbol[symbol] = by_symbol.get(symbol, 0.0) + exposure
+        exposure_rows = [{"symbol": symbol, "exposure": round(value, 6)} for symbol, value in sorted(by_symbol.items())]
+        max_symbol_exposure = max(by_symbol.values()) if by_symbol else 0.0
+        return exposure_total, exposure_rows, max_symbol_exposure
+
+    def _reconcile(self, *, mode: str) -> dict[str, Any]:
+        mode_n = str(mode or "paper").strip().lower()
+        source = "local_mirror"
+        source_ok = True
+        source_reason = ""
+        exchange_orders: dict[str, dict[str, Any]] = {}
+        if mode_n == "paper":
+            exchange_orders = {
+                str(order.order_id): {
+                    "filled_qty": float(order.filled_qty),
+                    "qty": float(order.qty),
+                    "symbol": str(order.symbol),
+                    "side": "BUY" if order.side == Side.LONG else "SELL",
+                }
+                for order in self._oms.orders.values()
+            }
+        if mode_n in {"testnet", "live"}:
+            exchange_orders, source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
+            if source_ok:
+                self._sync_oms_with_exchange_open_orders(exchange_orders)
+                closed_absent = self._close_absent_local_open_orders(mode=mode_n, exchange_orders=exchange_orders)
+                if closed_absent > 0:
+                    self._stats["requotes"] = self._stats.get("requotes", 0) + int(closed_absent)
+        local_orders = {
+            str(order.order_id): {"filled_qty": float(order.filled_qty)}
+            for order in self._oms.open_orders()
+        }
+        report = reconcile_orders(exchange_orders=exchange_orders, local_orders=local_orders)
+        self._last_reconcile = {
+            "desync_count": int(report.desync_count),
+            "missing_local": list(report.missing_local),
+            "missing_exchange": list(report.missing_exchange),
+            "qty_mismatches": list(report.qty_mismatches),
+            "source": source,
+            "source_ok": bool(source_ok),
+            "source_reason": source_reason,
+        }
+        return dict(self._last_reconcile)
+
+    def _append_execution_point(self, *, settings: dict[str, Any], mode: str) -> dict[str, Any]:
+        execution_cfg = settings.get("execution") if isinstance(settings.get("execution"), dict) else {}
+        spread_base = max(0.1, RuntimeBridge._safe_positive(execution_cfg.get("spread_proxy_bps"), 4.0))
+        slip_base = max(0.1, RuntimeBridge._safe_positive(execution_cfg.get("slippage_base_bps"), 3.0))
+        post_only = bool(execution_cfg.get("post_only", True))
+        mode_n = str(mode or "paper").strip().lower()
+
+        open_orders = len(self._oms.open_orders())
+        filled = sum(1 for row in self._oms.orders.values() if row.status == OrderStatus.FILLED)
+        partial = sum(1 for row in self._oms.orders.values() if row.status == OrderStatus.PARTIALLY_FILLED)
+        total_orders = len(self._oms.orders)
+        if total_orders <= 0:
+            fill_ratio = 0.0 if mode_n in {"testnet", "live"} else 0.92
+        else:
+            fill_ratio = min(1.0, max(0.0, (filled + partial * 0.5) / total_orders))
+        if total_orders <= 0 and mode_n in {"testnet", "live"}:
+            maker_ratio = 0.0
+        else:
+            maker_ratio = 0.92 if post_only else 0.48
+        latency_ms = 80.0 + (open_orders * 9.0) + (0.0 if post_only else 25.0)
+
+        point = {
+            "ts": utc_now_iso(),
+            "latency_ms_p95": round(latency_ms, 3),
+            "spread_bps": round(spread_base + (open_orders * 0.35), 3),
+            "slippage_bps": round(slip_base + (open_orders * 0.2), 3),
+            "maker_ratio": round(maker_ratio, 4),
+            "fill_ratio": round(fill_ratio, 4),
+        }
+        self._series.append(point)
+        if len(self._series) > 240:
+            self._series = self._series[-240:]
+        return point
+
+    def sync_runtime_state(self, state: dict[str, Any], settings: dict[str, Any], *, event: str | None = None) -> bool:
+        with self._lock:
+            changed = False
+            runtime_engine = _runtime_engine_from_state(state)
+            running = bool(state.get("running")) and not bool(state.get("killed"))
+            active_mode = str(state.get("mode") or default_mode()).strip().lower()
+            self._active_mode = active_mode
+            now_iso = utc_now_iso()
+            max_age_for_stale = max(10, _as_int((settings.get("execution") or {}).get("order_timeout_sec"), 45))
+
+            if event == "kill":
+                self._kill_switch.trigger("admin_killswitch")
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                changed = self._set_state_value(state, "running", False) or changed
+                changed = self._set_state_value(state, "killed", True) or changed
+                changed = self._set_state_value(state, "safe_mode", True) or changed
+                changed = self._set_state_value(state, "bot_status", "KILLED") or changed
+
+            if event in {"stop", "kill", "mode_change"}:
+                canceled_remote = 0
+                if runtime_engine == RUNTIME_ENGINE_REAL and active_mode in {"testnet", "live"}:
+                    canceled_remote = self._cancel_exchange_open_orders(mode=active_mode)
+                canceled_now = self._cancel_open_orders()
+                canceled_total = int(canceled_now) + int(canceled_remote)
+                if canceled_total > 0:
+                    self._stats["requotes"] = self._stats.get("requotes", 0) + canceled_total
+
+            if runtime_engine != RUNTIME_ENGINE_REAL or not running:
+                changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
+                changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
+                changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
+                changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_exchange_connector_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_exchange_order_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_exchange_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
+                if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
+                    changed = self._set_state_value(state, "runtime_exchange_mode", "") or changed
+                    changed = self._set_state_value(state, "runtime_exchange_verified_at", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_at", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_client_order_id", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_reason", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_action", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_reason", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_strategy_id", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_symbol", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_side", "") or changed
+                if event in {"stop", "kill", "mode_change"} or runtime_engine != RUNTIME_ENGINE_REAL:
+                    changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
+                    changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
+                if runtime_engine != RUNTIME_ENGINE_REAL:
+                    self._reset_runtime_costs()
+                self._remote_positions = []
+                self._append_execution_point(settings=settings, mode=active_mode)
+                return changed
+
+            exchange_ready = self._runtime_exchange_ready(mode=active_mode)
+            changed = self._set_state_value(state, "runtime_exchange_connector_ok", bool(exchange_ready.get("connector_ok", False))) or changed
+            changed = self._set_state_value(state, "runtime_exchange_order_ok", bool(exchange_ready.get("order_ok", False))) or changed
+            changed = self._set_state_value(state, "runtime_exchange_mode", str(exchange_ready.get("mode") or active_mode)) or changed
+            changed = self._set_state_value(state, "runtime_exchange_verified_at", str(exchange_ready.get("checked_at") or now_iso)) or changed
+            changed = self._set_state_value(state, "runtime_exchange_reason", str(exchange_ready.get("reason") or "")) or changed
+            if not bool(exchange_ready.get("ok", False)):
+                changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
+                changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
+                changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
+                changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                changed = self._set_state_value(state, "runtime_last_remote_submit_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_action", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_strategy_id", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_symbol", "") or changed
+                changed = self._set_state_value(state, "runtime_last_signal_side", "") or changed
+                changed = self._set_state_value(state, "runtime_heartbeat_at", "") or changed
+                changed = self._set_state_value(state, "runtime_last_reconcile_at", "") or changed
+                self._remote_positions = []
+                self._append_execution_point(settings=settings, mode=active_mode)
+                return changed
+
+            if event in {"start", "mode_change"} and self._kill_switch.is_triggered():
+                self._kill_switch.reset()
+            if event in {"start", "mode_change"}:
+                self._reset_runtime_costs()
+            self._ensure_seed_order(state)
+            stale_ids = self._oms.cancel_stale(max_age_seconds=max_age_for_stale)
+            if stale_ids:
+                self._stats["requotes"] = self._stats.get("requotes", 0) + len(stale_ids)
+            open_orders = self._oms.open_orders()
+            if active_mode == "paper" and open_orders:
+                target = open_orders[0]
+                remaining = max(0.0, float(target.qty) - float(target.filled_qty))
+                if remaining > 0:
+                    fill_step = min(remaining, max(0.0001, remaining * 0.25))
+                    self._oms.apply_fill(target.order_id, fill_step)
+
+            reconcile = self._reconcile(mode=active_mode)
+            reconciliation_ok = int(reconcile.get("desync_count") or 0) == 0 and bool(reconcile.get("source_ok", False))
+            changed = self._set_state_value(
+                state,
+                "runtime_telemetry_source",
+                RUNTIME_TELEMETRY_SOURCE_REAL if reconciliation_ok else RUNTIME_TELEMETRY_SOURCE_SYNTHETIC,
+            ) or changed
+            changed = self._set_state_value(state, "runtime_loop_alive", True) or changed
+            changed = self._set_state_value(state, "runtime_executor_connected", not self._kill_switch.is_triggered()) or changed
+            changed = self._set_state_value(state, "runtime_reconciliation_ok", reconciliation_ok) or changed
+            changed = self._set_state_value(state, "runtime_heartbeat_at", now_iso) or changed
+            changed = self._set_state_value(state, "runtime_last_reconcile_at", now_iso) or changed
+            if active_mode in {"testnet", "live"}:
+                account_positions, account_source, account_ok, account_reason = self._fetch_exchange_account_positions(
+                    mode=active_mode
+                )
+                if account_ok:
+                    self._remote_positions = account_positions
+                else:
+                    self._remote_positions = []
+                    self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                changed = self._set_state_value(state, "runtime_account_positions_ok", bool(account_ok)) or changed
+                changed = self._set_state_value(
+                    state,
+                    "runtime_account_positions_verified_at",
+                    now_iso if bool(account_ok) else "",
+                ) or changed
+                changed = self._set_state_value(
+                    state,
+                    "runtime_account_positions_reason",
+                    str(account_reason or account_source),
+                ) or changed
+            else:
+                self._remote_positions = []
+                changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
+
+            positions = self._positions_snapshot(mode=active_mode)
+            self._capture_runtime_fill_costs(settings=settings)
+            exposure_total, _exposure_rows, max_symbol_exposure = RuntimeBridge._aggregate_exposure(positions)
+            equity = max(1.0, RuntimeBridge._safe_positive(state.get("equity"), 10000.0))
+            total_exposure_pct = exposure_total / equity
+            asset_exposure_pct = max_symbol_exposure / equity if equity > 0 else 0.0
+            risk_engine = self._ensure_risk_engine(settings=settings, state=state)
+            decision = risk_engine.can_trade(
+                equity=equity,
+                daily_pnl=_as_float(state.get("daily_pnl"), 0.0),
+                open_positions=len(positions),
+                total_exposure_pct=total_exposure_pct,
+                asset_exposure_pct=asset_exposure_pct,
+                safe_mode=bool(state.get("safe_mode", False)),
+            )
+            daily_loss_pct = risk_engine.daily_loss_pct(_as_float(state.get("daily_pnl"), 0.0), equity)
+            drawdown_pct = risk_engine.drawdown_pct(equity)
+            hard_daily_limit = _as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0)
+            hard_dd_limit = _as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0)
+            policy_hard_trigger = ""
+            if hard_daily_limit > 0 and daily_loss_pct >= hard_daily_limit:
+                policy_hard_trigger = "policy_hard_daily_loss"
+            elif hard_dd_limit > 0 and drawdown_pct >= hard_dd_limit:
+                policy_hard_trigger = "policy_hard_drawdown"
+            if policy_hard_trigger:
+                decision = type(decision)(
+                    allow_new_positions=False,
+                    reason=policy_hard_trigger,
+                    safe_mode=True,
+                    kill=True,
+                )
+            self._last_risk = {
+                "allow_new_positions": bool(decision.allow_new_positions),
+                "reason": str(decision.reason or ""),
+                "safe_mode": bool(decision.safe_mode),
+                "kill": bool(decision.kill),
+                "open_positions": len(positions),
+                "total_exposure_pct": float(total_exposure_pct),
+                "asset_exposure_pct": float(asset_exposure_pct),
+                "daily_loss_pct": float(daily_loss_pct),
+                "drawdown_pct": float(drawdown_pct),
+                "policy_source": str(self._risk_policy_thresholds.get("source") or "settings"),
+            }
+            changed = self._set_state_value(state, "runtime_risk_allow_new_positions", bool(decision.allow_new_positions)) or changed
+            changed = self._set_state_value(state, "runtime_risk_reason", str(decision.reason or "")) or changed
+            if decision.kill:
+                self._kill_switch.trigger(str(decision.reason or "risk_engine_kill"))
+                changed = self._set_state_value(state, "running", False) or changed
+                changed = self._set_state_value(state, "killed", True) or changed
+                changed = self._set_state_value(state, "safe_mode", True) or changed
+                changed = self._set_state_value(state, "bot_status", "KILLED") or changed
+                changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
+                changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
+                changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
+                self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            if active_mode in {"testnet", "live"} and not bool(decision.kill) and bool(state.get("running")) and not bool(state.get("killed")):
+                submit_result = self._maybe_submit_exchange_seed_order(
+                    state=state,
+                    mode=active_mode,
+                    account_positions=account_positions,
+                    account_positions_ok=account_ok,
+                    account_positions_reason=account_reason,
+                )
+                submit_reason = str(submit_result.get("reason") or "")
+                submit_error = str(submit_result.get("error") or "")
+                submit_client_order_id = str(submit_result.get("client_order_id") or "")
+                signal_action = str(submit_result.get("signal_action") or "")
+                signal_reason = str(submit_result.get("signal_reason") or "")
+                signal_strategy_id = str(submit_result.get("signal_strategy_id") or "")
+                signal_symbol = str(submit_result.get("signal_symbol") or "")
+                signal_side = str(submit_result.get("signal_side") or "")
+                changed = self._set_state_value(state, "runtime_last_signal_action", signal_action) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_reason", signal_reason) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_strategy_id", signal_strategy_id) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_symbol", signal_symbol) or changed
+                changed = self._set_state_value(state, "runtime_last_signal_side", signal_side) or changed
+                changed = self._set_state_value(state, "runtime_last_remote_submit_reason", submit_reason) or changed
+                if submit_client_order_id:
+                    changed = self._set_state_value(
+                        state,
+                        "runtime_last_remote_client_order_id",
+                        submit_client_order_id,
+                    ) or changed
+                if bool(submit_result.get("submitted", False)):
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                else:
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", submit_error) or changed
+            self._append_execution_point(settings=settings, mode=active_mode)
+            return changed
+
+    def positions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return self._positions_snapshot(mode=self._active_mode)
+
+    def risk_snapshot(self, *, state: dict[str, Any], settings: dict[str, Any], gate_checklist: list[dict[str, Any]]) -> dict[str, Any]:
+        with self._lock:
+            mode = str(state.get("mode") or self._active_mode).strip().lower()
+            positions = self._positions_snapshot(mode=mode)
+            exposure_total, exposure_rows, max_symbol_exposure = RuntimeBridge._aggregate_exposure(positions)
+            equity = max(1.0, RuntimeBridge._safe_positive(state.get("equity"), 10000.0))
+            total_exposure_pct = exposure_total / equity
+            asset_exposure_pct = max_symbol_exposure / equity if equity > 0 else 0.0
+            risk_limits = self._risk_limits_from_settings(settings)
+            decision = self._last_risk if isinstance(self._last_risk, dict) else {}
+            breaker_flags: list[str] = []
+            if bool(state.get("safe_mode", False)):
+                breaker_flags.append("safe_mode")
+            if self._kill_switch.is_triggered() or bool(state.get("killed", False)):
+                breaker_flags.append("kill_switch")
+            if not breaker_flags:
+                breaker_flags.append("none")
+
+            exec_snapshot = self.execution_metrics_snapshot()
+            p95_slippage = _as_float(exec_snapshot.get("p95_slippage"), 0.0)
+            p95_spread = _as_float(exec_snapshot.get("p95_spread"), 0.0)
+            latency = _as_float(exec_snapshot.get("latency_ms_p95"), 0.0)
+            robust_base = max(0.0, min(100.0, 100.0 - (p95_slippage * 2.0) - (p95_spread * 1.5) - (latency / 8.0)))
+            daily_return = _as_float(state.get("daily_pnl"), 0.0) / equity
+            forecast_band = {
+                "return_p50_30d": round(daily_return * 10.0, 6),
+                "return_p90_30d": round(daily_return * 16.0, 6),
+                "dd_p90_30d": round(-abs(_as_float(state.get("max_dd"), -0.04)), 6),
+            }
+
+            return {
+                "equity": float(equity),
+                "dd": _as_float(state.get("max_dd"), -0.04),
+                "daily_loss": _as_float(state.get("daily_loss"), -0.01),
+                "exposure_total": round(exposure_total, 6),
+                "exposure_total_pct": round(total_exposure_pct, 6),
+                "exposure_by_symbol": exposure_rows,
+                "open_positions": len(positions),
+                "runtime_risk_decision": {
+                    "allow_new_positions": bool(decision.get("allow_new_positions", True)),
+                    "reason": str(decision.get("reason") or ""),
+                    "kill": bool(decision.get("kill", False)),
+                    "safe_mode": bool(decision.get("safe_mode", state.get("safe_mode", False))),
+                    "asset_exposure_pct": round(asset_exposure_pct, 6),
+                    "daily_loss_pct": round(_as_float(decision.get("daily_loss_pct"), 0.0), 6),
+                    "drawdown_pct": round(_as_float(decision.get("drawdown_pct"), 0.0), 6),
+                    "policy_source": str(decision.get("policy_source") or "settings"),
+                },
+                "circuit_breakers": breaker_flags,
+                "limits": {
+                    "daily_loss_limit": -abs(risk_limits.daily_loss_limit_pct),
+                    "max_dd_limit": -abs(risk_limits.max_drawdown_pct),
+                    "max_positions": int(risk_limits.max_positions),
+                    "max_total_exposure": float(risk_limits.max_total_exposure_pct),
+                    "max_asset_exposure": float(risk_limits.max_asset_exposure_pct),
+                    "risk_per_trade": float(risk_limits.risk_per_trade),
+                    "policy_hard_daily_loss_limit": -abs(_as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0))
+                    if _as_float(self._risk_policy_thresholds.get("hard_daily_loss_pct"), 0.0) > 0
+                    else None,
+                    "policy_hard_drawdown_limit": -abs(_as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0))
+                    if _as_float(self._risk_policy_thresholds.get("hard_drawdown_pct"), 0.0) > 0
+                    else None,
+                },
+                "stress_tests": [
+                    {"scenario": "fees_x2", "robust_score": round(max(0.0, robust_base - 7.5), 3)},
+                    {"scenario": "slippage_x2", "robust_score": round(max(0.0, robust_base - 10.0), 3)},
+                    {"scenario": "spread_shock", "robust_score": round(max(0.0, robust_base - 12.5), 3)},
+                ],
+                "forecast_band": forecast_band,
+                "gate_checklist": gate_checklist,
+                "reconciliation": dict(self._last_reconcile),
+            }
+
+    def execution_metrics_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            points = list(self._series[-40:])
+            if not points:
+                points = [
+                    {
+                        "ts": utc_now_iso(),
+                        "latency_ms_p95": 0.0,
+                        "spread_bps": 0.0,
+                        "slippage_bps": 0.0,
+                        "maker_ratio": 0.0,
+                        "fill_ratio": 0.0,
+                    }
+                ]
+            spreads = [_as_float(row.get("spread_bps"), 0.0) for row in points]
+            slips = [_as_float(row.get("slippage_bps"), 0.0) for row in points]
+            lats = [_as_float(row.get("latency_ms_p95"), 0.0) for row in points]
+            maker = [_as_float(row.get("maker_ratio"), 0.0) for row in points]
+            fills = [_as_float(row.get("fill_ratio"), 0.0) for row in points]
+
+            cancel_count = sum(
+                1
+                for row in self._oms.orders.values()
+                if row.status in {OrderStatus.CANCELED, OrderStatus.STALE}
+            )
+            return {
+                "maker_ratio": round(sum(maker) / len(maker), 6),
+                "fill_ratio": round(sum(fills) / len(fills), 6),
+                "requotes": int(self._stats.get("requotes", 0)),
+                "cancels": int(cancel_count),
+                "rate_limit_hits": int(self._stats.get("rate_limit_hits", 0)),
+                "api_errors": int(self._stats.get("api_errors", 0)),
+                "avg_spread": round(sum(spreads) / len(spreads), 6),
+                "p95_spread": round(max(spreads), 6),
+                "avg_slippage": round(sum(slips) / len(slips), 6),
+                "p95_slippage": round(max(slips), 6),
+                "latency_ms_p95": round(max(lats), 6),
+                "requests_24h_estimate": max(1, len(points) * 6),
+                "fills_count_runtime": int(round(self._runtime_costs.get("fills_count", 0.0))),
+                "fills_notional_runtime_usd": round(_as_float(self._runtime_costs.get("fills_notional_usd"), 0.0), 6),
+                "fees_total_runtime_usd": round(_as_float(self._runtime_costs.get("fees_total_usd"), 0.0), 6),
+                "spread_total_runtime_usd": round(_as_float(self._runtime_costs.get("spread_total_usd"), 0.0), 6),
+                "slippage_total_runtime_usd": round(_as_float(self._runtime_costs.get("slippage_total_usd"), 0.0), 6),
+                "funding_total_runtime_usd": round(_as_float(self._runtime_costs.get("funding_total_usd"), 0.0), 6),
+                "total_cost_runtime_usd": round(_as_float(self._runtime_costs.get("total_cost_usd"), 0.0), 6),
+                "runtime_costs": {
+                    "fills_count": int(round(self._runtime_costs.get("fills_count", 0.0))),
+                    "fills_notional_usd": round(_as_float(self._runtime_costs.get("fills_notional_usd"), 0.0), 6),
+                    "fees_total_usd": round(_as_float(self._runtime_costs.get("fees_total_usd"), 0.0), 6),
+                    "spread_total_usd": round(_as_float(self._runtime_costs.get("spread_total_usd"), 0.0), 6),
+                    "slippage_total_usd": round(_as_float(self._runtime_costs.get("slippage_total_usd"), 0.0), 6),
+                    "funding_total_usd": round(_as_float(self._runtime_costs.get("funding_total_usd"), 0.0), 6),
+                    "total_cost_usd": round(_as_float(self._runtime_costs.get("total_cost_usd"), 0.0), 6),
+                },
+                "series": points,
+                "notes": [
+                    "Metricas derivadas del runtime bridge (OMS/Reconciliation/Risk/KillSwitch).",
+                    "Telemetry source: runtime_loop_v1 cuando engine=real y loop activo.",
+                ],
+            }
+
+
+runtime_bridge = RuntimeBridge()
+
+
+class ShadowRunCoordinator:
+    def __init__(self, *, store: ConsoleStore) -> None:
+        self.store = store
+        self._lock = RLock()
+        self._stop_event = Event()
+        self._thread: Thread | None = None
+        self._last_closed_by_target: dict[str, str] = {}
+        self._state = self._empty_state()
+
+    @staticmethod
+    def _empty_state() -> dict[str, Any]:
+        return {
+            "running": False,
+            "thread_alive": False,
+            "stop_requested": False,
+            "stop_reason": "",
+            "allow_live": False,
+            "orders_sent": False,
+            "marketdata_base_url": SHADOW_MARKETDATA_BASE_URL,
+            "timeframe": SHADOW_DEFAULT_TIMEFRAME,
+            "lookback_bars": int(SHADOW_DEFAULT_LOOKBACK_BARS),
+            "poll_sec": int(SHADOW_DEFAULT_POLL_SEC),
+            "symbol_requested": None,
+            "active_bot_ids": [],
+            "active_strategy_ids": [],
+            "targets_count": 0,
+            "warnings": [],
+            "last_started_at": None,
+            "last_cycle_at": None,
+            "last_success_at": None,
+            "last_error": "",
+            "last_run_ids": [],
+            "cycles_total": 0,
+            "runs_created": 0,
+            "episodes_written": 0,
+            "skipped_duplicate_cycles": 0,
+        }
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            payload = dict(self._state)
+            payload["active_bot_ids"] = list(self._state.get("active_bot_ids") or [])
+            payload["active_strategy_ids"] = list(self._state.get("active_strategy_ids") or [])
+            payload["warnings"] = list(self._state.get("warnings") or [])
+            payload["last_run_ids"] = list(self._state.get("last_run_ids") or [])
+            thread_alive = bool(self._thread and self._thread.is_alive())
+            payload["thread_alive"] = thread_alive
+            payload["running"] = bool(self._state.get("running", False)) and thread_alive
+            return payload
+
+    def start(
+        self,
+        *,
+        bot_id: str | None,
+        timeframe: str,
+        lookback_bars: int,
+        poll_sec: int,
+        symbol: str | None,
+    ) -> dict[str, Any]:
+        timeframe_n = str(timeframe or SHADOW_DEFAULT_TIMEFRAME).strip().lower() or SHADOW_DEFAULT_TIMEFRAME
+        if timeframe_n not in {"5m", "10m", "15m"}:
+            raise ValueError("Shadow solo soporta timeframes 5m, 10m o 15m.")
+        poll_sec_n = max(10, int(poll_sec or SHADOW_DEFAULT_POLL_SEC))
+        lookback_n = max(60, int(lookback_bars or SHADOW_DEFAULT_LOOKBACK_BARS))
+        symbol_n = str(symbol or "").replace("/", "").replace("-", "").strip().upper() or None
+        targets, warnings = self._resolve_targets(
+            bot_id=(str(bot_id).strip() or None) if bot_id is not None else None,
+            symbol=symbol_n,
+            timeframe=timeframe_n,
+            lookback_bars=lookback_n,
+        )
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("Ya hay un shadow-run en ejecución.")
+            self._stop_event = Event()
+            self._state = self._empty_state()
+            self._state.update(
+                {
+                    "running": True,
+                    "thread_alive": True,
+                    "stop_requested": False,
+                    "stop_reason": "",
+                    "marketdata_base_url": SHADOW_MARKETDATA_BASE_URL,
+                    "timeframe": timeframe_n,
+                    "lookback_bars": int(lookback_n),
+                    "poll_sec": int(poll_sec_n),
+                    "symbol_requested": symbol_n,
+                    "active_bot_ids": sorted({str(target["bot_id"]) for target in targets}),
+                    "active_strategy_ids": sorted({str(target["strategy_id"]) for target in targets}),
+                    "targets_count": len(targets),
+                    "warnings": warnings,
+                    "last_started_at": utc_now_iso(),
+                    "last_error": "",
+                }
+            )
+            self._thread = Thread(
+                target=self._run_loop,
+                kwargs={
+                    "targets": targets,
+                    "timeframe": timeframe_n,
+                    "lookback_bars": lookback_n,
+                    "poll_sec": poll_sec_n,
+                    "symbol": symbol_n,
+                },
+                name="rtlab-shadow-runner",
+                daemon=True,
+            )
+            self._thread.start()
+        self.store.add_log(
+            event_type="shadow_runner_start",
+            severity="info",
+            module="learning",
+            message="Shadow runner iniciado.",
+            related_ids=[str(target["bot_id"]) for target in targets[:10]],
+            payload={
+                "bot_id": (str(bot_id).strip() or None) if bot_id is not None else None,
+                "symbol": symbol_n,
+                "timeframe": timeframe_n,
+                "lookback_bars": int(lookback_n),
+                "poll_sec": int(poll_sec_n),
+                "targets_count": len(targets),
+                "allow_live": False,
+                "orders_sent": False,
+            },
+        )
+        return self.status()
+
+    def stop(self, *, reason: str | None = None) -> dict[str, Any]:
+        stop_reason = str(reason or "manual_stop").strip() or "manual_stop"
+        with self._lock:
+            self._state["stop_requested"] = True
+            self._state["stop_reason"] = stop_reason
+            thread = self._thread
+            self._stop_event.set()
+        self.store.add_log(
+            event_type="shadow_runner_stop",
+            severity="info",
+            module="learning",
+            message="Shadow runner stop solicitado.",
+            related_ids=[],
+            payload={"reason": stop_reason, "allow_live": False, "orders_sent": False},
+        )
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+        return self.status()
+
+    def _resolve_targets(
+        self,
+        *,
+        bot_id: str | None,
+        symbol: str | None,
+        timeframe: str,
+        lookback_bars: int,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        bots = self.store.load_bots()
+        if bot_id:
+            bots = [row for row in bots if str(row.get("id") or "") == bot_id]
+            if not bots:
+                raise ValueError("Bot no encontrado para shadow.")
+        eligible_bots: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for row in bots:
+            status = str(row.get("status") or "active").strip().lower()
+            mode = str(row.get("mode") or "paper").strip().lower()
+            if status != "active":
+                continue
+            if mode != "shadow":
+                if bot_id and str(row.get("id") or "") == bot_id:
+                    raise ValueError("Poné el bot en modo SHADOW para correr mock en vivo sin órdenes.")
+                continue
+            eligible_bots.append(row)
+        if not eligible_bots:
+            raise ValueError("No hay bots activos en modo SHADOW.")
+
+        strategies = {str(row.get("id") or ""): row for row in self.store.list_strategies() if str(row.get("id") or "")}
+        targets: list[dict[str, Any]] = []
+        for bot in eligible_bots:
+            pool_ids = [str(sid) for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategies]
+            allowed_ids: list[str] = []
+            for strategy_id in pool_ids:
+                strategy = strategies.get(strategy_id) or {}
+                if str(strategy.get("status") or "active").strip().lower() == "archived":
+                    continue
+                if not bool(strategy.get("allow_learning", True)):
+                    continue
+                allowed_ids.append(strategy_id)
+            if not allowed_ids:
+                warnings.append(f"{bot.get('id')}: sin estrategias Pool=true para shadow.")
+                continue
+            resolved_symbol = symbol or next(
+                (str(item).replace("/", "").replace("-", "").strip().upper() for item in (bot.get("universe") or []) if str(item).strip()),
+                RUNTIME_REMOTE_ORDER_SYMBOL,
+            )
+            for strategy_id in allowed_ids:
+                strategy = strategies.get(strategy_id) or {}
+                params = strategy.get("params") if isinstance(strategy.get("params"), dict) else {}
+                tags = {str(tag or "").strip().lower() for tag in (strategy.get("tags") or [])}
+                use_orderflow = True
+                if isinstance(params.get("use_orderflow_data"), bool):
+                    use_orderflow = bool(params.get("use_orderflow_data"))
+                elif "feature_set:orderflow_off" in tags or "orderflow_off" in tags:
+                    use_orderflow = False
+                targets.append(
+                    {
+                        "bot_id": str(bot.get("id") or ""),
+                        "strategy_id": strategy_id,
+                        "symbol": resolved_symbol,
+                        "timeframe": timeframe,
+                        "lookback_bars": int(lookback_bars),
+                        "use_orderflow_data": bool(use_orderflow),
+                    }
+                )
+        if not targets:
+            raise ValueError("No hay estrategias elegibles (Pool=true) para correr shadow.")
+        return targets, warnings
+
+    def _run_loop(
+        self,
+        *,
+        targets: list[dict[str, Any]],
+        timeframe: str,
+        lookback_bars: int,
+        poll_sec: int,
+        symbol: str | None,
+    ) -> None:
+        runner = ShadowRunner(marketdata_base_url=SHADOW_MARKETDATA_BASE_URL)
+        while not self._stop_event.is_set():
+            cycle_runs: list[str] = []
+            cycle_errors: list[str] = []
+            with self._lock:
+                self._state["cycles_total"] = int(self._state.get("cycles_total") or 0) + 1
+                self._state["last_cycle_at"] = utc_now_iso()
+            for target in targets:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    simulation = runner.simulate(
+                        ShadowRunConfig(
+                            strategy_id=str(target["strategy_id"]),
+                            symbol=str(target["symbol"]),
+                            timeframe=str(target["timeframe"]),
+                            lookback_bars=int(target["lookback_bars"]),
+                            use_orderflow_data=bool(target.get("use_orderflow_data", True)),
+                        )
+                    )
+                    manifest = simulation.get("manifest") if isinstance(simulation.get("manifest"), dict) else {}
+                    last_closed = str(manifest.get("end") or "").strip()
+                    feature_set = "orderflow_on" if bool(target.get("use_orderflow_data", True)) else "orderflow_off"
+                    target_key = "|".join(
+                        [
+                            str(target["bot_id"]),
+                            str(target["strategy_id"]),
+                            str(target["symbol"]).upper(),
+                            str(target["timeframe"]).lower(),
+                            feature_set,
+                        ]
+                    )
+                    if last_closed:
+                        with self._lock:
+                            previous_closed = str(self._last_closed_by_target.get(target_key) or "")
+                            if previous_closed == last_closed:
+                                self._state["skipped_duplicate_cycles"] = int(self._state.get("skipped_duplicate_cycles") or 0) + 1
+                                continue
+                            self._last_closed_by_target[target_key] = last_closed
+                    run = self.store.create_shadow_live_run(
+                        bot_id=str(target["bot_id"]),
+                        strategy_id=str(target["strategy_id"]),
+                        symbol=str(target["symbol"]),
+                        timeframe=str(target["timeframe"]),
+                        lookback_bars=int(target["lookback_bars"]),
+                        simulation=simulation,
+                        use_orderflow_data=bool(target.get("use_orderflow_data", True)),
+                        note="shadow_runner_closed_candle",
+                    )
+                    cycle_runs.append(str(run.get("id") or ""))
+                except Exception as exc:
+                    message = f"{target.get('bot_id')}:{target.get('strategy_id')} -> {exc}"
+                    cycle_errors.append(message)
+                    self.store.add_log(
+                        event_type="shadow_runner_error",
+                        severity="warn",
+                        module="learning",
+                        message="Shadow runner con error en simulación.",
+                        related_ids=[str(target.get("bot_id") or ""), str(target.get("strategy_id") or "")],
+                        payload={
+                            "error": str(exc),
+                            "symbol": str(target.get("symbol") or ""),
+                            "timeframe": str(target.get("timeframe") or ""),
+                            "allow_live": False,
+                            "orders_sent": False,
+                        },
+                    )
+            if cycle_runs:
+                _invalidate_bots_overview_cache()
+            with self._lock:
+                if cycle_runs:
+                    self._state["runs_created"] = int(self._state.get("runs_created") or 0) + len(cycle_runs)
+                    self._state["episodes_written"] = int(self._state.get("episodes_written") or 0) + len(cycle_runs)
+                    self._state["last_success_at"] = utc_now_iso()
+                    self._state["last_run_ids"] = (cycle_runs + list(self._state.get("last_run_ids") or []))[:10]
+                if cycle_errors:
+                    self._state["last_error"] = " | ".join(cycle_errors[:3])
+            if self._stop_event.wait(max(10, int(poll_sec))):
+                break
+        with self._lock:
+            self._state["running"] = False
+            self._state["thread_alive"] = False
+
+
+shadow_coordinator = ShadowRunCoordinator(store=store)
 
 
 def _invalidate_bots_overview_cache() -> None:
@@ -4746,7 +7584,12 @@ def _get_bots_overview_payload_cached(
         0,
         int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT if recent_logs_per_bot is None else recent_logs_per_bot),
     )
-    cache_key = f"recent_logs={1 if effective_recent_logs else 0};logs_per_bot={effective_recent_logs_per_bot}"
+    recent_logs_source = "default" if include_recent_logs is None else "explicit"
+    cache_key = (
+        f"recent_logs={1 if effective_recent_logs else 0};"
+        f"logs_per_bot={effective_recent_logs_per_bot};"
+        f"source={recent_logs_source}"
+    )
     now_epoch = time.time()
     with _BOTS_OVERVIEW_CACHE_LOCK:
         entries = _BOTS_OVERVIEW_CACHE.get("entries")
@@ -4759,15 +7602,19 @@ def _get_bots_overview_payload_cached(
             cached_perf = cached_entry.get("perf")
             if isinstance(cached_payload, dict):
                 return cached_payload, "hit", (cached_perf if isinstance(cached_perf, dict) else {})
+    rec_rows = recommendations if isinstance(recommendations, list) else learning_service.load_all_recommendations()
     overview_perf: dict[str, Any] = {}
     items = store.list_bot_instances(
-        recommendations=recommendations,
-        include_recent_logs=effective_recent_logs,
-        recent_logs_per_bot=effective_recent_logs_per_bot,
+        recommendations=rec_rows,
+        include_recent_logs=include_recent_logs,
+        recent_logs_per_bot=recent_logs_per_bot,
         overview_perf=overview_perf,
     )
     payload = {"items": items, "total": len(items)}
     cache_perf = {"overview": dict(overview_perf.get("overview") or {})}
+    for key in ("logs_auto_disabled", "logs_auto_disable_threshold", "bots_count", "effective_recent_logs", "logs_per_bot_effective"):
+        if key in overview_perf:
+            cache_perf[key] = overview_perf.get(key)
     with _BOTS_OVERVIEW_CACHE_LOCK:
         entries = _BOTS_OVERVIEW_CACHE.get("entries")
         if not isinstance(entries, dict):
@@ -4818,54 +7665,76 @@ def _learning_eval_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     try:
         loader = DataLoader(USER_DATA_DIR)
         loaded = loader.load_resampled(market, symbol, timeframe, start, end)
-        engine = BacktestEngine()
-        result = engine.run(
-            BacktestRequest(
-                market=loaded.market,
-                symbol=loaded.symbol,
-                timeframe=loaded.timeframe,
-                start=start,
-                end=end,
-                strategy_id=str(candidate.get("base_strategy_id") or DEFAULT_STRATEGY_ID),
-                validation_mode="walk-forward",
-                costs=BacktestCosts(
-                    fees_bps=costs["fees_bps"],
-                    spread_bps=costs["spread_bps"],
-                    slippage_bps=costs["slippage_bps"],
-                    funding_bps=costs["funding_bps"],
-                    rollover_bps=costs["rollover_bps"],
-                ),
-            ),
-            MarketDataset(
-                market=loaded.market,
-                symbol=loaded.symbol,
-                timeframe=loaded.timeframe,
-                source=loaded.source,
-                dataset_hash=loaded.dataset_hash,
-                df=loaded.df,
-                manifest=loaded.manifest,
-            ),
+    except Exception as exc:
+        raise ValueError(
+            f"Learning run-now fail-closed: no se pudo cargar dataset real para {market}/{symbol}/{timeframe} "
+            f"({start}..{end}). Descargá o registrá el dataset y reintentá. cause={exc}"
+        ) from exc
+
+    loaded_source = str(getattr(loaded, "source", "") or "").strip().lower()
+    if loaded_source in {"", "none", "synthetic", "synthetic_seeded", "synthetic_fallback"}:
+        raise ValueError(
+            f"Learning run-now fail-closed: dataset_source invalido para evaluacion ({loaded_source or 'none'}). "
+            "Se requieren datos reales."
         )
-        result["costs_model"] = costs
-        return result
-    except Exception:
-        if ref:
-            return {
-                "metrics": dict(ref.get("metrics") or {}),
-                "costs_breakdown": dict(ref.get("costs_breakdown") or {}),
-                "equity_curve": list(ref.get("equity_curve") or []),
-                "data_source": str(ref.get("data_source") or "runs_cache_fallback"),
-                "dataset_hash": str(ref.get("dataset_hash") or ""),
-                "costs_model": costs,
-            }
-        return {
-            "metrics": {"max_dd": 0.0, "sortino": 0.0, "expectancy": 0.0, "sharpe": 0.0},
-            "costs_breakdown": {"gross_pnl_total": 0.0, "total_cost": 0.0},
-            "equity_curve": [],
-            "data_source": "none",
-            "dataset_hash": "",
-            "costs_model": costs,
-        }
+
+    learning_cfg = (learning_service.ensure_settings_shape(store.load_settings()).get("learning") or {})
+    validation_cfg = learning_cfg.get("validation") if isinstance(learning_cfg.get("validation"), dict) else {}
+    configured_mode = str(validation_cfg.get("validation_mode") or "").strip().lower()
+    if configured_mode in {"walk-forward", "purged-cv", "cpcv"}:
+        validation_mode = configured_mode
+    else:
+        validation_mode = "walk-forward" if bool(validation_cfg.get("walk_forward", True)) else "purged-cv"
+
+    def _optional_int_from_validation(name: str, min_value: int | None = None) -> int | None:
+        raw = validation_cfg.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if min_value is not None and parsed < int(min_value):
+            return None
+        return parsed
+
+    cpcv_n_splits = _optional_int_from_validation("cpcv_n_splits", min_value=4)
+    cpcv_k_test_groups = _optional_int_from_validation("cpcv_k_test_groups", min_value=1)
+    cpcv_max_paths = _optional_int_from_validation("cpcv_max_paths", min_value=1)
+
+    engine = BacktestEngine()
+    result = engine.run(
+        BacktestRequest(
+            market=loaded.market,
+            symbol=loaded.symbol,
+            timeframe=loaded.timeframe,
+            start=start,
+            end=end,
+            strategy_id=str(candidate.get("base_strategy_id") or DEFAULT_STRATEGY_ID),
+            validation_mode=validation_mode,
+            cpcv_n_splits=cpcv_n_splits,
+            cpcv_k_test_groups=cpcv_k_test_groups,
+            cpcv_max_paths=cpcv_max_paths,
+            costs=BacktestCosts(
+                fees_bps=costs["fees_bps"],
+                spread_bps=costs["spread_bps"],
+                slippage_bps=costs["slippage_bps"],
+                funding_bps=costs["funding_bps"],
+                rollover_bps=costs["rollover_bps"],
+            ),
+        ),
+        MarketDataset(
+            market=loaded.market,
+            symbol=loaded.symbol,
+            timeframe=loaded.timeframe,
+            source=loaded.source,
+            dataset_hash=loaded.dataset_hash,
+            df=loaded.df,
+            manifest=loaded.manifest,
+        ),
+    )
+    result["costs_model"] = costs
+    return result
 
 
 def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str, Any], base_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -4874,13 +7743,17 @@ def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str
     symbol = str(base_cfg.get("symbol") or "BTCUSDT")
     timeframe = str(base_cfg.get("timeframe") or "5m")
     data_source = str(base_cfg.get("dataset_source") or "auto").lower()
+    execution_mode = str(base_cfg.get("execution_mode") or "research").strip().lower()
     validation_mode = str(base_cfg.get("validation_mode") or "walk-forward")
+    bot_id_n = str(base_cfg.get("bot_id") or "").strip() or None
+    strict_strategy_id = execution_mode != "demo"
     if data_source in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
         raise ValueError(
             "Backtests masivos solo permiten datos reales. Usa dataset_source='auto' o 'dataset' y descarga el dataset."
         )
     return store.create_event_backtest_run(
         strategy_id=strategy_id,
+        bot_id=bot_id_n,
         market=market,
         symbol=symbol,
         timeframe=timeframe,
@@ -4892,6 +7765,7 @@ def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str
         funding_bps=float(costs.get("funding_bps", 1.0)),
         rollover_bps=float(costs.get("rollover_bps", 0.0)),
         validation_mode=validation_mode,
+        strict_strategy_id=bool(strict_strategy_id),
     )
 
 
@@ -4945,6 +7819,145 @@ def _runtime_engine_from_state(state: dict[str, Any] | None) -> str:
     if runtime_engine in {RUNTIME_ENGINE_REAL, RUNTIME_ENGINE_SIMULATED}:
         return runtime_engine
     return runtime_engine_default()
+
+
+def _runtime_ts_age_sec(value: str | None, *, now: datetime | None = None) -> int | None:
+    parsed = _parse_iso_datetime_utc(value)
+    if not isinstance(parsed, datetime):
+        return None
+    now_dt = now or utc_now()
+    return max(0, int((now_dt - parsed).total_seconds()))
+
+
+def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str | None = None) -> dict[str, Any]:
+    snapshot = state if isinstance(state, dict) else {}
+    now_dt = utc_now()
+    mode_n = str(target_mode or snapshot.get("mode") or default_mode()).strip().lower()
+    if mode_n not in ALLOWED_MODES:
+        mode_n = default_mode()
+    runtime_engine = _runtime_engine_from_state(snapshot)
+    telemetry_source = str(snapshot.get("runtime_telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC).strip().lower()
+    loop_alive = bool(snapshot.get("runtime_loop_alive", False))
+    executor_connected = bool(snapshot.get("runtime_executor_connected", False))
+    reconciliation_ok = bool(snapshot.get("runtime_reconciliation_ok", False))
+    exchange_connector_ok = bool(snapshot.get("runtime_exchange_connector_ok", False))
+    exchange_order_ok = bool(snapshot.get("runtime_exchange_order_ok", False))
+    exchange_mode = str(snapshot.get("runtime_exchange_mode") or "").strip().lower()
+    exchange_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_exchange_verified_at") or ""), now=now_dt)
+    exchange_required = mode_n in {"testnet", "live"}
+    heartbeat_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_heartbeat_at") or ""), now=now_dt)
+    reconcile_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_last_reconcile_at") or ""), now=now_dt)
+
+    checks = {
+        "engine_real": runtime_engine == RUNTIME_ENGINE_REAL,
+        "telemetry_real": telemetry_source == RUNTIME_TELEMETRY_SOURCE_REAL,
+        "runtime_loop_alive": loop_alive,
+        "executor_connected": executor_connected,
+        "reconciliation_ok": reconciliation_ok,
+        "heartbeat_fresh": heartbeat_age_sec is not None and heartbeat_age_sec <= int(RUNTIME_HEARTBEAT_MAX_AGE_SEC),
+        "reconciliation_fresh": reconcile_age_sec is not None and reconcile_age_sec <= int(RUNTIME_RECONCILIATION_MAX_AGE_SEC),
+        "exchange_connector_ok": (not exchange_required) or exchange_connector_ok,
+        "exchange_order_ok": (not exchange_required) or exchange_order_ok,
+        "exchange_check_fresh": (not exchange_required)
+        or (exchange_age_sec is not None and exchange_age_sec <= int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC)),
+        "exchange_mode_match": (not exchange_required) or exchange_mode == mode_n,
+    }
+    missing_checks = [key for key, ok in checks.items() if not bool(ok)]
+    ready_for_live = len(missing_checks) == 0
+
+    return {
+        "contract_version": RUNTIME_CONTRACT_VERSION,
+        "mode": mode_n,
+        "runtime_engine": runtime_engine,
+        "telemetry_source": telemetry_source,
+        "runtime_loop_alive": loop_alive,
+        "executor_connected": executor_connected,
+        "reconciliation_ok": reconciliation_ok,
+        "runtime_exchange_connector_ok": exchange_connector_ok,
+        "runtime_exchange_order_ok": exchange_order_ok,
+        "runtime_exchange_mode": exchange_mode,
+        "runtime_exchange_verified_at": str(snapshot.get("runtime_exchange_verified_at") or ""),
+        "runtime_exchange_reason": str(snapshot.get("runtime_exchange_reason") or ""),
+        "exchange_check_age_sec": exchange_age_sec,
+        "exchange_check_max_age_sec": int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC),
+        "runtime_heartbeat_at": str(snapshot.get("runtime_heartbeat_at") or ""),
+        "runtime_last_reconcile_at": str(snapshot.get("runtime_last_reconcile_at") or ""),
+        "heartbeat_age_sec": heartbeat_age_sec,
+        "heartbeat_max_age_sec": int(RUNTIME_HEARTBEAT_MAX_AGE_SEC),
+        "reconciliation_age_sec": reconcile_age_sec,
+        "reconciliation_max_age_sec": int(RUNTIME_RECONCILIATION_MAX_AGE_SEC),
+        "checks": checks,
+        "missing_checks": missing_checks,
+        "ready_for_live": ready_for_live,
+        "evaluated_at": now_dt.isoformat(),
+    }
+
+
+def _runtime_gate_status_for_mode(mode: str, state: dict[str, Any] | None) -> tuple[str, str, dict[str, Any]]:
+    mode_n = str(mode or "paper").strip().lower()
+    snapshot = _runtime_contract_snapshot(state, target_mode=mode_n)
+    missing = snapshot.get("missing_checks") if isinstance(snapshot.get("missing_checks"), list) else []
+    if mode_n == "live":
+        if bool(snapshot.get("ready_for_live")):
+            return "PASS", "Runtime contract v1 completo para LIVE.", snapshot
+        reason = "Runtime contract v1 incompleto para LIVE."
+        if missing:
+            reason = f"{reason} Faltan checks: {', '.join(str(x) for x in missing)}"
+        return "FAIL", reason, snapshot
+    if bool(snapshot.get("ready_for_live")):
+        return "PASS", "Runtime contract v1 completo (paper/testnet).", snapshot
+    return "WARN", "Runtime contract v1 incompleto (valido en no-live).", snapshot
+
+
+def _runtime_telemetry_guard(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    telemetry_source = str((snapshot or {}).get("telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC).strip().lower()
+    telemetry_real = telemetry_source == RUNTIME_TELEMETRY_SOURCE_REAL
+    return {
+        "telemetry_source": telemetry_source,
+        "telemetry_real": telemetry_real,
+        "ok": telemetry_real,
+        "fail_closed": not telemetry_real,
+        "reason": "" if telemetry_real else "telemetry_source sintetico: metricas no aptas para promotion/live",
+    }
+
+
+def _sync_runtime_state(
+    state: dict[str, Any] | None,
+    *,
+    settings: dict[str, Any] | None = None,
+    event: str | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    runtime_state = dict(state or {})
+    runtime_state["runtime_engine"] = _runtime_engine_from_state(runtime_state)
+    runtime_state.setdefault("runtime_contract_version", RUNTIME_CONTRACT_VERSION)
+    runtime_state.setdefault("runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC)
+    runtime_state.setdefault("runtime_loop_alive", False)
+    runtime_state.setdefault("runtime_executor_connected", False)
+    runtime_state.setdefault("runtime_reconciliation_ok", False)
+    runtime_state.setdefault("runtime_exchange_connector_ok", False)
+    runtime_state.setdefault("runtime_exchange_order_ok", False)
+    runtime_state.setdefault("runtime_exchange_mode", "")
+    runtime_state.setdefault("runtime_exchange_verified_at", "")
+    runtime_state.setdefault("runtime_exchange_reason", "")
+    runtime_state.setdefault("runtime_account_positions_ok", False)
+    runtime_state.setdefault("runtime_account_positions_verified_at", "")
+    runtime_state.setdefault("runtime_account_positions_reason", "")
+    runtime_state.setdefault("runtime_last_remote_submit_at", "")
+    runtime_state.setdefault("runtime_last_remote_client_order_id", "")
+    runtime_state.setdefault("runtime_last_remote_submit_error", "")
+    runtime_state.setdefault("runtime_last_signal_action", "")
+    runtime_state.setdefault("runtime_last_signal_reason", "")
+    runtime_state.setdefault("runtime_last_signal_strategy_id", "")
+    runtime_state.setdefault("runtime_last_signal_symbol", "")
+    runtime_state.setdefault("runtime_last_signal_side", "")
+    runtime_state.setdefault("runtime_heartbeat_at", "")
+    runtime_state.setdefault("runtime_last_reconcile_at", "")
+    runtime_settings = settings if isinstance(settings, dict) else store.load_settings()
+    changed = runtime_bridge.sync_runtime_state(runtime_state, runtime_settings, event=event)
+    if persist and changed:
+        store.save_bot_state(runtime_state)
+    return runtime_state
 
 
 def _is_trusted_internal_proxy(request: Request) -> bool:
@@ -5037,7 +8050,12 @@ def gate_row(gate_id: str, name: str, status: Literal["PASS", "FAIL", "WARN"], r
     return {"id": gate_id, "name": name, "status": status, "reason": reason, "details": details}
 
 
-def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = False) -> dict[str, Any]:
+def evaluate_gates(
+    mode: str | None = None,
+    *,
+    force_exchange_check: bool = False,
+    runtime_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     active_mode = (mode or store.load_bot_state().get("mode") or "paper").lower()
     settings = store.load_settings()
     gates: list[dict[str, Any]] = []
@@ -5182,29 +8200,23 @@ def evaluate_gates(mode: str | None = None, *, force_exchange_check: bool = Fals
         g8_reason = "Observability ready"
     gates.append(gate_row("G8_OBSERVABILITY_OK", "Observability", g8_status, g8_reason, {"telegram_enabled": telegram_enabled, "telegram_configured": has_telegram}))
 
-    runtime_engine = _runtime_engine_from_state(store.load_bot_state())
-    runtime_real = runtime_engine == RUNTIME_ENGINE_REAL
-    if active_mode == "live":
-        g9_status = "PASS" if runtime_real else "FAIL"
-        g9_reason = (
-            "Runtime de ejecucion real habilitado"
-            if runtime_real
-            else "Runtime simulado detectado: LIVE bloqueado hasta configurar RUNTIME_ENGINE=real"
-        )
-    else:
-        g9_status = "PASS" if runtime_real else "WARN"
-        g9_reason = (
-            "Runtime de ejecucion real habilitado"
-            if runtime_real
-            else "Runtime en modo simulado (valido para paper/testnet)"
-        )
+    runtime_state_synced = (
+        dict(runtime_state)
+        if isinstance(runtime_state, dict)
+        else dict(store.load_bot_state())
+    )
+    g9_status, g9_reason, runtime_snapshot = _runtime_gate_status_for_mode(active_mode, runtime_state_synced)
     gates.append(
         gate_row(
             "G9_RUNTIME_ENGINE_REAL",
             "Runtime engine",
             g9_status,
             g9_reason,
-            {"runtime_engine": runtime_engine, "mode": active_mode},
+            {
+                "mode": active_mode,
+                "runtime_engine": _runtime_engine_from_state(runtime_state_synced),
+                "runtime_contract": runtime_snapshot,
+            },
         )
     )
 
@@ -5260,24 +8272,16 @@ def live_can_be_enabled(gates_payload: dict[str, Any]) -> tuple[bool, str]:
 
 
 def build_status_payload() -> dict[str, Any]:
-    state = store.load_bot_state()
     settings = store.load_settings()
-    gates = evaluate_gates(state.get("mode", "paper"))
-    runtime_engine = _runtime_engine_from_state(state)
+    state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    runtime_snapshot = _runtime_contract_snapshot(state)
+    telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+    runtime_engine = str(runtime_snapshot.get("runtime_engine") or _runtime_engine_from_state(state))
     runtime_real = runtime_engine == RUNTIME_ENGINE_REAL
     runtime_mode = "real" if runtime_real else "simulado"
-    positions = [
-        {
-            "symbol": "BTC/USDT",
-            "side": "long",
-            "qty": 0.02,
-            "entry_px": 101200.0,
-            "mark_px": 101550.0,
-            "pnl_unrealized": 7.0,
-            "exposure_usd": 2031.0,
-            "strategy_id": DEFAULT_STRATEGY_ID,
-        }
-    ] if state.get("running") else []
+    runtime_positions = runtime_bridge.positions()
+    execution_snapshot = runtime_bridge.execution_metrics_snapshot()
+    gates = evaluate_gates(state.get("mode", "paper"), runtime_state=state)
     return {
         "status": state.get("bot_status", "PAUSED"),
         "state": state.get("bot_status", "PAUSED"),
@@ -5288,10 +8292,19 @@ def build_status_payload() -> dict[str, Any]:
             "engine": runtime_engine,
             "mode": runtime_mode,
             "real_trading_enabled": runtime_real,
+            "contract_version": str(runtime_snapshot.get("contract_version") or RUNTIME_CONTRACT_VERSION),
+            "telemetry_source": str(runtime_snapshot.get("telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC),
+            "ready_for_live": bool(runtime_snapshot.get("ready_for_live", False)),
+            "readiness_checks": runtime_snapshot.get("checks") if isinstance(runtime_snapshot.get("checks"), dict) else {},
+            "telemetry_ok": bool(telemetry_guard.get("ok", False)),
+            "telemetry_fail_closed": bool(telemetry_guard.get("fail_closed", True)),
+            "telemetry_reason": str(telemetry_guard.get("reason") or ""),
             "warning": None if runtime_real else "Runtime simulado: no se envian ordenes reales al exchange.",
         },
         "runtime_engine": runtime_engine,
         "runtime_mode": runtime_mode,
+        "runtime_snapshot": runtime_snapshot,
+        "runtime_telemetry_guard": telemetry_guard,
         "equity": float(state.get("equity", 10000.0)),
         "daily_pnl": float(state.get("daily_pnl", 0.0)),
         "pnl": {
@@ -5305,50 +8318,172 @@ def build_status_payload() -> dict[str, Any]:
         "last_heartbeat": state.get("last_heartbeat", utc_now_iso()),
         "updated_at": utc_now_iso(),
         "health": {
-            "api_latency_ms": 42,
-            "ws_connected": True,
-            "ws_lag_ms": 120,
-            "errors_5m": 0,
-            "rate_limits_5m": 0,
-            "errors_24h": 0,
+            "api_latency_ms": _as_float(execution_snapshot.get("latency_ms_p95"), 0.0),
+            "ws_connected": bool(runtime_snapshot.get("runtime_loop_alive", False)) if runtime_real else True,
+            "ws_lag_ms": int(_as_float(execution_snapshot.get("latency_ms_p95"), 0.0) * 0.65),
+            "errors_5m": int(execution_snapshot.get("api_errors", 0)),
+            "rate_limits_5m": int(execution_snapshot.get("rate_limit_hits", 0)),
+            "errors_24h": int(execution_snapshot.get("api_errors", 0)),
         },
         "gates_overall": gates["overall_status"],
-        "positions": positions,
+        "positions": runtime_positions,
     }
 
 
 def build_execution_metrics_payload() -> dict[str, Any]:
-    now = utc_now()
-    series = []
-    for idx in range(40):
-        series.append(
+    settings = store.load_settings()
+    state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    runtime_snapshot = _runtime_contract_snapshot(state)
+    telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+    payload = runtime_bridge.execution_metrics_snapshot()
+    if bool(telemetry_guard.get("fail_closed", True)):
+        # AP-1004 fail-closed: no exponer metricas "sanas" cuando la fuente es sintetica.
+        payload["maker_ratio"] = 0.0
+        payload["fill_ratio"] = 0.0
+        payload["latency_ms_p95"] = max(999.0, _as_float(payload.get("latency_ms_p95"), 0.0))
+        payload["api_errors"] = max(1, _as_int(payload.get("api_errors"), 0))
+        payload["rate_limit_hits"] = max(1, _as_int(payload.get("rate_limit_hits"), 0))
+        payload["fills_count_runtime"] = 0
+        payload["fills_notional_runtime_usd"] = 0.0
+        payload["fees_total_runtime_usd"] = 0.0
+        payload["spread_total_runtime_usd"] = 0.0
+        payload["slippage_total_runtime_usd"] = 0.0
+        payload["funding_total_runtime_usd"] = 0.0
+        payload["total_cost_runtime_usd"] = 0.0
+        payload["runtime_costs"] = {
+            "fills_count": 0,
+            "fills_notional_usd": 0.0,
+            "fees_total_usd": 0.0,
+            "spread_total_usd": 0.0,
+            "slippage_total_usd": 0.0,
+            "funding_total_usd": 0.0,
+            "total_cost_usd": 0.0,
+        }
+        notes = list(payload.get("notes") or [])
+        notes.append("Telemetry synthetic: fail-closed activo para bloquear promotion/live.")
+        payload["notes"] = notes
+    return {
+        "runtime_contract_version": str(runtime_snapshot.get("contract_version") or RUNTIME_CONTRACT_VERSION),
+        "runtime_telemetry_source": str(runtime_snapshot.get("telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC),
+        "runtime_telemetry_ok": bool(telemetry_guard.get("ok", False)),
+        "runtime_telemetry_fail_closed": bool(telemetry_guard.get("fail_closed", True)),
+        "runtime_telemetry_reason": str(telemetry_guard.get("reason") or ""),
+        "runtime_ready_for_live": bool(runtime_snapshot.get("ready_for_live", False)),
+        **payload,
+    }
+
+
+def build_operational_alerts_payload() -> dict[str, Any]:
+    now_iso = utc_now_iso()
+    settings = store.load_settings()
+    runs = store.load_runs()
+    try:
+        drift_payload = learning_service.compute_drift(settings=settings, runs=runs)
+    except Exception as exc:
+        drift_payload = {"drift": False, "algo": "unknown", "error": str(exc)}
+    execution_payload = build_execution_metrics_payload()
+    breaker_payload = store.breaker_events_integrity(window_hours=OPS_ALERT_BREAKER_WINDOW_HOURS, strict=True)
+    alerts: list[dict[str, Any]] = []
+
+    def _push_ops_alert(
+        *,
+        alert_type: str,
+        severity: str,
+        module_name: str,
+        message: str,
+        data: dict[str, Any],
+    ) -> None:
+        alerts.append(
             {
-                "ts": (now - timedelta(minutes=(40 - idx))).isoformat(),
-                "latency_ms_p95": 120 + (idx % 5) * 8,
-                "spread_bps": 7.0 + ((idx % 6) * 0.7),
-                "slippage_bps": 4.0 + ((idx % 4) * 0.6),
-                "maker_ratio": 0.58 + ((idx % 3) * 0.01),
-                "fill_ratio": 0.91 - ((idx % 3) * 0.01),
+                "id": f"ops_{alert_type}",
+                "ts": now_iso,
+                "type": alert_type,
+                "severity": severity,
+                "module": module_name,
+                "message": message,
+                "related_id": "",
+                "data": data,
             }
         )
+
+    drift_detected = bool(drift_payload.get("drift", False))
+    if OPS_ALERT_DRIFT_ENABLED and drift_detected:
+        _push_ops_alert(
+            alert_type="ops_drift",
+            severity="warn",
+            module_name="learning",
+            message="Drift detectado: revisar recommendation/research loop antes de promover.",
+            data={
+                "algo": drift_payload.get("algo"),
+                "research_loop_triggered": bool(drift_payload.get("research_loop_triggered", False)),
+            },
+        )
+
+    p95_slippage = _as_float(execution_payload.get("p95_slippage"), 0.0)
+    if p95_slippage >= OPS_ALERT_SLIPPAGE_P95_WARN_BPS:
+        _push_ops_alert(
+            alert_type="ops_slippage_anomaly",
+            severity="warn",
+            module_name="execution",
+            message="Slippage p95 anomalo sobre umbral operativo.",
+            data={
+                "p95_slippage": p95_slippage,
+                "threshold_bps": OPS_ALERT_SLIPPAGE_P95_WARN_BPS,
+            },
+        )
+
+    api_errors = int(_as_int(execution_payload.get("api_errors"), 0))
+    if api_errors >= OPS_ALERT_API_ERRORS_WARN:
+        _push_ops_alert(
+            alert_type="ops_api_errors",
+            severity="error",
+            module_name="execution",
+            message="Errores de API por encima del umbral operativo.",
+            data={
+                "api_errors": api_errors,
+                "threshold": OPS_ALERT_API_ERRORS_WARN,
+                "runtime_telemetry_source": execution_payload.get("runtime_telemetry_source"),
+            },
+        )
+
+    if not bool(breaker_payload.get("ok", False)):
+        _push_ops_alert(
+            alert_type="ops_breaker_integrity",
+            severity="warn",
+            module_name="risk",
+            message="Integridad de breaker_events no OK en modo estricto.",
+            data={
+                "status": breaker_payload.get("status"),
+                "window_hours": breaker_payload.get("window_hours"),
+                "strict_mode": bool(breaker_payload.get("strict_mode", True)),
+                "overall": breaker_payload.get("overall"),
+                "window": breaker_payload.get("window"),
+            },
+        )
+
     return {
-        "maker_ratio": 0.61,
-        "fill_ratio": 0.92,
-        "requotes": 2,
-        "cancels": 4,
-        "rate_limit_hits": 1,
-        "api_errors": 0,
-        "avg_spread": 8.1,
-        "p95_spread": 12.2,
-        "avg_slippage": 4.3,
-        "p95_slippage": 7.4,
-        "latency_ms_p95": 146.0,
-        "series": series,
-        "notes": [
-            "Maker ratio stable in the last hour.",
-            "No severe API errors observed.",
-            "Spread remains under configured guardrails.",
-        ],
+        "ok": True,
+        "generated_at": now_iso,
+        "overall_status": "WARN" if alerts else "PASS",
+        "thresholds": {
+            "drift_enabled": bool(OPS_ALERT_DRIFT_ENABLED),
+            "slippage_p95_warn_bps": OPS_ALERT_SLIPPAGE_P95_WARN_BPS,
+            "api_errors_warn": OPS_ALERT_API_ERRORS_WARN,
+            "breaker_window_hours": OPS_ALERT_BREAKER_WINDOW_HOURS,
+        },
+        "signals": {
+            "drift": drift_payload,
+            "execution": {
+                "p95_slippage": p95_slippage,
+                "api_errors": api_errors,
+            },
+            "breaker_integrity": {
+                "status": breaker_payload.get("status"),
+                "ok": bool(breaker_payload.get("ok", False)),
+                "window_hours": breaker_payload.get("window_hours"),
+            },
+        },
+        "alerts": alerts,
     }
 
 
@@ -5462,9 +8597,12 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
-        state = store.load_bot_state()
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
         mode = state.get("mode", "paper")
-        runtime_engine = _runtime_engine_from_state(state)
+        runtime_snapshot = _runtime_contract_snapshot(state)
+        telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+        runtime_engine = str(runtime_snapshot.get("runtime_engine") or _runtime_engine_from_state(state))
         storage_status = _user_data_persistence_status()
         return {
             "status": "ok",
@@ -5474,6 +8612,10 @@ def create_app() -> FastAPI:
             "mode": mode,
             "runtime_engine": runtime_engine,
             "runtime_mode": "real" if runtime_engine == RUNTIME_ENGINE_REAL else "simulado",
+            "runtime_contract_version": str(runtime_snapshot.get("contract_version") or RUNTIME_CONTRACT_VERSION),
+            "runtime_telemetry_source": str(runtime_snapshot.get("telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC),
+            "runtime_telemetry_fail_closed": bool(telemetry_guard.get("fail_closed", True)),
+            "runtime_ready_for_live": bool(runtime_snapshot.get("ready_for_live", False)),
             "ws": {"connected": True, "transport": "sse", "url": "/api/v1/stream", "last_event_at": utc_now_iso()},
             "exchange": {"name": exchange_name(), "mode": mode.upper()},
             "db": {"ok": True, "driver": "sqlite"},
@@ -5687,18 +8829,18 @@ def create_app() -> FastAPI:
         recent_logs_per_bot: int | None = Query(default=None, ge=0, le=50),
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
-        effective_recent_logs = bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS if recent_logs is None else recent_logs)
-        effective_recent_logs_per_bot = max(
+        default_recent_logs = bool(BOTS_OVERVIEW_INCLUDE_RECENT_LOGS if recent_logs is None else recent_logs)
+        default_recent_logs_per_bot = max(
             0,
             int(BOTS_OVERVIEW_RECENT_LOGS_PER_BOT if recent_logs_per_bot is None else recent_logs_per_bot),
         )
         t0 = time.perf_counter()
-        recs = learning_service.load_all_recommendations()
         payload, cache_state, cache_perf = _get_bots_overview_payload_cached(
-            recommendations=recs,
-            include_recent_logs=effective_recent_logs,
-            recent_logs_per_bot=effective_recent_logs_per_bot,
+            include_recent_logs=recent_logs,
+            recent_logs_per_bot=recent_logs_per_bot,
         )
+        effective_recent_logs = bool(cache_perf.get("effective_recent_logs", default_recent_logs))
+        effective_recent_logs_per_bot = int(cache_perf.get("logs_per_bot_effective", default_recent_logs_per_bot) or 0)
         total_ms = (time.perf_counter() - t0) * 1000.0
         response.headers["X-RTLAB-Bots-Overview-Cache"] = cache_state
         response.headers["X-RTLAB-Bots-Overview-MS"] = f"{total_ms:.3f}"
@@ -5735,6 +8877,9 @@ def create_app() -> FastAPI:
             "recent_logs_per_bot": int(effective_recent_logs_per_bot),
             "slow_threshold_ms": int(BOTS_OVERVIEW_PROFILE_SLOW_MS),
             "overview": cache_perf.get("overview") if isinstance(cache_perf.get("overview"), dict) else {},
+            "logs_auto_disabled": bool(cache_perf.get("logs_auto_disabled", False)),
+            "logs_auto_disable_threshold": int(cache_perf.get("logs_auto_disable_threshold") or 0),
+            "bots_count": int(cache_perf.get("bots_count") or 0),
         }
         return out
 
@@ -5874,11 +9019,152 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/learning/status")
     def learning_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         settings_payload = learning_service.ensure_settings_shape(store.load_settings())
-        return learning_service.build_status(
+        strategies = store.list_strategies()
+        payload = learning_service.build_status(
             settings=settings_payload,
-            strategies=store.list_strategies(),
+            strategies=strategies,
             runs=store.load_runs(),
         )
+        payload["experience_learning"] = option_b_engine.summarize(strategies=strategies)
+        option_b_cfg = payload.get("option_b") if isinstance(payload.get("option_b"), dict) else {}
+        payload["option_b"] = {
+            **option_b_cfg,
+            "allow_live": False,
+            "requires_human_approval": True,
+            "experience_store_enabled": True,
+        }
+        return payload
+
+    @app.get("/api/v1/learning/experience/summary")
+    def learning_experience_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return option_b_engine.summarize(strategies=store.list_strategies())
+
+    @app.get("/api/v1/learning/guidance")
+    def learning_guidance(
+        strategy_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        rows = option_b_engine.list_guidance()
+        if strategy_id:
+            rows = [row for row in rows if str(row.get("strategy_id") or "") == str(strategy_id)]
+        return {"items": rows}
+
+    @app.get("/api/v1/learning/proposals")
+    def learning_proposals(
+        status: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        rows = option_b_engine.list_proposals(status=status)
+        return {"items": rows, "status": status}
+
+    @app.get("/api/v1/learning/proposals/{proposal_id}")
+    def learning_proposal_detail(proposal_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        row = option_b_engine.get_proposal(proposal_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning proposal not found")
+        return row
+
+    @app.get("/api/v1/learning/shadow/status")
+    def learning_shadow_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return shadow_coordinator.status()
+
+    @app.post("/api/v1/learning/shadow/start")
+    def learning_shadow_start(
+        body: ShadowStartBody | None = None,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        payload = body or ShadowStartBody()
+        try:
+            status = shadow_coordinator.start(
+                bot_id=payload.bot_id,
+                timeframe=payload.timeframe,
+                lookback_bars=int(payload.lookback_bars),
+                poll_sec=int(payload.poll_sec),
+                symbol=payload.symbol,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, **status}
+
+    @app.post("/api/v1/learning/shadow/stop")
+    def learning_shadow_stop(
+        body: ShadowStopBody | None = None,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        status = shadow_coordinator.stop(reason=(body.reason if body else None))
+        return {"ok": True, **status}
+
+    @app.post("/api/v1/learning/proposals/recalculate")
+    def learning_proposals_recalculate(body: OptionBRecalculateBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        thresholds = learning_service._canonical_gates_thresholds()
+        result = option_b_engine.recalculate(
+            strategies=store.list_strategies(),
+            pbo_max=float((body.pbo_max if body else None) or thresholds.get("pbo_max") or 0.25),
+            dsr_min=float((body.dsr_min if body else None) or thresholds.get("dsr_min") or 0.95),
+        )
+        store.add_log(
+            event_type="learning_option_b_recalculate",
+            severity="info",
+            module="learning",
+            message="Opcion B recalculada desde Experience Store.",
+            related_ids=[str(row.get("id") or "") for row in (result.get("proposals") or [])[:20]],
+            payload={
+                "contexts": result.get("contexts"),
+                "generated_at": result.get("generated_at"),
+                "allow_live": False,
+            },
+        )
+        return result
+
+    @app.post("/api/v1/learning/proposals/{proposal_id}/approve")
+    def learning_proposal_approve(
+        proposal_id: str,
+        body: OptionBDecisionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        row = option_b_engine.set_proposal_status(proposal_id, status="approved", note=(body.note if body else None))
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning proposal not found")
+        store.add_log(
+            event_type="learning_option_b_approve",
+            severity="info",
+            module="learning",
+            message=f"Propuesta Opcion B aprobada: {proposal_id}",
+            related_ids=[proposal_id, str(row.get("proposed_strategy_id") or "")],
+            payload={
+                "reviewer": user.get("username", "admin"),
+                "note": (body.note if body else None) or "",
+                "allow_live": False,
+                "shadow_first": True,
+            },
+        )
+        return {
+            "ok": True,
+            "proposal": row,
+            "option_b": {"applied_live": False, "requires_shadow_first": True, "requires_human_approval": True},
+            "canary_plan": ["shadow_5", "shadow_15", "shadow_35", "shadow_60", "shadow_100"],
+        }
+
+    @app.post("/api/v1/learning/proposals/{proposal_id}/reject")
+    def learning_proposal_reject(
+        proposal_id: str,
+        body: OptionBDecisionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        row = option_b_engine.set_proposal_status(proposal_id, status="rejected", note=(body.note if body else None))
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning proposal not found")
+        store.add_log(
+            event_type="learning_option_b_reject",
+            severity="info",
+            module="learning",
+            message=f"Propuesta Opcion B rechazada: {proposal_id}",
+            related_ids=[proposal_id],
+            payload={"reviewer": user.get("username", "admin"), "note": (body.note if body else None) or ""},
+        )
+        return {"ok": True, "proposal": row}
 
     @app.post("/api/v1/learning/recommend")
     def learning_recommend(body: LearningRecommendBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -6196,6 +9482,8 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/research/mass-backtest/start")
     def research_mass_backtest_start(body: ResearchMassBacktestStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
+        cfg["execution_mode"] = str(cfg.get("execution_mode") or "research")
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
                 status_code=400,
@@ -6217,18 +9505,21 @@ def create_app() -> FastAPI:
         cfg["policy_snapshot_source_root"] = str(_policies_bundle.get("source_root") or "")
         if _policies_bundle.get("warnings"):
             cfg["policy_snapshot_warnings"] = list(_policies_bundle.get("warnings") or [])
-        started = mass_backtest_coordinator.start_async(
-            config=cfg,
-            strategies=store.list_strategies(),
-            historical_runs=store.load_runs(),
-            backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
-        )
+        try:
+            started = mass_backtest_coordinator.start_async(
+                config=cfg,
+                strategies=store.list_strategies(),
+                historical_runs=store.load_runs(),
+                backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         store.add_log(
             event_type="research_mass_backtest_start",
             severity="info",
             module="research",
             message="Mass backtests iniciados",
-            related_ids=[str(started.get("run_id") or "")],
+            related_ids=[x for x in [str(started.get("run_id") or ""), cfg.get("bot_id")] if x],
             payload={"config": cfg, "no_auto_live": True},
         )
         return started
@@ -6236,6 +9527,8 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/batches")
     def create_research_batch(body: BatchCreateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
+        cfg["execution_mode"] = str(cfg.get("execution_mode") or "research")
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
                 status_code=400,
@@ -6258,19 +9551,22 @@ def create_app() -> FastAPI:
         cfg["policy_snapshot_source_root"] = str(_policies_bundle.get("source_root") or "")
         if _policies_bundle.get("warnings"):
             cfg["policy_snapshot_warnings"] = list(_policies_bundle.get("warnings") or [])
-        started = mass_backtest_coordinator.start_async(
-            config=cfg,
-            strategies=store.list_strategies(),
-            historical_runs=store.load_runs(),
-            backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
-        )
+        try:
+            started = mass_backtest_coordinator.start_async(
+                config=cfg,
+                strategies=store.list_strategies(),
+                historical_runs=store.load_runs(),
+                backtest_callback=lambda variant, fold, costs: _mass_backtest_eval_fold(variant, fold, costs, cfg),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         batch_id = str(started.get("run_id") or "")
         store.add_log(
             event_type="batch_created",
             severity="info",
             module="research",
             message="Research Batch creado",
-            related_ids=[batch_id],
+            related_ids=[x for x in [batch_id, cfg.get("bot_id")] if x],
             payload={"config": cfg, "batch_id": batch_id},
         )
         return {"ok": True, "batch_id": batch_id, **started}
@@ -6300,6 +9596,22 @@ def create_app() -> FastAPI:
         row = next((r for r in rows if isinstance(r, dict) and str(r.get("variant_id") or "") == body.variant_id), None)
         if not row:
             raise HTTPException(status_code=404, detail="Variant not found in mass-backtest results")
+        results_cfg = results_payload.get("config") if isinstance(results_payload.get("config"), dict) else {}
+        execution_mode = str(results_cfg.get("execution_mode") or "research").strip().lower()
+        strict_required = execution_mode != "demo"
+        strict_fold_flags = [
+            bool((fold.get("provenance") or {}).get("strict_strategy_id"))
+            for fold in (row.get("folds") or [])
+            if isinstance(fold, dict) and isinstance(fold.get("provenance"), dict) and "strict_strategy_id" in (fold.get("provenance") or {})
+        ]
+        strict_strategy_id = bool(row.get("strict_strategy_id")) if "strict_strategy_id" in row else False
+        if strict_fold_flags:
+            strict_strategy_id = all(strict_fold_flags)
+        if strict_required and not strict_strategy_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Variant no elegible: strict_strategy_id=true es obligatorio en research/promotion no-demo.",
+            )
         gates_eval = row.get("gates_eval") if isinstance(row.get("gates_eval"), dict) else {}
         if gates_eval and not bool(gates_eval.get("passed")):
             fail_reasons = [str(x) for x in (gates_eval.get("fail_reasons") or []) if str(x)]
@@ -6339,6 +9651,8 @@ def create_app() -> FastAPI:
                 "summary": row.get("summary") or {},
                 "regime_metrics": row.get("regime_metrics") or {},
                 "hard_filters_pass": bool(row.get("hard_filters_pass")),
+                "execution_mode": execution_mode,
+                "strict_strategy_id": bool(strict_strategy_id),
                 "anti_overfitting": row.get("anti_overfitting") or {},
                 "gates_eval": gates_eval,
             },
@@ -6365,6 +9679,8 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/research/beast/start")
     def research_beast_start(body: ResearchBeastStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
+        cfg["execution_mode"] = "beast"
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
                 status_code=400,
@@ -6401,14 +9717,39 @@ def create_app() -> FastAPI:
             severity="info",
             module="research",
             message="Modo Bestia encolado",
-            related_ids=[str(started.get("run_id") or "")],
+            related_ids=[x for x in [str(started.get("run_id") or ""), cfg.get("bot_id")] if x],
             payload={"tier": body.tier, "estimated_trial_units": started.get("estimated_trial_units"), "config": cfg, "no_auto_live": True},
         )
         return started
 
     @app.get("/api/v1/research/beast/status")
     def research_beast_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        return mass_backtest_coordinator.beast_status()
+        payload = mass_backtest_coordinator.beast_status()
+        bundle = load_numeric_policies_bundle()
+        beast_meta = bundle.get("files", {}).get("beast_mode") if isinstance(bundle.get("files"), dict) else {}
+        beast_policy = (
+            bundle.get("policies", {}).get("beast_mode", {}).get("beast_mode")
+            if isinstance(bundle.get("policies"), dict)
+            and isinstance(bundle.get("policies", {}).get("beast_mode"), dict)
+            else {}
+        )
+        policy_enabled_declared = bool(beast_policy.get("enabled")) if isinstance(beast_policy, dict) else False
+        policy_state = "enabled"
+        if not bundle.get("available") or not isinstance(beast_meta, dict) or not beast_meta.get("exists") or not beast_meta.get("valid"):
+            policy_state = "missing"
+        elif not policy_enabled_declared:
+            policy_state = "disabled"
+        payload.update(
+            {
+                "policy_state": policy_state,
+                "policy_available": bool(bundle.get("available")),
+                "policy_enabled_declared": policy_enabled_declared,
+                "policy_source_root": str(bundle.get("source_root") or ""),
+                "policy_warnings": list(bundle.get("warnings") or []),
+                "policy_files": bundle.get("files") if isinstance(bundle.get("files"), dict) else {},
+            }
+        )
+        return payload
 
     @app.get("/api/v1/research/beast/jobs")
     def research_beast_jobs(limit: int = Query(default=50, ge=1, le=500), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
@@ -6623,6 +9964,30 @@ def create_app() -> FastAPI:
         if body.override_started_at:
             rollout_manager.set_phase_started_at(body.phase, body.override_started_at)
 
+        # AP-2003 fail-closed: no evaluar fases soak/live con telemetria sintetica.
+        status_for_guard = build_status_payload()
+        telemetry_guard = status_for_guard.get("runtime_telemetry_guard") if isinstance(status_for_guard.get("runtime_telemetry_guard"), dict) else {}
+        telemetry_ok = bool(telemetry_guard.get("ok", False))
+        telemetry_source = str(telemetry_guard.get("telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC)
+        if not telemetry_ok:
+            reason = str(telemetry_guard.get("reason") or "runtime telemetry guard fail-closed")
+            store.add_log(
+                event_type="rollout_phase_eval_blocked",
+                severity="warn",
+                module="rollout",
+                message="Rollout evaluate-phase bloqueado por telemetry_source sintetico",
+                related_ids=[str(state_before.get("rollout_id") or "")],
+                payload={
+                    "phase": body.phase,
+                    "telemetry_source": telemetry_source,
+                    "reason": reason,
+                },
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Rollout phase evaluation blocked: telemetry_source={telemetry_source} (fail-closed). {reason}",
+            )
+
         settings_payload = store.load_settings()
         execution_payload = build_execution_metrics_payload()
         logs_payload = store.list_logs(severity=None, module=None, since=None, until=None, page=1, page_size=250)
@@ -6750,10 +10115,45 @@ def create_app() -> FastAPI:
         use_orderflow_data = bool(use_orderflow_raw) if isinstance(use_orderflow_raw, bool) else str(use_orderflow_raw).strip().lower() not in {"0", "false", "no", "off"}
         strict_raw = body.get("strict_strategy_id", False)
         strict_strategy_id = bool(strict_raw) if isinstance(strict_raw, bool) else str(strict_raw).strip().lower() in {"1", "true", "yes", "on"}
+        purge_bars_raw = body.get("purge_bars")
+        embargo_bars_raw = body.get("embargo_bars")
+        cpcv_n_splits_raw = body.get("cpcv_n_splits")
+        cpcv_k_test_groups_raw = body.get("cpcv_k_test_groups")
+        cpcv_max_paths_raw = body.get("cpcv_max_paths")
+
+        def _optional_non_negative_int(name: str, value: Any) -> int | None:
+            if value is None or value == "":
+                return None
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"{name} debe ser entero >= 0") from exc
+            if parsed < 0:
+                raise HTTPException(status_code=400, detail=f"{name} debe ser entero >= 0")
+            return parsed
+
+        purge_bars = _optional_non_negative_int("purge_bars", purge_bars_raw)
+        embargo_bars = _optional_non_negative_int("embargo_bars", embargo_bars_raw)
+
+        def _optional_min_int(name: str, value: Any, min_value: int) -> int | None:
+            if value is None or value == "":
+                return None
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"{name} debe ser entero >= {min_value}") from exc
+            if parsed < min_value:
+                raise HTTPException(status_code=400, detail=f"{name} debe ser entero >= {min_value}")
+            return parsed
+
+        cpcv_n_splits = _optional_min_int("cpcv_n_splits", cpcv_n_splits_raw, 4)
+        cpcv_k_test_groups = _optional_min_int("cpcv_k_test_groups", cpcv_k_test_groups_raw, 1)
+        cpcv_max_paths = _optional_min_int("cpcv_max_paths", cpcv_max_paths_raw, 1)
 
         market = body.get("market")
         symbol = body.get("symbol")
         timeframe = body.get("timeframe")
+        bot_id = str(body.get("bot_id") or "").strip() or None
         data_source = str(body.get("data_source") or "auto").lower()
         if data_source in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
             raise HTTPException(
@@ -6764,6 +10164,7 @@ def create_app() -> FastAPI:
             try:
                 run = store.create_event_backtest_run(
                     strategy_id=strategy_id,
+                    bot_id=bot_id,
                     market=str(market),
                     symbol=str(symbol),
                     timeframe=str(timeframe),
@@ -6777,19 +10178,21 @@ def create_app() -> FastAPI:
                     validation_mode=validation_mode,
                     use_orderflow_data=use_orderflow_data,
                     strict_strategy_id=strict_strategy_id,
+                    purge_bars=purge_bars,
+                    embargo_bars=embargo_bars,
+                    cpcv_n_splits=cpcv_n_splits,
+                    cpcv_k_test_groups=cpcv_k_test_groups,
+                    cpcv_max_paths=cpcv_max_paths,
                 )
             except FileNotFoundError as exc:
                 mk = str(market).strip().lower()
-                script_name = (
-                    "scripts/download_crypto_binance_public.py"
-                    if mk == "crypto"
-                    else "scripts/download_forex_dukascopy.py"
-                    if mk == "forex"
-                    else "scripts/download_equities_alpaca.py"
-                )
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Faltan datos para {mk}/{str(symbol).upper()}/{str(timeframe).lower()}. Descarga con {script_name} y reintenta. Detalle: {exc}",
+                    detail=(
+                        f"Faltan datos para {mk}/{str(symbol).upper()}/{str(timeframe).lower()}. "
+                        "Cargá un dataset real reproducible en user_data/datasets o user_data/data y reintentá. "
+                        f"Detalle: {exc}"
+                    ),
                 ) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -6953,8 +10356,8 @@ def create_app() -> FastAPI:
         if market_name == "equities":
             return "orderflow_off", False, "market_default_equities"
 
-        # Backward compatibility: historic runs had order flow implicit ON.
-        return "orderflow_on", True, "default_backward_compat"
+        # Fail-closed: sin evidencia explicita no se asume ON ni OFF.
+        return "orderflow_unknown", False, "missing_fail_closed"
 
     def _mass_result_row_for_catalog_run(catalog_row: dict[str, Any]) -> dict[str, Any] | None:
         batch_id = str(catalog_row.get("batch_id") or "")
@@ -7009,6 +10412,11 @@ def create_app() -> FastAPI:
                 metadata["orderflow_feature_set"] = feature_set
                 metadata["use_orderflow_data"] = bool(orderflow_enabled)
                 metadata["orderflow_feature_source"] = feature_source
+                catalog_params = catalog_row.get("params_json") if isinstance(catalog_row.get("params_json"), dict) else {}
+                if payload.get("strict_strategy_id") is None and isinstance(catalog_params.get("strict_strategy_id"), bool):
+                    payload["strict_strategy_id"] = bool(catalog_params.get("strict_strategy_id"))
+                if isinstance(catalog_params.get("execution_mode"), str) and not payload.get("execution_mode"):
+                    payload["execution_mode"] = str(catalog_params.get("execution_mode") or "").strip().lower()
                 payload["metadata"] = metadata
                 return payload
             except HTTPException:
@@ -7146,6 +10554,11 @@ def create_app() -> FastAPI:
             "fund_score": catalog_row.get("fund_score"),
             "fund_promotion_blocked": bool(flags.get("FUNDAMENTALS_PROMOTION_BLOCKED", False)),
         }
+        params_json = report.get("params_json") if isinstance(report.get("params_json"), dict) else {}
+        if isinstance(params_json.get("strict_strategy_id"), bool):
+            report["strict_strategy_id"] = bool(params_json.get("strict_strategy_id"))
+        if isinstance(params_json.get("execution_mode"), str):
+            report["execution_mode"] = str(params_json.get("execution_mode") or "").strip().lower()
         feature_set, orderflow_enabled, feature_source = _infer_orderflow_feature_set(
             report=report,
             catalog_row=catalog_row,
@@ -7158,6 +10571,10 @@ def create_app() -> FastAPI:
         metadata["orderflow_feature_set"] = feature_set
         metadata["use_orderflow_data"] = bool(orderflow_enabled)
         metadata["orderflow_feature_source"] = feature_source
+        if "strict_strategy_id" in report:
+            metadata["strict_strategy_id"] = bool(report.get("strict_strategy_id"))
+        if report.get("execution_mode"):
+            metadata["execution_mode"] = str(report.get("execution_mode") or "")
         report["metadata"] = metadata
         return report
 
@@ -7237,7 +10654,7 @@ def create_app() -> FastAPI:
             if str(row.get("strategy_name") or "") == candidate_strategy_name:
                 continue
             row_feature_set, _, _ = _infer_orderflow_feature_set(report=row, catalog_row=row)
-            if candidate_feature_set and row_feature_set != candidate_feature_set:
+            if candidate_feature_set and candidate_feature_set != "orderflow_unknown" and row_feature_set != candidate_feature_set:
                 continue
             return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
 
@@ -7255,7 +10672,7 @@ def create_app() -> FastAPI:
                 continue
             if str(row.get("status") or "") in {"completed", "completed_warn"}:
                 row_feature_set, _, _ = _infer_orderflow_feature_set(report=row, catalog_row=row)
-                if candidate_feature_set and row_feature_set != candidate_feature_set:
+                if candidate_feature_set and candidate_feature_set != "orderflow_unknown" and row_feature_set != candidate_feature_set:
                     continue
                 return _resolve_rollout_report_from_any_run_id(str(row.get("run_id") or ""))
         raise HTTPException(status_code=400, detail="No baseline run available to compare against candidate")
@@ -7301,6 +10718,33 @@ def create_app() -> FastAPI:
         compare_engine = CompareEngine(compare_thresholds if isinstance(compare_thresholds, dict) else {})
         compare_result = compare_engine.compare(baseline_report, candidate_report)
         same_feature_set = candidate_feature_set == baseline_feature_set
+        known_feature_set = candidate_feature_set != "orderflow_unknown" and baseline_feature_set != "orderflow_unknown"
+        candidate_provenance = candidate_report.get("provenance") if isinstance(candidate_report.get("provenance"), dict) else {}
+        candidate_metadata = candidate_report.get("metadata") if isinstance(candidate_report.get("metadata"), dict) else {}
+        candidate_params = candidate_report.get("params_json") if isinstance(candidate_report.get("params_json"), dict) else {}
+        candidate_catalog_params = candidate_catalog.get("params_json") if isinstance((candidate_catalog or {}).get("params_json"), dict) else {}
+        candidate_execution_mode = str(
+            candidate_report.get("execution_mode")
+            or candidate_metadata.get("execution_mode")
+            or candidate_params.get("execution_mode")
+            or candidate_catalog_params.get("execution_mode")
+            or candidate_report.get("mode")
+            or "research"
+        ).strip().lower()
+        strict_strategy_id = False
+        strict_source = "missing"
+        for source, raw in [
+            ("report.strict_strategy_id", candidate_report.get("strict_strategy_id")),
+            ("report.provenance.strict_strategy_id", candidate_provenance.get("strict_strategy_id")),
+            ("report.metadata.strict_strategy_id", candidate_metadata.get("strict_strategy_id")),
+            ("report.params_json.strict_strategy_id", candidate_params.get("strict_strategy_id")),
+            ("catalog.params_json.strict_strategy_id", candidate_catalog_params.get("strict_strategy_id")),
+        ]:
+            if isinstance(raw, bool):
+                strict_strategy_id = bool(raw)
+                strict_source = source
+                break
+        strict_required = candidate_execution_mode != "demo"
 
         k = candidate_report.get("metrics") if isinstance(candidate_report.get("metrics"), dict) else {}
         flags = (candidate_catalog or {}).get("flags") if isinstance((candidate_catalog or {}).get("flags"), dict) else (candidate_report.get("flags") if isinstance(candidate_report.get("flags"), dict) else {})
@@ -7335,6 +10779,17 @@ def create_app() -> FastAPI:
             {"id": "realistic_costs", "ok": costs_ratio <= costs_ratio_max, "reason": "Costos realistas (costs_ratio)", "details": {"actual": round(costs_ratio, 6), "threshold": costs_ratio_max}},
             {"id": "oos_or_wfa", "ok": bool(flags.get("OOS") or flags.get("WFA")), "reason": "Debe tener evidencia OOS/WFA", "details": {"flags": flags}},
             {
+                "id": "known_feature_set",
+                "ok": known_feature_set,
+                "reason": "Baseline y candidato deben declarar feature set de order flow explicito",
+                "details": {
+                    "candidate_feature_set": candidate_feature_set,
+                    "baseline_feature_set": baseline_feature_set,
+                    "candidate_source": candidate_feature_source,
+                    "baseline_source": baseline_feature_source,
+                },
+            },
+            {
                 "id": "same_feature_set",
                 "ok": same_feature_set,
                 "reason": "Baseline y candidato deben tener mismo feature set de order flow",
@@ -7343,6 +10798,17 @@ def create_app() -> FastAPI:
                     "baseline_feature_set": baseline_feature_set,
                     "candidate_source": candidate_feature_source,
                     "baseline_source": baseline_feature_source,
+                },
+            },
+            {
+                "id": "strict_strategy_id_non_demo",
+                "ok": (not strict_required) or strict_strategy_id,
+                "reason": "strict_strategy_id=true es obligatorio en promotion no-demo",
+                "details": {
+                    "strict_required": strict_required,
+                    "strict_strategy_id": strict_strategy_id,
+                    "source": strict_source,
+                    "execution_mode": candidate_execution_mode,
                 },
             },
             {
@@ -7398,6 +10864,8 @@ def create_app() -> FastAPI:
                 "status": candidate_report.get("status"),
                 "orderflow_feature_set": candidate_feature_set,
                 "use_orderflow_data": bool(candidate_orderflow_enabled),
+                "strict_strategy_id": bool(strict_strategy_id),
+                "execution_mode": candidate_execution_mode,
             },
             "baseline": {
                 "run_id": str(baseline_report.get("id") or ""),
@@ -7443,6 +10911,7 @@ def create_app() -> FastAPI:
         run_type: str | None = Query(default=None),
         status: str | None = Query(default=None),
         strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
         symbol: str | None = Query(default=None),
         timeframe: str | None = Query(default=None),
         mode: str | None = Query(default=None),
@@ -7458,7 +10927,7 @@ def create_app() -> FastAPI:
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
         flags_any = [x.strip().upper() for x in str(flags or "").split(",") if x.strip()]
-        items = store.backtest_catalog.query_runs(
+        raw_items = store.backtest_catalog.query_runs(
             q=q,
             run_type=run_type,
             status=status,
@@ -7474,13 +10943,18 @@ def create_app() -> FastAPI:
             flags_any=flags_any,
             sort_by=sort_by,
             sort_dir=sort_dir,
-            limit=limit,
+            limit=max(int(limit), 50000) if str(bot_id or "").strip() else limit,
         )
-        return {"items": items, "count": len(items)}
+        items = store.annotate_runs_with_related_bots(raw_items, bot_id=bot_id)
+        limited_items = items[: max(1, int(limit))]
+        return {"items": limited_items, "count": len(items)}
 
     @app.get("/api/v1/runs/{run_id}")
     def runs_detail(run_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         row = _catalog_run_or_404(run_id)
+        annotated_rows = store.annotate_runs_with_related_bots([row])
+        if annotated_rows:
+            row = annotated_rows[0]
         row["artifacts_index"] = store.backtest_catalog.get_artifacts_for_run(str(row.get("run_id") or ""))
         legacy_id = str(row.get("legacy_json_id") or "")
         if legacy_id:
@@ -8159,34 +11633,20 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/risk")
     def risk(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         status = build_status_payload()
-        gates_payload = evaluate_gates(status["mode"])
         settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        runtime_snapshot = _runtime_contract_snapshot(state)
+        telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+        gates_payload = evaluate_gates(status["mode"], runtime_state=state)
         checklist = [{"stage": row["id"], "done": row["status"] == "PASS", "note": row["reason"]} for row in gates_payload["gates"]]
-        return {
-            "equity": status["equity"],
-            "dd": status["max_dd"]["value"],
-            "daily_loss": status["daily_loss"]["value"],
-            "exposure_total": status["equity"] * 0.22,
-            "exposure_by_symbol": [
-                {"symbol": "BTC/USDT", "exposure": status["equity"] * 0.14},
-                {"symbol": "ETH/USDT", "exposure": status["equity"] * 0.08},
-            ],
-            "circuit_breakers": ["none"] if not status["risk_flags"]["safe_mode"] else ["safe_mode"],
-            "limits": {
-                "daily_loss_limit": -abs(settings["risk_defaults"]["max_daily_loss"] / 100),
-                "max_dd_limit": -abs(settings["risk_defaults"]["max_dd"] / 100),
-                "max_positions": int(settings["risk_defaults"]["max_positions"]),
-                "max_total_exposure": 0.9,
-                "risk_per_trade": abs(settings["risk_defaults"]["risk_per_trade"] / 100),
-            },
-            "stress_tests": [
-                {"scenario": "fees_x2", "robust_score": 71.2},
-                {"scenario": "slippage_x2", "robust_score": 67.8},
-                {"scenario": "spread_shock", "robust_score": 65.1},
-            ],
-            "forecast_band": {"return_p50_30d": 0.041, "return_p90_30d": 0.085, "dd_p90_30d": -0.098},
-            "gate_checklist": checklist,
-        }
+        payload = runtime_bridge.risk_snapshot(state=state, settings=settings, gate_checklist=checklist)
+        payload["equity"] = float(status["equity"])
+        payload["dd"] = float(status["max_dd"]["value"])
+        payload["daily_loss"] = float(status["daily_loss"]["value"])
+        payload["runtime_telemetry_source"] = str(runtime_snapshot.get("telemetry_source") or RUNTIME_TELEMETRY_SOURCE_SYNTHETIC)
+        payload["runtime_telemetry_fail_closed"] = bool(telemetry_guard.get("fail_closed", True))
+        payload["runtime_telemetry_reason"] = str(telemetry_guard.get("reason") or "")
+        return payload
 
     @app.get("/api/v1/execution/metrics")
     def execution_metrics(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
@@ -8302,9 +11762,10 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/diagnostics/breaker-events")
     def diagnostics_breaker_events(
         window_hours: int = Query(default=BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS, ge=1, le=168),
+        strict: bool = Query(default=True),
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
-        return store.breaker_events_integrity(window_hours=window_hours)
+        return store.breaker_events_integrity(window_hours=window_hours, strict=bool(strict))
 
     @app.post("/api/v1/bot/mode")
     def bot_mode(body: BotModeBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -8328,6 +11789,7 @@ def create_app() -> FastAPI:
         state["bot_status"] = "PAUSED"
         state["running"] = False
         store.save_bot_state(state)
+        state = _sync_runtime_state(state, settings=store.load_settings(), event="mode_change", persist=True)
         store.add_log(
             event_type="mode_changed",
             severity="warn" if mode == "live" else "info",
@@ -8338,26 +11800,45 @@ def create_app() -> FastAPI:
         )
         return {"ok": True, "mode": mode}
 
-    @app.post("/api/v1/bot/start")
-    def bot_start(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
-        principal = store.registry.get_principal(state["mode"])
-        if not principal:
-            raise HTTPException(status_code=400, detail=f"No principals configured for mode {state['mode']}")
+        # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
+        strategy_name: str | None = None
+        active_bot_id = str(bot_id or "").strip() or None
+        if active_bot_id:
+            bots = store.load_bots()
+            bot_row = next((b for b in bots if str(b.get("id") or "") == active_bot_id), None)
+            if bot_row:
+                pool = bot_row.get("pool_strategy_ids") or []
+                if pool:
+                    strategy_name = str(pool[0])
+        if not strategy_name:
+            principal = store.registry.get_principal(state["mode"])
+            if not principal:
+                raise HTTPException(status_code=400, detail=f"No principals configured for mode {state['mode']}")
+            strategy_name = str(principal["name"])
+            active_bot_id = None
+        if active_bot_id:
+            state["active_bot_id"] = active_bot_id
         state["running"] = True
         state["killed"] = False
         state["bot_status"] = "RUNNING"
         store.save_bot_state(state)
+        state = _sync_runtime_state(state, settings=store.load_settings(), event="start", persist=True)
         store.add_log(
             event_type="status",
             severity="info",
             module="control",
             message=f"Bot started in {state['mode']}",
-            related_ids=[principal["name"]],
-            payload={"mode": state["mode"], "strategy": principal["name"]},
+            related_ids=[x for x in [strategy_name, active_bot_id] if x],
+            payload={"mode": state["mode"], "strategy": strategy_name, "bot_id": active_bot_id},
         )
-        return {"ok": True, "state": state["bot_status"], "mode": state["mode"]}
+        return {"ok": True, "state": state["bot_status"], "mode": state["mode"], "strategy": strategy_name, "bot_id": active_bot_id}
+
+    @app.post("/api/v1/bot/start")
+    def bot_start(body: BotStartBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        return _do_bot_start(bot_id=(body.bot_id if body else None))
 
     @app.post("/api/v1/bot/stop")
     def bot_stop(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -8365,6 +11846,7 @@ def create_app() -> FastAPI:
         state["running"] = False
         state["bot_status"] = "PAUSED"
         store.save_bot_state(state)
+        _sync_runtime_state(state, settings=store.load_settings(), event="stop", persist=True)
         store.add_log(
             event_type="status",
             severity="warn",
@@ -8383,6 +11865,7 @@ def create_app() -> FastAPI:
         state["safe_mode"] = True
         state["bot_status"] = "KILLED"
         store.save_bot_state(state)
+        _sync_runtime_state(state, settings=store.load_settings(), event="kill", persist=True)
         store.add_log(
             event_type="breaker_triggered",
             severity="error",
@@ -8407,11 +11890,12 @@ def create_app() -> FastAPI:
         state["running"] = False
         state["bot_status"] = "PAUSED"
         store.save_bot_state(state)
+        _sync_runtime_state(state, settings=store.load_settings(), event="stop", persist=True)
         return {"ok": True, "state": state["bot_status"]}
 
     @app.post("/api/v1/control/resume")
-    def control_resume(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        return bot_start(_)
+    def control_resume(body: BotStartBody | None = None, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        return _do_bot_start(bot_id=(body.bot_id if body else None))
 
     @app.post("/api/v1/control/safe-mode")
     async def control_safe_mode(request: Request, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -8421,6 +11905,7 @@ def create_app() -> FastAPI:
         state["safe_mode"] = enabled
         state["bot_status"] = "SAFE_MODE" if enabled else ("RUNNING" if state.get("running") else "PAUSED")
         store.save_bot_state(state)
+        _sync_runtime_state(state, settings=store.load_settings(), event="safe_mode", persist=True)
         return {"ok": True, "safe_mode": enabled}
 
     @app.post("/api/v1/control/kill")
@@ -8445,6 +11930,7 @@ def create_app() -> FastAPI:
         module: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        include_operational: bool = Query(default=True),
         _: dict[str, str] = Depends(current_user),
     ) -> list[dict[str, Any]]:
         payload = store.list_logs(severity=severity, module=module, since=since, until=until, page=1, page_size=250)
@@ -8463,6 +11949,11 @@ def create_app() -> FastAPI:
                         "data": item["payload"],
                     }
                 )
+        if include_operational:
+            ops_payload = build_operational_alerts_payload()
+            ops_alerts = ops_payload.get("alerts") if isinstance(ops_payload.get("alerts"), list) else []
+            rows.extend([row for row in ops_alerts if isinstance(row, dict)])
+        rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
         return rows
 
     @app.get("/api/v1/logs")

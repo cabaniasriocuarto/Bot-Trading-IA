@@ -18,7 +18,7 @@
 ## Alcance auditado
 - Backend: `rtlab_autotrader/rtlab_core/web/app.py`, `rtlab_autotrader/rtlab_core/rollout/gates.py`, `rtlab_autotrader/rtlab_core/src/backtest/engine.py`, `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`, `rtlab_autotrader/rtlab_core/fundamentals/credit_filter.py`.
 - Frontend/BFF: `rtlab_dashboard/src/app/api/[...path]/route.ts`, `rtlab_dashboard/src/lib/events-stream.ts`, `rtlab_dashboard/middleware.ts`, `rtlab_dashboard/src/lib/auth.ts`.
-- Policies/docs: `docs/truth/*`, `docs/SECURITY.md`, `knowledge/**`, `config/policies/**`, `docs/BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `docs/MASS_BACKTEST_DATA.md`.
+- Policies/docs: `docs/truth/*`, `docs/SECURITY.md`, `knowledge/**`, `config/policies/**`, `docs/_archive/BACKTESTS_RESEARCH_SYSTEM_FINAL.md`, `docs/_archive/MASS_BACKTEST_DATA.md`.
 - Seguridad/deps: `scripts/security_audit.sh`, `scripts/security_scan.sh`, `requirements-runtime.txt`, `requirements-research.txt`.
 - Bibliografía local: indexada en `docs/reference/BIBLIO_INDEX.md` con SHA256.
 
