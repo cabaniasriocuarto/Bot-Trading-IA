@@ -23,6 +23,10 @@ def _sample_run(*, run_id: str, strategy_id: str, dataset_hash: str = "abc123", 
     "period": {"start": "2024-01-01", "end": "2024-12-31"},
     "validation_mode": "walk-forward",
     "validation_summary": {"mode": "walk-forward", "implemented": True},
+    "feature_set": "orderflow_on",
+    "orderflow_feature_set": "orderflow_on",
+    "use_orderflow_data": True,
+    "flags": {"ORDERFLOW_FEATURE_SET": "orderflow_on", "ORDERFLOW_ENABLED": True},
     "metrics": {
       "trade_count": 200,
       "winrate": 0.53,
@@ -57,6 +61,14 @@ def _set_required_anti_overfitting_metrics(run: dict, *, pbo: float = 0.02, dsr:
   metrics["pbo"] = float(pbo)
   metrics["dsr"] = float(dsr)
   run["metrics"] = metrics
+
+
+def _ensure_runtime_real_for_rollout_api(module, client, headers: dict[str, str]) -> None:
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  start = client.post("/api/v1/bot/start", headers=headers)
+  assert start.status_code == 200, start.text
 
 
 def test_gate_evaluator_with_knowledge_gates_defaults_pass_and_fail() -> None:
@@ -121,6 +133,15 @@ def test_compare_engine_improvement_rules() -> None:
   mixed_res = compare.compare(baseline, mixed)
   assert mixed_res["passed"] is False
   assert "same_feature_set" in set(mixed_res["failed_ids"])
+
+  unknown = copy.deepcopy(candidate)
+  unknown.pop("orderflow_feature_set", None)
+  unknown.pop("feature_set", None)
+  unknown.pop("use_orderflow_data", None)
+  unknown["flags"] = {}
+  unknown_res = compare.compare(baseline, unknown)
+  assert unknown_res["passed"] is False
+  assert "known_feature_set" in set(unknown_res["failed_ids"])
 
 
 def test_rollout_manager_transitions_and_rollback(tmp_path: Path) -> None:
@@ -475,6 +496,7 @@ def test_rollout_api_canary15_manual_rollback_e2e(tmp_path: Path, monkeypatch) -
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  _ensure_runtime_real_for_rollout_api(module, client, headers)
 
   # Crear estrategia candidata (YAML) para tener strategy_id distinto al baseline.
   yaml_payload = """
@@ -620,6 +642,7 @@ def test_rollout_api_paper_soak_evaluate_and_auto_advance(tmp_path: Path, monkey
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  _ensure_runtime_real_for_rollout_api(module, client, headers)
 
   yaml_payload = """
 id: rollout_candidate_strategy_2
@@ -681,6 +704,7 @@ def test_rollout_api_testnet_soak_evaluate_and_auto_advance(tmp_path: Path, monk
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  _ensure_runtime_real_for_rollout_api(module, client, headers)
 
   yaml_payload = """
 id: rollout_candidate_strategy_3
@@ -762,6 +786,7 @@ def test_rollout_api_canary15_auto_rollback_e2e(tmp_path: Path, monkeypatch) -> 
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  _ensure_runtime_real_for_rollout_api(module, client, headers)
 
   yaml_payload = """
 id: rollout_candidate_strategy_4
@@ -851,6 +876,13 @@ defaults:
       "expectancy_24h_usd": -8.0,
       "phase_dd_increment_pct": 2.6,
       "max_dd": {"value": -0.05},
+      "runtime_telemetry_guard": {
+        "telemetry_source": "runtime_loop_v1",
+        "telemetry_real": True,
+        "ok": True,
+        "fail_closed": False,
+        "reason": "",
+      },
     },
   )
   monkeypatch.setattr(
@@ -888,6 +920,7 @@ def test_rollout_api_blending_preview_records_telemetry(tmp_path: Path, monkeypa
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  _ensure_runtime_real_for_rollout_api(module, client, headers)
 
   yaml_payload = """
 id: rollout_candidate_strategy_5
@@ -974,3 +1007,65 @@ defaults:
   assert status.status_code == 200, status.text
   status_payload = status.json()
   assert status_payload["live_signal_telemetry"]["phases"]["shadow"]["events"] >= 1
+
+
+def test_rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  yaml_payload = """
+id: rollout_candidate_strategy_fc
+name: Rollout Candidate FC
+version: 1.0.0
+defaults:
+  risk_per_trade_pct: 0.5
+""".strip()
+  upload = client.post(
+    "/api/v1/strategies/upload",
+    headers=headers,
+    files={"file": ("rollout_candidate_strategy_fc.yaml", yaml_payload.encode("utf-8"), "application/x-yaml")},
+  )
+  assert upload.status_code == 200, upload.text
+
+  runs = module.store.load_runs()
+  baseline_run = copy.deepcopy(runs[0])
+  baseline_run["id"] = "run_baseline_rollout_fc"
+  baseline_run["strategy_id"] = "trend_pullback_orderflow_confirm_v1"
+  baseline_run["data_source"] = "binance_public"
+  baseline_run["validation_mode"] = "walk-forward"
+  baseline_run["validation_summary"] = {"mode": "walk-forward", "implemented": True}
+  baseline_run["dataset_hash"] = "same_dataset_rollout_fc"
+  baseline_run["period"] = {"start": "2024-01-01", "end": "2024-12-31"}
+  baseline_run["metrics"].update({"trade_count": 200, "winrate": 0.50, "profit_factor": 1.25, "sharpe": 1.30, "sortino": 1.80, "calmar": 1.05, "max_dd": 0.12, "max_dd_duration_bars": 5000, "expectancy_usd_per_trade": 10.0})
+  baseline_run["costs_breakdown"].update({"gross_pnl_total": 2000.0, "total_cost": 600.0, "net_pnl_total": 1400.0, "net_pnl": 1400.0})
+  candidate_run = copy.deepcopy(baseline_run)
+  candidate_run["id"] = "run_candidate_rollout_fc"
+  candidate_run["strategy_id"] = "rollout_candidate_strategy_fc"
+  candidate_run["metrics"].update({"winrate": 0.54, "profit_factor": 1.35, "sharpe": 1.55, "sortino": 2.10, "calmar": 1.25, "max_dd": 0.13, "expectancy_usd_per_trade": 12.0})
+  _set_required_anti_overfitting_metrics(baseline_run, pbo=0.02, dsr=1.05)
+  _set_required_anti_overfitting_metrics(candidate_run, pbo=0.02, dsr=1.09)
+  candidate_run["costs_breakdown"].update({"gross_pnl_total": 2150.0, "total_cost": 630.0, "net_pnl_total": 1520.0, "net_pnl": 1520.0})
+  module.store.save_runs([candidate_run, baseline_run, *runs])
+
+  start = client.post("/api/v1/rollout/start", headers=headers, json={"candidate_run_id": candidate_run["id"], "baseline_run_id": baseline_run["id"]})
+  assert start.status_code == 200, start.text
+  adv = client.post("/api/v1/rollout/advance", headers=headers, json={})
+  assert adv.status_code == 200, adv.text
+  assert adv.json()["state"]["state"] == "PAPER_SOAK"
+
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "simulated"
+  state["running"] = False
+  module.store.save_bot_state(state)
+
+  old_start = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+  eval_res = client.post(
+    "/api/v1/rollout/evaluate-phase",
+    headers=headers,
+    json={"phase": "paper_soak", "override_started_at": old_start, "auto_advance": True},
+  )
+  assert eval_res.status_code == 400, eval_res.text
+  detail = str(eval_res.json().get("detail") or "").lower()
+  assert "telemetry_source" in detail
+  assert "fail-closed" in detail

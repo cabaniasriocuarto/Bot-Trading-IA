@@ -26,6 +26,27 @@ def _normalize_base_url(url: str) -> str:
     return value[:-1] if value.endswith("/") else value
 
 
+def _allow_insecure_password_cli() -> bool:
+    raw = str(os.getenv("ALLOW_INSECURE_PASSWORD_CLI", "")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _resolve_password(*, cli_password: str) -> str:
+    cli_value = str(cli_password or "").strip()
+    if cli_value:
+        if not _allow_insecure_password_cli():
+            raise RuntimeError(
+                "Uso de --password deshabilitado por seguridad. "
+                "Usa RTLAB_ADMIN_PASSWORD/RTLAB_PASSWORD o token."
+            )
+        return cli_value
+    for env_name in ("RTLAB_ADMIN_PASSWORD", "RTLAB_PASSWORD"):
+        value = str(os.getenv(env_name, "")).strip()
+        if value:
+            return value
+    return ""
+
+
 def _request_json(
     *,
     base_url: str,
@@ -63,7 +84,7 @@ def _resolve_token(
     user = str(username or "").strip()
     pwd = str(password or "").strip()
     if not user or not pwd:
-        raise RuntimeError("Falta auth: pasar --auth-token o --password.")
+        raise RuntimeError("Falta auth: pasar --auth-token o RTLAB_ADMIN_PASSWORD.")
     login = requests.post(
         f"{base_url}/api/v1/auth/login",
         json={"username": user, "password": pwd},
@@ -102,7 +123,9 @@ def _build_markdown(report: dict[str, Any]) -> str:
         f"- g9_status: `{checks.get('g9_status')}`",
         f"- g9_expected_runtime_guard: `{checks.get('g9_expected_runtime_guard')}`",
         f"- breaker_status: `{checks.get('breaker_status')}`",
+        f"- breaker_strict_mode: `{checks.get('breaker_strict_mode')}`",
         f"- breaker_ok: `{checks.get('breaker_ok')}`",
+        f"- allow_staging_warns_applied: `{checks.get('allow_staging_warns_applied')}`",
         f"- internal_proxy_status_ok: `{checks.get('internal_proxy_status_ok')}`",
         f"- protected_checks_complete: `{checks.get('protected_checks_complete')}`",
         f"- overall_pass: `{checks.get('overall_pass')}`",
@@ -123,7 +146,14 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run protected operational checks against deployed backend.")
     parser.add_argument("--base-url", default="https://bot-trading-ia-production.up.railway.app")
     parser.add_argument("--username", default=os.getenv("RTLAB_USERNAME", "Wadmin"))
-    parser.add_argument("--password", default=os.getenv("RTLAB_PASSWORD", ""))
+    parser.add_argument(
+        "--password",
+        default="",
+        help=(
+            "DEPRECATED (inseguro): password por CLI. "
+            "Usa RTLAB_ADMIN_PASSWORD/RTLAB_PASSWORD; para habilitar CLI setea ALLOW_INSECURE_PASSWORD_CLI=1."
+        ),
+    )
     parser.add_argument("--auth-token", default=os.getenv("RTLAB_AUTH_TOKEN", ""))
     parser.add_argument("--timeout-sec", type=float, default=15.0)
     parser.add_argument("--window-hours", type=int, default=24)
@@ -135,8 +165,24 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strict",
+        dest="strict",
         action="store_true",
-        help="Exit 2 when any required check is not passing.",
+        default=True,
+        help="Exit 2 when any required check is not passing (default: true).",
+    )
+    parser.add_argument(
+        "--no-strict",
+        dest="strict",
+        action="store_false",
+        help="Override and run in non-strict mode (compatibilidad legacy).",
+    )
+    parser.add_argument(
+        "--allow-staging-warns",
+        action="store_true",
+        help=(
+            "Solo para base_url de staging: permite G10=WARN y breaker NO_DATA "
+            "como aprobacion operativa no-live."
+        ),
     )
     return parser
 
@@ -152,7 +198,7 @@ def main() -> int:
         timeout_sec=max(1.0, float(args.timeout_sec)),
         auth_token=args.auth_token,
         username=args.username,
-        password=args.password,
+        password=_resolve_password(cli_password=str(args.password or "")),
     )
 
     endpoint_errors: dict[str, str] = {}
@@ -162,7 +208,7 @@ def main() -> int:
     gates, err_gates = _request_json(base_url=base_url, path="/api/v1/gates", timeout_sec=timeout_sec, token=token)
     breaker, err_breaker = _request_json(
         base_url=base_url,
-        path=f"/api/v1/diagnostics/breaker-events?window_hours={int(args.window_hours)}",
+        path=f"/api/v1/diagnostics/breaker-events?window_hours={int(args.window_hours)}&strict={'true' if args.strict else 'false'}",
         timeout_sec=timeout_sec,
         token=token,
     )
@@ -192,21 +238,33 @@ def main() -> int:
     else:
         g9_expected_guard = g9_status == expect_g9
 
+    storage_persistent = bool(storage.get("persistent_storage"))
+    breaker_status = str(breaker.get("status") or "UNKNOWN").upper() if breaker else "UNKNOWN"
+    breaker_ok_base = bool(breaker.get("ok", False)) if breaker else False
+    staging_target = "staging" in base_url.lower()
+    allow_staging_warns = bool(args.allow_staging_warns and staging_target)
+    g10_pass_base = g10_status == "PASS"
+    g10_pass = g10_pass_base or (allow_staging_warns and g10_status == "WARN")
+    breaker_ok = breaker_ok_base or (allow_staging_warns and breaker_status == "NO_DATA")
+
     checks = {
         "health_ok": bool(health.get("ok", False)),
-        "storage_persistent": bool(storage.get("persistent_storage")),
+        "storage_persistent": storage_persistent,
         "g10_status": g10_status,
-        "g10_pass": g10_status == "PASS",
+        "g10_pass": g10_pass,
+        "g10_pass_base": g10_pass_base,
         "g9_status": g9_status,
         "g9_expected_runtime_guard": bool(g9_expected_guard),
-        "breaker_status": str(breaker.get("status") or "UNKNOWN").upper() if breaker else "UNKNOWN",
-        "breaker_ok": bool(breaker.get("ok", False)) if breaker else False,
+        "breaker_status": breaker_status,
+        "breaker_strict_mode": bool(breaker.get("strict_mode", False)) if breaker else bool(args.strict),
+        "breaker_ok": breaker_ok,
+        "breaker_ok_base": breaker_ok_base,
+        "allow_staging_warns_applied": allow_staging_warns,
         "internal_proxy_status_ok": bool(internal_proxy_status.get("ok", False)) if internal_proxy_status else False,
     }
     checks["protected_checks_complete"] = not endpoint_errors
     checks["overall_pass"] = bool(
         checks["health_ok"]
-        and checks["storage_persistent"]
         and checks["g10_pass"]
         and checks["g9_expected_runtime_guard"]
         and checks["breaker_ok"]

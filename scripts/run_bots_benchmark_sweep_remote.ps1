@@ -69,6 +69,12 @@ try {
     if ([string]::IsNullOrWhiteSpace($adminPass)) {
         throw "ADMIN_PASSWORD vacio. Cancelado."
     }
+    $prevAdminPasswordEnv = $env:RTLAB_ADMIN_PASSWORD
+    $prevPasswordEnv = $env:RTLAB_PASSWORD
+    $prevBenchPasswordEnv = $env:RTLAB_BENCH_PASSWORD
+    $env:RTLAB_ADMIN_PASSWORD = $adminPass
+    $env:RTLAB_PASSWORD = $adminPass
+    $env:RTLAB_BENCH_PASSWORD = $adminPass
 
     $dateTag = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmss")
     $summary = @()
@@ -81,7 +87,6 @@ try {
             "scripts/seed_bots_remote.py",
             "--base-url", $BaseUrl,
             "--username", $Username,
-            "--password", $adminPass,
             "--target-bots", "$target",
             "--engine", $Engine,
             "--mode", $Mode,
@@ -111,7 +116,6 @@ try {
             "scripts/benchmark_bots_overview.py",
             "--base-url", $BaseUrl,
             "--username", $Username,
-            "--password", $adminPass,
             "--requests", "$Requests",
             "--warmup", "$Warmup",
             "--timeout-sec", "$TimeoutSec",
@@ -160,6 +164,9 @@ try {
     $summary | Format-Table -AutoSize
 }
 finally {
+    $env:RTLAB_ADMIN_PASSWORD = $prevAdminPasswordEnv
+    $env:RTLAB_PASSWORD = $prevPasswordEnv
+    $env:RTLAB_BENCH_PASSWORD = $prevBenchPasswordEnv
     Remove-Variable adminPass -ErrorAction SilentlyContinue
     Pop-Location
 }

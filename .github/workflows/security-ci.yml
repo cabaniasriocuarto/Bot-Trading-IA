@@ -1,0 +1,74 @@
+name: Security CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard insecure CLI password flags in automation
+        run: |
+          set -euo pipefail
+          workflow_files="$(ls .github/workflows/*.yml | grep -v 'security-ci.yml' || true)"
+          if [[ -n "${workflow_files}" ]] && grep -RInE -- '--password([[:space:]]|=|")' ${workflow_files}; then
+            echo "::error ::Detected --password usage in workflow files."
+            exit 1
+          fi
+          if ls scripts/*.ps1 >/dev/null 2>&1 && grep -RInE -- '--password([[:space:]]|=|")' scripts/*.ps1; then
+            echo "::error ::Detected --password usage in PowerShell automation scripts."
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install security tooling
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit
+          mkdir -p "$RUNNER_TEMP/bin"
+          GITLEAKS_VERSION="8.30.0"
+          GITLEAKS_TAR="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          GITLEAKS_URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${GITLEAKS_TAR}"
+          if curl -sSfL --retry 4 --retry-delay 2 --connect-timeout 20 "${GITLEAKS_URL}" -o "/tmp/${GITLEAKS_TAR}"; then
+            tar -xzf "/tmp/${GITLEAKS_TAR}" -C "$RUNNER_TEMP/bin" gitleaks || true
+          fi
+          if [[ ! -x "$RUNNER_TEMP/bin/gitleaks" ]]; then
+            curl -sSfL "https://raw.githubusercontent.com/gitleaks/gitleaks/v${GITLEAKS_VERSION}/install.sh" | bash -s -- -b "$RUNNER_TEMP/bin" "v${GITLEAKS_VERSION}"
+          fi
+          if [[ ! -x "$RUNNER_TEMP/bin/gitleaks" ]]; then
+            echo "::error ::No se pudo instalar gitleaks."
+            ls -la "$RUNNER_TEMP/bin" || true
+            exit 1
+          fi
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          gitleaks version
+
+      - name: Run security scan (strict)
+        env:
+          SECURITY_SCAN_STRICT: "1"
+        run: bash scripts/security_scan.sh
+
+      - name: Upload security artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit
+          path: artifacts/security_audit/
+          if-no-files-found: ignore

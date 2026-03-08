@@ -16,14 +16,23 @@ if [[ $AUDIT_STATUS -eq 2 && "$STRICT_MODE" != "1" ]]; then
 fi
 
 GITLEAKS_REPORT_DIR="artifacts/security_audit"
-BASELINE_JSON="$GITLEAKS_REPORT_DIR/gitleaks-baseline.json"
+CANONICAL_BASELINE_JSON="docs/security/gitleaks-baseline.json"
+LOCAL_BASELINE_JSON="$GITLEAKS_REPORT_DIR/gitleaks-baseline.json"
+BASELINE_JSON="${GITLEAKS_BASELINE_PATH:-}"
+if [[ -z "$BASELINE_JSON" ]]; then
+  if [[ -f "$CANONICAL_BASELINE_JSON" ]]; then
+    BASELINE_JSON="$CANONICAL_BASELINE_JSON"
+  elif [[ -f "$LOCAL_BASELINE_JSON" ]]; then
+    BASELINE_JSON="$LOCAL_BASELINE_JSON"
+  fi
+fi
 REPORT_SARIF="$GITLEAKS_REPORT_DIR/gitleaks.sarif"
 GITLEAKS_STATUS=0
 
 if command -v gitleaks >/dev/null 2>&1; then
   mkdir -p "$GITLEAKS_REPORT_DIR"
   echo "[security-scan] gitleaks (baseline-aware)"
-  if [[ -f "$BASELINE_JSON" ]]; then
+  if [[ -n "$BASELINE_JSON" && -f "$BASELINE_JSON" ]]; then
     echo "[security-scan] usando baseline: $BASELINE_JSON"
     gitleaks git --redact --baseline-path "$BASELINE_JSON" \
       --report-format sarif --report-path "$REPORT_SARIF" || GITLEAKS_STATUS=$?

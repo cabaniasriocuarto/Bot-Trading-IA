@@ -61,12 +61,26 @@ jobs:
 
       - name: Validate auth configuration
         env:
+          BASE_URL: ${{ inputs.base_url }}
           RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
           RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+          RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
         run: |
-          if [[ -z "${RTLAB_ADMIN_PASSWORD}" && -z "${RTLAB_AUTH_TOKEN}" ]]; then
-            echo "Missing secrets: set RTLAB_ADMIN_PASSWORD or RTLAB_AUTH_TOKEN in repository secrets." >&2
-            exit 1
+          if [[ "${BASE_URL}" == *"staging"* ]]; then
+            selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+            if [[ -z "${selected_admin_password}" && -z "${selected_auth_token}" ]]; then
+              echo "Missing staging secrets: define RTLAB_STAGING_AUTH_TOKEN or RTLAB_STAGING_ADMIN_PASSWORD." >&2
+              exit 1
+            fi
+          else
+            selected_auth_token="${RTLAB_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_ADMIN_PASSWORD:-}"
+            if [[ -z "${selected_admin_password}" && -z "${selected_auth_token}" ]]; then
+              echo "Missing production/default secrets: define RTLAB_AUTH_TOKEN or RTLAB_ADMIN_PASSWORD." >&2
+              exit 1
+            fi
           fi
 
       - name: Run protected checks
@@ -79,10 +93,21 @@ jobs:
           STRICT: ${{ inputs.strict }}
           RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
           RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+          RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
           report_prefix="artifacts/ops_protected_checks_gha_${GITHUB_RUN_ID}"
+          if [[ "${BASE_URL}" == *"staging"* ]]; then
+            selected_auth_token="${RTLAB_STAGING_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+          else
+            selected_auth_token="${RTLAB_AUTH_TOKEN:-}"
+            selected_admin_password="${RTLAB_ADMIN_PASSWORD:-}"
+          fi
+          export RTLAB_ADMIN_PASSWORD="${selected_admin_password}"
+          export RTLAB_PASSWORD="${selected_admin_password}"
 
           cmd=(
             python scripts/ops_protected_checks_report.py
@@ -96,12 +121,16 @@ jobs:
 
           if [[ "${STRICT}" == "true" ]]; then
             cmd+=(--strict)
+          else
+            cmd+=(--no-strict)
           fi
 
-          if [[ -n "${RTLAB_AUTH_TOKEN}" ]]; then
-            cmd+=(--auth-token "${RTLAB_AUTH_TOKEN}")
-          else
-            cmd+=(--password "${RTLAB_ADMIN_PASSWORD}")
+          if [[ "${BASE_URL}" == *"staging"* ]]; then
+            cmd+=(--allow-staging-warns)
+          fi
+
+          if [[ -n "${selected_auth_token}" ]]; then
+            cmd+=(--auth-token "${selected_auth_token}")
           fi
 
           "${cmd[@]}" | tee artifacts/protected_checks_stdout.log

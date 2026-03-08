@@ -136,8 +136,8 @@ class DatasetModeDataProvider:
         mk = str(market).lower()
         if mk == "crypto":
             return [
-                "Sin API keys: usar scripts/download_crypto_binance_public.py para descargar Binance Public Data (data.binance.vision).",
-                "Luego reintentar el mass backtest en dataset mode.",
+                "Sin API keys: cargar un dataset publico reproducible de crypto en user_data/datasets o user_data/data/crypto.",
+                "Luego reintentar el mass backtest en dataset mode con datos reales.",
             ]
         if mk == "forex":
             return ["Placeholder: agregar downloader de Dukascopy o cargar CSV/Parquet manual en user_data/data/forex."]

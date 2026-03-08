@@ -16,7 +16,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.policy_paths import resolve_policy_root
 from rtlab_core.src.data.catalog import DataCatalog
 from .data_provider import build_data_provider
 
@@ -35,6 +38,16 @@ def _json_load(path: Path, default: Any) -> Any:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _yaml_load(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return payload if payload is not None else default
     except Exception:
         return default
 
@@ -975,7 +988,13 @@ class MassBacktestEngine:
                 continue
             summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
             folds = [f for f in (row.get("folds") or []) if isinstance(f, dict)]
-            anti = row.get("anti_overfitting") if isinstance(row.get("anti_overfitting"), dict) else {}
+            anti_proxy = (
+                row.get("anti_proxy")
+                if isinstance(row.get("anti_proxy"), dict)
+                else (row.get("anti_overfitting") if isinstance(row.get("anti_overfitting"), dict) else {})
+            )
+            anti_proxy = copy.deepcopy(anti_proxy) if isinstance(anti_proxy, dict) else {}
+            row["anti_proxy"] = anti_proxy
 
             # DSR (deflated Sharpe proxy con stats de batch/trials)
             sharpe_mean = _f(summary.get("sharpe_oos"))
@@ -1157,13 +1176,17 @@ class MassBacktestEngine:
                     "batch_sharpe_var": round(sharpe_trial_var, 8),
                 },
             }
-            anti["method"] = "batch_cscv_pbo_and_dsr_proxy"
-            anti["pbo"] = pbo_batch.get("pbo")
-            anti["dsr"] = checks["dsr_deflated"]["value"]
-            anti["enforce_ready"] = bool(pbo_batch.get("available")) and bool(dsr_cfg.get("enabled", False))
-            anti["promotion_blocked"] = not gates_pass
-            anti["promotion_block_reason"] = "surrogate_adjustments_enabled" if surrogate_block_promotion else ("Advanced gates failed" if not gates_pass else "")
-            row["anti_overfitting"] = anti
+            anti_advanced = {
+                "method": "batch_cscv_pbo_and_dsr_proxy",
+                "pbo": pbo_batch.get("pbo"),
+                "dsr": checks["dsr_deflated"]["value"],
+                "enforce_ready": bool(pbo_batch.get("available")) and bool(dsr_cfg.get("enabled", False)),
+                "promotion_blocked": not gates_pass,
+                "promotion_block_reason": "surrogate_adjustments_enabled" if surrogate_block_promotion else ("Advanced gates failed" if not gates_pass else ""),
+            }
+            row["anti_advanced"] = anti_advanced
+            # Compatibilidad legacy para consumidores que aun leen anti_overfitting.
+            row["anti_overfitting"] = dict(anti_advanced)
             row["promotable"] = bool(row.get("hard_filters_pass")) and gates_pass
             row["recommendable_option_b"] = bool(row.get("hard_filters_pass")) and gates_pass
 
@@ -1439,8 +1462,12 @@ class MassBacktestEngine:
             micro = row.get("microstructure") if isinstance(row.get("microstructure"), dict) else {}
             gates_eval = row.get("gates_eval") if isinstance(row.get("gates_eval"), dict) else {}
             gates_checks = gates_eval.get("checks") if isinstance(gates_eval.get("checks"), dict) else {}
+            anti_proxy = row.get("anti_proxy") if isinstance(row.get("anti_proxy"), dict) else {}
+            anti_advanced = row.get("anti_advanced") if isinstance(row.get("anti_advanced"), dict) else {}
             micro_agg = micro.get("aggregate") if isinstance(micro.get("aggregate"), dict) else {}
             micro_symbol_kill = micro.get("symbol_kill") if isinstance(micro.get("symbol_kill"), dict) else {}
+            pbo_fallback = anti_advanced.get("pbo", anti_proxy.get("pbo"))
+            dsr_fallback = anti_advanced.get("dsr", anti_proxy.get("dsr"))
             run_id = self.backtest_catalog.next_formatted_id("BT")
             row["backtest_run_id"] = run_id
             status = "completed" if bool(row.get("hard_filters_pass")) else "completed_warn"
@@ -1491,20 +1518,31 @@ class MassBacktestEngine:
                     "max_open_positions": _i(cfg.get("max_open_positions"), 1),
                     "params_json": json.dumps(
                         {
+                            "bot_id": str(cfg.get("bot_id") or "").strip() or None,
                             "variant_id": row.get("variant_id"),
                             "params": params,
                             "batch_rank": idx,
                             "use_orderflow_data": bool(orderflow_enabled),
                             "orderflow_feature_set": orderflow_feature_set,
                             "surrogate_adjustments_enabled": surrogate_enabled,
+                            "execution_mode": str(row.get("execution_mode") or cfg.get("execution_mode") or "research"),
                             "evaluation_mode": surrogate_eval_mode,
+                            "strict_strategy_id": bool(row.get("strict_strategy_id")),
                         },
                         ensure_ascii=True,
                         sort_keys=True,
                     ),
                     "seed": _i(row.get("seed")) if row.get("seed") is not None else None,
                     "alias": None,
-                    "tags_json": json.dumps(["batch_child", "research", f"feature_set:{orderflow_feature_set}"], ensure_ascii=True),
+                    "tags_json": json.dumps(
+                        [
+                            "batch_child",
+                            "research",
+                            f"feature_set:{orderflow_feature_set}",
+                            *([f"bot:{str(cfg.get('bot_id') or '').strip()}"] if str(cfg.get("bot_id") or "").strip() else []),
+                        ],
+                        ensure_ascii=True,
+                    ),
                     "kpi_summary_json": json.dumps(
                         {
                             "sharpe": summary.get("sharpe_oos"),
@@ -1518,8 +1556,8 @@ class MassBacktestEngine:
                             "trade_count": summary.get("trade_count_oos"),
                             "roundtrips": summary.get("trade_count_oos"),
                             "robustness_score": round((_f(row.get("score"), 0.0) * 10) + 50, 4),
-                            "pbo": ((gates_checks.get("pbo_cscv") or {}) if isinstance(gates_checks.get("pbo_cscv"), dict) else {}).get("value", (row.get("anti_overfitting") or {}).get("pbo")),
-                            "dsr": ((gates_checks.get("dsr_deflated") or {}) if isinstance(gates_checks.get("dsr_deflated"), dict) else {}).get("value", (row.get("anti_overfitting") or {}).get("dsr")),
+                            "pbo": ((gates_checks.get("pbo_cscv") or {}) if isinstance(gates_checks.get("pbo_cscv"), dict) else {}).get("value", pbo_fallback),
+                            "dsr": ((gates_checks.get("dsr_deflated") or {}) if isinstance(gates_checks.get("dsr_deflated"), dict) else {}).get("value", dsr_fallback),
                             "vpin_cdf": micro_agg.get("vpin_cdf_oos"),
                             "micro_soft_kill_ratio": micro_agg.get("micro_soft_kill_ratio"),
                             "micro_hard_kill_ratio": micro_agg.get("micro_hard_kill_ratio"),
@@ -1565,6 +1603,9 @@ class MassBacktestEngine:
                             "use_orderflow_data": bool(orderflow_enabled),
                             "orderflow_feature_set": orderflow_feature_set,
                             "surrogate_adjustments": surrogate_meta,
+                            "strict_strategy_id": bool(row.get("strict_strategy_id")),
+                            "anti_proxy": anti_proxy,
+                            "anti_advanced": anti_advanced,
                         },
                         ensure_ascii=True,
                         sort_keys=True,
@@ -1694,6 +1735,7 @@ class MassBacktestEngine:
         surrogate_meta = cfg.get("resolved_surrogate_adjustments") if isinstance(cfg.get("resolved_surrogate_adjustments"), dict) else {}
         enable_surrogate_adjustments = bool(surrogate_meta.get("enabled_effective", False))
         surrogate_promotion_blocked = bool(surrogate_meta.get("promotion_blocked_effective", False))
+        execution_mode = str(cfg.get("execution_mode") or "research").strip().lower()
         for idx, variant in enumerate(variants, 1):
             fold_rows: list[dict[str, Any]] = []
             for fold in folds:
@@ -1714,8 +1756,14 @@ class MassBacktestEngine:
                         progress={"total_tasks": total_tasks, "completed_tasks": completed, "pct": round(completed * 100 / total_tasks, 2), "current_variant": idx},
                         logs=[f"Procesado {completed}/{total_tasks} folds ({variant['variant_id']})"],
                     )
+            strict_flags = [
+                bool((fold.get("provenance") or {}).get("strict_strategy_id"))
+                for fold in fold_rows
+                if isinstance(fold, dict) and isinstance(fold.get("provenance"), dict) and "strict_strategy_id" in (fold.get("provenance") or {})
+            ]
+            strict_strategy_id = bool(strict_flags) and all(strict_flags)
             robust = self.robustness_suite(fold_metrics=fold_rows, variant=variant)
-            anti = self.anti_overfitting_suite(fold_metrics=fold_rows)
+            anti_proxy = self.anti_overfitting_suite(fold_metrics=fold_rows)
             summary = {
                 "folds": len(fold_rows),
                 "trade_count_oos": sum(_i(x.get("trade_count")) for x in fold_rows),
@@ -1770,6 +1818,8 @@ class MassBacktestEngine:
             summary["evaluation_mode"] = str(surrogate_meta.get("evaluation_mode") or ("engine_surrogate_adjusted" if enable_surrogate_adjustments else "engine_raw"))
             summary["micro_soft_kill_ratio"] = round(_f(summary.get("micro_soft_kill_folds")) / max(1, len(fold_rows)), 6)
             summary["micro_hard_kill_ratio"] = round(_f(summary.get("micro_hard_kill_folds")) / max(1, len(fold_rows)), 6)
+            summary["strict_strategy_id"] = bool(strict_strategy_id)
+            summary["strict_strategy_evidence_folds"] = int(len(strict_flags))
             micro_agg_reasons = sorted(
                 {
                     str(reason)
@@ -1782,7 +1832,7 @@ class MassBacktestEngine:
                     if str(reason)
                 }
             )
-            score, hard_pass, reasons = self._score(summary, anti)
+            score, hard_pass, reasons = self._score(summary, anti_proxy)
             ranked_input.append(
                 {
                     "variant_id": variant["variant_id"],
@@ -1794,9 +1844,14 @@ class MassBacktestEngine:
                     "orderflow_feature_set": str(cfg.get("resolved_orderflow_feature_set") or ("orderflow_on" if bool(cfg.get("resolved_use_orderflow_data", cfg.get("use_orderflow_data", True))) else "orderflow_off")),
                     "summary": summary,
                     "folds": fold_rows,
+                    "execution_mode": execution_mode,
+                    "strict_strategy_id": bool(strict_strategy_id),
                     "regime_metrics": self._regime_metrics(fold_rows),
                     "robustness": robust,
-                    "anti_overfitting": anti,
+                    "anti_proxy": copy.deepcopy(anti_proxy),
+                    "anti_advanced": {},
+                    # Compatibilidad legacy: anti_overfitting se mantiene como alias hasta migrar consumidores.
+                    "anti_overfitting": copy.deepcopy(anti_proxy),
                     "microstructure": {
                         "available": bool(micro_debug.get("available")) if isinstance(micro_debug, dict) else False,
                         "policy": (micro_debug.get("policy") if isinstance(micro_debug, dict) and isinstance(micro_debug.get("policy"), dict) else {}),
@@ -1826,7 +1881,7 @@ class MassBacktestEngine:
                     "score": score,
                     "hard_filters_pass": hard_pass,
                     "hard_filter_reasons": reasons,
-                    "promotable": bool(hard_pass and not anti.get("promotion_blocked") and not surrogate_promotion_blocked),
+                    "promotable": bool(hard_pass and not anti_proxy.get("promotion_blocked") and not surrogate_promotion_blocked),
                     "recommendable_option_b": bool(hard_pass and not surrogate_promotion_blocked),
                 }
             )
@@ -2072,9 +2127,22 @@ class MassBacktestCoordinator:
             }
         )
 
+    def _default_beast_policy_cfg(self) -> dict[str, Any]:
+        policies_root = resolve_policy_root(self.engine.repo_root)
+        policy_path = (policies_root / "beast_mode.yaml").resolve()
+        beast_file = _yaml_load(policy_path, {})
+        if not isinstance(beast_file, dict):
+            return {}
+        return {"policy_snapshot": {"beast_mode": beast_file}}
+
     def _beast_policy(self, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-        pol_root = (cfg or {}).get("policy_snapshot") if isinstance((cfg or {}).get("policy_snapshot"), dict) else {}
-        beast = pol_root.get("beast_mode") if isinstance(pol_root.get("beast_mode"), dict) else {}
+        cfg_payload = cfg if isinstance(cfg, dict) else {}
+        pol_root = cfg_payload.get("policy_snapshot") if isinstance(cfg_payload.get("policy_snapshot"), dict) else {}
+        if not pol_root:
+            fallback_cfg = self._default_beast_policy_cfg()
+            pol_root = fallback_cfg.get("policy_snapshot") if isinstance(fallback_cfg.get("policy_snapshot"), dict) else {}
+        beast_file = pol_root.get("beast_mode") if isinstance(pol_root.get("beast_mode"), dict) else {}
+        beast = beast_file.get("beast_mode") if isinstance(beast_file.get("beast_mode"), dict) else beast_file
         governor = beast.get("budget_governor") if isinstance(beast.get("budget_governor"), dict) else {}
         return {
             "enabled": bool(beast.get("enabled", False)),
@@ -2180,10 +2248,43 @@ class MassBacktestCoordinator:
     def _run_id(self) -> str:
         return self.engine.backtest_catalog.next_formatted_id("BX")
 
+    def _preflight_dataset_ready(self, *, cfg: dict[str, Any], historical_runs: list[dict[str, Any]]) -> dict[str, Any]:
+        preview_cfg = copy.deepcopy(cfg)
+        universe = self.engine.build_universe(config=preview_cfg, historical_runs=historical_runs)
+        preview_cfg["resolved_universe"] = universe
+        market = str(preview_cfg.get("market") or "crypto")
+        symbol = str(preview_cfg.get("symbol") or (universe[0] if universe else "BTCUSDT")).upper()
+        timeframe = str(preview_cfg.get("timeframe") or "5m")
+        start = str(preview_cfg.get("start") or "2024-01-01")
+        end = str(preview_cfg.get("end") or "2024-12-31")
+        data_mode = str(preview_cfg.get("data_mode") or "dataset").lower()
+        provider = build_data_provider(mode=data_mode, user_data_dir=self.engine.user_data_dir, catalog=self.engine.catalog)
+        dataset_info = provider.resolve(
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+        )
+        if not bool(getattr(dataset_info, "ready", False)):
+            hints = [str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()]
+            hint_text = " | ".join(hints) if hints else "Verificá dataset_source, symbol, timeframe y rango."
+            raise ValueError(
+                f"No hay dataset real disponible para {market}/{symbol}/{timeframe} en modo {data_mode}. {hint_text}"
+            )
+        updates = {
+            "resolved_universe": universe,
+            "data_provider": dataset_info.to_dict(),
+        }
+        if not str(preview_cfg.get("symbol") or "").strip():
+            updates["symbol"] = symbol
+        return updates
+
     def start_async(self, *, config: dict[str, Any], strategies: list[dict[str, Any]], historical_runs: list[dict[str, Any]], backtest_callback: Callable[[dict[str, Any], FoldWindow, dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
         run_id = self._run_id()
         cfg = copy.deepcopy(config)
         cfg["run_id"] = run_id
+        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs))
         self.engine._write_status(run_id, state="QUEUED", config=cfg, progress={"pct": 0, "total_tasks": 0, "completed_tasks": 0}, logs=["Job encolado."])
         with self._lock:
             self._spawn_job_thread_locked(
@@ -2216,6 +2317,7 @@ class MassBacktestCoordinator:
         est_trials = self._beast_estimated_trial_units(cfg=cfg, strategies=strategies)
         if est_trials > _i(policy.get("max_trials_per_batch"), 5000):
             raise ValueError(f"Batch excede max_trials_per_batch ({est_trials} > {_i(policy.get('max_trials_per_batch'), 5000)}).")
+        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs))
 
         with self._lock:
             self._beast_roll_day_if_needed_locked()
@@ -2273,6 +2375,7 @@ class MassBacktestCoordinator:
             active_run_ids = [rid for rid in sorted(self._beast_active_run_ids) if self._threads.get(rid) and self._threads[rid].is_alive()]
             queued = len(self._beast_queue)
             jobs = list(self._beast_jobs_meta.values())
+            first_cfg = copy.deepcopy(self._beast_queue[0].get("config")) if self._beast_queue and isinstance(self._beast_queue[0], dict) else {}
             counts = {
                 "queued": sum(1 for j in jobs if str(j.get("state")).upper() == "QUEUED"),
                 "running": sum(1 for j in jobs if str(j.get("state")).upper() == "RUNNING"),
@@ -2282,9 +2385,12 @@ class MassBacktestCoordinator:
             }
             self._save_beast_metrics_locked()
             metrics = copy.deepcopy(self._beast_metrics)
-        last_policy = self._beast_policy((self._beast_queue[0].get("config") if self._beast_queue else None) or {})
-        tier = "hobby"
+        latest_job = jobs[-1] if jobs else {}
+        last_policy = self._beast_policy(first_cfg)
+        tier = str(first_cfg.get("beast_tier") or latest_job.get("tier") or "hobby").lower()
         cap = _i(last_policy.get("daily_job_cap_hobby"), 200)
+        if tier == "pro":
+            cap = _i(last_policy.get("daily_job_cap_pro"), cap)
         stop_pct = max(1.0, _f(last_policy.get("stop_at_budget_pct"), 80.0))
         cap_threshold = max(1, int(cap * (stop_pct / 100.0)))
         return {

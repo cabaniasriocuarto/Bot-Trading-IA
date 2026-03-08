@@ -1,3 +1,9 @@
+# Variables de entorno — NUNCA subir
+.env
+.env.local
+.env.*.local
+rtlab_autotrader/.env
+
 # Backups locales (NO subir)
 backups/
 *.zip
@@ -10,3 +16,19 @@ __pycache__/
 # Bibliografia local cruda (NO subir PDFs)
 docs/reference/biblio_raw/*
 !docs/reference/biblio_raw/.gitignore
+
+.vercel
+
+# Runtime SQLite databases (NO subir)
+rtlab_autotrader/user_data/*.sqlite3
+rtlab_autotrader/user_data/*.sqlite3-wal
+rtlab_autotrader/user_data/*.sqlite3-shm
+
+# Estado runtime generado (NO subir — se regenera en arranque)
+rtlab_autotrader/user_data/learning/bots.json
+rtlab_autotrader/user_data/strategy_packs/results/
+
+# Datos de mercado descargados (NO subir — grandes, reproducibles)
+rtlab_autotrader/user_data/data/crypto/processed/*.csv
+rtlab_autotrader/user_data/data/crypto/binance_public/
+rtlab_autotrader/user_data/data/crypto/manifests/

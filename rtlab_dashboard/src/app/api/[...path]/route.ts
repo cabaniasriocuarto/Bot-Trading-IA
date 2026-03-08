@@ -2,13 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getSessionFromRequest } from "@/lib/auth";
 import { handleMockApi } from "@/lib/mock-api";
-import { shouldUseMockApi } from "@/lib/security";
+import { shouldFallbackToMockOnBackendError, shouldUseMockApi } from "@/lib/security";
 
 export const dynamic = "force-dynamic";
-
-function shouldFallbackToMockOnBackendError() {
-  return process.env.ENABLE_MOCK_FALLBACK_ON_BACKEND_ERROR === "true";
-}
 
 async function proxyToBackend(
   req: NextRequest,

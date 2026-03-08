@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestRequest, StrategyRunner
 
 
-def _request(strategy_id: str) -> BacktestRequest:
+def _request(strategy_id: str, *, strict_strategy_id: bool = False) -> BacktestRequest:
     return BacktestRequest(
         market="crypto",
         symbol="BTCUSDT",
@@ -20,6 +21,7 @@ def _request(strategy_id: str) -> BacktestRequest:
             slippage_bps=4.0,
             funding_bps=0.0,
         ),
+        strict_strategy_id=bool(strict_strategy_id),
     )
 
 
@@ -104,3 +106,31 @@ def test_defensive_liquidity_applies_obi_gate_when_available() -> None:
 
     assert signal_ok == "long"
     assert signal_blocked is None
+
+
+def test_unknown_strategy_falls_back_to_trend_pullback_when_not_strict() -> None:
+    prev = pd.Series(
+        {
+            "close": 105.0,
+            "high": 106.0,
+            "low": 99.0,
+            "prev_high": 100.0,
+            "prev_low": 98.0,
+            "atr14": 1.0,
+            "ema20": 100.0,
+            "ema50": 95.0,
+            "ema200": 90.0,
+            "adx14": 25.0,
+            "rsi14": 55.0,
+        }
+    )
+    trend_signal = StrategyRunner(_request("trend_pullback_orderflow_v2"))._signal(prev)
+    unknown_signal = StrategyRunner(_request("rollout_candidate_strategy"))._signal(prev)
+
+    assert trend_signal == "long"
+    assert unknown_signal == trend_signal
+
+
+def test_unknown_strategy_fails_closed_when_strict_mode_enabled() -> None:
+    with pytest.raises(ValueError, match="no soportado por BacktestEngine en modo estricto"):
+        StrategyRunner(_request("rollout_candidate_strategy", strict_strategy_id=True))

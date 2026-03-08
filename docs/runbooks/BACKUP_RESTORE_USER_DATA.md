@@ -12,6 +12,7 @@ Tener backup reproducible de estado operativo (`bots`, `runs`, `settings`, `regi
 ## Scripts
 - Backup: `scripts/backup_user_data.py`
 - Restore: `scripts/restore_user_data.py`
+- Drill automatizado (backup + restore + verificacion hash): `scripts/backup_restore_drill.py`
 
 ## 1) Crear backup
 
@@ -43,6 +44,17 @@ python scripts/restore_user_data.py --archive backups/user_data_backup_YYYYMMDD_
 ## Validaciones de seguridad del restore
 - Rechaza entradas ZIP con rutas absolutas.
 - Rechaza entradas ZIP con `..` (path traversal).
+
+## Drill automatizado (recomendado)
+
+```bash
+python scripts/backup_restore_drill.py
+```
+
+Salida esperada:
+- `artifacts/backup_restore_drill_YYYYMMDD_HHMMSS.json`
+- `artifacts/backup_restore_drill_YYYYMMDD_HHMMSS.md`
+- `checks.manifest_match=true`
 
 ## Checklist operativo recomendado
 1. Crear backup antes de cambios de variables/redeploy.
