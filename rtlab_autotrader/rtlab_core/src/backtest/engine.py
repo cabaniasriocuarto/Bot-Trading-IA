@@ -1019,6 +1019,8 @@ class BacktestEngine:
     def run(self, request: BacktestRequest, dataset: MarketDataset) -> dict[str, Any]:
         if dataset.df.empty:
             raise ValueError("Dataset vacío para el rango solicitado")
+        if not dataset.dataset_hash:
+            raise ValueError("Dataset sin hash de integridad — no se puede ejecutar un backtest sin identificador reproducible")
         mode = (request.validation_mode or "").strip().lower()
         if mode == "cpcv":
             simulation, validation_summary = self._run_cpcv(request, dataset.df)

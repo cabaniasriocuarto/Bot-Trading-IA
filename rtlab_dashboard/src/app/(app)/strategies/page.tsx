@@ -1413,7 +1413,7 @@ export default function StrategiesPage() {
                           >
                             Agregar a bot
                           </Button>
-                          {pending && role === "admin" ? (
+                          {pending && role === "admin" && rec.recommendation_source !== "research" ? (
                             <>
                               <Button
                                 size="sm"
