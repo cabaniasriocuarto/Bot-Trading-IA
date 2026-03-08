@@ -4,9 +4,17 @@
 Mantener cambios limpios, revisables, deployables y sin mezclar ruido historico con producto real.
 
 ## Reglas obligatorias
-1. Crear siempre una rama nueva desde `main`.
-2. Trabajar una sola tarea por rama.
-3. No mezclar cambios de producto con:
+1. Antes de modificar, inspeccionar:
+   - rama actual
+   - `git status`
+   - relacion con `main`
+   - objetivo de la tarea
+2. Si la tarea es continuacion directa del mismo objetivo y la rama esta limpia y coherente, seguir en la rama actual.
+3. Si cambia el objetivo, si hay mezcla de cambios no relacionados o si la rama esta contaminada, crear una rama nueva desde `main`.
+4. No crear una rama nueva por cada microcambio o por cada archivo.
+5. Crear rama nueva solo por feature, fix o release coherente.
+6. Trabajar una sola tarea por rama.
+7. No mezclar cambios de producto con:
    - docs
    - auditorias
    - screenshots
@@ -14,23 +22,23 @@ Mantener cambios limpios, revisables, deployables y sin mezclar ruido historico 
    - logs
    - workflows
    - archivos archivados
-4. Antes de modificar, mostrar:
+8. Antes de modificar, mostrar:
    - rama actual
    - `git status`
    - lista de archivos a tocar
-5. No hacer push ni abrir PR hasta que:
+9. No hacer push ni abrir PR hasta que:
    - el build local pase
    - el diff sea razonable
    - los archivos tocados esten claramente enumerados
-6. Si la rama esta contaminada:
+10. Si la rama esta contaminada:
    - frenar
    - no seguir parchando
    - proponer una rama nueva desde `main`
    - hacer cherry-pick o copia selectiva
-7. Si un archivo no impacta producto real, excluirlo.
-8. No abrir PR gigantes.
-9. Priorizar producto visible, deploy real y claridad de release.
-10. Si algo no tiene backend real, no fingirlo en frontend.
+11. Si un archivo no impacta producto real, excluirlo.
+12. No abrir PR gigantes.
+13. Priorizar producto visible, deploy real y claridad de release.
+14. Si algo no tiene backend real, no fingirlo en frontend.
 
 ## Validacion minima antes de push
 - `git diff --stat`
