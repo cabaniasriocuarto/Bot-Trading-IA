@@ -2945,8 +2945,17 @@ export default function BacktestsPage() {
                           <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={224}>
                             <LineChart data={deepCompareEquityOverlay}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                              <XAxis dataKey="index" stroke="#94a3b8" />
-                              <YAxis stroke="#94a3b8" />
+                              <XAxis
+                                dataKey="index"
+                                stroke="#94a3b8"
+                                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                                label={{ value: "Paso / muestra", position: "insideBottom", offset: -4, fill: "#94a3b8" }}
+                              />
+                              <YAxis
+                                stroke="#94a3b8"
+                                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                                label={{ value: "Equity neta", angle: -90, position: "insideLeft", fill: "#94a3b8" }}
+                              />
                               <Tooltip />
                               <Legend />
                               {deepCompareLegacyRuns.map((run, idx) => (
@@ -2973,8 +2982,17 @@ export default function BacktestsPage() {
                           <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={224}>
                             <LineChart data={deepCompareDdOverlay}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                              <XAxis dataKey="index" stroke="#94a3b8" />
-                              <YAxis stroke="#94a3b8" />
+                              <XAxis
+                                dataKey="index"
+                                stroke="#94a3b8"
+                                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                                label={{ value: "Paso / muestra", position: "insideBottom", offset: -4, fill: "#94a3b8" }}
+                              />
+                              <YAxis
+                                stroke="#94a3b8"
+                                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                                label={{ value: "Drawdown", angle: -90, position: "insideLeft", fill: "#94a3b8" }}
+                              />
                               <Tooltip />
                               <Legend />
                               {deepCompareLegacyRuns.map((run, idx) => (
