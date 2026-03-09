@@ -123,18 +123,61 @@ Fecha: 2026-03-09
 9. Frontend integral por dominios
 10. Tests, builds, limpieza conservadora y cierre
 
-## Bloque actual
-- Bloque 7 en progreso:
-  - execution reality + live eligibility + preflight validation + routing
-  - subtramo pendiente de este bloque:
-    - completar routing live real
-    - enriquecer `execution_reality`
-    - separar mejor elegibilidad/mock/paper/testnet/live en UI final
+## Hecho hasta ahora
+- Bloque 8 backend/frontend minimo cerrado:
+  - endpoints `monitoring/*`
+  - pagina `Monitoring / Salud`
+  - score compuesto de salud
+  - feed de alertas
+  - resumen de drift
+  - eventos recientes de breaker/kill switch
+  - degradacion fail-soft si drift rompe
 
-## Pendiente del siguiente bloque
+## Nuevo plan consolidado
+- 1. Policies YAML y source of truth
+- 2. Ledgers/migraciones/strategy truth/evidence
+- 3. Brain bot-first + attribution + live source
+- 4. Research funnel / Beast / PBO-DSR-PSR
+- 5. Execution reality / live eligibility / preflight
+- 6. Monitoring / observability / alerts / drift / kill switches
+- 7. Frontend integral por dominios:
+  - dashboard
+  - instrumentos
+  - datasets
+  - research
+  - estrategias
+  - bots
+  - ejecucion
+  - monitoring
+  - configuracion
+- 8. Tests / builds / cierre documental
+
+## Bloques reordenados
+- Bloque 7:
+  - execution reality + live eligibility + preflight validation + routing
 - Bloque 8:
   - monitoring / observability / drift / alertas / kill switches / health score
-  - surface minima en backend antes del frontend integral por dominios
+- Bloque 9:
+  - frontend integral por dominios y taxonomia visible de modos
+- Bloque 10:
+  - tests finales, build completo, cierre documental
+
+## Bloque actual
+- Bloque 9 en progreso:
+  - frontend serio por dominios
+  - brain panel del bot
+  - strategy truth / passport visible
+  - execution reality visible
+  - taxonomia `mock/paper/testnet/demo/live` consistente en UI
+
+## Pendiente del siguiente bloque
+- consolidar paneles visibles del cerebro:
+  - strategy truth
+  - bot brain
+  - decision log
+  - execution reality
+- terminar taxonomia visible de modos en frontend
+- resolver `episode -> bot_id` directo para analitica historica fuerte
 
 ## Bloqueado / no implementado
 - Aun no implementado integralmente:
@@ -144,8 +187,6 @@ Fecha: 2026-03-09
   - taxonomia visible de modos `mock/paper/testnet/live` en todas las pantallas del frontend
   - frontend del cerebro
   - frontend del research funnel
-  - monitoring / health dashboard
-  - kill switches y drift visibles
   - Beast/Batch visible y consistente end-to-end en deploy
   - routing live final por family
   - `execution_reality` alimentado por fills/ordenes del runtime real
@@ -162,6 +203,7 @@ Fecha: 2026-03-09
 - El bloque actual debe evitar crear una segunda fuente de verdad de modos operativos fuera de YAML y store principal.
 - Todavia quedan referencias tecnicas internas `shadow` que deben seguir internas y no filtrarse como UX primaria.
 - El bloque 7 ahora ya valida elegibilidad/preflight, pero todavia no reemplaza un router live completo; no debe confundirse con ejecucion real end-to-end.
+- Monitoring / Salud ya esta visible, pero no reemplaza aun una pila completa de observabilidad externa (Prometheus/Grafana/Otel).
 
 ## Decisiones asumidas
 - Se sigue en `feature/brain-policy-ledgers-v1` porque el objetivo es continuidad directa del mismo programa tecnico.
@@ -201,7 +243,10 @@ Fecha: 2026-03-09
 - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
 - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
 - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+- `rtlab_dashboard/src/app/(app)/monitoring/page.tsx`
+- `rtlab_dashboard/src/components/layout/app-shell.tsx`
 - `rtlab_dashboard/src/lib/types.ts`
+- `rtlab_autotrader/tests/test_web_live_ready.py`
 - `rtlab_autotrader/tests/test_brain_policy_yaml.py`
 - `rtlab_autotrader/tests/test_instrument_registry_store.py`
 - `rtlab_autotrader/tests/test_binance_catalog_sync.py`
@@ -237,9 +282,13 @@ Fecha: 2026-03-09
 - `python -m py_compile rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS
 - `npm run lint -- "src/app/(app)/strategies/page.tsx" "src/app/(app)/execution/page.tsx" "src/app/(app)/backtests/page.tsx" "src/lib/types.ts"` -> PASS
+- `npm run lint -- "src/app/(app)/monitoring/page.tsx" "src/components/layout/app-shell.tsx" "src/lib/types.ts"` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "test_monitoring_health_endpoint_returns_scores or test_monitoring_kill_switches_endpoint_exposes_recent_breakers or test_monitoring_endpoints_degrade_cleanly_when_drift_fails" -q` -> PASS
 - `npm run build` (`rtlab_dashboard`) -> PASS
 
 ## Build status
 - Backend bloque 6 parcial: PASS
 - Frontend bloque 6 parcial: PASS
+- Backend bloque 8 minimo: PASS
+- Frontend bloque 8 minimo: PASS
 - `npm run build` verde; warnings de Recharts no bloqueantes

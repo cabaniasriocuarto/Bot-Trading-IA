@@ -5160,3 +5160,80 @@ def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
   assert len(detail_payload["best_runs_cache"]) == 2
   assert detail_payload["best_runs_cache"][0]["run_id"] == "BT-000123"
 
+
+def test_monitoring_health_endpoint_returns_scores(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/monitoring/health", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+
+  for key in [
+    "global_health_score",
+    "data_health_score",
+    "research_health_score",
+    "brain_health_score",
+    "execution_health_score",
+    "live_health_score",
+    "risk_health_score",
+    "observability_health_score",
+  ]:
+    assert key in payload
+    assert isinstance(payload[key], (int, float))
+
+  summary = payload.get("summary") or {}
+  assert isinstance(summary.get("status"), dict)
+  assert isinstance(summary.get("data_health"), dict)
+  assert isinstance(payload.get("reasons"), list)
+  assert isinstance(payload.get("suggested_actions"), list)
+
+
+def test_monitoring_kill_switches_endpoint_exposes_recent_breakers(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  module.store.add_log(
+    event_type="breaker_triggered",
+    severity="warn",
+    module="risk",
+    message="kill bot paper",
+    related_ids=["BOT-MONITORING"],
+    payload={"bot_id": "BOT-MONITORING", "mode": "paper", "reason": "drawdown", "symbol": "BTCUSDT"},
+  )
+
+  res = client.get("/api/v1/monitoring/kill-switches", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+  assert isinstance(payload.get("recent_events"), list)
+  assert payload["recent_events"]
+  first = payload["recent_events"][0]
+  assert first["bot_id"] == "BOT-MONITORING"
+  assert first["mode"] == "paper"
+  assert first["reason"] == "drawdown"
+
+
+def test_monitoring_endpoints_degrade_cleanly_when_drift_fails(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  def _boom(*, settings, runs):
+    raise RuntimeError("drift_down")
+
+  monkeypatch.setattr(module.learning_service, "compute_drift", _boom)
+
+  drift_res = client.get("/api/v1/monitoring/drift", headers=headers)
+  assert drift_res.status_code == 200, drift_res.text
+  drift_payload = drift_res.json()
+  assert drift_payload["status"] == "DEGRADED"
+  assert drift_payload["algo"] == "error"
+  assert drift_payload["error"] == "drift_down"
+
+  summary_res = client.get("/api/v1/monitoring/metrics-summary", headers=headers)
+  assert summary_res.status_code == 200, summary_res.text
+  summary = summary_res.json()
+  assert (summary.get("brain_health") or {}).get("drift_algo") == "error"
+

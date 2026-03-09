@@ -304,13 +304,40 @@ Regla de verdad:
     - `GET /api/v1/research/funnel`
   - el borrado de runs del catalogo limpia tambien el ledger del funnel
   - fallback seguro de timeframe soportado en enlaces de dataset/universe evita romper provenance legacy durante tests y API
+- Bloque 8:
+  - dominio `Monitoring / Salud` ya existe como capa visible separada en frontend
+  - endpoints nuevos:
+    - `GET /api/v1/monitoring/health`
+    - `GET /api/v1/monitoring/alerts`
+    - `GET /api/v1/monitoring/metrics-summary`
+    - `GET /api/v1/monitoring/drift`
+    - `GET /api/v1/monitoring/kill-switches`
+  - `monitoring/health` expone `health score` compuesto y sub-scores:
+    - data
+    - research
+    - brain
+    - execution
+    - risk
+    - observability
+  - `monitoring/kill-switches` expone integridad de `breaker_events` y eventos recientes por bot/modo/razon
+  - `monitoring/drift` queda fail-soft:
+    - si el calculo de drift falla, la API devuelve `status=DEGRADED` sin romper la pantalla
+  - la navegacion ya separa `Monitoring / Salud` del resto de dominios operativos
 
 ### Bloque actual en progreso
 
-- Bloque 6:
-  - taxonomia operativa y eligibility matrix por modo
-  - visibilidad minima de modos en backend/API
-  - preparar el puente hacia execution reality y frontend por dominios
+- Bloque 9:
+  - frontend integral por dominios:
+    - brain del bot
+    - strategy truth / passport
+    - execution reality
+    - health dashboard completo
+  - consolidar taxonomia visible de modos:
+    - mock
+    - paper
+    - testnet
+    - demo
+    - live
 
 ### Bibliografia base efectiva para este roadmap
 

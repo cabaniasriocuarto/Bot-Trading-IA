@@ -2281,3 +2281,23 @@
 - `test_web_live_ready.py`: nuevas validaciones para `run -> bot` persistente aun si cambia el pool del bot, y forwarding de `bot_id` en mass/beast.
 - Limpieza local conservadora: eliminados solo `tmp/`, `tmp_test_ud/`, runs `synthetic_seeded` no versionados y metadata vacia de `mass_backtests/`.
 
+### Monitoring / Salud (2026-03-09)
+- `app.py`: nueva familia de endpoints `/api/v1/monitoring/*` para salud, alertas, metricas resumidas, drift y kill switches.
+- `app.py`: `monitoring/drift` y `monitoring/metrics-summary` degradan a `DEGRADED` si falla el calculo de drift en vez de romper la UI.
+- `app.py`: `ConsoleStore.list_breaker_events(...)` expone eventos recientes de breaker/kill switch para backend y UI.
+- `app-shell.tsx`: nueva entrada de navegacion `Monitoring / Salud`.
+- `monitoring/page.tsx`: pantalla nueva con:
+  - health score global y sub-scores
+  - resumen de data/research/brain/execution/risk/observability
+  - feed de alertas
+  - eventos recientes de kill switch / breaker
+  - drift summary
+  - logs recientes
+- `types.ts`: contratos tipados para respuestas de monitoring.
+
+### Validacion Monitoring / Salud
+- `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "test_monitoring_health_endpoint_returns_scores or test_monitoring_kill_switches_endpoint_exposes_recent_breakers or test_monitoring_endpoints_degrade_cleanly_when_drift_fails" -q` -> PASS
+- `npm run lint -- "src/app/(app)/monitoring/page.tsx" "src/components/layout/app-shell.tsx" "src/lib/types.ts"` -> PASS
+- `npm run build` en `rtlab_dashboard` -> PASS
+

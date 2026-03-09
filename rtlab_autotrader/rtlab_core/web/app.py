@@ -2118,6 +2118,43 @@ class ConsoleStore:
             "window": window,
             "warnings": warnings,
         }
+
+    def list_breaker_events(
+        self,
+        *,
+        limit: int = 50,
+        bot_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows_limit = max(1, min(int(limit), 500))
+        params: list[Any] = []
+        where_sql = ""
+        if bot_id is not None and str(bot_id).strip():
+            where_sql = "WHERE bot_id = ?"
+            params.append(str(bot_id).strip())
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, ts, bot_id, mode, reason, run_id, symbol, source_log_id
+                FROM breaker_events
+                {where_sql}
+                ORDER BY ts DESC, id DESC
+                LIMIT ?
+                """,
+                tuple([*params, rows_limit]),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"] or 0),
+                "ts": str(row["ts"] or utc_now_iso()),
+                "bot_id": str(row["bot_id"] or "unknown_bot"),
+                "mode": str(row["mode"] or "unknown"),
+                "reason": str(row["reason"] or "breaker_triggered"),
+                "run_id": str(row["run_id"] or ""),
+                "symbol": str(row["symbol"] or ""),
+                "source_log_id": int(row["source_log_id"] or 0) if row["source_log_id"] is not None else None,
+            }
+            for row in rows
+        ]
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
@@ -8782,6 +8819,275 @@ def build_operational_alerts_payload() -> dict[str, Any]:
     }
 
 
+def build_monitoring_drift_payload() -> dict[str, Any]:
+    settings = store.load_settings()
+    runs = store.load_runs()
+    try:
+        return learning_service.compute_drift(settings=settings, runs=runs)
+    except Exception as exc:
+        return {
+            "drift": False,
+            "algo": "error",
+            "research_loop_triggered": False,
+            "status": "DEGRADED",
+            "error": str(exc),
+        }
+
+
+def _monitoring_score(value: float) -> float:
+    return round(max(0.0, min(100.0, float(value))), 2)
+
+
+def _monitoring_ratio_score(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 100.0
+    return _monitoring_score(100.0 * (1.0 - max(0.0, min(1.0, numerator / denominator))))
+
+
+def build_monitoring_metrics_summary() -> dict[str, Any]:
+    now_iso = utc_now_iso()
+    status_payload = build_status_payload()
+    execution_payload = build_execution_metrics_payload()
+    alerts_payload = build_operational_alerts_payload()
+    runs = store.load_runs()
+    drift_payload = build_monitoring_drift_payload()
+    parity_items = store.registry.list_live_parity_state(limit=2000)
+    proposals = store.registry.list_learning_proposals()
+    bots = store.load_bots()
+    breaker_integrity = store.breaker_events_integrity(window_hours=OPS_ALERT_BREAKER_WINDOW_HOURS, strict=True)
+
+    stale_reference = 0
+    stale_market = 0
+    live_blocked = 0
+    parity_ready = 0
+    derivative_missing_mark = 0
+    derivative_missing_funding = 0
+    provider_markets: dict[str, int] = {}
+    for item in parity_items:
+        provider_market = str(item.get("provider_market") or "unknown")
+        provider_markets[provider_market] = provider_markets.get(provider_market, 0) + 1
+        if not bool(item.get("has_reference_data", False)):
+            stale_reference += 1
+        if not bool(item.get("has_recent_market_state", False)):
+            stale_market += 1
+        if bool(item.get("live_enabled", False)):
+            parity_ready += 1
+        else:
+            live_blocked += 1
+        if provider_market in {"usdm_futures", "coinm_futures"}:
+            if not bool(item.get("has_recent_mark_price", False)):
+                derivative_missing_mark += 1
+            if bool(item.get("requires_funding", False)) and not bool(item.get("has_recent_funding", False)):
+                derivative_missing_funding += 1
+
+    by_mode: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    for bot in bots:
+        mode = str(bot.get("mode") or "unknown")
+        by_mode[mode] = by_mode.get(mode, 0) + 1
+        bot_status = str(bot.get("status") or "unknown")
+        by_status[bot_status] = by_status.get(bot_status, 0) + 1
+
+    failed_runs = 0
+    running_runs = 0
+    completed_runs = 0
+    research_runs = 0
+    for run in runs:
+        run_status = str(run.get("status") or "").upper()
+        if run_status == "FAILED":
+            failed_runs += 1
+        elif run_status in {"RUNNING", "QUEUED"}:
+            running_runs += 1
+        elif run_status in {"DONE", "COMPLETED"}:
+            completed_runs += 1
+        if str(run.get("type") or "").lower().startswith("research") or str(run.get("objective") or "").lower().startswith("research"):
+            research_runs += 1
+
+    runtime_ready = bool(execution_payload.get("runtime_ready_for_live", False))
+    safe_mode = bool((status_payload.get("risk_flags") or {}).get("safe_mode", False))
+    killed = bool((status_payload.get("risk_flags") or {}).get("killed", False))
+    ops_alerts = alerts_payload.get("alerts") if isinstance(alerts_payload.get("alerts"), list) else []
+
+    return {
+        "generated_at": now_iso,
+        "status": {
+            "runtime_mode": str(status_payload.get("mode") or "paper"),
+            "bot_status": str(status_payload.get("bot_status") or "PAUSED"),
+            "runtime_engine": str(status_payload.get("runtime_engine") or "simulated"),
+            "runtime_ready_for_live": runtime_ready,
+            "safe_mode": safe_mode,
+            "killed": killed,
+        },
+        "data_health": {
+            "live_parity_total": len(parity_items),
+            "parity_ready": parity_ready,
+            "live_blocked": live_blocked,
+            "stale_reference_data": stale_reference,
+            "stale_market_state": stale_market,
+            "derivatives_missing_mark_price": derivative_missing_mark,
+            "derivatives_missing_funding": derivative_missing_funding,
+            "provider_markets": provider_markets,
+        },
+        "research_health": {
+            "runs_total": len(runs),
+            "research_runs": research_runs,
+            "failed_runs": failed_runs,
+            "running_runs": running_runs,
+            "completed_runs": completed_runs,
+        },
+        "brain_health": {
+            "drift_detected": bool(drift_payload.get("drift", False)),
+            "drift_algo": str(drift_payload.get("algo") or "unknown"),
+            "pending_proposals": sum(1 for row in proposals if str(row.get("status") or "") == "pending"),
+            "needs_validation_proposals": sum(1 for row in proposals if str(row.get("status") or "") == "needs_validation"),
+            "approved_proposals": sum(1 for row in proposals if str(row.get("status") or "") == "approved"),
+        },
+        "execution_health": {
+            "latency_ms_p95": _as_float(execution_payload.get("latency_ms_p95"), 0.0),
+            "p95_spread": _as_float(execution_payload.get("p95_spread"), 0.0),
+            "p95_slippage": _as_float(execution_payload.get("p95_slippage"), 0.0),
+            "api_errors": _as_int(execution_payload.get("api_errors"), 0),
+            "rate_limit_hits": _as_int(execution_payload.get("rate_limit_hits"), 0),
+            "maker_ratio": _as_float(execution_payload.get("maker_ratio"), 0.0),
+            "fill_ratio": _as_float(execution_payload.get("fill_ratio"), 0.0),
+        },
+        "risk_health": {
+            "safe_mode": safe_mode,
+            "killed": killed,
+            "daily_loss_value": _as_float(((status_payload.get("daily_loss") or {}).get("value")), 0.0),
+            "daily_loss_limit": _as_float(((status_payload.get("daily_loss") or {}).get("limit")), 0.0),
+            "max_dd_value": _as_float(((status_payload.get("max_dd") or {}).get("value")), 0.0),
+            "max_dd_limit": _as_float(((status_payload.get("max_dd") or {}).get("limit")), 0.0),
+            "breaker_integrity": breaker_integrity,
+        },
+        "observability_health": {
+            "ops_alert_count": len(ops_alerts),
+            "recent_logs": store.list_logs(
+                severity=None,
+                module=None,
+                since=None,
+                until=None,
+                page=1,
+                page_size=20,
+            ).get("items", []),
+            "correlation_ids_enabled": bool(((load_numeric_policies_bundle().get("gates") or {}).get("observability") or {}).get("telemetry", {}).get("correlation_ids", True)),
+        },
+        "bots": {
+            "total": len(bots),
+            "by_mode": by_mode,
+            "by_status": by_status,
+        },
+    }
+
+
+def build_monitoring_kill_switch_payload() -> dict[str, Any]:
+    status_payload = build_status_payload()
+    breaker_events = store.list_breaker_events(limit=50)
+    risk_flags = status_payload.get("risk_flags") if isinstance(status_payload.get("risk_flags"), dict) else {}
+    return {
+        "generated_at": utc_now_iso(),
+        "safe_mode": bool(risk_flags.get("safe_mode", False)),
+        "killed": bool(risk_flags.get("killed", False)),
+        "bot_status": str(status_payload.get("bot_status") or "PAUSED"),
+        "runtime_mode": str(status_payload.get("mode") or "paper"),
+        "breaker_integrity": store.breaker_events_integrity(window_hours=OPS_ALERT_BREAKER_WINDOW_HOURS, strict=True),
+        "recent_events": breaker_events,
+    }
+
+
+def build_monitoring_health_payload() -> dict[str, Any]:
+    bundle = load_numeric_policies_bundle()
+    gates_root = bundle.get("gates") if isinstance(bundle.get("gates"), dict) else {}
+    observability = gates_root.get("observability") if isinstance(gates_root.get("observability"), dict) else {}
+    health_weights = observability.get("health_scoring", {}).get("weights") if isinstance(observability.get("health_scoring"), dict) else {}
+
+    summary = build_monitoring_metrics_summary()
+    execution = summary["execution_health"]
+    data = summary["data_health"]
+    research = summary["research_health"]
+    brain = summary["brain_health"]
+    risk = summary["risk_health"]
+    observability_payload = summary["observability_health"]
+    status = summary["status"]
+
+    data_score = _monitoring_score(
+        100.0
+        - (
+            min(30.0, float(data["stale_reference_data"]) * 10.0)
+            + min(30.0, float(data["stale_market_state"]) * 10.0)
+            + min(20.0, float(data["derivatives_missing_mark_price"]) * 10.0)
+            + min(20.0, float(data["derivatives_missing_funding"]) * 5.0)
+        )
+    )
+    research_score = _monitoring_score(100.0 - min(70.0, float(research["failed_runs"]) * 12.0) - min(20.0, float(research["running_runs"]) * 2.0))
+    brain_score = _monitoring_score(100.0 - (25.0 if bool(brain["drift_detected"]) else 0.0) - min(30.0, float(brain["needs_validation_proposals"]) * 5.0))
+    execution_score = _monitoring_score(
+        100.0
+        - min(35.0, _as_float(execution["latency_ms_p95"], 0.0) / 20.0)
+        - min(25.0, _as_float(execution["p95_slippage"], 0.0) * 3.0)
+        - min(20.0, float(execution["api_errors"]) * 8.0)
+        - min(20.0, float(execution["rate_limit_hits"]) * 4.0)
+    )
+    live_score = _monitoring_ratio_score(float(data["live_blocked"]), float(max(1, data["live_parity_total"])))
+    if not bool(status["runtime_ready_for_live"]):
+        live_score = _monitoring_score(live_score - 20.0)
+    risk_score = _monitoring_score(
+        100.0
+        - (40.0 if bool(risk["killed"]) else 0.0)
+        - (20.0 if bool(risk["safe_mode"]) else 0.0)
+        - (20.0 if str((risk["breaker_integrity"] or {}).get("status") or "") == "WARN" else 0.0)
+        - (35.0 if str((risk["breaker_integrity"] or {}).get("status") or "") == "NO_DATA" else 0.0)
+    )
+    observability_score = _monitoring_score(100.0 - min(40.0, float(observability_payload["ops_alert_count"]) * 8.0))
+
+    sub_scores = {
+        "data_health_score": data_score,
+        "research_health_score": research_score,
+        "brain_health_score": brain_score,
+        "execution_health_score": execution_score,
+        "live_health_score": live_score,
+        "risk_health_score": risk_score,
+        "observability_health_score": observability_score,
+    }
+    global_health_score = _monitoring_score(
+        sub_scores["data_health_score"] * _as_float(health_weights.get("data"), 0.20)
+        + sub_scores["research_health_score"] * _as_float(health_weights.get("research"), 0.10)
+        + sub_scores["brain_health_score"] * _as_float(health_weights.get("brain"), 0.15)
+        + sub_scores["execution_health_score"] * _as_float(health_weights.get("execution"), 0.20)
+        + sub_scores["live_health_score"] * _as_float(health_weights.get("live"), 0.20)
+        + sub_scores["risk_health_score"] * _as_float(health_weights.get("risk"), 0.10)
+        + sub_scores["observability_health_score"] * _as_float(health_weights.get("observability"), 0.05)
+    )
+
+    reasons: list[str] = []
+    suggested_actions: list[str] = []
+    if int(data["stale_market_state"]) > 0:
+        reasons.append("Hay instrumentos con market state vencido.")
+        suggested_actions.append("Revisar sync de mercado y estado live parity antes de operar.")
+    if bool(brain["drift_detected"]):
+        reasons.append("El cerebro detecta drift en learning/research.")
+        suggested_actions.append("Revalidar recomendaciones y revisar cambios de regimen antes de promover.")
+    if bool(risk["killed"]):
+        reasons.append("El sistema esta bajo kill switch.")
+        suggested_actions.append("Inspeccionar eventos de breaker y liberar solo con causa resuelta.")
+    if _as_int(execution["api_errors"], 0) > 0:
+        reasons.append("Hay errores de API en la telemetria reciente.")
+        suggested_actions.append("Revisar ejecucion, rate limits y conectividad del exchange.")
+    if int(observability_payload["ops_alert_count"]) > 0:
+        suggested_actions.append("Revisar feed de alertas operativas para priorizar incidentes.")
+    if not suggested_actions:
+        suggested_actions.append("Estado saludable. Mantener monitoreo y revalidacion periodica.")
+
+    return {
+        "generated_at": utc_now_iso(),
+        "global_health_score": global_health_score,
+        **sub_scores,
+        "summary": summary,
+        "reasons": reasons,
+        "suggested_actions": suggested_actions,
+    }
+
+
 def parse_strategy_package(payload: bytes) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
@@ -12552,6 +12858,26 @@ def create_app() -> FastAPI:
             rows.extend([row for row in ops_alerts if isinstance(row, dict)])
         rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
         return rows
+
+    @app.get("/api/v1/monitoring/health")
+    def monitoring_health(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return build_monitoring_health_payload()
+
+    @app.get("/api/v1/monitoring/alerts")
+    def monitoring_alerts(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return build_operational_alerts_payload()
+
+    @app.get("/api/v1/monitoring/metrics-summary")
+    def monitoring_metrics_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return build_monitoring_metrics_summary()
+
+    @app.get("/api/v1/monitoring/drift")
+    def monitoring_drift(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return build_monitoring_drift_payload()
+
+    @app.get("/api/v1/monitoring/kill-switches")
+    def monitoring_kill_switches(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return build_monitoring_kill_switch_payload()
 
     @app.get("/api/v1/logs")
     def logs(

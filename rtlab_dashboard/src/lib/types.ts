@@ -499,6 +499,127 @@ export interface LogEvent {
   payload?: Record<string, unknown>;
 }
 
+export interface MonitoringMetricsSummary {
+  generated_at: string;
+  status: {
+    runtime_mode: string;
+    bot_status: string;
+    runtime_engine: string;
+    runtime_ready_for_live: boolean;
+    safe_mode: boolean;
+    killed: boolean;
+  };
+  data_health: {
+    live_parity_total: number;
+    parity_ready: number;
+    live_blocked: number;
+    stale_reference_data: number;
+    stale_market_state: number;
+    derivatives_missing_mark_price: number;
+    derivatives_missing_funding: number;
+    provider_markets: Record<string, number>;
+  };
+  research_health: {
+    runs_total: number;
+    research_runs: number;
+    failed_runs: number;
+    running_runs: number;
+    completed_runs: number;
+  };
+  brain_health: {
+    drift_detected: boolean;
+    drift_algo: string;
+    pending_proposals: number;
+    needs_validation_proposals: number;
+    approved_proposals: number;
+  };
+  execution_health: {
+    latency_ms_p95: number;
+    p95_spread: number;
+    p95_slippage: number;
+    api_errors: number;
+    rate_limit_hits: number;
+    maker_ratio: number;
+    fill_ratio: number;
+  };
+  risk_health: {
+    safe_mode: boolean;
+    killed: boolean;
+    daily_loss_value: number;
+    daily_loss_limit: number;
+    max_dd_value: number;
+    max_dd_limit: number;
+    breaker_integrity: {
+      status: string;
+      ok: boolean;
+      warnings?: string[];
+      overall?: Record<string, unknown>;
+      window?: Record<string, unknown>;
+    };
+  };
+  observability_health: {
+    ops_alert_count: number;
+    recent_logs: LogEvent[];
+    correlation_ids_enabled: boolean;
+  };
+  bots: {
+    total: number;
+    by_mode: Record<string, number>;
+    by_status: Record<string, number>;
+  };
+}
+
+export interface MonitoringHealthResponse {
+  generated_at: string;
+  global_health_score: number;
+  data_health_score: number;
+  research_health_score: number;
+  brain_health_score: number;
+  execution_health_score: number;
+  live_health_score: number;
+  risk_health_score: number;
+  observability_health_score: number;
+  summary: MonitoringMetricsSummary;
+  reasons: string[];
+  suggested_actions: string[];
+}
+
+export interface MonitoringAlertsResponse {
+  ok: boolean;
+  generated_at: string;
+  overall_status: "PASS" | "WARN" | "FAIL" | string;
+  thresholds: Record<string, unknown>;
+  signals: Record<string, unknown>;
+  alerts: AlertEvent[];
+}
+
+export interface MonitoringKillSwitchEvent {
+  id: number;
+  ts: string;
+  bot_id: string;
+  mode: string;
+  reason: string;
+  run_id: string;
+  symbol: string;
+  source_log_id?: number | null;
+}
+
+export interface MonitoringKillSwitchesResponse {
+  generated_at: string;
+  safe_mode: boolean;
+  killed: boolean;
+  bot_status: string;
+  runtime_mode: string;
+  breaker_integrity: {
+    status: string;
+    ok: boolean;
+    warnings?: string[];
+    overall?: Record<string, unknown>;
+    window?: Record<string, unknown>;
+  };
+  recent_events: MonitoringKillSwitchEvent[];
+}
+
 export interface BotStatusResponse {
   state: BotStatus;
   daily_pnl: number;

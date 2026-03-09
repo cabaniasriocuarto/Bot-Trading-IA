@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   CandlestickChart,
   Cog,
+  HeartPulse,
   LayoutDashboard,
   LineChart,
   LogOut,
@@ -29,6 +30,7 @@ const navItems = [
   { href: "/portfolio", label: "Portafolio", icon: Wallet },
   { href: "/risk", label: "Riesgo", icon: Shield },
   { href: "/execution", label: "Ejecucion", icon: Activity },
+  { href: "/monitoring", label: "Monitoring / Salud", icon: HeartPulse },
   { href: "/alerts", label: "Alertas y Logs", icon: AlertTriangle },
   { href: "/settings", label: "Configuracion", icon: Cog },
 ];
