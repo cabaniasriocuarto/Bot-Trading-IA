@@ -159,6 +159,13 @@ def test_run_job_persists_results_and_duckdb_smoke_fallback(tmp_path: Path) -> N
   assert all(str(row["run_type"]) == "batch_child" for row in child_rows)
   assert any(str((row.get("kpis") or {}).get("expectancy_unit") or "") == "usd_per_trade" for row in child_rows)
   assert "MICRO_SOFT_KILL" in (child_rows[0].get("flags") or {})
+  funnel = engine.backtest_catalog.get_research_funnel(batch_id=run_id, limit=50)
+  assert funnel["summary"]["total_trials"] == len(child_rows)
+  assert funnel["items"]
+  assert all(str(item["run_id"]).startswith("BT-") for item in funnel["items"])
+  assert all(item["batch_id"] == run_id for item in funnel["items"])
+  assert all(item["promotion_stage"] for item in funnel["items"])
+  assert funnel["summary"]["hard_pass_count"] + funnel["summary"]["stage_counts"].get("rejected_hard_filters", 0) == len(child_rows)
 
 
 def test_dataset_mode_provider_no_api_keys_required_and_returns_hints_when_missing(tmp_path: Path) -> None:

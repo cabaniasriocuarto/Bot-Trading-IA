@@ -2,6 +2,42 @@
 
 ## 2026-03-09
 
+### Bloque 5 cerrado: research funnel persistente + API de funnel + limpieza de fallback
+- `BacktestCatalogDB` agrega el ledger persistente `research_trial_ledger` con indices por:
+  - `batch_id`
+  - `run_id`
+  - `promotion_stage`
+- El research funnel deja de depender solo de memoria o shortlist y pasa a persistir por trial:
+  - `trial_id`
+  - `batch_id`
+  - `run_id`
+  - `variant_id`
+  - `strategy_id`
+  - `market/symbol/timeframe`
+  - `dataset_source`
+  - `dataset_hash`
+  - `universe_json`
+  - `score`
+  - `promotion_stage`
+  - `rejection_reason_json`
+  - `PBO/DSR/PSR`
+  - `summary/regime/gates/anti_overfit/artifacts`
+- `MassBacktestEngine` ahora persiste un trial del funnel por cada sub-run del batch en `_record_batch_children_catalog(...)`.
+- `web/app.py` expone `GET /api/v1/research/funnel` con filtros por:
+  - `batch_id`
+  - `promotion_stage`
+  - `promotable_only`
+  - `limit`
+- El borrado de runs del catalogo ahora limpia tambien las filas asociadas del `research_trial_ledger`.
+- Se corrige fallback de provenance para evitar que snapshots legacy con timeframe no soportado (`1m`) rompan:
+  - `run_dataset_link`
+  - `run_universe_link`
+  usando fallback seguro a timeframe soportado.
+- Tests nuevos/extendidos:
+  - `rtlab_autotrader/tests/test_backtest_catalog_db.py`
+  - `rtlab_autotrader/tests/test_mass_backtest_engine.py`
+  - `rtlab_autotrader/tests/test_research_funnel_api.py`
+
 ### Bloque 4 cerrado: universos reproducibles + run_universe_link
 - `RegistryDB` agrega persistencia nueva para:
   - `universe_registry`

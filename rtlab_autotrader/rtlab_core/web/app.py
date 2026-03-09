@@ -2912,7 +2912,14 @@ def risk_hooks(context):
             return
         market = normalize_market(str(run.get("market") or ((run.get("dataset_manifest") or {}).get("market") if isinstance(run.get("dataset_manifest"), dict) else "crypto")))
         symbol = normalize_symbol(str(run.get("symbol") or ((run.get("dataset_manifest") or {}).get("symbol") if isinstance(run.get("dataset_manifest"), dict) else "")))
-        timeframe = normalize_timeframe(str(run.get("timeframe") or ((run.get("dataset_manifest") or {}).get("timeframe") if isinstance(run.get("dataset_manifest"), dict) else "1m")))
+        raw_timeframe = str(
+            run.get("timeframe")
+            or ((run.get("dataset_manifest") or {}).get("timeframe") if isinstance(run.get("dataset_manifest"), dict) else "5m")
+        )
+        try:
+            timeframe = normalize_timeframe(raw_timeframe)
+        except Exception:
+            timeframe = "5m"
         manifest = run.get("dataset_manifest") if isinstance(run.get("dataset_manifest"), dict) else {}
         provider = str(manifest.get("provider") or ("binance_public" if market == "crypto" else dataset_source or "manual"))
         provider_market = str(manifest.get("provider_market") or ("spot" if market == "crypto" else market))
@@ -2987,12 +2994,14 @@ def risk_hooks(context):
         provider = str(manifest.get("provider") or ("binance" if market == "crypto" else "manual")).strip().lower() or "manual"
         provider_market = str(manifest.get("provider_market") or ("spot" if market == "crypto" else market)).strip().lower() or "spot"
         asset_class = str(run.get("asset_class") or ("crypto" if market == "crypto" else market)).strip().lower() or "unknown"
-        timeframe = normalize_timeframe(
-            str(
-                run.get("timeframe")
-                or ((run.get("dataset_manifest") or {}).get("timeframe") if isinstance(run.get("dataset_manifest"), dict) else "1m")
-            )
+        raw_timeframe = str(
+            run.get("timeframe")
+            or ((run.get("dataset_manifest") or {}).get("timeframe") if isinstance(run.get("dataset_manifest"), dict) else "5m")
         )
+        try:
+            timeframe = normalize_timeframe(raw_timeframe)
+        except Exception:
+            timeframe = "5m"
         latest_catalog = self.registry.list_instrument_catalog_snapshots(
             provider=provider,
             provider_market=provider_market,
@@ -11557,6 +11566,25 @@ def create_app() -> FastAPI:
     def batches_list(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         items = store.backtest_catalog.list_batches()
         return {"items": items, "count": len(items)}
+
+    @app.get("/api/v1/research/funnel")
+    def research_funnel(
+        batch_id: str | None = Query(default=None),
+        promotion_stage: str | None = Query(default=None),
+        promotable_only: bool = Query(default=False),
+        limit: int = Query(default=500, ge=1, le=5000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        if promotion_stage or promotable_only:
+            items = store.backtest_catalog.list_research_trials(
+                batch_id=batch_id,
+                promotion_stage=promotion_stage,
+                promotable_only=promotable_only,
+                limit=limit,
+            )
+            summary = store.backtest_catalog.get_research_funnel(batch_id=batch_id, limit=limit).get("summary") or {}
+            return {"items": items, "summary": summary}
+        return store.backtest_catalog.get_research_funnel(batch_id=batch_id, limit=limit)
 
     @app.get("/api/v1/batches/{batch_id}")
     def batches_detail(batch_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

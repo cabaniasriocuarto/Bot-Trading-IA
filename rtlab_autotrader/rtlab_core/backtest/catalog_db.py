@@ -181,6 +181,42 @@ class BacktestCatalogDB:
                 CREATE INDEX IF NOT EXISTS idx_backtest_batches_created_at ON backtest_batches(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_backtest_batches_status ON backtest_batches(status);
 
+                CREATE TABLE IF NOT EXISTS research_trial_ledger (
+                  trial_id TEXT PRIMARY KEY,
+                  batch_id TEXT NOT NULL,
+                  run_id TEXT,
+                  variant_id TEXT NOT NULL,
+                  strategy_id TEXT NOT NULL,
+                  strategy_name TEXT NOT NULL,
+                  market TEXT NOT NULL,
+                  symbol TEXT,
+                  timeframe TEXT NOT NULL,
+                  dataset_source TEXT NOT NULL,
+                  dataset_hash TEXT NOT NULL,
+                  universe_json TEXT NOT NULL,
+                  rank_num INTEGER NOT NULL DEFAULT 0,
+                  score REAL NOT NULL DEFAULT 0.0,
+                  hard_filters_pass INTEGER NOT NULL DEFAULT 0,
+                  gates_pass INTEGER NOT NULL DEFAULT 0,
+                  promotable INTEGER NOT NULL DEFAULT 0,
+                  recommendable_option_b INTEGER NOT NULL DEFAULT 0,
+                  promotion_stage TEXT NOT NULL DEFAULT 'rejected',
+                  rejection_reason_json TEXT NOT NULL DEFAULT '[]',
+                  pbo REAL,
+                  dsr REAL,
+                  psr REAL,
+                  summary_json TEXT NOT NULL DEFAULT '{}',
+                  regime_metrics_json TEXT NOT NULL DEFAULT '{}',
+                  gates_json TEXT NOT NULL DEFAULT '{}',
+                  anti_overfit_json TEXT NOT NULL DEFAULT '{}',
+                  artifacts_json TEXT NOT NULL DEFAULT '{}',
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_research_trial_batch ON research_trial_ledger(batch_id, rank_num ASC, score DESC);
+                CREATE INDEX IF NOT EXISTS idx_research_trial_run ON research_trial_ledger(run_id);
+                CREATE INDEX IF NOT EXISTS idx_research_trial_stage ON research_trial_ledger(promotion_stage, promotable);
+
                 CREATE TABLE IF NOT EXISTS artifacts_index (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   run_id TEXT,
@@ -346,6 +382,41 @@ class BacktestCatalogDB:
             "updated_at": now,
         }
 
+    def _default_trial_record(self) -> dict[str, Any]:
+        now = _utc_iso()
+        return {
+            "trial_id": "",
+            "batch_id": "",
+            "run_id": None,
+            "variant_id": "",
+            "strategy_id": "",
+            "strategy_name": "",
+            "market": "crypto",
+            "symbol": None,
+            "timeframe": "5m",
+            "dataset_source": "",
+            "dataset_hash": "",
+            "universe_json": "[]",
+            "rank_num": 0,
+            "score": 0.0,
+            "hard_filters_pass": 0,
+            "gates_pass": 0,
+            "promotable": 0,
+            "recommendable_option_b": 0,
+            "promotion_stage": "rejected",
+            "rejection_reason_json": "[]",
+            "pbo": None,
+            "dsr": None,
+            "psr": None,
+            "summary_json": "{}",
+            "regime_metrics_json": "{}",
+            "gates_json": "{}",
+            "anti_overfit_json": "{}",
+            "artifacts_json": "{}",
+            "created_at": now,
+            "updated_at": now,
+        }
+
     def _structured_title(self, row: dict[str, Any]) -> tuple[str, str]:
         run_id = str(row.get("run_id") or "")
         stid = str(row.get("strategy_id") or "-")
@@ -412,6 +483,35 @@ class BacktestCatalogDB:
             conn.execute(
                 f"INSERT INTO backtest_batches ({','.join(cols)}) VALUES ({placeholders}) "
                 f"ON CONFLICT(batch_id) DO UPDATE SET {assignments}",
+                [row[c] for c in cols],
+            )
+            conn.commit()
+        return row
+
+    def upsert_research_trial(self, data: dict[str, Any]) -> dict[str, Any]:
+        row = self._default_trial_record()
+        row.update({k: v for k, v in data.items() if k in row})
+        row["updated_at"] = _utc_iso()
+        if not row["trial_id"]:
+            row["trial_id"] = str(data.get("trial_id") or f"{row.get('batch_id')}:{row.get('variant_id')}")
+        for json_field, default in {
+            "universe_json": [],
+            "rejection_reason_json": [],
+            "summary_json": {},
+            "regime_metrics_json": {},
+            "gates_json": {},
+            "anti_overfit_json": {},
+            "artifacts_json": {},
+        }.items():
+            if not isinstance(row.get(json_field), str):
+                row[json_field] = _to_json(row.get(json_field), default)
+        cols = list(row.keys())
+        placeholders = ",".join(["?"] * len(cols))
+        assignments = ",".join([f"{c}=excluded.{c}" for c in cols if c != "trial_id"])
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO research_trial_ledger ({','.join(cols)}) VALUES ({placeholders}) "
+                f"ON CONFLICT(trial_id) DO UPDATE SET {assignments}",
                 [row[c] for c in cols],
             )
             conn.commit()
@@ -1019,6 +1119,54 @@ class BacktestCatalogDB:
             "updated_at": raw.get("updated_at"),
         }
 
+    def _row_to_research_trial_dict(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        raw = dict(row)
+        for key in [
+            "universe_json",
+            "rejection_reason_json",
+            "summary_json",
+            "regime_metrics_json",
+            "gates_json",
+            "anti_overfit_json",
+            "artifacts_json",
+        ]:
+            try:
+                raw[key] = json.loads(str(raw.get(key) or "null"))
+            except Exception:
+                raw[key] = [] if key in {"universe_json", "rejection_reason_json"} else {}
+        return {
+            "trial_id": raw.get("trial_id"),
+            "batch_id": raw.get("batch_id"),
+            "run_id": raw.get("run_id"),
+            "variant_id": raw.get("variant_id"),
+            "strategy_id": raw.get("strategy_id"),
+            "strategy_name": raw.get("strategy_name"),
+            "market": raw.get("market"),
+            "symbol": raw.get("symbol"),
+            "timeframe": raw.get("timeframe"),
+            "dataset_source": raw.get("dataset_source"),
+            "dataset_hash": raw.get("dataset_hash"),
+            "universe": raw.get("universe_json") or [],
+            "rank_num": int(raw.get("rank_num") or 0),
+            "score": float(raw.get("score") or 0.0),
+            "hard_filters_pass": bool(raw.get("hard_filters_pass")),
+            "gates_pass": bool(raw.get("gates_pass")),
+            "promotable": bool(raw.get("promotable")),
+            "recommendable_option_b": bool(raw.get("recommendable_option_b")),
+            "promotion_stage": raw.get("promotion_stage"),
+            "rejection_reasons": raw.get("rejection_reason_json") or [],
+            "pbo": None if raw.get("pbo") is None else float(raw.get("pbo")),
+            "dsr": None if raw.get("dsr") is None else float(raw.get("dsr")),
+            "psr": None if raw.get("psr") is None else float(raw.get("psr")),
+            "summary": raw.get("summary_json") or {},
+            "regime_metrics": raw.get("regime_metrics_json") or {},
+            "gates": raw.get("gates_json") or {},
+            "anti_overfit": raw.get("anti_overfit_json") or {},
+            "artifacts": raw.get("artifacts_json") or {},
+            "created_at": raw.get("created_at"),
+            "updated_at": raw.get("updated_at"),
+        }
+
     def list_runs(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM backtest_runs ORDER BY created_at DESC, run_id DESC").fetchall()
@@ -1103,6 +1251,7 @@ class BacktestCatalogDB:
             affected_batches = sorted({str(r["batch_id"]) for r in rows if str(r["batch_id"] or "").strip()})
 
             conn.execute(f"DELETE FROM artifacts_index WHERE run_id IN ({placeholders})", normalized)
+            conn.execute(f"DELETE FROM research_trial_ledger WHERE run_id IN ({placeholders})", normalized)
             conn.execute(f"DELETE FROM backtest_runs WHERE run_id IN ({placeholders})", normalized)
 
             for batch_id in affected_batches:
@@ -1145,6 +1294,70 @@ class BacktestCatalogDB:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM backtest_runs WHERE batch_id = ? ORDER BY created_at DESC, run_id DESC", (str(batch_id),)).fetchall()
         return [self._row_to_run_dict(r) for r in rows]
+
+    def list_research_trials(
+        self,
+        *,
+        batch_id: str | None = None,
+        promotion_stage: str | None = None,
+        promotable_only: bool = False,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if batch_id:
+            clauses.append("batch_id = ?")
+            params.append(str(batch_id))
+        if promotion_stage:
+            clauses.append("promotion_stage = ?")
+            params.append(str(promotion_stage))
+        if promotable_only:
+            clauses.append("promotable = 1")
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        safe_limit = max(1, min(int(limit or 500), 5000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM research_trial_ledger
+                {where_sql}
+                ORDER BY batch_id DESC, rank_num ASC, score DESC, updated_at DESC
+                LIMIT ?
+                """,
+                [*params, safe_limit],
+            ).fetchall()
+        return [self._row_to_research_trial_dict(r) for r in rows]
+
+    def get_research_funnel(
+        self,
+        *,
+        batch_id: str | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        items = self.list_research_trials(batch_id=batch_id, limit=limit)
+        rejection_reason_counts: dict[str, int] = {}
+        stage_counts: dict[str, int] = {}
+        for item in items:
+            stage = str(item.get("promotion_stage") or "unknown")
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
+            for reason in item.get("rejection_reasons") or []:
+                reason_s = str(reason or "").strip()
+                if not reason_s:
+                    continue
+                rejection_reason_counts[reason_s] = rejection_reason_counts.get(reason_s, 0) + 1
+        return {
+            "items": items,
+            "summary": {
+                "batch_id": str(batch_id) if batch_id else None,
+                "total_trials": len(items),
+                "hard_pass_count": sum(1 for item in items if bool(item.get("hard_filters_pass"))),
+                "gates_pass_count": sum(1 for item in items if bool(item.get("gates_pass"))),
+                "promotable_count": sum(1 for item in items if bool(item.get("promotable"))),
+                "recommendable_option_b_count": sum(1 for item in items if bool(item.get("recommendable_option_b"))),
+                "stage_counts": dict(sorted(stage_counts.items())),
+                "rejection_reason_counts": dict(sorted(rejection_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+            },
+        }
 
     def get_artifacts_for_run(self, run_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:

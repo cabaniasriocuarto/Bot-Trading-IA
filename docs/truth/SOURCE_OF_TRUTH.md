@@ -146,7 +146,7 @@ Regla de verdad:
   - frontend de universos reproducibles por run
   - derivative state real poblado desde ingesta de mercado
   - live parity state cache completa con websocket/REST freshness por family
-  - research funnel visible de punta a punta
+  - research funnel visible de punta a punta en frontend
   - monitoring / observability / drift / kill switches completos
   - frontend integral del cerebro, truth, execution reality y health
   - frontend reorganizado por dominios claros:
@@ -214,13 +214,25 @@ Regla de verdad:
     - `POST /api/v1/universes`
     - `GET /api/v1/universes/runs/{run_id}`
   - si falta un simbolo en el snapshot, queda fail-closed con `snapshot_gap=instrument_missing_from_catalog` en vez de inventar metadata
+- Bloque 5:
+  - `BacktestCatalogDB` persiste `research_trial_ledger` como ledger reproducible del research funnel
+  - cada sub-run de `MassBacktestEngine` escribe trial con:
+    - `promotion_stage`
+    - `rejection_reason_json`
+    - `PBO/DSR/PSR`
+    - `dataset_hash`
+    - `universe_json`
+  - endpoint nuevo:
+    - `GET /api/v1/research/funnel`
+  - el borrado de runs del catalogo limpia tambien el ledger del funnel
+  - fallback seguro de timeframe soportado en enlaces de dataset/universe evita romper provenance legacy durante tests y API
 
 ### Bloque actual en progreso
 
-- Bloque 5:
-  - research funnel / Beast sobre universe snapshots y trial ledger
-  - rejection reasons y promotion stage visibles en el ledger de research
-  - dejar preparado el puente hacia la taxonomia de modos y la matriz de elegibilidad por modo
+- Bloque 6:
+  - taxonomia operativa y eligibility matrix por modo
+  - visibilidad minima de modos en backend/API
+  - preparar el puente hacia execution reality y frontend por dominios
 
 ### Bibliografia base efectiva para este roadmap
 

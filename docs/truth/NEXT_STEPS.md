@@ -53,6 +53,19 @@ Fecha: 2026-03-09
     - `POST /api/v1/universes`
     - `GET /api/v1/universes/runs/{run_id}`
   - los simbolos ausentes en un snapshot quedan fail-closed con `snapshot_gap`
+- Bloque 5 cerrado:
+  - `BacktestCatalogDB` ya persiste `research_trial_ledger`
+  - `MassBacktestEngine` ya registra un trial del funnel por cada sub-run del batch
+  - endpoint nuevo:
+    - `GET /api/v1/research/funnel`
+  - el ledger guarda:
+    - `promotion_stage`
+    - `rejection_reason_json`
+    - `dataset_hash`
+    - `universe_json`
+    - `PBO/DSR/PSR`
+  - `delete_runs()` del catalogo limpia tambien trials asociados
+  - fallback seguro de timeframe soportado evita que provenance legacy rompa `run_dataset_link` y `run_universe_link`
 
 ## Nuevo plan consolidado
 - Unificar el proyecto sobre una arquitectura auditable y escalable:
@@ -72,24 +85,22 @@ Fecha: 2026-03-09
 3. Adapters Binance Spot / Margin / USD?-M / COIN-M
 4. Market data / datasets / derivative state / live parity
 5. Research funnel / Beast / PBO-DSR-PSR
-6. Strategy truth + evidence + quarantine / stale
-7. Bot brain + bot policy + decision log + OPE minima
-8. Modos operativos + eligibility matrix (`backtest/mock/paper/testnet/demo/live`)
-9. Execution reality + live eligibility + preflight validation + routing
-10. Monitoring / observability / drift / kill switches / health score
-11. Frontend integral por dominios
-12. Tests, builds, limpieza conservadora y cierre
+6. Modos operativos + eligibility matrix (`backtest/mock/paper/testnet/demo/live`)
+7. Execution reality + live eligibility + preflight validation + routing
+8. Monitoring / observability / drift / kill switches / health score
+9. Frontend integral por dominios
+10. Tests, builds, limpieza conservadora y cierre
 
 ## Bloque actual
-- Bloque 5 en progreso:
-  - research funnel / Beast con trial ledger y universe snapshot
-  - rejection reasons y promotion stage trazables
-  - wiring PBO / DSR / PSR del lado research
+- Bloque 6 en progreso:
+  - taxonomia operativa canonica en backend
+  - eligibility matrix por modo (`backtest/mock/paper/testnet/demo/live`)
+  - soporte minimo para que cerebro, instrumentos y ejecucion hablen el mismo vocabulario operativo
 
 ## Pendiente del siguiente bloque
-- Bloque 6:
-  - reforzar `strategy_truth` / `strategy_evidence` con contexto de universe y promotion gating
-  - preparar el puente hacia modos operativos y eligibility matrix visibles
+- Bloque 7:
+  - `execution_reality` conectado a validacion preflight y elegibilidad live por family
+  - enlazar modos operativos con routing y bloqueos visibles
 
 ## Bloqueado / no implementado
 - Aun no implementado integralmente:
@@ -98,6 +109,7 @@ Fecha: 2026-03-09
   - dataset/universe registry visible en frontend
   - taxonomia visible de modos `mock/paper/testnet/live` en frontend
   - frontend del cerebro
+  - frontend del research funnel
   - monitoring / health dashboard
   - kill switches y drift visibles
   - Beast/Batch visible y consistente end-to-end en deploy
@@ -109,7 +121,8 @@ Fecha: 2026-03-09
 - `gates.yaml` ya concentra secciones nuevas de catalogo/live parity; si luego aparecen consumidores especializados, habra que decidir si conviene separar archivos sin romper `policy_paths.py`.
 - Margin en este bloque se deriva de metadata Spot publica; la validacion de capacidad real de cuenta queda para el bloque de live eligibility.
 - La taxonomia operativa nueva no debe introducir UI enganosa: si algo no tiene backend real, no debe parecer soportado.
-- El bloque actual debe evitar crear una segunda fuente de verdad de datasets distinta a `user_data/data/**/manifests` mientras se migra a storage trazable.
+- El research funnel ya persiste trials, pero todavia no tiene explotacion visual en frontend ni integracion completa con promotion UI.
+- El bloque actual debe evitar crear una segunda fuente de verdad de modos operativos fuera de YAML y store principal.
 
 ## Decisiones asumidas
 - Se sigue en `feature/brain-policy-ledgers-v1` porque el objetivo es continuidad directa del mismo programa tecnico.
@@ -139,6 +152,8 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/rtlab_core/brokers/binance/catalog.py`
 - `rtlab_autotrader/rtlab_core/src/data/catalog.py`
 - `rtlab_autotrader/rtlab_core/src/research/data_provider.py`
+- `rtlab_autotrader/rtlab_core/backtest/catalog_db.py`
+- `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`
 - `rtlab_autotrader/rtlab_core/universe/__init__.py`
 - `rtlab_autotrader/rtlab_core/universe/service.py`
 - `rtlab_autotrader/rtlab_core/web/app.py`
@@ -147,6 +162,9 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/tests/test_binance_catalog_sync.py`
 - `rtlab_autotrader/tests/test_dataset_registry.py`
 - `rtlab_autotrader/tests/test_universe_registry.py`
+- `rtlab_autotrader/tests/test_backtest_catalog_db.py`
+- `rtlab_autotrader/tests/test_mass_backtest_engine.py`
+- `rtlab_autotrader/tests/test_research_funnel_api.py`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/CHANGELOG.md`
 - `docs/truth/NEXT_STEPS.md`
@@ -163,6 +181,9 @@ Fecha: 2026-03-09
 - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
 - `python -m py_compile rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/universe/service.py` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_universe_registry.py -q` -> PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/backtest/catalog_db.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_backtest_catalog_db.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_research_funnel_api.py -q` -> PASS
 
 ## Build status
 - No aplica build de frontend en este bloque backend/config.

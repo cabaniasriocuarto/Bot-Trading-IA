@@ -201,3 +201,89 @@ def test_backtest_catalog_query_patch_and_rankings(tmp_path: Path) -> None:
     rankings = db.rankings(preset="balanceado", constraints={"min_trades": 100}, limit=10)
     assert rankings["items"]
     assert "composite_score" in rankings["items"][0]
+
+
+def test_research_trial_ledger_roundtrip_and_funnel_summary(tmp_path: Path) -> None:
+    db = BacktestCatalogDB(tmp_path / "catalog.sqlite3")
+
+    db.upsert_research_trial(
+        {
+            "trial_id": "BX-000001:v001",
+            "batch_id": "BX-000001",
+            "run_id": "BT-000001",
+            "variant_id": "v001",
+            "strategy_id": "trend_pullback_orderflow_confirm_v1",
+            "strategy_name": "Trend Pullback + Orderflow Confirm",
+            "market": "crypto",
+            "symbol": "BTCUSDT",
+            "timeframe": "5m",
+            "dataset_source": "binance_public",
+            "dataset_hash": "ds_hash_1",
+            "universe_json": ["BTCUSDT", "ETHUSDT"],
+            "rank_num": 1,
+            "score": 0.77,
+            "hard_filters_pass": 1,
+            "gates_pass": 1,
+            "promotable": 1,
+            "recommendable_option_b": 1,
+            "promotion_stage": "candidate",
+            "rejection_reason_json": [],
+            "pbo": 0.11,
+            "dsr": 0.97,
+            "psr": 0.98,
+            "summary_json": {"trade_count_oos": 180, "expectancy_net_usd": 6.5},
+            "gates_json": {"passed": True},
+            "anti_overfit_json": {"pbo": 0.11, "dsr": 0.97},
+        }
+    )
+    db.upsert_research_trial(
+        {
+            "trial_id": "BX-000001:v002",
+            "batch_id": "BX-000001",
+            "run_id": "BT-000002",
+            "variant_id": "v002",
+            "strategy_id": "trend_scanning_regime_v2",
+            "strategy_name": "Trend Scanning + Regimenes",
+            "market": "crypto",
+            "symbol": "BTCUSDT",
+            "timeframe": "5m",
+            "dataset_source": "binance_public",
+            "dataset_hash": "ds_hash_1",
+            "universe_json": ["BTCUSDT", "ETHUSDT"],
+            "rank_num": 2,
+            "score": 0.55,
+            "hard_filters_pass": 1,
+            "gates_pass": 0,
+            "promotable": 0,
+            "recommendable_option_b": 0,
+            "promotion_stage": "rejected_gates",
+            "rejection_reason_json": ["pbo_cscv", "dsr_deflated"],
+            "pbo": 0.41,
+            "dsr": 0.51,
+            "psr": 0.61,
+            "summary_json": {"trade_count_oos": 130, "expectancy_net_usd": 2.0},
+            "gates_json": {"passed": False, "fail_reasons": ["pbo_cscv", "dsr_deflated"]},
+            "anti_overfit_json": {"pbo": 0.41, "dsr": 0.51},
+        }
+    )
+
+    items = db.list_research_trials(batch_id="BX-000001", limit=10)
+    assert len(items) == 2
+    assert items[0]["trial_id"] == "BX-000001:v001"
+    assert items[0]["promotable"] is True
+    assert items[1]["promotion_stage"] == "rejected_gates"
+
+    promotable_only = db.list_research_trials(batch_id="BX-000001", promotable_only=True, limit=10)
+    assert len(promotable_only) == 1
+    assert promotable_only[0]["trial_id"] == "BX-000001:v001"
+
+    funnel = db.get_research_funnel(batch_id="BX-000001", limit=10)
+    summary = funnel["summary"]
+    assert summary["total_trials"] == 2
+    assert summary["hard_pass_count"] == 2
+    assert summary["gates_pass_count"] == 1
+    assert summary["promotable_count"] == 1
+    assert summary["recommendable_option_b_count"] == 1
+    assert summary["stage_counts"]["candidate"] == 1
+    assert summary["stage_counts"]["rejected_gates"] == 1
+    assert summary["rejection_reason_counts"]["pbo_cscv"] == 1

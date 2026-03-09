@@ -1470,9 +1470,9 @@ class MassBacktestEngine:
             dsr_fallback = anti_advanced.get("dsr", anti_proxy.get("dsr"))
             run_id = self.backtest_catalog.next_formatted_id("BT")
             row["backtest_run_id"] = run_id
-            status = "completed" if bool(row.get("hard_filters_pass")) else "completed_warn"
             symbols = [str(x) for x in (cfg.get("resolved_universe") or cfg.get("universe") or [])]
             timeframe = str(cfg.get("timeframe") or "5m")
+            status = "completed" if bool(row.get("hard_filters_pass")) else "completed_warn"
             record = self.backtest_catalog.upsert_backtest_run(
                 {
                     "run_id": run_id,
@@ -1613,6 +1613,61 @@ class MassBacktestEngine:
                 }
             )
             row["catalog_run_id"] = record["run_id"]
+            raw_rejection_reasons = [
+                *([str(x) for x in (row.get("hard_filter_reasons") or []) if str(x).strip()]),
+                *([str(x) for x in (gates_eval.get("fail_reasons") or []) if str(x).strip()]),
+            ]
+            rejection_reasons = list(dict.fromkeys(raw_rejection_reasons))
+            gates_pass = bool(gates_eval.get("passed", False))
+            promotable = bool(row.get("promotable"))
+            recommendable_option_b = bool(row.get("recommendable_option_b"))
+            if promotable:
+                promotion_stage = "candidate"
+            elif recommendable_option_b:
+                promotion_stage = "option_b_review"
+            elif bool(row.get("hard_filters_pass")) and rejection_reasons:
+                promotion_stage = "rejected_gates"
+            elif not bool(row.get("hard_filters_pass")):
+                promotion_stage = "rejected_hard_filters"
+            else:
+                promotion_stage = "rejected"
+            self.backtest_catalog.upsert_research_trial(
+                {
+                    "trial_id": f"{batch_id}:{row.get('variant_id')}",
+                    "batch_id": batch_id,
+                    "run_id": record["run_id"],
+                    "variant_id": str(row.get("variant_id") or ""),
+                    "strategy_id": str(row.get("strategy_id") or ""),
+                    "strategy_name": str(row.get("strategy_name") or row.get("strategy_id") or ""),
+                    "market": str(cfg.get("market") or "crypto"),
+                    "symbol": str(cfg.get("symbol") or (symbols[0] if symbols else "")) or None,
+                    "timeframe": timeframe,
+                    "dataset_source": str((cfg.get("data_provider") or {}).get("dataset_source") or cfg.get("dataset_source") or "dataset"),
+                    "dataset_hash": str(record.get("dataset_hash") or ""),
+                    "universe_json": symbols,
+                    "rank_num": idx,
+                    "score": _f(row.get("score"), 0.0),
+                    "hard_filters_pass": 1 if bool(row.get("hard_filters_pass")) else 0,
+                    "gates_pass": 1 if gates_pass else 0,
+                    "promotable": 1 if promotable else 0,
+                    "recommendable_option_b": 1 if recommendable_option_b else 0,
+                    "promotion_stage": promotion_stage,
+                    "rejection_reason_json": rejection_reasons,
+                    "pbo": ((gates_checks.get("pbo_cscv") or {}) if isinstance(gates_checks.get("pbo_cscv"), dict) else {}).get("value", pbo_fallback),
+                    "dsr": ((gates_checks.get("dsr_deflated") or {}) if isinstance(gates_checks.get("dsr_deflated"), dict) else {}).get("value", dsr_fallback),
+                    "psr": ((gates_checks.get("psr_prob") or {}) if isinstance(gates_checks.get("psr_prob"), dict) else {}).get("value"),
+                    "summary_json": summary,
+                    "regime_metrics_json": regime,
+                    "gates_json": gates_eval,
+                    "anti_overfit_json": anti_advanced or anti_proxy,
+                    "artifacts_json": {
+                        "catalog_run_id": record["run_id"],
+                        "batch_id": batch_id,
+                        "variant_id": row.get("variant_id"),
+                        "status": status,
+                    },
+                }
+            )
 
     def run_job(
         self,
