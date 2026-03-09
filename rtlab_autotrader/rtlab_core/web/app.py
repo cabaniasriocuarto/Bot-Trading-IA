@@ -9861,6 +9861,17 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         return learning_service.get_bot_decision_log_payload(bot_id, limit=limit)
 
+    @app.get("/api/v1/bots/{bot_id}/experience")
+    def bot_experience(
+        bot_id: str,
+        limit: int = Query(default=25, ge=1, le=200),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return learning_service.get_bot_experience_payload(bot_id, limit=limit)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.get("/api/v1/strategies/{strategy_id}/truth")
     def strategy_truth(strategy_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         try:

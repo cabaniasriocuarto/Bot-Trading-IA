@@ -763,6 +763,106 @@ class LearningService:
             current["trades"] += float(row.get("trades") or 0.0)
         return {"strategy_id": strategy_id, "items": rows, "summary": summary}
 
+    def get_bot_experience_payload(self, bot_id: str, *, limit: int = 25) -> dict[str, Any]:
+        registry = self._require_registry()
+        registry.backfill_bot_attribution_from_run_links()
+        policy = self._load_gates_policy()
+        rows = registry.list_experience_episodes(bot_ids=[bot_id])
+        rows.sort(key=lambda row: str(row.get("end_ts") or row.get("created_at") or ""), reverse=True)
+
+        source_breakdown: dict[str, dict[str, float]] = {}
+        strategy_breakdown: dict[str, dict[str, float]] = {}
+        attribution_breakdown = {"exact": 0, "strong": 0, "approx": 0, "unknown": 0}
+        excluded_count = 0
+        stale_count = 0
+        legacy_count = 0
+        trades_total = 0
+        effective_weight_total = 0.0
+        latest_end_ts = None
+
+        for row in rows:
+            source = str(row.get("source") or "unknown")
+            source_item = source_breakdown.setdefault(source, {"episodes": 0.0, "trades": 0.0, "effective_weight": 0.0})
+            strategy_id = str(row.get("strategy_id") or "unknown")
+            strategy_item = strategy_breakdown.setdefault(
+                strategy_id,
+                {"episodes": 0.0, "trades": 0.0, "effective_weight": 0.0},
+            )
+
+            trades = int(row.get("trades_count") or 0)
+            effective_weight = float(
+                row.get("effective_weight")
+                or self._effective_weight_for_row(dict(row, source_type=row.get("source")), source_type=source, policy=policy)
+                or 0.0
+            )
+            attribution = str(row.get("attribution_type") or "unknown").strip().lower()
+            if attribution.startswith("exact"):
+                attribution_breakdown["exact"] += 1
+            elif attribution.startswith("strong"):
+                attribution_breakdown["strong"] += 1
+            elif attribution.startswith("approx"):
+                attribution_breakdown["approx"] += 1
+            else:
+                attribution_breakdown["unknown"] += 1
+
+            source_item["episodes"] += 1.0
+            source_item["trades"] += float(trades)
+            source_item["effective_weight"] += effective_weight
+            strategy_item["episodes"] += 1.0
+            strategy_item["trades"] += float(trades)
+            strategy_item["effective_weight"] += effective_weight
+
+            trades_total += trades
+            effective_weight_total += effective_weight
+            excluded_count += 1 if self._is_excluded_row(row) else 0
+            stale_count += 1 if bool(row.get("stale")) else 0
+            legacy_count += 1 if bool(row.get("legacy_untrusted")) else 0
+            if latest_end_ts is None and (row.get("end_ts") or row.get("created_at")):
+                latest_end_ts = row.get("end_ts") or row.get("created_at")
+
+        top_strategies = sorted(
+            (
+                {
+                    "strategy_id": strategy_id,
+                    "episodes": int(values.get("episodes") or 0),
+                    "trades": int(values.get("trades") or 0),
+                    "effective_weight": round(float(values.get("effective_weight") or 0.0), 6),
+                }
+                for strategy_id, values in strategy_breakdown.items()
+            ),
+            key=lambda item: (float(item.get("effective_weight") or 0.0), int(item.get("trades") or 0)),
+            reverse=True,
+        )[:5]
+
+        return {
+            "bot_id": bot_id,
+            "items": rows[: max(1, int(limit or 25))],
+            "summary": {
+                "count": len(rows),
+                "eligible_count": max(0, len(rows) - excluded_count),
+                "excluded_count": excluded_count,
+                "stale_count": stale_count,
+                "legacy_count": legacy_count,
+                "trades_total": trades_total,
+                "effective_weight_total": round(effective_weight_total, 6),
+                "latest_end_ts": latest_end_ts,
+                "attribution_breakdown": attribution_breakdown,
+                "sources": {
+                    key: {
+                        "episodes": int(value.get("episodes") or 0),
+                        "trades": int(value.get("trades") or 0),
+                        "effective_weight": round(float(value.get("effective_weight") or 0.0), 6),
+                    }
+                    for key, value in sorted(
+                        source_breakdown.items(),
+                        key=lambda item: float((item[1] or {}).get("effective_weight") or 0.0),
+                        reverse=True,
+                    )
+                },
+                "top_strategies": top_strategies,
+            },
+        }
+
     def get_execution_reality_payload(
         self,
         *,

@@ -423,6 +423,46 @@ export interface BotDecisionLogResponse {
   };
 }
 
+export interface BotExperienceItem {
+  id: string;
+  run_id?: string | null;
+  source: string;
+  strategy_id: string;
+  bot_id?: string | null;
+  asset?: string | null;
+  timeframe?: string | null;
+  start_ts?: string | null;
+  end_ts?: string | null;
+  trades_count?: number;
+  attribution_type?: string | null;
+  attribution_confidence?: number | null;
+  effective_weight?: number | null;
+  legacy_untrusted?: boolean;
+  excluded_from_learning?: boolean;
+  excluded_from_rankings?: boolean;
+  excluded_from_guidance?: boolean;
+  excluded_from_brain_scores?: boolean;
+  stale?: boolean;
+}
+
+export interface BotExperienceResponse {
+  bot_id: string;
+  items: BotExperienceItem[];
+  summary: {
+    count: number;
+    eligible_count: number;
+    excluded_count: number;
+    stale_count: number;
+    legacy_count: number;
+    trades_total: number;
+    effective_weight_total: number;
+    latest_end_ts?: string | null;
+    attribution_breakdown: Record<string, number>;
+    sources: Record<string, { episodes: number; trades: number; effective_weight: number }>;
+    top_strategies: Array<{ strategy_id: string; episodes: number; trades: number; effective_weight: number }>;
+  };
+}
+
 export interface ExecutionRealityItem {
   execution_id: string;
   order_id?: string | null;

@@ -2,6 +2,27 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 9 parcial - experiencia atribuida al bot visible
+
+- El backend ya expone `GET /api/v1/bots/{bot_id}/experience`.
+- Ese contrato devuelve experiencia atribuida al bot sobre `experience_episode` con backfill previo desde `run_bot_link`.
+- La salida ya diferencia:
+  - episodios elegibles
+  - episodios excluidos
+  - episodios `legacy_untrusted`
+  - episodios `stale`
+  - atribucion `exact` / `strong` / `approx` / `unknown`
+  - fuentes por bot (`live`, `shadow`, `paper`, `testnet`, `backtest`)
+  - top estrategias por evidencia atribuida
+- Frontend `Bots` ya consume ese contrato y muestra una tarjeta dedicada para:
+  - ver si el cerebro del bot se apoya en evidencia exacta o solo contextual
+  - distinguir experiencia util de experiencia excluida
+  - inspeccionar cuales estrategias dominan la evidencia del bot
+- Estado real:
+  - `run -> bot` ya queda visible de forma operativa en UI
+  - la trazabilidad `episode -> bot` ya es mas explotable para auditar aprendizaje
+  - sigue faltando trazabilidad exacta nativa para todos los historicos viejos que nunca tuvieron `bot_id` ni `run_bot_link`
+
 ## Actualizacion de bloque 9 parcial - resumenes explotables de decision log + execution reality
 
 - `LearningService.get_bot_decision_log_payload(...)` ahora devuelve un `summary` agregado con:

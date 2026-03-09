@@ -245,6 +245,87 @@ def test_learning_service_backfills_bot_attribution_from_run_links(tmp_path: Pat
     assert evidence["bot_id"] == "BOT-ALPHA"
 
 
+def test_learning_service_summarizes_bot_experience_payload(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    base_dt = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    primary_strategy = "trend_pullback_orderflow_confirm_v1"
+    secondary_strategy = "meanreversion_range_v2"
+
+    _record_run(
+        store,
+        strategy_id=primary_strategy,
+        run_id="live-alpha-001",
+        source="live",
+        start_dt=base_dt,
+        bot_id="BOT-ALPHA",
+        expectancy=11.0,
+        sharpe=1.6,
+        trade_count=24,
+    )
+    _record_run(
+        store,
+        strategy_id=primary_strategy,
+        run_id="shadow-alpha-001",
+        source="shadow",
+        start_dt=base_dt + timedelta(days=2),
+        bot_id="BOT-ALPHA",
+        expectancy=7.0,
+        sharpe=1.0,
+        trade_count=18,
+    )
+
+    registry.upsert_experience_episode(
+        episode_id="episode-paper-001",
+        run_id="paper-alpha-001",
+        source="paper",
+        source_weight=0.8,
+        strategy_id=secondary_strategy,
+        bot_id=None,
+        asset="BTCUSDT",
+        timeframe="5m",
+        start_ts=(base_dt + timedelta(days=4)).isoformat(),
+        end_ts=(base_dt + timedelta(days=4, minutes=5)).isoformat(),
+        dataset_source="paper_runtime",
+        dataset_hash="paper-hash-001",
+        commit_hash="deadbeef",
+        costs_profile_id="cp-paper",
+        validation_quality="paper_runtime",
+        cost_fidelity_level="simulated_exchange_execution",
+        feature_set="orderflow_on",
+        trades_count=14,
+        attribution_type="unknown",
+        attribution_confidence=0.0,
+        effective_weight=0.45,
+        legacy_untrusted=1,
+        excluded_from_learning=1,
+        summary={"trade_count": 14},
+    )
+    registry.upsert_run_bot_link(
+        run_id="paper-alpha-001",
+        bot_id="BOT-ALPHA",
+        attribution_type="strong",
+        attribution_confidence=0.8,
+    )
+
+    payload = service.get_bot_experience_payload("BOT-ALPHA")
+
+    assert payload["summary"]["count"] == 3
+    assert payload["summary"]["eligible_count"] == 2
+    assert payload["summary"]["excluded_count"] == 1
+    assert payload["summary"]["legacy_count"] == 1
+    assert payload["summary"]["attribution_breakdown"]["exact"] >= 2
+    assert payload["summary"]["attribution_breakdown"]["strong"] == 1
+    assert payload["summary"]["sources"]["live"]["episodes"] == 1
+    assert payload["summary"]["sources"]["shadow"]["episodes"] == 1
+    assert payload["summary"]["sources"]["paper"]["episodes"] == 1
+    assert payload["summary"]["top_strategies"][0]["strategy_id"] == primary_strategy
+    assert payload["items"][0]["bot_id"] == "BOT-ALPHA"
+
+
 def test_learning_service_reads_execution_reality_ledger(tmp_path: Path) -> None:
     registry = RegistryDB(tmp_path / "registry.sqlite")
     repo_root = Path(__file__).resolve().parents[2]

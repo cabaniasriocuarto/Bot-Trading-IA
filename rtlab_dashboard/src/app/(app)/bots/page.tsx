@@ -14,6 +14,7 @@ import type {
   BotBrainItem,
   BotBrainResponse,
   BotDecisionLogResponse,
+  BotExperienceResponse,
   BotInstance,
   BotLiveEligibilityResponse,
   ExecutionRealityResponse,
@@ -56,6 +57,14 @@ function modeBadge(mode: string | undefined) {
   return "neutral" as const;
 }
 
+function attributionBadge(attribution: string | undefined) {
+  const normalized = String(attribution || "").toLowerCase();
+  if (normalized.startsWith("exact")) return "success" as const;
+  if (normalized.startsWith("strong")) return "info" as const;
+  if (normalized.startsWith("approx")) return "warn" as const;
+  return "neutral" as const;
+}
+
 function BotsPageContent() {
   const searchParams = useSearchParams();
   const requestedBotId = searchParams.get("bot_id") || "";
@@ -64,6 +73,7 @@ function BotsPageContent() {
   const [selectedBotId, setSelectedBotId] = useState("");
   const [brain, setBrain] = useState<BotBrainResponse | null>(null);
   const [decisionLog, setDecisionLog] = useState<BotDecisionLogResponse | null>(null);
+  const [experience, setExperience] = useState<BotExperienceResponse | null>(null);
   const [eligibility, setEligibility] = useState<BotLiveEligibilityResponse | null>(null);
   const [reality, setReality] = useState<ExecutionRealityResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,6 +97,7 @@ function BotsPageContent() {
     if (!botId) {
       setBrain(null);
       setDecisionLog(null);
+      setExperience(null);
       setEligibility(null);
       setReality(null);
       setDetailError("");
@@ -95,14 +106,16 @@ function BotsPageContent() {
     setDetailLoading(true);
     setDetailError("");
     try {
-      const [brainPayload, decisionPayload, eligibilityPayload, realityPayload] = await Promise.all([
+      const [brainPayload, decisionPayload, experiencePayload, eligibilityPayload, realityPayload] = await Promise.all([
         apiGet<BotBrainResponse>(`/api/v1/bots/${encodeURIComponent(botId)}/brain`),
         apiGet<BotDecisionLogResponse>(`/api/v1/bots/${encodeURIComponent(botId)}/decision-log`),
+        apiGet<BotExperienceResponse>(`/api/v1/bots/${encodeURIComponent(botId)}/experience`),
         apiGet<BotLiveEligibilityResponse>(`/api/v1/bots/${encodeURIComponent(botId)}/live-eligibility`),
         apiGet<ExecutionRealityResponse>(`/api/v1/execution/reality?bot_id=${encodeURIComponent(botId)}`),
       ]);
       setBrain(brainPayload);
       setDecisionLog(decisionPayload);
+      setExperience(experiencePayload);
       setEligibility(eligibilityPayload);
       setReality(realityPayload);
     } catch (err) {
@@ -110,6 +123,7 @@ function BotsPageContent() {
       setDetailError(message);
       setBrain(null);
       setDecisionLog(null);
+      setExperience(null);
       setEligibility(null);
       setReality(null);
     } finally {
@@ -148,6 +162,14 @@ function BotsPageContent() {
         (left, right) => Number(right[1]?.weight_sum || 0) - Number(left[1]?.weight_sum || 0),
       ),
     [brain],
+  );
+
+  const experienceSources = useMemo(
+    () =>
+      Object.entries(experience?.summary?.sources || {}).sort(
+        (left, right) => Number(right[1]?.effective_weight || 0) - Number(left[1]?.effective_weight || 0),
+      ),
+    [experience],
   );
 
   const refreshAll = async () => {
@@ -372,30 +394,103 @@ function BotsPageContent() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardTitle>Fuentes de evidencia</CardTitle>
-              <CardDescription>Resumen agregado de trades y peso efectivo por fuente para este bot/pool.</CardDescription>
-              <CardContent className="space-y-3">
-                {sourceRows.length ? (
-                  sourceRows.map(([source, summary]) => (
-                    <div key={source} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm">
-                      <div className="flex items-center justify-between gap-2">
-                        <Badge variant="info">{source}</Badge>
-                        <span className="text-slate-400">{fmtNum(summary.count)} episodios</span>
+            <div className="space-y-4">
+              <Card>
+                <CardTitle>Experiencia atribuida al bot</CardTitle>
+                <CardDescription>
+                  Episodios exactos, fuertes o aproximados que alimentan el cerebro del bot. Lo excluido, legacy o stale sigue visible, pero no entra al score principal.
+                </CardDescription>
+                <CardContent className="space-y-3">
+                  {experience?.summary?.count ? (
+                    <>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <MetricCard label="Episodios" value={String(experience.summary.count)} compact />
+                        <MetricCard label="Elegibles" value={String(experience.summary.eligible_count)} compact />
+                        <MetricCard label="Excluidos" value={String(experience.summary.excluded_count)} compact />
+                        <MetricCard label="Legacy / Stale" value={`${experience.summary.legacy_count} / ${experience.summary.stale_count}`} compact />
+                        <MetricCard label="Trades" value={fmtNum(experience.summary.trades_total)} compact />
+                        <MetricCard label="Peso efectivo" value={fmtNum(experience.summary.effective_weight_total)} compact />
                       </div>
-                      <div className="mt-2 grid gap-2 md:grid-cols-2">
-                        <p className="text-slate-300">Peso efectivo: <strong>{fmtNum(summary.weight_sum)}</strong></p>
-                        <p className="text-slate-300">Trades: <strong>{fmtNum(summary.trades)}</strong></p>
-                        <p className="text-slate-400">Exacto del bot: {fmtNum(summary.exact_bot_count)} episodios / {fmtNum(summary.exact_bot_trades)} trades</p>
-                        <p className="text-slate-400">Contexto del pool/global: {fmtNum(summary.pool_context_count)} episodios / {fmtNum(summary.pool_context_trades)} trades</p>
+
+                      <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm">
+                        <p className="text-xs uppercase tracking-wide text-slate-400">Atribucion de episodios</p>
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries(experience.summary.attribution_breakdown || {}).map(([kind, count]) => (
+                            <Badge key={kind} variant={attributionBadge(kind)}>
+                              {kind}: {count}
+                            </Badge>
+                          ))}
+                        </div>
+                        {experience.summary.latest_end_ts ? (
+                          <p className="text-slate-400">
+                            Ultimo episodio: <strong>{new Date(experience.summary.latest_end_ts).toLocaleString()}</strong>
+                          </p>
+                        ) : null}
                       </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-slate-400">Todavía no hay evidencia ponderable para este bot.</p>
-                )}
-              </CardContent>
-            </Card>
+
+                      {experienceSources.length ? (
+                        <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Fuentes ya atribuibles</p>
+                          <div className="flex flex-wrap gap-2">
+                            {experienceSources.map(([source, summary]) => (
+                              <Badge key={source} variant="info">
+                                {source}: {summary.episodes} ep / {fmtNum(summary.trades)} trades / {fmtNum(summary.effective_weight)} peso
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {experience.summary.top_strategies?.length ? (
+                        <div className="space-y-2">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Top estrategias por evidencia del bot</p>
+                          <div className="space-y-2">
+                            {experience.summary.top_strategies.map((item) => (
+                              <div key={item.strategy_id} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="font-medium text-slate-100">{item.strategy_id}</span>
+                                  <Badge variant="neutral">{fmtNum(item.effective_weight)} peso</Badge>
+                                </div>
+                                <p className="mt-2 text-slate-400">
+                                  Episodios: {item.episodes} � Trades: {fmtNum(item.trades)}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="text-sm text-slate-400">Todavia no hay experiencia atribuida de forma suficientemente fuerte a este bot.</p>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardTitle>Fuentes de evidencia</CardTitle>
+                <CardDescription>Resumen agregado de trades y peso efectivo por fuente para este bot/pool.</CardDescription>
+                <CardContent className="space-y-3">
+                  {sourceRows.length ? (
+                    sourceRows.map(([source, summary]) => (
+                      <div key={source} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <Badge variant="info">{source}</Badge>
+                          <span className="text-slate-400">{fmtNum(summary.count)} episodios</span>
+                        </div>
+                        <div className="mt-2 grid gap-2 md:grid-cols-2">
+                          <p className="text-slate-300">Peso efectivo: <strong>{fmtNum(summary.weight_sum)}</strong></p>
+                          <p className="text-slate-300">Trades: <strong>{fmtNum(summary.trades)}</strong></p>
+                          <p className="text-slate-400">Exacto del bot: {fmtNum(summary.exact_bot_count)} episodios / {fmtNum(summary.exact_bot_trades)} trades</p>
+                          <p className="text-slate-400">Contexto del pool/global: {fmtNum(summary.pool_context_count)} episodios / {fmtNum(summary.pool_context_trades)} trades</p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-slate-400">Todavia no hay evidencia ponderable para este bot.</p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           </section>
 
           <section className="grid gap-4 xl:grid-cols-2">
@@ -616,3 +711,4 @@ export default function BotsPage() {
     </Suspense>
   );
 }
+

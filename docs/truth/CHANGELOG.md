@@ -2,6 +2,31 @@
 
 ## 2026-03-09
 
+### Bloque 9 parcial: experiencia atribuida al bot visible y auditable
+- Nuevo endpoint: `GET /api/v1/bots/{bot_id}/experience`
+- `LearningService.get_bot_experience_payload(...)` resume por bot:
+  - episodios totales
+  - elegibles
+  - excluidos
+  - legacy
+  - stale
+  - trades totales
+  - peso efectivo total
+  - breakdown de atribucion (`exact`, `strong`, `approx`, `unknown`)
+  - breakdown por fuente
+  - top estrategias por evidencia atribuida al bot
+- Frontend `Bots` ahora muestra una tarjeta explicita `Experiencia atribuida al bot` con:
+  - conteos elegibles/excluidos
+  - legacy/stale
+  - atribucion por calidad
+  - top estrategias del bot por evidencia
+- Se agrega test backend que valida el resumen de experiencia por bot y su atribucion.
+- Validacion:
+  - `py_compile` PASS
+  - `pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` PASS
+  - `eslint` `bots/page.tsx` + `types.ts` PASS
+  - `npm run build` PASS
+
 ### Bloque 9 parcial: decision log y execution reality mas explotables en Bots
 - `LearningService.get_bot_decision_log_payload(...)` agrega `summary` con:
   - cantidad de decisiones
