@@ -2,6 +2,71 @@
 
 Fecha: 2026-03-08
 
+## Hecho en este bloque (cerebro-3/3)
+- `LearningService` ahora usa ledgers reales del cerebro para construir politica por bot:
+  - `exact_bot`
+  - `pool_context`
+  - `global_truth`
+- `effective_weight` queda realmente usado en servicio/backend, no solo persistido.
+- `run_bot_link` se usa para reforzar atribucion cuando la evidencia no trae `bot_id`.
+- Se persisten:
+  - `bot_policy_state`
+  - `bot_decision_log`
+- Endpoints nuevos del cerebro disponibles:
+  - `GET /api/v1/bots/{id}/brain`
+  - `POST /api/v1/bots/{id}/recompute-brain`
+  - `GET /api/v1/bots/{id}/decision-log`
+  - `GET /api/v1/strategies/{id}/truth`
+  - `GET /api/v1/strategies/{id}/evidence`
+  - `GET /api/v1/execution/reality`
+- `live` queda integrado como fuente real tambien en el plano de servicio/endpoints.
+
+## Pendiente siguiente bloque
+1. Frontend minimo del cerebro:
+   - brain panel del bot
+   - strategy truth panel
+   - decision log visual
+   - execution reality panel
+2. Extender atribucion exacta a `episode -> bot_id` para analitica historica directa.
+3. Conectar `execution_reality` a fills/slippage reales del runtime cuando existan.
+4. Reforzar Beast/Batch solo en lo minimo necesario para que deploy/UX no contradigan el cerebro.
+5. Cablear OPE / doubly-robust / safe policy improvement del policy layer si el runtime actual lo soporta sin humo.
+
+## Bloqueado / no implementado
+- Aun NO implementado:
+  - frontend del cerebro
+  - OPE/DR real del policy layer
+  - policy simulation visible
+  - Beast/Batch totalmente cerrado en deploy
+
+## Decisiones asumidas
+- `live` entra como fuente valida del aprendizaje y del cerebro, pero NO cambia la politica `LIVE NO GO`.
+- El blend del bot se hace sobre evidencia validada y no excluida; legacy/stale sigue fail-closed.
+- Se privilegia backend/store/endpoints primero y UX despues, para no mostrar humo.
+
+## Riesgos abiertos
+- La UX todavia no expone todo el cerebro aunque backend ya lo soporte.
+- `source_summary` del cerebro queda limpio de doble conteo por scope, pero sigue dependiendo de la calidad de `strategy_evidence`.
+- `execution_reality` todavia puede quedar vacio si el runtime no alimenta ese ledger.
+
+## Archivos tocados
+- `rtlab_autotrader/rtlab_core/learning/brain.py`
+- `rtlab_autotrader/rtlab_core/learning/service.py`
+- `rtlab_autotrader/rtlab_core/web/app.py`
+- `rtlab_autotrader/tests/test_brain_policy_service.py`
+- `docs/truth/SOURCE_OF_TRUTH.md`
+- `docs/truth/CHANGELOG.md`
+- `docs/truth/NEXT_STEPS.md`
+
+## Tests ejecutados
+- `python -m py_compile rtlab_autotrader/rtlab_core/learning/brain.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_yaml.py -q` -> PASS
+
+## Build status
+- no aplica build de frontend en este bloque backend/store/service/endpoints
+
 ## Hecho en este bloque (cerebro-2/3)
 - `live` agregado como fuente real del modelo de experiencia:
   - store

@@ -2,6 +2,59 @@
 
 Fecha de actualizacion: 2026-03-08
 
+## Bloque cerebro-3/3: brain service + endpoints + scoring bot-first - 2026-03-08
+
+- Rama tecnica activa:
+  - `feature/brain-policy-ledgers-v1`
+- Se mantiene continuidad directa del mismo objetivo tecnico; no se abre rama nueva.
+- Estado anterior del cerebro:
+  - `live` ya existia como fuente valida en store/engine/schema;
+  - pero NO habia un servicio backend consolidado que:
+    - leyera `strategy_evidence`
+    - resolviera atribucion `run -> bot`
+    - mezclara `exact_bot`, `pool_context` y `global_truth`
+    - persistiera `bot_policy_state`
+    - registrara `bot_decision_log`
+    - expusiera endpoints dedicados del cerebro
+- Estado real despues de este bloque:
+  - `LearningService` ya implementa `bot-first with global prior` sobre los ledgers nuevos:
+    - `exact_bot`
+    - `pool_context`
+    - `global_truth`
+  - el score final usa `blend_bot_policy_scores(...)` desde `brain.py` y thresholds desde YAML:
+    - `exact_bot_threshold_trades`
+    - `exact_bot_threshold_effective_weight`
+    - `blend_if_sufficient`
+    - `blend_if_insufficient`
+  - `effective_weight` ya participa en el cerebro operativo via servicio, no solo como campo persistido.
+  - `run_bot_link` ya se usa para reforzar atribucion cuando la evidencia de estrategia no trae `bot_id` embebido.
+  - el backend persiste:
+    - `bot_policy_state`
+    - `bot_decision_log`
+  - `strategy_truth` ya se materializa automaticamente si la estrategia existe y todavia no tiene ledger propio.
+- Nuevos endpoints backend disponibles:
+  - `GET /api/v1/bots/{bot_id}/brain`
+  - `POST /api/v1/bots/{bot_id}/recompute-brain`
+  - `GET /api/v1/bots/{bot_id}/decision-log`
+  - `GET /api/v1/strategies/{strategy_id}/truth`
+  - `GET /api/v1/strategies/{strategy_id}/evidence`
+  - `GET /api/v1/execution/reality`
+- `live` queda como fuente real del cerebro en el flujo completo:
+  - schema/store -> engine -> service -> endpoints
+  - no solo como label.
+- Alcance deliberadamente NO cerrado en este bloque:
+  - frontend del brain panel
+  - truth panel visual
+  - reality panel visual
+  - decision log visual
+  - OPE / doubly-robust wiring real del policy layer
+  - Beast/Batch cerrado end-to-end en deploy
+- Validacion del bloque:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/learning/brain.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_brain_policy_yaml.py -q` -> PASS
+
 ## Bloque cerebro-2/3: live como fuente real + ledgers + trazabilidad run->bot - 2026-03-08
 
 - Rama tecnica activa:

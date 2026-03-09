@@ -2,6 +2,35 @@
 
 ## 2026-03-08
 
+### Bloque cerebro-3/3: service/backend del cerebro sobre ledgers reales
+- `brain.py` incorpora helpers operativos para el cerebro:
+  - `sample_size_factor`
+  - `attribution_factor`
+  - `effective_weight_from_components`
+  - `blend_bot_policy_scores`
+- `LearningService` deja de ser un helper liviano y pasa a consumir los nuevos ledgers:
+  - atribuye evidencia a bots con `run_bot_link`
+  - calcula agregados `exact_bot / pool_context / global_truth`
+  - blend bot-first con prior global usando policy YAML
+  - persiste `bot_policy_state`
+  - registra `bot_decision_log`
+  - expone payloads de:
+    - cerebro del bot
+    - decision log
+    - truth de estrategia
+    - evidencia de estrategia
+    - execution reality
+- `web/app.py` agrega endpoints reales del cerebro:
+  - `GET /api/v1/bots/{bot_id}/brain`
+  - `POST /api/v1/bots/{bot_id}/recompute-brain`
+  - `GET /api/v1/bots/{bot_id}/decision-log`
+  - `GET /api/v1/strategies/{strategy_id}/truth`
+  - `GET /api/v1/strategies/{strategy_id}/evidence`
+  - `GET /api/v1/execution/reality`
+- `live` queda incorporado como fuente real de experiencia a nivel schema/store/engine/service/endpoints.
+- Test nuevo:
+  - `rtlab_autotrader/tests/test_brain_policy_service.py`
+
 ### Bloque cerebro-2/3: live como fuente real + ledgers del cerebro
 - `experience_episode.source` acepta ahora `live` ademas de `backtest/shadow/paper/testnet`.
 - `experience_store.py` pasa a leer `gates.source_weights` desde YAML y registra `live` como fuente de experiencia real.

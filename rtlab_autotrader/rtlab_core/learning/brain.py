@@ -31,6 +31,96 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _clamp(value: float, *, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, float(value)))
+
+
+def sample_size_factor(trades: int | float, *, cap: int = 500) -> float:
+    trades_n = max(0.0, _safe_float(trades, 0.0))
+    cap_n = max(1.0, _safe_float(cap, 500.0))
+    return _clamp(math.log1p(trades_n) / math.log1p(cap_n))
+
+
+def attribution_factor(attribution_type: str | None, attribution_confidence: float | None = None) -> float:
+    raw_type = str(attribution_type or "unknown").strip().lower()
+    mapped = {
+        "exact": 1.0,
+        "strong": 0.75,
+        "approximate": 0.40,
+        "approx": 0.40,
+        "unknown": 0.0,
+    }.get(raw_type, 0.0)
+    if attribution_confidence is None:
+        return mapped
+    return _clamp(max(mapped, _safe_float(attribution_confidence, 0.0)))
+
+
+def effective_weight_from_components(
+    *,
+    source_weight: float,
+    validation_quality: float,
+    freshness_decay: float,
+    trades: int | float,
+    attribution_type: str | None = None,
+    attribution_confidence: float | None = None,
+    cost_realism_factor: float = 1.0,
+    data_integrity_factor: float = 1.0,
+) -> float:
+    return float(
+        max(
+            0.0,
+            _safe_float(source_weight, 0.0)
+            * _clamp(_safe_float(validation_quality, 0.0))
+            * _clamp(_safe_float(freshness_decay, 0.0))
+            * sample_size_factor(trades)
+            * attribution_factor(attribution_type, attribution_confidence)
+            * _clamp(_safe_float(cost_realism_factor, 1.0))
+            * _clamp(_safe_float(data_integrity_factor, 1.0)),
+        )
+    )
+
+
+def blend_bot_policy_scores(
+    *,
+    exact_bot_score: float,
+    pool_context_score: float,
+    global_truth_score: float,
+    exact_bot_trades: int | float,
+    exact_bot_weight_sum: float,
+    exact_bot_threshold_trades: int | float = 50,
+    exact_bot_threshold_effective_weight: float = 5.0,
+    sufficient_weights: dict[str, float] | None = None,
+    insufficient_weights: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    enough_exact = (
+        _safe_float(exact_bot_trades, 0.0) >= _safe_float(exact_bot_threshold_trades, 50.0)
+        and _safe_float(exact_bot_weight_sum, 0.0) >= _safe_float(exact_bot_threshold_effective_weight, 5.0)
+    )
+    weights = (
+        sufficient_weights
+        if enough_exact
+        else insufficient_weights
+    ) or {
+        "exact_bot": 0.55 if enough_exact else 0.25,
+        "pool_context": 0.25 if enough_exact else 0.35,
+        "global_truth": 0.20 if enough_exact else 0.40,
+    }
+    final_score = (
+        _safe_float(weights.get("exact_bot"), 0.0) * _safe_float(exact_bot_score, 0.0)
+        + _safe_float(weights.get("pool_context"), 0.0) * _safe_float(pool_context_score, 0.0)
+        + _safe_float(weights.get("global_truth"), 0.0) * _safe_float(global_truth_score, 0.0)
+    )
+    return {
+        "score_final": float(final_score),
+        "exact_history_sufficient": bool(enough_exact),
+        "weights_used": {
+            "exact_bot": _safe_float(weights.get("exact_bot"), 0.0),
+            "pool_context": _safe_float(weights.get("pool_context"), 0.0),
+            "global_truth": _safe_float(weights.get("global_truth"), 0.0),
+        },
+    }
+
+
 def compute_normalized_reward(
     *,
     pnl_net: float,

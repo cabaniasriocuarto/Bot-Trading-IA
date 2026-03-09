@@ -5633,7 +5633,7 @@ def risk_hooks(context):
 _validate_auth_config_for_production()
 
 store = ConsoleStore()
-learning_service = LearningService(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT)
+learning_service = LearningService(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT, registry=store.registry)
 option_b_engine = OptionBLearningEngine(store.registry)
 rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
 mass_backtest_engine = MassBacktestEngine(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT, knowledge_loader=KnowledgeLoader(repo_root=MONOREPO_ROOT))
@@ -9057,6 +9057,90 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         rows = option_b_engine.list_proposals(status=status)
         return {"items": rows, "status": status}
+
+    @app.get("/api/v1/bots/{bot_id}/brain")
+    def bot_brain(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            return learning_service.build_bot_brain(
+                bot_id=bot_id,
+                bots=store.list_bot_instances(recommendations=learning_service.load_all_recommendations()),
+                strategies=store.list_strategies(),
+                runs=store.load_runs(),
+                persist=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/v1/bots/{bot_id}/recompute-brain")
+    def bot_recompute_brain(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        try:
+            payload = learning_service.build_bot_brain(
+                bot_id=bot_id,
+                bots=store.list_bot_instances(recommendations=learning_service.load_all_recommendations()),
+                strategies=store.list_strategies(),
+                runs=store.load_runs(),
+                persist=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        store.add_log(
+            event_type="learning_brain_recompute",
+            severity="info",
+            module="learning",
+            message=f"Cerebro recalculado para bot {bot_id}",
+            related_ids=[bot_id, str(payload.get("selected_strategy_id") or "")],
+            payload={"regime_label": payload.get("regime_label"), "persisted": payload.get("persisted")},
+        )
+        return payload
+
+    @app.get("/api/v1/bots/{bot_id}/decision-log")
+    def bot_decision_log(
+        bot_id: str,
+        limit: int = Query(default=50, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return learning_service.get_bot_decision_log_payload(bot_id, limit=limit)
+
+    @app.get("/api/v1/strategies/{strategy_id}/truth")
+    def strategy_truth(strategy_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            return learning_service.get_strategy_truth_payload(
+                strategy_id,
+                strategies=store.list_strategies(),
+                runs=store.load_runs(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/v1/strategies/{strategy_id}/evidence")
+    def strategy_evidence(strategy_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            payload = learning_service.get_strategy_evidence_payload(strategy_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not payload.get("items"):
+            known = {str(row.get("id") or "") for row in store.list_strategies()}
+            if strategy_id not in known:
+                raise HTTPException(status_code=404, detail="Strategy not found")
+        return payload
+
+    @app.get("/api/v1/execution/reality")
+    def execution_reality(
+        bot_id: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return learning_service.get_execution_reality_payload(bot_id=bot_id, strategy_id=strategy_id, limit=limit)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/v1/learning/proposals/{proposal_id}")
     def learning_proposal_detail(proposal_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
