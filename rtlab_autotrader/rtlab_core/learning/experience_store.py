@@ -137,6 +137,17 @@ def _load_source_weights() -> dict[str, float]:
 SOURCE_WEIGHTS = _load_source_weights()
 
 
+def _normalize_source_alias(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    if raw == "mock":
+        return "shadow"
+    if raw == "test":
+        return "testnet"
+    return raw
+
+
 class ExperienceStore:
     def __init__(self, registry: RegistryDB) -> None:
         self.registry = registry
@@ -144,9 +155,9 @@ class ExperienceStore:
     @staticmethod
     def source_from_run(run: dict[str, Any], *, override: str | None = None) -> str | None:
         if override:
-            source = str(override).strip().lower()
+            source = _normalize_source_alias(override)
         else:
-            mode = str(run.get("mode") or "").strip().lower()
+            mode = _normalize_source_alias(run.get("mode"))
             if mode == "backtest":
                 source = "backtest"
             elif mode in VALID_SOURCES:
@@ -157,7 +168,8 @@ class ExperienceStore:
 
     @staticmethod
     def source_weight(source: str) -> float:
-        return float(SOURCE_WEIGHTS.get(str(source or "").strip().lower(), 0.5))
+        normalized = _normalize_source_alias(source)
+        return float(SOURCE_WEIGHTS.get(str(normalized or "").strip().lower(), 0.5))
 
     @staticmethod
     def _costs_profile_id(run: dict[str, Any]) -> str:

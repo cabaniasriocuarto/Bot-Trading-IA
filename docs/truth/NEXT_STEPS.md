@@ -67,6 +67,18 @@ Fecha: 2026-03-09
   - `delete_runs()` del catalogo limpia tambien trials asociados
   - fallback seguro de timeframe soportado evita que provenance legacy rompa `run_dataset_link` y `run_universe_link`
 
+- Bloque 6 parcial cerrado:
+  - `mock` queda como modo operativo visible del bot.
+  - `shadow` queda interno como fuente de experiencia/compatibilidad.
+  - `experience_store` ya normaliza aliases `mock -> shadow`.
+  - `instrument_registry` y snapshots ya persisten `mock_enabled`.
+  - la API ya expone `mode_capabilities` por instrumento.
+  - frontend visible actualizado en:
+    - `Strategies`
+    - `Execution`
+    - `Backtests`
+  - `live` ya aparece como fuente de experiencia en resumenes donde corresponde.
+
 ## Nuevo plan consolidado
 - Unificar el proyecto sobre una arquitectura auditable y escalable:
   1. catalogo de instrumentos / Binance multi-family
@@ -92,22 +104,21 @@ Fecha: 2026-03-09
 10. Tests, builds, limpieza conservadora y cierre
 
 ## Bloque actual
-- Bloque 6 en progreso:
-  - taxonomia operativa canonica en backend
-  - eligibility matrix por modo (`backtest/mock/paper/testnet/demo/live`)
-  - soporte minimo para que cerebro, instrumentos y ejecucion hablen el mismo vocabulario operativo
+- Bloque 7 en progreso:
+  - execution reality + live eligibility + preflight validation + routing
+  - apoyar la taxonomia operativa ya consolidada sobre validacion/ruteo real
 
 ## Pendiente del siguiente bloque
-- Bloque 7:
-  - `execution_reality` conectado a validacion preflight y elegibilidad live por family
-  - enlazar modos operativos con routing y bloqueos visibles
+- Bloque 8:
+  - monitoring / observability / drift / alertas / kill switches / health score
+  - surface minima en backend antes del frontend integral por dominios
 
 ## Bloqueado / no implementado
 - Aun no implementado integralmente:
   - derivative state real poblado desde ingesta
   - live parity state cache completa
   - dataset/universe registry visible en frontend
-  - taxonomia visible de modos `mock/paper/testnet/live` en frontend
+  - taxonomia visible de modos `mock/paper/testnet/live` en todas las pantallas del frontend
   - frontend del cerebro
   - frontend del research funnel
   - monitoring / health dashboard
@@ -123,6 +134,7 @@ Fecha: 2026-03-09
 - La taxonomia operativa nueva no debe introducir UI enganosa: si algo no tiene backend real, no debe parecer soportado.
 - El research funnel ya persiste trials, pero todavia no tiene explotacion visual en frontend ni integracion completa con promotion UI.
 - El bloque actual debe evitar crear una segunda fuente de verdad de modos operativos fuera de YAML y store principal.
+- Todavia quedan referencias tecnicas internas `shadow` que deben seguir internas y no filtrarse como UX primaria.
 
 ## Decisiones asumidas
 - Se sigue en `feature/brain-policy-ledgers-v1` porque el objetivo es continuidad directa del mismo programa tecnico.
@@ -157,6 +169,11 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/rtlab_core/universe/__init__.py`
 - `rtlab_autotrader/rtlab_core/universe/service.py`
 - `rtlab_autotrader/rtlab_core/web/app.py`
+- `rtlab_autotrader/rtlab_core/learning/experience_store.py`
+- `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+- `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+- `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+- `rtlab_dashboard/src/lib/types.ts`
 - `rtlab_autotrader/tests/test_brain_policy_yaml.py`
 - `rtlab_autotrader/tests/test_instrument_registry_store.py`
 - `rtlab_autotrader/tests/test_binance_catalog_sync.py`
@@ -184,6 +201,14 @@ Fecha: 2026-03-09
 - `python -m py_compile rtlab_autotrader/rtlab_core/backtest/catalog_db.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_backtest_catalog_db.py -q` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_research_funnel_api.py -q` -> PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/brokers/binance/catalog.py rtlab_autotrader/rtlab_core/instruments/registry.py rtlab_autotrader/rtlab_core/universe/service.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_instrument_registry_store.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_binance_catalog_sync.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+- `npm run lint -- "src/app/(app)/strategies/page.tsx" "src/app/(app)/execution/page.tsx" "src/app/(app)/backtests/page.tsx" "src/lib/types.ts"` -> PASS
+- `npm run build` (`rtlab_dashboard`) -> PASS
 
 ## Build status
-- No aplica build de frontend en este bloque backend/config.
+- Backend bloque 6 parcial: PASS
+- Frontend bloque 6 parcial: PASS
+- `npm run build` verde; warnings de Recharts no bloqueantes

@@ -66,7 +66,7 @@ export default function ExecutionPage() {
   });
   const [primaryBusyMode, setPrimaryBusyMode] = useState<"paper" | "testnet" | "live" | null>(null);
   const [botInstances, setBotInstances] = useState<BotInstance[]>([]);
-  const [botModeFilter, setBotModeFilter] = useState<"all" | "shadow" | "paper" | "testnet" | "live">("all");
+  const [botModeFilter, setBotModeFilter] = useState<"all" | "mock" | "paper" | "testnet" | "live">("all");
   const [botStatusFilter, setBotStatusFilter] = useState<"all" | "active" | "paused" | "archived">("all");
   const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
   const [selectedExecutionBotId, setSelectedExecutionBotId] = useState("");
@@ -295,7 +295,7 @@ export default function ExecutionPage() {
       status: rollout?.pending_live_approval ? "warn" : "pending",
       help: rollout?.pending_live_approval
         ? `Hay aprobacion pendiente${rollout.pending_live_approval_target ? ` para ${rollout.pending_live_approval_target}` : ""}.`
-        : "Inicia un rollout (shadow/canary) desde Settings para poblar telemetria y validar antes de LIVE.",
+        : "Inicia un rollout (mock/canary) desde Settings para poblar telemetria y validar antes de LIVE.",
     },
   ] as const;
 
@@ -775,9 +775,9 @@ export default function ExecutionPage() {
                     >
                       {selectedExecutionBot.status === "active" ? "Pausar bot" : "Activar bot"}
                     </Button>
-                    <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "shadow" }, "Cambiar bot a SHADOW")}>
-                      Modo SHADOW
-                    </Button>
+                      <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "mock" }, "Cambiar bot a MOCK")}>
+                        Modo MOCK
+                      </Button>
                     <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "paper" }, "Cambiar bot a PAPER")}>
                       Modo PAPER
                     </Button>
@@ -798,7 +798,7 @@ export default function ExecutionPage() {
                     Pool actual: <strong>{selectedExecutionBot.pool_strategy_ids.length}</strong> estrategias
                     {selectedExecutionBot.metrics?.last_run_at ? ` · último run ${new Date(selectedExecutionBot.metrics.last_run_at).toLocaleString()}` : ""}
                     {selectedExecutionBot.metrics?.experience_by_source
-                      ? ` · shadow ${selectedExecutionBot.metrics.experience_by_source.shadow?.episode_count ?? 0} / backtest ${selectedExecutionBot.metrics.experience_by_source.backtest?.episode_count ?? 0}`
+                        ? ` · mock/shadow ${selectedExecutionBot.metrics.experience_by_source.shadow?.episode_count ?? 0} / backtest ${selectedExecutionBot.metrics.experience_by_source.backtest?.episode_count ?? 0} / live ${selectedExecutionBot.metrics.experience_by_source.live?.episode_count ?? 0}`
                       : ""}
                   </p>
                 </>
@@ -869,7 +869,7 @@ export default function ExecutionPage() {
               <p className="font-semibold text-slate-100">Que hacer ahora</p>
               <ol className="mt-2 list-decimal space-y-1 pl-4">
                 <li>Verifica exchange y permisos (Read + Trade, sin Withdraw).</li>
-                <li>Corre rollout en Shadow/Canary desde Settings &gt; Rollout / Gates.</li>
+                  <li>Corre rollout en Mock/Canary desde Settings &gt; Rollout / Gates.</li>
                 <li>Aprueba manualmente antes de STABLE_100.</li>
               </ol>
             </div>
@@ -955,7 +955,7 @@ export default function ExecutionPage() {
               <p className="font-semibold text-slate-100">Que hacer ahora</p>
               <ol className="mt-2 list-decimal space-y-1 pl-4">
                 <li>Ejecuta evaluacion offline y compara vs baseline.</li>
-                <li>Inicia Shadow/Canary para generar telemetria de blending y KPIs.</li>
+                  <li>Inicia Mock/Canary para generar telemetria de blending y KPIs.</li>
                 <li>Aprueba manualmente solo cuando gates y canary esten OK.</li>
               </ol>
             </div>
@@ -979,16 +979,16 @@ export default function ExecutionPage() {
         </CardDescription>
         <CardContent className="space-y-3">
           <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs text-slate-300">
-            Runtime global: <strong>{runtimeModeKey.toUpperCase()}</strong> · Operadores visibles se gestionan por separado (shadow/paper/testnet/live).
+            Runtime global: <strong>{runtimeModeKey.toUpperCase()}</strong> · Operadores visibles se gestionan por separado (mock/paper/testnet/live).
           </div>
           <div className="grid gap-3 md:grid-cols-6">
             <div>
               <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Filtro modo</label>
-              <Select value={botModeFilter} onChange={(e) => setBotModeFilter(e.target.value as "all" | "shadow" | "paper" | "testnet" | "live")}>
-                <option value="all">Todos</option>
-                <option value="shadow">shadow</option>
-                <option value="paper">paper</option>
-                <option value="testnet">testnet</option>
+                <Select value={botModeFilter} onChange={(e) => setBotModeFilter(e.target.value as "all" | "mock" | "paper" | "testnet" | "live")}>
+                  <option value="all">Todos</option>
+                  <option value="mock">mock</option>
+                  <option value="paper">paper</option>
+                  <option value="testnet">testnet</option>
                 <option value="live">live</option>
               </Select>
             </div>

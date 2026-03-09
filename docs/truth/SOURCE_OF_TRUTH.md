@@ -1,7 +1,43 @@
-# SOURCE OF TRUTH (Estado Real del Proyecto)
+﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 6 parcial - Modos operativos y capacidades por instrumento
+
+- Taxonomia operativa canonica vigente:
+  - `backtest`
+  - `mock`
+  - `paper`
+  - `testnet`
+  - `demo`
+  - `live`
+- Regla canonica de implementacion:
+  - `mock` es el modo operativo visible del bot en UI y store.
+  - `shadow` se mantiene como fuente interna/canonica de experiencia y como compatibilidad de endpoints legacy.
+  - `mock` no reemplaza `paper`.
+  - `mock` no reemplaza `testnet`.
+- `config/policies/gates.yaml` ya expone `execution_modes.mock` y conserva `paper/testnet/live`.
+- `experience_store.py` normaliza aliases operativos:
+  - `mock -> shadow`
+  - `test -> testnet`
+- `instrument_registry` y `instrument_catalog_snapshot_item` ya persisten `mock_enabled`.
+- La API de instrumentos ya devuelve `mode_capabilities` por instrumento/snapshot con:
+  - `allowed_in_backtest`
+  - `allowed_in_mock`
+  - `allowed_in_paper`
+  - `allowed_in_testnet`
+  - `allowed_in_demo`
+  - `allowed_in_live`
+- `web/app.py` ya normaliza `shadow -> mock` para modos de bot visibles, sin romper la fuente de experiencia `shadow`.
+- Frontend visible ya alineado en:
+  - `Strategies`
+  - `Execution`
+  - `Backtests`
+  mostrando `mock` como modo operativo y `live` como fuente de experiencia cuando existe.
+- Pendiente real luego de este bloque:
+  - consolidar la taxonomia de modos en el resto del frontend
+  - conectar `execution_reality` con preflight/live eligibility/routing real
+  - evitar que referencias internas `shadow` se filtren a la UX primaria fuera de contextos tecnicos
 ## Plan maestro consolidado - 2026-03-09
 
 - Rama tecnica activa:
@@ -242,3 +278,4 @@ Regla de verdad:
   - solo fuentes del mismo nivel academico/profesional y preferentemente de los mismos autores o documentacion oficial
 - Regla aplicada:
   - si una decision tecnica critica no queda respaldada por bibliografia local, se busca soporte equivalente externo y se documenta.
+

@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS instrument_registry (
     status TEXT NOT NULL DEFAULT 'unknown',
     tradable INTEGER NOT NULL DEFAULT 0,
     backtestable INTEGER NOT NULL DEFAULT 0,
+    mock_enabled INTEGER NOT NULL DEFAULT 0,
     paper_enabled INTEGER NOT NULL DEFAULT 0,
     test_enabled INTEGER NOT NULL DEFAULT 0,
     demo_enabled INTEGER NOT NULL DEFAULT 0,
@@ -411,6 +412,7 @@ CREATE TABLE IF NOT EXISTS instrument_catalog_snapshot_item (
     status TEXT NOT NULL DEFAULT 'unknown',
     tradable INTEGER NOT NULL DEFAULT 0,
     backtestable INTEGER NOT NULL DEFAULT 0,
+    mock_enabled INTEGER NOT NULL DEFAULT 0,
     paper_enabled INTEGER NOT NULL DEFAULT 0,
     test_enabled INTEGER NOT NULL DEFAULT 0,
     demo_enabled INTEGER NOT NULL DEFAULT 0,
@@ -636,6 +638,8 @@ class RegistryDB:
         self._ensure_column(conn, "experience_episode", "summary_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column(conn, "experience_episode", "created_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
         self._ensure_column(conn, "experience_episode", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+        self._ensure_column(conn, "instrument_registry", "mock_enabled", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "instrument_catalog_snapshot_item", "mock_enabled", "INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_experience_episode_bot_source
@@ -2216,6 +2220,17 @@ class RegistryDB:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [dict(row) for row in rows]
 
+    @staticmethod
+    def _instrument_mode_capabilities(item: dict[str, Any]) -> dict[str, bool]:
+        return {
+            "allowed_in_backtest": bool(item.get("backtestable")),
+            "allowed_in_mock": bool(item.get("mock_enabled")),
+            "allowed_in_paper": bool(item.get("paper_enabled")),
+            "allowed_in_testnet": bool(item.get("test_enabled")),
+            "allowed_in_demo": bool(item.get("demo_enabled")),
+            "allowed_in_live": bool(item.get("live_enabled")),
+        }
+
     def upsert_instrument_registry(
         self,
         *,
@@ -2234,6 +2249,7 @@ class RegistryDB:
         status: str = "unknown",
         tradable: bool = False,
         backtestable: bool = False,
+        mock_enabled: bool = False,
         paper_enabled: bool = False,
         test_enabled: bool = False,
         demo_enabled: bool = False,
@@ -2270,7 +2286,7 @@ class RegistryDB:
                     instrument_id, provider, provider_market, provider_symbol, normalized_symbol,
                     base_asset, quote_asset, settle_asset, margin_asset, asset_class,
                     contract_type, instrument_type, status, tradable, backtestable,
-                    paper_enabled, test_enabled, demo_enabled, live_enabled,
+                    mock_enabled, paper_enabled, test_enabled, demo_enabled, live_enabled,
                     permissions_json, order_types_json, time_in_force_json,
                     tick_size, step_size, min_qty, max_qty, min_notional,
                     price_precision, qty_precision, maker_fee_bps, taker_fee_bps,
@@ -2283,7 +2299,7 @@ class RegistryDB:
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
@@ -2307,6 +2323,7 @@ class RegistryDB:
                     status=excluded.status,
                     tradable=excluded.tradable,
                     backtestable=excluded.backtestable,
+                    mock_enabled=excluded.mock_enabled,
                     paper_enabled=excluded.paper_enabled,
                     test_enabled=excluded.test_enabled,
                     demo_enabled=excluded.demo_enabled,
@@ -2351,6 +2368,7 @@ class RegistryDB:
                     status,
                     1 if tradable else 0,
                     1 if backtestable else 0,
+                    1 if mock_enabled else 0,
                     1 if paper_enabled else 0,
                     1 if test_enabled else 0,
                     1 if demo_enabled else 0,
@@ -2435,6 +2453,7 @@ class RegistryDB:
             for key in (
                 "tradable",
                 "backtestable",
+                "mock_enabled",
                 "paper_enabled",
                 "test_enabled",
                 "demo_enabled",
@@ -2442,6 +2461,8 @@ class RegistryDB:
                 "is_active_snapshot",
             ):
                 item[key] = bool(item.get(key))
+            item["testnet_enabled"] = bool(item.get("test_enabled"))
+            item["mode_capabilities"] = self._instrument_mode_capabilities(item)
             out.append(item)
         return out
 
@@ -2508,9 +2529,9 @@ class RegistryDB:
                     """
                     INSERT INTO instrument_catalog_snapshot_item (
                         snapshot_id, instrument_id, provider_symbol, normalized_symbol, status,
-                        tradable, backtestable, paper_enabled, test_enabled, demo_enabled, live_enabled, snapshot_payload_json
+                        tradable, backtestable, mock_enabled, paper_enabled, test_enabled, demo_enabled, live_enabled, snapshot_payload_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         snapshot_id,
@@ -2520,6 +2541,7 @@ class RegistryDB:
                         str(item.get("status") or "unknown"),
                         1 if item.get("tradable") else 0,
                         1 if item.get("backtestable") else 0,
+                        1 if item.get("mock_enabled") else 0,
                         1 if item.get("paper_enabled") else 0,
                         1 if item.get("test_enabled") else 0,
                         1 if item.get("demo_enabled") else 0,
@@ -2579,12 +2601,15 @@ class RegistryDB:
             for key in (
                 "tradable",
                 "backtestable",
+                "mock_enabled",
                 "paper_enabled",
                 "test_enabled",
                 "demo_enabled",
                 "live_enabled",
             ):
                 item[key] = bool(item.get(key))
+            item["testnet_enabled"] = bool(item.get("test_enabled"))
+            item["mode_capabilities"] = self._instrument_mode_capabilities(item)
             out.append(item)
         return out
 

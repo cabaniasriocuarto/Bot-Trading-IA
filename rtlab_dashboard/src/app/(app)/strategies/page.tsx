@@ -101,9 +101,9 @@ type LearningRecommendationLite = {
 };
 
 const BOT_MODE_HELP: Record<string, string> = {
-  shadow: "Mock en vivo: usa market data real, no envia ordenes y guarda experiencia source=shadow.",
+  mock: "Mock en vivo: usa market data real, no envia ordenes y persiste experiencia source=shadow para aprendizaje.",
   paper: "Paper interno: corre con fondos virtuales y sirve para validar la logica sin exchange real.",
-  testnet: "Testnet del exchange: usa sandbox/API de prueba, distinto de shadow.",
+  testnet: "Testnet del exchange: usa sandbox/API de prueba, distinto de mock.",
   live: "Live real: sigue NO GO. Se deja visible solo como referencia operativa y no debe activarse ahora.",
 };
 
@@ -791,20 +791,20 @@ export default function StrategiesPage() {
       });
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo iniciar shadow.");
+        setError(err instanceof Error ? err.message : "No se pudo iniciar mock.");
     } finally {
       setShadowBusy(false);
     }
   };
 
-  const stopShadowRunner = async (reason = "ui_stop_shadow") => {
+  const stopShadowRunner = async (reason = "ui_stop_mock") => {
     setShadowBusy(true);
     setError("");
     try {
       await apiPost("/api/v1/learning/shadow/stop", { reason });
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo detener shadow.");
+        setError(err instanceof Error ? err.message : "No se pudo detener mock.");
     } finally {
       setShadowBusy(false);
     }
@@ -1313,10 +1313,10 @@ export default function StrategiesPage() {
                   {learningBusy ? "Recalculando..." : "Recalcular Opcion B"}
                 </Button>
                 <Button variant="outline" disabled={shadowBusy || role !== "admin" || shadowStatus?.running} onClick={() => void startShadowRunner()}>
-                  {shadowBusy && !shadowStatus?.running ? "Iniciando shadow..." : "Iniciar shadow"}
+                    {shadowBusy && !shadowStatus?.running ? "Iniciando mock..." : "Iniciar mock"}
                 </Button>
                 <Button variant="outline" disabled={shadowBusy || role !== "admin" || !shadowStatus?.running} onClick={() => void stopShadowRunner()}>
-                  {shadowBusy && shadowStatus?.running ? "Deteniendo..." : "Detener shadow"}
+                    {shadowBusy && shadowStatus?.running ? "Deteniendo..." : "Detener mock"}
                 </Button>
                 <Button variant="outline" onClick={() => void refresh()}>
                   Refrescar
@@ -1333,14 +1333,14 @@ export default function StrategiesPage() {
               ) : null}
               <div className="mt-2 rounded border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={shadowStatus?.running ? "success" : "neutral"}>{shadowStatus?.running ? "Shadow corriendo" : "Shadow detenido"}</Badge>
+                  <Badge variant={shadowStatus?.running ? "success" : "neutral"}>{shadowStatus?.running ? "Mock corriendo" : "Mock detenido"}</Badge>
                   <span>targets: <strong>{shadowStatus?.targets_count ?? 0}</strong></span>
                   <span>runs: <strong>{shadowStatus?.runs_created ?? 0}</strong></span>
                   <span>duplicados evitados: <strong>{shadowStatus?.skipped_duplicate_cycles ?? 0}</strong></span>
                 </div>
-                <p className="mt-1 text-slate-400">
-                  Mock/shadow usa market data real, no envia ordenes y deja experiencia persistente para Opcion B.
-                </p>
+                  <p className="mt-1 text-slate-400">
+                    Mock usa market data real, no envia ordenes y deja experiencia persistente source=shadow para Opcion B.
+                  </p>
                 {shadowStatus?.last_error ? <p className="mt-1 text-amber-300">Ultimo error: {shadowStatus.last_error}</p> : null}
               </div>
             </div>
@@ -1556,7 +1556,7 @@ export default function StrategiesPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bots / AutoBots (multi-instancia)</p>
-                <p className="text-[11px] text-slate-400">Administra operadores (shadow/paper/testnet/live), engine y pool de estrategias sin tocar LIVE autom&aacute;ticamente.</p>
+                  <p className="text-[11px] text-slate-400">Administra operadores (mock/paper/testnet/live), engine y pool de estrategias sin tocar LIVE autom&aacute;ticamente.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void refresh()}>
@@ -1626,7 +1626,7 @@ export default function StrategiesPage() {
                             <div>{m?.trade_count ?? 0}</div>
                             <div className="text-[10px] text-slate-500">runs: {m?.run_count ?? 0}</div>
                             <div className="text-[10px] text-slate-500">
-                              sh: {experienceBySource?.shadow?.episode_count ?? 0} · bt: {experienceBySource?.backtest?.episode_count ?? 0}
+                                mk/sh: {experienceBySource?.shadow?.episode_count ?? 0} · bt: {experienceBySource?.backtest?.episode_count ?? 0} · live: {experienceBySource?.live?.episode_count ?? 0}
                             </div>
                           </TD>
                           <TD>{fmtPct(m?.winrate ?? 0)}</TD>
@@ -1673,7 +1673,7 @@ export default function StrategiesPage() {
                                 <div className="mt-2 min-w-[280px] space-y-2">
                                   <div className="rounded border border-slate-800 bg-slate-950/50 p-2">
                                     <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Modo</p>
-                                    {(["shadow", "paper", "testnet", "live"] as const).map((modeKey) => (
+                                    {(["mock", "paper", "testnet", "live"] as const).map((modeKey) => (
                                       <div key={`${bot.id}-mode-${modeKey}`} className="mb-1 rounded border border-slate-800 p-2 last:mb-0">
                                         <Button
                                           size="sm"
@@ -1715,16 +1715,16 @@ export default function StrategiesPage() {
                                         disabled={role !== "admin" || shadowBusy || bot.mode !== "shadow" || bot.status !== "active"}
                                         onClick={() => void startShadowRunner(bot.id)}
                                       >
-                                        Simular en shadow
+                                        Simular en mock
                                       </Button>
                                       <Button
                                         size="sm"
                                         variant="outline"
                                         className="h-7 px-2 text-[11px]"
                                         disabled={role !== "admin" || shadowBusy || !shadowStatus?.running}
-                                        onClick={() => void stopShadowRunner(`ui_stop_shadow:${bot.id}`)}
+                                        onClick={() => void stopShadowRunner(`ui_stop_mock:${bot.id}`)}
                                       >
-                                        Detener shadow
+                                        Detener mock
                                       </Button>
                                     </div>
                                     <p className="mt-1 text-[10px] text-slate-400">
@@ -1805,7 +1805,7 @@ export default function StrategiesPage() {
                             <details className="mt-1 rounded border border-slate-800 bg-slate-950/30 p-2 text-[11px] text-slate-300">
                               <summary className="cursor-pointer select-none">Experiencia por fuente</summary>
                               <div className="mt-2 space-y-1">
-                                {(["shadow", "testnet", "paper", "backtest"] as const).map((sourceKey) => {
+                                  {(["shadow", "testnet", "paper", "live", "backtest"] as const).map((sourceKey) => {
                                   const source = experienceBySource?.[sourceKey];
                                   return (
                                     <div key={`${bot.id}-${sourceKey}`} className="rounded border border-slate-800 px-2 py-1">
@@ -1834,7 +1834,7 @@ export default function StrategiesPage() {
               </div>
             ) : (
               <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-400">
-                Todav&iacute;a no hay bots multi-instancia. Cre&aacute; uno desde el pool actual para operar shadow/paper/testnet con m&eacute;tricas separadas.
+                Todav&iacute;a no hay bots multi-instancia. Cre&aacute; uno desde el pool actual para operar mock/paper/testnet con m&eacute;tricas separadas.
               </div>
             )}
           </div>
@@ -1844,4 +1844,3 @@ export default function StrategiesPage() {
     </div>
   );
 }
-

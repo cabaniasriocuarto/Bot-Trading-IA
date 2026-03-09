@@ -169,7 +169,11 @@ gates:
   execution_modes:
     backtest:
       enabled: true
+    mock:
+      enabled: true
     paper:
+      enabled: true
+    testnet:
       enabled: true
     test:
       enabled: true

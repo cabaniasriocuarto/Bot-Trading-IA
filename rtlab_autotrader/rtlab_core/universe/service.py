@@ -58,6 +58,7 @@ class UniverseService:
                     "status": "unknown",
                     "tradable": False,
                     "backtestable": False,
+                    "mock_enabled": False,
                     "paper_enabled": False,
                     "test_enabled": False,
                     "demo_enabled": False,

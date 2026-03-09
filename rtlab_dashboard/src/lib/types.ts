@@ -164,7 +164,7 @@ export interface BotInstanceMetrics {
   last_kill_at?: string | null;
   by_mode?: Record<string, { trade_count: number; winrate: number; net_pnl: number; avg_sharpe: number; expectancy_value?: number; run_count: number }>;
   experience_by_source?: Record<
-    "backtest" | "shadow" | "paper" | "testnet",
+    "backtest" | "shadow" | "paper" | "testnet" | "live",
     {
       episode_count: number;
       run_count: number;
@@ -198,7 +198,7 @@ export interface BotInstance {
   id: string;
   name: string;
   engine: string;
-  mode: "shadow" | "paper" | "testnet" | "live";
+  mode: "mock" | "shadow" | "paper" | "testnet" | "live";
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
   pool_strategies?: BotInstanceStrategyRef[];
@@ -864,7 +864,7 @@ export interface BacktestCatalogRunRelatedBot {
   id: string;
   name: string;
   engine: string;
-  mode: "shadow" | "paper" | "testnet" | "live" | string;
+    mode: "mock" | "shadow" | "paper" | "testnet" | "live" | string;
   status: "active" | "paused" | "archived" | string;
 }
 

@@ -49,6 +49,7 @@ class InstrumentCatalogStore:
             status=str(payload.get("status") or "unknown"),
             tradable=bool(payload.get("tradable")),
             backtestable=bool(payload.get("backtestable")),
+            mock_enabled=bool(payload.get("mock_enabled")),
             paper_enabled=bool(payload.get("paper_enabled")),
             test_enabled=bool(payload.get("test_enabled")),
             demo_enabled=bool(payload.get("demo_enabled")),

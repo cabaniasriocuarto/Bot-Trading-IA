@@ -446,7 +446,7 @@ class RunsBulkBody(BaseModel):
 class BotCreateBody(BaseModel):
     name: str | None = None
     engine: str = "bandit_thompson"
-    mode: Literal["shadow", "paper", "testnet", "live"] = "paper"
+    mode: Literal["mock", "shadow", "paper", "testnet", "live"] = "paper"
     status: Literal["active", "paused", "archived"] = "active"
     pool_strategy_ids: list[str] | None = None
     universe: list[str] | None = None
@@ -456,7 +456,7 @@ class BotCreateBody(BaseModel):
 class BotPatchBody(BaseModel):
     name: str | None = None
     engine: str | None = None
-    mode: Literal["shadow", "paper", "testnet", "live"] | None = None
+    mode: Literal["mock", "shadow", "paper", "testnet", "live"] | None = None
     status: Literal["active", "paused", "archived"] | None = None
     pool_strategy_ids: list[str] | None = None
     universe: list[str] | None = None
@@ -466,7 +466,7 @@ class BotPatchBody(BaseModel):
 class BotBulkPatchBody(BaseModel):
     ids: list[str]
     engine: str | None = None
-    mode: Literal["shadow", "paper", "testnet", "live"] | None = None
+    mode: Literal["mock", "shadow", "paper", "testnet", "live"] | None = None
     status: Literal["active", "paused", "archived"] | None = None
     pool_strategy_ids: list[str] | None = None
     universe: list[str] | None = None
@@ -1946,7 +1946,9 @@ class ConsoleStore:
     @staticmethod
     def _normalize_breaker_mode(value: str | None) -> str:
         mode = str(value or "").strip().lower()
-        if mode in {"shadow", "paper", "testnet", "live"}:
+        if mode == "shadow":
+            return "mock"
+        if mode in {"mock", "paper", "testnet", "live"}:
             return mode
         return "unknown"
 
@@ -3303,7 +3305,9 @@ def risk_hooks(context):
     @staticmethod
     def _normalize_bot_mode(value: str | None) -> str:
         mode = str(value or "paper").strip().lower()
-        if mode not in {"shadow", "paper", "testnet", "live"}:
+        if mode == "shadow":
+            return "mock"
+        if mode not in {"mock", "paper", "testnet", "live"}:
             return "paper"
         return mode
 
@@ -3784,8 +3788,8 @@ def risk_hooks(context):
             "recommendations_count": 0,
         }
 
-        mode_to_kpi_mode = {"shadow": "shadow", "paper": "paper", "testnet": "testnet", "live": "live"}
-        kills_mode_keys = ("shadow", "paper", "testnet", "live", "unknown")
+        mode_to_kpi_mode = {"mock": "shadow", "paper": "paper", "testnet": "testnet", "live": "live"}
+        kills_mode_keys = ("mock", "paper", "testnet", "live", "unknown")
 
         t_stage = time.perf_counter()
         bots_rows = bots if isinstance(bots, list) else self.load_bots()
@@ -4192,11 +4196,11 @@ def risk_hooks(context):
             "kills_24h": 0,
             "kills_global_total": 0,
             "kills_global_24h": 0,
-            "kills_by_mode": {"shadow": 0, "paper": 0, "testnet": 0, "live": 0, "unknown": 0},
-            "kills_by_mode_24h": {"shadow": 0, "paper": 0, "testnet": 0, "live": 0, "unknown": 0},
+            "kills_by_mode": {"mock": 0, "paper": 0, "testnet": 0, "live": 0, "unknown": 0},
+            "kills_by_mode_24h": {"mock": 0, "paper": 0, "testnet": 0, "live": 0, "unknown": 0},
             "last_kill_at": None,
             "by_mode": {
-                "shadow": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
+                "mock": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
                 "paper": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
                 "testnet": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
                 "live": {"trade_count": 0, "winrate": 0.0, "net_pnl": 0.0, "avg_sharpe": 0.0, "expectancy_value": 0.0, "run_count": 0},
@@ -7700,16 +7704,16 @@ class ShadowRunCoordinator:
         warnings: list[str] = []
         for row in bots:
             status = str(row.get("status") or "active").strip().lower()
-            mode = str(row.get("mode") or "paper").strip().lower()
+            mode = self.store._normalize_bot_mode(str(row.get("mode") or "paper"))
             if status != "active":
                 continue
-            if mode != "shadow":
+            if mode != "mock":
                 if bot_id and str(row.get("id") or "") == bot_id:
-                    raise ValueError("Poné el bot en modo SHADOW para correr mock en vivo sin órdenes.")
+                    raise ValueError("Poné el bot en modo MOCK para correr mock en vivo sin órdenes.")
                 continue
             eligible_bots.append(row)
         if not eligible_bots:
-            raise ValueError("No hay bots activos en modo SHADOW.")
+            raise ValueError("No hay bots activos en modo MOCK.")
 
         strategies = {str(row.get("id") or ""): row for row in self.store.list_strategies() if str(row.get("id") or "")}
         targets: list[dict[str, Any]] = []
@@ -7724,7 +7728,7 @@ class ShadowRunCoordinator:
                     continue
                 allowed_ids.append(strategy_id)
             if not allowed_ids:
-                warnings.append(f"{bot.get('id')}: sin estrategias Pool=true para shadow.")
+                warnings.append(f"{bot.get('id')}: sin estrategias Pool=true para mock.")
                 continue
             resolved_symbol = symbol or next(
                 (str(item).replace("/", "").replace("-", "").strip().upper() for item in (bot.get("universe") or []) if str(item).strip()),
