@@ -2,6 +2,22 @@
 
 ## 2026-03-09
 
+### Bloque 9 parcial: backfill conservador de atribucion + resumen por fuente enriquecido
+- `RegistryDB` agrega `backfill_bot_attribution_from_run_links()` para consolidar `bot_id` historico solo cuando el `run_id` tiene un unico bot asociado.
+- `LearningService` usa ese backfill antes de construir:
+  - `GET /api/v1/bots/{bot_id}/brain`
+  - `GET /api/v1/strategies/{strategy_id}/evidence`
+- `source_summary` del cerebro ahora devuelve por fuente:
+  - episodios
+  - peso efectivo
+  - trades
+  - split `exact_bot` vs `pool/global`
+- Frontend `Bots` ya lo muestra de forma visible y en espanol.
+- Validacion:
+  - `py_compile` PASS
+  - `pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` PASS
+  - `eslint` `bots/page.tsx` + `types.ts` PASS
+  - `npm run build` PASS
 ### Bloque 9 parcial: atribucion `run -> bot` reforzada + taxonomia visible de modos
 - `ExperienceStore` ahora infiere `bot_id` desde:
   - campo directo del run

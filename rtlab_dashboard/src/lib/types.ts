@@ -372,7 +372,18 @@ export interface BotBrainResponse {
   selected_strategy_id?: string | null;
   items: BotBrainItem[];
   source_summary: {
-    sources: Record<string, { count: number; weight_sum: number }>;
+    sources: Record<
+      string,
+      {
+        count: number;
+        weight_sum: number;
+        trades: number;
+        exact_bot_count: number;
+        pool_context_count: number;
+        exact_bot_trades: number;
+        pool_context_trades: number;
+      }
+    >;
     trades_total: number;
     weight_sum_total: number;
   };

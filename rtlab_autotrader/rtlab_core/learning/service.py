@@ -486,6 +486,7 @@ class LearningService:
         evidence_by_strategy: dict[str, list[dict[str, Any]]],
         *,
         policy: dict[str, Any],
+        bot_id: str | None = None,
     ) -> dict[str, dict[str, float]]:
         summary: dict[str, dict[str, float]] = {}
         seen: set[tuple[Any, ...]] = set()
@@ -501,11 +502,31 @@ class LearningService:
                     continue
                 seen.add(marker)
                 source = str(row.get("source_type") or row.get("source") or "unknown")
-                current = summary.setdefault(source, {"count": 0.0, "weight_sum": 0.0})
+                current = summary.setdefault(
+                    source,
+                    {
+                        "count": 0.0,
+                        "weight_sum": 0.0,
+                        "trades": 0.0,
+                        "exact_bot_count": 0.0,
+                        "pool_context_count": 0.0,
+                        "exact_bot_trades": 0.0,
+                        "pool_context_trades": 0.0,
+                    },
+                )
+                trades = float(row.get("trades") or row.get("trade_count") or 0.0)
+                is_exact_bot = bool(bot_id) and str(row.get("bot_id") or "") == str(bot_id)
                 current["count"] += 1.0
+                current["trades"] += trades
                 current["weight_sum"] += float(
                     self._effective_weight_for_row(row, source_type=source, policy=policy)
                 )
+                if is_exact_bot:
+                    current["exact_bot_count"] += 1.0
+                    current["exact_bot_trades"] += trades
+                else:
+                    current["pool_context_count"] += 1.0
+                    current["pool_context_trades"] += trades
         return summary
 
     def build_bot_brain(
@@ -518,6 +539,7 @@ class LearningService:
         persist: bool = True,
     ) -> dict[str, Any]:
         registry = self._require_registry()
+        registry.backfill_bot_attribution_from_run_links()
         bot = next((row for row in bots if str(row.get("id") or "") == str(bot_id)), None)
         if not bot:
             raise ValueError("Bot no encontrado")
@@ -656,7 +678,7 @@ class LearningService:
                 risk_overrides={"live_enabled": False},
                 execution_constraints={"requires_human_approval_for_live": True},
             )
-        source_summary = self._summarize_sources(all_evidence, policy=policy)
+        source_summary = self._summarize_sources(all_evidence, policy=policy, bot_id=bot_id)
         return {
             "bot_id": bot_id,
             "regime_label": regime_label,
@@ -695,6 +717,7 @@ class LearningService:
 
     def get_strategy_evidence_payload(self, strategy_id: str) -> dict[str, Any]:
         registry = self._require_registry()
+        registry.backfill_bot_attribution_from_run_links()
         rows = self._attach_bot_attribution(registry.list_strategy_evidence(strategy_id=strategy_id))
         rows.sort(key=lambda row: str(row.get("created_at") or row.get("as_of") or ""), reverse=True)
         summary: dict[str, dict[str, float]] = {}

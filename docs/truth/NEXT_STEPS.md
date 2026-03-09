@@ -106,6 +106,14 @@ Fecha: 2026-03-09
     - evidencia por estrategia
   - `Bots` ya muestra taxonomia operativa visible.
   - `Execution` ya muestra taxonomia operativa visible.
+- Bloque 9 parcial adicional cerrado:
+  - `RegistryDB.backfill_bot_attribution_from_run_links()` consolida atribucion historica solo si el `run_id` tiene un unico bot.
+  - `LearningService` ejecuta ese backfill antes de construir cerebro/evidence.
+  - `Bots` ya muestra por fuente:
+    - episodios
+    - peso efectivo
+    - trades
+    - split exacto del bot vs contexto pool/global
 
 ## Nuevo plan consolidado
 - Unificar el proyecto sobre una arquitectura auditable y escalable:
@@ -175,15 +183,14 @@ Fecha: 2026-03-09
 - Bloque 9 en progreso:
   - frontend serio por dominios
   - decision log visual y realidad de ejecucion mas explotable
-  - `episode -> bot_id` historico mas fuerte cuando no exista solo `run_bot_link`
   - consistencia visible Beast/Batch en deploy
 
 ## Pendiente del siguiente bloque
 - consolidar paneles visibles del cerebro:
   - decision log
   - execution reality
-  - resumen por fuente con `live`
-- reforzar `episode -> bot_id` directo para analitica historica fuerte
+  - resumen por fuente con `live` ya mas explotable
+- reforzar `episode -> bot_id` directo para tablas/pantallas que aun dependan de episodios legacy sin backfill previo
 - resolver mensajes/estado visible de Beast/Batch en deploy
 
 ## Bloqueado / no implementado
@@ -212,6 +219,7 @@ Fecha: 2026-03-09
 - El bloque 7 ahora ya valida elegibilidad/preflight, pero todavia no reemplaza un router live completo; no debe confundirse con ejecucion real end-to-end.
 - Monitoring / Salud ya esta visible, pero no reemplaza aun una pila completa de observabilidad externa (Prometheus/Grafana/Otel).
 - La trazabilidad `run -> bot` ya es fuerte si el run trae metadata/tags utiles; la analitica legacy por episodio sigue siendo parcialmente dependiente de esa relacion.
+- El backfill de atribucion ahora es persistente pero deliberadamente conservador: no resuelve automaticamente casos donde un mismo `run_id` aparece ligado a mas de un bot.
 
 ## Decisiones asumidas
 - Se sigue en `feature/brain-policy-ledgers-v1` porque el objetivo es continuidad directa del mismo programa tecnico.

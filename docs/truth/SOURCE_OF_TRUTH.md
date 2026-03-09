@@ -2,6 +2,29 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 9 parcial - backfill conservador de atribucion + resumen por fuente enriquecido
+
+- `RegistryDB.backfill_bot_attribution_from_run_links()` ya consolida atribucion historica desde `run_bot_link` cuando existe una unica relacion `run_id -> bot_id`.
+- El backfill:
+  - completa `experience_episode.bot_id` si estaba vacio
+  - completa `experience_episode.attribution_type` / `attribution_confidence` si estaban en `unknown` o `0`
+  - completa `strategy_evidence.bot_id` si estaba vacio
+  - no sobreescribe filas ya atribuidas ni inventa joins ambiguos
+- `LearningService` ejecuta este backfill antes de construir:
+  - `bot brain`
+  - `strategy evidence payload`
+- El resumen por fuente del cerebro ahora expone por fuente:
+  - `count`
+  - `weight_sum`
+  - `trades`
+  - `exact_bot_count`
+  - `pool_context_count`
+  - `exact_bot_trades`
+  - `pool_context_trades`
+- Frontend `Bots` ya muestra ese detalle por fuente, por lo que `live` deja de verse solo como badge abstracto y pasa a verse con trades y scope de atribucion.
+- Regla vigente:
+  - si un `run_id` aparece asociado a mas de un bot, no se hace backfill automatico
+  - la atribucion queda fail-closed hasta aclarar la relacion
 ## Actualizacion de bloque 9 parcial - Atribucion `run -> bot` reforzada + taxonomia visible de modos
 
 - `ExperienceStore.record_run(...)` ya no depende solo de un `bot_id` explicito para atribuir experiencia a un bot.

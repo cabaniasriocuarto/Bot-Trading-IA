@@ -2140,6 +2140,77 @@ class RegistryDB:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [dict(row) for row in rows]
 
+    def backfill_bot_attribution_from_run_links(self) -> dict[str, int]:
+        episode_updates = 0
+        evidence_updates = 0
+        with self._connect() as conn:
+            unique_links = conn.execute(
+                """
+                SELECT run_id, bot_id, attribution_type, attribution_confidence
+                FROM run_bot_link
+                GROUP BY run_id
+                HAVING COUNT(*) = 1
+                """
+            ).fetchall()
+            for row in unique_links:
+                run_id = str(row["run_id"] or "").strip()
+                bot_id = str(row["bot_id"] or "").strip()
+                if not run_id or not bot_id:
+                    continue
+                attribution_type = str(row["attribution_type"] or "strong").strip() or "strong"
+                attribution_confidence = float(row["attribution_confidence"] or 0.0)
+                episode_updates += int(
+                    conn.execute(
+                        """
+                        UPDATE experience_episode
+                        SET
+                            bot_id = CASE
+                                WHEN bot_id IS NULL OR TRIM(bot_id) = '' THEN ?
+                                ELSE bot_id
+                            END,
+                            attribution_type = CASE
+                                WHEN attribution_type IS NULL OR TRIM(attribution_type) = '' OR attribution_type = 'unknown' THEN ?
+                                ELSE attribution_type
+                            END,
+                            attribution_confidence = CASE
+                                WHEN COALESCE(attribution_confidence, 0) <= 0 THEN ?
+                                ELSE attribution_confidence
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE run_id = ?
+                          AND (
+                              bot_id IS NULL OR TRIM(bot_id) = ''
+                              OR attribution_type IS NULL OR TRIM(attribution_type) = '' OR attribution_type = 'unknown'
+                              OR COALESCE(attribution_confidence, 0) <= 0
+                          )
+                        """,
+                        (bot_id, attribution_type, attribution_confidence, run_id),
+                    ).rowcount
+                    or 0
+                )
+                evidence_updates += int(
+                    conn.execute(
+                        """
+                        UPDATE strategy_evidence
+                        SET
+                            bot_id = CASE
+                                WHEN bot_id IS NULL OR TRIM(bot_id) = '' THEN ?
+                                ELSE bot_id
+                            END,
+                            notes = CASE
+                                WHEN notes IS NULL OR TRIM(notes) = '' THEN 'bot_attribution_backfilled_from_run_link'
+                                ELSE notes
+                            END
+                        WHERE run_id = ?
+                          AND (bot_id IS NULL OR TRIM(bot_id) = '')
+                        """,
+                        (bot_id, run_id),
+                    ).rowcount
+                    or 0
+                )
+            conn.commit()
+        return {"experience_episode": episode_updates, "strategy_evidence": evidence_updates}
+
     def upsert_execution_reality(
         self,
         *,

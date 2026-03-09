@@ -342,7 +342,12 @@ function BotsPageContent() {
                         <Badge variant="info">{source}</Badge>
                         <span className="text-slate-400">{fmtNum(summary.count)} episodios</span>
                       </div>
-                      <p className="mt-2 text-slate-300">Peso efectivo: <strong>{fmtNum(summary.weight_sum)}</strong></p>
+                      <div className="mt-2 grid gap-2 md:grid-cols-2">
+                        <p className="text-slate-300">Peso efectivo: <strong>{fmtNum(summary.weight_sum)}</strong></p>
+                        <p className="text-slate-300">Trades: <strong>{fmtNum(summary.trades)}</strong></p>
+                        <p className="text-slate-400">Exacto del bot: {fmtNum(summary.exact_bot_count)} episodios / {fmtNum(summary.exact_bot_trades)} trades</p>
+                        <p className="text-slate-400">Contexto del pool/global: {fmtNum(summary.pool_context_count)} episodios / {fmtNum(summary.pool_context_trades)} trades</p>
+                      </div>
                     </div>
                   ))
                 ) : (

@@ -153,6 +153,8 @@ def test_learning_service_builds_bot_brain_from_live_and_ledgers(tmp_path: Path)
 
     assert payload["selected_strategy_id"] == strategy_live
     assert "live" in payload["source_summary"]["sources"]
+    assert payload["source_summary"]["sources"]["live"]["trades"] >= 1
+    assert payload["source_summary"]["sources"]["live"]["exact_bot_count"] >= 1
     assert payload["items"][0]["strategy_id"] == strategy_live
 
     policy_rows = registry.list_bot_policy_state(bot_id="BOT-ALPHA")
@@ -168,6 +170,79 @@ def test_learning_service_builds_bot_brain_from_live_and_ledgers(tmp_path: Path)
 
     evidence_payload = service.get_strategy_evidence_payload(strategy_live)
     assert evidence_payload["summary"]["live"]["count"] >= 1
+
+
+def test_learning_service_backfills_bot_attribution_from_run_links(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    strategy = _strategy_row(strategy_id, tags=["trend"])
+    run_id = "legacy-run-001"
+    episode_id = "episode-legacy-001"
+
+    registry.upsert_experience_episode(
+        episode_id=episode_id,
+        run_id=run_id,
+        source="live",
+        source_weight=1.0,
+        strategy_id=strategy_id,
+        bot_id=None,
+        asset="BTCUSDT",
+        timeframe="5m",
+        start_ts=datetime(2025, 1, 1, tzinfo=timezone.utc).isoformat(),
+        end_ts=datetime(2025, 1, 1, 0, 5, tzinfo=timezone.utc).isoformat(),
+        dataset_source="live_runtime",
+        dataset_hash="legacy-live-hash",
+        commit_hash="deadbeef",
+        costs_profile_id="cp1",
+        validation_quality="runtime_live_execution",
+        cost_fidelity_level="real_exchange_execution",
+        feature_set="orderflow_on",
+        trades_count=12,
+        attribution_type="unknown",
+        attribution_confidence=0.0,
+        effective_weight=1.0,
+        summary={"trade_count": 12},
+    )
+    registry.upsert_strategy_evidence(
+        evidence_id="evidence-legacy-001",
+        strategy_id=strategy_id,
+        source_type="live",
+        run_id=run_id,
+        bot_id=None,
+        dataset_hash="legacy-live-hash",
+        dataset_source="live_runtime",
+        trades=12,
+        expectancy_net=8.5,
+        sharpe=1.4,
+        validation_quality=1.0,
+        source_weight=1.0,
+        freshness_decay=1.0,
+        effective_weight=1.0,
+    )
+    registry.upsert_run_bot_link(
+        run_id=run_id,
+        bot_id="BOT-ALPHA",
+        attribution_type="exact",
+        attribution_confidence=1.0,
+    )
+
+    service.build_bot_brain(
+        bot_id="BOT-ALPHA",
+        bots=[{"id": "BOT-ALPHA", "engine_id": "bandit_thompson", "pool_strategy_ids": [strategy_id]}],
+        strategies=[strategy],
+        runs=[],
+        persist=False,
+    )
+
+    episode = registry.list_experience_episodes(strategy_ids=[strategy_id])[0]
+    evidence = registry.list_strategy_evidence(strategy_id=strategy_id)[0]
+
+    assert episode["bot_id"] == "BOT-ALPHA"
+    assert episode["attribution_type"] == "exact"
+    assert evidence["bot_id"] == "BOT-ALPHA"
 
 
 def test_learning_service_reads_execution_reality_ledger(tmp_path: Path) -> None:
