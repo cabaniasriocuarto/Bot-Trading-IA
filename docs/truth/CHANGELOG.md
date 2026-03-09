@@ -2,6 +2,27 @@
 
 ## 2026-03-09
 
+### Bloque 10 parcial: Beast/Batch ahora separa runtime policy de dataset real
+- `MassBacktestCoordinator.beast_status()` ahora expone:
+  - `enqueue_ready`
+  - `operational_state`
+  - `blockers`
+- `GET /api/v1/research/beast/status` ya distingue entre:
+  - `enabled`
+  - `disabled`
+  - `missing_root`
+  - `missing_file`
+  - `invalid_file`
+- `Backtests` ahora separa dos diagnósticos que antes quedaban mezclados:
+  - problema de runtime/policies/deploy
+  - falta de dataset real reproducible para el formulario actual
+- La tarjeta de estado del batch seleccionado ahora aclara explícitamente que un `FAILED` puede corresponder al `BX` elegido y no al formulario actual ni a Beast global.
+- Validación:
+  - `pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k beast -q` PASS
+  - `eslint` `backtests/page.tsx` + `types.ts` PASS
+  - `npm run build` PASS
+
 ### Bloque 9 parcial: `Execution` ya muestra realidad operativa por bot
 - Frontend `Execution` ahora consume `GET /api/v1/execution/reality?bot_id=...`.
 - La pantalla muestra, por bot seleccionado:

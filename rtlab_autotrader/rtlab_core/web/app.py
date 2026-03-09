@@ -10630,10 +10630,46 @@ def create_app() -> FastAPI:
         )
         policy_enabled_declared = bool(beast_policy.get("enabled")) if isinstance(beast_policy, dict) else False
         policy_state = "enabled"
-        if not bundle.get("available") or not isinstance(beast_meta, dict) or not beast_meta.get("exists") or not beast_meta.get("valid"):
-            policy_state = "missing"
+        policy_blockers: list[str] = []
+        if not bundle.get("available"):
+            policy_state = "missing_root"
+            policy_blockers.append("runtime_policy_root_missing")
+        elif not isinstance(beast_meta, dict) or not beast_meta.get("exists"):
+            policy_state = "missing_file"
+            policy_blockers.append("beast_mode_yaml_missing")
+        elif not beast_meta.get("valid"):
+            policy_state = "invalid_file"
+            policy_blockers.append("beast_mode_yaml_invalid")
         elif not policy_enabled_declared:
             policy_state = "disabled"
+            policy_blockers.append("policy_disabled")
+        blockers = list(dict.fromkeys([str(x) for x in (payload.get("blockers") or []) + policy_blockers if str(x).strip()]))
+        enqueue_ready = bool(payload.get("enqueue_ready", False)) and policy_state == "enabled"
+        operator_hint = (
+            "Beast listo para encolar jobs, sujeto a dataset real y budget governor."
+            if enqueue_ready
+            else (
+                "El runtime no encontró config/policies; corregí el root del deploy o el empaquetado."
+                if policy_state == "missing_root"
+                else (
+                    "Falta beast_mode.yaml en el runtime; el deploy no está cargando la policy."
+                    if policy_state == "missing_file"
+                    else (
+                        "beast_mode.yaml existe pero es inválido o vacío; corregí el YAML antes de reintentar."
+                        if policy_state == "invalid_file"
+                        else (
+                            "Beast está deshabilitado explícitamente por policy (enabled=false)."
+                            if policy_state == "disabled"
+                            else (
+                                "Beast está en stop-all; reanudá el scheduler antes de encolar jobs."
+                                if bool((payload.get("scheduler") or {}).get("stop_requested"))
+                                else "Beast no está listo para encolar jobs todavía."
+                            )
+                        )
+                    )
+                )
+            )
+        )
         payload.update(
             {
                 "policy_state": policy_state,
@@ -10642,6 +10678,9 @@ def create_app() -> FastAPI:
                 "policy_source_root": str(bundle.get("source_root") or ""),
                 "policy_warnings": list(bundle.get("warnings") or []),
                 "policy_files": bundle.get("files") if isinstance(bundle.get("files"), dict) else {},
+                "enqueue_ready": enqueue_ready,
+                "blockers": blockers,
+                "operator_hint": operator_hint,
             }
         )
         return payload

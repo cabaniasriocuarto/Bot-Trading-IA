@@ -29,11 +29,15 @@ Fecha: 2026-03-09
   - `direct_attribution_count`
   - `linked_only_count`
   - `ambiguous_link_count`
+- Beast/Batch ya separa:
+  - policy/runtime real de `config/policies`
+  - disponibilidad de dataset real del formulario
+  - estado historico del `BX` seleccionado
 
 ## Nuevo plan consolidado
-- Cerrar primero la visibilidad util del cerebro y la atribucion historica fuerte.
-- Luego cerrar Beast/Batch visible y coherente en deploy.
-- Por ultimo endurecer OPE / observabilidad avanzada / surface final de monitoring.
+- Cerrar primero Beast/Batch deploy-visible y sin mensajes engañosos.
+- Luego endurecer OPE / observabilidad avanzada / surface final de monitoring.
+- Despues cerrar el frontend especifico del cerebro que aun falte para decision log / truth / reality.
 
 ## Bloques reordenados
 1. Brain backend + ledgers + live source
@@ -44,11 +48,12 @@ Fecha: 2026-03-09
 6. OPE / observabilidad avanzada / endurecimiento final
 
 ## Bloque actual
-- Atribucion historica fuerte `run/episode -> bot` cerrada en backend y service. Siguiente foco: Beast/Batch deploy-visible y sin mensajes/estados engañosos.
+- Beast/Batch deploy-visible y sin mensajes/estados engañosos cerrado a nivel backend + frontend local. Siguiente foco: OPE / observabilidad avanzada / endurecimiento final.
 
 ## Pendiente del siguiente bloque
-- Beast/Batch deploy-visible y sin estados engañosos
-- surface minima en frontend para explicar claramente cuando un batch queda bloqueado por dataset/policy/deploy
+- OPE / safe policy improvement del policy layer
+- observabilidad avanzada / alertas / drift / kill switches
+- surface minima adicional para brain/truth/reality si hace falta despues del endurecimiento backend
 
 ## Bloqueado / no implementado
 - `execution_reality` aun no refleja fills reales end-to-end del runtime productivo
@@ -60,11 +65,13 @@ Fecha: 2026-03-09
 - Si el backend desplegado no esta en la misma version que frontend, `Execution` puede no recibir `execution_reality` real por bot.
 - La atribucion `episode -> bot_id` sigue fail-closed si el run historico trae multiples bots posibles; eso es intencional.
 - El warning de Recharts en prerender sigue siendo no bloqueante.
+- Si el backend desplegado no incorpora este bloque, `Backtests` todavia puede mostrar Beast como si estuviera bloqueado por policy cuando en realidad falta dataset o faltan policies en runtime.
 
 ## Decisiones asumidas
 - Se mantiene la rama `feature/brain-policy-ledgers-v1` porque sigue siendo el mismo objetivo coherente.
 - Se empujan commits por bloque estable para no mezclar trabajo sano con cambios intermedios.
 - La atribucion automatica sigue fail-closed cuando un `run_id` tiene mas de un bot posible.
+- Beast debe fallar de forma explicable: dataset y policy se diagnostican por separado.
 
 ## Archivos tocados
 - `rtlab_autotrader/rtlab_core/learning/experience_store.py`
@@ -72,6 +79,12 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/rtlab_core/learning/service.py`
 - `rtlab_autotrader/tests/test_learning_experience_option_b.py`
 - `rtlab_autotrader/tests/test_brain_policy_service.py`
+- `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`
+- `rtlab_autotrader/rtlab_core/web/app.py`
+- `rtlab_autotrader/tests/test_mass_backtest_engine.py`
+- `rtlab_autotrader/tests/test_web_live_ready.py`
+- `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+- `rtlab_dashboard/src/lib/types.ts`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/CHANGELOG.md`
 - `docs/truth/NEXT_STEPS.md`
@@ -80,6 +93,11 @@ Fecha: 2026-03-09
 - `python -m py_compile rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/learning/service.py`
 - `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q`
 - `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q`
+- `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q`
+- `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k beast -q`
+- `npm run lint -- "src/app/(app)/backtests/page.tsx" "src/lib/types.ts"`
+- `npm run build`
 
 ## Build status
 - bloque backend atribucion fuerte -> PASS
+- bloque Beast/Batch frontend+backend local -> PASS

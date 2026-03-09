@@ -2448,11 +2448,21 @@ class MassBacktestCoordinator:
             cap = _i(last_policy.get("daily_job_cap_pro"), cap)
         stop_pct = max(1.0, _f(last_policy.get("stop_at_budget_pct"), 80.0))
         cap_threshold = max(1, int(cap * (stop_pct / 100.0)))
+        stop_requested = bool(self._beast_stop_requested)
+        enabled = bool(last_policy.get("enabled"))
+        blockers: list[str] = []
+        if not enabled:
+            blockers.append("policy_disabled")
+        if stop_requested:
+            blockers.append("stop_all_active")
         return {
-            "enabled": bool(last_policy.get("enabled")),
+            "enabled": enabled,
+            "enqueue_ready": enabled and not stop_requested,
+            "operational_state": "ready" if enabled and not stop_requested else ("stopped" if stop_requested else "disabled"),
+            "blockers": blockers,
             "scheduler": {
                 "thread_alive": bool(self._beast_scheduler_thread and self._beast_scheduler_thread.is_alive()),
-                "stop_requested": bool(self._beast_stop_requested),
+                "stop_requested": stop_requested,
                 "queue_depth": queued,
                 "workers_active": len(active_run_ids),
                 "active_run_ids": active_run_ids,

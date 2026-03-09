@@ -857,7 +857,10 @@ export default function BacktestsPage() {
   const beastEnabledState = useMemo(() => {
     if (beastStatus == null) return "loading";
     const policyState = String(beastStatus.policy_state || "").toLowerCase();
-    if (policyState === "missing") return "missing";
+    if (policyState === "missing_root") return "missing_root";
+    if (policyState === "missing_file") return "missing_file";
+    if (policyState === "invalid_file") return "invalid_file";
+    if (policyState === "missing") return "missing_root";
     if (policyState === "disabled") return "blocked";
     if (policyState === "enabled") return "enabled";
     if (beastStatus.policy_enabled_declared === true) return "enabled";
@@ -866,15 +869,28 @@ export default function BacktestsPage() {
   }, [beastStatus]);
 
   const beastPolicyHint = useMemo(() => {
-    if (beastEnabledState === "missing") {
+    if (beastEnabledState === "missing_root") {
       const root = beastStatus?.policy_source_root ? ` (${beastStatus.policy_source_root})` : "";
       return `El runtime no encontro config/policies para Beast${root}. No es un bloqueo funcional del cerebro: falta empaquetado/config root.`;
+    }
+    if (beastEnabledState === "missing_file") {
+      return "El runtime encontro config/policies, pero falta beast_mode.yaml. El deploy no cargó la policy específica de Beast.";
+    }
+    if (beastEnabledState === "invalid_file") {
+      return "beast_mode.yaml existe en runtime pero está vacío o inválido. Corregí el YAML antes de reintentar.";
     }
     if (beastEnabledState === "blocked") {
       return "La policy beast_mode.yaml esta cargada y marca enabled=false.";
     }
-    return "Beast disponible: usa scheduler local con budget governor y cola por jobs.";
+    return beastStatus?.operator_hint || "Beast disponible: usa scheduler local con budget governor y cola por jobs.";
   }, [beastEnabledState, beastStatus]);
+
+  const beastDatasetHint = useMemo(() => {
+    if (datasetReadyState === "exact") return "Dataset real listo para el símbolo/timeframe exactos del formulario.";
+    if (datasetReadyState === "resample_1m") return "Dataset real disponible solo en 1m; el runtime tendría que re-muestrear al timeframe elegido.";
+    if (datasetReadyState === "loading") return "Validando disponibilidad de dataset real para este formulario.";
+    return "Para este formulario todavía no hay dataset real reproducible; Beast y Research Batch van a fallar aunque la policy esté OK.";
+  }, [datasetReadyState]);
 
   const massErrorHint = useMemo(() => {
     const msg = String(massError || "");
@@ -890,6 +906,18 @@ export default function BacktestsPage() {
     }
     return "";
   }, [massError]);
+
+  const massStatusScopeHint = useMemo(() => {
+    if (!massRunId) return "";
+    const state = String(massStatus?.state || "").toUpperCase();
+    if (state === "FAILED") {
+      return `El FAIL visible corresponde al batch seleccionado ${massRunId}. No implica por sí solo que Beast esté deshabilitado ni que el formulario actual esté mal configurado.`;
+    }
+    if (state === "COMPLETED") {
+      return `Este panel muestra el batch seleccionado ${massRunId}; si cambiaste el formulario recién, refrescá o lanzá un batch nuevo para no mezclar contextos.`;
+    }
+    return `Este panel está ligado al batch seleccionado ${massRunId}.`;
+  }, [massRunId, massStatus?.state]);
 
   useEffect(() => {
     if (!massRunId) return;
@@ -1165,7 +1193,7 @@ export default function BacktestsPage() {
       setMassError(`Modo Bestia requiere dataset real para ${form.market}/${form.symbol}/${form.timeframe}.${hint}${cmd}`);
       return;
     }
-    if (beastEnabledState === "missing") {
+    if (beastEnabledState === "missing_root" || beastEnabledState === "missing_file" || beastEnabledState === "invalid_file") {
       setMassError("Este runtime no encontro config/policies para Beast. Corregi el root del deploy o el empaquetado de policies antes de reintentar.");
       return;
     }
@@ -3541,8 +3569,12 @@ export default function BacktestsPage() {
                   title={
                     beastEnabledState === "blocked"
                       ? "Beast esta deshabilitado en beast_mode.yaml (enabled=false)."
-                      : beastEnabledState === "missing"
+                      : beastEnabledState === "missing_root"
                         ? "Este runtime no encontro config/policies para Beast. Corregi el root del deploy o el empaquetado."
+                        : beastEnabledState === "missing_file"
+                          ? "Este runtime no trae beast_mode.yaml dentro de config/policies."
+                          : beastEnabledState === "invalid_file"
+                            ? "beast_mode.yaml existe pero es invalido o vacio."
                         : "Encola el batch en Modo Bestia (scheduler local fase 1, con budget governor y limites de concurrencia)."
                   }
                 >
@@ -3575,23 +3607,37 @@ export default function BacktestsPage() {
                         ? "success"
                         : beastEnabledState === "blocked"
                           ? "danger"
-                          : beastEnabledState === "missing"
+                          : beastEnabledState === "missing_root" || beastEnabledState === "missing_file" || beastEnabledState === "invalid_file"
                             ? "warn"
                             : "neutral"
                     }
                   >
                     {beastEnabledState === "enabled"
-                      ? "habilitado"
+                      ? (beastStatus?.enqueue_ready ? "listo para encolar" : "habilitado")
                       : beastEnabledState === "blocked"
                         ? "bloqueado por policy"
-                        : beastEnabledState === "missing"
-                          ? "runtime sin policy"
+                        : beastEnabledState === "missing_root"
+                          ? "runtime sin policies"
+                          : beastEnabledState === "missing_file"
+                            ? "falta beast_mode.yaml"
+                            : beastEnabledState === "invalid_file"
+                              ? "policy inválida"
                           : "cargando policy"}
+                  </Badge>
+                  <Badge variant={datasetReadyState === "missing" ? "warn" : datasetReadyState === "loading" ? "neutral" : "success"}>
+                    {datasetReadyState === "exact"
+                      ? "dataset exacto"
+                      : datasetReadyState === "resample_1m"
+                        ? "dataset 1m"
+                        : datasetReadyState === "loading"
+                          ? "validando dataset"
+                          : "dataset faltante"}
                   </Badge>
                 </div>
                 <p className="mt-2 text-[11px] text-slate-400">
                   {beastPolicyHint}
                 </p>
+                <p className="mt-1 text-[11px] text-slate-500">{beastDatasetHint}</p>
                 {beastStatus?.policy_source_root ? (
                   <p className="mt-1 text-[11px] text-slate-500">Policy root runtime: {beastStatus.policy_source_root}</p>
                 ) : null}
@@ -3696,14 +3742,14 @@ export default function BacktestsPage() {
                     </div>
                   ) : (
                     <p className="text-xs text-slate-400">
-                      Todavia no hay jobs Beast. Usa Ã¢â‚¬Å“Ejecutar en Modo BestiaÃ¢â‚¬Â para encolar batches grandes (si la policy lo permite).
+                      Todavia no hay jobs Beast. Usa “Ejecutar en Modo Bestia” para encolar batches grandes cuando el runtime tenga policies válidas y el formulario tenga dataset real.
                     </p>
                   )}
                 </div>
               </div>
 
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                <p className="text-xs uppercase tracking-wide text-slate-400">Estado</p>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Estado del batch seleccionado</p>
                 <div className="mt-2 flex items-center gap-2">
                   <Badge variant={massStatus?.state === "COMPLETED" ? "success" : massStatus?.state === "FAILED" ? "danger" : "warn"}>
                     {massStatus?.state || "IDLE"}
@@ -3713,6 +3759,7 @@ export default function BacktestsPage() {
                 <p className="mt-2 text-xs text-slate-400">
                   {massStatus?.progress?.completed_tasks ?? 0}/{massStatus?.progress?.total_tasks ?? 0} tareas
                 </p>
+                {massStatusScopeHint ? <p className="mt-2 text-[11px] text-slate-500">{massStatusScopeHint}</p> : null}
                 {massStatus?.error ? <p className="mt-2 text-xs text-rose-300 whitespace-pre-wrap">{String(massStatus.error)}</p> : null}
                 {massStatus?.error && massErrorHint ? <p className="mt-2 text-xs text-amber-300">{massErrorHint}</p> : null}
               </div>

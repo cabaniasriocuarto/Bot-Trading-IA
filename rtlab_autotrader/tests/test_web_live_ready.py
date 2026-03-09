@@ -5056,6 +5056,129 @@ def test_research_beast_start_rejects_missing_dataset(tmp_path: Path, monkeypatc
   assert "no hay dataset real disponible" in str((start.json() or {}).get("detail") or "").lower()
 
 
+def test_research_beast_status_distinguishes_missing_runtime_policy_root(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "beast_status",
+    lambda: {
+      "enabled": True,
+      "enqueue_ready": True,
+      "operational_state": "ready",
+      "blockers": [],
+      "scheduler": {"stop_requested": False, "queue_depth": 0, "workers_active": 0},
+      "budget": {"tier": "hobby", "daily_cap": 200, "stop_at_budget_pct": 80.0},
+      "counts": {"queued": 0, "running": 0, "completed": 0, "failed": 0},
+      "recent_history": [],
+      "requires_postgres": True,
+      "mode": "local_scheduler_phase1",
+    },
+  )
+  monkeypatch.setattr(
+    module,
+    "load_numeric_policies_bundle",
+    lambda: {
+      "available": False,
+      "source_root": "",
+      "warnings": ["runtime_policy_root_missing"],
+      "files": {},
+      "policies": {},
+    },
+  )
+
+  status = client.get("/api/v1/research/beast/status", headers=headers)
+  assert status.status_code == 200, status.text
+  payload = status.json()
+  assert payload["policy_state"] == "missing_root"
+  assert payload["enqueue_ready"] is False
+  assert "runtime_policy_root_missing" in (payload.get("blockers") or [])
+  assert "config/policies" in str(payload.get("operator_hint") or "")
+
+
+def test_research_beast_status_distinguishes_disabled_policy(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "beast_status",
+    lambda: {
+      "enabled": False,
+      "enqueue_ready": False,
+      "operational_state": "disabled",
+      "blockers": ["policy_disabled"],
+      "scheduler": {"stop_requested": False, "queue_depth": 0, "workers_active": 0},
+      "budget": {"tier": "hobby", "daily_cap": 200, "stop_at_budget_pct": 80.0},
+      "counts": {"queued": 0, "running": 0, "completed": 0, "failed": 0},
+      "recent_history": [],
+      "requires_postgres": True,
+      "mode": "local_scheduler_phase1",
+    },
+  )
+  monkeypatch.setattr(
+    module,
+    "load_numeric_policies_bundle",
+    lambda: {
+      "available": True,
+      "source_root": "C:/repo/config/policies",
+      "warnings": [],
+      "files": {"beast_mode": {"path": "C:/repo/config/policies/beast_mode.yaml", "exists": True, "valid": True}},
+      "policies": {"beast_mode": {"beast_mode": {"enabled": False}}},
+    },
+  )
+
+  status = client.get("/api/v1/research/beast/status", headers=headers)
+  assert status.status_code == 200, status.text
+  payload = status.json()
+  assert payload["policy_state"] == "disabled"
+  assert payload["enqueue_ready"] is False
+  assert "policy_disabled" in (payload.get("blockers") or [])
+  assert "enabled=false" in str(payload.get("operator_hint") or "")
+
+
+def test_research_beast_status_distinguishes_missing_beast_file(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "beast_status",
+    lambda: {
+      "enabled": True,
+      "enqueue_ready": True,
+      "operational_state": "ready",
+      "blockers": [],
+      "scheduler": {"stop_requested": False, "queue_depth": 0, "workers_active": 0},
+      "budget": {"tier": "hobby", "daily_cap": 200, "stop_at_budget_pct": 80.0},
+      "counts": {"queued": 0, "running": 0, "completed": 0, "failed": 0},
+      "recent_history": [],
+      "requires_postgres": True,
+      "mode": "local_scheduler_phase1",
+    },
+  )
+  monkeypatch.setattr(
+    module,
+    "load_numeric_policies_bundle",
+    lambda: {
+      "available": True,
+      "source_root": "C:/repo/config/policies",
+      "warnings": [],
+      "files": {"beast_mode": {"path": "C:/repo/config/policies/beast_mode.yaml", "exists": False, "valid": False}},
+      "policies": {},
+    },
+  )
+
+  status = client.get("/api/v1/research/beast/status", headers=headers)
+  assert status.status_code == 200, status.text
+  payload = status.json()
+  assert payload["policy_state"] == "missing_file"
+  assert payload["enqueue_ready"] is False
+  assert "beast_mode_yaml_missing" in (payload.get("blockers") or [])
+  assert "beast_mode.yaml" in str(payload.get("operator_hint") or "")
+
+
 def test_research_beast_start_accepts_orderflow_toggle(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

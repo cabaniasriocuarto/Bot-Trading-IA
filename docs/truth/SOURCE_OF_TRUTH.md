@@ -2,6 +2,29 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 10 parcial - Beast/Batch sin diagnosticos engañosos
+
+- `beast_mode.enabled=true` en YAML ya no implica por si solo que el runtime este listo para encolar jobs.
+- El backend ahora distingue estados de policy/runtime para Beast:
+  - `enabled`
+  - `disabled`
+  - `missing_root`
+  - `missing_file`
+  - `invalid_file`
+- Ademas expone:
+  - `enqueue_ready`
+  - `operational_state`
+  - `blockers`
+- `Backtests` ya separa dos causas diferentes:
+  - problemas de runtime/policies/deploy
+  - falta de dataset real reproducible para el formulario actual
+- Estado real vigente:
+  - si falta `config/policies` en runtime, UI lo muestra como problema de empaquetado/deploy
+  - si falta `beast_mode.yaml`, UI lo muestra como archivo ausente
+  - si el YAML es invalido, UI lo muestra como policy invalida
+  - si Beast esta bien pero falta dataset real, UI lo muestra como problema de dataset y no como bloqueo por policy
+- El panel `Estado del batch seleccionado` ahora se declara como contexto historico del `BX` elegido; no diagnostica el formulario actual por si solo.
+
 ## Actualizacion de bloque 9 parcial - `Execution` ya expone realidad operativa por bot
 
 - `Execution` ya no depende solo de metricas globales del runtime.

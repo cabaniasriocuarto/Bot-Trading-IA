@@ -486,6 +486,9 @@ def test_beast_status_uses_repo_policy_when_queue_empty(tmp_path: Path, monkeypa
   status = coordinator.beast_status()
 
   assert status["enabled"] is True
+  assert status["enqueue_ready"] is True
+  assert status["operational_state"] == "ready"
+  assert status["blockers"] == []
   assert status["requires_postgres"] is True
   assert status["scheduler"]["max_concurrent_jobs"] == 7
   assert status["scheduler"]["rate_limit_enabled"] is True
