@@ -44,6 +44,15 @@ Fecha: 2026-03-09
     - `GET /api/v1/datasets`
     - `GET /api/v1/datasets/{run_id}/links`
     - `GET /api/v1/live-parity`
+- Bloque 4 cerrado:
+  - `universe_registry`, `universe_snapshot`, `universe_snapshot_item` y `run_universe_link` ya viven en la SQLite principal
+  - `UniverseService` ya genera universos reproducibles por provider/family/symbols
+  - `ConsoleStore.record_run(...)` ya persiste `run -> universe`
+  - endpoints:
+    - `GET /api/v1/universes`
+    - `POST /api/v1/universes`
+    - `GET /api/v1/universes/runs/{run_id}`
+  - los simbolos ausentes en un snapshot quedan fail-closed con `snapshot_gap`
 
 ## Nuevo plan consolidado
 - Unificar el proyecto sobre una arquitectura auditable y escalable:
@@ -62,35 +71,31 @@ Fecha: 2026-03-09
 2. Instrument registry + snapshots de catalogo + policies base
 3. Adapters Binance Spot / Margin / USD?-M / COIN-M
 4. Market data / datasets / derivative state / live parity
-5. Universos + snapshot exacto por run
-6. Research funnel / Beast / PBO-DSR-PSR
-7. Strategy truth + evidence + quarantine / stale
-8. Bot brain + bot policy + decision log + OPE minima
- 9. Modos operativos + eligibility matrix (`backtest/mock/paper/testnet/demo/live`)
- 10. Execution reality + live eligibility + preflight validation + routing
- 11. Monitoring / observability / drift / kill switches / health score
- 12. Frontend integral por dominios
- 13. Tests, builds, limpieza conservadora y cierre
+5. Research funnel / Beast / PBO-DSR-PSR
+6. Strategy truth + evidence + quarantine / stale
+7. Bot brain + bot policy + decision log + OPE minima
+8. Modos operativos + eligibility matrix (`backtest/mock/paper/testnet/demo/live`)
+9. Execution reality + live eligibility + preflight validation + routing
+10. Monitoring / observability / drift / kill switches / health score
+11. Frontend integral por dominios
+12. Tests, builds, limpieza conservadora y cierre
 
 ## Bloque actual
-- Bloque 4 en progreso:
-  - universos reproducibles por provider/family/filtros
-  - snapshot exacto de instrumentos por run
-  - enlace fuerte run -> dataset -> universe/instruments
-  - base para taxonomia de modos sin hardcodes dispersos
+- Bloque 5 en progreso:
+  - research funnel / Beast con trial ledger y universe snapshot
+  - rejection reasons y promotion stage trazables
+  - wiring PBO / DSR / PSR del lado research
 
 ## Pendiente del siguiente bloque
-- Bloque 5:
-  - research funnel / Beast con universe snapshot y rechazo explicable
-  - wiring PBO / DSR / PSR sobre trial ledger
-  - preparar entrada de modos operativos al producto visible
+- Bloque 6:
+  - reforzar `strategy_truth` / `strategy_evidence` con contexto de universe y promotion gating
+  - preparar el puente hacia modos operativos y eligibility matrix visibles
 
 ## Bloqueado / no implementado
 - Aun no implementado integralmente:
-  - universos versionados por run
   - derivative state real poblado desde ingesta
   - live parity state cache completa
-  - dataset registry visible en frontend
+  - dataset/universe registry visible en frontend
   - taxonomia visible de modos `mock/paper/testnet/live` en frontend
   - frontend del cerebro
   - monitoring / health dashboard
@@ -100,9 +105,10 @@ Fecha: 2026-03-09
 ## Riesgos abiertos
 - Hay capas legacy de catalogo/datasets simples que pueden superponerse con el nuevo instrument registry si no se consolidan con cuidado.
 - Binance multi-family agrega complejidad de metadata, filtros y elegibilidad live; debe hacerse sin romper backtests existentes.
+- Los universos ya quedan versionados, pero todavia no alimentan un funnel visual de research ni el frontend de datasets/universes.
 - `gates.yaml` ya concentra secciones nuevas de catalogo/live parity; si luego aparecen consumidores especializados, habra que decidir si conviene separar archivos sin romper `policy_paths.py`.
 - Margin en este bloque se deriva de metadata Spot publica; la validacion de capacidad real de cuenta queda para el bloque de live eligibility.
-- La taxonomia operativa nueva no debe introducir UI engañosa: si algo no tiene backend real, no debe parecer soportado.
+- La taxonomia operativa nueva no debe introducir UI enganosa: si algo no tiene backend real, no debe parecer soportado.
 - El bloque actual debe evitar crear una segunda fuente de verdad de datasets distinta a `user_data/data/**/manifests` mientras se migra a storage trazable.
 
 ## Decisiones asumidas
@@ -113,6 +119,7 @@ Fecha: 2026-03-09
 - Los nuevos umbrales deben vivir en YAML, no hardcodeados.
 - La base del catalogo se deja en `RegistryDB` para evitar abrir otra SQLite paralela ahora.
 - El dataset registry nuevo se montara sobre la misma SQLite principal y se alimentara desde `DataCatalog`/`DataProvider` para mantener compatibilidad.
+- Los universos generados desde runs usan snapshot del catalogo vigente; si no existe snapshot de la family, se persisten igual pero con gaps fail-closed.
 - La taxonomia canonica de modos queda fijada como:
   - `backtest`
   - `mock`
@@ -132,11 +139,14 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/rtlab_core/brokers/binance/catalog.py`
 - `rtlab_autotrader/rtlab_core/src/data/catalog.py`
 - `rtlab_autotrader/rtlab_core/src/research/data_provider.py`
+- `rtlab_autotrader/rtlab_core/universe/__init__.py`
+- `rtlab_autotrader/rtlab_core/universe/service.py`
 - `rtlab_autotrader/rtlab_core/web/app.py`
 - `rtlab_autotrader/tests/test_brain_policy_yaml.py`
 - `rtlab_autotrader/tests/test_instrument_registry_store.py`
 - `rtlab_autotrader/tests/test_binance_catalog_sync.py`
 - `rtlab_autotrader/tests/test_dataset_registry.py`
+- `rtlab_autotrader/tests/test_universe_registry.py`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/CHANGELOG.md`
 - `docs/truth/NEXT_STEPS.md`
@@ -151,6 +161,8 @@ Fecha: 2026-03-09
 - `python -m py_compile rtlab_autotrader/rtlab_core/src/data/catalog.py rtlab_autotrader/rtlab_core/src/research/data_provider.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_dataset_registry.py` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_dataset_registry.py -q` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/universe/service.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_universe_registry.py -q` -> PASS
 
 ## Build status
 - No aplica build de frontend en este bloque backend/config.

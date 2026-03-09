@@ -49,6 +49,7 @@ from rtlab_core.src.research import MassBacktestCoordinator, MassBacktestEngine
 from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngine
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 from rtlab_core.types import OrderStatus, Side
+from rtlab_core.universe import UniverseService
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
@@ -318,6 +319,17 @@ class StrategyPatchBody(BaseModel):
     allow_learning: bool | None = None
     is_primary: bool | None = None
     status: Literal["active", "disabled", "archived"] | None = None
+
+
+class UniverseCreateBody(BaseModel):
+    name: str
+    provider: str = "binance"
+    provider_market: str = "spot"
+    market: str = "crypto"
+    asset_class: str = "crypto"
+    symbols: list[str]
+    definition: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class LearningAdoptBody(BaseModel):
@@ -1786,6 +1798,7 @@ class ConsoleStore:
         ensure_paths()
         self.registry = RegistryDB(REGISTRY_DB_PATH)
         self.data_catalog = DataCatalog(USER_DATA_DIR)
+        self.universe_service = UniverseService(self.registry)
         self.experience_store = ExperienceStore(self.registry)
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
@@ -2891,6 +2904,7 @@ def risk_hooks(context):
             created_at=str(run.get("created_at") or ""),
         )
         self._record_run_dataset_link(run, dataset_source=dataset_source, dataset_hash=dataset_hash)
+        self._record_run_universe_link(run, dataset_source=dataset_source, dataset_hash=dataset_hash)
 
     def _record_run_dataset_link(self, run: dict[str, Any], *, dataset_source: str, dataset_hash: str) -> None:
         run_id = str(run.get("id") or "")
@@ -2948,6 +2962,84 @@ def risk_hooks(context):
                 "mode": str(run.get("mode") or "backtest"),
                 "strategy_id": str(run.get("strategy_id") or ""),
                 "bot_id": str(((run.get("metadata") or {}).get("bot_id") if isinstance(run.get("metadata"), dict) else "") or ""),
+            },
+        )
+
+    def _record_run_universe_link(self, run: dict[str, Any], *, dataset_source: str, dataset_hash: str) -> None:
+        run_id = str(run.get("id") or "")
+        if not run_id:
+            return
+        raw_universe = run.get("universe") if isinstance(run.get("universe"), list) else []
+        normalized_symbols = [normalize_symbol(str(item)) for item in raw_universe if str(item).strip()]
+        normalized_symbols = [item for item in normalized_symbols if item]
+        if not normalized_symbols:
+            symbol = normalize_symbol(str(run.get("symbol") or ""))
+            normalized_symbols = [symbol] if symbol else []
+        if not normalized_symbols:
+            return
+        market = normalize_market(
+            str(
+                run.get("market")
+                or ((run.get("dataset_manifest") or {}).get("market") if isinstance(run.get("dataset_manifest"), dict) else "crypto")
+            )
+        )
+        manifest = run.get("dataset_manifest") if isinstance(run.get("dataset_manifest"), dict) else {}
+        provider = str(manifest.get("provider") or ("binance" if market == "crypto" else "manual")).strip().lower() or "manual"
+        provider_market = str(manifest.get("provider_market") or ("spot" if market == "crypto" else market)).strip().lower() or "spot"
+        asset_class = str(run.get("asset_class") or ("crypto" if market == "crypto" else market)).strip().lower() or "unknown"
+        timeframe = normalize_timeframe(
+            str(
+                run.get("timeframe")
+                or ((run.get("dataset_manifest") or {}).get("timeframe") if isinstance(run.get("dataset_manifest"), dict) else "1m")
+            )
+        )
+        latest_catalog = self.registry.list_instrument_catalog_snapshots(
+            provider=provider,
+            provider_market=provider_market,
+            limit=1,
+        )
+        catalog_snapshot_id = str(latest_catalog[0].get("snapshot_id") or "") if latest_catalog else ""
+        universe_name = str(run.get("universe_name") or f"{provider_market}:{timeframe}:{len(normalized_symbols)}-symbols")
+        payload = self.universe_service.upsert_universe(
+            name=universe_name,
+            provider=provider,
+            provider_market=provider_market,
+            market=market,
+            asset_class=asset_class,
+            symbols=normalized_symbols,
+            definition={
+                "timeframe": timeframe,
+                "dataset_source": dataset_source,
+                "catalog_snapshot_id": catalog_snapshot_id,
+                "source_kind": "run_snapshot",
+            },
+            metadata={
+                "run_id": run_id,
+                "strategy_id": str(run.get("strategy_id") or ""),
+                "bot_id": str(((run.get("metadata") or {}).get("bot_id") if isinstance(run.get("metadata"), dict) else "") or ""),
+                "mode": str(run.get("mode") or "backtest"),
+                "dataset_hash": dataset_hash,
+                "dataset_source": dataset_source,
+                "timeframe": timeframe,
+            },
+            status="generated",
+        )
+        self.registry.upsert_run_universe_link(
+            run_id=run_id,
+            universe_id=str(payload.get("universe_id") or ""),
+            snapshot_id=str(payload.get("snapshot_id") or ""),
+            provider=provider,
+            provider_market=provider_market,
+            market=market,
+            asset_class=asset_class,
+            symbol_count=int(payload.get("symbol_count") or 0),
+            metadata={
+                "strategy_id": str(run.get("strategy_id") or ""),
+                "bot_id": str(((run.get("metadata") or {}).get("bot_id") if isinstance(run.get("metadata"), dict) else "") or ""),
+                "mode": str(run.get("mode") or "backtest"),
+                "dataset_hash": dataset_hash,
+                "dataset_source": dataset_source,
+                "timeframe": timeframe,
             },
         )
 
@@ -8920,6 +9012,54 @@ def create_app() -> FastAPI:
     def dataset_links_for_run(run_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         items = store.registry.list_run_dataset_links(run_id=run_id)
         return {"run_id": run_id, "items": items, "count": len(items)}
+
+    @app.get("/api/v1/universes")
+    def list_universes(
+        provider_market: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        items = store.universe_service.list_universes(provider_market=provider_market, limit=limit)
+        return {"items": items, "count": len(items)}
+
+    @app.post("/api/v1/universes")
+    def create_universe(body: UniverseCreateBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        payload = store.universe_service.upsert_universe(
+            name=str(body.name or "").strip() or "Universe",
+            provider=str(body.provider or "binance").strip().lower() or "binance",
+            provider_market=str(body.provider_market or "spot").strip().lower() or "spot",
+            market=normalize_market(body.market),
+            asset_class=str(body.asset_class or "unknown").strip().lower() or "unknown",
+            symbols=list(body.symbols or []),
+            definition=body.definition or {},
+            metadata=body.metadata or {},
+            status="active",
+        )
+        store.add_log(
+            event_type="universe_created",
+            severity="info",
+            module="catalog",
+            message="Universo registrado manualmente",
+            related_ids=[str(payload.get("universe_id") or "")],
+            payload={"provider_market": body.provider_market, "symbol_count": int(payload.get("symbol_count") or 0)},
+        )
+        return {"ok": True, **payload}
+
+    @app.get("/api/v1/universes/runs/{run_id}")
+    def universe_links_for_run(run_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        items = store.registry.list_run_universe_links(run_id=run_id)
+        enriched: list[dict[str, Any]] = []
+        for row in items:
+            snapshot_id = str(row.get("snapshot_id") or "")
+            snapshot = next((item for item in store.registry.list_universe_snapshots(limit=1000) if str(item.get("snapshot_id") or "") == snapshot_id), None)
+            enriched.append(
+                {
+                    **row,
+                    "snapshot": snapshot,
+                    "items": store.registry.list_universe_snapshot_items(snapshot_id) if snapshot_id else [],
+                }
+            )
+        return {"run_id": run_id, "items": enriched, "count": len(enriched)}
 
     @app.get("/api/v1/instruments")
     def list_instruments(

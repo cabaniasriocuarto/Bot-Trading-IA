@@ -7,8 +7,11 @@ Fecha de actualizacion: 2026-03-09
 - Rama tecnica activa:
   - `feature/brain-policy-ledgers-v1`
 - Estado git al iniciar el bloque:
-  - `git status` limpio
-  - continuidad directa contra `origin/main` (`0/4`)
+  - cambios locales acotados a:
+    - `registry_db.py`
+    - `app.py`
+    - `rtlab_core/universe/*`
+  - continuidad directa contra `origin/main` (`0/5`)
 - Decision de rama:
   - se mantiene la rama actual porque este trabajo sigue el mismo objetivo coherente:
     - cerebro del programa
@@ -140,7 +143,7 @@ Regla de verdad:
     - `universe_policy`
     - `observability`
 - Aun no implementado de forma integral:
-  - universos reproducibles por run
+  - frontend de universos reproducibles por run
   - derivative state real poblado desde ingesta de mercado
   - live parity state cache completa con websocket/REST freshness por family
   - research funnel visible de punta a punta
@@ -202,14 +205,22 @@ Regla de verdad:
   - `live_parity_state` queda disponible con actualizacion en sync de instrumentos
   - endpoints de datasets y live parity ya expuestos
   - tests locales en verde para dataset registry y compatibilidad con mass backtest
+- Bloque 4:
+  - `universe_registry`, `universe_snapshot`, `universe_snapshot_item` y `run_universe_link` quedan persistidos en la SQLite principal
+  - `UniverseService` genera universos reproducibles con snapshot exacto de instrumentos por family/provider
+  - `ConsoleStore.record_run(...)` ya persiste `run -> universe` junto al `run -> dataset`
+  - endpoints nuevos:
+    - `GET /api/v1/universes`
+    - `POST /api/v1/universes`
+    - `GET /api/v1/universes/runs/{run_id}`
+  - si falta un simbolo en el snapshot, queda fail-closed con `snapshot_gap=instrument_missing_from_catalog` en vez de inventar metadata
 
 ### Bloque actual en progreso
 
-- Bloque 4:
-  - introducir universos reproducibles por provider/family/symbol filters
-  - persistir snapshots exactos del universo por run
-  - enlazar runs, datasets e instrumentos sin ambiguedad
-  - preparar la matriz de modos (`backtest/mock/paper/testnet/demo/live`) para usar el mismo catalogo normalizado
+- Bloque 5:
+  - research funnel / Beast sobre universe snapshots y trial ledger
+  - rejection reasons y promotion stage visibles en el ledger de research
+  - dejar preparado el puente hacia la taxonomia de modos y la matriz de elegibilidad por modo
 
 ### Bibliografia base efectiva para este roadmap
 

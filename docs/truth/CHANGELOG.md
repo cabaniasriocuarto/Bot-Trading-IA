@@ -2,6 +2,27 @@
 
 ## 2026-03-09
 
+### Bloque 4 cerrado: universos reproducibles + run_universe_link
+- `RegistryDB` agrega persistencia nueva para:
+  - `universe_registry`
+  - `universe_snapshot`
+  - `universe_snapshot_item`
+  - `run_universe_link`
+- Se crea `rtlab_core.universe.service.UniverseService` para:
+  - registrar universos reproducibles por provider/family/symbols
+  - fijar `catalog_snapshot_id` del universo cuando existe snapshot de instrumentos
+  - generar snapshot exacto de instrumentos del universo
+  - marcar fail-closed los simbolos faltantes con `snapshot_gap=instrument_missing_from_catalog`
+- `ConsoleStore.record_run(...)` ahora persiste tambien el enlace:
+  - `run -> universe -> snapshot exacto de instrumentos`
+- Se agregan endpoints:
+  - `GET /api/v1/universes`
+  - `POST /api/v1/universes`
+  - `GET /api/v1/universes/runs/{run_id}`
+- Tests nuevos/ejecutados:
+  - `rtlab_autotrader/tests/test_universe_registry.py`
+  - `rtlab_autotrader/tests/test_dataset_registry.py`
+
 ### Bloque 3 cerrado: dataset registry + run_dataset_link + live parity minima
 - `DataCatalog` pasa a sincronizar manifests a `dataset_registry` en la SQLite principal.
 - `DatasetModeDataProvider` registra manifests estandarizados al resolver datasets legacy o fallback de catalogo.

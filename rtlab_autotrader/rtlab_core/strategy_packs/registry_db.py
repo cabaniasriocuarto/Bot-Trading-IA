@@ -473,6 +473,78 @@ CREATE TABLE IF NOT EXISTS run_dataset_link (
 CREATE INDEX IF NOT EXISTS idx_run_dataset_link_run
 ON run_dataset_link(run_id, linked_at DESC);
 
+CREATE TABLE IF NOT EXISTS universe_registry (
+    universe_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_market TEXT NOT NULL,
+    market TEXT NOT NULL DEFAULT 'crypto',
+    asset_class TEXT NOT NULL DEFAULT 'unknown',
+    definition_json TEXT NOT NULL DEFAULT '{}',
+    symbol_count INTEGER NOT NULL DEFAULT 0,
+    catalog_snapshot_id TEXT,
+    source_hash TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_universe_registry_lookup
+ON universe_registry(provider, provider_market, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS universe_snapshot (
+    snapshot_id TEXT PRIMARY KEY,
+    universe_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_market TEXT NOT NULL,
+    market TEXT NOT NULL DEFAULT 'crypto',
+    asset_class TEXT NOT NULL DEFAULT 'unknown',
+    catalog_snapshot_id TEXT,
+    definition_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    symbol_count INTEGER NOT NULL DEFAULT 0,
+    source_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(universe_id) REFERENCES universe_registry(universe_id) ON DELETE CASCADE,
+    FOREIGN KEY(catalog_snapshot_id) REFERENCES instrument_catalog_snapshot(snapshot_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_universe_snapshot_lookup
+ON universe_snapshot(universe_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS universe_snapshot_item (
+    snapshot_id TEXT NOT NULL,
+    normalized_symbol TEXT NOT NULL,
+    instrument_id TEXT,
+    provider_symbol TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY(snapshot_id, normalized_symbol),
+    FOREIGN KEY(snapshot_id) REFERENCES universe_snapshot(snapshot_id) ON DELETE CASCADE,
+    FOREIGN KEY(instrument_id) REFERENCES instrument_registry(instrument_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_universe_snapshot_item_symbol
+ON universe_snapshot_item(snapshot_id, normalized_symbol, instrument_id);
+
+CREATE TABLE IF NOT EXISTS run_universe_link (
+    run_id TEXT NOT NULL,
+    universe_id TEXT,
+    snapshot_id TEXT NOT NULL,
+    provider TEXT,
+    provider_market TEXT,
+    market TEXT,
+    asset_class TEXT,
+    symbol_count INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(run_id, snapshot_id),
+    FOREIGN KEY(universe_id) REFERENCES universe_registry(universe_id) ON DELETE SET NULL,
+    FOREIGN KEY(snapshot_id) REFERENCES universe_snapshot(snapshot_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_universe_link_run
+ON run_universe_link(run_id, linked_at DESC);
+
 CREATE TABLE IF NOT EXISTS derivative_state_snapshot (
     snapshot_id TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
@@ -2738,6 +2810,295 @@ class RegistryDB:
             query += " AND run_id=?"
             params.append(run_id)
         query += " ORDER BY linked_at DESC, dataset_id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json", "{}") or "{}")
+            except Exception:
+                item["metadata"] = {}
+            out.append(item)
+        return out
+
+    def upsert_universe_registry(
+        self,
+        *,
+        universe_id: str,
+        name: str,
+        provider: str,
+        provider_market: str,
+        market: str,
+        asset_class: str,
+        definition: dict[str, Any] | None = None,
+        symbol_count: int = 0,
+        catalog_snapshot_id: str | None = None,
+        source_hash: str | None = None,
+        status: str = "active",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO universe_registry (
+                    universe_id, name, provider, provider_market, market, asset_class, definition_json,
+                    symbol_count, catalog_snapshot_id, source_hash, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(universe_id) DO UPDATE SET
+                    name=excluded.name,
+                    provider=excluded.provider,
+                    provider_market=excluded.provider_market,
+                    market=excluded.market,
+                    asset_class=excluded.asset_class,
+                    definition_json=excluded.definition_json,
+                    symbol_count=excluded.symbol_count,
+                    catalog_snapshot_id=excluded.catalog_snapshot_id,
+                    source_hash=excluded.source_hash,
+                    status=excluded.status,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    universe_id,
+                    name,
+                    provider,
+                    provider_market,
+                    market,
+                    asset_class,
+                    json.dumps(definition or {}, ensure_ascii=True, sort_keys=True),
+                    int(symbol_count),
+                    catalog_snapshot_id,
+                    source_hash or "",
+                    status,
+                ),
+            )
+            conn.commit()
+
+    def list_universe_registry(
+        self,
+        *,
+        provider: str | None = None,
+        provider_market: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM universe_registry WHERE 1=1"
+        params: list[Any] = []
+        if provider:
+            query += " AND provider=?"
+            params.append(provider)
+        if provider_market:
+            query += " AND provider_market=?"
+            params.append(provider_market)
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC, universe_id DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["definition"] = json.loads(item.pop("definition_json", "{}") or "{}")
+            except Exception:
+                item["definition"] = {}
+            out.append(item)
+        return out
+
+    def get_universe_registry(self, universe_id: str) -> dict[str, Any] | None:
+        rows = self.list_universe_registry(limit=1000)
+        for row in rows:
+            if str(row.get("universe_id") or "") == str(universe_id):
+                return row
+        return None
+
+    def upsert_universe_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        universe_id: str,
+        provider: str,
+        provider_market: str,
+        market: str,
+        asset_class: str,
+        catalog_snapshot_id: str | None = None,
+        definition: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        items: list[dict[str, Any]] | None = None,
+        source_hash: str | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        normalized_items = items or []
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO universe_snapshot (
+                    snapshot_id, universe_id, provider, provider_market, market, asset_class,
+                    catalog_snapshot_id, definition_json, metadata_json, symbol_count, source_hash, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    universe_id=excluded.universe_id,
+                    provider=excluded.provider,
+                    provider_market=excluded.provider_market,
+                    market=excluded.market,
+                    asset_class=excluded.asset_class,
+                    catalog_snapshot_id=excluded.catalog_snapshot_id,
+                    definition_json=excluded.definition_json,
+                    metadata_json=excluded.metadata_json,
+                    symbol_count=excluded.symbol_count,
+                    source_hash=excluded.source_hash,
+                    created_at=COALESCE(excluded.created_at, universe_snapshot.created_at)
+                """,
+                (
+                    snapshot_id,
+                    universe_id,
+                    provider,
+                    provider_market,
+                    market,
+                    asset_class,
+                    catalog_snapshot_id,
+                    json.dumps(definition or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True),
+                    len(normalized_items),
+                    source_hash or "",
+                    created_at,
+                ),
+            )
+            conn.execute("DELETE FROM universe_snapshot_item WHERE snapshot_id=?", (snapshot_id,))
+            for item in normalized_items:
+                conn.execute(
+                    """
+                    INSERT INTO universe_snapshot_item (
+                        snapshot_id, normalized_symbol, instrument_id, provider_symbol, payload_json
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot_id,
+                        str(item.get("normalized_symbol") or ""),
+                        (str(item.get("instrument_id") or "") or None),
+                        (str(item.get("provider_symbol") or "") or None),
+                        json.dumps(item, ensure_ascii=True, sort_keys=True),
+                    ),
+                )
+            conn.commit()
+
+    def list_universe_snapshots(
+        self,
+        *,
+        universe_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM universe_snapshot WHERE 1=1"
+        params: list[Any] = []
+        if universe_id:
+            query += " AND universe_id=?"
+            params.append(universe_id)
+        query += " ORDER BY created_at DESC, snapshot_id DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["definition"] = json.loads(item.pop("definition_json", "{}") or "{}")
+            except Exception:
+                item["definition"] = {}
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json", "{}") or "{}")
+            except Exception:
+                item["metadata"] = {}
+            out.append(item)
+        return out
+
+    def list_universe_snapshot_items(self, snapshot_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM universe_snapshot_item
+                WHERE snapshot_id=?
+                ORDER BY normalized_symbol ASC
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["payload"] = json.loads(item.pop("payload_json", "{}") or "{}")
+            except Exception:
+                item["payload"] = {}
+            out.append(item)
+        return out
+
+    def upsert_run_universe_link(
+        self,
+        *,
+        run_id: str,
+        snapshot_id: str,
+        universe_id: str | None = None,
+        provider: str | None = None,
+        provider_market: str | None = None,
+        market: str | None = None,
+        asset_class: str | None = None,
+        symbol_count: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO run_universe_link (
+                    run_id, universe_id, snapshot_id, provider, provider_market, market,
+                    asset_class, symbol_count, metadata_json, linked_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(run_id, snapshot_id) DO UPDATE SET
+                    universe_id=excluded.universe_id,
+                    provider=excluded.provider,
+                    provider_market=excluded.provider_market,
+                    market=excluded.market,
+                    asset_class=excluded.asset_class,
+                    symbol_count=excluded.symbol_count,
+                    metadata_json=excluded.metadata_json,
+                    linked_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    run_id,
+                    universe_id,
+                    snapshot_id,
+                    provider,
+                    provider_market,
+                    market,
+                    asset_class,
+                    int(symbol_count),
+                    json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True),
+                ),
+            )
+            conn.commit()
+
+    def list_run_universe_links(
+        self,
+        *,
+        run_id: str | None = None,
+        universe_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM run_universe_link WHERE 1=1"
+        params: list[Any] = []
+        if run_id:
+            query += " AND run_id=?"
+            params.append(run_id)
+        if universe_id:
+            query += " AND universe_id=?"
+            params.append(universe_id)
+        query += " ORDER BY linked_at DESC, snapshot_id DESC"
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
         out: list[dict[str, Any]] = []
