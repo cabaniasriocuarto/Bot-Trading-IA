@@ -2,6 +2,11 @@ fundamentals_credit_filter:
   enabled: true
   fail_closed: true
   apply_markets: ["equities"]
+  point_in_time_required: true
+  require_as_of: true
+  require_vintage_date_for_macro: true
+  require_filing_acceptance_datetime_for_filings: true
+  reject_revised_data_as_if_known_in_past: true
   freshness_max_days: 120
   data_source:
     mode: "local_json"

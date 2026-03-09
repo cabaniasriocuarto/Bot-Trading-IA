@@ -3,20 +3,25 @@ from __future__ import annotations
 import hashlib
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any
 
+import yaml
+
 from rtlab_core.learning.brain import deflated_sharpe_ratio
+from rtlab_core.policy_paths import resolve_policy_root
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 
 
-VALID_SOURCES = {"backtest", "shadow", "paper", "testnet"}
+VALID_SOURCES = {"backtest", "shadow", "paper", "testnet", "live"}
 VALID_REGIMES = {"trend", "range", "high_vol", "toxic", "unknown"}
-SOURCE_WEIGHTS = {
+DEFAULT_SOURCE_WEIGHTS = {
     "shadow": 1.00,
     "testnet": 0.90,
     "paper": 0.80,
     "backtest": 0.60,
+    "live": 1.00,
 }
 
 
@@ -29,6 +34,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -104,6 +116,27 @@ def _psr(values: list[float]) -> float | None:
     return _normal_cdf(sharpe / sr_std)
 
 
+def _load_source_weights() -> dict[str, float]:
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        policies_root = resolve_policy_root(repo_root)
+        payload = yaml.safe_load((policies_root / "gates.yaml").read_text(encoding="utf-8")) or {}
+        gates = payload.get("gates") if isinstance(payload.get("gates"), dict) else {}
+        raw = gates.get("source_weights") if isinstance(gates.get("source_weights"), dict) else {}
+        merged = {**DEFAULT_SOURCE_WEIGHTS}
+        for key, value in raw.items():
+            try:
+                merged[str(key).strip().lower()] = float(value)
+            except Exception:
+                continue
+        return merged
+    except Exception:
+        return dict(DEFAULT_SOURCE_WEIGHTS)
+
+
+SOURCE_WEIGHTS = _load_source_weights()
+
+
 class ExperienceStore:
     def __init__(self, registry: RegistryDB) -> None:
         self.registry = registry
@@ -151,6 +184,8 @@ class ExperienceStore:
         validation_mode = str(run.get("validation_mode") or "").strip().lower()
         pbo = metrics.get("pbo")
         dsr = metrics.get("dsr")
+        if source == "live":
+            return "runtime_live_execution"
         if source == "shadow":
             return "shadow_live_market_data"
         if source in {"paper", "testnet"}:
@@ -166,6 +201,8 @@ class ExperienceStore:
     @staticmethod
     def _cost_fidelity_level(run: dict[str, Any], *, source: str) -> str:
         dataset_source = str(run.get("data_source") or ((run.get("provenance") or {}).get("dataset_source") if isinstance(run.get("provenance"), dict) else "") or "").lower()
+        if source == "live":
+            return "real_exchange_execution"
         if source == "shadow":
             return "runtime_simulated_live_data"
         if source in {"paper", "testnet"}:
@@ -224,6 +261,7 @@ class ExperienceStore:
         dataset_hash = str(run.get("dataset_hash") or ((run.get("provenance") or {}).get("dataset_hash") if isinstance(run.get("provenance"), dict) else "") or "")
         commit_hash = str(run.get("git_commit") or ((run.get("provenance") or {}).get("commit_hash") if isinstance(run.get("provenance"), dict) else "") or "")
         feature_set = str(run.get("feature_set") or ((run.get("provenance") or {}).get("orderflow_feature_set") if isinstance(run.get("provenance"), dict) else "") or "unknown")
+        provenance = run.get("provenance") if isinstance(run.get("provenance"), dict) else {}
         source_weight = self.source_weight(source)
         episode_id = self._episode_id(
             run_id=run_id,
@@ -237,16 +275,22 @@ class ExperienceStore:
         trades = run.get("trades") if isinstance(run.get("trades"), list) else []
         summary_metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
         summary_costs = run.get("costs_breakdown") if isinstance(run.get("costs_breakdown"), dict) else {}
+        trade_count = _safe_int(summary_metrics.get("trade_count") or summary_metrics.get("roundtrips") or len(trades), len(trades))
+        as_of = str(run.get("as_of") or provenance.get("as_of") or end_ts or start_ts or run.get("created_at") or "").strip() or None
+        vintage_date = str(run.get("vintage_date") or provenance.get("vintage_date") or "").strip() or None
+        bot_id_n = str(bot_id or "").strip() or None
+        attribution_type = "exact" if bot_id_n else "unknown"
+        attribution_confidence = 1.0 if bot_id_n else 0.0
         summary = {
             "metrics": summary_metrics,
             "costs_breakdown": summary_costs,
             "mode": str(run.get("mode") or ""),
-            "bot_id": str(bot_id or ""),
+            "bot_id": str(bot_id_n or ""),
             "feature_set": feature_set,
             "validation_mode": str(run.get("validation_mode") or ""),
             "dataset_source": dataset_source,
             "source_weight": source_weight,
-            "trade_count": int(summary_metrics.get("trade_count") or summary_metrics.get("roundtrips") or len(trades)),
+            "trade_count": trade_count,
             "run_count": 1,
             "orderflow_enabled": bool(run.get("use_orderflow_data", False)),
             "tags": run.get("tags") if isinstance(run.get("tags"), list) else [],
@@ -257,7 +301,7 @@ class ExperienceStore:
             source=source,
             source_weight=source_weight,
             strategy_id=strategy_id,
-            bot_id=str(bot_id or "").strip() or None,
+            bot_id=bot_id_n,
             asset=asset or "UNKNOWN",
             timeframe=timeframe or "unknown",
             start_ts=start_ts or None,
@@ -269,12 +313,70 @@ class ExperienceStore:
             validation_quality=self._validation_quality(run, source=source),
             cost_fidelity_level=self._cost_fidelity_level(run, source=source),
             feature_set=feature_set,
+            as_of=as_of,
+            vintage_date=vintage_date,
+            trades_count=trade_count,
+            attribution_type=attribution_type,
+            attribution_confidence=attribution_confidence,
+            effective_weight=source_weight,
             notes=str(run.get("notes") or ""),
             summary=summary,
             created_at=str(run.get("created_at") or None) if run.get("created_at") else None,
         )
+        if bot_id_n:
+            self.registry.upsert_run_bot_link(
+                run_id=run_id,
+                bot_id=bot_id_n,
+                attribution_type=attribution_type,
+                attribution_confidence=attribution_confidence,
+                created_at=str(run.get("created_at") or _utc_iso()),
+            )
         events = self._build_trade_events(episode_id=episode_id, run=run)
         self.registry.replace_experience_events(episode_id, events)
+        total_cost_bps = (
+            _safe_float(summary_costs.get("fees_total_bps"), _safe_float((run.get("costs_model") or {}).get("fees_bps")))
+            + _safe_float(summary_costs.get("spread_total_bps"), _safe_float((run.get("costs_model") or {}).get("spread_bps")))
+            + _safe_float(summary_costs.get("slippage_total_bps"), _safe_float((run.get("costs_model") or {}).get("slippage_bps")))
+            + _safe_float(summary_costs.get("funding_total_bps"), _safe_float((run.get("costs_model") or {}).get("funding_bps")))
+        )
+        age_days = 0.0
+        if as_of:
+            dt = _parse_iso(as_of)
+            if dt is not None:
+                age_days = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
+        self.registry.upsert_strategy_evidence(
+            evidence_id=f"{episode_id}:evidence",
+            strategy_id=strategy_id,
+            source_type=source,
+            run_id=run_id,
+            bot_id=bot_id_n,
+            dataset_hash=dataset_hash or None,
+            dataset_source=dataset_source or None,
+            as_of=as_of,
+            vintage_date=vintage_date,
+            trades=trade_count,
+            turnover=_safe_float(summary_metrics.get("turnover"), trade_count),
+            fees_bps=_safe_float((run.get("costs_model") or {}).get("fees_bps")),
+            spread_bps=_safe_float((run.get("costs_model") or {}).get("spread_bps")),
+            slippage_bps=_safe_float((run.get("costs_model") or {}).get("slippage_bps")),
+            funding_bps=_safe_float((run.get("costs_model") or {}).get("funding_bps")),
+            expectancy_net=_safe_float(summary_metrics.get("expectancy_usd_per_trade"), _safe_float(summary_metrics.get("expectancy"))),
+            sharpe=_safe_float(summary_metrics.get("sharpe")),
+            sortino=_safe_float(summary_metrics.get("sortino")),
+            psr=_safe_float(summary_metrics.get("psr"), 0.0) if summary_metrics.get("psr") is not None else None,
+            dsr=_safe_float(summary_metrics.get("dsr"), 0.0) if summary_metrics.get("dsr") is not None else None,
+            pbo=_safe_float(summary_metrics.get("pbo"), 0.0) if summary_metrics.get("pbo") is not None else None,
+            max_dd=_safe_float(summary_metrics.get("max_dd")),
+            win_rate=_safe_float(summary_metrics.get("win_rate"), _safe_float(summary_metrics.get("hit_rate"))),
+            profit_factor=_safe_float(summary_metrics.get("profit_factor")),
+            validation_quality=1.0,
+            source_weight=source_weight,
+            freshness_decay=math.exp(-age_days / 180.0) if age_days > 0 else 1.0,
+            effective_weight=source_weight,
+            legacy_untrusted=False,
+            excluded_from_learning=False,
+            notes=f"source={source}; cost_bps_total={total_cost_bps:.4f}; feature_set={feature_set}",
+        )
         self._refresh_regime_kpis(strategy_id)
         self._refresh_strategy_guidance(strategy_id)
         return {
@@ -426,7 +528,7 @@ class ExperienceStore:
         return events
 
     def _refresh_regime_kpis(self, strategy_id: str) -> None:
-        episodes = self.registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest", "shadow", "paper", "testnet"])
+        episodes = self.registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest", "shadow", "paper", "testnet", "live"])
         if not episodes:
             self.registry.replace_regime_kpis(strategy_id, [])
             return

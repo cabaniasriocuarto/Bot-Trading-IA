@@ -10,7 +10,7 @@ from typing import Any
 from rtlab_core.learning.brain import deflated_sharpe_ratio
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 
-VALID_SOURCES = ("backtest", "shadow", "paper", "testnet")
+VALID_SOURCES = ("backtest", "shadow", "paper", "testnet", "live")
 VALID_REGIMES = ("trend", "range", "high_vol", "toxic", "unknown")
 
 

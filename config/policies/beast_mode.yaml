@@ -13,3 +13,16 @@ beast_mode:
     daily_job_cap_hobby: 200
     daily_job_cap_pro: 800
     stop_at_budget_pct: 80
+
+  research_funnel:
+    persist_all_trials: true
+    mark_legacy_if_metadata_missing: true
+    require_dataset_hash_for_promotable: true
+    require_cost_profile_for_promotable: true
+    require_execution_model_for_promotable: true
+
+  multiple_testing_controls:
+    pbo_enabled: true
+    dsr_enabled: true
+    psr_enabled: true
+    cpcv_enabled: true

@@ -3386,7 +3386,7 @@ def risk_hooks(context):
         *,
         strategy_ids: list[str],
     ) -> dict[str, dict[str, dict[str, Any]]]:
-        valid_sources = ("backtest", "shadow", "paper", "testnet")
+        valid_sources = ("backtest", "shadow", "paper", "testnet", "live")
         out: dict[str, dict[str, dict[str, Any]]] = {
             strategy_id: {source: self._empty_experience_source_metrics() for source in valid_sources}
             for strategy_id in strategy_ids
@@ -3462,7 +3462,7 @@ def risk_hooks(context):
         *,
         bot_ids: list[str],
     ) -> dict[str, dict[str, dict[str, Any]]]:
-        valid_sources = ("backtest", "shadow", "paper", "testnet")
+        valid_sources = ("backtest", "shadow", "paper", "testnet", "live")
         out: dict[str, dict[str, dict[str, Any]]] = {
             bot_id: {source: self._empty_experience_source_metrics() for source in valid_sources}
             for bot_id in bot_ids
@@ -3823,7 +3823,7 @@ def risk_hooks(context):
                 by_mode_metrics[mode_key] = self._aggregate_bot_metric_rows(mode_rows)
             experience_by_source = {
                 source: self._empty_experience_source_metrics()
-                for source in ("backtest", "shadow", "paper", "testnet")
+                for source in ("backtest", "shadow", "paper", "testnet", "live")
             }
             for sid in pool:
                 strategy_sources = experience_by_strategy.get(sid) or {}
@@ -3862,7 +3862,7 @@ def risk_hooks(context):
             if has_exact_experience:
                 experience_by_source = {
                     source: dict(exact_experience_by_source.get(source) or self._empty_experience_source_metrics())
-                    for source in ("backtest", "shadow", "paper", "testnet")
+                    for source in ("backtest", "shadow", "paper", "testnet", "live")
                 }
             active = by_mode_metrics.get(
                 mode,
@@ -3979,6 +3979,7 @@ def risk_hooks(context):
                 "shadow": self._empty_experience_source_metrics(),
                 "paper": self._empty_experience_source_metrics(),
                 "testnet": self._empty_experience_source_metrics(),
+                "live": self._empty_experience_source_metrics(),
             },
             "last_run_at": None,
             "recommendations_pending": 0,
@@ -12029,4 +12030,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

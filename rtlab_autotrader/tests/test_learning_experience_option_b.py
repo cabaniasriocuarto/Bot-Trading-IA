@@ -205,6 +205,74 @@ def test_experience_store_persists_and_filters_bot_id(tmp_path: Path) -> None:
     assert empty == []
 
 
+def test_experience_store_persists_live_source_and_run_bot_link(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    start_dt = datetime(2025, 2, 1, tzinfo=timezone.utc)
+
+    run = {
+        "id": "live-run-linked",
+        "strategy_id": strategy_id,
+        "mode": "live",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "exchange_live",
+        "dataset_hash": "live-dataset-hash",
+        "git_commit": "cafebabe",
+        "feature_set": "orderflow_on",
+        "as_of": start_dt.isoformat(),
+        "period": {
+            "start": start_dt.isoformat(),
+            "end": (start_dt + timedelta(minutes=5)).isoformat(),
+        },
+        "metrics": {
+            "trade_count": 2,
+            "roundtrips": 2,
+            "expectancy_usd_per_trade": 5.5,
+            "sharpe": 1.1,
+            "sortino": 1.3,
+            "profit_factor": 1.6,
+            "win_rate": 0.5,
+            "max_dd": 0.02,
+        },
+        "costs_model": {
+            "fees_bps": 4.5,
+            "spread_bps": 2.5,
+            "slippage_bps": 1.0,
+            "funding_bps": 0.0,
+        },
+        "costs_breakdown": {
+            "gross_pnl_total": 14.0,
+            "net_pnl_total": 11.0,
+            "fees_total": 1.0,
+            "spread_total": 1.0,
+            "slippage_total": 1.0,
+            "funding_total": 0.0,
+        },
+        "trades": [],
+    }
+    payload = store.record_run(run, source_override="live", bot_id="BOT-LIVE")
+
+    assert payload is not None
+    episodes = registry.list_experience_episodes(bot_ids=["BOT-LIVE"], sources=["live"])
+    assert len(episodes) == 1
+    assert episodes[0]["source"] == "live"
+    assert episodes[0]["attribution_type"] == "exact"
+    assert episodes[0]["attribution_confidence"] == 1.0
+    assert episodes[0]["effective_weight"] == 1.0
+
+    links = registry.list_run_bot_links(run_id="live-run-linked")
+    assert len(links) == 1
+    assert links[0]["bot_id"] == "BOT-LIVE"
+    assert links[0]["attribution_type"] == "exact"
+
+    evidence = registry.list_strategy_evidence(strategy_id=strategy_id, source_type="live")
+    assert len(evidence) == 1
+    assert evidence[0]["run_id"] == "live-run-linked"
+    assert evidence[0]["source_type"] == "live"
+
+
 def test_option_b_engine_filters_pool_true(tmp_path: Path) -> None:
     registry = RegistryDB(tmp_path / "registry.sqlite")
     store = ExperienceStore(registry)
@@ -262,3 +330,54 @@ def test_shadow_run_config_uses_safe_defaults() -> None:
 
     left.costs.fees_bps = 9.0
     assert right.costs.fees_bps == 5.5
+
+
+def test_registry_ledgers_support_truth_and_execution_reality(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+
+    registry.upsert_strategy_truth(
+        strategy_id="trend_pullback_orderflow_confirm_v1",
+        strategy_version="1.2.0",
+        family="trend_pullback",
+        market="crypto",
+        asset_class="spot",
+        timeframe="5m",
+        thesis_summary="La estrategia busca pullbacks a favor de tendencia con confirmación de order flow.",
+        intended_regimes=["trend"],
+        forbidden_regimes=["toxic"],
+        current_status="candidate",
+        current_confidence=0.72,
+    )
+    truth = registry.get_strategy_truth("trend_pullback_orderflow_confirm_v1")
+    assert truth is not None
+    assert truth["family"] == "trend_pullback"
+    assert truth["current_confidence"] == 0.72
+
+    registry.upsert_execution_reality(
+        execution_id="exec-1",
+        order_id="order-1",
+        bot_id="BOT-LIVE",
+        strategy_id="trend_pullback_orderflow_confirm_v1",
+        symbol="BTCUSDT",
+        timestamp=datetime(2025, 2, 1, tzinfo=timezone.utc).isoformat(),
+        order_type="market",
+        side="buy",
+        qty=0.1,
+        participation_rate=0.01,
+        expected_fill_price=100.0,
+        realized_fill_price=100.2,
+        realized_slippage_bps=20.0,
+        maker_taker="taker",
+        partial_fill_ratio=1.0,
+        queue_proxy=0.0,
+        cancel_replace_count=0,
+        latency_ms=42.0,
+        spread_bps=4.0,
+        impact_bps_est=8.0,
+        impact_budget_bps=15.0,
+        reconciliation_status="ok",
+    )
+    rows = registry.list_execution_reality(bot_id="BOT-LIVE")
+    assert len(rows) == 1
+    assert rows[0]["execution_id"] == "exec-1"
+    assert rows[0]["impact_bps_est"] == 8.0

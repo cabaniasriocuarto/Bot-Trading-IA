@@ -1,6 +1,12 @@
 fees:
   fee_snapshot_ttl_hours: 6
   funding_snapshot_ttl_minutes: 60
+  require_complete_cost_stack_for_learning: true
+  cost_stack_fields:
+    - fees
+    - spread
+    - slippage
+    - funding
   default_fee_model_if_api_missing:
     maker_fee: 0.0002
     taker_fee: 0.0004
@@ -15,3 +21,7 @@ fees:
       maker_fee: 0.0008
       taker_fee: 0.0010
   persist_snapshots: true
+  cost_realism_factor:
+    complete: 1.00
+    partial: 0.50
+    missing: 0.00

@@ -1,6 +1,16 @@
 risk_policy:
   scope: ["bot", "strategy", "symbol"]
 
+  portfolio_limits:
+    max_weight_per_strategy: 0.35
+    max_weight_per_bot: 1.00
+    max_live_strategies_active_per_bot: 3
+
+  sizing:
+    use_fractional_kelly: true
+    half_kelly_cap: 0.50
+    quarter_kelly_trigger_confidence: 0.70
+
   soft_kill:
     block_new_entries: true
     cancel_entry_orders: true
@@ -29,3 +39,17 @@ risk_policy:
       stale_feed_seconds: 120
       reject_rate_soft_pct: 5
       reject_rate_hard_pct: 15
+
+  drawdown_controls:
+    hard_dd_pause_bot: 0.08
+    hard_dd_pause_strategy: 0.06
+    soft_dd_reduce_bot: 0.04
+    consecutive_losses_reduce: 4
+
+  liquidity_toxicity_multipliers:
+    exposure_cap_low_liquidity_multiplier: 0.50
+    exposure_cap_high_toxicity_multiplier: 0.50
+
+  cooldown:
+    quarantine_cooldown_minutes: 1440
+    reentry_requires_new_evidence: true

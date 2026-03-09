@@ -2,6 +2,11 @@ microstructure:
   enabled: true
   order_flow_level: 1
 
+  sampling:
+    volume_bars: true
+    dollar_bars: true
+    imbalance_bars: true
+
   vpin:
     enabled: true
     time_bar_seconds: 60
@@ -18,6 +23,8 @@ microstructure:
     thresholds:
       soft_kill_cdf: 0.90
       hard_kill_cdf: 0.97
+      reduce_aggressiveness_pct: 0.90
+      defensive_mode_pct: 0.95
 
   spread_guard:
     enabled: true
@@ -33,3 +40,13 @@ microstructure:
     enabled: true
     lookback_minutes: 60
     soft_kill_if_realized_vol_gt_multiplier: 3.0
+
+  impact:
+    enabled: true
+    model: "hybrid_linear_to_sqrt"
+    block_if_impact_gt_edge_ratio: 0.50
+    participation_caps:
+      crypto_liquid: 0.02
+      futures_liquid: 0.015
+      equities_liquid: 0.01
+      fallback: 0.005

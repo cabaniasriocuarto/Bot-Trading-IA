@@ -1,6 +1,146 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-08
+
+## Hecho en este bloque (cerebro-2/3)
+- `live` agregado como fuente real del modelo de experiencia:
+  - store
+  - engine
+  - backend aggregates
+- Persistencia exacta `run -> bot` agregada mediante `run_bot_link`.
+- Nuevos ledgers/base del cerebro creados en SQLite:
+  - `strategy_truth`
+  - `strategy_evidence`
+  - `bot_policy_state`
+  - `bot_decision_log`
+  - `execution_reality`
+- `experience_episode` ampliado con:
+  - flags de quarantine/exclusion
+  - provenance temporal (`as_of`, `vintage_date`)
+  - `trades_count`
+  - attribution
+  - `effective_weight`
+- Evidencia por estrategia ya se registra tambien desde `ConsoleStore.record_run(...)`.
+
+## Pendiente siguiente bloque
+1. Cablear `brain.py` / `knowledge.py` / `service.py` al modelo completo bot-first con prior global usando los nuevos ledgers en vez de solo agregados livianos.
+2. Hacer visible en frontend, de forma minima y clara:
+   - `live` como fuente en paneles de experiencia
+   - `strategy_truth`
+   - `bot_policy_state`
+   - `bot_decision_log`
+   - `execution_reality`
+3. Completar la atribucion fuerte `episode -> bot_id` como campo/consulta directa para analitica historica por bot.
+4. Conectar `execution_reality` a fills/slippage reales del runtime cuando exista evidencia operativa no simulada.
+5. Reforzar Beast/Batch solo en lo minimo necesario para que las nuevas fuentes y ledgers no se contradigan en deploy.
+
+## Bloqueado / no implementado
+- Aun NO implementado:
+  - panel visual completo del cerebro del bot
+  - decision log visible en frontend
+  - truth panel de estrategia
+  - reality panel de ejecucion
+  - OPE / doubly-robust wiring real del policy layer
+  - Beast/Batch cerrado end-to-end en deploy
+
+## Decisiones asumidas
+- `live` se incorpora como fuente de experiencia real, pero NO habilita `LIVE` operativo por si sola.
+- La atribucion exacta se persiste solo cuando el run llega con `bot_id`; no se reconstruye artificialmente si falta.
+- El trabajo se mantuvo backward-compatible sobre SQLite y sobre el modelo actual del repo.
+
+## Riesgos abiertos
+- Parte del cerebro sigue visible solo en backend/store y todavia no en UX final.
+- `strategy_evidence` hoy persiste evidencia primaria por run, pero falta expandir la capa de governance completa (`owner/validator/revalidation_due`) si se quiere governance mas fuerte.
+- `execution_reality` existe en DB pero todavia no esta alimentado por un runtime real end-to-end.
+
+## Archivos tocados
+- `rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py`
+- `rtlab_autotrader/rtlab_core/learning/experience_store.py`
+- `rtlab_autotrader/rtlab_core/learning/option_b_engine.py`
+- `rtlab_autotrader/rtlab_core/web/app.py`
+- `rtlab_autotrader/tests/test_learning_experience_option_b.py`
+- `rtlab_autotrader/tests/test_brain_policy_yaml.py`
+- `docs/truth/SOURCE_OF_TRUTH.md`
+- `docs/truth/CHANGELOG.md`
+- `docs/truth/NEXT_STEPS.md`
+
+## Tests ejecutados
+- `python -m py_compile rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/learning/option_b_engine.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_yaml.py -q` -> PASS
+
+## Build status
+- no aplica build de frontend en este bloque de store/engine/schema
+
+## Hecho en este bloque (cerebro-0/1)
+- Confirmada la fuente de verdad de configuracion:
+  - `config/policies/*.yaml`
+- Centralizados defaults del cerebro en YAML:
+  - pesos por fuente
+  - stale / freshness
+  - quality gates
+  - blending bot-first con prior global
+  - promotion / quarantine
+  - impact / participation caps
+  - cost realism
+  - point-in-time fundamentals
+- Test de sanidad agregado:
+  - `rtlab_autotrader/tests/test_brain_policy_yaml.py`
+
+## Pendiente siguiente bloque
+1. Migraciones SQLite backward-compatible en `registry_db.py`:
+   - `strategy_truth`
+   - `strategy_evidence`
+   - `bot_policy_state`
+   - `bot_decision_log`
+   - `run_bot_link`
+   - `execution_reality`
+   - flags legacy/stale/effective_weight en `experience_episode`
+2. Cablear `learning/*` al nuevo esquema de pesos / quarantine / stale.
+3. Definir si `knowledge.py` mantiene fallback legacy o pasa a consumir el mismo root canonico de `config/policies`.
+
+## Bloqueado / no implementado
+- Aun NO implementado:
+  - migracion DB del cerebro
+  - quarantine/stale efectivo en runtime
+  - score bot-first en `brain.py` / `option_b_engine.py`
+  - endpoints nuevos del cerebro
+  - frontend `brain panel`
+
+## Decisiones asumidas
+- Se preservan todas las claves antiguas ya consumidas por runtime y tests.
+- Las nuevas secciones se agregan como extensiones, no como reemplazo incompatible.
+- `config/policies` queda como unica fuente de verdad operativa; cualquier fallback legacy se tratara en el siguiente bloque.
+
+## Riesgos abiertos
+- Hay codigo legacy que todavia lee `knowledge/policies/gates.yaml` como metadata/fallback y puede generar divergencia narrativa si no se normaliza en el siguiente bloque.
+- Los nuevos defaults existen en YAML, pero aun no impactan score/persistencia hasta cablear `learning/*`.
+
+## Archivos tocados
+- `config/policies/gates.yaml`
+- `config/policies/microstructure.yaml`
+- `config/policies/risk_policy.yaml`
+- `config/policies/beast_mode.yaml`
+- `config/policies/fees.yaml`
+- `config/policies/fundamentals_credit_filter.yaml`
+- `rtlab_autotrader/tests/test_brain_policy_yaml.py`
+- `docs/truth/SOURCE_OF_TRUTH.md`
+- `docs/truth/CHANGELOG.md`
+- `docs/truth/NEXT_STEPS.md`
+
+## Tests ejecutados
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_yaml.py -q` -> PASS
+- parse YAML directo sobre:
+  - `gates.yaml`
+  - `microstructure.yaml`
+  - `risk_policy.yaml`
+  - `beast_mode.yaml`
+  - `fees.yaml`
+  - `fundamentals_credit_filter.yaml`
+  -> PASS
+
+## Build status
+- no aplica build de frontend en este bloque de policies
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.

@@ -43,3 +43,81 @@ gates:
     allow_request_override: false
     allowed_execution_modes: ["demo"]
     promotion_blocked: true
+
+  source_weights:
+    legacy_untrusted: 0.00
+    backtest_is: 0.05
+    backtest_oos: 0.20
+    walk_forward: 0.35
+    cpcv: 0.45
+    shadow: 0.60
+    paper: 0.75
+    testnet: 0.85
+    live: 1.00
+
+  freshness_half_life_days:
+    backtest_oos: 90
+    walk_forward: 120
+    cpcv: 120
+    shadow: 45
+    paper: 60
+    testnet: 75
+    live: 180
+
+  stale_windows_days:
+    backtest_oos: 180
+    walk_forward: 180
+    cpcv: 180
+    shadow: 90
+    paper: 90
+    testnet: 90
+    live: 365
+
+  evidence_quality:
+    require_dataset_hash: true
+    require_dataset_source: true
+    require_costs_complete: true
+    require_no_lookahead: true
+    require_no_leakage: true
+    default_min_trades: 100
+
+  brain_policy:
+    exact_bot_threshold_trades: 50
+    exact_bot_threshold_effective_weight: 5.0
+    blend_if_sufficient:
+      exact_bot: 0.55
+      pool_context: 0.25
+      global_truth: 0.20
+    blend_if_insufficient:
+      exact_bot: 0.25
+      pool_context: 0.35
+      global_truth: 0.40
+
+  promotion:
+    candidate:
+      min_trades_oos: 100
+      min_psr: 0.95
+      min_dsr: 0.80
+      max_pbo: 0.30
+      max_dd: 0.20
+      require_complete_costs: true
+      require_no_lookahead: true
+      require_no_leakage: true
+    shadow_or_paper:
+      min_trades_oos: 150
+      min_psr: 0.97
+      min_dsr: 0.85
+      max_pbo: 0.25
+      max_is_to_oos_degradation: 0.40
+    testnet_or_live_small:
+      require_shadow_consistency: true
+      require_paper_consistency: true
+      require_realized_slippage_reasonable: true
+      require_human_approval: true
+
+  quarantine:
+    pbo_gt: 0.40
+    dsr_lt: 0.60
+    dd_strategy_gt: 0.06
+    dd_bot_gt: 0.08
+    require_complete_provenance: true

@@ -1,6 +1,113 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-06
+Fecha de actualizacion: 2026-03-08
+
+## Bloque cerebro-2/3: live como fuente real + ledgers + trazabilidad run->bot - 2026-03-08
+
+- Rama tecnica activa:
+  - `feature/brain-policy-ledgers-v1`
+- Se mantiene continuidad directa contra `origin/main` (`0/0`) y el objetivo sigue siendo el mismo bloque del cerebro; no se abre rama nueva.
+- `live` ya es una fuente real y persistente del modelo de experiencia:
+  - `experience_episode.source` acepta:
+    - `backtest`
+    - `shadow`
+    - `paper`
+    - `testnet`
+    - `live`
+  - `experience_store.py` ya carga `gates.source_weights` desde `config/policies/gates.yaml` y aplica `live=1.00` como default/fuente mas fuerte.
+  - `OptionBLearningEngine` ya incluye `live` en `VALID_SOURCES`.
+  - el backend web ya agrega `live` en resúmenes/agrupaciones de experiencia por fuente.
+- Trazabilidad exacta `run -> bot` ya queda persistida:
+  - nueva tabla `run_bot_link`
+  - `ConsoleStore.record_run(...)` persiste el vínculo cuando el run llega con `bot_id`
+  - la atribución queda marcada como:
+    - `attribution_type=exact`
+    - `attribution_confidence=1.0`
+  - si no hay `bot_id`, la atribución sigue explícitamente como `unknown/0.0`, no se inventa.
+- Nuevo ledger/base de cerebro disponible en SQLite:
+  - `strategy_truth`
+  - `strategy_evidence`
+  - `bot_policy_state`
+  - `bot_decision_log`
+  - `execution_reality`
+  - `run_bot_link`
+- `experience_episode` se amplió sin romper compatibilidad para soportar:
+  - `legacy_untrusted`
+  - `excluded_from_learning`
+  - `excluded_from_rankings`
+  - `excluded_from_guidance`
+  - `excluded_from_brain_scores`
+  - `stale`
+  - `as_of`
+  - `vintage_date`
+  - `trades_count`
+  - `attribution_type`
+  - `attribution_confidence`
+  - `effective_weight`
+- `strategy_evidence` ya recibe evidencia por run con:
+  - `source_type`
+  - `dataset_hash`
+  - `dataset_source`
+  - costos básicos
+  - métricas netas principales
+  - `source_weight`
+  - `freshness_decay`
+  - `effective_weight`
+  - flags legacy/exclusion
+- Estado real de este bloque:
+  - backend/store/engine: cableado y validado localmente
+  - frontend: todavía NO muestra paneles nuevos específicos para `live`, `strategy_truth`, `bot_policy_state` o `execution_reality`
+  - Beast/Batch: no se “cierra” entero aquí; solo se mantiene coherencia de fuentes para el cerebro
+- Validacion del bloque:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/learning/option_b_engine.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_brain_policy_yaml.py -q` -> PASS
+
+## Bloque cerebro-0/1: policies centralizadas del cerebro - 2026-03-08
+
+- Rama tecnica activa:
+  - `feature/brain-policy-ledgers-v1`
+- `git status` limpio y `HEAD` en continuidad directa contra `origin/main` (`0/0`), por lo que este objetivo se sigue en la rama actual sin abrir otra rama auxiliar.
+- Fuente de verdad de configuracion confirmada:
+  - `config/policies/*.yaml`
+  - el runtime ya resuelve ese root via `rtlab_core/policy_paths.py`
+  - no se crea una segunda fuente paralela para cerebro/riesgo/microestructura.
+- Se centralizaron defaults del cerebro y su jerarquia de evidencia en YAML:
+  - `gates.yaml`:
+    - `source_weights`
+    - `freshness_half_life_days`
+    - `stale_windows_days`
+    - `evidence_quality`
+    - `brain_policy`
+    - `promotion`
+    - `quarantine`
+  - `microstructure.yaml`:
+    - `sampling`
+    - thresholds operativos extendidos
+    - `impact` + `participation_caps`
+  - `risk_policy.yaml`:
+    - `portfolio_limits`
+    - `sizing`
+    - `drawdown_controls`
+    - multiplicadores de liquidez/toxicidad
+    - `cooldown`
+  - `beast_mode.yaml`:
+    - `research_funnel`
+    - `multiple_testing_controls`
+  - `fees.yaml`:
+    - `require_complete_cost_stack_for_learning`
+    - `cost_stack_fields`
+    - `cost_realism_factor`
+  - `fundamentals_credit_filter.yaml`:
+    - requisitos point-in-time / `as_of` / `vintage_date`
+- En este bloque NO se tocaron todavia:
+  - migraciones SQLite
+  - `learning/*`
+  - endpoints del cerebro
+  - frontend del brain panel
+- Validacion del bloque:
+  - test nuevo `rtlab_autotrader/tests/test_brain_policy_yaml.py`
+  - objetivo: asegurar que las nuevas claves YAML existan y carguen desde el root de policies real
 
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 

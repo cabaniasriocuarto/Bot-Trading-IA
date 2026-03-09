@@ -1,5 +1,52 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-08
+
+### Bloque cerebro-2/3: live como fuente real + ledgers del cerebro
+- `experience_episode.source` acepta ahora `live` ademas de `backtest/shadow/paper/testnet`.
+- `experience_store.py` pasa a leer `gates.source_weights` desde YAML y registra `live` como fuente de experiencia real.
+- `OptionBLearningEngine` y los agregados del backend incluyen `live` en sus fuentes validas.
+- `RegistryDB` agrega y migra estructuras nuevas para el cerebro:
+  - `strategy_truth`
+  - `strategy_evidence`
+  - `bot_policy_state`
+  - `bot_decision_log`
+  - `run_bot_link`
+  - `execution_reality`
+- `experience_episode` se amplia con flags de quarantine/stale, provenance adicional, conteo de trades, attribution y `effective_weight`.
+- `ConsoleStore.record_run(...)` ya persiste:
+  - vinculo exacto `run_id -> bot_id` cuando existe `bot_id`
+  - evidencia por estrategia en `strategy_evidence`
+  - attribution explicita en vez de inferencia silenciosa
+- Tests agregados/extendidos:
+  - `rtlab_autotrader/tests/test_learning_experience_option_b.py`
+  - `rtlab_autotrader/tests/test_brain_policy_yaml.py`
+
+### Bloque cerebro-0/1: centralizacion YAML del cerebro
+- Fuente de verdad confirmada:
+  - `config/policies/*.yaml`
+  - `policy_paths.py` sigue siendo el resolvedor canonico del runtime.
+- Se agregan defaults configurables para el cerebro sin romper claves existentes:
+  - `gates.source_weights`
+  - `gates.freshness_half_life_days`
+  - `gates.stale_windows_days`
+  - `gates.evidence_quality`
+  - `gates.brain_policy`
+  - `gates.promotion`
+  - `gates.quarantine`
+- Se extienden:
+  - `microstructure.yaml` con `sampling` e `impact`
+  - `risk_policy.yaml` con `portfolio_limits`, `sizing`, `drawdown_controls`, `cooldown`
+  - `beast_mode.yaml` con `research_funnel` y `multiple_testing_controls`
+  - `fees.yaml` con cost stack para aprendizaje
+  - `fundamentals_credit_filter.yaml` con reglas point-in-time
+- Test agregado:
+  - `rtlab_autotrader/tests/test_brain_policy_yaml.py`
+- Alcance deliberadamente excluido de este bloque:
+  - sin migraciones SQLite
+  - sin wiring nuevo de endpoints
+  - sin cambios de frontend todavia
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

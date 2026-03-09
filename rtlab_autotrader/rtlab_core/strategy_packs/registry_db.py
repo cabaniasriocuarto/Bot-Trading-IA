@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS run_provenance (
 CREATE TABLE IF NOT EXISTS experience_episode (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
-    source TEXT NOT NULL CHECK (source IN ('backtest', 'shadow', 'paper', 'testnet')),
+    source TEXT NOT NULL CHECK (source IN ('backtest', 'shadow', 'paper', 'testnet', 'live')),
     source_weight REAL NOT NULL DEFAULT 1.0,
     strategy_id TEXT NOT NULL,
     bot_id TEXT,
@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS experience_episode (
     validation_quality TEXT NOT NULL DEFAULT 'unknown',
     cost_fidelity_level TEXT NOT NULL DEFAULT 'standard',
     feature_set TEXT NOT NULL DEFAULT 'unknown',
+    legacy_untrusted INTEGER NOT NULL DEFAULT 0,
+    excluded_from_learning INTEGER NOT NULL DEFAULT 0,
+    excluded_from_rankings INTEGER NOT NULL DEFAULT 0,
+    excluded_from_guidance INTEGER NOT NULL DEFAULT 0,
+    excluded_from_brain_scores INTEGER NOT NULL DEFAULT 0,
+    stale INTEGER NOT NULL DEFAULT 0,
+    as_of TEXT,
+    vintage_date TEXT,
+    trades_count INTEGER NOT NULL DEFAULT 0,
+    attribution_type TEXT NOT NULL DEFAULT 'unknown',
+    attribution_confidence REAL NOT NULL DEFAULT 0,
+    effective_weight REAL NOT NULL DEFAULT 0,
     notes TEXT,
     summary_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -186,6 +198,139 @@ CREATE TABLE IF NOT EXISTS strategy_policy_guidance (
     notes TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS strategy_truth (
+    strategy_id TEXT PRIMARY KEY,
+    strategy_version TEXT,
+    family TEXT,
+    market TEXT,
+    asset_class TEXT,
+    timeframe TEXT,
+    thesis_summary TEXT,
+    thesis_detail TEXT,
+    intended_regimes_json TEXT NOT NULL DEFAULT '[]',
+    forbidden_regimes_json TEXT NOT NULL DEFAULT '[]',
+    microstructure_constraints_json TEXT NOT NULL DEFAULT '{}',
+    capacity_constraints_json TEXT NOT NULL DEFAULT '{}',
+    cost_limits_json TEXT NOT NULL DEFAULT '{}',
+    invalidation_rules_json TEXT NOT NULL DEFAULT '{}',
+    current_status TEXT NOT NULL DEFAULT 'candidate',
+    current_confidence REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS strategy_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    strategy_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    run_id TEXT,
+    bot_id TEXT,
+    dataset_hash TEXT,
+    dataset_source TEXT,
+    as_of TEXT,
+    vintage_date TEXT,
+    trades INTEGER NOT NULL DEFAULT 0,
+    turnover REAL NOT NULL DEFAULT 0,
+    fees_bps REAL,
+    spread_bps REAL,
+    slippage_bps REAL,
+    funding_bps REAL,
+    expectancy_net REAL,
+    sharpe REAL,
+    sortino REAL,
+    psr REAL,
+    dsr REAL,
+    pbo REAL,
+    max_dd REAL,
+    win_rate REAL,
+    profit_factor REAL,
+    validation_quality REAL NOT NULL DEFAULT 0,
+    source_weight REAL NOT NULL DEFAULT 0,
+    freshness_decay REAL NOT NULL DEFAULT 1,
+    effective_weight REAL NOT NULL DEFAULT 0,
+    legacy_untrusted INTEGER NOT NULL DEFAULT 0,
+    excluded_from_learning INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(strategy_id) REFERENCES strategy_registry(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_evidence_strategy_source
+ON strategy_evidence(strategy_id, source_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS bot_policy_state (
+    bot_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    regime_label TEXT NOT NULL,
+    score_current REAL NOT NULL DEFAULT 0,
+    weight_target REAL NOT NULL DEFAULT 0,
+    weight_live REAL NOT NULL DEFAULT 0,
+    veto_until TEXT,
+    veto_reason TEXT,
+    confidence REAL NOT NULL DEFAULT 0,
+    source_scope TEXT NOT NULL DEFAULT 'unknown',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (bot_id, strategy_id, regime_label)
+);
+
+CREATE TABLE IF NOT EXISTS bot_decision_log (
+    decision_id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    regime_label TEXT NOT NULL,
+    candidate_strategies_json TEXT NOT NULL DEFAULT '[]',
+    selected_strategy_id TEXT,
+    rejected_strategies_json TEXT NOT NULL DEFAULT '[]',
+    reason_json TEXT NOT NULL DEFAULT '{}',
+    evidence_scope_json TEXT NOT NULL DEFAULT '{}',
+    risk_overrides_json TEXT NOT NULL DEFAULT '{}',
+    execution_constraints_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_decision_log_bot_ts
+ON bot_decision_log(bot_id, timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS run_bot_link (
+    run_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    attribution_type TEXT NOT NULL,
+    attribution_confidence REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (run_id, bot_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_bot_link_bot_created
+ON run_bot_link(bot_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS execution_reality (
+    execution_id TEXT PRIMARY KEY,
+    order_id TEXT,
+    bot_id TEXT,
+    strategy_id TEXT,
+    symbol TEXT,
+    timestamp TEXT,
+    order_type TEXT,
+    side TEXT,
+    qty REAL,
+    participation_rate REAL,
+    expected_fill_price REAL,
+    realized_fill_price REAL,
+    realized_slippage_bps REAL,
+    maker_taker TEXT,
+    partial_fill_ratio REAL,
+    queue_proxy REAL,
+    cancel_replace_count INTEGER NOT NULL DEFAULT 0,
+    latency_ms REAL,
+    spread_bps REAL,
+    impact_bps_est REAL,
+    impact_budget_bps REAL,
+    reconciliation_status TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_reality_bot_ts
+ON execution_reality(bot_id, timestamp DESC);
 """
 
 
@@ -214,11 +359,24 @@ class RegistryDB:
         self._ensure_column(conn, "strategy_registry", "created_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
         self._ensure_column(conn, "strategy_registry", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
         self._ensure_column(conn, "run_provenance", "costs_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._migrate_experience_episode(conn)
         self._ensure_column(conn, "experience_episode", "source_weight", "REAL NOT NULL DEFAULT 1.0")
         self._ensure_column(conn, "experience_episode", "validation_quality", "TEXT NOT NULL DEFAULT 'unknown'")
         self._ensure_column(conn, "experience_episode", "cost_fidelity_level", "TEXT NOT NULL DEFAULT 'standard'")
         self._ensure_column(conn, "experience_episode", "feature_set", "TEXT NOT NULL DEFAULT 'unknown'")
         self._ensure_column(conn, "experience_episode", "bot_id", "TEXT")
+        self._ensure_column(conn, "experience_episode", "legacy_untrusted", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "excluded_from_learning", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "excluded_from_rankings", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "excluded_from_guidance", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "excluded_from_brain_scores", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "stale", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "as_of", "TEXT")
+        self._ensure_column(conn, "experience_episode", "vintage_date", "TEXT")
+        self._ensure_column(conn, "experience_episode", "trades_count", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "attribution_type", "TEXT NOT NULL DEFAULT 'unknown'")
+        self._ensure_column(conn, "experience_episode", "attribution_confidence", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "experience_episode", "effective_weight", "REAL NOT NULL DEFAULT 0")
         self._ensure_column(conn, "experience_episode", "notes", "TEXT")
         self._ensure_column(conn, "experience_episode", "summary_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column(conn, "experience_episode", "created_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
@@ -262,6 +420,155 @@ class RegistryDB:
         if column in names:
             return
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+    def _migrate_experience_episode(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(experience_episode)").fetchall()
+        if not rows:
+            return
+        names = {str(row["name"]) if isinstance(row, sqlite3.Row) else str(row[1]) for row in rows}
+        table_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='experience_episode'"
+        ).fetchone()
+        table_sql = str((table_row["sql"] if isinstance(table_row, sqlite3.Row) else (table_row[0] if table_row else "")) or "").lower()
+        required = {
+            "legacy_untrusted",
+            "excluded_from_learning",
+            "excluded_from_rankings",
+            "excluded_from_guidance",
+            "excluded_from_brain_scores",
+            "stale",
+            "as_of",
+            "vintage_date",
+            "trades_count",
+            "attribution_type",
+            "attribution_confidence",
+            "effective_weight",
+        }
+        requires_rebuild = "live" not in table_sql or not required.issubset(names)
+        if not requires_rebuild:
+            return
+        source_expr = "source" if "source" in names else "'backtest'"
+        bot_expr = "bot_id" if "bot_id" in names else "NULL"
+        start_expr = "start_ts" if "start_ts" in names else "NULL"
+        created_expr = "created_at" if "created_at" in names else "CURRENT_TIMESTAMP"
+        summary_expr = "summary_json" if "summary_json" in names else "'{}'"
+        trades_expr = "0"
+        if "summary_json" in names:
+            trades_expr = (
+                "CAST(COALESCE(json_extract(summary_json, '$.trade_count'), "
+                "json_extract(summary_json, '$.metrics.trade_count'), "
+                "json_extract(summary_json, '$.metrics.roundtrips'), 0) AS INTEGER)"
+            )
+        attribution_type_expr = (
+            "CASE WHEN bot_id IS NOT NULL AND TRIM(bot_id) <> '' THEN 'exact' ELSE 'unknown' END"
+            if "bot_id" in names
+            else "'unknown'"
+        )
+        attribution_confidence_expr = (
+            "CASE WHEN bot_id IS NOT NULL AND TRIM(bot_id) <> '' THEN 1.0 ELSE 0.0 END"
+            if "bot_id" in names
+            else "0.0"
+        )
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS experience_episode_v2 (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('backtest', 'shadow', 'paper', 'testnet', 'live')),
+                source_weight REAL NOT NULL DEFAULT 1.0,
+                strategy_id TEXT NOT NULL,
+                bot_id TEXT,
+                asset TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                start_ts TEXT,
+                end_ts TEXT,
+                dataset_source TEXT,
+                dataset_hash TEXT,
+                commit_hash TEXT,
+                costs_profile_id TEXT,
+                validation_quality TEXT NOT NULL DEFAULT 'unknown',
+                cost_fidelity_level TEXT NOT NULL DEFAULT 'standard',
+                feature_set TEXT NOT NULL DEFAULT 'unknown',
+                legacy_untrusted INTEGER NOT NULL DEFAULT 0,
+                excluded_from_learning INTEGER NOT NULL DEFAULT 0,
+                excluded_from_rankings INTEGER NOT NULL DEFAULT 0,
+                excluded_from_guidance INTEGER NOT NULL DEFAULT 0,
+                excluded_from_brain_scores INTEGER NOT NULL DEFAULT 0,
+                stale INTEGER NOT NULL DEFAULT 0,
+                as_of TEXT,
+                vintage_date TEXT,
+                trades_count INTEGER NOT NULL DEFAULT 0,
+                attribution_type TEXT NOT NULL DEFAULT 'unknown',
+                attribution_confidence REAL NOT NULL DEFAULT 0,
+                effective_weight REAL NOT NULL DEFAULT 0,
+                notes TEXT,
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(run_id, source, strategy_id, asset, timeframe, dataset_hash)
+            );
+            """
+        )
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO experience_episode_v2 (
+                id, run_id, source, source_weight, strategy_id, bot_id, asset, timeframe, start_ts, end_ts,
+                dataset_source, dataset_hash, commit_hash, costs_profile_id, validation_quality, cost_fidelity_level,
+                feature_set, legacy_untrusted, excluded_from_learning, excluded_from_rankings, excluded_from_guidance,
+                excluded_from_brain_scores, stale, as_of, vintage_date, trades_count, attribution_type,
+                attribution_confidence, effective_weight, notes, summary_json, created_at, updated_at
+            )
+            SELECT
+                id,
+                run_id,
+                {source_expr},
+                COALESCE(source_weight, 1.0),
+                strategy_id,
+                {bot_expr},
+                asset,
+                timeframe,
+                {start_expr},
+                end_ts,
+                dataset_source,
+                dataset_hash,
+                commit_hash,
+                costs_profile_id,
+                COALESCE(validation_quality, 'unknown'),
+                COALESCE(cost_fidelity_level, 'standard'),
+                COALESCE(feature_set, 'unknown'),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                COALESCE({start_expr}, {created_expr}),
+                NULL,
+                {trades_expr},
+                {attribution_type_expr},
+                {attribution_confidence_expr},
+                COALESCE(source_weight, 1.0),
+                notes,
+                COALESCE({summary_expr}, '{{}}'),
+                COALESCE({created_expr}, CURRENT_TIMESTAMP),
+                COALESCE(updated_at, CURRENT_TIMESTAMP)
+            FROM experience_episode
+            """
+        )
+        conn.execute("DROP TABLE experience_episode")
+        conn.execute("ALTER TABLE experience_episode_v2 RENAME TO experience_episode")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_experience_episode_strategy_source
+            ON experience_episode(strategy_id, source, asset, timeframe, created_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_experience_episode_bot_source
+            ON experience_episode(bot_id, source, asset, timeframe, created_at DESC)
+            """
+        )
 
     def _migrate_regime_kpi(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute("PRAGMA table_info(regime_kpi)").fetchall()
@@ -701,6 +1008,18 @@ class RegistryDB:
         validation_quality: str | None = None,
         cost_fidelity_level: str | None = None,
         feature_set: str | None = None,
+        legacy_untrusted: bool = False,
+        excluded_from_learning: bool = False,
+        excluded_from_rankings: bool = False,
+        excluded_from_guidance: bool = False,
+        excluded_from_brain_scores: bool = False,
+        stale: bool = False,
+        as_of: str | None = None,
+        vintage_date: str | None = None,
+        trades_count: int = 0,
+        attribution_type: str | None = None,
+        attribution_confidence: float = 0.0,
+        effective_weight: float = 0.0,
         notes: str | None = None,
         summary: dict[str, Any] | None = None,
         created_at: str | None = None,
@@ -711,10 +1030,14 @@ class RegistryDB:
                 INSERT INTO experience_episode (
                     id, run_id, source, source_weight, strategy_id, bot_id, asset, timeframe, start_ts, end_ts,
                     dataset_source, dataset_hash, commit_hash, costs_profile_id,
-                    validation_quality, cost_fidelity_level, feature_set, notes, summary_json,
+                    validation_quality, cost_fidelity_level, feature_set,
+                    legacy_untrusted, excluded_from_learning, excluded_from_rankings, excluded_from_guidance,
+                    excluded_from_brain_scores, stale, as_of, vintage_date, trades_count,
+                    attribution_type, attribution_confidence, effective_weight,
+                    notes, summary_json,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
                 ON CONFLICT(id) DO UPDATE SET
                     run_id=excluded.run_id,
                     source=excluded.source,
@@ -732,6 +1055,18 @@ class RegistryDB:
                     validation_quality=excluded.validation_quality,
                     cost_fidelity_level=excluded.cost_fidelity_level,
                     feature_set=excluded.feature_set,
+                    legacy_untrusted=excluded.legacy_untrusted,
+                    excluded_from_learning=excluded.excluded_from_learning,
+                    excluded_from_rankings=excluded.excluded_from_rankings,
+                    excluded_from_guidance=excluded.excluded_from_guidance,
+                    excluded_from_brain_scores=excluded.excluded_from_brain_scores,
+                    stale=excluded.stale,
+                    as_of=excluded.as_of,
+                    vintage_date=excluded.vintage_date,
+                    trades_count=excluded.trades_count,
+                    attribution_type=excluded.attribution_type,
+                    attribution_confidence=excluded.attribution_confidence,
+                    effective_weight=excluded.effective_weight,
                     notes=excluded.notes,
                     summary_json=excluded.summary_json,
                     updated_at=CURRENT_TIMESTAMP
@@ -754,6 +1089,18 @@ class RegistryDB:
                     validation_quality or "unknown",
                     cost_fidelity_level or "standard",
                     feature_set or "unknown",
+                    1 if legacy_untrusted else 0,
+                    1 if excluded_from_learning else 0,
+                    1 if excluded_from_rankings else 0,
+                    1 if excluded_from_guidance else 0,
+                    1 if excluded_from_brain_scores else 0,
+                    1 if stale else 0,
+                    as_of,
+                    vintage_date,
+                    int(trades_count or 0),
+                    attribution_type or "unknown",
+                    float(attribution_confidence or 0.0),
+                    float(effective_weight or 0.0),
                     notes,
                     json.dumps(summary or {}, ensure_ascii=True, sort_keys=True),
                     created_at,
@@ -829,6 +1176,13 @@ class RegistryDB:
                 item["summary"] = {}
             summary = item["summary"] if isinstance(item.get("summary"), dict) else {}
             item["bot_id"] = str(item.get("bot_id") or summary.get("bot_id") or "").strip() or None
+            item["legacy_untrusted"] = bool(item.get("legacy_untrusted"))
+            item["excluded_from_learning"] = bool(item.get("excluded_from_learning"))
+            item["excluded_from_rankings"] = bool(item.get("excluded_from_rankings"))
+            item["excluded_from_guidance"] = bool(item.get("excluded_from_guidance"))
+            item["excluded_from_brain_scores"] = bool(item.get("excluded_from_brain_scores"))
+            item["stale"] = bool(item.get("stale"))
+            item["trades_count"] = int(item.get("trades_count") or summary.get("trade_count") or 0)
             if requested_bot_ids and item["bot_id"] not in requested_bot_ids:
                 continue
             out.append(item)
@@ -1109,3 +1463,500 @@ class RegistryDB:
                 item["avoid_regimes"] = []
             out.append(item)
         return out
+
+    def upsert_strategy_truth(
+        self,
+        *,
+        strategy_id: str,
+        strategy_version: str | None = None,
+        family: str | None = None,
+        market: str | None = None,
+        asset_class: str | None = None,
+        timeframe: str | None = None,
+        thesis_summary: str | None = None,
+        thesis_detail: str | None = None,
+        intended_regimes: list[str] | None = None,
+        forbidden_regimes: list[str] | None = None,
+        microstructure_constraints: dict[str, Any] | None = None,
+        capacity_constraints: dict[str, Any] | None = None,
+        cost_limits: dict[str, Any] | None = None,
+        invalidation_rules: dict[str, Any] | None = None,
+        current_status: str = "candidate",
+        current_confidence: float = 0.0,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO strategy_truth (
+                    strategy_id, strategy_version, family, market, asset_class, timeframe,
+                    thesis_summary, thesis_detail, intended_regimes_json, forbidden_regimes_json,
+                    microstructure_constraints_json, capacity_constraints_json, cost_limits_json,
+                    invalidation_rules_json, current_status, current_confidence, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(strategy_id) DO UPDATE SET
+                    strategy_version=excluded.strategy_version,
+                    family=excluded.family,
+                    market=excluded.market,
+                    asset_class=excluded.asset_class,
+                    timeframe=excluded.timeframe,
+                    thesis_summary=excluded.thesis_summary,
+                    thesis_detail=excluded.thesis_detail,
+                    intended_regimes_json=excluded.intended_regimes_json,
+                    forbidden_regimes_json=excluded.forbidden_regimes_json,
+                    microstructure_constraints_json=excluded.microstructure_constraints_json,
+                    capacity_constraints_json=excluded.capacity_constraints_json,
+                    cost_limits_json=excluded.cost_limits_json,
+                    invalidation_rules_json=excluded.invalidation_rules_json,
+                    current_status=excluded.current_status,
+                    current_confidence=excluded.current_confidence,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    strategy_id,
+                    strategy_version,
+                    family,
+                    market,
+                    asset_class,
+                    timeframe,
+                    thesis_summary,
+                    thesis_detail,
+                    json.dumps(intended_regimes or [], ensure_ascii=True, sort_keys=True),
+                    json.dumps(forbidden_regimes or [], ensure_ascii=True, sort_keys=True),
+                    json.dumps(microstructure_constraints or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(capacity_constraints or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(cost_limits or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(invalidation_rules or {}, ensure_ascii=True, sort_keys=True),
+                    current_status,
+                    float(current_confidence or 0.0),
+                ),
+            )
+            conn.commit()
+
+    def get_strategy_truth(self, strategy_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM strategy_truth WHERE strategy_id=?", (strategy_id,)).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        for src, dst in (
+            ("intended_regimes_json", "intended_regimes"),
+            ("forbidden_regimes_json", "forbidden_regimes"),
+            ("microstructure_constraints_json", "microstructure_constraints"),
+            ("capacity_constraints_json", "capacity_constraints"),
+            ("cost_limits_json", "cost_limits"),
+            ("invalidation_rules_json", "invalidation_rules"),
+        ):
+            try:
+                item[dst] = json.loads(item.pop(src, "[]") or ("[]" if "regimes" in src else "{}"))
+            except Exception:
+                item[dst] = [] if "regimes" in src else {}
+        return item
+
+    def upsert_strategy_evidence(
+        self,
+        *,
+        evidence_id: str,
+        strategy_id: str,
+        source_type: str,
+        run_id: str | None = None,
+        bot_id: str | None = None,
+        dataset_hash: str | None = None,
+        dataset_source: str | None = None,
+        as_of: str | None = None,
+        vintage_date: str | None = None,
+        trades: int = 0,
+        turnover: float = 0.0,
+        fees_bps: float | None = None,
+        spread_bps: float | None = None,
+        slippage_bps: float | None = None,
+        funding_bps: float | None = None,
+        expectancy_net: float | None = None,
+        sharpe: float | None = None,
+        sortino: float | None = None,
+        psr: float | None = None,
+        dsr: float | None = None,
+        pbo: float | None = None,
+        max_dd: float | None = None,
+        win_rate: float | None = None,
+        profit_factor: float | None = None,
+        validation_quality: float = 0.0,
+        source_weight: float = 0.0,
+        freshness_decay: float = 1.0,
+        effective_weight: float = 0.0,
+        legacy_untrusted: bool = False,
+        excluded_from_learning: bool = False,
+        notes: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO strategy_evidence (
+                    evidence_id, strategy_id, source_type, run_id, bot_id, dataset_hash, dataset_source, as_of, vintage_date,
+                    trades, turnover, fees_bps, spread_bps, slippage_bps, funding_bps, expectancy_net, sharpe, sortino, psr, dsr,
+                    pbo, max_dd, win_rate, profit_factor, validation_quality, source_weight, freshness_decay, effective_weight,
+                    legacy_untrusted, excluded_from_learning, notes
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(evidence_id) DO UPDATE SET
+                    strategy_id=excluded.strategy_id,
+                    source_type=excluded.source_type,
+                    run_id=excluded.run_id,
+                    bot_id=excluded.bot_id,
+                    dataset_hash=excluded.dataset_hash,
+                    dataset_source=excluded.dataset_source,
+                    as_of=excluded.as_of,
+                    vintage_date=excluded.vintage_date,
+                    trades=excluded.trades,
+                    turnover=excluded.turnover,
+                    fees_bps=excluded.fees_bps,
+                    spread_bps=excluded.spread_bps,
+                    slippage_bps=excluded.slippage_bps,
+                    funding_bps=excluded.funding_bps,
+                    expectancy_net=excluded.expectancy_net,
+                    sharpe=excluded.sharpe,
+                    sortino=excluded.sortino,
+                    psr=excluded.psr,
+                    dsr=excluded.dsr,
+                    pbo=excluded.pbo,
+                    max_dd=excluded.max_dd,
+                    win_rate=excluded.win_rate,
+                    profit_factor=excluded.profit_factor,
+                    validation_quality=excluded.validation_quality,
+                    source_weight=excluded.source_weight,
+                    freshness_decay=excluded.freshness_decay,
+                    effective_weight=excluded.effective_weight,
+                    legacy_untrusted=excluded.legacy_untrusted,
+                    excluded_from_learning=excluded.excluded_from_learning,
+                    notes=excluded.notes
+                """,
+                (
+                    evidence_id,
+                    strategy_id,
+                    source_type,
+                    run_id,
+                    bot_id,
+                    dataset_hash,
+                    dataset_source,
+                    as_of,
+                    vintage_date,
+                    int(trades or 0),
+                    float(turnover or 0.0),
+                    fees_bps,
+                    spread_bps,
+                    slippage_bps,
+                    funding_bps,
+                    expectancy_net,
+                    sharpe,
+                    sortino,
+                    psr,
+                    dsr,
+                    pbo,
+                    max_dd,
+                    win_rate,
+                    profit_factor,
+                    float(validation_quality or 0.0),
+                    float(source_weight or 0.0),
+                    float(freshness_decay or 0.0),
+                    float(effective_weight or 0.0),
+                    1 if legacy_untrusted else 0,
+                    1 if excluded_from_learning else 0,
+                    notes,
+                ),
+            )
+            conn.commit()
+
+    def list_strategy_evidence(self, *, strategy_id: str | None = None, source_type: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM strategy_evidence WHERE 1=1"
+        params: list[Any] = []
+        if strategy_id:
+            query += " AND strategy_id=?"
+            params.append(strategy_id)
+        if source_type:
+            query += " AND source_type=?"
+            params.append(source_type)
+        query += " ORDER BY created_at DESC, evidence_id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out = [dict(row) for row in rows]
+        for row in out:
+            row["legacy_untrusted"] = bool(row.get("legacy_untrusted"))
+            row["excluded_from_learning"] = bool(row.get("excluded_from_learning"))
+        return out
+
+    def upsert_bot_policy_state(
+        self,
+        *,
+        bot_id: str,
+        strategy_id: str,
+        regime_label: str,
+        score_current: float,
+        weight_target: float,
+        weight_live: float,
+        veto_until: str | None = None,
+        veto_reason: str | None = None,
+        confidence: float = 0.0,
+        source_scope: str = "unknown",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO bot_policy_state (
+                    bot_id, strategy_id, regime_label, score_current, weight_target, weight_live,
+                    veto_until, veto_reason, confidence, source_scope, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(bot_id, strategy_id, regime_label) DO UPDATE SET
+                    score_current=excluded.score_current,
+                    weight_target=excluded.weight_target,
+                    weight_live=excluded.weight_live,
+                    veto_until=excluded.veto_until,
+                    veto_reason=excluded.veto_reason,
+                    confidence=excluded.confidence,
+                    source_scope=excluded.source_scope,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    bot_id,
+                    strategy_id,
+                    regime_label,
+                    float(score_current or 0.0),
+                    float(weight_target or 0.0),
+                    float(weight_live or 0.0),
+                    veto_until,
+                    veto_reason,
+                    float(confidence or 0.0),
+                    source_scope,
+                ),
+            )
+            conn.commit()
+
+    def list_bot_policy_state(self, *, bot_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM bot_policy_state WHERE 1=1"
+        params: list[Any] = []
+        if bot_id:
+            query += " AND bot_id=?"
+            params.append(bot_id)
+        query += " ORDER BY updated_at DESC, strategy_id ASC, regime_label ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def append_bot_decision_log(
+        self,
+        *,
+        decision_id: str,
+        bot_id: str,
+        timestamp: str,
+        regime_label: str,
+        candidate_strategies: list[dict[str, Any]] | list[str] | None = None,
+        selected_strategy_id: str | None = None,
+        rejected_strategies: list[dict[str, Any]] | list[str] | None = None,
+        reason: dict[str, Any] | None = None,
+        evidence_scope: dict[str, Any] | None = None,
+        risk_overrides: dict[str, Any] | None = None,
+        execution_constraints: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO bot_decision_log (
+                    decision_id, bot_id, timestamp, regime_label, candidate_strategies_json, selected_strategy_id,
+                    rejected_strategies_json, reason_json, evidence_scope_json, risk_overrides_json, execution_constraints_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_id,
+                    bot_id,
+                    timestamp,
+                    regime_label,
+                    json.dumps(candidate_strategies or [], ensure_ascii=True, sort_keys=True),
+                    selected_strategy_id,
+                    json.dumps(rejected_strategies or [], ensure_ascii=True, sort_keys=True),
+                    json.dumps(reason or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(evidence_scope or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(risk_overrides or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(execution_constraints or {}, ensure_ascii=True, sort_keys=True),
+                ),
+            )
+            conn.commit()
+
+    def list_bot_decision_log(self, *, bot_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM bot_decision_log WHERE 1=1"
+        params: list[Any] = []
+        if bot_id:
+            query += " AND bot_id=?"
+            params.append(bot_id)
+        query += " ORDER BY timestamp DESC, decision_id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for src, dst, default in (
+                ("candidate_strategies_json", "candidate_strategies", []),
+                ("rejected_strategies_json", "rejected_strategies", []),
+                ("reason_json", "reason", {}),
+                ("evidence_scope_json", "evidence_scope", {}),
+                ("risk_overrides_json", "risk_overrides", {}),
+                ("execution_constraints_json", "execution_constraints", {}),
+            ):
+                try:
+                    item[dst] = json.loads(item.pop(src, json.dumps(default)) or json.dumps(default))
+                except Exception:
+                    item[dst] = default
+            out.append(item)
+        return out
+
+    def upsert_run_bot_link(
+        self,
+        *,
+        run_id: str,
+        bot_id: str,
+        attribution_type: str,
+        attribution_confidence: float,
+        created_at: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO run_bot_link (run_id, bot_id, attribution_type, attribution_confidence, created_at)
+                VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                ON CONFLICT(run_id, bot_id) DO UPDATE SET
+                    attribution_type=excluded.attribution_type,
+                    attribution_confidence=excluded.attribution_confidence,
+                    created_at=COALESCE(excluded.created_at, run_bot_link.created_at)
+                """,
+                (
+                    run_id,
+                    bot_id,
+                    attribution_type,
+                    float(attribution_confidence or 0.0),
+                    created_at,
+                ),
+            )
+            conn.commit()
+
+    def list_run_bot_links(self, *, run_id: str | None = None, bot_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM run_bot_link WHERE 1=1"
+        params: list[Any] = []
+        if run_id:
+            query += " AND run_id=?"
+            params.append(run_id)
+        if bot_id:
+            query += " AND bot_id=?"
+            params.append(bot_id)
+        query += " ORDER BY created_at DESC, run_id ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_execution_reality(
+        self,
+        *,
+        execution_id: str,
+        order_id: str | None = None,
+        bot_id: str | None = None,
+        strategy_id: str | None = None,
+        symbol: str | None = None,
+        timestamp: str | None = None,
+        order_type: str | None = None,
+        side: str | None = None,
+        qty: float | None = None,
+        participation_rate: float | None = None,
+        expected_fill_price: float | None = None,
+        realized_fill_price: float | None = None,
+        realized_slippage_bps: float | None = None,
+        maker_taker: str | None = None,
+        partial_fill_ratio: float | None = None,
+        queue_proxy: float | None = None,
+        cancel_replace_count: int = 0,
+        latency_ms: float | None = None,
+        spread_bps: float | None = None,
+        impact_bps_est: float | None = None,
+        impact_budget_bps: float | None = None,
+        reconciliation_status: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_reality (
+                    execution_id, order_id, bot_id, strategy_id, symbol, timestamp, order_type, side, qty, participation_rate,
+                    expected_fill_price, realized_fill_price, realized_slippage_bps, maker_taker, partial_fill_ratio,
+                    queue_proxy, cancel_replace_count, latency_ms, spread_bps, impact_bps_est, impact_budget_bps,
+                    reconciliation_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(execution_id) DO UPDATE SET
+                    order_id=excluded.order_id,
+                    bot_id=excluded.bot_id,
+                    strategy_id=excluded.strategy_id,
+                    symbol=excluded.symbol,
+                    timestamp=excluded.timestamp,
+                    order_type=excluded.order_type,
+                    side=excluded.side,
+                    qty=excluded.qty,
+                    participation_rate=excluded.participation_rate,
+                    expected_fill_price=excluded.expected_fill_price,
+                    realized_fill_price=excluded.realized_fill_price,
+                    realized_slippage_bps=excluded.realized_slippage_bps,
+                    maker_taker=excluded.maker_taker,
+                    partial_fill_ratio=excluded.partial_fill_ratio,
+                    queue_proxy=excluded.queue_proxy,
+                    cancel_replace_count=excluded.cancel_replace_count,
+                    latency_ms=excluded.latency_ms,
+                    spread_bps=excluded.spread_bps,
+                    impact_bps_est=excluded.impact_bps_est,
+                    impact_budget_bps=excluded.impact_budget_bps,
+                    reconciliation_status=excluded.reconciliation_status
+                """,
+                (
+                    execution_id,
+                    order_id,
+                    bot_id,
+                    strategy_id,
+                    symbol,
+                    timestamp,
+                    order_type,
+                    side,
+                    qty,
+                    participation_rate,
+                    expected_fill_price,
+                    realized_fill_price,
+                    realized_slippage_bps,
+                    maker_taker,
+                    partial_fill_ratio,
+                    queue_proxy,
+                    int(cancel_replace_count or 0),
+                    latency_ms,
+                    spread_bps,
+                    impact_bps_est,
+                    impact_budget_bps,
+                    reconciliation_status,
+                ),
+            )
+            conn.commit()
+
+    def list_execution_reality(
+        self,
+        *,
+        bot_id: str | None = None,
+        strategy_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM execution_reality WHERE 1=1"
+        params: list[Any] = []
+        if bot_id:
+            query += " AND bot_id=?"
+            params.append(bot_id)
+        if strategy_id:
+            query += " AND strategy_id=?"
+            params.append(strategy_id)
+        query += " ORDER BY timestamp DESC, created_at DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
