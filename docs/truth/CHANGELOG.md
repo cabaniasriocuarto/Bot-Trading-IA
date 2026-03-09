@@ -2,6 +2,22 @@
 
 ## 2026-03-09
 
+### Bloque 9 parcial: drilldown visible de episodios atribuidos al bot
+- Frontend `Bots` ahora muestra una tabla `Ultimos episodios atribuidos` dentro de la tarjeta de experiencia del bot.
+- El drilldown expone por episodio:
+  - fin de episodio
+  - `run_id`
+  - fuente
+  - estrategia
+  - mercado/timeframe
+  - tipo de atribucion
+  - peso efectivo
+  - flags `legacy`, `stale`, `excluido`
+- Esto cierra mejor la trazabilidad visible `episode -> bot` sin inventar calculos en frontend.
+- Validacion:
+  - `eslint` `bots/page.tsx` PASS
+  - `npm run build` PASS
+
 ### Bloque 9 parcial: experiencia atribuida al bot visible y auditable
 - Nuevo endpoint: `GET /api/v1/bots/{bot_id}/experience`
 - `LearningService.get_bot_experience_payload(...)` resume por bot:

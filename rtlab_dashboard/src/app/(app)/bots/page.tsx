@@ -459,6 +459,64 @@ function BotsPageContent() {
                           </div>
                         </div>
                       ) : null}
+
+                      {experience.items?.length ? (
+                        <div className="space-y-2">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Ultimos episodios atribuidos</p>
+                          <div className="overflow-x-auto rounded-lg border border-slate-800">
+                            <Table className="text-xs">
+                              <THead>
+                                <TR>
+                                  <TH>Fin</TH>
+                                  <TH>Run</TH>
+                                  <TH>Fuente</TH>
+                                  <TH>Estrategia</TH>
+                                  <TH>Mercado / TF</TH>
+                                  <TH>Atribucion</TH>
+                                  <TH>Peso</TH>
+                                  <TH>Flags</TH>
+                                </TR>
+                              </THead>
+                              <TBody>
+                                {experience.items.map((item) => (
+                                  <TR key={item.id}>
+                                    <TD>
+                                      {item.end_ts
+                                        ? new Date(item.end_ts).toLocaleString()
+                                        : item.start_ts
+                                          ? new Date(item.start_ts).toLocaleString()
+                                          : "--"}
+                                    </TD>
+                                    <TD className="font-mono text-[11px] text-slate-300">{item.run_id || item.id}</TD>
+                                    <TD>
+                                      <Badge variant="info">{item.source}</Badge>
+                                    </TD>
+                                    <TD className="text-slate-200">{item.strategy_id}</TD>
+                                    <TD className="text-slate-400">
+                                      {item.asset || "--"} · {item.timeframe || "--"}
+                                    </TD>
+                                    <TD>
+                                      <Badge variant={attributionBadge(item.attribution_type || undefined)}>
+                                        {item.attribution_type || "unknown"}
+                                      </Badge>
+                                    </TD>
+                                    <TD>{fmtNum(item.effective_weight || 0)}</TD>
+                                    <TD>
+                                      <div className="flex flex-wrap gap-1">
+                                        {item.legacy_untrusted ? <Badge variant="warn">legacy</Badge> : null}
+                                        {item.stale ? <Badge variant="warn">stale</Badge> : null}
+                                        {item.excluded_from_learning || item.excluded_from_brain_scores ? (
+                                          <Badge variant="neutral">excluido</Badge>
+                                        ) : null}
+                                      </div>
+                                    </TD>
+                                  </TR>
+                                ))}
+                              </TBody>
+                            </Table>
+                          </div>
+                        </div>
+                      ) : null}
                     </>
                   ) : (
                     <p className="text-sm text-slate-400">Todavia no hay experiencia atribuida de forma suficientemente fuerte a este bot.</p>

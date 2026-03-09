@@ -18,9 +18,10 @@ Fecha de actualizacion: 2026-03-09
   - ver si el cerebro del bot se apoya en evidencia exacta o solo contextual
   - distinguir experiencia util de experiencia excluida
   - inspeccionar cuales estrategias dominan la evidencia del bot
+  - inspeccionar episodios individuales con `run_id`, fuente, atribucion, peso efectivo y flags operativas
 - Estado real:
   - `run -> bot` ya queda visible de forma operativa en UI
-  - la trazabilidad `episode -> bot` ya es mas explotable para auditar aprendizaje
+  - la trazabilidad `episode -> bot` ya es visible a nivel de episodio reciente desde la pantalla `Bots`
   - sigue faltando trazabilidad exacta nativa para todos los historicos viejos que nunca tuvieron `bot_id` ni `run_bot_link`
 
 ## Actualizacion de bloque 9 parcial - resumenes explotables de decision log + execution reality
