@@ -47,7 +47,7 @@ Fecha de actualizacion: 2026-03-09
 9. Monitoring / Observability / Alerts / Drift / Kill Switches
 10. Frontend de trazabilidad, control y salud operativa
 
-### Estado real consolidado despues del bloque 1
+### Estado real consolidado despues del bloque 2
 
 - Ya implementado y usable en backend:
   - `live` como fuente real de evidencia
@@ -65,6 +65,21 @@ Fecha de actualizacion: 2026-03-09
     - `instrument_catalog_snapshot_item`
   - wrapper de catalogo:
     - `rtlab_core.instruments.registry.InstrumentCatalogStore`
+  - adapter Binance multi-family:
+    - `rtlab_core.brokers.binance.BinanceCatalogSyncService`
+  - sync de catalogo Binance:
+    - manual via API
+    - on startup
+    - programado por scheduler configurable
+  - snapshotting y diffing de catalogo para:
+    - `spot`
+    - `margin`
+    - `usdm_futures`
+    - `coinm_futures`
+  - endpoints de catalogo:
+    - `GET /api/v1/instruments`
+    - `GET /api/v1/instruments/{instrument_id}`
+    - `POST /api/v1/instruments/sync`
 - Ya centralizado en YAML:
   - `gates`
   - `microstructure`
@@ -80,8 +95,6 @@ Fecha de actualizacion: 2026-03-09
     - `universe_policy`
     - `observability`
 - Aun no implementado de forma integral:
-  - adapter Binance multi-family con sync real
-  - snapshots/diffing poblados desde exchange
   - universos reproducibles por run
   - live parity state cache
   - research funnel visible de punta a punta
@@ -92,7 +105,7 @@ Fecha de actualizacion: 2026-03-09
 
 1. Consolidar docs/truth y congelar roadmap maestro
 2. Instrument registry + snapshots de catalogo + policies base
-3. Adapters Binance Spot / Margin / USD?-M / COIN-M + sync manual/startup
+3. Adapters Binance Spot / Margin / USD?-M / COIN-M + sync manual/startup/programado
 4. Market data / datasets / derivative state / live parity
 5. Universos + dataset builder + linkage exacto de snapshots por run
 6. Research funnel / Beast / trial ledger / PBO-DSR-PSR wiring
@@ -115,6 +128,17 @@ Fecha de actualizacion: 2026-03-09
   - schema base del instrument registry y snapshots versionados
   - wrapper fino de catalogo sobre `RegistryDB`
   - tests de sanidad YAML y persistencia del catalogo
+- Bloque 2:
+  - adapter Binance multi-family con normalizacion de metadata para:
+    - Spot
+    - Margin derivado de `exchangeInfo`
+    - USD?-M Futures
+    - COIN-M Futures
+  - sync inicial opcional al startup
+  - scheduler de resync configurable
+  - endpoint admin de sync manual
+  - snapshotting y diffing del catalogo por market family
+  - tests del adapter y persistencia de snapshots reales
 
 ### Bibliografia base efectiva para este roadmap
 

@@ -30,6 +30,11 @@ Fecha: 2026-03-09
   - nuevas policies base para catalogo / market data / live parity / observabilidad
   - tablas base de catalogo de instrumentos y snapshots
   - wrapper `InstrumentCatalogStore`
+- Bloque 2 cerrado:
+  - adapter Binance multi-family
+  - sync manual / startup / scheduler
+  - snapshotting y diffing por market family
+  - endpoints `/api/v1/instruments*`
 
 ## Nuevo plan consolidado
 - Unificar el proyecto sobre una arquitectura auditable y escalable:
@@ -57,21 +62,20 @@ Fecha: 2026-03-09
 12. Tests, builds, limpieza conservadora y cierre
 
 ## Bloque actual
-- Bloque 1 cerrado:
-  - policies base para catalogo/live parity/observabilidad
-  - base persistente del instrument registry
-  - snapshots versionados del catalogo
+- Bloque 2 cerrado:
+  - metadata Binance normalizada para Spot / Margin / USD?-M / COIN-M
+  - sync inicial/manual/programado
+  - snapshots y diffing del catalogo poblados desde `exchangeInfo`
 
 ## Pendiente del siguiente bloque
-- Bloque 2:
-  - crear adapter Binance para Spot / Margin / USD?-M / COIN-M
-  - sync manual / startup / programado
-  - diffing de snapshots
-  - poblar `instrument_registry` desde metadata real del exchange
+- Bloque 3:
+  - market data historica y derivative state
+  - checkpoints / resume / dedupe
+  - dataset registry
+  - primeras garantias de live parity
 
 ## Bloqueado / no implementado
 - Aun no implementado integralmente:
-  - adapter Binance multi-market con sync real
   - universos versionados por run
   - live parity state cache
   - frontend del cerebro
@@ -83,6 +87,7 @@ Fecha: 2026-03-09
 - Hay capas legacy de catalogo/datasets simples que pueden superponerse con el nuevo instrument registry si no se consolidan con cuidado.
 - Binance multi-family agrega complejidad de metadata, filtros y elegibilidad live; debe hacerse sin romper backtests existentes.
 - `gates.yaml` ya concentra secciones nuevas de catalogo/live parity; si luego aparecen consumidores especializados, habra que decidir si conviene separar archivos sin romper `policy_paths.py`.
+- Margin en este bloque se deriva de metadata Spot publica; la validacion de capacidad real de cuenta queda para el bloque de live eligibility.
 
 ## Decisiones asumidas
 - Se sigue en `feature/brain-policy-ledgers-v1` porque el objetivo es continuidad directa del mismo programa tecnico.
@@ -97,16 +102,23 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py`
 - `rtlab_autotrader/rtlab_core/instruments/__init__.py`
 - `rtlab_autotrader/rtlab_core/instruments/registry.py`
+- `rtlab_autotrader/rtlab_core/brokers/__init__.py`
+- `rtlab_autotrader/rtlab_core/brokers/binance/__init__.py`
+- `rtlab_autotrader/rtlab_core/brokers/binance/catalog.py`
+- `rtlab_autotrader/rtlab_core/web/app.py`
 - `rtlab_autotrader/tests/test_brain_policy_yaml.py`
 - `rtlab_autotrader/tests/test_instrument_registry_store.py`
+- `rtlab_autotrader/tests/test_binance_catalog_sync.py`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/CHANGELOG.md`
 - `docs/truth/NEXT_STEPS.md`
 
 ## Tests ejecutados
 - `python -m py_compile rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/instruments/registry.py` -> PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/brokers/binance/catalog.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_brain_policy_yaml.py -q` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_instrument_registry_store.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_binance_catalog_sync.py -q` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS
 
 ## Build status

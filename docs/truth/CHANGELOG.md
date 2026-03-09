@@ -2,6 +2,31 @@
 
 ## 2026-03-09
 
+### Bloque 2: adapter Binance multi-family + sync manual/startup/scheduled
+- Se crea `rtlab_core.brokers.binance.catalog.BinanceCatalogSyncService`.
+- El catalogo Binance ahora sincroniza y persiste metadata real para:
+  - `spot`
+  - `margin` derivado de `exchangeInfo` Spot y flags `isMarginTradingAllowed`
+  - `usdm_futures`
+  - `coinm_futures`
+- Se incorpora snapshotting y diffing versionado por market family sobre:
+  - `instrument_catalog_snapshot`
+  - `instrument_catalog_snapshot_item`
+- `web/app.py` agrega wiring operativo:
+  - sync opcional en startup
+  - scheduler configurable
+  - endpoint admin `POST /api/v1/instruments/sync`
+  - catalogo visible via:
+    - `GET /api/v1/instruments`
+    - `GET /api/v1/instruments/{instrument_id}`
+- Test nuevo:
+  - `rtlab_autotrader/tests/test_binance_catalog_sync.py`
+- Alcance deliberadamente excluido de este bloque:
+  - sin market data historica
+  - sin universe builder
+  - sin live parity cache
+  - sin routers live por family todavia
+
 ### Bloque 1: base de catalogo de instrumentos + policies de catalogo/live parity
 - `config/policies/gates.yaml` incorpora defaults centralizados para:
   - `market_catalog`

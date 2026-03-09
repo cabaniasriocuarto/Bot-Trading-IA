@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from rtlab_core.config import load_config
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.brokers.binance import BinanceCatalogSyncService
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
 from rtlab_core.learning import LearningService
@@ -5639,6 +5640,9 @@ rollout_manager = RolloutManager(user_data_dir=USER_DATA_DIR)
 mass_backtest_engine = MassBacktestEngine(user_data_dir=USER_DATA_DIR, repo_root=MONOREPO_ROOT, knowledge_loader=KnowledgeLoader(repo_root=MONOREPO_ROOT))
 mass_backtest_coordinator = MassBacktestCoordinator(engine=mass_backtest_engine)
 rollout_gates = GateEvaluator(repo_root=MONOREPO_ROOT)
+instrument_catalog_service = BinanceCatalogSyncService(store.registry, policies_root=CONFIG_POLICIES_ROOT)
+instrument_catalog_sync_stop = Event()
+instrument_catalog_sync_thread: Thread | None = None
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -5653,6 +5657,56 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _market_catalog_policy() -> dict[str, Any]:
+    payload = _yaml_file_or_default(CONFIG_POLICIES_ROOT / "gates.yaml", {})
+    gates = payload.get("gates") if isinstance(payload, dict) and isinstance(payload.get("gates"), dict) else {}
+    market_catalog = gates.get("market_catalog") if isinstance(gates.get("market_catalog"), dict) else {}
+    providers = market_catalog.get("providers") if isinstance(market_catalog.get("providers"), dict) else {}
+    provider_cfg = providers.get("binance") if isinstance(providers.get("binance"), dict) else {}
+    return provider_cfg
+
+
+def _catalog_sync_startup_enabled() -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    explicit = os.getenv("BINANCE_CATALOG_SYNC_ON_STARTUP")
+    if explicit is not None:
+        return _env_bool("BINANCE_CATALOG_SYNC_ON_STARTUP", True)
+    provider_cfg = _market_catalog_policy()
+    return _bool(provider_cfg.get("enabled"), default=True) and _bool(provider_cfg.get("sync_on_startup"), default=True)
+
+
+def _catalog_sync_schedule_minutes() -> int:
+    provider_cfg = _market_catalog_policy()
+    explicit = os.getenv("BINANCE_CATALOG_SYNC_SCHEDULE_MINUTES")
+    if explicit is not None:
+        return max(0, _env_int("BINANCE_CATALOG_SYNC_SCHEDULE_MINUTES", 0))
+    return max(0, _as_int(provider_cfg.get("sync_schedule_minutes"), 0))
+
+
+def _start_instrument_catalog_scheduler() -> None:
+    global instrument_catalog_sync_thread
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    interval_minutes = _catalog_sync_schedule_minutes()
+    if interval_minutes <= 0:
+        return
+    if instrument_catalog_sync_thread and instrument_catalog_sync_thread.is_alive():
+        return
+    instrument_catalog_sync_stop.clear()
+    instrument_catalog_sync_thread = Thread(
+        target=instrument_catalog_service.scheduled_sync_loop,
+        kwargs={"stop_event": instrument_catalog_sync_stop, "interval_minutes": interval_minutes},
+        name="binance-catalog-sync",
+        daemon=True,
+    )
+    instrument_catalog_sync_thread.start()
+
+
+def _stop_instrument_catalog_scheduler() -> None:
+    instrument_catalog_sync_stop.set()
 
 
 def _load_runtime_risk_policy_thresholds() -> dict[str, Any]:
@@ -8596,6 +8650,26 @@ def create_app() -> FastAPI:
             response.headers["X-RTLAB-RateLimit-Bucket"] = bucket
         return response
 
+    @app.on_event("startup")
+    def startup_catalog_sync() -> None:
+        if _catalog_sync_startup_enabled():
+            try:
+                instrument_catalog_service.sync_all(reason="startup")
+            except Exception as exc:
+                store.add_log(
+                    event_type="catalog_sync",
+                    severity="warn",
+                    module="catalog",
+                    message="Fallo sync inicial de catalogo Binance",
+                    related_ids=[],
+                    payload={"error": str(exc)},
+                )
+        _start_instrument_catalog_scheduler()
+
+    @app.on_event("shutdown")
+    def shutdown_catalog_sync() -> None:
+        _stop_instrument_catalog_scheduler()
+
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
         settings = store.load_settings()
@@ -8699,6 +8773,61 @@ def create_app() -> FastAPI:
     def data_catalog(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         catalog = DataCatalog(USER_DATA_DIR)
         return {"items": [row.to_dict() for row in catalog.list_entries()], "timeframes": list(SUPPORTED_TIMEFRAMES), "universes": MARKET_UNIVERSES}
+
+    @app.get("/api/v1/instruments")
+    def list_instruments(
+        provider_market: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        tradable: bool | None = Query(default=None),
+        live_enabled: bool | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        items = instrument_catalog_service.list_instruments(
+            provider_market=provider_market,
+            status=status,
+            tradable=tradable,
+            live_enabled=live_enabled,
+        )
+        return {
+            "items": items,
+            "filters": {
+                "provider": "binance",
+                "provider_market": provider_market,
+                "status": status,
+                "tradable": tradable,
+                "live_enabled": live_enabled,
+            },
+            "count": len(items),
+        }
+
+    @app.get("/api/v1/instruments/{instrument_id}")
+    def get_instrument(instrument_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        item = instrument_catalog_service.get_instrument(instrument_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Instrumento no encontrado")
+        return item
+
+    @app.post("/api/v1/instruments/sync")
+    def sync_instruments(
+        reason: str = Query(default="manual"),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            payload = instrument_catalog_service.sync_all(reason=reason or "manual")
+        except requests.HTTPError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else str(exc)
+            raise HTTPException(status_code=502, detail=f"Sync Binance fallo: {detail}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Sync Binance fallo: {exc}") from exc
+        store.add_log(
+            event_type="catalog_sync",
+            severity="info" if payload.get("ok") else "warn",
+            module="catalog",
+            message="Sync manual de catalogo Binance",
+            related_ids=[],
+            payload=payload,
+        )
+        return payload
 
     @app.get("/api/v1/data/status")
     def data_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

@@ -2225,6 +2225,7 @@ class RegistryDB:
         provider: str | None = None,
         provider_market: str | None = None,
         normalized_symbol: str | None = None,
+        status: str | None = None,
         live_enabled: bool | None = None,
         tradable: bool | None = None,
     ) -> list[dict[str, Any]]:
@@ -2239,6 +2240,9 @@ class RegistryDB:
         if normalized_symbol:
             query += " AND normalized_symbol=?"
             params.append(normalized_symbol)
+        if status:
+            query += " AND status=?"
+            params.append(status)
         if live_enabled is not None:
             query += " AND live_enabled=?"
             params.append(1 if live_enabled else 0)
