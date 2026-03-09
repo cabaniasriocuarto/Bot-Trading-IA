@@ -209,6 +209,72 @@ export interface BotInstance {
   metrics?: BotInstanceMetrics;
 }
 
+export interface BotLiveEligibilityStrategy {
+  strategy_id: string;
+  strategy_name: string;
+  score_current?: number;
+  weight_target?: number;
+  weight_live?: number;
+  confidence?: number;
+  source_scope?: string;
+  veto_until?: string | null;
+  veto_reason?: string | null;
+}
+
+export interface BotLiveEligibilityInstrument {
+  instrument_id: string;
+  provider_market: string;
+  provider_symbol: string;
+  normalized_symbol: string;
+  status?: string;
+  tradable?: boolean;
+  live_enabled?: boolean;
+  mode_capabilities?: Record<string, boolean>;
+  parity_status?: string;
+  parity_warnings?: string[];
+  eligible_live?: boolean;
+  tick_size?: number | null;
+  step_size?: number | null;
+  min_qty?: number | null;
+  min_notional?: number | null;
+}
+
+export interface BotLiveEligibilityResponse {
+  bot_id: string;
+  bot_name?: string;
+  bot_mode?: string;
+  bot_status?: string;
+  runtime_mode?: string;
+  pool_size: number;
+  blocked_reasons: string[];
+  warnings: string[];
+  summary: {
+    eligible_instruments: number;
+    blocked_instruments: number;
+    parity_ready: number;
+  };
+  strategies: BotLiveEligibilityStrategy[];
+  eligible_instruments: BotLiveEligibilityInstrument[];
+}
+
+export interface ExecutionPreflightCheck {
+  id: string;
+  ok: boolean;
+  label: string;
+  detail: string;
+}
+
+export interface ExecutionPreflightResponse {
+  ok: boolean;
+  mode: string;
+  bot_id: string;
+  blocked_reasons: string[];
+  reason_codes: string[];
+  warnings: string[];
+  checks: ExecutionPreflightCheck[];
+  instrument?: BotLiveEligibilityInstrument | null;
+}
+
 export interface StrategyComparison {
   left: Strategy;
   right: Strategy;

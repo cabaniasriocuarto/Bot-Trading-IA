@@ -477,6 +477,16 @@ class BotStartBody(BaseModel):
     bot_id: str | None = None
 
 
+class ExecutionPreflightBody(BaseModel):
+    bot_id: str
+    instrument_id: str | None = None
+    symbol: str | None = None
+    provider_market: str | None = None
+    side: Literal["BUY", "SELL"] = "BUY"
+    qty: float | None = None
+    mode: Literal["mock", "paper", "testnet", "live"] = "live"
+
+
 class ShadowStartBody(BaseModel):
     bot_id: str | None = None
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -9579,6 +9589,49 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         try:
             return learning_service.get_execution_reality_payload(bot_id=bot_id, strategy_id=strategy_id, limit=limit)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/v1/bots/{bot_id}/live-eligibility")
+    def bot_live_eligibility(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            store.refresh_live_parity_state()
+        except Exception:
+            pass
+        try:
+            return learning_service.get_bot_live_eligibility_payload(
+                bot_id=bot_id,
+                bots=store.list_bot_instances(recommendations=learning_service.load_all_recommendations()),
+                strategies=store.list_strategies(),
+                settings=store.load_settings(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/live/validate-order")
+    def execution_live_validate_order(body: ExecutionPreflightBody, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            store.refresh_live_parity_state()
+        except Exception:
+            pass
+        try:
+            return learning_service.validate_execution_preflight(
+                bot_id=body.bot_id,
+                instrument_id=body.instrument_id,
+                symbol=body.symbol,
+                provider_market=body.provider_market,
+                side=body.side,
+                qty=body.qty,
+                mode=body.mode,
+                bots=store.list_bot_instances(recommendations=learning_service.load_all_recommendations()),
+                strategies=store.list_strategies(),
+                settings=store.load_settings(),
+                live_trading_enabled=LIVE_TRADING_ENABLED,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

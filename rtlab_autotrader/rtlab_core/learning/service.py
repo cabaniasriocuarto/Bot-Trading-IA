@@ -733,6 +733,333 @@ class LearningService:
             },
         }
 
+    def get_bot_live_eligibility_payload(
+        self,
+        *,
+        bot_id: str,
+        bots: list[dict[str, Any]],
+        strategies: list[dict[str, Any]],
+        settings: dict[str, Any],
+        health: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        registry = self._require_registry()
+        bot = next((row for row in bots if str(row.get("id") or "") == str(bot_id)), None)
+        if not bot:
+            raise ValueError("Bot no encontrado")
+
+        settings_payload = self.ensure_settings_shape(dict(settings or {}))
+        runtime_mode = str(settings_payload.get("mode") or "PAPER").strip().lower()
+        strategy_map = {str(row.get("id") or ""): row for row in strategies if isinstance(row, dict)}
+        pool_ids = [str(item) for item in (bot.get("pool_strategy_ids") or []) if str(item)]
+        if not pool_ids and isinstance(bot.get("pool_strategies"), list):
+            pool_ids = [str((row or {}).get("id") or "") for row in bot.get("pool_strategies") or [] if str((row or {}).get("id") or "")]
+
+        policy_rows = registry.list_bot_policy_state(bot_id=bot_id)
+        latest_policy_by_strategy: dict[str, dict[str, Any]] = {}
+        for row in policy_rows:
+            strategy_id = str(row.get("strategy_id") or "")
+            if strategy_id and strategy_id not in latest_policy_by_strategy:
+                latest_policy_by_strategy[strategy_id] = row
+
+        strategy_items: list[dict[str, Any]] = []
+        for strategy_id in pool_ids:
+            meta = strategy_map.get(strategy_id, {})
+            policy = latest_policy_by_strategy.get(strategy_id, {})
+            strategy_items.append(
+                {
+                    "strategy_id": strategy_id,
+                    "strategy_name": str(meta.get("name") or strategy_id),
+                    "score_current": float(policy.get("score_current") or 0.0),
+                    "weight_target": float(policy.get("weight_target") or 0.0),
+                    "weight_live": float(policy.get("weight_live") or 0.0),
+                    "confidence": float(policy.get("confidence") or 0.0),
+                    "source_scope": str(policy.get("source_scope") or "sin_evidencia"),
+                    "veto_until": policy.get("veto_until"),
+                    "veto_reason": policy.get("veto_reason"),
+                }
+            )
+        strategy_items.sort(key=lambda row: (float(row.get("score_current") or 0.0), float(row.get("confidence") or 0.0)), reverse=True)
+
+        parity_rows = registry.list_live_parity_state(limit=2000)
+        parity_by_instrument = {str(row.get("instrument_id") or ""): row for row in parity_rows if str(row.get("instrument_id") or "")}
+        parity_by_symbol = {
+            (str(row.get("provider_market") or "").lower(), str(row.get("symbol") or "").upper()): row
+            for row in parity_rows
+        }
+
+        instrument_rows = registry.list_instrument_registry(provider="binance")
+        bot_universe = {str(item).upper() for item in (bot.get("universe") or []) if str(item)}
+        eligible_instruments: list[dict[str, Any]] = []
+        blocked_instruments = 0
+        parity_ready = 0
+        for instrument in instrument_rows:
+            if not bool(instrument.get("is_active_snapshot", True)):
+                continue
+            instrument_symbol = str(instrument.get("normalized_symbol") or instrument.get("provider_symbol") or "").upper()
+            if bot_universe and instrument_symbol not in bot_universe and str(instrument.get("instrument_id") or "").upper() not in bot_universe:
+                continue
+            parity = parity_by_instrument.get(str(instrument.get("instrument_id") or "")) or parity_by_symbol.get(
+                (str(instrument.get("provider_market") or "").lower(), instrument_symbol)
+            ) or {}
+            warnings = list(parity.get("warnings") or [])
+            live_capable = bool((instrument.get("mode_capabilities") or {}).get("allowed_in_live", instrument.get("live_enabled")))
+            parity_ok = bool(parity.get("has_reference_data")) and bool(parity.get("has_recent_market_state"))
+            if str(instrument.get("provider_market") or "") in {"usdm_futures", "coinm_futures"}:
+                parity_ok = parity_ok and bool(parity.get("has_recent_mark_price"))
+            if live_capable and bool(instrument.get("tradable")) and parity_ok:
+                parity_ready += 1
+            else:
+                blocked_instruments += 1
+            eligible_instruments.append(
+                {
+                    "instrument_id": str(instrument.get("instrument_id") or ""),
+                    "provider_market": str(instrument.get("provider_market") or ""),
+                    "provider_symbol": str(instrument.get("provider_symbol") or ""),
+                    "normalized_symbol": instrument_symbol,
+                    "status": str(instrument.get("status") or ""),
+                    "tradable": bool(instrument.get("tradable")),
+                    "live_enabled": bool(instrument.get("live_enabled")),
+                    "mode_capabilities": instrument.get("mode_capabilities") or {},
+                    "parity_status": str(parity.get("status") or "sin_parity"),
+                    "parity_warnings": warnings,
+                    "eligible_live": bool(live_capable and bool(instrument.get("tradable")) and parity_ok),
+                    "tick_size": instrument.get("tick_size"),
+                    "step_size": instrument.get("step_size"),
+                    "min_qty": instrument.get("min_qty"),
+                    "min_notional": instrument.get("min_notional"),
+                }
+            )
+
+        eligible_instruments.sort(
+            key=lambda row: (
+                0 if bool(row.get("eligible_live")) else 1,
+                0 if bool(row.get("tradable")) else 1,
+                str(row.get("provider_market") or ""),
+                str(row.get("normalized_symbol") or ""),
+            )
+        )
+        blocked_reasons: list[str] = []
+        warnings: list[str] = []
+        if not pool_ids:
+            blocked_reasons.append("pool_vacio")
+        if str(bot.get("status") or "") == "archived":
+            blocked_reasons.append("bot_archivado")
+        elif str(bot.get("status") or "") == "paused":
+            warnings.append("bot_pausado")
+        if not parity_ready:
+            blocked_reasons.append("sin_instrumentos_elegibles_live")
+        if runtime_mode != "live":
+            warnings.append(f"runtime_actual_{runtime_mode}")
+        if health and not bool((health or {}).get("ok", True)):
+            warnings.append("health_backend_no_ok")
+
+        return {
+            "bot_id": bot_id,
+            "bot_name": str(bot.get("name") or bot_id),
+            "bot_mode": str(bot.get("mode") or ""),
+            "bot_status": str(bot.get("status") or ""),
+            "runtime_mode": runtime_mode,
+            "pool_size": len(pool_ids),
+            "blocked_reasons": blocked_reasons,
+            "warnings": warnings,
+            "summary": {
+                "eligible_instruments": sum(1 for row in eligible_instruments if bool(row.get("eligible_live"))),
+                "blocked_instruments": blocked_instruments,
+                "parity_ready": parity_ready,
+            },
+            "strategies": strategy_items,
+            "eligible_instruments": eligible_instruments[:20],
+        }
+
+    def validate_execution_preflight(
+        self,
+        *,
+        bot_id: str,
+        instrument_id: str | None,
+        symbol: str | None,
+        provider_market: str | None,
+        side: str | None,
+        qty: float | None,
+        mode: str,
+        bots: list[dict[str, Any]],
+        strategies: list[dict[str, Any]],
+        settings: dict[str, Any],
+        health: dict[str, Any] | None = None,
+        live_trading_enabled: bool = False,
+    ) -> dict[str, Any]:
+        registry = self._require_registry()
+        normalized_mode = str(mode or "live").strip().lower()
+        capability_key = {
+            "mock": "allowed_in_mock",
+            "shadow": "allowed_in_mock",
+            "paper": "allowed_in_paper",
+            "test": "allowed_in_testnet",
+            "testnet": "allowed_in_testnet",
+            "demo": "allowed_in_demo",
+            "live": "allowed_in_live",
+        }.get(normalized_mode, "allowed_in_live")
+        eligibility = self.get_bot_live_eligibility_payload(
+            bot_id=bot_id,
+            bots=bots,
+            strategies=strategies,
+            settings=settings,
+            health=health,
+        )
+        bot = next((row for row in bots if str(row.get("id") or "") == str(bot_id)), None)
+        if not bot:
+            raise ValueError("Bot no encontrado")
+
+        instrument_rows = registry.list_instrument_registry(provider="binance")
+        parity_rows = registry.list_live_parity_state(limit=2000)
+        parity_by_instrument = {str(row.get("instrument_id") or ""): row for row in parity_rows if str(row.get("instrument_id") or "")}
+        parity_by_symbol = {
+            (str(row.get("provider_market") or "").lower(), str(row.get("symbol") or "").upper()): row
+            for row in parity_rows
+        }
+
+        selected_instrument: dict[str, Any] | None = None
+        normalized_symbol = str(symbol or "").upper()
+        normalized_market = str(provider_market or "").lower()
+        for row in instrument_rows:
+            row_id = str(row.get("instrument_id") or "")
+            row_symbol = str(row.get("normalized_symbol") or row.get("provider_symbol") or "").upper()
+            row_market = str(row.get("provider_market") or "").lower()
+            if instrument_id and row_id == str(instrument_id):
+                selected_instrument = row
+                break
+            if normalized_symbol and row_symbol == normalized_symbol and (not normalized_market or row_market == normalized_market):
+                selected_instrument = row
+                break
+        if selected_instrument is None:
+            selected_instrument = next((row for row in eligibility.get("eligible_instruments", []) if bool(row.get("eligible_live"))), None)
+        parity = {}
+        if selected_instrument:
+            parity = parity_by_instrument.get(str(selected_instrument.get("instrument_id") or "")) or parity_by_symbol.get(
+                (
+                    str(selected_instrument.get("provider_market") or "").lower(),
+                    str(selected_instrument.get("normalized_symbol") or selected_instrument.get("provider_symbol") or "").upper(),
+                )
+            ) or {}
+
+        checks: list[dict[str, Any]] = []
+        blocked_reasons: list[str] = []
+        warnings: list[str] = list(eligibility.get("warnings") or [])
+
+        def _add_check(check_id: str, label: str, ok: bool, detail: str, *, blocking: bool = True) -> None:
+            checks.append({"id": check_id, "label": label, "ok": bool(ok), "detail": detail})
+            if blocking and not ok:
+                blocked_reasons.append(check_id)
+
+        bot_status = str(bot.get("status") or "")
+        pool_size = int(eligibility.get("pool_size") or 0)
+        _add_check("bot_exists", "Bot encontrado", True, f"Bot {bot_id} disponible.")
+        _add_check("pool_not_empty", "Pool con estrategias", pool_size > 0, f"Pool actual: {pool_size} estrategia(s).")
+        _add_check("bot_not_archived", "Bot no archivado", bot_status != "archived", f"Estado del bot: {bot_status or 'desconocido'}.")
+        _add_check(
+            "bot_mode_matches",
+            "Modo del bot compatible",
+            normalized_mode != "live" or str(bot.get("mode") or "").lower() == "live",
+            f"Modo del bot: {str(bot.get('mode') or '').lower() or 'sin_modo'}. Validación solicitada para {normalized_mode}.",
+        )
+        _add_check("instrument_found", "Instrumento resuelto", selected_instrument is not None, "Se seleccionó instrumento elegible." if selected_instrument else "No hay instrumento elegible para validar.")
+
+        if selected_instrument:
+            capabilities = selected_instrument.get("mode_capabilities") or {}
+            instrument_market = str(selected_instrument.get("provider_market") or "")
+            instrument_symbol = str(selected_instrument.get("normalized_symbol") or selected_instrument.get("provider_symbol") or "")
+            _add_check(
+                "instrument_tradable",
+                "Instrumento tradable",
+                bool(selected_instrument.get("tradable")),
+                f"{instrument_symbol} / {instrument_market} tradable={bool(selected_instrument.get('tradable'))}.",
+            )
+            _add_check(
+                "instrument_mode_enabled",
+                "Modo habilitado para el instrumento",
+                bool(capabilities.get(capability_key, False)),
+                f"{instrument_symbol} permite {normalized_mode}={bool(capabilities.get(capability_key, False))}.",
+            )
+            if normalized_mode == "live":
+                _add_check(
+                    "live_runtime_enabled",
+                    "LIVE habilitado en runtime",
+                    bool(live_trading_enabled),
+                    "LIVE_TRADING_ENABLED debe estar activo para enrutar órdenes reales.",
+                )
+            else:
+                _add_check(
+                    "mode_runtime_declared",
+                    "Modo operativo declarado",
+                    True,
+                    f"Validación sobre modo {normalized_mode}; no usa dinero real.",
+                    blocking=False,
+                )
+            _add_check(
+                "parity_reference",
+                "Referencia de mercado disponible",
+                bool(parity.get("has_reference_data")),
+                f"Paridad status={str(parity.get('status') or 'sin_parity')}.",
+            )
+            _add_check(
+                "parity_market_state",
+                "Estado de mercado reciente",
+                bool(parity.get("has_recent_market_state")),
+                "Se requiere dataset/market state reciente para validar ejecución.",
+            )
+            if instrument_market in {"usdm_futures", "coinm_futures"}:
+                _add_check(
+                    "parity_mark_price",
+                    "Mark price reciente",
+                    bool(parity.get("has_recent_mark_price")),
+                    "Derivados requieren mark price reciente para live/testnet.",
+                )
+            else:
+                _add_check(
+                    "parity_mark_price",
+                    "Mark price no requerido",
+                    True,
+                    "Spot/margin no requieren mark price dedicado.",
+                    blocking=False,
+                )
+            _add_check(
+                "qty_positive",
+                "Cantidad válida",
+                qty is None or float(qty) > 0.0,
+                f"qty={qty if qty is not None else 'auto/no provista'}.",
+            )
+            _add_check(
+                "side_declared",
+                "Lado declarado",
+                str(side or "").upper() in {"BUY", "SELL"},
+                f"side={str(side or '').upper() or 'NO_DECLARADO'}.",
+            )
+            instrument_payload = {
+                "instrument_id": str(selected_instrument.get("instrument_id") or ""),
+                "provider_market": instrument_market,
+                "provider_symbol": str(selected_instrument.get("provider_symbol") or ""),
+                "normalized_symbol": instrument_symbol,
+                "status": str(selected_instrument.get("status") or ""),
+                "tradable": bool(selected_instrument.get("tradable")),
+                "live_enabled": bool(selected_instrument.get("live_enabled")),
+                "mode_capabilities": capabilities,
+                "parity_status": str(parity.get("status") or "sin_parity"),
+                "parity_warnings": list(parity.get("warnings") or []),
+            }
+        else:
+            instrument_payload = None
+
+        reason_codes = list(dict.fromkeys(blocked_reasons))
+        return {
+            "ok": len(reason_codes) == 0,
+            "mode": normalized_mode,
+            "bot_id": bot_id,
+            "blocked_reasons": reason_codes,
+            "reason_codes": reason_codes,
+            "warnings": warnings,
+            "checks": checks,
+            "instrument": instrument_payload,
+        }
+
     def _streams_from_runs(self, runs: list[dict[str, Any]]) -> dict[str, list[float]]:
         latest = runs[:50]
         return {

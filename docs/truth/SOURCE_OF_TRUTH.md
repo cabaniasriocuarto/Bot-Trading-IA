@@ -2,6 +2,48 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 7 parcial - Elegibilidad live por bot + preflight visible en Ejecucion
+
+- `LearningService` ahora expone una capa operativa minima para `live` sobre el cerebro del bot:
+  - `get_bot_live_eligibility_payload(...)`
+  - `validate_execution_preflight(...)`
+- La elegibilidad live ya no depende solo de labels o del modo visible del bot. Ahora combina:
+  - `bot_policy_state` persistido
+  - `instrument_registry`
+  - `live_parity_state`
+  - modo del bot
+  - estado del bot
+  - runtime mode
+  - `LIVE_TRADING_ENABLED`
+- La validacion usa checks explicitos y auditables:
+  - bot encontrado
+  - pool no vacio
+  - bot no archivado
+  - modo del bot compatible
+  - instrumento resuelto
+  - instrumento tradable
+  - instrumento habilitado para el modo
+  - runtime live habilitado
+  - referencia de mercado disponible
+  - estado de mercado reciente
+  - `mark_price` reciente si el market es derivado
+  - cantidad valida
+  - lado declarado
+- `web/app.py` ya publica endpoints reales para esta capa:
+  - `GET /api/v1/bots/{bot_id}/live-eligibility`
+  - `POST /api/v1/execution/live/validate-order`
+- Frontend `Execution` ya muestra:
+  - resumen de elegibilidad live del bot seleccionado
+  - estrategias del pool con score/weights/confidence
+  - instrumentos live elegibles
+  - motivos de bloqueo
+  - warnings
+  - resultado del preflight live
+- Estado real del bloque:
+  - la visibilidad minima backend/frontend ya existe
+  - todavia no hay routing live final ni `execution_reality` conectado a fills reales
+  - la trazabilidad `episode -> bot_id` directa sigue pendiente; la trazabilidad fuerte hoy es `run -> bot`
+
 ## Actualizacion de bloque 6 parcial - Modos operativos y capacidades por instrumento
 
 - Taxonomia operativa canonica vigente:

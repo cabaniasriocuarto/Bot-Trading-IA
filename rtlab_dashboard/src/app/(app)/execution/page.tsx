@@ -10,7 +10,18 @@ import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/c
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiDelete, apiGet, apiPost } from "@/lib/client-api";
-import type { BotInstance, BotStatusResponse, ExchangeDiagnoseResponse, ExecutionStats, HealthResponse, SettingsResponse, Strategy, TradingMode } from "@/lib/types";
+import type {
+  BotInstance,
+  BotLiveEligibilityResponse,
+  BotStatusResponse,
+  ExchangeDiagnoseResponse,
+  ExecutionPreflightResponse,
+  ExecutionStats,
+  HealthResponse,
+  SettingsResponse,
+  Strategy,
+  TradingMode,
+} from "@/lib/types";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/utils";
 
 type GatesResponse = {
@@ -71,6 +82,11 @@ export default function ExecutionPage() {
   const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
   const [selectedExecutionBotId, setSelectedExecutionBotId] = useState("");
   const [botBulkBusy, setBotBulkBusy] = useState(false);
+  const [botLiveEligibility, setBotLiveEligibility] = useState<BotLiveEligibilityResponse | null>(null);
+  const [botLiveEligibilityError, setBotLiveEligibilityError] = useState("");
+  const [botLiveEligibilityLoading, setBotLiveEligibilityLoading] = useState(false);
+  const [preflightResult, setPreflightResult] = useState<ExecutionPreflightResponse | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState<boolean>(() => (typeof document === "undefined" ? true : document.visibilityState === "visible"));
   const pollInFlightRef = useRef(false);
 
@@ -118,19 +134,41 @@ export default function ExecutionPage() {
     }
   }, []);
 
+  const loadBotLiveEligibility = useCallback(async (botId: string) => {
+    if (!botId) {
+      setBotLiveEligibility(null);
+      setBotLiveEligibilityError("");
+      return;
+    }
+    setBotLiveEligibilityLoading(true);
+    setBotLiveEligibilityError("");
+    try {
+      const payload = await apiGet<BotLiveEligibilityResponse>(`/api/v1/bots/${encodeURIComponent(botId)}/live-eligibility`);
+      setBotLiveEligibility(payload);
+    } catch (err) {
+      setBotLiveEligibility(null);
+      setBotLiveEligibilityError(err instanceof Error ? err.message : "No se pudo cargar la elegibilidad live del bot.");
+    } finally {
+      setBotLiveEligibilityLoading(false);
+    }
+  }, []);
+
   const refreshAll = useCallback(async (forceExchange = false) => {
     setRefreshing(true);
     setMessage("");
     setControlError("");
     try {
       await Promise.all([loadExecutionMetrics(), loadTradingPanel(forceExchange)]);
+      if (selectedExecutionBotId) {
+        await loadBotLiveEligibility(selectedExecutionBotId);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "No se pudo actualizar la pantalla.";
       setError(msg);
     } finally {
       setRefreshing(false);
     }
-  }, [loadExecutionMetrics, loadTradingPanel]);
+  }, [loadBotLiveEligibility, loadExecutionMetrics, loadTradingPanel, selectedExecutionBotId]);
 
   useEffect(() => {
     const load = async () => {
@@ -551,6 +589,29 @@ export default function ExecutionPage() {
     }
   };
 
+  const runPreflightValidation = async () => {
+    if (!selectedExecutionBotId) {
+      setControlError("Selecciona un bot para validar preflight.");
+      return;
+    }
+    setPreflightLoading(true);
+    setControlError("");
+    try {
+      const payload = await apiPost<ExecutionPreflightResponse>("/api/v1/execution/live/validate-order", {
+        bot_id: selectedExecutionBotId,
+        mode: "live",
+        side: "BUY",
+      });
+      setPreflightResult(payload);
+      setMessage(payload.ok ? "Preflight live OK para el bot seleccionado." : "Preflight live con bloqueos o advertencias.");
+    } catch (err) {
+      setPreflightResult(null);
+      setControlError(err instanceof Error ? err.message : "No se pudo validar el preflight live.");
+    } finally {
+      setPreflightLoading(false);
+    }
+  };
+
   const selectBotsWhere = (predicate: (bot: BotInstance) => boolean) => {
     const ids = botRowsFiltered.filter(predicate).map((row) => String(row.id));
     setBotSelectedIds(ids);
@@ -569,6 +630,17 @@ export default function ExecutionPage() {
       botInstances[0];
     if (preferred) setSelectedExecutionBotId(preferred.id);
   }, [botInstances, botSelectedIds, runtimeModeKey, selectedExecutionBotId]);
+
+  useEffect(() => {
+    if (!selectedExecutionBotId) {
+      setBotLiveEligibility(null);
+      setBotLiveEligibilityError("");
+      setPreflightResult(null);
+      return;
+    }
+    setPreflightResult(null);
+    void loadBotLiveEligibility(selectedExecutionBotId);
+  }, [loadBotLiveEligibility, selectedExecutionBotId]);
 
   return (
     <div className="space-y-4">
@@ -852,6 +924,134 @@ export default function ExecutionPage() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Elegibilidad live del bot</p>
+                  <p className="text-[11px] text-slate-400">
+                    Resume si el bot seleccionado puede pasar a validación live real y qué preflight bloquea hoy.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {botLiveEligibility?.runtime_mode ? <Badge variant="info">runtime {botLiveEligibility.runtime_mode}</Badge> : null}
+                  {botLiveEligibility?.bot_mode ? <Badge variant="neutral">bot {botLiveEligibility.bot_mode}</Badge> : null}
+                  {botLiveEligibility?.bot_status ? (
+                    <Badge variant={botLiveEligibility.bot_status === "active" ? "success" : botLiveEligibility.bot_status === "paused" ? "warn" : "neutral"}>
+                      {botLiveEligibility.bot_status}
+                    </Badge>
+                  ) : null}
+                </div>
+              </div>
+              {!selectedExecutionBot ? (
+                <p className="text-xs text-slate-400">Selecciona un bot para revisar su elegibilidad live y el preflight.</p>
+              ) : botLiveEligibilityLoading ? (
+                <p className="text-xs text-slate-400">Cargando elegibilidad live…</p>
+              ) : botLiveEligibilityError ? (
+                <p className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">{botLiveEligibilityError}</p>
+              ) : botLiveEligibility ? (
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <Metric title="Pool elegible" value={String(botLiveEligibility.pool_size)} compact />
+                    <Metric title="Instrumentos live OK" value={String(botLiveEligibility.summary.eligible_instruments)} compact />
+                    <Metric title="Paridad lista" value={String(botLiveEligibility.summary.parity_ready)} compact />
+                  </div>
+                  {botLiveEligibility.blocked_reasons.length ? (
+                    <div className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-200">
+                      <p className="font-semibold text-rose-100">Bloqueos activos</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {botLiveEligibility.blocked_reasons.map((reason) => (
+                          <Badge key={`live-block-${reason}`} variant="danger">
+                            {liveReasonLabel(reason)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {botLiveEligibility.warnings.length ? (
+                    <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+                      <p className="font-semibold text-amber-100">Advertencias</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {botLiveEligibility.warnings.map((warning) => (
+                          <Badge key={`live-warning-${warning}`} variant="warn">
+                            {liveReasonLabel(warning)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" disabled={preflightLoading || !selectedExecutionBotId} onClick={() => void runPreflightValidation()}>
+                      {preflightLoading ? "Validando..." : "Validar preflight live"}
+                    </Button>
+                    <Button variant="ghost" disabled={!selectedExecutionBotId || botLiveEligibilityLoading} onClick={() => void loadBotLiveEligibility(selectedExecutionBotId)}>
+                      Refrescar elegibilidad
+                    </Button>
+                  </div>
+                  {preflightResult ? (
+                    <div className="rounded border border-slate-800 bg-slate-900/50 p-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold text-slate-100">Resultado de preflight</p>
+                        <Badge variant={preflightResult.ok ? "success" : "warn"}>{preflightResult.ok ? "OK" : "Con bloqueos"}</Badge>
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {preflightResult.checks.map((check) => (
+                          <div key={`preflight-${check.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1">
+                            <div>
+                              <p className="font-medium text-slate-200">{check.label}</p>
+                              <p className="text-[11px] text-slate-400">{check.detail}</p>
+                            </div>
+                            <Badge variant={check.ok ? "success" : "danger"}>{check.ok ? "PASS" : "BLOCK"}</Badge>
+                          </div>
+                        ))}
+                        {preflightResult.instrument ? (
+                          <p className="text-[11px] text-slate-400">
+                            Instrumento validado: <strong>{preflightResult.instrument.normalized_symbol}</strong> · {preflightResult.instrument.provider_market}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="overflow-x-auto rounded border border-slate-800">
+                    <Table className="text-xs">
+                      <THead>
+                        <TR>
+                          <TH>Instrumento</TH>
+                          <TH>Mercado</TH>
+                          <TH>Estado</TH>
+                          <TH>Paridad</TH>
+                          <TH>Live</TH>
+                        </TR>
+                      </THead>
+                      <TBody>
+                        {botLiveEligibility.eligible_instruments.slice(0, 8).map((row) => (
+                          <TR key={`eligible-live-${row.instrument_id}`}>
+                            <TD>{row.normalized_symbol || row.provider_symbol}</TD>
+                            <TD>{row.provider_market}</TD>
+                            <TD>{row.status || "--"}</TD>
+                            <TD>
+                              <Badge variant={row.parity_status === "reference_dataset_ready" ? "success" : row.parity_status === "missing_dataset" ? "warn" : "neutral"}>
+                                {row.parity_status || "sin_paridad"}
+                              </Badge>
+                            </TD>
+                            <TD>
+                              <Badge variant={row.eligible_live ? "success" : "danger"}>{row.eligible_live ? "habilitado" : "bloqueado"}</Badge>
+                            </TD>
+                          </TR>
+                        ))}
+                        {!botLiveEligibility.eligible_instruments.length ? (
+                          <TR>
+                            <TD colSpan={5} className="py-4 text-center text-xs text-slate-400">
+                              No hay instrumentos candidatos para este bot.
+                            </TD>
+                          </TR>
+                        ) : null}
+                      </TBody>
+                    </Table>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </CardContent>
         </Card>
@@ -1280,6 +1480,34 @@ function statusLabel(status: BotStatusResponse["bot_status"] | string): string {
   if (normalized === "SAFE_MODE") return "Modo seguro";
   if (normalized === "KILLED") return "Kill switch";
   return normalized;
+}
+
+function liveReasonLabel(reason: string): string {
+  const normalized = String(reason).trim().toLowerCase();
+  const labels: Record<string, string> = {
+    pool_vacio: "Pool vacio",
+    bot_archivado: "Bot archivado",
+    bot_pausado: "Bot pausado",
+    sin_instrumentos_elegibles_live: "Sin instrumentos elegibles para live",
+    health_backend_no_ok: "Health backend no OK",
+    runtime_actual_mock: "Runtime actual: mock",
+    runtime_actual_paper: "Runtime actual: paper",
+    runtime_actual_testnet: "Runtime actual: testnet",
+    runtime_actual_live: "Runtime actual: live",
+    live_runtime_enabled: "Live no habilitado en runtime",
+    bot_mode_matches: "Modo del bot no coincide",
+    instrument_found: "Instrumento no resoluble",
+    instrument_tradable: "Instrumento no tradable",
+    instrument_mode_enabled: "Instrumento no habilitado para este modo",
+    parity_reference: "Falta referencia de mercado",
+    parity_market_state: "Falta estado de mercado reciente",
+    parity_mark_price: "Falta mark price reciente",
+    qty_positive: "Cantidad invalida",
+    side_declared: "Lado no declarado",
+    pool_not_empty: "Pool vacio",
+    bot_not_archived: "Bot archivado",
+  };
+  return labels[normalized] ?? normalized.replaceAll("_", " ");
 }
 
 function ChecklistRow({

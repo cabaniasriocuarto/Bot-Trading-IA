@@ -199,3 +199,199 @@ def test_learning_service_reads_execution_reality_ledger(tmp_path: Path) -> None
     assert payload["summary"]["count"] == 1
     assert payload["summary"]["avg_realized_slippage_bps"] == 1.5
     assert payload["items"][0]["reconciliation_status"] == "ok"
+
+
+def test_learning_service_reports_live_eligibility_for_bot(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    base_dt = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    for idx in range(8):
+        _record_run(
+            store,
+            strategy_id=strategy_id,
+            run_id=f"live-eligibility-{idx}",
+            source="live",
+            start_dt=base_dt + timedelta(days=idx * 5),
+            bot_id="BOT-ALPHA",
+            expectancy=8.5,
+            sharpe=1.35,
+            max_dd=0.03,
+            trade_count=12,
+        )
+
+    registry.upsert_instrument_registry(
+        instrument_id="binance:spot:BTCUSDT",
+        provider="binance",
+        provider_market="spot",
+        provider_symbol="BTCUSDT",
+        normalized_symbol="BTCUSDT",
+        base_asset="BTC",
+        quote_asset="USDT",
+        asset_class="crypto",
+        status="TRADING",
+        tradable=True,
+        backtestable=True,
+        mock_enabled=True,
+        paper_enabled=True,
+        test_enabled=True,
+        demo_enabled=True,
+        live_enabled=True,
+        tick_size=0.1,
+        step_size=0.001,
+        min_qty=0.001,
+        min_notional=10.0,
+        source_hash="hash-btcusdt",
+    )
+    registry.upsert_live_parity_state(
+        provider="binance",
+        provider_market="spot",
+        symbol="BTCUSDT",
+        instrument_id="binance:spot:BTCUSDT",
+        dataset_id="dataset-live-btcusdt",
+        has_reference_data=True,
+        has_recent_market_state=True,
+        status="reference_dataset_ready",
+    )
+
+    strategies = [_strategy_row(strategy_id, tags=["trend"])]
+    runs = [
+        {
+            "id": "runtime-live",
+            "strategy_id": strategy_id,
+            "mode": "live",
+            "timeframe": "5m",
+            "symbol": "BTCUSDT",
+            "feature_set": "orderflow_on",
+            "metrics": {"sharpe": 1.2, "max_dd": 0.03},
+        }
+    ]
+    bots = [
+        {
+            "id": "BOT-ALPHA",
+            "name": "Bot Alpha",
+            "mode": "live",
+            "status": "active",
+            "pool_strategy_ids": [strategy_id],
+            "universe": ["BTCUSDT"],
+        }
+    ]
+
+    service.build_bot_brain(bot_id="BOT-ALPHA", bots=bots, strategies=strategies, runs=runs, persist=True)
+    payload = service.get_bot_live_eligibility_payload(
+        bot_id="BOT-ALPHA",
+        bots=bots,
+        strategies=strategies,
+        settings={"mode": "LIVE"},
+        health={"ok": True},
+    )
+
+    assert payload["bot_id"] == "BOT-ALPHA"
+    assert payload["summary"]["eligible_instruments"] == 1
+    assert payload["summary"]["parity_ready"] == 1
+    assert payload["strategies"][0]["strategy_id"] == strategy_id
+    assert payload["eligible_instruments"][0]["instrument_id"] == "binance:spot:BTCUSDT"
+    assert payload["eligible_instruments"][0]["eligible_live"] is True
+
+
+def test_learning_service_preflight_blocks_when_live_disabled(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    base_dt = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    _record_run(
+        store,
+        strategy_id=strategy_id,
+        run_id="live-preflight-1",
+        source="live",
+        start_dt=base_dt,
+        bot_id="BOT-ALPHA",
+        expectancy=7.0,
+        sharpe=1.1,
+        max_dd=0.03,
+        trade_count=15,
+    )
+
+    registry.upsert_instrument_registry(
+        instrument_id="binance:spot:BTCUSDT",
+        provider="binance",
+        provider_market="spot",
+        provider_symbol="BTCUSDT",
+        normalized_symbol="BTCUSDT",
+        base_asset="BTC",
+        quote_asset="USDT",
+        asset_class="crypto",
+        status="TRADING",
+        tradable=True,
+        backtestable=True,
+        mock_enabled=True,
+        paper_enabled=True,
+        test_enabled=True,
+        demo_enabled=True,
+        live_enabled=True,
+        tick_size=0.1,
+        step_size=0.001,
+        min_qty=0.001,
+        min_notional=10.0,
+        source_hash="hash-btcusdt",
+    )
+    registry.upsert_live_parity_state(
+        provider="binance",
+        provider_market="spot",
+        symbol="BTCUSDT",
+        instrument_id="binance:spot:BTCUSDT",
+        dataset_id="dataset-live-btcusdt",
+        has_reference_data=True,
+        has_recent_market_state=True,
+        status="reference_dataset_ready",
+    )
+
+    strategies = [_strategy_row(strategy_id, tags=["trend"])]
+    runs = [
+        {
+            "id": "runtime-live",
+            "strategy_id": strategy_id,
+            "mode": "live",
+            "timeframe": "5m",
+            "symbol": "BTCUSDT",
+            "feature_set": "orderflow_on",
+            "metrics": {"sharpe": 1.1, "max_dd": 0.03},
+        }
+    ]
+    bots = [
+        {
+            "id": "BOT-ALPHA",
+            "name": "Bot Alpha",
+            "mode": "live",
+            "status": "active",
+            "pool_strategy_ids": [strategy_id],
+            "universe": ["BTCUSDT"],
+        }
+    ]
+
+    service.build_bot_brain(bot_id="BOT-ALPHA", bots=bots, strategies=strategies, runs=runs, persist=True)
+    payload = service.validate_execution_preflight(
+        bot_id="BOT-ALPHA",
+        instrument_id="binance:spot:BTCUSDT",
+        symbol="BTCUSDT",
+        provider_market="spot",
+        side="BUY",
+        qty=0.1,
+        mode="live",
+        bots=bots,
+        strategies=strategies,
+        settings={"mode": "LIVE"},
+        health={"ok": True},
+        live_trading_enabled=False,
+    )
+
+    assert payload["ok"] is False
+    assert "live_runtime_enabled" in payload["reason_codes"]
+    assert payload["instrument"]["instrument_id"] == "binance:spot:BTCUSDT"

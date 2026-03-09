@@ -2,6 +2,34 @@
 
 ## 2026-03-09
 
+### Bloque 7 parcial: elegibilidad live por bot + preflight visible en Execution
+- `LearningService` agrega dos contratos operativos nuevos:
+  - `get_bot_live_eligibility_payload(...)`
+  - `validate_execution_preflight(...)`
+- `web/app.py` expone:
+  - `GET /api/v1/bots/{bot_id}/live-eligibility`
+  - `POST /api/v1/execution/live/validate-order`
+- La validacion live ya usa evidencia combinada de:
+  - bot
+  - pool
+  - catalogo de instrumentos
+  - estado de paridad live
+  - flags del runtime
+- Frontend `Execution` agrega un panel visible de:
+  - elegibilidad live del bot
+  - resumen de instrumentos elegibles
+  - razones de bloqueo / warnings
+  - preflight de ejecucion live
+- Tests nuevos:
+  - elegibilidad live positiva para bot con parity e instrumento valido
+  - bloqueo de preflight cuando `LIVE_TRADING_ENABLED=false`
+- Validacion:
+  - `py_compile` PASS
+  - `pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` PASS
+  - `eslint` `execution/page.tsx` + `types.ts` PASS
+  - `npm run build` PASS
+  - warnings de Recharts siguen no bloqueantes
+
 ### Bloque 6 parcial: taxonomia operativa canonica + mock visible + matrix minima por modo
 - Se fija `mock` como modo operativo visible del bot en UI/backend, separado de:
   - `paper`

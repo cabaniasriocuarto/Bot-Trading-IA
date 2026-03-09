@@ -78,6 +78,26 @@ Fecha: 2026-03-09
     - `Execution`
     - `Backtests`
   - `live` ya aparece como fuente de experiencia en resumenes donde corresponde.
+- Bloque 7 parcial cerrado:
+  - `LearningService` ya calcula elegibilidad live por bot usando:
+    - `bot_policy_state`
+    - `instrument_registry`
+    - `live_parity_state`
+    - estado/modo del bot
+    - estado del runtime
+  - endpoint nuevo:
+    - `GET /api/v1/bots/{bot_id}/live-eligibility`
+  - endpoint nuevo:
+    - `POST /api/v1/execution/live/validate-order`
+  - `Execution` ya muestra:
+    - resumen de elegibilidad live del bot seleccionado
+    - razones de bloqueo y warnings
+    - estrategias del pool con pesos/confidence
+    - tabla corta de instrumentos elegibles
+    - resultado del preflight live
+  - tests backend nuevos para:
+    - elegibilidad live positiva
+    - bloqueo live cuando `LIVE_TRADING_ENABLED=false`
 
 ## Nuevo plan consolidado
 - Unificar el proyecto sobre una arquitectura auditable y escalable:
@@ -106,7 +126,10 @@ Fecha: 2026-03-09
 ## Bloque actual
 - Bloque 7 en progreso:
   - execution reality + live eligibility + preflight validation + routing
-  - apoyar la taxonomia operativa ya consolidada sobre validacion/ruteo real
+  - subtramo pendiente de este bloque:
+    - completar routing live real
+    - enriquecer `execution_reality`
+    - separar mejor elegibilidad/mock/paper/testnet/live en UI final
 
 ## Pendiente del siguiente bloque
 - Bloque 8:
@@ -124,6 +147,9 @@ Fecha: 2026-03-09
   - monitoring / health dashboard
   - kill switches y drift visibles
   - Beast/Batch visible y consistente end-to-end en deploy
+  - routing live final por family
+  - `execution_reality` alimentado por fills/ordenes del runtime real
+  - linkage `episode -> bot_id` directo para analitica historica fuerte
 
 ## Riesgos abiertos
 - Hay capas legacy de catalogo/datasets simples que pueden superponerse con el nuevo instrument registry si no se consolidan con cuidado.
@@ -135,6 +161,7 @@ Fecha: 2026-03-09
 - El research funnel ya persiste trials, pero todavia no tiene explotacion visual en frontend ni integracion completa con promotion UI.
 - El bloque actual debe evitar crear una segunda fuente de verdad de modos operativos fuera de YAML y store principal.
 - Todavia quedan referencias tecnicas internas `shadow` que deben seguir internas y no filtrarse como UX primaria.
+- El bloque 7 ahora ya valida elegibilidad/preflight, pero todavia no reemplaza un router live completo; no debe confundirse con ejecucion real end-to-end.
 
 ## Decisiones asumidas
 - Se sigue en `feature/brain-policy-ledgers-v1` porque el objetivo es continuidad directa del mismo programa tecnico.
@@ -169,6 +196,7 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/rtlab_core/universe/__init__.py`
 - `rtlab_autotrader/rtlab_core/universe/service.py`
 - `rtlab_autotrader/rtlab_core/web/app.py`
+- `rtlab_autotrader/rtlab_core/learning/service.py`
 - `rtlab_autotrader/rtlab_core/learning/experience_store.py`
 - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
 - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
@@ -182,6 +210,7 @@ Fecha: 2026-03-09
 - `rtlab_autotrader/tests/test_backtest_catalog_db.py`
 - `rtlab_autotrader/tests/test_mass_backtest_engine.py`
 - `rtlab_autotrader/tests/test_research_funnel_api.py`
+- `rtlab_autotrader/tests/test_brain_policy_service.py`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/CHANGELOG.md`
 - `docs/truth/NEXT_STEPS.md`
@@ -205,6 +234,8 @@ Fecha: 2026-03-09
 - `python -m pytest rtlab_autotrader/tests/test_instrument_registry_store.py -q` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_binance_catalog_sync.py -q` -> PASS
 - `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS
 - `npm run lint -- "src/app/(app)/strategies/page.tsx" "src/app/(app)/execution/page.tsx" "src/app/(app)/backtests/page.tsx" "src/lib/types.ts"` -> PASS
 - `npm run build` (`rtlab_dashboard`) -> PASS
 
