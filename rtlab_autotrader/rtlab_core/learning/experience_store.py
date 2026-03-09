@@ -153,6 +153,44 @@ class ExperienceStore:
         self.registry = registry
 
     @staticmethod
+    def _infer_bot_id(run: dict[str, Any], explicit_bot_id: str | None = None) -> tuple[str | None, str, float]:
+        direct = str(explicit_bot_id or "").strip()
+        if direct:
+            return direct, "exact", 1.0
+
+        def _lookup_bot_id(payload: dict[str, Any]) -> str | None:
+            value = payload.get("bot_id")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            return None
+
+        candidate = _lookup_bot_id(run)
+        if candidate:
+            return candidate, "exact", 1.0
+
+        for scope in ("summary", "meta", "provenance", "params", "params_json"):
+            nested = run.get(scope)
+            if isinstance(nested, dict):
+                candidate = _lookup_bot_id(nested)
+                if candidate:
+                    return candidate, "exact", 1.0
+
+        tags = run.get("tags")
+        if isinstance(tags, list):
+            for raw in tags:
+                tag = str(raw or "").strip()
+                if not tag:
+                    continue
+                lower = tag.lower()
+                if lower.startswith("bot:") or lower.startswith("bot_id:"):
+                    _, _, suffix = tag.partition(":")
+                    inferred = suffix.strip()
+                    if inferred:
+                        return inferred, "strong", 0.75
+
+        return None, "unknown", 0.0
+
+    @staticmethod
     def source_from_run(run: dict[str, Any], *, override: str | None = None) -> str | None:
         if override:
             source = _normalize_source_alias(override)
@@ -290,9 +328,7 @@ class ExperienceStore:
         trade_count = _safe_int(summary_metrics.get("trade_count") or summary_metrics.get("roundtrips") or len(trades), len(trades))
         as_of = str(run.get("as_of") or provenance.get("as_of") or end_ts or start_ts or run.get("created_at") or "").strip() or None
         vintage_date = str(run.get("vintage_date") or provenance.get("vintage_date") or "").strip() or None
-        bot_id_n = str(bot_id or "").strip() or None
-        attribution_type = "exact" if bot_id_n else "unknown"
-        attribution_confidence = 1.0 if bot_id_n else 0.0
+        bot_id_n, attribution_type, attribution_confidence = self._infer_bot_id(run, explicit_bot_id=bot_id)
         summary = {
             "metrics": summary_metrics,
             "costs_breakdown": summary_costs,

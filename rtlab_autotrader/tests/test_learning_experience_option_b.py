@@ -273,6 +273,92 @@ def test_experience_store_persists_live_source_and_run_bot_link(tmp_path: Path) 
     assert evidence[0]["source_type"] == "live"
 
 
+def test_experience_store_infers_exact_bot_from_run_metadata(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    start_dt = datetime(2025, 2, 2, tzinfo=timezone.utc)
+
+    run = {
+        "id": "run-metadata-bot",
+        "strategy_id": strategy_id,
+        "mode": "paper",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "exchange_paper",
+        "dataset_hash": "paper-dataset-hash",
+        "feature_set": "orderflow_on",
+        "summary": {"bot_id": "BOT-META"},
+        "period": {
+            "start": start_dt.isoformat(),
+            "end": (start_dt + timedelta(minutes=5)).isoformat(),
+        },
+        "metrics": {"trade_count": 1, "roundtrips": 1},
+        "trades": [],
+    }
+
+    store.record_run(run, source_override="paper")
+
+    episodes = registry.list_experience_episodes(bot_ids=["BOT-META"], sources=["paper"])
+    assert len(episodes) == 1
+    assert episodes[0]["bot_id"] == "BOT-META"
+    assert episodes[0]["attribution_type"] == "exact"
+    assert episodes[0]["attribution_confidence"] == 1.0
+
+    links = registry.list_run_bot_links(run_id="run-metadata-bot")
+    assert len(links) == 1
+    assert links[0]["bot_id"] == "BOT-META"
+    assert links[0]["attribution_type"] == "exact"
+
+    evidence = registry.list_strategy_evidence(strategy_id=strategy_id, source_type="paper")
+    assert len(evidence) == 1
+    assert evidence[0]["bot_id"] == "BOT-META"
+
+
+def test_experience_store_infers_strong_bot_from_tags(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    start_dt = datetime(2025, 2, 3, tzinfo=timezone.utc)
+
+    run = {
+        "id": "run-tag-bot",
+        "strategy_id": strategy_id,
+        "mode": "shadow",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "shadow_feed",
+        "dataset_hash": "shadow-dataset-hash",
+        "feature_set": "orderflow_on",
+        "tags": ["brain", "bot:BOT-TAG"],
+        "period": {
+            "start": start_dt.isoformat(),
+            "end": (start_dt + timedelta(minutes=5)).isoformat(),
+        },
+        "metrics": {"trade_count": 1, "roundtrips": 1},
+        "trades": [],
+    }
+
+    store.record_run(run, source_override="shadow")
+
+    episodes = registry.list_experience_episodes(bot_ids=["BOT-TAG"], sources=["shadow"])
+    assert len(episodes) == 1
+    assert episodes[0]["bot_id"] == "BOT-TAG"
+    assert episodes[0]["attribution_type"] == "strong"
+    assert episodes[0]["attribution_confidence"] == 0.75
+
+    links = registry.list_run_bot_links(run_id="run-tag-bot")
+    assert len(links) == 1
+    assert links[0]["bot_id"] == "BOT-TAG"
+    assert links[0]["attribution_type"] == "strong"
+
+    evidence = registry.list_strategy_evidence(strategy_id=strategy_id, source_type="shadow")
+    assert len(evidence) == 1
+    assert evidence[0]["bot_id"] == "BOT-TAG"
+    assert evidence[0]["attribution_type"] == "strong"
+    assert evidence[0]["attribution_confidence"] == 0.75
+
+
 def test_option_b_engine_filters_pool_true(tmp_path: Path) -> None:
     registry = RegistryDB(tmp_path / "registry.sqlite")
     store = ExperienceStore(registry)

@@ -651,6 +651,19 @@ export default function ExecutionPage() {
         </CardDescription>
       </Card>
 
+      <Card>
+        <CardTitle>Modos operativos y alcance</CardTitle>
+        <CardDescription>
+          Esta pantalla ejecuta el runtime por bot. Mock es simulacion interna; Paper usa mercado real con fills simulados; Testnet valida contra la API oficial de prueba; Live usa cuenta real con pre-flight y controles de riesgo.
+        </CardDescription>
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <ModeScopeCard title="Mock" detail="Simula exchange, fills y errores dentro del sistema. Sirve para probar policy, UI y alertas sin tocar una API real." />
+          <ModeScopeCard title="Paper" detail="Usa mercado real-time, pero capital y fills simulados. Sirve para validar el cerebro online sin dinero real." />
+          <ModeScopeCard title="Testnet" detail="Usa la API de prueba del exchange para validar payloads, restricciones y cancel/replace con credenciales de sandbox." />
+          <ModeScopeCard title="Live" detail="Usa cuenta real. Solo habilitado si pasa elegibilidad, riesgo, paridad live y checklist operativo." />
+        </CardContent>
+      </Card>
+
       {error ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-300">{error}</p> : null}
       {controlError ? <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">{controlError}</p> : null}
       {message ? <p className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-300">{message}</p> : null}
@@ -1473,6 +1486,17 @@ export default function ExecutionPage() {
           ))}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function ModeScopeCard({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+      <div className="mb-2">
+        <Badge variant={title === "Live" ? "warn" : title === "Testnet" ? "info" : "neutral"}>{title}</Badge>
+      </div>
+      <p>{detail}</p>
     </div>
   );
 }

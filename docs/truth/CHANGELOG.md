@@ -2,6 +2,29 @@
 
 ## 2026-03-09
 
+### Bloque 9 parcial: atribucion `run -> bot` reforzada + taxonomia visible de modos
+- `ExperienceStore` ahora infiere `bot_id` desde:
+  - campo directo del run
+  - metadata embebida (`summary/meta/provenance/params/params_json`)
+  - tags `bot:<id>` / `bot_id:<id>`
+- La atribucion queda persistida y reutilizable en:
+  - `experience_episode`
+  - `run_bot_link`
+  - `strategy_evidence` via rehidratacion desde `run_bot_link`
+- `RegistryDB` ahora devuelve mejor attribution en:
+  - `list_experience_episodes(...)`
+  - `list_strategy_evidence(...)`
+  incluso para historicos donde la evidencia no traia `bot_id` directo pero si `run -> bot`.
+- Frontend actualizado:
+  - `Bots` agrega tarjeta visible `Taxonomia de modos`
+  - `Execution` agrega tarjeta visible `Modos operativos y alcance`
+- Validacion:
+  - `py_compile` PASS
+  - `pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` PASS
+  - `pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` PASS
+  - `eslint` `bots/page.tsx` + `execution/page.tsx` PASS
+  - `npm run build` PASS
+
 ### Bloque 7 parcial: elegibilidad live por bot + preflight visible en Execution
 - `LearningService` agrega dos contratos operativos nuevos:
   - `get_bot_live_eligibility_payload(...)`

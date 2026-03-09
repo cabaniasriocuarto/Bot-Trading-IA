@@ -1405,6 +1405,20 @@ class RegistryDB:
             )
             conn.commit()
 
+    def _run_bot_link_map(self, run_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        cleaned = sorted({str(run_id).strip() for run_id in run_ids if str(run_id).strip()})
+        if not cleaned:
+            return {}
+        placeholders = ",".join("?" for _ in cleaned)
+        query = f"SELECT * FROM run_bot_link WHERE run_id IN ({placeholders}) ORDER BY created_at DESC, run_id ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(cleaned)).fetchall()
+        out: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            item = dict(row)
+            out.setdefault(str(item.get("run_id") or ""), []).append(item)
+        return out
+
     def list_experience_episodes(
         self,
         *,
@@ -1425,6 +1439,7 @@ class RegistryDB:
         query += " ORDER BY created_at DESC, id DESC"
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
+        link_map = self._run_bot_link_map([str(row["run_id"]) for row in rows if row["run_id"]])
         out: list[dict[str, Any]] = []
         requested_bot_ids = {str(x).strip() for x in (bot_ids or []) if str(x).strip()}
         for row in rows:
@@ -1435,6 +1450,13 @@ class RegistryDB:
                 item["summary"] = {}
             summary = item["summary"] if isinstance(item.get("summary"), dict) else {}
             item["bot_id"] = str(item.get("bot_id") or summary.get("bot_id") or "").strip() or None
+            links = link_map.get(str(item.get("run_id") or ""))
+            if not item["bot_id"] and links and len(links) == 1:
+                item["bot_id"] = str(links[0].get("bot_id") or "").strip() or None
+                if not str(item.get("attribution_type") or "").strip() or str(item.get("attribution_type")) == "unknown":
+                    item["attribution_type"] = str(links[0].get("attribution_type") or "strong")
+                if not float(item.get("attribution_confidence") or 0.0):
+                    item["attribution_confidence"] = float(links[0].get("attribution_confidence") or 0.0)
             item["legacy_untrusted"] = bool(item.get("legacy_untrusted"))
             item["excluded_from_learning"] = bool(item.get("excluded_from_learning"))
             item["excluded_from_rankings"] = bool(item.get("excluded_from_rankings"))
@@ -1937,8 +1959,15 @@ class RegistryDB:
         query += " ORDER BY created_at DESC, evidence_id DESC"
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
+        link_map = self._run_bot_link_map([str(row["run_id"]) for row in rows if row["run_id"]])
         out = [dict(row) for row in rows]
         for row in out:
+            links = link_map.get(str(row.get("run_id") or ""))
+            if links and len(links) == 1:
+                if not str(row.get("bot_id") or "").strip():
+                    row["bot_id"] = str(links[0].get("bot_id") or "").strip() or None
+                row["attribution_type"] = str(links[0].get("attribution_type") or row.get("attribution_type") or "strong")
+                row["attribution_confidence"] = float(links[0].get("attribution_confidence") or row.get("attribution_confidence") or 0.0)
             row["legacy_untrusted"] = bool(row.get("legacy_untrusted"))
             row["excluded_from_learning"] = bool(row.get("excluded_from_learning"))
         return out

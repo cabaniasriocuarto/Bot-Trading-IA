@@ -186,6 +186,19 @@ function BotsPageContent() {
       </Card>
 
       <Card>
+        <CardTitle>Taxonomía de modos</CardTitle>
+        <CardDescription>
+          El cerebro pondera distinto la evidencia según el modo. Mock y Shadow son simulación propia; Paper usa mercado real con fills simulados; Testnet valida contra el exchange de prueba; Live usa cuenta real.
+        </CardDescription>
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <ModeExplainer title="Mock / Shadow" badge="mock" text="Sirve para probar policy, UI y eventos sin tocar un exchange real." />
+          <ModeExplainer title="Paper" badge="paper" text="Usa mercado real, pero fills y capital simulados con nuestro execution model." />
+          <ModeExplainer title="Testnet" badge="testnet" text="Usa la API oficial de prueba para validar payloads, restricciones y errores reales." />
+          <ModeExplainer title="Live" badge="live" text="Cuenta real. Requiere elegibilidad, riesgo, pre-flight y monitoreo operativo." />
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardContent className="space-y-3">
           <div className="grid gap-3 md:grid-cols-[minmax(260px,360px)_1fr_auto]">
             <div>
@@ -464,6 +477,17 @@ function BotsPageContent() {
           </section>
         </>
       ) : null}
+    </div>
+  );
+}
+
+function ModeExplainer({ title, badge, text }: { title: string; badge: string; text: string }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+      <div className="mb-2 flex items-center gap-2">
+        <Badge variant={modeBadge(badge)}>{title}</Badge>
+      </div>
+      <p>{text}</p>
     </div>
   );
 }

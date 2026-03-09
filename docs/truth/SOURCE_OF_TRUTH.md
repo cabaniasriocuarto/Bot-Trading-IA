@@ -2,6 +2,48 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 9 parcial - Atribucion `run -> bot` reforzada + taxonomia visible de modos
+
+- `ExperienceStore.record_run(...)` ya no depende solo de un `bot_id` explicito para atribuir experiencia a un bot.
+- La inferencia fuerte actual de `bot_id` se resuelve en este orden:
+  - argumento explicito `bot_id`
+  - `run.bot_id`
+  - metadata embebida en:
+    - `summary`
+    - `meta`
+    - `provenance`
+    - `params`
+    - `params_json`
+  - tags con prefijos:
+    - `bot:<id>`
+    - `bot_id:<id>`
+- Tipos de atribucion efectivos vigentes:
+  - `exact` con confianza `1.0`
+  - `strong` con confianza `0.75`
+  - `unknown` con confianza `0.0`
+- La trazabilidad fuerte hoy queda persistida en:
+  - `run_bot_link`
+  - `experience_episode.bot_id` cuando la atribucion se puede resolver al grabar
+- `RegistryDB` ahora rehidrata atribucion de bot al leer:
+  - `list_experience_episodes(...)`
+  - `list_strategy_evidence(...)`
+  usando `run_bot_link` cuando la fila historica no trae `bot_id` directo.
+- Estado real:
+  - `run -> bot` queda bastante mas fuerte y util para cerebro, evidencia y UI.
+  - `episode -> bot` sigue sin backfill historico total en todas las filas legacy; la fuente mas fuerte sigue siendo `run_bot_link`.
+- Frontend visible alineado:
+  - `Bots` ahora muestra una tarjeta explicita `Taxonomia de modos` con diferencias entre:
+    - `Mock / Shadow`
+    - `Paper`
+    - `Testnet`
+    - `Live`
+  - `Execution` ahora muestra una tarjeta explicita `Modos operativos y alcance` con el mismo criterio de producto.
+- Regla de UX vigente:
+  - `mock` se presenta como simulacion propia del sistema.
+  - `paper` se presenta como mercado real con fills simulados.
+  - `testnet` se presenta como entorno oficial del exchange.
+  - `live` se presenta como operacion real con controles reforzados.
+
 ## Actualizacion de bloque 7 parcial - Elegibilidad live por bot + preflight visible en Ejecucion
 
 - `LearningService` ahora expone una capa operativa minima para `live` sobre el cerebro del bot:

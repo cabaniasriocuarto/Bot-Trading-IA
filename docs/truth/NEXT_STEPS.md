@@ -98,6 +98,14 @@ Fecha: 2026-03-09
   - tests backend nuevos para:
     - elegibilidad live positiva
     - bloqueo live cuando `LIVE_TRADING_ENABLED=false`
+- Bloque 9 parcial cerrado:
+  - `ExperienceStore` ya infiere `bot_id` desde metadata y tags del run.
+  - `run_bot_link` queda como fuente fuerte de atribucion historica.
+  - `RegistryDB` rehidrata `bot_id` / `attribution_type` / `attribution_confidence` al listar:
+    - episodios
+    - evidencia por estrategia
+  - `Bots` ya muestra taxonomia operativa visible.
+  - `Execution` ya muestra taxonomia operativa visible.
 
 ## Nuevo plan consolidado
 - Unificar el proyecto sobre una arquitectura auditable y escalable:
@@ -159,25 +167,24 @@ Fecha: 2026-03-09
   - monitoring / observability / drift / alertas / kill switches / health score
 - Bloque 9:
   - frontend integral por dominios y taxonomia visible de modos
+  - trazabilidad fuerte `run -> bot`
 - Bloque 10:
   - tests finales, build completo, cierre documental
 
 ## Bloque actual
 - Bloque 9 en progreso:
   - frontend serio por dominios
-  - brain panel del bot
-  - strategy truth / passport visible
-  - execution reality visible
-  - taxonomia `mock/paper/testnet/demo/live` consistente en UI
+  - decision log visual y realidad de ejecucion mas explotable
+  - `episode -> bot_id` historico mas fuerte cuando no exista solo `run_bot_link`
+  - consistencia visible Beast/Batch en deploy
 
 ## Pendiente del siguiente bloque
 - consolidar paneles visibles del cerebro:
-  - strategy truth
-  - bot brain
   - decision log
   - execution reality
-- terminar taxonomia visible de modos en frontend
-- resolver `episode -> bot_id` directo para analitica historica fuerte
+  - resumen por fuente con `live`
+- reforzar `episode -> bot_id` directo para analitica historica fuerte
+- resolver mensajes/estado visible de Beast/Batch en deploy
 
 ## Bloqueado / no implementado
 - Aun no implementado integralmente:
@@ -185,12 +192,12 @@ Fecha: 2026-03-09
   - live parity state cache completa
   - dataset/universe registry visible en frontend
   - taxonomia visible de modos `mock/paper/testnet/live` en todas las pantallas del frontend
-  - frontend del cerebro
+  - frontend del cerebro completo
   - frontend del research funnel
   - Beast/Batch visible y consistente end-to-end en deploy
   - routing live final por family
   - `execution_reality` alimentado por fills/ordenes del runtime real
-  - linkage `episode -> bot_id` directo para analitica historica fuerte
+  - linkage `episode -> bot_id` historico directo para toda la data legacy
 
 ## Riesgos abiertos
 - Hay capas legacy de catalogo/datasets simples que pueden superponerse con el nuevo instrument registry si no se consolidan con cuidado.
@@ -204,6 +211,7 @@ Fecha: 2026-03-09
 - Todavia quedan referencias tecnicas internas `shadow` que deben seguir internas y no filtrarse como UX primaria.
 - El bloque 7 ahora ya valida elegibilidad/preflight, pero todavia no reemplaza un router live completo; no debe confundirse con ejecucion real end-to-end.
 - Monitoring / Salud ya esta visible, pero no reemplaza aun una pila completa de observabilidad externa (Prometheus/Grafana/Otel).
+- La trazabilidad `run -> bot` ya es fuerte si el run trae metadata/tags utiles; la analitica legacy por episodio sigue siendo parcialmente dependiente de esa relacion.
 
 ## Decisiones asumidas
 - Se sigue en `feature/brain-policy-ledgers-v1` porque el objetivo es continuidad directa del mismo programa tecnico.
@@ -307,6 +315,13 @@ Fecha: 2026-03-09
   - bot brain
   - bot decision log
   - strategy truth/evidence
+- Atribucion `run -> bot` reforzada en backend:
+  - `ExperienceStore` infiere `bot_id` desde metadata y tags
+  - `run_bot_link` se usa como fuente fuerte de atribucion
+  - `RegistryDB` rehidrata atribucion al leer episodios/evidencia
+- Taxonomia operativa visible agregada en frontend:
+  - `Bots` muestra `Mock / Shadow`, `Paper`, `Testnet`, `Live`
+  - `Execution` muestra `Modos operativos y alcance`
   - execution reality
 
 ## Bloque actual
@@ -334,8 +349,12 @@ Fecha: 2026-03-09
 ## Decisiones asumidas
 - Se mantiene la rama `feature/brain-policy-ledgers-v1` porque sigue siendo el mismo objetivo coherente.
 - Se cierra este bloque con visibilidad minima real en frontend, sin redise?o gigante ni humo de capacidades no soportadas.
+- La atribucion historica fuerte del cerebro usa primero `run_bot_link`; no se inventa `bot_id` de episodio si la evidencia no permite inferencia suficiente.
 
 ## Archivos tocados
+- `rtlab_autotrader/rtlab_core/learning/experience_store.py`
+- `rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py`
+- `rtlab_autotrader/tests/test_learning_experience_option_b.py`
 - `rtlab_dashboard/src/app/(app)/bots/page.tsx`
 - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
 - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`
@@ -350,6 +369,10 @@ Fecha: 2026-03-09
 
 ## Tests ejecutados
 - `npm run lint -- "src/app/(app)/bots/page.tsx" "src/app/(app)/execution/page.tsx" "src/app/(app)/strategies/[id]/page.tsx" "src/components/charts/equity-drawdown-chart.tsx" "src/components/charts/returns-histogram.tsx" "src/components/charts/stacked-cost-chart.tsx" "src/components/layout/app-shell.tsx" "src/lib/types.ts"` -> PASS
+- `python -m py_compile rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS
+- `npm run lint -- "src/app/(app)/bots/page.tsx" "src/app/(app)/execution/page.tsx"` -> PASS
 
 ## Build status
 - `npm run build` en `rtlab_dashboard` -> PASS
