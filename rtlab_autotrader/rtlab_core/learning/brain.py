@@ -121,6 +121,75 @@ def blend_bot_policy_scores(
     }
 
 
+def score_probability_map(
+    candidates: list[dict[str, Any]],
+    *,
+    id_key: str = "strategy_id",
+    score_key: str = "score_final",
+    temperature: float = 1.0,
+    min_probability: float = 1e-6,
+) -> dict[str, float]:
+    usable: list[tuple[str, float]] = []
+    temp = max(_safe_float(temperature, 1.0), 1e-6)
+    for candidate in candidates:
+        strategy_id = str(candidate.get(id_key) or "").strip()
+        if not strategy_id:
+            continue
+        usable.append((strategy_id, _safe_float(candidate.get(score_key), 0.0) / temp))
+    if not usable:
+        return {}
+    max_score = max(score for _, score in usable)
+    exps = [(strategy_id, math.exp(max(-50.0, min(50.0, score - max_score)))) for strategy_id, score in usable]
+    total = sum(value for _, value in exps) or 1.0
+    probabilities = {
+        strategy_id: max(min_probability, value / total)
+        for strategy_id, value in exps
+    }
+    norm = sum(probabilities.values()) or 1.0
+    return {strategy_id: probability / norm for strategy_id, probability in probabilities.items()}
+
+
+def doubly_robust_ope(
+    samples: list[dict[str, Any]],
+    *,
+    clip_rho: float = 10.0,
+    z_score: float = 1.96,
+) -> dict[str, float]:
+    if not samples:
+        return {
+            "sample_count": 0.0,
+            "target_value": 0.0,
+            "baseline_value": 0.0,
+            "improvement": 0.0,
+            "lower_bound": 0.0,
+            "std_error": 0.0,
+        }
+
+    dr_values: list[float] = []
+    baseline_values: list[float] = []
+    for sample in samples:
+        rho = max(0.0, min(_safe_float(sample.get("rho"), 0.0), clip_rho))
+        reward = _safe_float(sample.get("reward"), 0.0)
+        logged_value = _safe_float(sample.get("logged_value"), 0.0)
+        target_value = _safe_float(sample.get("target_value"), 0.0)
+        dr_values.append(target_value + rho * (reward - logged_value))
+        baseline_values.append(_safe_float(sample.get("baseline_value"), 0.0))
+
+    target_mean = mean(dr_values)
+    baseline_mean = mean(baseline_values) if baseline_values else 0.0
+    sigma = pstdev(dr_values) if len(dr_values) > 1 else 0.0
+    std_error = sigma / math.sqrt(max(len(dr_values), 1))
+    lower_bound = target_mean - (z_score * std_error)
+    return {
+        "sample_count": float(len(dr_values)),
+        "target_value": float(target_mean),
+        "baseline_value": float(baseline_mean),
+        "improvement": float(target_mean - baseline_mean),
+        "lower_bound": float(lower_bound),
+        "std_error": float(std_error),
+    }
+
+
 def compute_normalized_reward(
     *,
     pnl_net: float,

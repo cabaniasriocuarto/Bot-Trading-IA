@@ -16,8 +16,10 @@ from .brain import (
     compute_normalized_reward,
     deflated_sharpe_ratio,
     detect_drift,
+    doubly_robust_ope,
     effective_weight_from_components,
     pbo_cscv,
+    score_probability_map,
 )
 from .knowledge import KnowledgeLoader
 
@@ -729,6 +731,232 @@ class LearningService:
                 "regime_breakdown": regime_breakdown,
                 "selected_breakdown": selected_breakdown,
             },
+        }
+
+    def evaluate_bot_policy_ope(
+        self,
+        bot_id: str,
+        *,
+        limit: int = 200,
+        min_decisions: int = 20,
+        clip_rho: float = 5.0,
+    ) -> dict[str, Any]:
+        registry = self._require_registry()
+        registry.backfill_bot_attribution_from_run_links()
+        policy = self._load_gates_policy()
+        decision_rows = registry.list_bot_decision_log(bot_id=bot_id)[: max(1, int(limit or 200))]
+        if not decision_rows:
+            return {
+                "bot_id": bot_id,
+                "method": "ope_dr_conservador",
+                "safe_to_promote": False,
+                "sample_count": 0,
+                "target_value": 0.0,
+                "baseline_value": 0.0,
+                "improvement": 0.0,
+                "lower_bound": 0.0,
+                "warnings": ["NO EVIDENCIA: el bot no tiene decision_log suficiente para OPE."],
+            }
+
+        latest_policy_by_strategy: dict[str, dict[str, Any]] = {}
+        for row in registry.list_bot_policy_state(bot_id=bot_id):
+            strategy_id = str(row.get("strategy_id") or "")
+            if strategy_id and strategy_id not in latest_policy_by_strategy:
+                latest_policy_by_strategy[strategy_id] = row
+
+        strategy_ids: set[str] = set(latest_policy_by_strategy)
+        for row in decision_rows:
+            selected_strategy_id = str(row.get("selected_strategy_id") or "").strip()
+            if selected_strategy_id:
+                strategy_ids.add(selected_strategy_id)
+            for candidate in row.get("candidate_strategies") or []:
+                if isinstance(candidate, dict):
+                    candidate_id = str(candidate.get("strategy_id") or candidate.get("id") or "").strip()
+                else:
+                    candidate_id = str(candidate or "").strip()
+                if candidate_id:
+                    strategy_ids.add(candidate_id)
+
+        reward_proxy_by_strategy: dict[str, dict[str, Any]] = {}
+        for strategy_id in strategy_ids:
+            rows = self._attach_bot_attribution(registry.list_strategy_evidence(strategy_id=strategy_id))
+            exact_rows = [row for row in rows if str(row.get("bot_id") or "") == str(bot_id)]
+            global_rows = list(rows)
+            exact_scope = self._aggregate_evidence_scope(exact_rows)
+            global_scope = self._aggregate_evidence_scope(global_rows)
+            chosen_scope = exact_scope if float(exact_scope.get("weight_sum") or 0.0) > 0 else global_scope
+            reward_proxy_by_strategy[strategy_id] = {
+                "reward": float(((chosen_scope.get("metrics") or {}).get("expectancy_net") or 0.0)),
+                "weight_sum": float(chosen_scope.get("weight_sum") or 0.0),
+                "trades_total": int(chosen_scope.get("trades_total") or 0),
+                "scope": "exact_bot" if float(exact_scope.get("weight_sum") or 0.0) > 0 else "global_truth",
+                "source_breakdown": chosen_scope.get("source_breakdown") or {},
+                "has_exact_bot": bool(float(exact_scope.get("weight_sum") or 0.0) > 0),
+            }
+
+        samples: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        exact_supported = 0
+        fallback_global_truth = 0
+        missing_policy_candidates = 0
+        missing_reward_candidates = 0
+        behavior_policy_mode = "softmax_score_final"
+        window_start = decision_rows[-1].get("timestamp") if decision_rows else None
+        window_end = decision_rows[0].get("timestamp") if decision_rows else None
+
+        for row in decision_rows:
+            selected_strategy_id = str(row.get("selected_strategy_id") or "").strip()
+            candidate_payload = []
+            for candidate in row.get("candidate_strategies") or []:
+                if isinstance(candidate, dict):
+                    candidate_id = str(candidate.get("strategy_id") or candidate.get("id") or "").strip()
+                    if not candidate_id:
+                        continue
+                    candidate_payload.append(
+                        {
+                            "strategy_id": candidate_id,
+                            "score_final": float(candidate.get("score_final") or 0.0),
+                            "score_exact_bot": float(candidate.get("score_exact_bot") or 0.0),
+                            "score_pool_context": float(candidate.get("score_pool_context") or 0.0),
+                            "score_global_truth": float(candidate.get("score_global_truth") or 0.0),
+                        }
+                    )
+                else:
+                    candidate_id = str(candidate or "").strip()
+                    if candidate_id:
+                        candidate_payload.append({"strategy_id": candidate_id, "score_final": 0.0})
+            if not candidate_payload or not selected_strategy_id:
+                continue
+
+            behavior_probs = score_probability_map(candidate_payload)
+            if not behavior_probs:
+                uniform = 1.0 / max(len(candidate_payload), 1)
+                behavior_probs = {
+                    str(candidate.get("strategy_id") or ""): uniform
+                    for candidate in candidate_payload
+                    if str(candidate.get("strategy_id") or "").strip()
+                }
+                behavior_policy_mode = "uniform_fallback"
+
+            target_raw: dict[str, float] = {}
+            target_score_payload: list[dict[str, Any]] = []
+            for candidate in candidate_payload:
+                candidate_id = str(candidate.get("strategy_id") or "")
+                policy_row = latest_policy_by_strategy.get(candidate_id) or {}
+                target_weight = float(policy_row.get("weight_target") or 0.0)
+                target_raw[candidate_id] = max(0.0, target_weight)
+                target_score_payload.append(
+                    {
+                        "strategy_id": candidate_id,
+                        "score_final": float(policy_row.get("score_current") or candidate.get("score_final") or 0.0),
+                    }
+                )
+            target_total = sum(target_raw.values())
+            if target_total <= 0:
+                target_probs = score_probability_map(target_score_payload)
+                missing_policy_candidates += 1
+            else:
+                target_probs = {strategy_id: value / target_total for strategy_id, value in target_raw.items() if value > 0}
+            if not target_probs:
+                continue
+
+            rewards: dict[str, float] = {}
+            baseline_value = 0.0
+            target_value = 0.0
+            for strategy_id in {str(item.get("strategy_id") or "") for item in candidate_payload}:
+                proxy = reward_proxy_by_strategy.get(strategy_id) or {}
+                rewards[strategy_id] = float(proxy.get("reward") or 0.0)
+                baseline_value += float(behavior_probs.get(strategy_id) or 0.0) * rewards[strategy_id]
+                target_value += float(target_probs.get(strategy_id) or 0.0) * rewards[strategy_id]
+            reward_proxy = reward_proxy_by_strategy.get(selected_strategy_id) or {}
+            observed_reward = rewards.get(selected_strategy_id, 0.0)
+            if not reward_proxy:
+                missing_reward_candidates += 1
+                continue
+            if bool(reward_proxy.get("has_exact_bot")):
+                exact_supported += 1
+            else:
+                fallback_global_truth += 1
+
+            logged_value = observed_reward
+            rho = float(target_probs.get(selected_strategy_id) or 0.0) / max(float(behavior_probs.get(selected_strategy_id) or 0.0), 1e-6)
+            samples.append(
+                {
+                    "reward": observed_reward,
+                    "logged_value": logged_value,
+                    "target_value": target_value,
+                    "baseline_value": baseline_value,
+                    "rho": rho,
+                }
+            )
+
+        dr_payload = doubly_robust_ope(samples, clip_rho=clip_rho)
+        sample_count = int(dr_payload.get("sample_count") or 0)
+        exact_support_ratio = (exact_supported / sample_count) if sample_count else 0.0
+        if sample_count < int(min_decisions or 20):
+            warnings.append(
+                f"NO EVIDENCIA: OPE requiere al menos {int(min_decisions or 20)} decisiones atribuibles; disponibles={sample_count}."
+            )
+        if exact_support_ratio < 0.60:
+            warnings.append(
+                f"Cobertura exacta insuficiente para OPE conservadora: exact_bot_ratio={round(exact_support_ratio, 4)}."
+            )
+        if fallback_global_truth > 0:
+            warnings.append(
+                f"OPE uso fallback de verdad global en {fallback_global_truth} decisiones; no es evidencia exacta del bot."
+            )
+        if missing_policy_candidates > 0:
+            warnings.append(
+                f"Se uso fallback de target policy por score actual en {missing_policy_candidates} decisiones sin weight_target explicito."
+            )
+        if missing_reward_candidates > 0:
+            warnings.append(
+                f"Se descartaron {missing_reward_candidates} decisiones por falta de reward proxy utilizable."
+            )
+        warnings = list(dict.fromkeys(warnings))
+        safe_to_promote = bool(
+            sample_count >= int(min_decisions or 20)
+            and exact_support_ratio >= 0.60
+            and float(dr_payload.get("lower_bound") or 0.0) > float(dr_payload.get("baseline_value") or 0.0)
+        )
+        return {
+            "bot_id": bot_id,
+            "method": "ope_dr_conservador",
+            "sample_count": sample_count,
+            "decision_window": {"start": window_start, "end": window_end},
+            "target_value": round(float(dr_payload.get("target_value") or 0.0), 6),
+            "baseline_value": round(float(dr_payload.get("baseline_value") or 0.0), 6),
+            "improvement": round(float(dr_payload.get("improvement") or 0.0), 6),
+            "lower_bound": round(float(dr_payload.get("lower_bound") or 0.0), 6),
+            "std_error": round(float(dr_payload.get("std_error") or 0.0), 6),
+            "exact_support_ratio": round(exact_support_ratio, 6),
+            "safe_to_promote": safe_to_promote,
+            "behavior_policy_mode": behavior_policy_mode,
+            "target_policy_mode": "weight_target_current_policy",
+            "warnings": warnings,
+            "sources": {
+                strategy_id: {
+                    "scope": str(payload.get("scope") or "unknown"),
+                    "reward_proxy": round(float(payload.get("reward") or 0.0), 6),
+                    "weight_sum": round(float(payload.get("weight_sum") or 0.0), 6),
+                    "trades_total": int(payload.get("trades_total") or 0),
+                    "source_breakdown": payload.get("source_breakdown") or {},
+                }
+                for strategy_id, payload in sorted(
+                    reward_proxy_by_strategy.items(),
+                    key=lambda item: (
+                        float((item[1] or {}).get("weight_sum") or 0.0),
+                        float((item[1] or {}).get("reward") or 0.0),
+                    ),
+                    reverse=True,
+                )
+            },
+            "thresholds": {
+                "min_decisions": int(min_decisions or 20),
+                "min_exact_support_ratio": 0.60,
+                "clip_rho": clip_rho,
+            },
+            "policy_source": str((policy.get("brain_policy") or {}).get("source") or "config/policies/gates.yaml"),
         }
 
     def get_strategy_truth_payload(

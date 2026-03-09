@@ -2,6 +2,28 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 10 parcial - OPE conservadora para policy del bot
+
+- El cerebro del bot ya no depende solo de scores y evidence scopes para cambiar policy; ahora existe una evaluacion OPE conservadora sobre `bot_decision_log` + `bot_policy_state` + `strategy_evidence`.
+- Backend expone `POST /api/v1/bots/{bot_id}/ope-evaluate`.
+- La evaluacion:
+  - usa `Doubly Robust` conservador como estimador operativo
+  - usa primero evidencia exacta del bot
+  - cae a `global_truth` solo si la evidencia exacta no alcanza
+  - falla cerrado si no hay decisiones suficientes
+  - falla cerrado si la cobertura exacta del bot es insuficiente
+- La policy actual del bot se trata como `target policy`.
+- La behavior policy historica se aproxima desde:
+  - `candidate_strategies.score_final` del `decision_log`
+  - o fallback uniforme si no hay score historico suficiente
+- Regla vigente para `safe_to_promote`:
+  - cantidad minima de decisiones
+  - ratio minimo de soporte exacto del bot
+  - `lower_bound > baseline_value`
+- Limitacion vigente:
+  - la OPE actual aun no usa propensity logging real del runtime ni reward realizado por decision exacta; usa reward proxy conservador desde `strategy_evidence`.
+  - por lo tanto, esta capa sirve para endurecer promotion y policy review, pero NO equivale aun a una aprobacion automatica de live.
+
 ## Actualizacion de bloque 10 parcial - Beast/Batch sin diagnosticos engañosos
 
 - `beast_mode.enabled=true` en YAML ya no implica por si solo que el runtime este listo para encolar jobs.

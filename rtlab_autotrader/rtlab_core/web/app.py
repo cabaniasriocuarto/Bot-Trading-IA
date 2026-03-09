@@ -9853,6 +9853,38 @@ def create_app() -> FastAPI:
         )
         return payload
 
+    @app.post("/api/v1/bots/{bot_id}/ope-evaluate")
+    def bot_ope_evaluate(
+        bot_id: str,
+        limit: int = Query(default=200, ge=1, le=1000),
+        min_decisions: int = Query(default=20, ge=5, le=500),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            payload = learning_service.evaluate_bot_policy_ope(
+                bot_id,
+                limit=limit,
+                min_decisions=min_decisions,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        store.add_log(
+            event_type="learning_ope_evaluate",
+            severity="info",
+            module="learning",
+            message=f"OPE del bot {bot_id} evaluada",
+            related_ids=[bot_id],
+            payload={
+                "sample_count": payload.get("sample_count"),
+                "safe_to_promote": payload.get("safe_to_promote"),
+                "lower_bound": payload.get("lower_bound"),
+                "baseline_value": payload.get("baseline_value"),
+            },
+        )
+        return payload
+
     @app.get("/api/v1/bots/{bot_id}/decision-log")
     def bot_decision_log(
         bot_id: str,

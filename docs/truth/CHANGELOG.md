@@ -2,6 +2,31 @@
 
 ## 2026-03-09
 
+### Bloque 10 parcial: OPE conservadora del cerebro del bot
+- `LearningService` agrega `evaluate_bot_policy_ope(...)` para evaluar una policy del bot con enfoque `Doubly Robust` conservador.
+- La evaluacion usa:
+  - `bot_decision_log`
+  - `bot_policy_state`
+  - `strategy_evidence`
+  - evidencia exacta del bot primero, con fallback fail-closed a verdad global si falta soporte local
+- Nuevo endpoint admin:
+  - `POST /api/v1/bots/{bot_id}/ope-evaluate`
+- La respuesta expone:
+  - `target_value`
+  - `baseline_value`
+  - `improvement`
+  - `lower_bound`
+  - `exact_support_ratio`
+  - `safe_to_promote`
+  - warnings explicitos cuando falta evidencia o la cobertura exacta del bot es baja
+- Tests nuevos:
+  - caso positivo con evidencia exacta `live` del bot
+  - caso fail-closed por pocas decisiones
+- Validacion:
+  - `py_compile` PASS
+  - `pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` PASS
+  - `pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` PASS
+
 ### Bloque 10 parcial: Beast/Batch ahora separa runtime policy de dataset real
 - `MassBacktestCoordinator.beast_status()` ahora expone:
   - `enqueue_ready`

@@ -468,6 +468,144 @@ def test_learning_service_summarizes_bot_decision_log(tmp_path: Path) -> None:
     assert payload["summary"]["selected_breakdown"]["s1"] == 1
 
 
+def test_learning_service_evaluates_bot_policy_ope_with_exact_bot_evidence(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    strategy_primary = "trend_pullback_orderflow_confirm_v1"
+    strategy_secondary = "meanreversion_range_v2"
+    base_dt = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    for idx in range(8):
+        _record_run(
+            store,
+            strategy_id=strategy_primary,
+            run_id=f"ope-live-primary-{idx}",
+            source="live",
+            start_dt=base_dt + timedelta(days=idx * 4),
+            bot_id="BOT-ALPHA",
+            expectancy=11.0,
+            sharpe=1.5,
+            max_dd=0.03,
+            trade_count=14,
+        )
+        _record_run(
+            store,
+            strategy_id=strategy_secondary,
+            run_id=f"ope-live-secondary-{idx}",
+            source="live",
+            start_dt=base_dt + timedelta(days=idx * 4, minutes=30),
+            bot_id="BOT-ALPHA",
+            expectancy=4.0,
+            sharpe=0.8,
+            max_dd=0.05,
+            trade_count=12,
+        )
+
+    registry.upsert_bot_policy_state(
+        bot_id="BOT-ALPHA",
+        strategy_id=strategy_primary,
+        regime_label="trend",
+        score_current=0.95,
+        weight_target=1.0,
+        weight_live=1.0,
+        confidence=0.92,
+        source_scope="exact_bot+pool_context+global_truth",
+    )
+    registry.upsert_bot_policy_state(
+        bot_id="BOT-ALPHA",
+        strategy_id=strategy_secondary,
+        regime_label="trend",
+        score_current=0.35,
+        weight_target=0.0,
+        weight_live=0.0,
+        confidence=0.48,
+        source_scope="exact_bot+pool_context+global_truth",
+    )
+
+    for idx in range(24):
+        registry.append_bot_decision_log(
+            decision_id=f"ope-decision-{idx}",
+            bot_id="BOT-ALPHA",
+            timestamp=(base_dt + timedelta(hours=idx)).isoformat(),
+            regime_label="trend",
+            candidate_strategies=[
+                {"strategy_id": strategy_primary, "score_final": 0.70},
+                {"strategy_id": strategy_secondary, "score_final": 0.30},
+            ],
+            selected_strategy_id=strategy_primary,
+            rejected_strategies=[{"strategy_id": strategy_secondary, "score_final": 0.30}],
+            reason={"selected_by": "bot_first_with_global_prior"},
+            evidence_scope={"source_weights": {"live": 1.0}},
+            risk_overrides={},
+            execution_constraints={},
+        )
+
+    payload = service.evaluate_bot_policy_ope("BOT-ALPHA", min_decisions=10)
+
+    assert payload["sample_count"] == 24
+    assert payload["exact_support_ratio"] == 1.0
+    assert payload["safe_to_promote"] is True
+    assert payload["target_value"] > payload["baseline_value"]
+    assert payload["lower_bound"] >= payload["baseline_value"]
+    assert payload["sources"][strategy_primary]["scope"] == "exact_bot"
+
+
+def test_learning_service_fails_closed_ope_when_decisions_are_insufficient(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    base_dt = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    _record_run(
+        store,
+        strategy_id=strategy_id,
+        run_id="ope-small-live-1",
+        source="live",
+        start_dt=base_dt,
+        bot_id="BOT-ALPHA",
+        expectancy=7.0,
+        sharpe=1.1,
+        max_dd=0.04,
+        trade_count=10,
+    )
+    registry.upsert_bot_policy_state(
+        bot_id="BOT-ALPHA",
+        strategy_id=strategy_id,
+        regime_label="trend",
+        score_current=0.7,
+        weight_target=1.0,
+        weight_live=1.0,
+        confidence=0.7,
+        source_scope="exact_bot",
+    )
+    for idx in range(3):
+        registry.append_bot_decision_log(
+            decision_id=f"ope-small-{idx}",
+            bot_id="BOT-ALPHA",
+            timestamp=(base_dt + timedelta(hours=idx)).isoformat(),
+            regime_label="trend",
+            candidate_strategies=[{"strategy_id": strategy_id, "score_final": 0.7}],
+            selected_strategy_id=strategy_id,
+            rejected_strategies=[],
+            reason={"selected_by": "bot_first_with_global_prior"},
+            evidence_scope={"source_weights": {"live": 1.0}},
+            risk_overrides={},
+            execution_constraints={},
+        )
+
+    payload = service.evaluate_bot_policy_ope("BOT-ALPHA", min_decisions=10)
+
+    assert payload["sample_count"] == 3
+    assert payload["safe_to_promote"] is False
+    assert any("NO EVIDENCIA" in warning for warning in payload["warnings"])
+
+
 def test_learning_service_reports_live_eligibility_for_bot(tmp_path: Path) -> None:
     registry = RegistryDB(tmp_path / "registry.sqlite")
     store = ExperienceStore(registry)
