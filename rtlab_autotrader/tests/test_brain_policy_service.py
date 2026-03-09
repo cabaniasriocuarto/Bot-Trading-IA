@@ -326,6 +326,67 @@ def test_learning_service_summarizes_bot_experience_payload(tmp_path: Path) -> N
     assert payload["items"][0]["bot_id"] == "BOT-ALPHA"
 
 
+def test_learning_service_counts_linked_only_bot_experience(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    base_dt = datetime(2025, 1, 10, tzinfo=timezone.utc)
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    run = {
+        "id": "shadow-linked-only-001",
+        "strategy_id": strategy_id,
+        "mode": "shadow",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "shadow_feed",
+        "dataset_hash": "shadow-linked-only-hash",
+        "feature_set": "orderflow_on",
+        "metadata": {"related_bot_ids": ["BOT-ALPHA", "BOT-BETA"]},
+        "period": {"start": base_dt.isoformat(), "end": (base_dt + timedelta(minutes=5)).isoformat()},
+        "created_at": (base_dt + timedelta(days=2)).isoformat(),
+        "metrics": {
+            "trade_count": 9,
+            "roundtrips": 9,
+            "expectancy_usd_per_trade": 3.5,
+            "sharpe": 0.9,
+            "sortino": 1.1,
+            "profit_factor": 1.4,
+            "win_rate": 0.55,
+            "max_dd": 0.05,
+        },
+        "costs_model": {
+            "fees_bps": 4.0,
+            "spread_bps": 2.0,
+            "slippage_bps": 1.0,
+            "funding_bps": 0.0,
+        },
+        "costs_breakdown": {
+            "gross_pnl_total": 36.0,
+            "net_pnl_total": 31.5,
+            "total_cost": 4.5,
+            "fees_total": 1.8,
+            "spread_total": 1.8,
+            "slippage_total": 0.9,
+            "funding_total": 0.0,
+        },
+        "trades": [],
+    }
+    store.record_run(run, source_override="shadow")
+
+    payload = service.get_bot_experience_payload("BOT-ALPHA")
+
+    assert payload["summary"]["count"] == 1
+    assert payload["summary"]["direct_attribution_count"] == 0
+    assert payload["summary"]["linked_only_count"] == 1
+    assert payload["summary"]["ambiguous_link_count"] == 1
+    assert payload["items"][0]["bot_id"] is None
+    assert payload["items"][0]["matched_bot_id"] == "BOT-ALPHA"
+    assert payload["items"][0]["matched_bot_scope"] == "run_link"
+    assert payload["items"][0]["matched_bot_attribution_type"] == "approx"
+
+
 def test_learning_service_reads_execution_reality_ledger(tmp_path: Path) -> None:
     registry = RegistryDB(tmp_path / "registry.sqlite")
     repo_root = Path(__file__).resolve().parents[2]

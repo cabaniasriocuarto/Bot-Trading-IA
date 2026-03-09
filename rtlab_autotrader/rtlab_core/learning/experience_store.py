@@ -153,7 +153,70 @@ class ExperienceStore:
         self.registry = registry
 
     @staticmethod
-    def _infer_bot_id(run: dict[str, Any], explicit_bot_id: str | None = None) -> tuple[str | None, str, float]:
+    def _normalize_related_bot_ids(values: Any) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def _add(value: Any) -> None:
+            ref = str(value or "").strip()
+            if ref and ref not in seen:
+                seen.add(ref)
+                out.append(ref)
+
+        if isinstance(values, (list, tuple, set)):
+            for item in values:
+                if isinstance(item, dict):
+                    _add(item.get("id"))
+                    _add(item.get("bot_id"))
+                else:
+                    _add(item)
+        elif isinstance(values, dict):
+            _add(values.get("id"))
+            _add(values.get("bot_id"))
+        else:
+            _add(values)
+        return out
+
+    @classmethod
+    def _extract_related_bot_ids(cls, run: dict[str, Any], explicit_bot_id: str | None = None) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def _extend(values: Any) -> None:
+            for ref in cls._normalize_related_bot_ids(values):
+                if ref not in seen:
+                    seen.add(ref)
+                    out.append(ref)
+
+        direct = str(explicit_bot_id or "").strip()
+        if direct:
+            _extend(direct)
+
+        if not isinstance(run, dict):
+            return out
+
+        payload_sources: list[dict[str, Any]] = [run]
+        for key in ("summary", "metadata", "meta", "provenance", "params", "params_json", "artifacts"):
+            value = run.get(key)
+            if isinstance(value, dict):
+                payload_sources.append(value)
+        for payload in payload_sources:
+            _extend(payload.get("bot_id"))
+            _extend(payload.get("bot_ids"))
+            _extend(payload.get("related_bot_ids"))
+            _extend(payload.get("related_bots"))
+        tags = run.get("tags")
+        if isinstance(tags, list):
+            for raw in tags:
+                tag = str(raw or "").strip()
+                lower = tag.lower()
+                if lower.startswith("bot:") or lower.startswith("bot_id:"):
+                    _, _, suffix = tag.partition(":")
+                    _extend(suffix.strip())
+        return out
+
+    @classmethod
+    def _infer_bot_id(cls, run: dict[str, Any], explicit_bot_id: str | None = None) -> tuple[str | None, str, float]:
         direct = str(explicit_bot_id or "").strip()
         if direct:
             return direct, "exact", 1.0
@@ -187,6 +250,10 @@ class ExperienceStore:
                     inferred = suffix.strip()
                     if inferred:
                         return inferred, "strong", 0.75
+
+        related_refs = cls._extract_related_bot_ids(run, explicit_bot_id=explicit_bot_id)
+        if len(related_refs) == 1:
+            return related_refs[0], "strong", 0.75
 
         return None, "unknown", 0.0
 
@@ -328,12 +395,14 @@ class ExperienceStore:
         trade_count = _safe_int(summary_metrics.get("trade_count") or summary_metrics.get("roundtrips") or len(trades), len(trades))
         as_of = str(run.get("as_of") or provenance.get("as_of") or end_ts or start_ts or run.get("created_at") or "").strip() or None
         vintage_date = str(run.get("vintage_date") or provenance.get("vintage_date") or "").strip() or None
+        related_bot_ids = self._extract_related_bot_ids(run, explicit_bot_id=bot_id)
         bot_id_n, attribution_type, attribution_confidence = self._infer_bot_id(run, explicit_bot_id=bot_id)
         summary = {
             "metrics": summary_metrics,
             "costs_breakdown": summary_costs,
             "mode": str(run.get("mode") or ""),
             "bot_id": str(bot_id_n or ""),
+            "related_bot_ids": related_bot_ids,
             "feature_set": feature_set,
             "validation_mode": str(run.get("validation_mode") or ""),
             "dataset_source": dataset_source,
@@ -371,12 +440,21 @@ class ExperienceStore:
             summary=summary,
             created_at=str(run.get("created_at") or None) if run.get("created_at") else None,
         )
-        if bot_id_n:
+        related_ids_to_link = list(related_bot_ids)
+        if bot_id_n and bot_id_n not in related_ids_to_link:
+            related_ids_to_link.insert(0, bot_id_n)
+        for related_bot_id in related_ids_to_link:
+            if related_bot_id == bot_id_n and bot_id_n:
+                related_type = attribution_type
+                related_confidence = attribution_confidence
+            else:
+                related_type = "approx"
+                related_confidence = 0.40
             self.registry.upsert_run_bot_link(
                 run_id=run_id,
-                bot_id=bot_id_n,
-                attribution_type=attribution_type,
-                attribution_confidence=attribution_confidence,
+                bot_id=related_bot_id,
+                attribution_type=related_type,
+                attribution_confidence=related_confidence,
                 created_at=str(run.get("created_at") or _utc_iso()),
             )
         events = self._build_trade_events(episode_id=episode_id, run=run)

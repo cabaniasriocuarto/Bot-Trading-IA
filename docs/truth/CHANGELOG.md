@@ -2458,3 +2458,25 @@
 - Warning no bloqueante conocido:
   - Recharts sigue emitiendo `width(-1)/height(-1)` en prerender, pero no rompe el build.
 
+### Atribucion fuerte run/episode -> bot (2026-03-09)
+- `experience_store.py` ahora detecta `related_bot_ids` y tags `bot:*` al registrar runs, persiste `run_bot_link` para todas las referencias relacionadas y mantiene fail-closed la atribucion exacta si el run es ambiguo.
+- `registry_db.py` ahora expone en episodios/evidencia:
+  - `related_bot_ids`
+  - `bot_link_count`
+  - `matched_bot_id`
+  - `matched_bot_scope`
+  - `matched_bot_attribution_type`
+  - `matched_bot_attribution_confidence`
+- `service.py` resume experiencia por bot distinguiendo:
+  - atribucion directa
+  - evidencia solo vinculada por `run_bot_link`
+  - casos ambiguos
+- La analitica historica del bot ya no depende solo de `episode.bot_id`; tambien usa `run_bot_link` y metadata estructurada del run.
+- Regla mantenida:
+  - si un run apunta a multiples bots, no se inventa una atribucion exacta; queda visible como evidencia vinculada (`linked-only`) y fuera de inferencia directa fuerte.
+
+### Validacion atribucion fuerte
+- `python -m py_compile rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/learning/service.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS (`11 passed`)
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS (`8 passed`)
+

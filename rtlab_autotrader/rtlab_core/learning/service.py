@@ -773,6 +773,9 @@ class LearningService:
         source_breakdown: dict[str, dict[str, float]] = {}
         strategy_breakdown: dict[str, dict[str, float]] = {}
         attribution_breakdown = {"exact": 0, "strong": 0, "approx": 0, "unknown": 0}
+        direct_attribution_count = 0
+        linked_only_count = 0
+        ambiguous_link_count = 0
         excluded_count = 0
         stale_count = 0
         legacy_count = 0
@@ -796,6 +799,8 @@ class LearningService:
                 or 0.0
             )
             attribution = str(row.get("attribution_type") or "unknown").strip().lower()
+            matched_scope = str(row.get("matched_bot_scope") or "none").strip().lower()
+            related_bot_ids = [str(ref or "").strip() for ref in (row.get("related_bot_ids") or []) if str(ref or "").strip()]
             if attribution.startswith("exact"):
                 attribution_breakdown["exact"] += 1
             elif attribution.startswith("strong"):
@@ -804,6 +809,12 @@ class LearningService:
                 attribution_breakdown["approx"] += 1
             else:
                 attribution_breakdown["unknown"] += 1
+            if matched_scope == "direct" or str(row.get("bot_id") or "").strip() == bot_id:
+                direct_attribution_count += 1
+            elif matched_scope in {"run_link", "related"}:
+                linked_only_count += 1
+                if int(row.get("bot_link_count") or 0) > 1 or len(related_bot_ids) > 1:
+                    ambiguous_link_count += 1
 
             source_item["episodes"] += 1.0
             source_item["trades"] += float(trades)
@@ -843,6 +854,9 @@ class LearningService:
                 "excluded_count": excluded_count,
                 "stale_count": stale_count,
                 "legacy_count": legacy_count,
+                "direct_attribution_count": direct_attribution_count,
+                "linked_only_count": linked_only_count,
+                "ambiguous_link_count": ambiguous_link_count,
                 "trades_total": trades_total,
                 "effective_weight_total": round(effective_weight_total, 6),
                 "latest_end_ts": latest_end_ts,

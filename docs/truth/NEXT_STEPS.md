@@ -22,11 +22,17 @@ Fecha: 2026-03-09
   - preflight
   - realidad operativa reciente
   - reconciliacion, slippage, spread, impacto, latencia y maker/taker
+- La atribucion historica del bot ahora usa:
+  - `experience_episode.bot_id` cuando existe atribucion exacta/fuerte
+  - `run_bot_link` y `related_bot_ids` cuando el episodio es ambiguo
+- La experiencia por bot resume:
+  - `direct_attribution_count`
+  - `linked_only_count`
+  - `ambiguous_link_count`
 
 ## Nuevo plan consolidado
 - Cerrar primero la visibilidad util del cerebro y la atribucion historica fuerte.
-- Luego reforzar la atribucion directa `episode -> bot`.
-- Despues cerrar Beast/Batch visible y coherente en deploy.
+- Luego cerrar Beast/Batch visible y coherente en deploy.
 - Por ultimo endurecer OPE / observabilidad avanzada / surface final de monitoring.
 
 ## Bloques reordenados
@@ -38,11 +44,11 @@ Fecha: 2026-03-09
 6. OPE / observabilidad avanzada / endurecimiento final
 
 ## Bloque actual
-- `Execution` ya consolidado con realidad operativa por bot. Siguiente foco: atribucion historica fuerte `episode -> bot`.
+- Atribucion historica fuerte `run/episode -> bot` cerrada en backend y service. Siguiente foco: Beast/Batch deploy-visible y sin mensajes/estados engañosos.
 
 ## Pendiente del siguiente bloque
-- reforzar `episode -> bot_id` directo en analitica historica, no solo por backfill conservador
 - Beast/Batch deploy-visible y sin estados engañosos
+- surface minima en frontend para explicar claramente cuando un batch queda bloqueado por dataset/policy/deploy
 
 ## Bloqueado / no implementado
 - `execution_reality` aun no refleja fills reales end-to-end del runtime productivo
@@ -52,6 +58,7 @@ Fecha: 2026-03-09
 ## Riesgos abiertos
 - Si el backend desplegado no esta en la misma version que frontend, la pagina `Bots` puede verse parcial.
 - Si el backend desplegado no esta en la misma version que frontend, `Execution` puede no recibir `execution_reality` real por bot.
+- La atribucion `episode -> bot_id` sigue fail-closed si el run historico trae multiples bots posibles; eso es intencional.
 - El warning de Recharts en prerender sigue siendo no bloqueante.
 
 ## Decisiones asumidas
@@ -60,15 +67,19 @@ Fecha: 2026-03-09
 - La atribucion automatica sigue fail-closed cuando un `run_id` tiene mas de un bot posible.
 
 ## Archivos tocados
-- `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+- `rtlab_autotrader/rtlab_core/learning/experience_store.py`
+- `rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py`
+- `rtlab_autotrader/rtlab_core/learning/service.py`
+- `rtlab_autotrader/tests/test_learning_experience_option_b.py`
+- `rtlab_autotrader/tests/test_brain_policy_service.py`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/CHANGELOG.md`
 - `docs/truth/NEXT_STEPS.md`
 
 ## Tests ejecutados
-- `npm run lint -- "src/app/(app)/execution/page.tsx"`
-- `npm run build`
+- `python -m py_compile rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/rtlab_core/learning/service.py`
+- `python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q`
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q`
 
 ## Build status
-- `rtlab_dashboard` -> PASS
-- warning conocido de Recharts en prerender -> no bloqueante
+- bloque backend atribucion fuerte -> PASS

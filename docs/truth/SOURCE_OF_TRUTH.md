@@ -506,3 +506,29 @@ Regla de verdad:
 - Regla aplicada:
   - si una decision tecnica critica no queda respaldada por bibliografia local, se busca soporte equivalente externo y se documenta.
 
+### Estado vigente tras atribucion fuerte run/episode -> bot (2026-03-09)
+
+- La atribucion historica del cerebro ya no depende solo de `experience_episode.bot_id`.
+- Fuente de verdad efectiva para experiencia por bot:
+  1. `experience_episode.bot_id` cuando existe atribucion exacta o inferencia unica fuerte
+  2. `run_bot_link` cuando el run trae relacion bot/run aunque el episodio quede ambiguo
+  3. `summary.related_bot_ids` y tags `bot:*` como metadata estructurada del run
+- Reglas activas:
+  - si hay un solo bot relacionado, se permite atribucion `strong`
+  - si hay multiples bots relacionados, la atribucion exacta queda `unknown`
+  - los runs ambiguos siguen visibles en experiencia del bot como `linked-only`, pero no se promocionan a verdad exacta
+- `RegistryDB.list_experience_episodes(...)` y `RegistryDB.list_strategy_evidence(...)` exponen:
+  - `related_bot_ids`
+  - `bot_link_count`
+  - `matched_bot_scope`
+  - `matched_bot_attribution_type`
+  - `matched_bot_attribution_confidence`
+- `LearningService.get_bot_experience_payload(...)` resume experiencia por bot con:
+  - `direct_attribution_count`
+  - `linked_only_count`
+  - `ambiguous_link_count`
+- Esta capa mantiene el principio del proyecto:
+  - fail-closed para atribucion exacta
+  - visibilidad historica para evidencia relacionada
+  - no contaminar el cerebro del bot con asignaciones fuertes no demostrables
+

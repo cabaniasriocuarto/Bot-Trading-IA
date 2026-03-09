@@ -1410,13 +1410,38 @@ class RegistryDB:
         if not cleaned:
             return {}
         placeholders = ",".join("?" for _ in cleaned)
-        query = f"SELECT * FROM run_bot_link WHERE run_id IN ({placeholders}) ORDER BY created_at DESC, run_id ASC"
+        query = f"SELECT * FROM run_bot_link WHERE run_id IN ({placeholders}) ORDER BY run_id ASC, rowid ASC"
         with self._connect() as conn:
             rows = conn.execute(query, tuple(cleaned)).fetchall()
         out: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             item = dict(row)
             out.setdefault(str(item.get("run_id") or ""), []).append(item)
+        return out
+
+    @staticmethod
+    def _normalize_bot_refs(values: Any) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def _add(value: Any) -> None:
+            ref = str(value or "").strip()
+            if ref and ref not in seen:
+                seen.add(ref)
+                out.append(ref)
+
+        if isinstance(values, (list, tuple, set)):
+            for item in values:
+                if isinstance(item, dict):
+                    _add(item.get("id"))
+                    _add(item.get("bot_id"))
+                else:
+                    _add(item)
+        elif isinstance(values, dict):
+            _add(values.get("id"))
+            _add(values.get("bot_id"))
+        else:
+            _add(values)
         return out
 
     def list_experience_episodes(
@@ -1450,13 +1475,52 @@ class RegistryDB:
                 item["summary"] = {}
             summary = item["summary"] if isinstance(item.get("summary"), dict) else {}
             item["bot_id"] = str(item.get("bot_id") or summary.get("bot_id") or "").strip() or None
-            links = link_map.get(str(item.get("run_id") or ""))
+            links = link_map.get(str(item.get("run_id") or "")) or []
+            summary_related_ids = self._normalize_bot_refs(summary.get("related_bot_ids"))
+            link_bot_ids = self._normalize_bot_refs([link.get("bot_id") for link in links])
+            related_bot_ids = self._normalize_bot_refs(summary_related_ids + link_bot_ids + [item["bot_id"]])
+            item["related_bot_ids"] = related_bot_ids
+            item["bot_link_count"] = len(links)
             if not item["bot_id"] and links and len(links) == 1:
                 item["bot_id"] = str(links[0].get("bot_id") or "").strip() or None
                 if not str(item.get("attribution_type") or "").strip() or str(item.get("attribution_type")) == "unknown":
                     item["attribution_type"] = str(links[0].get("attribution_type") or "strong")
                 if not float(item.get("attribution_confidence") or 0.0):
                     item["attribution_confidence"] = float(links[0].get("attribution_confidence") or 0.0)
+            item["matched_bot_ids"] = []
+            item["matched_bot_id"] = None
+            item["matched_bot_scope"] = "none"
+            item["matched_bot_attribution_type"] = None
+            item["matched_bot_attribution_confidence"] = 0.0
+            matched_links = [link for link in links if str(link.get("bot_id") or "").strip() in requested_bot_ids]
+            if requested_bot_ids:
+                direct_match = bool(item["bot_id"] and item["bot_id"] in requested_bot_ids)
+                matched_related = [bot_ref for bot_ref in related_bot_ids if bot_ref in requested_bot_ids]
+                if not direct_match and not matched_related:
+                    continue
+                if direct_match:
+                    item["matched_bot_ids"] = [item["bot_id"]]
+                    item["matched_bot_id"] = item["bot_id"]
+                    item["matched_bot_scope"] = "direct"
+                    item["matched_bot_attribution_type"] = str(item.get("attribution_type") or "unknown")
+                    item["matched_bot_attribution_confidence"] = float(item.get("attribution_confidence") or 0.0)
+                elif matched_links:
+                    best_link = sorted(
+                        matched_links,
+                        key=lambda link: float(link.get("attribution_confidence") or 0.0),
+                        reverse=True,
+                    )[0]
+                    item["matched_bot_ids"] = matched_related
+                    item["matched_bot_id"] = str(best_link.get("bot_id") or "").strip() or None
+                    item["matched_bot_scope"] = "run_link"
+                    item["matched_bot_attribution_type"] = str(best_link.get("attribution_type") or "unknown")
+                    item["matched_bot_attribution_confidence"] = float(best_link.get("attribution_confidence") or 0.0)
+                else:
+                    item["matched_bot_ids"] = matched_related
+                    item["matched_bot_id"] = matched_related[0] if matched_related else None
+                    item["matched_bot_scope"] = "related"
+                    item["matched_bot_attribution_type"] = "unknown"
+                    item["matched_bot_attribution_confidence"] = 0.0
             item["legacy_untrusted"] = bool(item.get("legacy_untrusted"))
             item["excluded_from_learning"] = bool(item.get("excluded_from_learning"))
             item["excluded_from_rankings"] = bool(item.get("excluded_from_rankings"))
@@ -1464,8 +1528,6 @@ class RegistryDB:
             item["excluded_from_brain_scores"] = bool(item.get("excluded_from_brain_scores"))
             item["stale"] = bool(item.get("stale"))
             item["trades_count"] = int(item.get("trades_count") or summary.get("trade_count") or 0)
-            if requested_bot_ids and item["bot_id"] not in requested_bot_ids:
-                continue
             out.append(item)
         return out
 
@@ -1962,7 +2024,11 @@ class RegistryDB:
         link_map = self._run_bot_link_map([str(row["run_id"]) for row in rows if row["run_id"]])
         out = [dict(row) for row in rows]
         for row in out:
-            links = link_map.get(str(row.get("run_id") or ""))
+            links = link_map.get(str(row.get("run_id") or "")) or []
+            row["related_bot_ids"] = self._normalize_bot_refs(
+                [row.get("bot_id")] + [link.get("bot_id") for link in links]
+            )
+            row["bot_link_count"] = len(links)
             if links and len(links) == 1:
                 if not str(row.get("bot_id") or "").strip():
                     row["bot_id"] = str(links[0].get("bot_id") or "").strip() or None

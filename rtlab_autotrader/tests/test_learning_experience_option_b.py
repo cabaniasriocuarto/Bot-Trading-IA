@@ -359,6 +359,100 @@ def test_experience_store_infers_strong_bot_from_tags(tmp_path: Path) -> None:
     assert evidence[0]["attribution_confidence"] == 0.75
 
 
+def test_experience_store_infers_strong_bot_from_related_metadata(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    start_dt = datetime(2025, 2, 4, tzinfo=timezone.utc)
+
+    run = {
+        "id": "run-related-bot",
+        "strategy_id": strategy_id,
+        "mode": "paper",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "exchange_paper",
+        "dataset_hash": "paper-related-dataset-hash",
+        "feature_set": "orderflow_on",
+        "metadata": {"related_bot_ids": ["BOT-RELATED"]},
+        "period": {
+            "start": start_dt.isoformat(),
+            "end": (start_dt + timedelta(minutes=5)).isoformat(),
+        },
+        "metrics": {"trade_count": 1, "roundtrips": 1},
+        "trades": [],
+    }
+
+    store.record_run(run, source_override="paper")
+
+    episodes = registry.list_experience_episodes(bot_ids=["BOT-RELATED"], sources=["paper"])
+    assert len(episodes) == 1
+    assert episodes[0]["bot_id"] == "BOT-RELATED"
+    assert episodes[0]["attribution_type"] == "strong"
+    assert episodes[0]["attribution_confidence"] == 0.75
+    assert episodes[0]["related_bot_ids"] == ["BOT-RELATED"]
+    assert episodes[0]["bot_link_count"] == 1
+
+    links = registry.list_run_bot_links(run_id="run-related-bot")
+    assert len(links) == 1
+    assert links[0]["bot_id"] == "BOT-RELATED"
+    assert links[0]["attribution_type"] == "strong"
+
+    evidence = registry.list_strategy_evidence(strategy_id=strategy_id, source_type="paper")
+    assert len(evidence) == 1
+    assert evidence[0]["bot_id"] == "BOT-RELATED"
+    assert evidence[0]["related_bot_ids"] == ["BOT-RELATED"]
+
+
+def test_experience_store_keeps_ambiguous_related_bots_as_linked_only(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "trend_pullback_orderflow_confirm_v1"
+    start_dt = datetime(2025, 2, 5, tzinfo=timezone.utc)
+
+    run = {
+        "id": "run-related-bots-ambiguous",
+        "strategy_id": strategy_id,
+        "mode": "shadow",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "shadow_feed",
+        "dataset_hash": "shadow-related-dataset-hash",
+        "feature_set": "orderflow_on",
+        "metadata": {"related_bot_ids": ["BOT-A", "BOT-B"]},
+        "period": {
+            "start": start_dt.isoformat(),
+            "end": (start_dt + timedelta(minutes=5)).isoformat(),
+        },
+        "metrics": {"trade_count": 1, "roundtrips": 1},
+        "trades": [],
+    }
+
+    store.record_run(run, source_override="shadow")
+
+    episodes = registry.list_experience_episodes(bot_ids=["BOT-A"], sources=["shadow"])
+    assert len(episodes) == 1
+    assert episodes[0]["bot_id"] is None
+    assert episodes[0]["attribution_type"] == "unknown"
+    assert episodes[0]["matched_bot_id"] == "BOT-A"
+    assert episodes[0]["matched_bot_scope"] == "run_link"
+    assert episodes[0]["matched_bot_attribution_type"] == "approx"
+    assert episodes[0]["matched_bot_attribution_confidence"] == 0.4
+    assert episodes[0]["related_bot_ids"] == ["BOT-A", "BOT-B"]
+    assert episodes[0]["bot_link_count"] == 2
+
+    links = registry.list_run_bot_links(run_id="run-related-bots-ambiguous")
+    assert len(links) == 2
+    assert {row["bot_id"] for row in links} == {"BOT-A", "BOT-B"}
+    assert {row["attribution_type"] for row in links} == {"approx"}
+
+    evidence = registry.list_strategy_evidence(strategy_id=strategy_id, source_type="shadow")
+    assert len(evidence) == 1
+    assert evidence[0]["bot_id"] is None
+    assert evidence[0]["related_bot_ids"] == ["BOT-A", "BOT-B"]
+    assert evidence[0]["bot_link_count"] == 2
+
+
 def test_option_b_engine_filters_pool_true(tmp_path: Path) -> None:
     registry = RegistryDB(tmp_path / "registry.sqlite")
     store = ExperienceStore(registry)
