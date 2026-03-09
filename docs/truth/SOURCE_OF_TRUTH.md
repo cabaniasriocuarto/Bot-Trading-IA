@@ -2,6 +2,28 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 9 parcial - `Execution` ya expone realidad operativa por bot
+
+- `Execution` ya no depende solo de metricas globales del runtime.
+- Si hay un bot seleccionado, frontend consulta `GET /api/v1/execution/reality?bot_id=...`.
+- El dominio `Execution` ahora muestra especificamente:
+  - slippage medio real
+  - spread medio
+  - impacto medio estimado
+  - latencia media
+  - maker/taker ratio
+  - fill parcial medio
+  - ultimo timestamp operativo
+  - breakdown de reconciliacion
+  - eventos recientes por instrumento
+- Regla de separacion vigente:
+  - `Bots` explica por que decide
+  - `Execution` explica como se ejecuta y como sale esa ejecucion
+- Estado real:
+  - la pantalla `Execution` ya muestra elegibilidad live del bot
+  - la pantalla `Execution` ya muestra realidad operativa reciente del bot
+  - sigue faltando conectar `execution_reality` a fills reales end-to-end del runtime productivo
+
 ## Actualizacion de bloque 9 parcial - experiencia atribuida al bot visible
 
 - El backend ya expone `GET /api/v1/bots/{bot_id}/experience`.

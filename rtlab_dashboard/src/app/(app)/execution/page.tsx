@@ -15,6 +15,7 @@ import type {
   BotLiveEligibilityResponse,
   BotStatusResponse,
   ExchangeDiagnoseResponse,
+  ExecutionRealityResponse,
   ExecutionPreflightResponse,
   ExecutionStats,
   HealthResponse,
@@ -85,6 +86,9 @@ export default function ExecutionPage() {
   const [botLiveEligibility, setBotLiveEligibility] = useState<BotLiveEligibilityResponse | null>(null);
   const [botLiveEligibilityError, setBotLiveEligibilityError] = useState("");
   const [botLiveEligibilityLoading, setBotLiveEligibilityLoading] = useState(false);
+  const [executionReality, setExecutionReality] = useState<ExecutionRealityResponse | null>(null);
+  const [executionRealityError, setExecutionRealityError] = useState("");
+  const [executionRealityLoading, setExecutionRealityLoading] = useState(false);
   const [preflightResult, setPreflightResult] = useState<ExecutionPreflightResponse | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState<boolean>(() => (typeof document === "undefined" ? true : document.visibilityState === "visible"));
@@ -153,6 +157,25 @@ export default function ExecutionPage() {
     }
   }, []);
 
+  const loadBotExecutionReality = useCallback(async (botId: string) => {
+    if (!botId) {
+      setExecutionReality(null);
+      setExecutionRealityError("");
+      return;
+    }
+    setExecutionRealityLoading(true);
+    setExecutionRealityError("");
+    try {
+      const payload = await apiGet<ExecutionRealityResponse>(`/api/v1/execution/reality?bot_id=${encodeURIComponent(botId)}&limit=20`);
+      setExecutionReality(payload);
+    } catch (err) {
+      setExecutionReality(null);
+      setExecutionRealityError(err instanceof Error ? err.message : "No se pudo cargar la realidad de ejecucion del bot.");
+    } finally {
+      setExecutionRealityLoading(false);
+    }
+  }, []);
+
   const refreshAll = useCallback(async (forceExchange = false) => {
     setRefreshing(true);
     setMessage("");
@@ -160,7 +183,7 @@ export default function ExecutionPage() {
     try {
       await Promise.all([loadExecutionMetrics(), loadTradingPanel(forceExchange)]);
       if (selectedExecutionBotId) {
-        await loadBotLiveEligibility(selectedExecutionBotId);
+        await Promise.all([loadBotLiveEligibility(selectedExecutionBotId), loadBotExecutionReality(selectedExecutionBotId)]);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "No se pudo actualizar la pantalla.";
@@ -168,7 +191,7 @@ export default function ExecutionPage() {
     } finally {
       setRefreshing(false);
     }
-  }, [loadBotLiveEligibility, loadExecutionMetrics, loadTradingPanel, selectedExecutionBotId]);
+  }, [loadBotExecutionReality, loadBotLiveEligibility, loadExecutionMetrics, loadTradingPanel, selectedExecutionBotId]);
 
   useEffect(() => {
     const load = async () => {
@@ -635,12 +658,14 @@ export default function ExecutionPage() {
     if (!selectedExecutionBotId) {
       setBotLiveEligibility(null);
       setBotLiveEligibilityError("");
+      setExecutionReality(null);
+      setExecutionRealityError("");
       setPreflightResult(null);
       return;
     }
     setPreflightResult(null);
-    void loadBotLiveEligibility(selectedExecutionBotId);
-  }, [loadBotLiveEligibility, selectedExecutionBotId]);
+    void Promise.all([loadBotLiveEligibility(selectedExecutionBotId), loadBotExecutionReality(selectedExecutionBotId)]);
+  }, [loadBotExecutionReality, loadBotLiveEligibility, selectedExecutionBotId]);
 
   return (
     <div className="space-y-4">
@@ -1063,6 +1088,101 @@ export default function ExecutionPage() {
                           <TR>
                             <TD colSpan={5} className="py-4 text-center text-xs text-slate-400">
                               No hay instrumentos candidatos para este bot.
+                            </TD>
+                          </TR>
+                        ) : null}
+                      </TBody>
+                    </Table>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Realidad de ejecucion por bot</p>
+                  <p className="text-[11px] text-slate-400">
+                    Resume fills, slippage, spread, maker/taker, impacto y reconciliacion del bot seleccionado. Esta vista es operativa; las decisiones del bot siguen en Bots.
+                  </p>
+                </div>
+                {executionReality?.summary.latest_timestamp ? (
+                  <Badge variant="neutral">ultimo evento {new Date(executionReality.summary.latest_timestamp).toLocaleString()}</Badge>
+                ) : null}
+              </div>
+              {!selectedExecutionBot ? (
+                <p className="text-xs text-slate-400">Selecciona un bot para revisar su realidad de ejecucion reciente.</p>
+              ) : executionRealityLoading ? (
+                <p className="text-xs text-slate-400">Cargando realidad de ejecucion…</p>
+              ) : executionRealityError ? (
+                <p className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">{executionRealityError}</p>
+              ) : executionReality ? (
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                    <Metric title="Eventos" value={String(executionReality.summary.count)} compact />
+                    <Metric title="Slippage prom." value={`${fmtNum(executionReality.summary.avg_realized_slippage_bps)} bps`} compact />
+                    <Metric title="Spread prom." value={`${fmtNum(executionReality.summary.avg_spread_bps)} bps`} compact />
+                    <Metric title="Impacto prom." value={`${fmtNum(executionReality.summary.avg_impact_bps_est)} bps`} compact />
+                    <Metric title="Latencia prom." value={`${fmtNum(executionReality.summary.avg_latency_ms)} ms`} compact />
+                    <Metric title="Maker / Taker" value={`${fmtPct(executionReality.summary.maker_ratio)} / ${fmtPct(executionReality.summary.taker_ratio)}`} compact />
+                  </div>
+                  <div className="rounded border border-slate-800 bg-slate-900/50 p-2 text-xs text-slate-300">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-slate-100">Reconciliacion</span>
+                      {Object.entries(executionReality.summary.reconciliation_breakdown || {}).length ? (
+                        Object.entries(executionReality.summary.reconciliation_breakdown || {}).map(([key, count]) => (
+                          <Badge key={`reconciliation-${key}`} variant={reconciliationVariant(key)}>
+                            {key}: {count}
+                          </Badge>
+                        ))
+                      ) : (
+                        <Badge variant="neutral">sin datos</Badge>
+                      )}
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      Simbolos observados: <strong>{executionReality.summary.symbols_count}</strong> · fill parcial promedio:{" "}
+                      <strong>{fmtPct(executionReality.summary.avg_partial_fill_ratio)}</strong>
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto rounded border border-slate-800">
+                    <Table className="text-xs">
+                      <THead>
+                        <TR>
+                          <TH>Momento</TH>
+                          <TH>Instrumento</TH>
+                          <TH>Operacion</TH>
+                          <TH>Maker/Taker</TH>
+                          <TH>Slippage</TH>
+                          <TH>Spread</TH>
+                          <TH>Impacto</TH>
+                          <TH>Latencia</TH>
+                          <TH>Fill parcial</TH>
+                          <TH>Reconciliacion</TH>
+                        </TR>
+                      </THead>
+                      <TBody>
+                        {executionReality.items.map((row) => (
+                          <TR key={`execution-reality-${row.execution_id}`}>
+                            <TD>{row.timestamp ? new Date(row.timestamp).toLocaleString() : "--"}</TD>
+                            <TD>{row.symbol || "--"}</TD>
+                            <TD>{[row.side, row.order_type].filter(Boolean).join(" / ") || "--"}</TD>
+                            <TD>{row.maker_taker || "--"}</TD>
+                            <TD>{row.realized_slippage_bps != null ? `${fmtNum(row.realized_slippage_bps)} bps` : "--"}</TD>
+                            <TD>{row.spread_bps != null ? `${fmtNum(row.spread_bps)} bps` : "--"}</TD>
+                            <TD>{row.impact_bps_est != null ? `${fmtNum(row.impact_bps_est)} bps` : "--"}</TD>
+                            <TD>{row.latency_ms != null ? `${fmtNum(row.latency_ms)} ms` : "--"}</TD>
+                            <TD>{row.partial_fill_ratio != null ? fmtPct(row.partial_fill_ratio) : "--"}</TD>
+                            <TD>
+                              <Badge variant={reconciliationVariant(row.reconciliation_status)}>
+                                {row.reconciliation_status || "sin dato"}
+                              </Badge>
+                            </TD>
+                          </TR>
+                        ))}
+                        {!executionReality.items.length ? (
+                          <TR>
+                            <TD colSpan={10} className="py-4 text-center text-xs text-slate-400">
+                              Todavia no hay eventos recientes de ejecucion para este bot.
                             </TD>
                           </TR>
                         ) : null}
@@ -1545,6 +1665,15 @@ function liveReasonLabel(reason: string): string {
     bot_not_archived: "Bot archivado",
   };
   return labels[normalized] ?? normalized.replaceAll("_", " ");
+}
+
+function reconciliationVariant(status?: string | null): "success" | "warn" | "danger" | "neutral" {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (!normalized) return "neutral";
+  if (normalized.includes("ok") || normalized.includes("matched") || normalized.includes("synced")) return "success";
+  if (normalized.includes("warn") || normalized.includes("pending") || normalized.includes("partial")) return "warn";
+  if (normalized.includes("fail") || normalized.includes("mismatch") || normalized.includes("error")) return "danger";
+  return "neutral";
 }
 
 function ChecklistRow({

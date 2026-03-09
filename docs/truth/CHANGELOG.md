@@ -2,6 +2,25 @@
 
 ## 2026-03-09
 
+### Bloque 9 parcial: `Execution` ya muestra realidad operativa por bot
+- Frontend `Execution` ahora consume `GET /api/v1/execution/reality?bot_id=...`.
+- La pantalla muestra, por bot seleccionado:
+  - cantidad de eventos de ejecucion
+  - slippage medio
+  - spread medio
+  - impacto medio
+  - latencia media
+  - maker/taker ratio
+  - fill parcial medio
+  - breakdown de reconciliacion
+  - tabla de eventos recientes por instrumento
+- Esto separa mejor dominios:
+  - `Bots` explica decisiones y evidencia
+  - `Execution` explica consecuencias operativas y calidad de ejecucion
+- Validacion:
+  - `eslint` `execution/page.tsx` PASS
+  - `npm run build` PASS
+
 ### Bloque 9 parcial: drilldown visible de episodios atribuidos al bot
 - Frontend `Bots` ahora muestra una tabla `Ultimos episodios atribuidos` dentro de la tarjeta de experiencia del bot.
 - El drilldown expone por episodio:
