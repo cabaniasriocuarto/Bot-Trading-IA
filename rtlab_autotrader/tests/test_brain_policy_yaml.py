@@ -21,6 +21,12 @@ def test_gates_yaml_exposes_brain_policy_and_live_source_weight() -> None:
     assert (gates.get("brain_policy") or {}).get("exact_bot_threshold_trades") == 50
     assert (gates.get("promotion") or {}).get("candidate", {}).get("min_psr") == 0.95
     assert (gates.get("quarantine") or {}).get("require_complete_provenance") is True
+    assert (gates.get("market_catalog") or {}).get("providers", {}).get("binance", {}).get("sync_on_startup") is True
+    assert (gates.get("market_data") or {}).get("live_parity", {}).get("require_recent_market_state") is True
+    assert (gates.get("execution_modes") or {}).get("live", {}).get("require_symbol_validation") is True
+    assert (gates.get("execution_symbol_validation") or {}).get("enforce_tick_size") is True
+    assert (gates.get("universe_policy") or {}).get("defaults", {}).get("active_only") is True
+    assert (gates.get("observability") or {}).get("health_scoring", {}).get("enabled") is True
 
 
 def test_microstructure_and_fees_yaml_expose_extended_guards() -> None:

@@ -331,6 +331,97 @@ CREATE TABLE IF NOT EXISTS execution_reality (
 
 CREATE INDEX IF NOT EXISTS idx_execution_reality_bot_ts
 ON execution_reality(bot_id, timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS instrument_registry (
+    instrument_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_market TEXT NOT NULL,
+    provider_symbol TEXT NOT NULL,
+    normalized_symbol TEXT NOT NULL,
+    base_asset TEXT,
+    quote_asset TEXT,
+    settle_asset TEXT,
+    margin_asset TEXT,
+    asset_class TEXT NOT NULL DEFAULT 'unknown',
+    contract_type TEXT,
+    instrument_type TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    tradable INTEGER NOT NULL DEFAULT 0,
+    backtestable INTEGER NOT NULL DEFAULT 0,
+    paper_enabled INTEGER NOT NULL DEFAULT 0,
+    test_enabled INTEGER NOT NULL DEFAULT 0,
+    demo_enabled INTEGER NOT NULL DEFAULT 0,
+    live_enabled INTEGER NOT NULL DEFAULT 0,
+    permissions_json TEXT NOT NULL DEFAULT '[]',
+    order_types_json TEXT NOT NULL DEFAULT '[]',
+    time_in_force_json TEXT NOT NULL DEFAULT '[]',
+    tick_size REAL,
+    step_size REAL,
+    min_qty REAL,
+    max_qty REAL,
+    min_notional REAL,
+    price_precision INTEGER,
+    qty_precision INTEGER,
+    maker_fee_bps REAL,
+    taker_fee_bps REAL,
+    funding_interval_hours REAL,
+    onboard_date TEXT,
+    delivery_date TEXT,
+    exchange_filters_json TEXT NOT NULL DEFAULT '{}',
+    symbol_filters_json TEXT NOT NULL DEFAULT '{}',
+    raw_exchange_payload_json TEXT NOT NULL DEFAULT '{}',
+    account_eligibility_json TEXT NOT NULL DEFAULT '{}',
+    source_hash TEXT,
+    is_active_snapshot INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    delisted_at TEXT,
+    UNIQUE(provider, provider_market, provider_symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_instrument_registry_normalized
+ON instrument_registry(normalized_symbol, provider_market, status);
+
+CREATE INDEX IF NOT EXISTS idx_instrument_registry_live
+ON instrument_registry(provider, provider_market, live_enabled, tradable);
+
+CREATE TABLE IF NOT EXISTS instrument_catalog_snapshot (
+    snapshot_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_market TEXT NOT NULL,
+    catalog_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    total_instruments INTEGER NOT NULL DEFAULT 0,
+    tradable_instruments INTEGER NOT NULL DEFAULT 0,
+    live_enabled_instruments INTEGER NOT NULL DEFAULT 0,
+    backtestable_instruments INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_instrument_catalog_snapshot_created
+ON instrument_catalog_snapshot(provider, provider_market, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS instrument_catalog_snapshot_item (
+    snapshot_id TEXT NOT NULL,
+    instrument_id TEXT NOT NULL,
+    provider_symbol TEXT NOT NULL,
+    normalized_symbol TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    tradable INTEGER NOT NULL DEFAULT 0,
+    backtestable INTEGER NOT NULL DEFAULT 0,
+    paper_enabled INTEGER NOT NULL DEFAULT 0,
+    test_enabled INTEGER NOT NULL DEFAULT 0,
+    demo_enabled INTEGER NOT NULL DEFAULT 0,
+    live_enabled INTEGER NOT NULL DEFAULT 0,
+    snapshot_payload_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY(snapshot_id, instrument_id),
+    FOREIGN KEY(snapshot_id) REFERENCES instrument_catalog_snapshot(snapshot_id) ON DELETE CASCADE,
+    FOREIGN KEY(instrument_id) REFERENCES instrument_registry(instrument_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_instrument_catalog_snapshot_item_symbol
+ON instrument_catalog_snapshot_item(snapshot_id, normalized_symbol, live_enabled);
 """
 
 
@@ -1960,3 +2051,371 @@ class RegistryDB:
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [dict(row) for row in rows]
+
+    def upsert_instrument_registry(
+        self,
+        *,
+        instrument_id: str,
+        provider: str,
+        provider_market: str,
+        provider_symbol: str,
+        normalized_symbol: str,
+        base_asset: str | None = None,
+        quote_asset: str | None = None,
+        settle_asset: str | None = None,
+        margin_asset: str | None = None,
+        asset_class: str = "unknown",
+        contract_type: str | None = None,
+        instrument_type: str | None = None,
+        status: str = "unknown",
+        tradable: bool = False,
+        backtestable: bool = False,
+        paper_enabled: bool = False,
+        test_enabled: bool = False,
+        demo_enabled: bool = False,
+        live_enabled: bool = False,
+        permissions: list[str] | None = None,
+        order_types: list[str] | None = None,
+        time_in_force: list[str] | None = None,
+        tick_size: float | None = None,
+        step_size: float | None = None,
+        min_qty: float | None = None,
+        max_qty: float | None = None,
+        min_notional: float | None = None,
+        price_precision: int | None = None,
+        qty_precision: int | None = None,
+        maker_fee_bps: float | None = None,
+        taker_fee_bps: float | None = None,
+        funding_interval_hours: float | None = None,
+        onboard_date: str | None = None,
+        delivery_date: str | None = None,
+        exchange_filters: dict[str, Any] | None = None,
+        symbol_filters: dict[str, Any] | None = None,
+        raw_exchange_payload: dict[str, Any] | None = None,
+        account_eligibility: dict[str, Any] | None = None,
+        source_hash: str | None = None,
+        is_active_snapshot: bool = True,
+        first_seen_at: str | None = None,
+        last_seen_at: str | None = None,
+        delisted_at: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO instrument_registry (
+                    instrument_id, provider, provider_market, provider_symbol, normalized_symbol,
+                    base_asset, quote_asset, settle_asset, margin_asset, asset_class,
+                    contract_type, instrument_type, status, tradable, backtestable,
+                    paper_enabled, test_enabled, demo_enabled, live_enabled,
+                    permissions_json, order_types_json, time_in_force_json,
+                    tick_size, step_size, min_qty, max_qty, min_notional,
+                    price_precision, qty_precision, maker_fee_bps, taker_fee_bps,
+                    funding_interval_hours, onboard_date, delivery_date,
+                    exchange_filters_json, symbol_filters_json, raw_exchange_payload_json,
+                    account_eligibility_json, source_hash, is_active_snapshot,
+                    first_seen_at, last_seen_at, delisted_at
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP), ?
+                )
+                ON CONFLICT(instrument_id) DO UPDATE SET
+                    provider=excluded.provider,
+                    provider_market=excluded.provider_market,
+                    provider_symbol=excluded.provider_symbol,
+                    normalized_symbol=excluded.normalized_symbol,
+                    base_asset=excluded.base_asset,
+                    quote_asset=excluded.quote_asset,
+                    settle_asset=excluded.settle_asset,
+                    margin_asset=excluded.margin_asset,
+                    asset_class=excluded.asset_class,
+                    contract_type=excluded.contract_type,
+                    instrument_type=excluded.instrument_type,
+                    status=excluded.status,
+                    tradable=excluded.tradable,
+                    backtestable=excluded.backtestable,
+                    paper_enabled=excluded.paper_enabled,
+                    test_enabled=excluded.test_enabled,
+                    demo_enabled=excluded.demo_enabled,
+                    live_enabled=excluded.live_enabled,
+                    permissions_json=excluded.permissions_json,
+                    order_types_json=excluded.order_types_json,
+                    time_in_force_json=excluded.time_in_force_json,
+                    tick_size=excluded.tick_size,
+                    step_size=excluded.step_size,
+                    min_qty=excluded.min_qty,
+                    max_qty=excluded.max_qty,
+                    min_notional=excluded.min_notional,
+                    price_precision=excluded.price_precision,
+                    qty_precision=excluded.qty_precision,
+                    maker_fee_bps=excluded.maker_fee_bps,
+                    taker_fee_bps=excluded.taker_fee_bps,
+                    funding_interval_hours=excluded.funding_interval_hours,
+                    onboard_date=excluded.onboard_date,
+                    delivery_date=excluded.delivery_date,
+                    exchange_filters_json=excluded.exchange_filters_json,
+                    symbol_filters_json=excluded.symbol_filters_json,
+                    raw_exchange_payload_json=excluded.raw_exchange_payload_json,
+                    account_eligibility_json=excluded.account_eligibility_json,
+                    source_hash=excluded.source_hash,
+                    is_active_snapshot=excluded.is_active_snapshot,
+                    last_seen_at=COALESCE(excluded.last_seen_at, CURRENT_TIMESTAMP),
+                    delisted_at=excluded.delisted_at
+                """,
+                (
+                    instrument_id,
+                    provider,
+                    provider_market,
+                    provider_symbol,
+                    normalized_symbol,
+                    base_asset,
+                    quote_asset,
+                    settle_asset,
+                    margin_asset,
+                    asset_class,
+                    contract_type,
+                    instrument_type,
+                    status,
+                    1 if tradable else 0,
+                    1 if backtestable else 0,
+                    1 if paper_enabled else 0,
+                    1 if test_enabled else 0,
+                    1 if demo_enabled else 0,
+                    1 if live_enabled else 0,
+                    json.dumps(permissions or [], ensure_ascii=True, sort_keys=True),
+                    json.dumps(order_types or [], ensure_ascii=True, sort_keys=True),
+                    json.dumps(time_in_force or [], ensure_ascii=True, sort_keys=True),
+                    tick_size,
+                    step_size,
+                    min_qty,
+                    max_qty,
+                    min_notional,
+                    price_precision,
+                    qty_precision,
+                    maker_fee_bps,
+                    taker_fee_bps,
+                    funding_interval_hours,
+                    onboard_date,
+                    delivery_date,
+                    json.dumps(exchange_filters or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(symbol_filters or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(raw_exchange_payload or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(account_eligibility or {}, ensure_ascii=True, sort_keys=True),
+                    source_hash,
+                    1 if is_active_snapshot else 0,
+                    first_seen_at,
+                    last_seen_at,
+                    delisted_at,
+                ),
+            )
+            conn.commit()
+
+    def list_instrument_registry(
+        self,
+        *,
+        provider: str | None = None,
+        provider_market: str | None = None,
+        normalized_symbol: str | None = None,
+        live_enabled: bool | None = None,
+        tradable: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM instrument_registry WHERE 1=1"
+        params: list[Any] = []
+        if provider:
+            query += " AND provider=?"
+            params.append(provider)
+        if provider_market:
+            query += " AND provider_market=?"
+            params.append(provider_market)
+        if normalized_symbol:
+            query += " AND normalized_symbol=?"
+            params.append(normalized_symbol)
+        if live_enabled is not None:
+            query += " AND live_enabled=?"
+            params.append(1 if live_enabled else 0)
+        if tradable is not None:
+            query += " AND tradable=?"
+            params.append(1 if tradable else 0)
+        query += " ORDER BY provider_market ASC, normalized_symbol ASC, provider_symbol ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for src, dst, default in (
+                ("permissions_json", "permissions", []),
+                ("order_types_json", "order_types", []),
+                ("time_in_force_json", "time_in_force", []),
+                ("exchange_filters_json", "exchange_filters", {}),
+                ("symbol_filters_json", "symbol_filters", {}),
+                ("raw_exchange_payload_json", "raw_exchange_payload", {}),
+                ("account_eligibility_json", "account_eligibility", {}),
+            ):
+                try:
+                    item[dst] = json.loads(item.pop(src, json.dumps(default)) or json.dumps(default))
+                except Exception:
+                    item[dst] = default
+            for key in (
+                "tradable",
+                "backtestable",
+                "paper_enabled",
+                "test_enabled",
+                "demo_enabled",
+                "live_enabled",
+                "is_active_snapshot",
+            ):
+                item[key] = bool(item.get(key))
+            out.append(item)
+        return out
+
+    def get_instrument_registry(self, instrument_id: str) -> dict[str, Any] | None:
+        rows = self.list_instrument_registry()
+        for row in rows:
+            if row.get("instrument_id") == instrument_id:
+                return row
+        return None
+
+    def upsert_instrument_catalog_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        provider: str,
+        provider_market: str,
+        catalog_hash: str,
+        items: list[dict[str, Any]],
+        metadata: dict[str, Any] | None = None,
+        status: str = "active",
+        created_at: str | None = None,
+    ) -> None:
+        tradable_instruments = sum(1 for item in items if item.get("tradable"))
+        live_enabled_instruments = sum(1 for item in items if item.get("live_enabled"))
+        backtestable_instruments = sum(1 for item in items if item.get("backtestable"))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO instrument_catalog_snapshot (
+                    snapshot_id, provider, provider_market, catalog_hash, status,
+                    total_instruments, tradable_instruments, live_enabled_instruments,
+                    backtestable_instruments, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    provider=excluded.provider,
+                    provider_market=excluded.provider_market,
+                    catalog_hash=excluded.catalog_hash,
+                    status=excluded.status,
+                    total_instruments=excluded.total_instruments,
+                    tradable_instruments=excluded.tradable_instruments,
+                    live_enabled_instruments=excluded.live_enabled_instruments,
+                    backtestable_instruments=excluded.backtestable_instruments,
+                    metadata_json=excluded.metadata_json,
+                    created_at=COALESCE(excluded.created_at, instrument_catalog_snapshot.created_at)
+                """,
+                (
+                    snapshot_id,
+                    provider,
+                    provider_market,
+                    catalog_hash,
+                    status,
+                    len(items),
+                    tradable_instruments,
+                    live_enabled_instruments,
+                    backtestable_instruments,
+                    json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True),
+                    created_at,
+                ),
+            )
+            conn.execute("DELETE FROM instrument_catalog_snapshot_item WHERE snapshot_id=?", (snapshot_id,))
+            for item in items:
+                conn.execute(
+                    """
+                    INSERT INTO instrument_catalog_snapshot_item (
+                        snapshot_id, instrument_id, provider_symbol, normalized_symbol, status,
+                        tradable, backtestable, paper_enabled, test_enabled, demo_enabled, live_enabled, snapshot_payload_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot_id,
+                        str(item.get("instrument_id") or ""),
+                        str(item.get("provider_symbol") or ""),
+                        str(item.get("normalized_symbol") or ""),
+                        str(item.get("status") or "unknown"),
+                        1 if item.get("tradable") else 0,
+                        1 if item.get("backtestable") else 0,
+                        1 if item.get("paper_enabled") else 0,
+                        1 if item.get("test_enabled") else 0,
+                        1 if item.get("demo_enabled") else 0,
+                        1 if item.get("live_enabled") else 0,
+                        json.dumps(item, ensure_ascii=True, sort_keys=True),
+                    ),
+                )
+            conn.commit()
+
+    def list_instrument_catalog_snapshots(
+        self,
+        *,
+        provider: str | None = None,
+        provider_market: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM instrument_catalog_snapshot WHERE 1=1"
+        params: list[Any] = []
+        if provider:
+            query += " AND provider=?"
+            params.append(provider)
+        if provider_market:
+            query += " AND provider_market=?"
+            params.append(provider_market)
+        query += " ORDER BY created_at DESC, snapshot_id DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out = [dict(row) for row in rows]
+        for row in out:
+            try:
+                row["metadata"] = json.loads(row.pop("metadata_json", "{}") or "{}")
+            except Exception:
+                row["metadata"] = {}
+        return out
+
+    def list_instrument_catalog_snapshot_items(self, snapshot_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM instrument_catalog_snapshot_item
+                WHERE snapshot_id=?
+                ORDER BY normalized_symbol ASC, provider_symbol ASC
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                payload = json.loads(item.pop("snapshot_payload_json", "{}") or "{}")
+            except Exception:
+                payload = {}
+            item["snapshot_payload"] = payload
+            for key in (
+                "tradable",
+                "backtestable",
+                "paper_enabled",
+                "test_enabled",
+                "demo_enabled",
+                "live_enabled",
+            ):
+                item[key] = bool(item.get(key))
+            out.append(item)
+        return out

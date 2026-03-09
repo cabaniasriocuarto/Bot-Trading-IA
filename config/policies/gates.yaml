@@ -121,3 +121,118 @@ gates:
     dd_strategy_gt: 0.06
     dd_bot_gt: 0.08
     require_complete_provenance: true
+
+  market_catalog:
+    providers:
+      binance:
+        enabled: true
+        sync_on_startup: true
+        sync_schedule_minutes: 1440
+        families:
+          spot: true
+          margin: true
+          usdm_futures: true
+          coinm_futures: true
+        keep_delisted_history: true
+        include_only_tradable: true
+        fail_closed_on_missing_metadata: true
+
+  market_data:
+    providers:
+      binance:
+        enabled: true
+        sync_reference_on_startup: true
+        sync_market_data_on_startup: false
+        historical_backfill_enabled: true
+        websocket_live_enabled: true
+        rest_fallback_enabled: true
+    history:
+      store_klines: true
+      store_agg_trades: true
+      store_depth_snapshots: true
+      store_mark_price: true
+      store_index_price: true
+      store_funding_rate: true
+      store_open_interest: true
+      store_sentiment_optional: false
+    dataset_build:
+      require_catalog_hash: true
+      require_source_snapshot: true
+      require_data_quality_flags: true
+    live_parity:
+      require_recent_reference_data: true
+      require_recent_market_state: true
+      require_recent_spread_proxy: true
+      require_mark_price_for_derivatives: true
+      require_funding_for_derivatives_if_strategy_uses_it: true
+
+  execution_modes:
+    backtest:
+      enabled: true
+    paper:
+      enabled: true
+    test:
+      enabled: true
+    demo:
+      enabled: true
+    live:
+      enabled: true
+      require_account_capability_check: true
+      require_symbol_validation: true
+      require_risk_validation: true
+      require_microstructure_validation: true
+      require_execution_profile: true
+      require_human_approval_if_configured: true
+
+  execution_symbol_validation:
+    enforce_tick_size: true
+    enforce_step_size: true
+    enforce_min_qty: true
+    enforce_min_notional: true
+    reject_if_status_not_trading: true
+
+  universe_policy:
+    defaults:
+      active_only: true
+      tradable_only: true
+      backtestable_only: true
+      live_only_if_execution_enabled: true
+      require_tick_and_step: true
+      require_min_trade_rules: true
+
+  observability:
+    telemetry:
+      structured_logs: true
+      metrics: true
+      traces: true
+      correlation_ids: true
+    alerts:
+      websocket_down: true
+      stale_market_state: true
+      stale_reference_data: true
+      order_rejection_spike: true
+      slippage_spike: true
+      spread_blowout: true
+      toxicity_spike: true
+      impact_blowout: true
+      reconciliation_mismatch: true
+      drawdown_breach: true
+      drift_severe: true
+      feature_integrity_failure: true
+      rate_limit_stress: true
+      kill_switch_activated: true
+    drift:
+      psi_enabled: true
+      ks_enabled: true
+      missingness_drift_enabled: true
+      categorical_ratio_drift_enabled: true
+    health_scoring:
+      enabled: true
+      weights:
+        data: 0.20
+        research: 0.10
+        brain: 0.15
+        execution: 0.20
+        live: 0.20
+        risk: 0.10
+        observability: 0.05

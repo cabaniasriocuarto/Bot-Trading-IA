@@ -1,5 +1,44 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-09
+
+### Bloque 1: base de catalogo de instrumentos + policies de catalogo/live parity
+- `config/policies/gates.yaml` incorpora defaults centralizados para:
+  - `market_catalog`
+  - `market_data`
+  - `execution_modes`
+  - `execution_symbol_validation`
+  - `universe_policy`
+  - `observability`
+- `RegistryDB` agrega tablas nuevas para la base del catalogo de instrumentos:
+  - `instrument_registry`
+  - `instrument_catalog_snapshot`
+  - `instrument_catalog_snapshot_item`
+- Se crea `rtlab_core.instruments.registry` como wrapper fino sobre `RegistryDB` para:
+  - generar `instrument_id` estable
+  - persistir instrumentos
+  - persistir snapshots versionados del catalogo
+- Test nuevo:
+  - `rtlab_autotrader/tests/test_instrument_registry_store.py`
+- `test_brain_policy_yaml.py` se extiende para validar que el runtime expone las nuevas secciones YAML del bloque.
+
+### Consolidacion del plan maestro del proyecto
+- Se fusiona el roadmap previo del cerebro con el roadmap integral de:
+  - catalogo de instrumentos
+  - Binance multi-market
+  - datasets / live parity
+  - research funnel / Beast
+  - strategy truth
+  - bot brain
+  - execution reality
+  - observabilidad / drift / kill switches
+  - frontend y docs/truth
+- Se fija como fuente de verdad operativa:
+  - `config/policies/*.yaml`
+- Se fija como secuencia tecnica vigente:
+  - docs/truth -> instrument registry -> adapters Binance -> market data / datasets -> universos -> research funnel -> truth/evidence -> bot brain -> execution/live -> observabilidad -> frontend -> cierre
+- Se explicita que la rama activa `feature/brain-policy-ledgers-v1` sigue siendo coherente para este hilo tecnico y no se fragmenta en otra rama nueva.
+
 ## 2026-03-08
 
 ### Bloque cerebro-3/3: service/backend del cerebro sobre ledgers reales
@@ -521,7 +560,7 @@
   - agregado check explicito de binario ejecutable (`$RUNNER_TEMP/bin/gitleaks`) con error claro si no queda instalado.
   - export `PATH` en el mismo step antes de `gitleaks version` (evita falso fail por `GITHUB_PATH` no aplicado aun).
   - extraccion directa a `RUNNER_TEMP/bin` y validacion de `gitleaks version`.
-  - `scripts/security_scan.sh` ahora toma baseline canónica en `docs/security/gitleaks-baseline.json` (o `GITLEAKS_BASELINE_PATH`), evitando depender de archivos `artifacts/` no versionados en CI.
+  - `scripts/security_scan.sh` ahora toma baseline canÃ³nica en `docs/security/gitleaks-baseline.json` (o `GITLEAKS_BASELINE_PATH`), evitando depender de archivos `artifacts/` no versionados en CI.
 - Nuevo archivo versionado:
   - `docs/security/gitleaks-baseline.json` (redactado).
 - Resultado esperado:
@@ -571,7 +610,7 @@
   - endpoint `GET /api/v1/diagnostics/breaker-events` ahora usa `strict=true` por defecto.
 - `scripts/ops_protected_checks_report.py`:
   - `--strict` pasa a default `true`.
-  - nuevo flag `--no-strict` para override explícito.
+  - nuevo flag `--no-strict` para override explÃ­cito.
 - `rtlab_autotrader/tests/test_web_live_ready.py`:
   - ajuste de pruebas para default estricto + override no estricto.
 - Evidencia:
@@ -631,7 +670,7 @@
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview_supports_recent_logs_query_overrides_and_cache_key or bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override or bots_overview_perf_headers_and_debug_payload" -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_overview" -q` -> PASS (`7 passed`).
 
-### AP-BOT-1004 (runtime testnet sin fill sintético)
+### AP-BOT-1004 (runtime testnet sin fill sintÃ©tico)
 - `rtlab_autotrader/rtlab_core/web/app.py`:
   - `RuntimeBridge._reconcile(...)` ahora parsea `openOrders` con `qty/symbol/side` y sincroniza OMS local;
   - `RuntimeBridge.sync_runtime_state(...)` deja progresion de fill incremental solo para `paper` (en `testnet/live` no simula fills);
@@ -1276,16 +1315,16 @@
     - `artifacts/security_audit/pip-audit-runtime.json`
     - `artifacts/security_audit/pip-audit-research.json`
     - `artifacts/security_audit/gitleaks.sarif`
-- Bloque benchmark `/api/v1/bots` (regresión local + endurecimiento remoto):
+- Bloque benchmark `/api/v1/bots` (regresiÃ³n local + endurecimiento remoto):
   - `scripts/benchmark_bots_overview.py` agrega:
     - `--ask-password`,
-    - `--require-evidence` (exit `2` cuando no hay cardinalidad mínima),
+    - `--require-evidence` (exit `2` cuando no hay cardinalidad mÃ­nima),
     - `--require-target-pass` (exit `3` cuando no cumple objetivo p95).
   - nuevo launcher `scripts/run_bots_benchmark_remote.ps1` para ejecutar benchmark remoto estricto en Windows con prompt de password.
   - rerun local ejecutado:
     - `python scripts/benchmark_bots_overview.py --bots 100 --requests 200 --warmup 30 --report-path docs/audit/BOTS_OVERVIEW_BENCHMARK_LOCAL_20260302_RERUN.md`
     - resultado: `p50=36.914ms`, `p95=55.513ms`, `p99=81.628ms` (PASS `<300ms`).
-- Bundle remoto de cierre (operación en 1 comando):
+- Bundle remoto de cierre (operaciÃ³n en 1 comando):
   - nuevo script `scripts/run_remote_closeout_bundle.ps1`.
   - ejecuta secuencialmente con una sola captura de `ADMIN_PASSWORD`:
     - `check_storage_persistence.py --require-persistent`,
@@ -1449,7 +1488,7 @@
   - flujo `gitleaks` baseline-aware.
   - usa baseline si existe `artifacts/security_audit/gitleaks-baseline.json`.
   - sin baseline, ejecuta modo estricto con `gitleaks git`.
-  - elimina falso warning de “gitleaks no instalado” cuando el binario esta presente.
+  - elimina falso warning de â€œgitleaks no instaladoâ€ cuando el binario esta presente.
 - CI de seguridad:
   - `rtlab_autotrader/.github/workflows/ci.yml` agrega job `security` bloqueante.
   - ejecuta `pip-audit` + `gitleaks` y sube artefactos de auditoria.
@@ -1504,35 +1543,35 @@
 
 ### Bloque 4: fuente canonica de gates unificada (config > knowledge)
 - `build_learning_config_payload` ahora toma gates desde `config/policies/gates.yaml` como fuente primaria.
-- Si `safe_update.gates_file` en knowledge difiere de la canónica, se agrega warning y se fuerza la fuente canónica.
+- Si `safe_update.gates_file` en knowledge difiere de la canÃ³nica, se agrega warning y se fuerza la fuente canÃ³nica.
 - `gates_summary` en `/api/v1/config/learning` ahora expone:
-  - `source` (ruta canónica efectiva)
-  - flags `pbo_enabled` / `dsr_enabled` derivados de política canónica.
-- `LearningService` para recomendaciones usa thresholds de gates canónicos:
+  - `source` (ruta canÃ³nica efectiva)
+  - flags `pbo_enabled` / `dsr_enabled` derivados de polÃ­tica canÃ³nica.
+- `LearningService` para recomendaciones usa thresholds de gates canÃ³nicos:
   - `pbo_max` desde `reject_if_gt`
   - `dsr_min` desde `min_dsr`
-  - fallback explícito a `knowledge/policies/gates.yaml` solo si no existe config.
-- `MassBacktestEngine` añade trazabilidad de política en artefactos:
+  - fallback explÃ­cito a `knowledge/policies/gates.yaml` solo si no existe config.
+- `MassBacktestEngine` aÃ±ade trazabilidad de polÃ­tica en artefactos:
   - `knowledge_snapshot.gates_canonical`
   - `knowledge_snapshot.gates_source`
 - Tests agregados/ajustados:
   - `test_learning_service_uses_canonical_config_gates_thresholds`
   - `test_config_learning_endpoint_reads_yaml_and_exposes_capabilities` (assert de `gates_summary.source` y `safe_update.gates_file`)
-- Validación ejecutada:
+- ValidaciÃ³n ejecutada:
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_learning_endpoint_reads_yaml_and_exposes_capabilities or config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> `2 passed`
   - `python -m pytest rtlab_autotrader/tests/test_learning_service_gates_source.py rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `10 passed`
 
 ### Bloque 5: UI Research Batch con calidad por simbolo visible
 - `Backtests > Research Batch` ahora muestra en leaderboard:
-  - columna `Mín trades/símbolo`
-  - badge de mínimo requerido cuando existe en `gates_eval.min_trade_quality`.
+  - columna `MÃ­n trades/sÃ­mbolo`
+  - badge de mÃ­nimo requerido cuando existe en `gates_eval.min_trade_quality`.
 - Drilldown de variante agrega:
-  - `Mín trades/símbolo` con umbral requerido
-  - detalle `Trades OOS por símbolo` (mapa agregado).
+  - `MÃ­n trades/sÃ­mbolo` con umbral requerido
+  - detalle `Trades OOS por sÃ­mbolo` (mapa agregado).
 - Tipado frontend actualizado:
   - `MassBacktestResultRow.summary.trade_count_by_symbol_oos`
   - `MassBacktestResultRow.summary.min_trades_per_symbol_oos`
-- Validación ejecutada:
+- ValidaciÃ³n ejecutada:
   - `npm --prefix rtlab_dashboard run test -- src/lib/auth.test.ts src/lib/security.test.ts` -> `11 passed`
   - `npm --prefix rtlab_dashboard run lint` -> `0 errores` (warnings existentes no bloqueantes)
 
@@ -1544,7 +1583,7 @@
     - `reason`
     - `promotion_blocked_effective`
     - `evaluation_mode`
-- Policy canónica agregada en `config/policies/gates.yaml`:
+- Policy canÃ³nica agregada en `config/policies/gates.yaml`:
   - `gates.surrogate_adjustments.enabled=false`
   - `allow_request_override=false`
   - `allowed_execution_modes=["demo"]`
@@ -1563,7 +1602,7 @@
   - `test_surrogate_adjustments_request_override_rejected_by_default`
   - `test_advanced_gates_block_promotion_when_surrogate_adjustments_enabled`
   - `test_run_job_applies_surrogate_only_in_demo_mode_and_blocks_promotion`
-- Validación ejecutada:
+- ValidaciÃ³n ejecutada:
   - `python -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> `13 passed`
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "mass_backtest_research_endpoints_and_mark_candidate" -q` -> `1 passed`
 
@@ -1699,23 +1738,23 @@
 - Estado final de config en prod:
   - `BOTS_OVERVIEW_INCLUDE_RECENT_LOGS=false`.
 
-### Auditoria comité + hardening adicional
+### Auditoria comitÃ© + hardening adicional
 - Seguridad:
-  - `current_user` ahora ignora headers internos si no existe `INTERNAL_PROXY_TOKEN` válido (fail-closed en todos los entornos).
+  - `current_user` ahora ignora headers internos si no existe `INTERNAL_PROXY_TOKEN` vÃ¡lido (fail-closed en todos los entornos).
   - login backend con rate-limit/lockout por `IP+user`:
     - `10` intentos en `10` min -> `429`
     - lockout `30` min tras `20` fallos.
-  - BFF (`[...path]` y `events-stream`) ahora falla con `500` explícito si falta `INTERNAL_PROXY_TOKEN`.
+  - BFF (`[...path]` y `events-stream`) ahora falla con `500` explÃ­cito si falta `INTERNAL_PROXY_TOKEN`.
 - Config:
   - `.env.example` backend y frontend actualizados con `INTERNAL_PROXY_TOKEN`.
-- Auditoría:
+- AuditorÃ­a:
   - nuevos artefactos `docs/audit/AUDIT_REPORT_20260228.md`, `docs/audit/AUDIT_FINDINGS_20260228.md`, `docs/audit/AUDIT_BACKLOG_20260228.md`.
-- Bibliografía:
-  - nuevo `scripts/biblio_extract.py` (indexación SHA256 + extracción incremental a txt).
+- BibliografÃ­a:
+  - nuevo `scripts/biblio_extract.py` (indexaciÃ³n SHA256 + extracciÃ³n incremental a txt).
   - nuevo `docs/reference/biblio_txt/.gitignore`.
   - `docs/reference/BIBLIO_INDEX.md` regenerado con hashes.
 - Seguridad documental:
-  - `docs/SECURITY.md` reescrito con threat model mínimo, checklist y comandos de auditoría.
+  - `docs/SECURITY.md` reescrito con threat model mÃ­nimo, checklist y comandos de auditorÃ­a.
 - Test agregado:
   - `test_auth_login_rate_limit_and_lock_guard`.
 
@@ -1749,7 +1788,7 @@
 - `BacktestEngine` bloquea `validation_mode=purged-cv|cpcv` en Quick Backtest con error explicito (fail-closed; sin `hook_only` silencioso).
 - `MassBacktestEngine` desactiva surrogate adjustments por defecto:
   - nuevo comportamiento default `evaluation_mode=engine_raw`.
-  - surrogate solo segun policy canónica (`gates.surrogate_adjustments`) y modo permitido.
+  - surrogate solo segun policy canÃ³nica (`gates.surrogate_adjustments`) y modo permitido.
 - `GateEvaluator` migra fuente primaria de thresholds a `config/policies/gates.yaml` (fallback `knowledge/policies/gates.yaml`).
 - `GateEvaluator` pasa a fail-closed para PBO/DSR cuando policy los marca como habilitados y faltan en el reporte.
 
@@ -1897,9 +1936,9 @@
 - UI:
   - `strategies/page.tsx`: tabla de bots ahora muestra `runs` debajo de `trades` y `kills 24h`.
   - `execution/page.tsx`:
-    - botón masivo `Modo LIVE` bloqueado cuando checklist LIVE no está en PASS
+    - botÃ³n masivo `Modo LIVE` bloqueado cuando checklist LIVE no estÃ¡ en PASS
     - tabla de operadores agrega columnas `Sharpe` y `Kills (total/24h)`.
-- Tipos frontend actualizados en `src/lib/types.ts` para nuevos campos de métricas de bot.
+- Tipos frontend actualizados en `src/lib/types.ts` para nuevos campos de mÃ©tricas de bot.
 - Tests:
   - nuevo `test_bots_live_mode_blocked_by_gates`
   - se mantiene `test_bots_multi_instance_endpoints`.
@@ -1911,9 +1950,9 @@
 
 ### Backtests / Runs (bloque continuo de UX + escala)
 - Runs table ahora permite ordenar haciendo click en cabeceras (Run ID, Fecha, Estrategia, Ret%, MaxDD, Sharpe, PF, WinRate, Trades, Expectancy) con toggle asc/desc.
-- Se agregó `sort_by=winrate` en backend (`BacktestCatalogDB.query_runs`) para ranking directo por winrate.
-- Se eliminó el límite rígido de `5` en selección legacy (`selectedRuns`) para no recortar comparaciones manuales.
-- Parser de errores UI reforzado (`uiErrMsg`) para evitar renderizar `[object Object]` y mostrar mensajes útiles (`detail/message/error/cause`).
+- Se agregÃ³ `sort_by=winrate` en backend (`BacktestCatalogDB.query_runs`) para ranking directo por winrate.
+- Se eliminÃ³ el lÃ­mite rÃ­gido de `5` en selecciÃ³n legacy (`selectedRuns`) para no recortar comparaciones manuales.
+- Parser de errores UI reforzado (`uiErrMsg`) para evitar renderizar `[object Object]` y mostrar mensajes Ãºtiles (`detail/message/error/cause`).
 - Tests actualizados: `test_backtest_catalog_db.py` valida ordenamiento por `winrate`.
 
 ### Research Batch (shortlist BX persistente)
@@ -1922,8 +1961,8 @@
   - nuevo endpoint `POST /api/v1/batches/{batch_id}/shortlist` (admin) para guardar shortlist de variantes/runs.
 - Frontend (`Backtests > Research Batch`):
   - botones `Guardar shortlist BX` y `Cargar shortlist BX`.
-  - restauración automática de shortlist al seleccionar un batch.
-  - en tabla de Batches se muestra columna `Shortlist` (cantidad guardada) y acción `Cargar shortlist`.
+  - restauraciÃ³n automÃ¡tica de shortlist al seleccionar un batch.
+  - en tabla de Batches se muestra columna `Shortlist` (cantidad guardada) y acciÃ³n `Cargar shortlist`.
 - Tests:
   - `test_web_live_ready.py::test_batch_shortlist_save_and_load`
   - `test_backtest_catalog_db.py` cubre patch de batch con `best_runs_cache`.
@@ -2043,7 +2082,7 @@
 - `npm run build` en `rtlab_dashboard` -> PASS
 
 ### Limpieza local conservadora (2026-03-07)
-- Se removieron solo artefactos locales no versionados y engañosos:
+- Se removieron solo artefactos locales no versionados y engaÃ±osos:
   - `tmp/`
   - `rtlab_autotrader/tmp_test_ud/`
   - `rtlab_autotrader/user_data/backtests/` (6 runs `synthetic_seeded`)
