@@ -2,6 +2,29 @@
 
 ## 2026-03-09
 
+### Bloque 9 parcial: decision log y execution reality mas explotables en Bots
+- `LearningService.get_bot_decision_log_payload(...)` agrega `summary` con:
+  - cantidad de decisiones
+  - con seleccion
+  - hold/skip
+  - candidatas totales
+  - rechazadas totales
+  - ultima decision
+  - breakdown por regimen
+  - breakdown por estrategia elegida
+- `LearningService.get_execution_reality_payload(...)` agrega `summary` con:
+  - impacto medio estimado
+  - partial fill medio
+  - maker/taker ratio
+  - simbolos activos
+  - ultima ejecucion
+  - breakdown de reconciliacion
+- Frontend `Bots` ahora muestra esos resumenes de forma visible y en espanol.
+- Validacion:
+  - `py_compile` PASS
+  - `pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` PASS
+  - `eslint` `bots/page.tsx` + `types.ts` PASS
+  - `npm run build` PASS
 ### Bloque 9 parcial: backfill conservador de atribucion + resumen por fuente enriquecido
 - `RegistryDB` agrega `backfill_bot_attribution_from_run_links()` para consolidar `bot_id` historico solo cuando el `run_id` tiene un unico bot asociado.
 - `LearningService` usa ese backfill antes de construir:

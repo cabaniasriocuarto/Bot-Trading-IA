@@ -2,6 +2,37 @@
 
 Fecha de actualizacion: 2026-03-09
 
+## Actualizacion de bloque 9 parcial - resumenes explotables de decision log + execution reality
+
+- `LearningService.get_bot_decision_log_payload(...)` ahora devuelve un `summary` agregado con:
+  - cantidad total de decisiones
+  - decisiones con seleccion efectiva
+  - `hold/skip`
+  - candidatas totales
+  - rechazadas totales
+  - ultima decision
+  - breakdown por regimen
+  - breakdown por estrategia seleccionada
+- `LearningService.get_execution_reality_payload(...)` ahora devuelve un `summary` agregado con:
+  - cantidad total de ejecuciones
+  - slippage medio
+  - latencia media
+  - spread medio
+  - impacto medio estimado
+  - partial fill medio
+  - maker ratio / taker ratio
+  - cantidad de simbolos activos
+  - ultima ejecucion
+  - breakdown por estado de reconciliacion
+- Frontend `Bots` ya explota esos contratos sin inventar datos:
+  - tarjeta de resumen del `decision log`
+  - desglose por regimen y por estrategia elegida
+  - tarjeta de `execution reality` con maker/taker, impacto, partial fills y reconciliacion
+- Estado real:
+  - el cerebro ya es mas visible y auditable desde `Bots`
+  - sigue faltando timeline avanzada y filtros ricos del `decision log`
+  - sigue faltando un `reality panel` mas profundo en `Execution`
+
 ## Actualizacion de bloque 9 parcial - backfill conservador de atribucion + resumen por fuente enriquecido
 
 - `RegistryDB.backfill_bot_attribution_from_run_links()` ya consolida atribucion historica desde `run_bot_link` cuando existe una unica relacion `run_id -> bot_id`.

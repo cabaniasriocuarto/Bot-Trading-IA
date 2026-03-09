@@ -275,7 +275,48 @@ function BotsPageContent() {
             <Card className="xl:col-span-2">
               <CardTitle>Policy del bot por estrategia</CardTitle>
               <CardDescription>Score bot-first con prior global, pesos objetivo/live y confidence por estrategia del pool.</CardDescription>
-              <CardContent className="overflow-x-auto">
+              <CardContent className="space-y-4 overflow-x-auto">
+                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                  <MetricCard label="Decisiones" value={String(decisionLog?.summary?.count ?? 0)} compact />
+                  <MetricCard label="Con selección" value={String(decisionLog?.summary?.with_selection ?? 0)} compact />
+                  <MetricCard label="Hold / Skip" value={String(decisionLog?.summary?.hold_or_skip ?? 0)} compact />
+                  <MetricCard label="Candidatas" value={String(decisionLog?.summary?.candidate_total ?? 0)} compact />
+                  <MetricCard label="Rechazadas" value={String(decisionLog?.summary?.rejected_total ?? 0)} compact />
+                  <MetricCard
+                    label="Última decisión"
+                    value={decisionLog?.summary?.latest_timestamp ? new Date(decisionLog.summary.latest_timestamp).toLocaleString() : "--"}
+                    compact
+                  />
+                </div>
+                {(decisionLog?.summary?.regime_breakdown && Object.keys(decisionLog.summary.regime_breakdown).length) ||
+                (decisionLog?.summary?.selected_breakdown && Object.keys(decisionLog.summary.selected_breakdown).length) ? (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                      <p className="text-xs uppercase tracking-wide text-slate-400">Régimen observado</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {Object.entries(decisionLog?.summary?.regime_breakdown || {}).map(([regime, count]) => (
+                          <Badge key={regime} variant="neutral">
+                            {regime}: {count}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                      <p className="text-xs uppercase tracking-wide text-slate-400">Selecciones más frecuentes</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {Object.entries(decisionLog?.summary?.selected_breakdown || {}).length ? (
+                          Object.entries(decisionLog?.summary?.selected_breakdown || {}).map(([strategyId, count]) => (
+                            <Badge key={strategyId} variant="info">
+                              {strategyId}: {count}
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-sm text-slate-400">Solo hubo hold/skip en esta ventana.</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
                 <Table className="text-xs">
                   <THead>
                     <TR>
@@ -402,16 +443,38 @@ function BotsPageContent() {
               <CardTitle>Live eligibility y execution reality</CardTitle>
               <CardDescription>Estado real del bot para live y resumen de ejecución reciente del ledger operativo.</CardDescription>
               <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
                   <MetricCard label="Instrumentos elegibles" value={String(eligibility?.summary?.eligible_instruments ?? 0)} compact />
                   <MetricCard label="Parity ready" value={String(eligibility?.summary?.parity_ready ?? 0)} compact />
                   <MetricCard label="Exec rows" value={String(reality?.summary?.count ?? 0)} compact />
+                  <MetricCard label="Símbolos activos" value={String(reality?.summary?.symbols_count ?? 0)} compact />
+                  <MetricCard
+                    label="Última ejecución"
+                    value={reality?.summary?.latest_timestamp ? new Date(reality.summary.latest_timestamp).toLocaleString() : "--"}
+                    compact
+                  />
+                  <MetricCard label="Partial fill prom." value={fmtPct(reality?.summary?.avg_partial_fill_ratio ?? 0)} compact />
                 </div>
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
                   <MetricCard label="Slippage promedio" value={`${fmtNum(reality?.summary?.avg_realized_slippage_bps ?? 0)} bps`} compact />
                   <MetricCard label="Latencia promedio" value={`${fmtNum(reality?.summary?.avg_latency_ms ?? 0)} ms`} compact />
                   <MetricCard label="Spread promedio" value={`${fmtNum(reality?.summary?.avg_spread_bps ?? 0)} bps`} compact />
+                  <MetricCard label="Impacto promedio" value={`${fmtNum(reality?.summary?.avg_impact_bps_est ?? 0)} bps`} compact />
+                  <MetricCard label="Maker / Taker" value={`${fmtPct(reality?.summary?.maker_ratio ?? 0)} / ${fmtPct(reality?.summary?.taker_ratio ?? 0)}`} compact />
                 </div>
+
+                {Object.keys(reality?.summary?.reconciliation_breakdown || {}).length ? (
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                    <p className="text-xs uppercase tracking-wide text-slate-400">Estado de reconciliación</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {Object.entries(reality?.summary?.reconciliation_breakdown || {}).map(([status, count]) => (
+                        <Badge key={status} variant={status === "ok" || status === "matched" ? "success" : "warn"}>
+                          {status}: {count}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 {eligibility?.blocked_reasons?.length ? (
                   <div className="rounded-lg border border-rose-900/50 bg-rose-950/30 p-3 text-sm text-rose-200">

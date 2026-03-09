@@ -411,6 +411,16 @@ export interface BotDecisionLogItem {
 export interface BotDecisionLogResponse {
   bot_id: string;
   items: BotDecisionLogItem[];
+  summary: {
+    count: number;
+    with_selection: number;
+    hold_or_skip: number;
+    candidate_total: number;
+    rejected_total: number;
+    latest_timestamp?: string | null;
+    regime_breakdown: Record<string, number>;
+    selected_breakdown: Record<string, number>;
+  };
 }
 
 export interface ExecutionRealityItem {
@@ -447,6 +457,13 @@ export interface ExecutionRealityResponse {
     avg_realized_slippage_bps: number;
     avg_latency_ms: number;
     avg_spread_bps: number;
+    avg_impact_bps_est: number;
+    avg_partial_fill_ratio: number;
+    maker_ratio: number;
+    taker_ratio: number;
+    symbols_count: number;
+    latest_timestamp?: string | null;
+    reconciliation_breakdown: Record<string, number>;
   };
 }
 

@@ -3,6 +3,68 @@
 Fecha: 2026-03-09
 
 ## Hecho hasta ahora
+- Bloque 9 parcial ampliado:
+  - `decision log` del bot ya expone resumen agregado util para UI
+  - `execution reality` ya expone maker/taker, impacto, partial fills y reconciliacion agregada
+  - frontend `Bots` ya muestra esos datos sin calculos client-side improvisados
+
+## Nuevo plan consolidado
+- Cerrar visibilidad util del cerebro primero:
+  - `decision log`
+  - `execution reality`
+  - `truth/evidence`
+- Luego reforzar atribucion exacta `episode -> bot_id`.
+- Despues atacar Beast/Batch visible y coherente en deploy.
+
+## Bloques reordenados
+1. Brain backend + ledgers + live source
+2. Visibilidad minima del cerebro en frontend
+3. Trazabilidad exacta `run/episode -> bot`
+4. Beast/Batch deploy-visible
+5. Endurecimiento final de execution reality / OPE / observabilidad avanzada
+
+## Bloque actual
+- Cerrar bloque 9 parcial con:
+  - resumen visual de `decision log`
+  - resumen visual de `execution reality`
+  - docs/truth consistentes
+
+## Pendiente del siguiente bloque
+- reforzar `episode -> bot_id` directo en analitica historica
+- mover mas visibilidad de `execution reality` a `Execution`
+- Beast/Batch deploy-visible y sin estados engañosos
+
+## Bloqueado / no implementado
+- `execution_reality` aun no refleja fills reales end-to-end del runtime productivo
+- `decision log` visual aun no tiene timeline rica ni filtros avanzados
+
+## Riesgos abiertos
+- Si el backend desplegado no esta en la misma version que frontend, la pagina `Bots` puede verse parcial.
+- El warning de Recharts en prerender sigue siendo no bloqueante.
+
+## Decisiones asumidas
+- Se mantiene la rama `feature/brain-policy-ledgers-v1` porque sigue siendo el mismo objetivo coherente.
+- Se empujan commits por bloque estable para no mezclar trabajo sano con cambios intermedios.
+
+## Archivos tocados
+- `rtlab_autotrader/rtlab_core/learning/service.py`
+- `rtlab_autotrader/tests/test_brain_policy_service.py`
+- `rtlab_dashboard/src/app/(app)/bots/page.tsx`
+- `rtlab_dashboard/src/lib/types.ts`
+- `docs/truth/SOURCE_OF_TRUTH.md`
+- `docs/truth/CHANGELOG.md`
+- `docs/truth/NEXT_STEPS.md`
+
+## Tests ejecutados
+- `python -m py_compile rtlab_autotrader/rtlab_core/learning/service.py` -> PASS
+- `python -m pytest rtlab_autotrader/tests/test_brain_policy_service.py -q` -> PASS
+- `npm run lint -- "src/app/(app)/bots/page.tsx" "src/lib/types.ts"` -> PASS
+- `npm run build` -> PASS
+
+## Build status
+- `rtlab_dashboard` -> PASS
+
+## Hecho hasta ahora
 - Fuente de verdad de configuracion confirmada:
   - `config/policies/*.yaml`
 - Cerebro backend ya cableado con:

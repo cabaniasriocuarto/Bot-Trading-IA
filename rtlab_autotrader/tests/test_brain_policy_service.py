@@ -273,7 +273,57 @@ def test_learning_service_reads_execution_reality_ledger(tmp_path: Path) -> None
 
     assert payload["summary"]["count"] == 1
     assert payload["summary"]["avg_realized_slippage_bps"] == 1.5
+    assert payload["summary"]["avg_impact_bps_est"] == 1.1
+    assert payload["summary"]["avg_partial_fill_ratio"] == 0.9
+    assert payload["summary"]["maker_ratio"] == 0.0
+    assert payload["summary"]["taker_ratio"] == 1.0
+    assert payload["summary"]["symbols_count"] == 1
+    assert payload["summary"]["reconciliation_breakdown"]["ok"] == 1
     assert payload["items"][0]["reconciliation_status"] == "ok"
+
+
+def test_learning_service_summarizes_bot_decision_log(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    repo_root = Path(__file__).resolve().parents[2]
+    service = LearningService(user_data_dir=tmp_path, repo_root=repo_root, registry=registry)
+
+    registry.append_bot_decision_log(
+        decision_id="decision-1",
+        bot_id="BOT-ALPHA",
+        timestamp=datetime(2025, 2, 1, tzinfo=timezone.utc).isoformat(),
+        regime_label="trend",
+        candidate_strategies=[{"strategy_id": "s1"}, {"strategy_id": "s2"}],
+        selected_strategy_id="s1",
+        rejected_strategies=[{"strategy_id": "s2"}],
+        reason={"selected_by": "bot_first"},
+        evidence_scope={"source_weights": {"live": 1.0}},
+        risk_overrides={},
+        execution_constraints={},
+    )
+    registry.append_bot_decision_log(
+        decision_id="decision-2",
+        bot_id="BOT-ALPHA",
+        timestamp=datetime(2025, 2, 2, tzinfo=timezone.utc).isoformat(),
+        regime_label="range",
+        candidate_strategies=[{"strategy_id": "s1"}],
+        selected_strategy_id="",
+        rejected_strategies=[{"strategy_id": "s1"}],
+        reason={"selected_by": "hold"},
+        evidence_scope={"source_weights": {"shadow": 0.6}},
+        risk_overrides={},
+        execution_constraints={},
+    )
+
+    payload = service.get_bot_decision_log_payload(bot_id="BOT-ALPHA", limit=20)
+
+    assert payload["summary"]["count"] == 2
+    assert payload["summary"]["with_selection"] == 1
+    assert payload["summary"]["hold_or_skip"] == 1
+    assert payload["summary"]["candidate_total"] == 3
+    assert payload["summary"]["rejected_total"] == 2
+    assert payload["summary"]["regime_breakdown"]["trend"] == 1
+    assert payload["summary"]["regime_breakdown"]["range"] == 1
+    assert payload["summary"]["selected_breakdown"]["s1"] == 1
 
 
 def test_learning_service_reports_live_eligibility_for_bot(tmp_path: Path) -> None:

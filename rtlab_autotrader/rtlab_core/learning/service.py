@@ -695,7 +695,41 @@ class LearningService:
     def get_bot_decision_log_payload(self, bot_id: str, *, limit: int = 50) -> dict[str, Any]:
         registry = self._require_registry()
         rows = registry.list_bot_decision_log(bot_id=bot_id)
-        return {"bot_id": bot_id, "items": rows[: max(1, int(limit or 50))]}
+        limited_rows = rows[: max(1, int(limit or 50))]
+        regime_breakdown: dict[str, int] = {}
+        selected_breakdown: dict[str, int] = {}
+        with_selection = 0
+        hold_or_skip = 0
+        candidate_total = 0
+        rejected_total = 0
+        latest_timestamp = None
+        for row in limited_rows:
+            regime = str(row.get("regime_label") or "unknown")
+            regime_breakdown[regime] = regime_breakdown.get(regime, 0) + 1
+            selected_strategy_id = str(row.get("selected_strategy_id") or "").strip()
+            if selected_strategy_id:
+                with_selection += 1
+                selected_breakdown[selected_strategy_id] = selected_breakdown.get(selected_strategy_id, 0) + 1
+            else:
+                hold_or_skip += 1
+            candidate_total += len(row.get("candidate_strategies") or [])
+            rejected_total += len(row.get("rejected_strategies") or [])
+            if not latest_timestamp and row.get("timestamp"):
+                latest_timestamp = row.get("timestamp")
+        return {
+            "bot_id": bot_id,
+            "items": limited_rows,
+            "summary": {
+                "count": len(limited_rows),
+                "with_selection": with_selection,
+                "hold_or_skip": hold_or_skip,
+                "candidate_total": candidate_total,
+                "rejected_total": rejected_total,
+                "latest_timestamp": latest_timestamp,
+                "regime_breakdown": regime_breakdown,
+                "selected_breakdown": selected_breakdown,
+            },
+        }
 
     def get_strategy_truth_payload(
         self,
@@ -742,8 +776,25 @@ class LearningService:
             avg_slippage = sum(float(row.get("realized_slippage_bps") or 0.0) for row in rows) / len(rows)
             avg_latency = sum(float(row.get("latency_ms") or 0.0) for row in rows) / len(rows)
             avg_spread = sum(float(row.get("spread_bps") or 0.0) for row in rows) / len(rows)
+            avg_impact = sum(float(row.get("impact_bps_est") or 0.0) for row in rows) / len(rows)
+            avg_partial_fill_ratio = sum(float(row.get("partial_fill_ratio") or 0.0) for row in rows) / len(rows)
         else:
-            avg_slippage = avg_latency = avg_spread = 0.0
+            avg_slippage = avg_latency = avg_spread = avg_impact = avg_partial_fill_ratio = 0.0
+        maker_count = sum(1 for row in rows if str(row.get("maker_taker") or "").lower() == "maker")
+        taker_count = sum(1 for row in rows if str(row.get("maker_taker") or "").lower() == "taker")
+        maker_taker_total = maker_count + taker_count
+        reconciliation_breakdown: dict[str, int] = {}
+        symbols = {
+            str(row.get("symbol") or "").upper()
+            for row in rows
+            if str(row.get("symbol") or "").strip()
+        }
+        latest_timestamp = None
+        for row in rows:
+            status = str(row.get("reconciliation_status") or "unknown")
+            reconciliation_breakdown[status] = reconciliation_breakdown.get(status, 0) + 1
+            if not latest_timestamp and row.get("timestamp"):
+                latest_timestamp = row.get("timestamp")
         return {
             "bot_id": bot_id,
             "strategy_id": strategy_id,
@@ -753,6 +804,13 @@ class LearningService:
                 "avg_realized_slippage_bps": round(avg_slippage, 6),
                 "avg_latency_ms": round(avg_latency, 6),
                 "avg_spread_bps": round(avg_spread, 6),
+                "avg_impact_bps_est": round(avg_impact, 6),
+                "avg_partial_fill_ratio": round(avg_partial_fill_ratio, 6),
+                "maker_ratio": round(maker_count / maker_taker_total, 6) if maker_taker_total else 0.0,
+                "taker_ratio": round(taker_count / maker_taker_total, 6) if maker_taker_total else 0.0,
+                "symbols_count": len(symbols),
+                "latest_timestamp": latest_timestamp,
+                "reconciliation_breakdown": reconciliation_breakdown,
             },
         }
 
