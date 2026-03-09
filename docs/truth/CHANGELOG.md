@@ -2301,3 +2301,35 @@
 - `npm run lint -- "src/app/(app)/monitoring/page.tsx" "src/components/layout/app-shell.tsx" "src/lib/types.ts"` -> PASS
 - `npm run build` en `rtlab_dashboard` -> PASS
 
+### Frontend serio del cerebro (2026-03-09)
+- Se agrega dominio visible `Bots` en la navegacion principal para separar:
+  - policy/brain del bot
+  - decision log
+  - elegibilidad live
+  - execution reality
+  de la pantalla `Ejecucion`.
+- Nueva vista:
+  - `rtlab_dashboard/src/app/(app)/bots/page.tsx`
+  - muestra selector de bot, recomputo de brain, tabla de policy por estrategia, resumen por fuente, decision log, live eligibility, ejecuciones recientes y cards de truth/evidence para estrategias lideres.
+- `execution/page.tsx` deja de usar `Strategies` como destino para acciones de bot y deriva a `Bots`.
+- `strategies/[id]/page.tsx` ahora expone:
+  - `truth` cientifica
+  - evidencia por fuente
+  - flags de legacy/stale/exclusion
+  usando los endpoints backend del cerebro ya creados.
+- Charts compartidos ahora muestran nombres de ejes y unidades visibles:
+  - `equity-drawdown-chart.tsx`
+  - `returns-histogram.tsx`
+  - `stacked-cost-chart.tsx`
+- `types.ts` incorpora contratos tipados para:
+  - bot brain
+  - decision log
+  - strategy truth/evidence
+  - execution reality
+
+### Validacion Frontend serio del cerebro
+- `npm run lint -- "src/app/(app)/bots/page.tsx" "src/app/(app)/execution/page.tsx" "src/app/(app)/strategies/[id]/page.tsx" "src/components/charts/equity-drawdown-chart.tsx" "src/components/charts/returns-histogram.tsx" "src/components/charts/stacked-cost-chart.tsx" "src/components/layout/app-shell.tsx" "src/lib/types.ts"` -> PASS
+- `npm run build` en `rtlab_dashboard` -> PASS
+- Warning no bloqueante conocido:
+  - Recharts sigue emitiendo `width(-1)/height(-1)` en prerender, pero no rompe el build.
+

@@ -12,8 +12,15 @@ export function StackedCostChart({
       <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
         <BarChart data={data}>
           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-          <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <XAxis
+            dataKey="label"
+            tick={{ fill: "#94a3b8", fontSize: 11 }}
+            label={{ value: "Corrida / variante", position: "insideBottom", offset: -5, fill: "#94a3b8", fontSize: 11 }}
+          />
+          <YAxis
+            tick={{ fill: "#94a3b8", fontSize: 11 }}
+            label={{ value: "Costos (bps)", angle: -90, position: "insideLeft", fill: "#94a3b8", fontSize: 11 }}
+          />
           <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
           <Legend />
           <Bar dataKey="fees" stackId="cost" fill="#22d3ee" />
@@ -24,5 +31,4 @@ export function StackedCostChart({
     </div>
   );
 }
-
 

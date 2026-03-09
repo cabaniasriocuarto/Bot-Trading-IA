@@ -31,9 +31,22 @@ export function EquityDrawdownChart({
             </linearGradient>
           </defs>
           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-          <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-          <YAxis yAxisId="equity" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-          <YAxis yAxisId="drawdown" orientation="right" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <XAxis
+            dataKey="label"
+            tick={{ fill: "#94a3b8", fontSize: 11 }}
+            label={{ value: "Tiempo", position: "insideBottom", offset: -5, fill: "#94a3b8", fontSize: 11 }}
+          />
+          <YAxis
+            yAxisId="equity"
+            tick={{ fill: "#94a3b8", fontSize: 11 }}
+            label={{ value: "Capital / equity", angle: -90, position: "insideLeft", fill: "#94a3b8", fontSize: 11 }}
+          />
+          <YAxis
+            yAxisId="drawdown"
+            orientation="right"
+            tick={{ fill: "#94a3b8", fontSize: 11 }}
+            label={{ value: "Drawdown", angle: 90, position: "insideRight", fill: "#94a3b8", fontSize: 11 }}
+          />
           <Tooltip
             contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }}
             labelStyle={{ color: "#cbd5e1" }}
@@ -62,5 +75,4 @@ export function EquityDrawdownChart({
     </div>
   );
 }
-
 

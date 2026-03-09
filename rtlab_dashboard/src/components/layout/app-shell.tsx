@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   CandlestickChart,
   Cog,
+  Cpu,
   HeartPulse,
   LayoutDashboard,
   LineChart,
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { href: "/", label: "Resumen", icon: LayoutDashboard },
   { href: "/strategies", label: "Estrategias", icon: SplitSquareVertical },
+  { href: "/bots", label: "Bots", icon: Cpu },
   { href: "/backtests", label: "Backtests", icon: LineChart },
   { href: "/trades", label: "Operaciones", icon: CandlestickChart },
   { href: "/portfolio", label: "Portafolio", icon: Wallet },

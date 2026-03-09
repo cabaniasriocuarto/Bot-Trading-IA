@@ -292,3 +292,64 @@ Fecha: 2026-03-09
 - Backend bloque 8 minimo: PASS
 - Frontend bloque 8 minimo: PASS
 - `npm run build` verde; warnings de Recharts no bloqueantes
+
+
+## Hecho en este bloque
+- Frontend del cerebro visible y separado por dominio:
+  - nueva pantalla `Bots`
+  - `Execution` deriva acciones de bot a `Bots`
+  - `Strategies/[id]` muestra `truth` y `evidence`
+- Charts compartidos con ejes nombrados:
+  - equity/drawdown
+  - returns histogram
+  - stacked cost chart
+- Contratos tipados frontend agregados para:
+  - bot brain
+  - bot decision log
+  - strategy truth/evidence
+  - execution reality
+
+## Bloque actual
+- Bloque 9 cerrado parcialmente:
+  - brain panel visible
+  - decision log visible
+  - truth/evidence visible
+  - execution reality resumida visible
+
+## Pendiente del siguiente bloque
+- Fortalecer atribucion exacta `episode -> bot_id`
+- Consolidar taxonomia visible de modos en todas las pantallas
+- Research funnel visible en frontend
+- Beast/Batch coherente y verificable en deploy
+
+## Bloqueado / no implementado
+- `execution_reality` aun no refleja fills reales end-to-end del runtime productivo
+- `decision log` visual aun no tiene timeline avanzada ni filtros ricos
+- `Strategies/[id]` muestra truth/evidence, pero no todo el passport cientifico completo
+
+## Riesgos abiertos
+- La pagina `Bots` depende de endpoints backend ya existentes; si el backend desplegado no esta actualizado, la UI puede verse parcial en preview.
+- El warning de Recharts en prerender sigue siendo no bloqueante pero conviene resolverlo en otro bloque para limpiar CI.
+
+## Decisiones asumidas
+- Se mantiene la rama `feature/brain-policy-ledgers-v1` porque sigue siendo el mismo objetivo coherente.
+- Se cierra este bloque con visibilidad minima real en frontend, sin redise?o gigante ni humo de capacidades no soportadas.
+
+## Archivos tocados
+- `rtlab_dashboard/src/app/(app)/bots/page.tsx`
+- `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+- `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`
+- `rtlab_dashboard/src/components/charts/equity-drawdown-chart.tsx`
+- `rtlab_dashboard/src/components/charts/returns-histogram.tsx`
+- `rtlab_dashboard/src/components/charts/stacked-cost-chart.tsx`
+- `rtlab_dashboard/src/components/layout/app-shell.tsx`
+- `rtlab_dashboard/src/lib/types.ts`
+- `docs/truth/SOURCE_OF_TRUTH.md`
+- `docs/truth/CHANGELOG.md`
+- `docs/truth/NEXT_STEPS.md`
+
+## Tests ejecutados
+- `npm run lint -- "src/app/(app)/bots/page.tsx" "src/app/(app)/execution/page.tsx" "src/app/(app)/strategies/[id]/page.tsx" "src/components/charts/equity-drawdown-chart.tsx" "src/components/charts/returns-histogram.tsx" "src/components/charts/stacked-cost-chart.tsx" "src/components/layout/app-shell.tsx" "src/lib/types.ts"` -> PASS
+
+## Build status
+- `npm run build` en `rtlab_dashboard` -> PASS

@@ -257,6 +257,188 @@ export interface BotLiveEligibilityResponse {
   eligible_instruments: BotLiveEligibilityInstrument[];
 }
 
+export interface BrainEvidenceMetrics {
+  expectancy_net?: number;
+  profit_factor?: number;
+  sharpe?: number;
+  sortino?: number;
+  psr?: number;
+  dsr?: number;
+  max_dd?: number;
+  max_dd_abs?: number;
+  win_rate?: number;
+}
+
+export interface BrainEvidenceScope {
+  rows: Array<Record<string, unknown>>;
+  trades_total: number;
+  weight_sum: number;
+  source_breakdown: Record<string, { count: number; weight_sum: number }>;
+  metrics: BrainEvidenceMetrics;
+}
+
+export interface StrategyTruthRecord {
+  strategy_id: string;
+  strategy_version?: string;
+  family?: string;
+  market?: string;
+  asset_class?: string;
+  timeframe?: string;
+  thesis_summary?: string;
+  thesis_detail?: string;
+  intended_regimes?: string[];
+  forbidden_regimes?: string[];
+  microstructure_constraints?: Record<string, unknown>;
+  capacity_constraints?: Record<string, unknown>;
+  cost_limits?: Record<string, unknown>;
+  invalidation_rules?: Record<string, unknown>;
+  current_status?: string;
+  current_confidence?: number;
+}
+
+export interface StrategyTruthResponse {
+  strategy_id: string;
+  truth: StrategyTruthRecord;
+  evidence_summary: Record<string, { count?: number; effective_weight?: number; trades?: number }>;
+}
+
+export interface StrategyEvidenceItem {
+  evidence_id?: string;
+  strategy_id: string;
+  source_type: string;
+  run_id?: string | null;
+  bot_id?: string | null;
+  dataset_hash?: string | null;
+  dataset_source?: string | null;
+  as_of?: string | null;
+  vintage_date?: string | null;
+  trades?: number;
+  turnover?: number | null;
+  fees_bps?: number | null;
+  spread_bps?: number | null;
+  slippage_bps?: number | null;
+  funding_bps?: number | null;
+  expectancy_net?: number | null;
+  sharpe?: number | null;
+  sortino?: number | null;
+  psr?: number | null;
+  dsr?: number | null;
+  pbo?: number | null;
+  max_dd?: number | null;
+  win_rate?: number | null;
+  profit_factor?: number | null;
+  validation_quality?: number | null;
+  source_weight?: number | null;
+  freshness_decay?: number | null;
+  effective_weight?: number | null;
+  legacy_untrusted?: number | boolean;
+  stale?: number | boolean;
+  excluded_from_learning?: number | boolean;
+  created_at?: string | null;
+}
+
+export interface StrategyEvidenceResponse {
+  strategy_id: string;
+  items: StrategyEvidenceItem[];
+  summary: Record<string, { count: number; effective_weight: number; trades: number }>;
+}
+
+export interface BotBrainItem {
+  strategy_id: string;
+  strategy_name: string;
+  score_exact_bot: number;
+  score_pool_context: number;
+  score_global_truth: number;
+  score_final: number;
+  exact_history_sufficient: boolean;
+  weights_used: {
+    exact_bot: number;
+    pool_context: number;
+    global_truth: number;
+  };
+  weight_target: number;
+  weight_live: number;
+  confidence: number;
+  source_scope: string;
+  truth: StrategyTruthRecord;
+  exact_bot: BrainEvidenceScope;
+  pool_context: BrainEvidenceScope;
+  global_truth: BrainEvidenceScope;
+}
+
+export interface BotBrainResponse {
+  bot_id: string;
+  regime_label: string;
+  selected_strategy_id?: string | null;
+  items: BotBrainItem[];
+  source_summary: {
+    sources: Record<string, { count: number; weight_sum: number }>;
+    trades_total: number;
+    weight_sum_total: number;
+  };
+  warnings?: string[];
+  persisted?: boolean;
+}
+
+export interface BotDecisionLogItem {
+  decision_id: string;
+  bot_id: string;
+  timestamp: string;
+  regime_label: string;
+  candidate_strategies_json: Array<Record<string, unknown>>;
+  selected_strategy_id?: string | null;
+  rejected_strategies_json: Array<Record<string, unknown>>;
+  reason_json: Record<string, unknown>;
+  evidence_scope_json: Record<string, unknown>;
+  risk_overrides_json: Record<string, unknown>;
+  execution_constraints_json: Record<string, unknown>;
+  expected_edge_bps?: number | null;
+  realized_edge_bps_if_known?: number | null;
+  notes?: string | null;
+}
+
+export interface BotDecisionLogResponse {
+  bot_id: string;
+  items: BotDecisionLogItem[];
+}
+
+export interface ExecutionRealityItem {
+  execution_id: string;
+  order_id?: string | null;
+  bot_id?: string | null;
+  strategy_id?: string | null;
+  symbol?: string | null;
+  timestamp?: string | null;
+  order_type?: string | null;
+  side?: string | null;
+  qty?: number | null;
+  participation_rate?: number | null;
+  expected_fill_price?: number | null;
+  realized_fill_price?: number | null;
+  realized_slippage_bps?: number | null;
+  maker_taker?: string | null;
+  partial_fill_ratio?: number | null;
+  queue_proxy?: number | null;
+  cancel_replace_count?: number | null;
+  latency_ms?: number | null;
+  spread_bps?: number | null;
+  impact_bps_est?: number | null;
+  impact_budget_bps?: number | null;
+  reconciliation_status?: string | null;
+}
+
+export interface ExecutionRealityResponse {
+  bot_id?: string | null;
+  strategy_id?: string | null;
+  items: ExecutionRealityItem[];
+  summary: {
+    count: number;
+    avg_realized_slippage_bps: number;
+    avg_latency_ms: number;
+    avg_spread_bps: number;
+  };
+}
+
 export interface ExecutionPreflightCheck {
   id: string;
   ok: boolean;

@@ -339,6 +339,24 @@ Regla de verdad:
     - demo
     - live
 
+### Estado vigente tras frontend serio del cerebro (2026-03-09)
+
+- El dominio `Bots` ya es pantalla propia del producto y deja de vivir mezclado en `Ejecucion`.
+- `Ejecucion` queda orientada a operativa/runtime/preflight.
+- `Bots` queda orientada a:
+  - brain/policy del bot
+  - decision log
+  - elegibilidad live
+  - execution reality agregada por bot
+- `Strategies/[id]` ya muestra la capa `strategy truth` y `strategy evidence` del cerebro backend.
+- Los charts compartidos del frontend ahora exponen nombres de ejes y unidades visibles en los componentes principales de comparacion/backtest.
+- No existe aun frontend completo para:
+  - funnel visual de research
+  - datasets/universes
+  - decision timeline avanzada
+  - panel exhaustivo de execution reality con trazas/fills reales
+  - taxonomia completa de modos en todas las pantallas
+
 ### Bibliografia base efectiva para este roadmap
 
 - Base local prioritaria:

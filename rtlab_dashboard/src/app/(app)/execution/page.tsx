@@ -862,8 +862,14 @@ export default function ExecutionPage() {
                     <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void deleteBot(selectedExecutionBot)}>
                       Borrar bot
                     </Button>
-                    <Button variant="ghost" className="text-[11px]" onClick={() => { window.location.href = "/strategies"; }}>
-                      Editar pool →
+                    <Button
+                      variant="ghost"
+                      className="text-[11px]"
+                      onClick={() => {
+                        window.location.href = selectedExecutionBotId ? `/bots?bot_id=${encodeURIComponent(selectedExecutionBotId)}` : "/bots";
+                      }}
+                    >
+                      Abrir en Bots →
                     </Button>
                   </div>
                   <p className="mt-2 text-[11px] text-slate-400">
@@ -1324,8 +1330,15 @@ export default function ExecutionPage() {
                           <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(bot.id, { status: bot.status === "active" ? "paused" : "active" }, bot.status === "active" ? "Pausar operador" : "Activar operador")}>
                             {bot.status === "active" ? "Pausar" : "Activar"}
                           </Button>
-                          <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => { window.location.href = "/strategies"; }}>
-                            Pool →
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px]"
+                            onClick={() => {
+                              window.location.href = `/bots?bot_id=${encodeURIComponent(bot.id)}`;
+                            }}
+                          >
+                            Ver bot →
                           </Button>
                           <Button size="sm" variant="danger" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void deleteBot(bot)}>
                             Borrar

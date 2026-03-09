@@ -13,8 +13,24 @@ import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet } from "@/lib/client-api";
 import { getPlaybook } from "@/lib/playbooks";
-import type { BacktestRun, Strategy, Trade } from "@/lib/types";
+import type { BacktestRun, Strategy, StrategyEvidenceResponse, StrategyTruthResponse, Trade } from "@/lib/types";
 import { fmtNum, fmtPct } from "@/lib/utils";
+
+function normalizeLabels(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean);
+    } catch {
+      return value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
 
 export default function StrategyDetailPage() {
   const params = useParams<{ id: string }>();
@@ -26,22 +42,34 @@ export default function StrategyDetailPage() {
   const [allBacktests, setAllBacktests] = useState<BacktestRun[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [compareId, setCompareId] = useState("");
+  const [truthPayload, setTruthPayload] = useState<StrategyTruthResponse | null>(null);
+  const [evidencePayload, setEvidencePayload] = useState<StrategyEvidenceResponse | null>(null);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     const load = async () => {
-      const [s, allStrategies, allBacktests, allTrades] = await Promise.all([
-        apiGet<Strategy>(`/api/v1/strategies/${strategyId}`),
-        apiGet<Strategy[]>("/api/v1/strategies"),
-        apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
-        apiGet<Trade[]>(`/api/v1/trades?strategy_id=${strategyId}`),
-      ]);
-      setStrategy(s);
-      setStrategies(allStrategies);
-      setAllBacktests(allBacktests);
-      setBacktests(allBacktests.filter((row) => row.strategy_id === strategyId));
-      setTrades(allTrades);
-      const compareCandidate = allStrategies.find((row) => row.id !== strategyId && row.name === s.name) || allStrategies.find((row) => row.id !== strategyId);
-      setCompareId(compareCandidate?.id || "");
+      try {
+        const [s, allStrategies, loadedBacktests, allTrades, truth, evidence] = await Promise.all([
+          apiGet<Strategy>(`/api/v1/strategies/${strategyId}`),
+          apiGet<Strategy[]>("/api/v1/strategies"),
+          apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
+          apiGet<Trade[]>(`/api/v1/trades?strategy_id=${strategyId}`),
+          apiGet<StrategyTruthResponse>(`/api/v1/strategies/${strategyId}/truth`).catch(() => null),
+          apiGet<StrategyEvidenceResponse>(`/api/v1/strategies/${strategyId}/evidence`).catch(() => null),
+        ]);
+        setStrategy(s);
+        setStrategies(allStrategies);
+        setAllBacktests(loadedBacktests);
+        setBacktests(loadedBacktests.filter((row) => row.strategy_id === strategyId));
+        setTrades(allTrades);
+        setTruthPayload(truth);
+        setEvidencePayload(evidence);
+        const compareCandidate = allStrategies.find((row) => row.id !== strategyId && row.name === s.name) || allStrategies.find((row) => row.id !== strategyId);
+        setCompareId(compareCandidate?.id || "");
+        setLoadError("");
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : "No se pudo cargar la estrategia.");
+      }
     };
     void load();
   }, [strategyId]);
@@ -83,6 +111,13 @@ export default function StrategyDetailPage() {
   }, [backtests]);
 
   const compare = strategies.find((row) => row.id === compareId) || null;
+  const truth = truthPayload?.truth || null;
+  const intendedRegimes = useMemo(() => normalizeLabels(truth?.intended_regimes), [truth?.intended_regimes]);
+  const forbiddenRegimes = useMemo(() => normalizeLabels(truth?.forbidden_regimes), [truth?.forbidden_regimes]);
+  const evidenceSummaryRows = useMemo(
+    () => Object.entries(truthPayload?.evidence_summary || evidencePayload?.summary || {}),
+    [evidencePayload?.summary, truthPayload?.evidence_summary],
+  );
   const changedKeys = useMemo(() => {
     if (!strategy || !compare) return [];
     const keys = new Set([...Object.keys(strategy.params), ...Object.keys(compare.params)]);
@@ -130,6 +165,10 @@ export default function StrategyDetailPage() {
     ];
   }, [latestCompareBacktest, latestCurrentBacktest]);
 
+  if (loadError && !strategy) {
+    return <p className="text-sm text-rose-300">{loadError}</p>;
+  }
+
   if (!strategy) {
     return <p className="text-sm text-slate-400">Cargando estrategia...</p>;
   }
@@ -157,6 +196,111 @@ export default function StrategyDetailPage() {
 
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
+          <CardTitle>Truth científica</CardTitle>
+          <CardDescription>Tesis, confidence y regímenes válidos/prohibidos que el cerebro usa como prior global.</CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Kpi label="Confidence base" value={fmtPct(truth?.current_confidence ?? 0)} />
+              <Kpi label="Estado truth" value={String(truth?.current_status || "sin estado")} />
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Tesis resumida</p>
+              <p className="mt-2 text-sm text-slate-200">{truth?.thesis_summary || truth?.thesis_detail || "Sin tesis documentada todavía."}</p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Regímenes aptos</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {intendedRegimes.length ? intendedRegimes.map((item) => <Badge key={item} variant="success">{item}</Badge>) : <span className="text-sm text-slate-400">No documentados</span>}
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Regímenes prohibidos</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {forbiddenRegimes.length ? forbiddenRegimes.map((item) => <Badge key={item} variant="danger">{item}</Badge>) : <span className="text-sm text-slate-400">No documentados</span>}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs text-slate-300">
+              <Badge variant="neutral">{truth?.family || "sin familia"}</Badge>
+              <Badge variant="neutral">{truth?.market || "sin mercado"}</Badge>
+              <Badge variant="neutral">{truth?.asset_class || "sin asset class"}</Badge>
+              <Badge variant="neutral">{truth?.timeframe || "sin timeframe"}</Badge>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardTitle>Evidencia por fuente</CardTitle>
+          <CardDescription>Resumen y últimas filas del ledger de evidencia para esta estrategia.</CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {evidenceSummaryRows.length ? (
+                evidenceSummaryRows.map(([source, summary]) => (
+                  <div key={source} className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">
+                    <div className="flex items-center justify-between gap-2">
+                      <Badge variant="info">{source}</Badge>
+                      <span>{fmtNum(summary.count || 0)} filas</span>
+                    </div>
+                    <p className="mt-2">Peso efectivo: <strong>{fmtNum(summary.effective_weight || 0)}</strong></p>
+                    <p>Trades: <strong>{fmtNum(summary.trades || 0)}</strong></p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-slate-400">Todavía no hay evidencia indexada por fuente.</p>
+              )}
+            </div>
+            <div className="overflow-x-auto">
+              <Table className="text-xs">
+                <THead>
+                  <TR>
+                    <TH>Fuente</TH>
+                    <TH>Bot</TH>
+                    <TH>Trades</TH>
+                    <TH>Peso</TH>
+                    <TH>Expectancy</TH>
+                    <TH>Sharpe</TH>
+                    <TH>PSR / DSR</TH>
+                    <TH>PBO</TH>
+                    <TH>Flags</TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {(evidencePayload?.items || []).slice(0, 8).map((row, idx) => (
+                    <TR key={`${row.evidence_id || row.run_id || row.source_type}-${idx}`}>
+                      <TD>{row.source_type}</TD>
+                      <TD>{row.bot_id || "--"}</TD>
+                      <TD>{fmtNum(row.trades || 0)}</TD>
+                      <TD>{fmtNum(row.effective_weight || 0)}</TD>
+                      <TD>{fmtNum(row.expectancy_net || 0)}</TD>
+                      <TD>{fmtNum(row.sharpe || 0)}</TD>
+                      <TD>{`${fmtNum(row.psr || 0)} / ${fmtNum(row.dsr || 0)}`}</TD>
+                      <TD>{row.pbo == null ? "--" : fmtNum(row.pbo)}</TD>
+                      <TD>
+                        <div className="flex flex-wrap gap-1">
+                          {row.legacy_untrusted ? <Badge variant="warn">Legacy</Badge> : null}
+                          {row.stale ? <Badge variant="warn">Stale</Badge> : null}
+                          {row.excluded_from_learning ? <Badge variant="danger">Excluida</Badge> : null}
+                        </div>
+                      </TD>
+                    </TR>
+                  ))}
+                  {!evidencePayload?.items?.length ? (
+                    <TR>
+                      <TD colSpan={9} className="text-slate-400">
+                        No hay filas de evidencia persistidas todavía.
+                      </TD>
+                    </TR>
+                  ) : null}
+                </TBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-2">
+        <Card>
           <CardTitle>Equity y Drawdown</CardTitle>
           <CardContent>
             <EquityDrawdownChart
@@ -174,8 +318,8 @@ export default function StrategyDetailPage() {
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
                 <LineChart data={rolling}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                  <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: "Tiempo", position: "insideBottom", offset: -5, fill: "#94a3b8", fontSize: 11 }} />
+                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: "Ratio", angle: -90, position: "insideLeft", fill: "#94a3b8", fontSize: 11 }} />
                   <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
                   <Legend />
                   <Line type="monotone" dataKey="sharpe" stroke="#22d3ee" strokeWidth={2} dot={false} />
@@ -213,8 +357,8 @@ export default function StrategyDetailPage() {
                   }))}
                 >
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                  <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: "Tiempo", position: "insideBottom", offset: -5, fill: "#94a3b8", fontSize: 11 }} />
+                  <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: "Exposición relativa", angle: -90, position: "insideLeft", fill: "#94a3b8", fontSize: 11 }} />
                   <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
                   <Legend />
                   <Line type="monotone" dataKey="net" stroke="#22d3ee" strokeWidth={2} dot={false} />
@@ -330,6 +474,4 @@ function Kpi({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
-
-
 
