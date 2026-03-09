@@ -1785,6 +1785,7 @@ class ConsoleStore:
     def __init__(self) -> None:
         ensure_paths()
         self.registry = RegistryDB(REGISTRY_DB_PATH)
+        self.data_catalog = DataCatalog(USER_DATA_DIR)
         self.experience_store = ExperienceStore(self.registry)
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
@@ -2866,14 +2867,19 @@ def risk_hooks(context):
             return
         period = run.get("period") if isinstance(run.get("period"), dict) else {}
         costs_model = run.get("costs_model") if isinstance(run.get("costs_model"), dict) else {}
+        run_id = str(run.get("id") or "")
+        strategy_id = str(run.get("strategy_id") or "")
+        mode = str(run.get("mode") or "backtest")
+        dataset_source = str(run.get("data_source") or run.get("dataset_source") or "synthetic")
+        dataset_hash = str(run.get("dataset_hash") or "")
         self.registry.upsert_run_provenance(
-            run_id=str(run.get("id") or ""),
-            strategy_id=str(run.get("strategy_id") or ""),
-            mode=str(run.get("mode") or "backtest"),
+            run_id=run_id,
+            strategy_id=strategy_id,
+            mode=mode,
             ts_from=str(period.get("start") or ""),
             ts_to=str(period.get("end") or ""),
-            dataset_source=str(run.get("data_source") or run.get("dataset_source") or "synthetic"),
-            dataset_hash=str(run.get("dataset_hash") or ""),
+            dataset_source=dataset_source,
+            dataset_hash=dataset_hash,
             costs_used={
                 "fees_bps": float(costs_model.get("fees_bps", 0.0) or 0.0),
                 "spread_bps": float(costs_model.get("spread_bps", 0.0) or 0.0),
@@ -2884,6 +2890,125 @@ def risk_hooks(context):
             commit_hash=str(run.get("git_commit") or ""),
             created_at=str(run.get("created_at") or ""),
         )
+        self._record_run_dataset_link(run, dataset_source=dataset_source, dataset_hash=dataset_hash)
+
+    def _record_run_dataset_link(self, run: dict[str, Any], *, dataset_source: str, dataset_hash: str) -> None:
+        run_id = str(run.get("id") or "")
+        if not run_id:
+            return
+        market = normalize_market(str(run.get("market") or ((run.get("dataset_manifest") or {}).get("market") if isinstance(run.get("dataset_manifest"), dict) else "crypto")))
+        symbol = normalize_symbol(str(run.get("symbol") or ((run.get("dataset_manifest") or {}).get("symbol") if isinstance(run.get("dataset_manifest"), dict) else "")))
+        timeframe = normalize_timeframe(str(run.get("timeframe") or ((run.get("dataset_manifest") or {}).get("timeframe") if isinstance(run.get("dataset_manifest"), dict) else "1m")))
+        manifest = run.get("dataset_manifest") if isinstance(run.get("dataset_manifest"), dict) else {}
+        provider = str(manifest.get("provider") or ("binance_public" if market == "crypto" else dataset_source or "manual"))
+        provider_market = str(manifest.get("provider_market") or ("spot" if market == "crypto" else market))
+        dataset_entry = self.registry.get_dataset_registry(
+            provider=provider,
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            dataset_hash=dataset_hash or None,
+        )
+        if dataset_entry is None and isinstance(manifest, dict) and manifest:
+            dataset_id = self.data_catalog.sync_manifest_to_registry(
+                {
+                    **manifest,
+                    "market": market,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "provider": provider,
+                    "provider_market": provider_market,
+                    "dataset_source": dataset_source,
+                    "dataset_hash": dataset_hash,
+                },
+                manifest_path=Path(str(manifest.get("manifest_path") or "")) if str(manifest.get("manifest_path") or "").strip() else None,
+            )
+            dataset_entry = self.registry.get_dataset_registry(
+                provider=provider,
+                market=market,
+                symbol=symbol,
+                timeframe=timeframe,
+                dataset_hash=dataset_hash or None,
+            )
+            if dataset_entry is None:
+                dataset_entry = {"dataset_id": dataset_id}
+        if dataset_entry is None:
+            return
+        self.registry.upsert_run_dataset_link(
+            run_id=run_id,
+            dataset_id=str(dataset_entry.get("dataset_id") or ""),
+            dataset_hash=dataset_hash or str(dataset_entry.get("dataset_hash") or ""),
+            dataset_source=dataset_source or str(dataset_entry.get("dataset_source") or ""),
+            provider=provider,
+            provider_market=provider_market,
+            market=market,
+            symbol=symbol,
+            timeframe=timeframe,
+            metadata={
+                "mode": str(run.get("mode") or "backtest"),
+                "strategy_id": str(run.get("strategy_id") or ""),
+                "bot_id": str(((run.get("metadata") or {}).get("bot_id") if isinstance(run.get("metadata"), dict) else "") or ""),
+            },
+        )
+
+    def refresh_live_parity_state(self, *, provider_market: str | None = None) -> list[dict[str, Any]]:
+        instruments = self.registry.list_instrument_registry(provider="binance", provider_market=provider_market)
+        latest_datasets: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in self.registry.list_dataset_registry(limit=1000):
+            key = (str(row.get("provider_market") or "spot"), str(row.get("symbol") or "").upper())
+            latest_datasets.setdefault(key, row)
+        latest_derivatives: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in self.registry.list_derivative_state_snapshots(limit=1000):
+            key = (str(row.get("provider_market") or ""), str(row.get("normalized_symbol") or "").upper())
+            latest_derivatives.setdefault(key, row)
+        out: list[dict[str, Any]] = []
+        for instrument in instruments:
+            pm = str(instrument.get("provider_market") or "")
+            symbol = str(instrument.get("normalized_symbol") or "").upper()
+            dataset_row = latest_datasets.get((pm, symbol))
+            derivative_row = latest_derivatives.get((pm, symbol))
+            has_reference_data = True
+            has_recent_market_state = bool(dataset_row)
+            has_recent_book_state = False
+            has_recent_mark_price = bool(derivative_row.get("mark_price")) if derivative_row else False
+            has_recent_funding = derivative_row is not None and derivative_row.get("funding_rate") is not None
+            warnings: list[str] = []
+            status = "reference_only"
+            if not bool(instrument.get("tradable")):
+                status = "not_tradable"
+                warnings.append("instrument_not_tradable")
+            elif not bool(instrument.get("live_enabled")):
+                status = "live_blocked"
+                warnings.append("instrument_live_disabled")
+            elif not has_recent_market_state:
+                status = "missing_dataset"
+                warnings.append("dataset_missing_for_symbol")
+            elif pm in {"usdm_futures", "coinm_futures"} and not has_recent_mark_price:
+                status = "missing_derivative_state"
+                warnings.append("mark_price_or_derivative_state_missing")
+            else:
+                status = "reference_dataset_ready"
+            parity_id = self.registry.upsert_live_parity_state(
+                provider=str(instrument.get("provider") or "binance"),
+                provider_market=pm,
+                symbol=symbol,
+                instrument_id=str(instrument.get("instrument_id") or ""),
+                dataset_id=str((dataset_row or {}).get("dataset_id") or ""),
+                has_reference_data=has_reference_data,
+                has_recent_market_state=has_recent_market_state,
+                has_recent_book_state=has_recent_book_state,
+                has_recent_mark_price=has_recent_mark_price,
+                has_recent_funding=has_recent_funding,
+                status=status,
+                warnings=warnings,
+                snapshot_ref={
+                    "dataset_hash": str((dataset_row or {}).get("dataset_hash") or ""),
+                    "catalog_hash": str((dataset_row or {}).get("catalog_hash") or ""),
+                    "derivative_snapshot_id": str((derivative_row or {}).get("snapshot_id") or ""),
+                },
+            )
+            out.append({"parity_id": parity_id, "symbol": symbol, "provider_market": pm, "status": status, "warnings": warnings})
+        return out
 
     def _ensure_seed_backtest(self) -> None:
         runs = self.load_runs()
@@ -8771,8 +8896,30 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/data/catalog")
     def data_catalog(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        catalog = DataCatalog(USER_DATA_DIR)
-        return {"items": [row.to_dict() for row in catalog.list_entries()], "timeframes": list(SUPPORTED_TIMEFRAMES), "universes": MARKET_UNIVERSES}
+        return {"items": [row.to_dict() for row in store.data_catalog.list_entries()], "timeframes": list(SUPPORTED_TIMEFRAMES), "universes": MARKET_UNIVERSES}
+
+    @app.get("/api/v1/datasets")
+    def list_datasets(
+        market: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        timeframe: str | None = Query(default=None),
+        ready: bool | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        items = store.registry.list_dataset_registry(
+            market=normalize_market(market) if market else None,
+            symbol=normalize_symbol(symbol) if symbol else None,
+            timeframe=normalize_timeframe(timeframe) if timeframe else None,
+            ready=ready,
+            limit=limit,
+        )
+        return {"items": items, "count": len(items)}
+
+    @app.get("/api/v1/datasets/{run_id}/links")
+    def dataset_links_for_run(run_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        items = store.registry.list_run_dataset_links(run_id=run_id)
+        return {"run_id": run_id, "items": items, "count": len(items)}
 
     @app.get("/api/v1/instruments")
     def list_instruments(
@@ -8819,19 +8966,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=f"Sync Binance fallo: {detail}") from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Sync Binance fallo: {exc}") from exc
+        parity = store.refresh_live_parity_state()
         store.add_log(
             event_type="catalog_sync",
             severity="info" if payload.get("ok") else "warn",
             module="catalog",
             message="Sync manual de catalogo Binance",
             related_ids=[],
-            payload=payload,
+            payload={**payload, "live_parity_updated": len(parity)},
         )
-        return payload
+        return {**payload, "live_parity_updated": len(parity)}
 
     @app.get("/api/v1/data/status")
     def data_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        return DataCatalog(USER_DATA_DIR).status()
+        return store.data_catalog.status()
+
+    @app.get("/api/v1/live-parity")
+    def list_live_parity(
+        provider_market: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        items = store.registry.list_live_parity_state(provider_market=provider_market, status=status, limit=limit)
+        return {"items": items, "count": len(items)}
 
     @app.get("/api/v1/strategies")
     def list_strategies(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:

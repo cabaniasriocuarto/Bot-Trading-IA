@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -422,6 +423,97 @@ CREATE TABLE IF NOT EXISTS instrument_catalog_snapshot_item (
 
 CREATE INDEX IF NOT EXISTS idx_instrument_catalog_snapshot_item_symbol
 ON instrument_catalog_snapshot_item(snapshot_id, normalized_symbol, live_enabled);
+
+CREATE TABLE IF NOT EXISTS dataset_registry (
+    dataset_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_market TEXT,
+    market TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    dataset_mode TEXT NOT NULL DEFAULT 'dataset',
+    dataset_source TEXT NOT NULL DEFAULT 'dataset',
+    dataset_hash TEXT NOT NULL DEFAULT '',
+    start_ts TEXT,
+    end_ts TEXT,
+    manifest_path TEXT NOT NULL,
+    processed_path TEXT,
+    files_json TEXT NOT NULL DEFAULT '[]',
+    catalog_hash TEXT,
+    source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    data_quality_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    ready INTEGER NOT NULL DEFAULT 1,
+    public_downloadable INTEGER NOT NULL DEFAULT 0,
+    api_keys_required INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(provider, market, symbol, timeframe, dataset_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dataset_registry_lookup
+ON dataset_registry(provider, market, symbol, timeframe, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS run_dataset_link (
+    run_id TEXT NOT NULL,
+    dataset_id TEXT NOT NULL,
+    dataset_hash TEXT NOT NULL DEFAULT '',
+    dataset_source TEXT NOT NULL DEFAULT 'dataset',
+    provider TEXT,
+    provider_market TEXT,
+    market TEXT,
+    symbol TEXT,
+    timeframe TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(run_id, dataset_id),
+    FOREIGN KEY(dataset_id) REFERENCES dataset_registry(dataset_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_dataset_link_run
+ON run_dataset_link(run_id, linked_at DESC);
+
+CREATE TABLE IF NOT EXISTS derivative_state_snapshot (
+    snapshot_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_market TEXT NOT NULL,
+    normalized_symbol TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    mark_price REAL,
+    index_price REAL,
+    premium_index_bps REAL,
+    funding_rate REAL,
+    open_interest REAL,
+    basis_bps REAL,
+    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+    catalog_hash TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_derivative_state_snapshot_symbol
+ON derivative_state_snapshot(provider, provider_market, normalized_symbol, observed_at DESC);
+
+CREATE TABLE IF NOT EXISTS live_parity_state (
+    parity_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_market TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    instrument_id TEXT,
+    dataset_id TEXT,
+    has_reference_data INTEGER NOT NULL DEFAULT 0,
+    has_recent_market_state INTEGER NOT NULL DEFAULT 0,
+    has_recent_book_state INTEGER NOT NULL DEFAULT 0,
+    has_recent_mark_price INTEGER NOT NULL DEFAULT 0,
+    has_recent_funding INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    snapshot_ref_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(provider, provider_market, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_parity_state_lookup
+ON live_parity_state(provider, provider_market, status, updated_at DESC);
 """
 
 
@@ -2419,6 +2511,432 @@ class RegistryDB:
                 "test_enabled",
                 "demo_enabled",
                 "live_enabled",
+            ):
+                item[key] = bool(item.get(key))
+            out.append(item)
+        return out
+
+    def upsert_dataset_registry(
+        self,
+        *,
+        provider: str,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        dataset_source: str,
+        dataset_hash: str,
+        manifest_path: str,
+        files: list[str] | None = None,
+        processed_path: str | None = None,
+        provider_market: str | None = None,
+        dataset_mode: str = "dataset",
+        start_ts: str | None = None,
+        end_ts: str | None = None,
+        catalog_hash: str | None = None,
+        source_snapshot: dict[str, Any] | None = None,
+        data_quality: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        ready: bool = True,
+        public_downloadable: bool = False,
+        api_keys_required: bool = False,
+        created_at: str | None = None,
+    ) -> str:
+        dataset_id = hashlib.sha256(
+            "|".join(
+                [
+                    str(provider or ""),
+                    str(provider_market or ""),
+                    str(market or ""),
+                    str(symbol or ""),
+                    str(timeframe or ""),
+                    str(dataset_hash or ""),
+                    str(manifest_path or ""),
+                ]
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO dataset_registry (
+                    dataset_id, provider, provider_market, market, symbol, timeframe, dataset_mode, dataset_source,
+                    dataset_hash, start_ts, end_ts, manifest_path, processed_path, files_json, catalog_hash,
+                    source_snapshot_json, data_quality_json, metadata_json, ready, public_downloadable,
+                    api_keys_required, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                ON CONFLICT(dataset_id) DO UPDATE SET
+                    provider=excluded.provider,
+                    provider_market=excluded.provider_market,
+                    market=excluded.market,
+                    symbol=excluded.symbol,
+                    timeframe=excluded.timeframe,
+                    dataset_mode=excluded.dataset_mode,
+                    dataset_source=excluded.dataset_source,
+                    dataset_hash=excluded.dataset_hash,
+                    start_ts=excluded.start_ts,
+                    end_ts=excluded.end_ts,
+                    manifest_path=excluded.manifest_path,
+                    processed_path=excluded.processed_path,
+                    files_json=excluded.files_json,
+                    catalog_hash=excluded.catalog_hash,
+                    source_snapshot_json=excluded.source_snapshot_json,
+                    data_quality_json=excluded.data_quality_json,
+                    metadata_json=excluded.metadata_json,
+                    ready=excluded.ready,
+                    public_downloadable=excluded.public_downloadable,
+                    api_keys_required=excluded.api_keys_required,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    dataset_id,
+                    provider,
+                    provider_market,
+                    market,
+                    symbol,
+                    timeframe,
+                    dataset_mode,
+                    dataset_source,
+                    dataset_hash,
+                    start_ts,
+                    end_ts,
+                    manifest_path,
+                    processed_path,
+                    json.dumps(files or [], ensure_ascii=True, sort_keys=True),
+                    catalog_hash,
+                    json.dumps(source_snapshot or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(data_quality or {}, ensure_ascii=True, sort_keys=True),
+                    json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True),
+                    1 if ready else 0,
+                    1 if public_downloadable else 0,
+                    1 if api_keys_required else 0,
+                    created_at,
+                ),
+            )
+            conn.commit()
+        return dataset_id
+
+    def list_dataset_registry(
+        self,
+        *,
+        provider: str | None = None,
+        market: str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        ready: bool | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM dataset_registry WHERE 1=1"
+        params: list[Any] = []
+        if provider:
+            query += " AND provider=?"
+            params.append(provider)
+        if market:
+            query += " AND market=?"
+            params.append(market)
+        if symbol:
+            query += " AND symbol=?"
+            params.append(symbol)
+        if timeframe:
+            query += " AND timeframe=?"
+            params.append(timeframe)
+        if ready is not None:
+            query += " AND ready=?"
+            params.append(1 if ready else 0)
+        query += " ORDER BY updated_at DESC, dataset_id DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for src, dst, default in (
+                ("files_json", "files", []),
+                ("source_snapshot_json", "source_snapshot", {}),
+                ("data_quality_json", "data_quality", {}),
+                ("metadata_json", "metadata", {}),
+            ):
+                try:
+                    item[dst] = json.loads(item.pop(src, "{}" if isinstance(default, dict) else "[]") or ("{}" if isinstance(default, dict) else "[]"))
+                except Exception:
+                    item[dst] = default
+            item["ready"] = bool(item.get("ready"))
+            item["public_downloadable"] = bool(item.get("public_downloadable"))
+            item["api_keys_required"] = bool(item.get("api_keys_required"))
+            out.append(item)
+        return out
+
+    def get_dataset_registry(
+        self,
+        *,
+        provider: str,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        dataset_hash: str | None = None,
+    ) -> dict[str, Any] | None:
+        rows = self.list_dataset_registry(provider=provider, market=market, symbol=symbol, timeframe=timeframe, limit=25)
+        if dataset_hash:
+            for row in rows:
+                if str(row.get("dataset_hash") or "") == str(dataset_hash):
+                    return row
+        return rows[0] if rows else None
+
+    def upsert_run_dataset_link(
+        self,
+        *,
+        run_id: str,
+        dataset_id: str,
+        dataset_hash: str | None = None,
+        dataset_source: str | None = None,
+        provider: str | None = None,
+        provider_market: str | None = None,
+        market: str | None = None,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO run_dataset_link (
+                    run_id, dataset_id, dataset_hash, dataset_source, provider, provider_market,
+                    market, symbol, timeframe, metadata_json, linked_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(run_id, dataset_id) DO UPDATE SET
+                    dataset_hash=excluded.dataset_hash,
+                    dataset_source=excluded.dataset_source,
+                    provider=excluded.provider,
+                    provider_market=excluded.provider_market,
+                    market=excluded.market,
+                    symbol=excluded.symbol,
+                    timeframe=excluded.timeframe,
+                    metadata_json=excluded.metadata_json,
+                    linked_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    run_id,
+                    dataset_id,
+                    dataset_hash or "",
+                    dataset_source or "dataset",
+                    provider,
+                    provider_market,
+                    market,
+                    symbol,
+                    timeframe,
+                    json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True),
+                ),
+            )
+            conn.commit()
+
+    def list_run_dataset_links(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM run_dataset_link WHERE 1=1"
+        params: list[Any] = []
+        if run_id:
+            query += " AND run_id=?"
+            params.append(run_id)
+        query += " ORDER BY linked_at DESC, dataset_id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json", "{}") or "{}")
+            except Exception:
+                item["metadata"] = {}
+            out.append(item)
+        return out
+
+    def upsert_derivative_state_snapshot(
+        self,
+        *,
+        provider: str,
+        provider_market: str,
+        normalized_symbol: str,
+        observed_at: str,
+        mark_price: float | None = None,
+        index_price: float | None = None,
+        premium_index_bps: float | None = None,
+        funding_rate: float | None = None,
+        open_interest: float | None = None,
+        basis_bps: float | None = None,
+        raw_payload: dict[str, Any] | None = None,
+        catalog_hash: str | None = None,
+    ) -> str:
+        snapshot_id = hashlib.sha256(
+            "|".join([provider, provider_market, normalized_symbol, observed_at]).encode("utf-8")
+        ).hexdigest()[:24]
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO derivative_state_snapshot (
+                    snapshot_id, provider, provider_market, normalized_symbol, observed_at, mark_price,
+                    index_price, premium_index_bps, funding_rate, open_interest, basis_bps,
+                    raw_payload_json, catalog_hash, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    mark_price=excluded.mark_price,
+                    index_price=excluded.index_price,
+                    premium_index_bps=excluded.premium_index_bps,
+                    funding_rate=excluded.funding_rate,
+                    open_interest=excluded.open_interest,
+                    basis_bps=excluded.basis_bps,
+                    raw_payload_json=excluded.raw_payload_json,
+                    catalog_hash=excluded.catalog_hash
+                """,
+                (
+                    snapshot_id,
+                    provider,
+                    provider_market,
+                    normalized_symbol,
+                    observed_at,
+                    mark_price,
+                    index_price,
+                    premium_index_bps,
+                    funding_rate,
+                    open_interest,
+                    basis_bps,
+                    json.dumps(raw_payload or {}, ensure_ascii=True, sort_keys=True),
+                    catalog_hash,
+                ),
+            )
+            conn.commit()
+        return snapshot_id
+
+    def list_derivative_state_snapshots(
+        self,
+        *,
+        provider_market: str | None = None,
+        normalized_symbol: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM derivative_state_snapshot WHERE 1=1"
+        params: list[Any] = []
+        if provider_market:
+            query += " AND provider_market=?"
+            params.append(provider_market)
+        if normalized_symbol:
+            query += " AND normalized_symbol=?"
+            params.append(normalized_symbol)
+        query += " ORDER BY observed_at DESC, snapshot_id DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["raw_payload"] = json.loads(item.pop("raw_payload_json", "{}") or "{}")
+            except Exception:
+                item["raw_payload"] = {}
+            out.append(item)
+        return out
+
+    def upsert_live_parity_state(
+        self,
+        *,
+        provider: str,
+        provider_market: str,
+        symbol: str,
+        instrument_id: str | None = None,
+        dataset_id: str | None = None,
+        has_reference_data: bool = False,
+        has_recent_market_state: bool = False,
+        has_recent_book_state: bool = False,
+        has_recent_mark_price: bool = False,
+        has_recent_funding: bool = False,
+        status: str = "unknown",
+        warnings: list[str] | None = None,
+        snapshot_ref: dict[str, Any] | None = None,
+    ) -> str:
+        parity_id = hashlib.sha256("|".join([provider, provider_market, symbol]).encode("utf-8")).hexdigest()[:24]
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_parity_state (
+                    parity_id, provider, provider_market, symbol, instrument_id, dataset_id,
+                    has_reference_data, has_recent_market_state, has_recent_book_state,
+                    has_recent_mark_price, has_recent_funding, status, warnings_json,
+                    snapshot_ref_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(parity_id) DO UPDATE SET
+                    instrument_id=excluded.instrument_id,
+                    dataset_id=excluded.dataset_id,
+                    has_reference_data=excluded.has_reference_data,
+                    has_recent_market_state=excluded.has_recent_market_state,
+                    has_recent_book_state=excluded.has_recent_book_state,
+                    has_recent_mark_price=excluded.has_recent_mark_price,
+                    has_recent_funding=excluded.has_recent_funding,
+                    status=excluded.status,
+                    warnings_json=excluded.warnings_json,
+                    snapshot_ref_json=excluded.snapshot_ref_json,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    parity_id,
+                    provider,
+                    provider_market,
+                    symbol,
+                    instrument_id,
+                    dataset_id,
+                    1 if has_reference_data else 0,
+                    1 if has_recent_market_state else 0,
+                    1 if has_recent_book_state else 0,
+                    1 if has_recent_mark_price else 0,
+                    1 if has_recent_funding else 0,
+                    status,
+                    json.dumps(warnings or [], ensure_ascii=True, sort_keys=True),
+                    json.dumps(snapshot_ref or {}, ensure_ascii=True, sort_keys=True),
+                ),
+            )
+            conn.commit()
+        return parity_id
+
+    def list_live_parity_state(
+        self,
+        *,
+        provider_market: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM live_parity_state WHERE 1=1"
+        params: list[Any] = []
+        if provider_market:
+            query += " AND provider_market=?"
+            params.append(provider_market)
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC, parity_id DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["warnings"] = json.loads(item.pop("warnings_json", "[]") or "[]")
+            except Exception:
+                item["warnings"] = []
+            try:
+                item["snapshot_ref"] = json.loads(item.pop("snapshot_ref_json", "{}") or "{}")
+            except Exception:
+                item["snapshot_ref"] = {}
+            for key in (
+                "has_reference_data",
+                "has_recent_market_state",
+                "has_recent_book_state",
+                "has_recent_mark_price",
+                "has_recent_funding",
             ):
                 item[key] = bool(item.get(key))
             out.append(item)

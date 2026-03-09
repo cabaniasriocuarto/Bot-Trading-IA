@@ -8,7 +8,7 @@ Fecha de actualizacion: 2026-03-09
   - `feature/brain-policy-ledgers-v1`
 - Estado git al iniciar el bloque:
   - `git status` limpio
-  - continuidad directa contra `origin/main` (`0/2`)
+  - continuidad directa contra `origin/main` (`0/4`)
 - Decision de rama:
   - se mantiene la rama actual porque este trabajo sigue el mismo objetivo coherente:
     - cerebro del programa
@@ -42,12 +42,45 @@ Fecha de actualizacion: 2026-03-09
 4. Strategy Truth Layer
 5. Bot Brain / Bot Policy Layer
 6. Execution Reality Layer
-7. Live Trading Layer
-8. Governance / Model Risk Layer
-9. Monitoring / Observability / Alerts / Drift / Kill Switches
-10. Frontend de trazabilidad, control y salud operativa
+7. Modos Operativos / Eligibility Matrix
+8. Live Trading Layer
+9. Governance / Model Risk Layer
+10. Monitoring / Observability / Alerts / Drift / Kill Switches
+11. Frontend de trazabilidad, control y salud operativa por dominios
 
-### Estado real consolidado despues del bloque 2
+### Taxonomia operativa canonica
+
+- `backtest`:
+  - simulacion historica reproducible
+  - datasets versionados
+  - fills simulados
+  - sin APIs reales de trading
+- `mock`:
+  - simulacion propia del sistema
+  - puede usar market data real-time o replay
+  - exchange/cuenta/fills/errores simulados por RTLAB
+  - independiente de testnet
+- `paper`:
+  - market data real-time
+  - decisiones reales del bot
+  - capital ficticio
+  - fills simulados con execution model interno
+- `testnet`:
+  - entorno oficial de prueba del exchange
+  - credenciales y fondos virtuales de prueba
+  - valida auth, payloads, filtros y errores reales de API
+- `demo`:
+  - reservado para brokers que expongan sandbox/demo propio distinto de testnet
+- `live`:
+  - cuenta y endpoints reales
+  - requiere elegibilidad fuerte, preflight, monitoreo y kill switches
+
+Regla de verdad:
+- `mock` != `testnet`
+- `paper` != `mock`
+- `live` nunca se habilita por defecto
+
+### Estado real consolidado despues del bloque 3
 
 - Ya implementado y usable en backend:
   - `live` como fuente real de evidencia
@@ -80,6 +113,18 @@ Fecha de actualizacion: 2026-03-09
     - `GET /api/v1/instruments`
     - `GET /api/v1/instruments/{instrument_id}`
     - `POST /api/v1/instruments/sync`
+  - dataset registry persistente y compatible con el stack actual:
+    - `dataset_registry`
+    - `run_dataset_link`
+  - `DataCatalog` y `DatasetModeDataProvider` ya sincronizan manifests a SQLite sin romper research legacy
+  - `ConsoleStore.record_run(...)` ya persiste linkage `run -> dataset`
+  - live parity minima persistida:
+    - `live_parity_state`
+    - estados honestos `reference_only / reference_dataset_ready / live_blocked / not_tradable / missing_*`
+  - endpoints nuevos de datos:
+    - `GET /api/v1/datasets`
+    - `GET /api/v1/datasets/{run_id}/links`
+    - `GET /api/v1/live-parity`
 - Ya centralizado en YAML:
   - `gates`
   - `microstructure`
@@ -96,10 +141,20 @@ Fecha de actualizacion: 2026-03-09
     - `observability`
 - Aun no implementado de forma integral:
   - universos reproducibles por run
-  - live parity state cache
+  - derivative state real poblado desde ingesta de mercado
+  - live parity state cache completa con websocket/REST freshness por family
   - research funnel visible de punta a punta
   - monitoring / observability / drift / kill switches completos
   - frontend integral del cerebro, truth, execution reality y health
+  - frontend reorganizado por dominios claros:
+    - instrumentos
+    - datasets
+    - research
+    - estrategias
+    - bots
+    - ejecucion
+    - monitoring
+    - configuracion
 
 ### Orden tecnico definitivo de bloques
 
@@ -111,10 +166,11 @@ Fecha de actualizacion: 2026-03-09
 6. Research funnel / Beast / trial ledger / PBO-DSR-PSR wiring
 7. Strategy truth + evidence + legacy quarantine / stale handling
 8. Bot brain + bot policy + decision log + OPE minima
-9. Execution reality + live eligibility + preflight validation + routing
-10. Monitoring / observability / alerts / drift / kill switches / health score
-11. Frontend integral de catalogo, passport, brain, execution reality y monitoring
-12. Tests, builds, limpieza conservadora y cierre documental
+9. Normalizacion de modos operativos + eligibility matrix por modo
+10. Execution reality + live eligibility + preflight validation + routing
+11. Monitoring / observability / alerts / drift / kill switches / health score
+12. Frontend integral por dominios: dashboard, instrumentos, datasets, research, estrategias, bots, ejecucion, monitoring, configuracion
+13. Tests, builds, limpieza conservadora y cierre documental
 
 ### Bloques cerrados
 
@@ -139,6 +195,21 @@ Fecha de actualizacion: 2026-03-09
   - endpoint admin de sync manual
   - snapshotting y diffing del catalogo por market family
   - tests del adapter y persistencia de snapshots reales
+- Bloque 3:
+  - `DataCatalog` ya sincroniza manifests al `dataset_registry`
+  - `DatasetModeDataProvider` ya registra datasets estandarizados al resolver manifests legacy
+  - `ConsoleStore.record_run(...)` ya persiste `run_dataset_link`
+  - `live_parity_state` queda disponible con actualizacion en sync de instrumentos
+  - endpoints de datasets y live parity ya expuestos
+  - tests locales en verde para dataset registry y compatibilidad con mass backtest
+
+### Bloque actual en progreso
+
+- Bloque 4:
+  - introducir universos reproducibles por provider/family/symbol filters
+  - persistir snapshots exactos del universo por run
+  - enlazar runs, datasets e instrumentos sin ambiguedad
+  - preparar la matriz de modos (`backtest/mock/paper/testnet/demo/live`) para usar el mismo catalogo normalizado
 
 ### Bibliografia base efectiva para este roadmap
 

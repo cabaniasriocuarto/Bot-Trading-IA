@@ -2,6 +2,49 @@
 
 ## 2026-03-09
 
+### Bloque 3 cerrado: dataset registry + run_dataset_link + live parity minima
+- `DataCatalog` pasa a sincronizar manifests a `dataset_registry` en la SQLite principal.
+- `DatasetModeDataProvider` registra manifests estandarizados al resolver datasets legacy o fallback de catalogo.
+- `ConsoleStore.record_run(...)` ya persiste `run_dataset_link` usando `dataset_id` trazable y manifest asociado.
+- Se agregan endpoints nuevos:
+  - `GET /api/v1/datasets`
+  - `GET /api/v1/datasets/{run_id}/links`
+  - `GET /api/v1/live-parity`
+- `POST /api/v1/instruments/sync` ahora refresca `live_parity_state` para dejar estado minimo honesto por instrumento.
+- Se corrige el mensaje legacy de falta de dataset para no sugerir scripts inexistentes.
+- Tests nuevos/ejecutados:
+  - `rtlab_autotrader/tests/test_dataset_registry.py`
+  - `rtlab_autotrader/tests/test_mass_backtest_engine.py`
+
+### Replanificacion consolidada: modos operativos + frontend por dominios
+- El plan maestro se reordena para incorporar como capa explicita:
+  - taxonomia de modos `backtest/mock/paper/testnet/demo/live`
+  - eligibility matrix por modo
+  - frontend organizado por dominios:
+    - dashboard
+    - instrumentos
+    - datasets
+    - research
+    - estrategias
+    - bots
+    - ejecucion
+    - monitoring
+    - configuracion
+- Regla de producto confirmada:
+  - `mock` != `testnet`
+  - `paper` != `mock`
+  - `live` no se habilita por defecto
+
+### Bloque 3 iniciado: datasets / derivative state / live parity
+- Se fija como objetivo inmediato consolidar la capa de datasets sobre el catalogo legacy existente, sin abrir un subsistema paralelo.
+- La persistencia nueva del bloque debe vivir en la SQLite principal y seguir siendo compatible con:
+  - `DataCatalog`
+  - `DataLoader`
+  - `DatasetModeDataProvider`
+  - `MassBacktestEngine`
+- Se corrige en truth la relacion vigente con `origin/main`:
+  - continuidad directa `0/4`
+
 ### Bloque 2: adapter Binance multi-family + sync manual/startup/scheduled
 - Se crea `rtlab_core.brokers.binance.catalog.BinanceCatalogSyncService`.
 - El catalogo Binance ahora sincroniza y persiste metadata real para:

@@ -94,6 +94,7 @@ class DatasetModeDataProvider:
         unique_files = [str(Path(f).resolve()) for f in dict.fromkeys(files)]
         payload = {
             "provider": provider,
+            "provider_market": str(((getattr(entry, "metadata", None) or {}).get("provider_market") or ("spot" if market == "crypto" else market))),
             "market": market,
             "symbol": symbol,
             "timeframe": timeframe,
@@ -163,6 +164,8 @@ class DatasetModeDataProvider:
                 dataset_hash = _sha256_files([Path(x) for x in files]) or hashlib.sha256(std_manifest_path.read_bytes()).hexdigest()
                 manifest["dataset_hash"] = dataset_hash
                 self._persist_standard_manifest(manifest)
+            if hasattr(self.catalog, "sync_manifest_to_registry"):
+                self.catalog.sync_manifest_to_registry(manifest, manifest_path=std_manifest_path)
             return DatasetResolution(
                 mode="dataset",
                 provider=provider,
@@ -190,7 +193,9 @@ class DatasetModeDataProvider:
                 warnings.append(f"No existe dataset {tf} directo; se usará 1m y resample en runtime ({sym}).")
         if entry is not None:
             manifest = self._build_standard_manifest_from_catalog(provider=provider, market=mk, symbol=sym, timeframe=tf, entry=entry)
-            self._persist_standard_manifest(manifest)
+            target_manifest = self._persist_standard_manifest(manifest)
+            if hasattr(self.catalog, "sync_manifest_to_registry"):
+                self.catalog.sync_manifest_to_registry(manifest, manifest_path=target_manifest)
             return DatasetResolution(
                 mode="dataset",
                 provider=provider,

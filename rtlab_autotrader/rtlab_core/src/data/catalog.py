@@ -6,6 +6,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from rtlab_core.strategy_packs.registry_db import RegistryDB
+
 from .universes import DEFAULT_SOURCES, MARKET_UNIVERSES, SUPPORTED_MARKETS, SUPPORTED_TIMEFRAMES, normalize_market, normalize_symbol
 
 
@@ -55,6 +57,84 @@ class DataCatalog:
     def __init__(self, user_data_dir: Path) -> None:
         self.user_data_dir = user_data_dir.resolve()
         self.data_root = (self.user_data_dir / "data").resolve()
+        self.registry = RegistryDB((self.user_data_dir / "strategy_packs" / "registry.sqlite3").resolve())
+
+    def _provider_for_market(self, market: str, payload: dict[str, Any]) -> str:
+        provider = str(payload.get("provider") or "").strip()
+        if provider:
+            return provider
+        source = str(payload.get("dataset_source") or payload.get("source") or "").strip()
+        if source:
+            return source
+        return "binance_public" if market == "crypto" else DEFAULT_SOURCES.get(market, "manual")
+
+    def _provider_market_for_payload(self, market: str, payload: dict[str, Any]) -> str:
+        explicit = str(payload.get("provider_market") or payload.get("market_family") or "").strip().lower()
+        if explicit:
+            return explicit
+        if market == "crypto":
+            return "spot"
+        return market
+
+    def sync_manifest_to_registry(self, payload: dict[str, Any], *, manifest_path: Path | None = None) -> str:
+        mk = normalize_market(str(payload.get("market") or "crypto"))
+        sym = normalize_symbol(str(payload.get("symbol") or ""))
+        tf = str(payload.get("timeframe") or "1m").lower()
+        files = [str(item) for item in payload.get("files", []) if isinstance(item, str)]
+        normalized_files = [str(Path(item).resolve()) for item in files]
+        dataset_hash = str(payload.get("dataset_hash") or "").strip()
+        if not dataset_hash:
+            existing_files = [Path(item) for item in normalized_files if Path(item).exists()]
+            dataset_hash = _sha256_files(existing_files) if existing_files else sha256(
+                json.dumps(payload, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            payload["dataset_hash"] = dataset_hash
+        catalog_hash = sha256(
+            json.dumps(
+                {
+                    "market": mk,
+                    "symbol": sym,
+                    "timeframe": tf,
+                    "dataset_hash": dataset_hash,
+                    "files": normalized_files,
+                    "provider": self._provider_for_market(mk, payload),
+                    "provider_market": self._provider_market_for_payload(mk, payload),
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        processed_path = str(payload.get("processed_path") or "").strip() or None
+        data_quality = payload.get("data_quality") if isinstance(payload.get("data_quality"), dict) else {}
+        if not data_quality:
+            existing_count = sum(1 for item in normalized_files if Path(item).exists())
+            data_quality = {
+                "manifest_present": True,
+                "files_declared": len(normalized_files),
+                "files_existing": existing_count,
+                "catalog_managed": True,
+            }
+        return self.registry.upsert_dataset_registry(
+            provider=self._provider_for_market(mk, payload),
+            provider_market=self._provider_market_for_payload(mk, payload),
+            market=mk,
+            symbol=sym,
+            timeframe=tf,
+            dataset_source=str(payload.get("dataset_source") or payload.get("source") or self._provider_for_market(mk, payload)),
+            dataset_hash=dataset_hash,
+            manifest_path=str((manifest_path or Path(str(payload.get("manifest_path") or ""))).resolve()) if manifest_path or payload.get("manifest_path") else "",
+            files=normalized_files,
+            processed_path=processed_path,
+            dataset_mode=str(payload.get("dataset_mode") or "dataset"),
+            start_ts=str(payload.get("start") or ""),
+            end_ts=str(payload.get("end") or ""),
+            catalog_hash=catalog_hash,
+            source_snapshot=payload if isinstance(payload, dict) else {},
+            data_quality=data_quality,
+            metadata=payload if isinstance(payload, dict) else {},
+            ready=bool(dataset_hash),
+            public_downloadable=bool(mk == "crypto"),
+            api_keys_required=bool(payload.get("api_keys_required", False)),
+        )
 
     def manifests_dir(self, market: str) -> Path:
         return self.data_root / normalize_market(market) / "manifests"
@@ -72,6 +152,7 @@ class DataCatalog:
             for path in sorted(manifests.glob("*.json")):
                 try:
                     payload = _json_load(path)
+                    self.sync_manifest_to_registry(payload, manifest_path=path)
                     out.append(
                         CatalogEntry(
                             market=str(payload.get("market", mk)),
@@ -113,7 +194,10 @@ class DataCatalog:
                                 "market": market,
                                 "symbol": symbol,
                                 "timeframe": tf,
-                                "hint": f"Descarga datos con scripts/download_{'crypto_binance_public' if market=='crypto' else 'forex_dukascopy' if market=='forex' else 'equities_alpaca'}.py",
+                                "hint": (
+                                    "Cargar dataset reproducible en user_data/datasets o user_data/data/"
+                                    f"{market} y reintentar el research/backtest en modo dataset."
+                                ),
                             }
                         )
         return {
@@ -159,5 +243,5 @@ class DataCatalog:
             payload.update(extra)
         manifest_path = manifest_dir / f"{sym}_{tf}.json"
         manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.sync_manifest_to_registry(payload, manifest_path=manifest_path)
         return payload
-
