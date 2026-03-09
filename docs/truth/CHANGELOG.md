@@ -10,12 +10,15 @@
   - fuente
   - estrategia
   - mercado/timeframe
+  - `dataset_source`
+  - `dataset_hash` resumido
   - tipo de atribucion
+  - `attribution_confidence`
   - peso efectivo
   - flags `legacy`, `stale`, `excluido`
 - Esto cierra mejor la trazabilidad visible `episode -> bot` sin inventar calculos en frontend.
 - Validacion:
-  - `eslint` `bots/page.tsx` PASS
+  - `eslint` `bots/page.tsx` + `types.ts` PASS
   - `npm run build` PASS
 
 ### Bloque 9 parcial: experiencia atribuida al bot visible y auditable

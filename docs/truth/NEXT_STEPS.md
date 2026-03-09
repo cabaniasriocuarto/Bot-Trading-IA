@@ -16,7 +16,7 @@ Fecha: 2026-03-09
   - resumen de `decision log`
   - resumen de `execution reality`
   - experiencia atribuida al bot
-  - drilldown de episodios atribuidos por `run_id`, fuente, atribucion, peso y flags
+  - drilldown de episodios atribuidos por `run_id`, fuente, `dataset_source`, `dataset_hash`, atribucion, confianza, peso y flags
 
 ## Nuevo plan consolidado
 - Cerrar primero la visibilidad util del cerebro y la atribucion historica fuerte.
@@ -33,7 +33,7 @@ Fecha: 2026-03-09
 6. OPE / observabilidad avanzada / endurecimiento final
 
 ## Bloque actual
-- Cerrar el bloque de visibilidad del cerebro con drilldown de episodios atribuidos y docs/truth consistentes.
+- Reforzar trazabilidad visible `episode -> bot` con provenance y confidence en la UI de `Bots`.
 
 ## Pendiente del siguiente bloque
 - reforzar `episode -> bot_id` directo en analitica historica, no solo por backfill conservador
@@ -55,6 +55,7 @@ Fecha: 2026-03-09
 - La atribucion automatica sigue fail-closed cuando un `run_id` tiene mas de un bot posible.
 
 ## Archivos tocados
+- `rtlab_dashboard/src/lib/types.ts`
 - `rtlab_dashboard/src/app/(app)/bots/page.tsx`
 - `docs/truth/SOURCE_OF_TRUTH.md`
 - `docs/truth/CHANGELOG.md`

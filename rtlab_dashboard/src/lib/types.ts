@@ -431,6 +431,10 @@ export interface BotExperienceItem {
   bot_id?: string | null;
   asset?: string | null;
   timeframe?: string | null;
+  dataset_source?: string | null;
+  dataset_hash?: string | null;
+  as_of?: string | null;
+  created_at?: string | null;
   start_ts?: string | null;
   end_ts?: string | null;
   trades_count?: number;

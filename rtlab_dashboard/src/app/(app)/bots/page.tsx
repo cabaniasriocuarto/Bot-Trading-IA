@@ -472,6 +472,7 @@ function BotsPageContent() {
                                   <TH>Fuente</TH>
                                   <TH>Estrategia</TH>
                                   <TH>Mercado / TF</TH>
+                                  <TH>Provenance</TH>
                                   <TH>Atribucion</TH>
                                   <TH>Peso</TH>
                                   <TH>Flags</TH>
@@ -495,8 +496,19 @@ function BotsPageContent() {
                                     <TD className="text-slate-400">
                                       {item.asset || "--"} · {item.timeframe || "--"}
                                     </TD>
+                                    <TD className="text-slate-400">
+                                      <div className="space-y-1">
+                                        <div>{item.dataset_source || "sin dataset_source"}</div>
+                                        <div className="font-mono text-[10px] text-slate-500">
+                                          {item.dataset_hash ? item.dataset_hash.slice(0, 12) : "sin hash"}
+                                        </div>
+                                      </div>
+                                    </TD>
                                     <TD>
-                                      <Badge variant={attributionBadge(item.attribution_type || undefined)}>
+                                      <Badge
+                                        variant={attributionBadge(item.attribution_type || undefined)}
+                                        title={`confidence=${fmtNum(item.attribution_confidence || 0)}`}
+                                      >
                                         {item.attribution_type || "unknown"}
                                       </Badge>
                                     </TD>

@@ -18,7 +18,7 @@ Fecha de actualizacion: 2026-03-09
   - ver si el cerebro del bot se apoya en evidencia exacta o solo contextual
   - distinguir experiencia util de experiencia excluida
   - inspeccionar cuales estrategias dominan la evidencia del bot
-  - inspeccionar episodios individuales con `run_id`, fuente, atribucion, peso efectivo y flags operativas
+  - inspeccionar episodios individuales con `run_id`, fuente, `dataset_source`, `dataset_hash`, atribucion, `attribution_confidence`, peso efectivo y flags operativas
 - Estado real:
   - `run -> bot` ya queda visible de forma operativa en UI
   - la trazabilidad `episode -> bot` ya es visible a nivel de episodio reciente desde la pantalla `Bots`
