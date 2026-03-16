@@ -957,6 +957,94 @@ export interface BacktestCatalogBatchesResponse {
   count: number;
 }
 
+export interface ResearchFunnelStage {
+  id: string;
+  label: string;
+  count: number;
+  tone?: "neutral" | "success" | "warn" | "danger" | "info" | string;
+  description?: string;
+}
+
+export interface ResearchFunnelResponse {
+  generated_at?: string;
+  counts?: Record<string, number>;
+  evidence?: Record<string, number>;
+  stages?: ResearchFunnelStage[];
+  recent_candidates?: Array<{
+    run_id: string;
+    strategy_name?: string;
+    asset?: string;
+    timeframe?: string;
+    candidate_stage?: string;
+    evidence_status?: "trusted" | "legacy" | "quarantine" | string;
+  }>;
+  compatibility?: Record<string, unknown>;
+}
+
+export interface ResearchTrialLedgerItem {
+  run_id: string;
+  legacy_json_id?: string | null;
+  batch_id?: string | null;
+  run_type?: string;
+  run_status?: string;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  strategy_id: string;
+  strategy_name?: string;
+  asset?: string;
+  timeframe?: string;
+  dataset_source?: string;
+  dataset_hash?: string;
+  commit_hash?: string;
+  source?: string;
+  evidence_status?: "trusted" | "legacy" | "quarantine" | string;
+  evidence_flags?: string[];
+  learning_excluded?: boolean;
+  validation_quality?: string;
+  cost_fidelity_level?: string;
+  feature_set?: string;
+  candidate_stage?: string;
+  candidate_flags?: {
+    shortlisted?: boolean;
+    paso_gates?: boolean;
+    strict_strategy_id?: boolean;
+    [key: string]: unknown;
+  };
+  proposal_count?: number;
+  proposal_statuses?: string[];
+  proposal_needs_validation?: boolean;
+  metrics?: {
+    trade_count?: number;
+    sharpe?: number | null;
+    winrate?: number | null;
+    max_dd?: number | null;
+    net_pnl?: number | null;
+    [key: string]: unknown;
+  };
+  costs?: {
+    gross_pnl?: number | null;
+    net_pnl?: number | null;
+    fees_total?: number | null;
+    spread_total?: number | null;
+    slippage_total?: number | null;
+    funding_total?: number | null;
+    total_cost?: number | null;
+    total_cost_source?: string;
+    components_complete?: boolean;
+    components_present?: boolean;
+    [key: string]: unknown;
+  };
+  catalog_present?: boolean;
+}
+
+export interface ResearchTrialLedgerResponse {
+  generated_at?: string;
+  items: ResearchTrialLedgerItem[];
+  count: number;
+  status_filter?: string | null;
+}
+
 export interface BacktestCompareResponse {
   items: BacktestCatalogRun[];
   count: number;

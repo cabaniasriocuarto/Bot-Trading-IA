@@ -1,5 +1,28 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-16
+
+### RTLRESE-10 · Research funnel + trial ledger
+- Backend:
+  - nuevos endpoints `GET /api/v1/research/funnel` y `GET /api/v1/research/trial-ledger`;
+  - el ledger combina `BacktestCatalogDB`, `experience_episode (source=backtest)` y `learning_proposal`;
+  - si la evidencia todavia no tiene estado canonico persistido, clasifica on-the-fly en:
+    - `trusted`
+    - `legacy`
+    - `quarantine`
+  - `catalog_only_no_episode` queda visible como `legacy` para no ocultar corridas viejas ni venderlas como evidence fuerte.
+- Frontend `Backtests`:
+  - nueva seccion `Research Funnel y Trial Ledger`;
+  - separa conteos de runs, evidence `trusted/legacy/quarantine`, pipeline de candidates y tabla corta de ledger;
+  - no mezcla `strategy_truth` ni runtime con research evidence.
+- Compatibilidad:
+  - la UI nueva convive con `Backtests / Runs` y `Research Batch`;
+  - se mantienen contratos legacy existentes.
+- Validacion:
+  - `py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - smoke funcional directo del modulo con `user_data` temporal -> PASS
+  - smoke HTTP con `pytest` pendiente por entorno: falta `httpx` para `starlette.testclient`
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

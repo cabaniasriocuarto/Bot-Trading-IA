@@ -1,6 +1,36 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-06
+Fecha de actualizacion: 2026-03-16
+
+## RTLRESE-10 · Research funnel + trial ledger por API y frontend - 2026-03-16
+
+- API nueva:
+  - `GET /api/v1/research/funnel`
+  - `GET /api/v1/research/trial-ledger`
+- Fuente operativa usada por esta vista:
+  - catalogo de backtests (`BacktestCatalogDB`)
+  - evidencia persistida `experience_episode` (`source=backtest`)
+  - propuestas de aprendizaje (`learning_proposal`)
+- Frontera semantica visible:
+  - `strategy_truth` no cambia en esta issue
+  - `strategy_evidence` se expone como funnel/ledger de research
+  - `bot_policy_state` y `bot_decision_log` no se mezclan en esta pantalla
+- Clasificacion operativa actual de evidence:
+  - `trusted`: metadata, costos y trazabilidad completas
+  - `legacy`: evidencia degradada o solo catalogada; visible, pero no debe venderse como evidence fuerte
+  - `quarantine`: faltan metadata critica, costos completos o trazabilidad suficiente
+  - `learning_excluded` se expone como flag operativo del ledger/funnel para distinguir evidencia no apta
+- Compatibilidad legacy mantenida:
+  - si un run existe solo en catalogo y no en `experience_episode`, se muestra como `legacy` con flag `catalog_only_no_episode`
+  - en esta rama el status de evidence todavia se deriva on-the-fly desde metadata/costos/trazabilidad actuales; no depende aun de una columna canonica persistida
+- Frontend:
+  - `Backtests` agrega una seccion `Research Funnel y Trial Ledger`
+  - la seccion nueva convive con `Backtests / Runs` y `Research Batch`; no reemplaza contratos legacy existentes
+  - la UI marca `trusted/legacy/quarantine` y evita presentar evidence degradada como si fuera evidencia confiable
+- Validacion ejecutada en esta rama:
+  - `py_compile` sobre `app.py` y `test_web_live_ready.py` -> PASS
+  - smoke funcional directo sobre los helpers nuevos del modulo (`_research_funnel_payload`, `_collect_research_trial_ledger_items`) con `user_data` temporal -> PASS
+  - smoke HTTP con `pytest`/`TestClient` no corrio por limitacion de entorno: falta `httpx` en la venv de `rtlab_autotrader`
 
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 

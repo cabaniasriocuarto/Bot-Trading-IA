@@ -4829,6 +4829,149 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   assert any(row["id"] == draft["id"] for row in recs.json())
 
 
+def test_research_funnel_and_trial_ledger_expose_evidence_statuses(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategy = module.store.list_strategies()[0]
+
+  def _seed_trial(
+    *,
+    run_id: str,
+    dataset_source: str,
+    dataset_hash: str,
+    commit_hash: str,
+    feature_set: str,
+    validation_mode: str,
+    costs_breakdown: dict[str, float],
+  ) -> None:
+    run = {
+      "id": run_id,
+      "run_type": "batch_child" if "LEGACY" in run_id else "single",
+      "status": "completed",
+      "created_at": "2026-03-16T12:00:00+00:00",
+      "started_at": "2026-03-16T12:01:00+00:00",
+      "finished_at": "2026-03-16T12:02:00+00:00",
+      "created_by": "test",
+      "mode": "backtest",
+      "strategy_id": strategy["id"],
+      "strategy_name": strategy["name"],
+      "strategy_version": strategy["version"],
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "period": {"start": "2024-01-01", "end": "2024-01-31"},
+      "universe": ["BTCUSDT"],
+      "validation_mode": validation_mode,
+      "data_source": dataset_source,
+      "dataset_hash": dataset_hash,
+      "feature_set": feature_set,
+      "git_commit": commit_hash,
+      "metrics": {
+        "trade_count": 120,
+        "roundtrips": 120,
+        "sharpe": 1.4,
+        "winrate": 0.58,
+        "max_dd": 0.08,
+      },
+      "costs_breakdown": costs_breakdown,
+      "costs_model": {
+        "fees_bps": 5.5,
+        "spread_bps": 4.0,
+        "slippage_bps": 3.0,
+        "funding_bps": 1.0,
+        "rollover_bps": 0.0,
+      },
+      "flags": {
+        "PASO_GATES": "TRUSTED" in run_id,
+      },
+      "params_json": {
+        "validation_mode": validation_mode,
+        "strict_strategy_id": "TRUSTED" in run_id,
+      },
+      "provenance": {
+        "dataset_source": dataset_source,
+        "dataset_hash": dataset_hash,
+        "commit_hash": commit_hash,
+        "orderflow_feature_set": feature_set,
+        "from": "2024-01-01",
+        "to": "2024-01-31",
+      },
+      "artifacts_links": {},
+    }
+    module.store.backtest_catalog.record_run_from_payload(run=run, strategy_meta=strategy, created_by="test")
+    module.store.record_experience_run(run, source_override="backtest")
+
+  _seed_trial(
+    run_id="BT-TRUSTED-001",
+    dataset_source="binance_public",
+    dataset_hash="ds_trusted_001",
+    commit_hash="abc123trusted",
+    feature_set="orderflow_on",
+    validation_mode="walk-forward",
+    costs_breakdown={
+      "gross_pnl_total": 1500.0,
+      "net_pnl_total": 1200.0,
+      "total_cost": 300.0,
+      "fees_total": 100.0,
+      "spread_total": 90.0,
+      "slippage_total": 80.0,
+      "funding_total": 30.0,
+    },
+  )
+  _seed_trial(
+    run_id="BT-LEGACY-001",
+    dataset_source="binance_public",
+    dataset_hash="ds_legacy_001",
+    commit_hash="local",
+    feature_set="unknown",
+    validation_mode="walk-forward",
+    costs_breakdown={
+      "gross_pnl_total": 1400.0,
+      "net_pnl_total": 1180.0,
+      "total_cost": 220.0,
+      "fees_total": 90.0,
+      "spread_total": 70.0,
+      "slippage_total": 60.0,
+      "funding_total": 0.0,
+    },
+  )
+  _seed_trial(
+    run_id="BT-QUARANTINE-001",
+    dataset_source="binance_public",
+    dataset_hash="",
+    commit_hash="abc123quarantine",
+    feature_set="orderflow_on",
+    validation_mode="walk-forward",
+    costs_breakdown={
+      "gross_pnl_total": 900.0,
+      "net_pnl_total": 760.0,
+      "fees_total": 40.0,
+      "spread_total": 50.0,
+    },
+  )
+
+  funnel = client.get("/api/v1/research/funnel", headers=headers)
+  assert funnel.status_code == 200, funnel.text
+  funnel_payload = funnel.json()
+  assert funnel_payload["evidence"]["trusted"] >= 1
+  assert funnel_payload["evidence"]["legacy"] >= 1
+  assert funnel_payload["evidence"]["quarantine"] >= 1
+  assert funnel_payload["counts"]["candidate_ready"] >= 1
+
+  ledger = client.get("/api/v1/research/trial-ledger?limit=20", headers=headers)
+  assert ledger.status_code == 200, ledger.text
+  by_run = {row["run_id"]: row for row in ledger.json()["items"]}
+  assert by_run["BT-TRUSTED-001"]["evidence_status"] == "trusted"
+  assert by_run["BT-TRUSTED-001"]["learning_excluded"] is False
+  assert by_run["BT-LEGACY-001"]["evidence_status"] == "legacy"
+  assert "missing_commit_hash" in by_run["BT-LEGACY-001"]["evidence_flags"]
+  assert by_run["BT-QUARANTINE-001"]["evidence_status"] == "quarantine"
+  assert by_run["BT-QUARANTINE-001"]["learning_excluded"] is True
+  assert "missing_dataset_hash" in by_run["BT-QUARANTINE-001"]["evidence_flags"]
+
+
 def test_research_mass_backtest_start_rejects_missing_dataset(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
