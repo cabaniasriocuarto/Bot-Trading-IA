@@ -1,6 +1,103 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-06
+Fecha de actualizacion: 2026-03-15
+
+## Automatizacion local Git/PowerShell para VS Code en Windows - 2026-03-15
+
+### Motivo real del agregado
+
+- Se observaron errores repetidos en el flujo local de trabajo:
+  - `safe.directory` / `dubious ownership`
+  - ramas contaminadas con trabajo de otra sub-issue
+  - comandos pegados parcialmente en la terminal
+  - mezcla accidental entre trabajo de producto y `docs/truth`
+- Para bajar riesgo operativo local se agregaron dos scripts PowerShell simples y reutilizables.
+- Este tramo NO cambia frontend/backend del producto.
+- Este tramo NO mezcla RTLRESE-13/14/15/16.
+
+### Scripts agregados
+
+#### `scripts/auto-new-issue-branch.ps1`
+
+Sirve para crear una rama nueva limpia para una sub-issue desde Windows/VS Code con el flujo correcto:
+
+1. entra al repo,
+2. asegura `safe.directory`,
+3. muestra rama actual y `git status --short --branch`,
+4. si hay cambios locales propone/ejecuta `stash`,
+5. cambia a `main`,
+6. ejecuta `pull --ff-only`,
+7. crea y cambia a la rama nueva.
+
+Parametros:
+
+- `-RepoPath`
+  - default: `G:\Users\Admin\Desktop\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA`
+- `-NewBranch`
+  - obligatorio
+- `-DryRun`
+  - opcional; imprime que haria sin mutar Git
+
+Ejemplos exactos:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\auto-new-issue-branch.ps1 -NewBranch feature/rtlrese-13-minimal-backend
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\auto-new-issue-branch.ps1 -NewBranch feature/rtlrese-13-minimal-backend -DryRun
+```
+
+#### `scripts/commit-truth-docs.ps1`
+
+Sirve para commitear SOLO los tres docs operativos de truth:
+
+- `docs/truth/CHANGELOG.md`
+- `docs/truth/NEXT_STEPS.md`
+- `docs/truth/SOURCE_OF_TRUTH.md`
+
+Flujo:
+
+1. entra al repo,
+2. asegura `safe.directory`,
+3. muestra rama actual,
+4. muestra diff solo de esos tres archivos contra `HEAD`,
+5. si no es `DryRun`, hace `git add` solo de esos tres archivos,
+6. hace `git commit -m ...`,
+7. muestra `git status --short` al final.
+
+Parametros:
+
+- `-RepoPath`
+  - default: `G:\Users\Admin\Desktop\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA`
+- `-CommitMessage`
+  - obligatorio
+- `-DryRun`
+  - opcional
+
+Ejemplos exactos:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\commit-truth-docs.ps1 -CommitMessage "docs(truth): actualizar auditoria de rama"
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\commit-truth-docs.ps1 -CommitMessage "docs(truth): actualizar auditoria de rama" -DryRun
+```
+
+### Riesgos que ayudan a evitar
+
+- ramas contaminadas antes de arrancar una sub-issue nueva
+- errores manuales al recordar `safe.directory`
+- copy/paste incompleto de secuencias `stash -> main -> pull -> switch -c`
+- commits accidentales fuera de `docs/truth/*`
+- mezcla de tareas entre producto y auditoria/documentacion
+
+### Validacion local realizada
+
+- `auto-new-issue-branch.ps1` se valido con `-DryRun` en `feature/devx-git-automation-scripts`.
+- La validacion detecto correctamente cambios locales en `scripts/*`, mostro el `stash` esperado y no ejecuto cambios sobre Git.
+- `commit-truth-docs.ps1` debe usarse para revisar/commitear solo `docs/truth/*` del tramo actual.
 
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 

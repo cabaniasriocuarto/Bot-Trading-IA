@@ -1,5 +1,28 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-15
+
+### Scripts locales de automatizacion Git/PowerShell para Windows
+- Se agrego `scripts/auto-new-issue-branch.ps1` para automatizar:
+  - `safe.directory`
+  - inspeccion de rama/status
+  - `stash` defensivo cuando hay cambios locales
+  - `switch main`
+  - `pull --ff-only`
+  - creacion de rama nueva limpia
+- Se agrego `scripts/commit-truth-docs.ps1` para commitear SOLO:
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Motivo operativo:
+  - reducir errores de `copy/paste`,
+  - evitar mezcla de tareas,
+  - evitar olvidos de `safe.directory`,
+  - acelerar el flujo local desde VS Code sobre Windows.
+- Validacion local hecha:
+  - `auto-new-issue-branch.ps1 -DryRun` detecto cambios locales reales y mostro el flujo esperado sin mutar Git.
+- No hubo refactor masivo ni cambios sobre frontend/backend del producto.
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

@@ -1,6 +1,25 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-15
+
+## Tramo vigente: automatizacion local Git/PowerShell en Windows
+- [x] Script para abrir rama nueva limpia:
+  - `scripts/auto-new-issue-branch.ps1`
+- [x] Script para commitear solo `docs/truth/*`:
+  - `scripts/commit-truth-docs.ps1`
+- [x] `safe.directory` integrado al flujo para evitar `dubious ownership`.
+- [x] Validacion local no destructiva hecha con `-DryRun`.
+- [x] Sin mezcla con frontend/backend del bot.
+
+## Proximo uso recomendado del flujo
+1. Antes de una sub-issue nueva, usar:
+   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\auto-new-issue-branch.ps1 -NewBranch feature/<issue>`
+2. Si el tramo fue solo auditoria/docs, commitear con:
+   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\commit-truth-docs.ps1 -CommitMessage "docs(truth): ..."`
+3. Mantener la disciplina de:
+   - una tarea coherente por rama
+   - no seguir en ramas contaminadas
+   - no mezclar producto con auditoria/documentacion
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.
