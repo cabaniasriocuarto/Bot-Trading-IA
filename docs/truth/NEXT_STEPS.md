@@ -1,6 +1,15 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-16
+
+## Siguiente bloque chico tras RTLRESE-7
+- [x] Clasificacion minima `trusted/legacy/quarantine` en `strategy_evidence`.
+- [x] Exclusión de `quarantine` de aprendizaje, guidance y rankings de Option B.
+- [x] `legacy` conservado con `needs_validation` explicito y penalizacion de confianza.
+- [ ] Exponer `evidence_status/evidence_flags` en endpoints o UI solo donde haga falta auditoria operativa, sin volver a mezclar truth con evidence.
+- [ ] Extender esta misma frontera a rankings/catalogos fuera de Option B solo cuando exista un consumidor real y justificado.
+- [ ] Revisar si conviene un backfill chico para episodios legacy historicos que hoy no traen metadata suficiente para clasificacion fina.
+- [ ] Mantener RTLRESE-10 separado: no mezclar esta cuarentena de evidencia con cambios nuevos de producto, frontend o refactors masivos.
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.

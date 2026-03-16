@@ -829,6 +829,10 @@ class RegistryDB:
                 item["summary"] = {}
             summary = item["summary"] if isinstance(item.get("summary"), dict) else {}
             item["bot_id"] = str(item.get("bot_id") or summary.get("bot_id") or "").strip() or None
+            item["evidence_status"] = str(summary.get("evidence_status") or "trusted")
+            raw_flags = summary.get("evidence_flags") if isinstance(summary.get("evidence_flags"), list) else []
+            item["evidence_flags"] = [str(flag).strip() for flag in raw_flags if str(flag).strip()]
+            item["learning_excluded"] = bool(summary.get("learning_excluded", False))
             if requested_bot_ids and item["bot_id"] not in requested_bot_ids:
                 continue
             out.append(item)

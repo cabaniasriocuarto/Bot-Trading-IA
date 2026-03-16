@@ -18,6 +18,14 @@ SOURCE_WEIGHTS = {
     "paper": 0.80,
     "backtest": 0.60,
 }
+EVIDENCE_STATUS_TRUSTED = "trusted"
+EVIDENCE_STATUS_LEGACY = "legacy"
+EVIDENCE_STATUS_QUARANTINE = "quarantine"
+VALID_EVIDENCE_STATUSES = {
+    EVIDENCE_STATUS_TRUSTED,
+    EVIDENCE_STATUS_LEGACY,
+    EVIDENCE_STATUS_QUARANTINE,
+}
 
 
 def _utc_iso() -> str:
@@ -29,6 +37,31 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _has_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def episode_evidence_status(episode: dict[str, Any]) -> str:
+    summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+    raw = str(summary.get("evidence_status") or episode.get("evidence_status") or EVIDENCE_STATUS_TRUSTED).strip().lower()
+    return raw if raw in VALID_EVIDENCE_STATUSES else EVIDENCE_STATUS_TRUSTED
+
+
+def episode_evidence_flags(episode: dict[str, Any]) -> list[str]:
+    summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+    raw = summary.get("evidence_flags") if isinstance(summary.get("evidence_flags"), list) else episode.get("evidence_flags")
+    if not isinstance(raw, list):
+        return []
+    return [str(flag).strip() for flag in raw if str(flag).strip()]
+
+
+def episode_learning_excluded(episode: dict[str, Any]) -> bool:
+    summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+    if "learning_excluded" in summary:
+        return bool(summary.get("learning_excluded"))
+    return episode_evidence_status(episode) == EVIDENCE_STATUS_QUARANTINE
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -175,6 +208,132 @@ class ExperienceStore:
         return "synthetic_seeded"
 
     @staticmethod
+    def _normalized_summary_costs(run: dict[str, Any], *, trades: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+        summary_costs = dict(run.get("costs_breakdown") if isinstance(run.get("costs_breakdown"), dict) else {})
+        flags: list[str] = []
+        if not summary_costs:
+            flags.append("costs_breakdown_missing")
+        trade_rows = [trade for trade in trades if isinstance(trade, dict)]
+        if not trade_rows:
+            return summary_costs, flags
+        can_reconstruct_gross = all("pnl" in trade for trade in trade_rows)
+        can_reconstruct_net = all("pnl_net" in trade for trade in trade_rows)
+        can_reconstruct_components = all(
+            all(key in trade for key in ("fees", "spread_cost", "slippage_cost", "funding_cost"))
+            for trade in trade_rows
+        )
+
+        reconstructed_any = False
+        if can_reconstruct_gross:
+            gross_total = sum(_safe_float(trade.get("pnl")) for trade in trade_rows)
+            if "gross_pnl_total" not in summary_costs:
+                summary_costs["gross_pnl_total"] = gross_total
+                reconstructed_any = True
+        if can_reconstruct_net:
+            net_total = sum(_safe_float(trade.get("pnl_net")) for trade in trade_rows)
+            if "net_pnl_total" not in summary_costs:
+                summary_costs["net_pnl_total"] = net_total
+                reconstructed_any = True
+        if can_reconstruct_components:
+            fees_total = sum(_safe_float(trade.get("fees")) for trade in trade_rows)
+            spread_total = sum(_safe_float(trade.get("spread_cost")) for trade in trade_rows)
+            slippage_total = sum(_safe_float(trade.get("slippage_cost")) for trade in trade_rows)
+            funding_total = sum(_safe_float(trade.get("funding_cost")) for trade in trade_rows)
+            total_cost = fees_total + spread_total + slippage_total + funding_total
+            for key, value in {
+                "total_cost": total_cost,
+                "fees_total": fees_total,
+                "spread_total": spread_total,
+                "slippage_total": slippage_total,
+                "funding_total": funding_total,
+            }.items():
+                if key not in summary_costs and _has_number(value):
+                    summary_costs[key] = value
+                    reconstructed_any = True
+        if reconstructed_any:
+            flags.append("costs_reconstructed_from_trades")
+        return summary_costs, flags
+
+    @staticmethod
+    def _evidence_integrity(
+        *,
+        source: str,
+        asset: str,
+        timeframe: str,
+        start_ts: str,
+        end_ts: str,
+        created_at: str,
+        dataset_source: str,
+        dataset_hash: str,
+        commit_hash: str,
+        validation_mode: str,
+        feature_set: str,
+        validation_quality: str,
+        summary_costs: dict[str, Any],
+        carry_flags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        flags = list(carry_flags or [])
+        quarantine = False
+        legacy = False
+
+        if not asset or asset == "UNKNOWN":
+            flags.append("missing_asset")
+            quarantine = True
+        if not timeframe or timeframe == "unknown":
+            flags.append("missing_timeframe")
+            quarantine = True
+        if not any(str(value or "").strip() for value in (start_ts, end_ts, created_at)):
+            flags.append("missing_temporal_traceability")
+            quarantine = True
+        if source == "backtest" and not str(dataset_hash or "").strip():
+            flags.append("missing_dataset_hash")
+            quarantine = True
+        if source == "backtest" and not str(dataset_source or "").strip():
+            flags.append("missing_dataset_source")
+            legacy = True
+        if not str(commit_hash or "").strip():
+            flags.append("missing_commit_hash")
+            legacy = True
+        if source == "backtest" and not str(validation_mode or "").strip():
+            flags.append("missing_validation_mode")
+            legacy = True
+        if not str(feature_set or "").strip() or str(feature_set).strip().lower() == "unknown":
+            flags.append("missing_feature_set")
+            legacy = True
+
+        gross_total = summary_costs.get("gross_pnl_total", summary_costs.get("gross_pnl"))
+        net_total = summary_costs.get("net_pnl_total", summary_costs.get("net_pnl"))
+        total_cost = summary_costs.get("total_cost")
+        if not (_has_number(gross_total) and _has_number(net_total) and _has_number(total_cost)):
+            flags.append("missing_cost_totals")
+            quarantine = True
+
+        missing_components = [
+            key
+            for key in ("fees_total", "spread_total", "slippage_total", "funding_total")
+            if key not in summary_costs
+        ]
+        if missing_components:
+            flags.append("missing_cost_components")
+            legacy = True
+
+        if "costs_breakdown_missing" in flags:
+            legacy = True
+        if "costs_reconstructed_from_trades" in flags:
+            legacy = True
+        if validation_quality == "synthetic_or_bootstrap":
+            flags.append("synthetic_validation_quality")
+            legacy = True
+
+        unique_flags = sorted(set(str(flag).strip() for flag in flags if str(flag).strip()))
+        status = EVIDENCE_STATUS_QUARANTINE if quarantine else EVIDENCE_STATUS_LEGACY if legacy else EVIDENCE_STATUS_TRUSTED
+        return {
+            "evidence_status": status,
+            "evidence_flags": unique_flags,
+            "learning_excluded": status == EVIDENCE_STATUS_QUARANTINE,
+        }
+
+    @staticmethod
     def _infer_regime(run: dict[str, Any], trade: dict[str, Any] | None = None) -> str:
         if isinstance(trade, dict):
             raw = str(trade.get("regime_label") or "").strip().lower()
@@ -236,7 +395,25 @@ class ExperienceStore:
         )
         trades = run.get("trades") if isinstance(run.get("trades"), list) else []
         summary_metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
-        summary_costs = run.get("costs_breakdown") if isinstance(run.get("costs_breakdown"), dict) else {}
+        summary_costs, summary_cost_flags = self._normalized_summary_costs(run, trades=trades)
+        validation_quality = self._validation_quality(run, source=source)
+        cost_fidelity_level = self._cost_fidelity_level(run, source=source)
+        evidence_integrity = self._evidence_integrity(
+            source=source,
+            asset=asset,
+            timeframe=timeframe,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            created_at=str(run.get("created_at") or ""),
+            dataset_source=dataset_source,
+            dataset_hash=dataset_hash,
+            commit_hash=commit_hash,
+            validation_mode=str(run.get("validation_mode") or ""),
+            feature_set=feature_set,
+            validation_quality=validation_quality,
+            summary_costs=summary_costs,
+            carry_flags=summary_cost_flags,
+        )
         summary = {
             "metrics": summary_metrics,
             "costs_breakdown": summary_costs,
@@ -250,6 +427,9 @@ class ExperienceStore:
             "run_count": 1,
             "orderflow_enabled": bool(run.get("use_orderflow_data", False)),
             "tags": run.get("tags") if isinstance(run.get("tags"), list) else [],
+            "validation_quality": validation_quality,
+            "cost_fidelity_level": cost_fidelity_level,
+            **evidence_integrity,
         }
         self.registry.upsert_experience_episode(
             episode_id=episode_id,
@@ -266,8 +446,8 @@ class ExperienceStore:
             dataset_hash=dataset_hash or None,
             commit_hash=commit_hash or None,
             costs_profile_id=self._costs_profile_id(run),
-            validation_quality=self._validation_quality(run, source=source),
-            cost_fidelity_level=self._cost_fidelity_level(run, source=source),
+            validation_quality=validation_quality,
+            cost_fidelity_level=cost_fidelity_level,
             feature_set=feature_set,
             notes=str(run.get("notes") or ""),
             summary=summary,
@@ -426,7 +606,11 @@ class ExperienceStore:
         return events
 
     def _refresh_regime_kpis(self, strategy_id: str) -> None:
-        episodes = self.registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest", "shadow", "paper", "testnet"])
+        episodes = [
+            row
+            for row in self.registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest", "shadow", "paper", "testnet"])
+            if not episode_learning_excluded(row)
+        ]
         if not episodes:
             self.registry.replace_regime_kpis(strategy_id, [])
             return
@@ -518,17 +702,21 @@ class ExperienceStore:
         self.registry.replace_regime_kpis(strategy_id, out)
 
     def _refresh_strategy_guidance(self, strategy_id: str) -> None:
+        all_episodes = self.registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest", "shadow", "paper", "testnet"])
+        legacy_count = sum(1 for row in all_episodes if episode_evidence_status(row) == EVIDENCE_STATUS_LEGACY)
+        quarantine_count = sum(1 for row in all_episodes if episode_evidence_status(row) == EVIDENCE_STATUS_QUARANTINE)
         rows = self.registry.list_regime_kpis(strategy_id=strategy_id)
         if not rows:
-            self.registry.upsert_strategy_policy_guidance(strategy_id=strategy_id, notes="Sin experiencia suficiente.")
+            notes = "Sin experiencia suficiente."
+            if quarantine_count:
+                notes += f" Evidencia quarantine excluida: {quarantine_count} episodio(s)."
+            self.registry.upsert_strategy_policy_guidance(strategy_id=strategy_id, notes=notes)
             return
         preferred: list[tuple[str, float]] = []
         avoid: list[str] = []
         spreads: list[float] = []
         vpins: list[float] = []
-        events = self.registry.list_experience_events(
-            episode_ids=[str(row.get("id") or "") for row in self.registry.list_experience_episodes(strategy_ids=[strategy_id])]
-        )
+        events = self.registry.list_experience_events(episode_ids=[str(row.get("id") or "") for row in all_episodes if not episode_learning_excluded(row)])
         for event in events:
             if isinstance(event.get("spread_bps"), (int, float)):
                 spreads.append(float(event["spread_bps"]))
@@ -546,6 +734,11 @@ class ExperienceStore:
         preferred.sort(key=lambda item: item[1], reverse=True)
         preferred_regimes = [regime for regime, _score in preferred[:3]]
         avoid_regimes = sorted(set(avoid))
+        notes = "Guidance derivada de experiencia neta por regimen (Opcion B, no auto-aplica)."
+        if legacy_count:
+            notes += f" Evidencia legacy presente: {legacy_count} episodio(s), requiere validacion adicional."
+        if quarantine_count:
+            notes += f" Evidencia quarantine excluida: {quarantine_count} episodio(s)."
         self.registry.upsert_strategy_policy_guidance(
             strategy_id=strategy_id,
             preferred_regimes=preferred_regimes,
@@ -555,5 +748,5 @@ class ExperienceStore:
             max_spread_bps_allowed=(mean(spreads) * 1.25) if spreads else None,
             max_vpin_allowed=min(0.95, mean(vpins) * 1.1) if vpins else None,
             cost_stress_result="fail" if any(_safe_float(row.get("expectancy_net")) - (1.5 * _safe_float(row.get("cost_ratio"))) < 0 for row in rows) else "pass",
-            notes="Guidance derivada de experiencia neta por régimen (Opción B, no auto-aplica).",
+            notes=notes,
         )
