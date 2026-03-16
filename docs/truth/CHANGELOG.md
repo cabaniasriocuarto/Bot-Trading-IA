@@ -26,6 +26,27 @@
 - Validacion local:
   - `uv run python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/domains/common.py rtlab_autotrader/rtlab_core/domains/truth/repository.py rtlab_autotrader/rtlab_core/domains/evidence/repository.py rtlab_autotrader/rtlab_core/domains/policy_state/repository.py rtlab_autotrader/rtlab_core/domains/decision_log/repository.py` -> PASS
 
+### RTLRESE-14 backend API contracts por dominio
+- Backend FastAPI:
+  - agrega `GET /api/v1/strategies/{strategy_id}/truth`
+  - agrega `GET /api/v1/strategies/{strategy_id}/evidence`
+  - agrega `GET /api/v1/bots/{bot_id}/policy-state`
+  - agrega `PATCH /api/v1/bots/{bot_id}/policy-state`
+  - agrega `GET /api/v1/bots/{bot_id}/decision-log`
+- Compatibilidad:
+  - `GET /api/v1/strategies/{strategy_id}` se mantiene como endpoint legado y ahora recompone `last_oos` desde los helpers de dominio.
+- Frontera operativa:
+  - `truth` ya no comparte payload principal con evidencia;
+  - `policy_state` queda separado del patch generico de bot;
+  - `decision_log` queda separado de `logs` globales.
+- Alcance explicitamente no mezclado:
+  - sin cambios en frontend;
+  - sin tocar RTLRESE-15/16.
+- Validacion:
+  - `py_compile` sobre `app.py` y `test_web_live_ready.py` -> PASS
+  - smoke funcional directo sobre `ConsoleStore` -> PASS
+  - smoke HTTP con `pytest` bloqueado por entorno (`httpx` faltante para `starlette.testclient`)
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

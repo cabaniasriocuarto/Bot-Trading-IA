@@ -456,6 +456,15 @@ class BotPatchBody(BaseModel):
     notes: str | None = None
 
 
+class BotPolicyStatePatchBody(BaseModel):
+    engine: str | None = None
+    mode: Literal["shadow", "paper", "testnet", "live"] | None = None
+    status: Literal["active", "paused", "archived"] | None = None
+    pool_strategy_ids: list[str] | None = None
+    universe: list[str] | None = None
+    notes: str | None = None
+
+
 class BotBulkPatchBody(BaseModel):
     ids: list[str]
     engine: str | None = None
@@ -1955,6 +1964,16 @@ class ConsoleStore:
     def _log_has_bot_ref(related_ids: list[str], payload: dict[str, Any]) -> bool:
         return bool(ConsoleStore._extract_bot_refs_from_log(related_ids, payload))
 
+    @classmethod
+    def _log_targets_bot(cls, log_row: dict[str, Any], bot_id: str) -> bool:
+        if not isinstance(log_row, dict):
+            return False
+        refs = cls._extract_bot_refs_from_log(
+            log_row.get("related_ids") if isinstance(log_row.get("related_ids"), list) else [],
+            log_row.get("payload") if isinstance(log_row.get("payload"), dict) else {},
+        )
+        return str(bot_id or "").strip() in refs
+
     @staticmethod
     def _normalize_breaker_mode(value: str | None) -> str:
         mode = str(value or "").strip().lower()
@@ -2834,6 +2853,51 @@ def risk_hooks(context):
 
     def save_bots(self, rows: list[dict[str, Any]]) -> None:
         self.policy_state.save_bot_rows(rows)
+
+    def bot_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot_id_n = str(bot_id or "").strip()
+        for row in self.load_bots():
+            if str(row.get("id") or "") == bot_id_n:
+                return dict(row)
+        raise HTTPException(status_code=404, detail="BotInstance not found")
+
+    @staticmethod
+    def _bot_policy_state_payload(bot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "engine": str(bot.get("engine") or "bandit_thompson"),
+            "mode": str(bot.get("mode") or "paper"),
+            "status": str(bot.get("status") or "active"),
+            "pool_strategy_ids": [str(item) for item in (bot.get("pool_strategy_ids") or []) if str(item).strip()],
+            "universe": [str(item) for item in (bot.get("universe") or []) if str(item).strip()],
+            "notes": str(bot.get("notes") or ""),
+            "created_at": str(bot.get("created_at") or ""),
+            "updated_at": str(bot.get("updated_at") or ""),
+        }
+
+    def bot_policy_state_or_404(self, bot_id: str) -> dict[str, Any]:
+        return self._bot_policy_state_payload(self.bot_or_404(bot_id))
+
+    def patch_bot_policy_state(
+        self,
+        bot_id: str,
+        *,
+        engine: str | None = None,
+        mode: str | None = None,
+        status: str | None = None,
+        pool_strategy_ids: list[str] | None = None,
+        universe: list[str] | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        bot = self.patch_bot_instance(
+            bot_id,
+            engine=engine,
+            mode=mode,
+            status=status,
+            pool_strategy_ids=pool_strategy_ids,
+            universe=universe,
+            notes=notes,
+        )
+        return self._bot_policy_state_payload(bot)
 
     def _ensure_default_bots(self) -> None:
         rows = self.load_bots()
@@ -3906,6 +3970,38 @@ def risk_hooks(context):
             "status": str(reg.get("status") or row.get("status") or ("active" if row.get("enabled") else "disabled")),
             "created_at": row.get("created_at", utc_now_iso()),
             "updated_at": row.get("updated_at", utc_now_iso()),
+        }
+
+    def strategy_truth_or_404(self, strategy_id: str) -> dict[str, Any]:
+        return self.strategy_or_404(strategy_id)
+
+    def strategy_evidence_or_404(self, strategy_id: str, *, limit: int = 10) -> dict[str, Any]:
+        strategy = self.strategy_or_404(strategy_id)
+        rows = [row for row in self.load_runs() if str((row or {}).get("strategy_id") or "") == strategy_id]
+        rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        items: list[dict[str, Any]] = []
+        for row in rows[: max(1, int(limit))]:
+            params_json = row.get("params_json") if isinstance(row.get("params_json"), dict) else {}
+            items.append(
+                {
+                    "run_id": str(row.get("id") or ""),
+                    "mode": str(row.get("mode") or "backtest"),
+                    "created_at": str(row.get("created_at") or ""),
+                    "metrics": row.get("metrics") if isinstance(row.get("metrics"), dict) else {},
+                    "tags": [str(tag) for tag in (row.get("tags") or []) if str(tag).strip()],
+                    "notes": str(row.get("notes") or ""),
+                    "validation_mode": str(params_json.get("validation_mode") or ""),
+                }
+            )
+        latest = items[0] if items else None
+        return {
+            "strategy_id": strategy_id,
+            "strategy_version": str(strategy.get("version") or "0.0.0"),
+            "last_run_at": strategy.get("last_run_at"),
+            "run_count": len(rows),
+            "last_oos": (latest.get("metrics") if isinstance(latest, dict) else None),
+            "latest_run": latest,
+            "items": items,
         }
 
     def set_strategy_enabled(self, strategy_id: str, enabled: bool) -> dict[str, Any]:
@@ -5191,6 +5287,128 @@ def risk_hooks(context):
             page=page,
             page_size=page_size,
         )
+
+    def list_breaker_events_for_bot(
+        self,
+        bot_id: str,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        bot = self.bot_or_404(bot_id)
+        clauses = ["bot_id = ?"]
+        params: list[Any] = [str(bot.get("id") or bot_id)]
+        if since:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until:
+            clauses.append("ts <= ?")
+            params.append(until)
+        where_sql = f"WHERE {' AND '.join(clauses)}"
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, ts, bot_id, mode, reason, run_id, symbol, source_log_id
+                FROM breaker_events
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                tuple(params + [max(1, int(limit))]),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "ts": str(row["ts"] or ""),
+                "bot_id": str(row["bot_id"] or ""),
+                "mode": str(row["mode"] or ""),
+                "reason": str(row["reason"] or ""),
+                "run_id": str(row["run_id"] or "") if row["run_id"] is not None else None,
+                "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
+                "source_log_id": int(row["source_log_id"]) if row["source_log_id"] is not None else None,
+            }
+            for row in rows
+        ]
+
+    def bot_decision_log(
+        self,
+        bot_id: str,
+        *,
+        severity: str | None,
+        module: str | None,
+        since: str | None,
+        until: str | None,
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        bot_id_n = str(bot.get("id") or bot_id)
+        clauses = ["r.bot_id = ?"]
+        params: list[Any] = [bot_id_n]
+        if severity:
+            clauses.append("l.severity = ?")
+            params.append(severity)
+        if module:
+            clauses.append("l.module = ?")
+            params.append(module)
+        if since:
+            clauses.append("l.ts >= ?")
+            params.append(since)
+        if until:
+            clauses.append("l.ts <= ?")
+            params.append(until)
+        where_sql = f"WHERE {' AND '.join(clauses)}"
+        offset = (max(page, 1) - 1) * max(page_size, 1)
+        items: list[dict[str, Any]]
+        total: int
+        try:
+            with self._connect() as conn:
+                total_row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS n
+                    FROM log_bot_refs r
+                    JOIN logs l ON l.id = r.log_id
+                    {where_sql}
+                    """,
+                    tuple(params),
+                ).fetchone()
+                rows = conn.execute(
+                    f"""
+                    SELECT l.*
+                    FROM log_bot_refs r
+                    JOIN logs l ON l.id = r.log_id
+                    {where_sql}
+                    ORDER BY l.id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    tuple(params + [page_size, offset]),
+                ).fetchall()
+            items = [self._log_row_to_dict(row) for row in rows]
+            total = int(total_row["n"]) if total_row else 0
+        except sqlite3.OperationalError:
+            fallback_rows = [
+                row
+                for row in self.list_logs(
+                    severity=severity,
+                    module=module,
+                    since=since,
+                    until=until,
+                    page=1,
+                    page_size=5000,
+                )["items"]
+                if self._log_targets_bot(row, bot_id_n)
+            ]
+            total = len(fallback_rows)
+            items = fallback_rows[offset : offset + max(page_size, 1)]
+        return {
+            "bot_id": bot_id_n,
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "breaker_events": self.list_breaker_events_for_bot(bot_id_n, since=since, until=until, limit=min(max(page_size, 1), 250)),
+        }
 
     @staticmethod
     def _log_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -8320,15 +8538,24 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/strategies/{strategy_id}")
     def strategy_detail(strategy_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        strategy = store.strategy_or_404(strategy_id)
-        principals = store.registry.principals()
-        primary_for = [row["mode"] for row in principals if row["name"] == strategy_id]
-        run = store.latest_run_for_strategy(strategy_id)
+        strategy = store.strategy_truth_or_404(strategy_id)
+        evidence = store.strategy_evidence_or_404(strategy_id, limit=1)
         return {
             **strategy,
-            "primary_for_modes": primary_for,
-            "last_oos": run["metrics"] if run else None,
+            "last_oos": evidence.get("last_oos"),
         }
+
+    @app.get("/api/v1/strategies/{strategy_id}/truth")
+    def strategy_truth(strategy_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.strategy_truth_or_404(strategy_id)
+
+    @app.get("/api/v1/strategies/{strategy_id}/evidence")
+    def strategy_evidence(
+        strategy_id: str,
+        limit: int = Query(default=10, ge=1, le=50),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.strategy_evidence_or_404(strategy_id, limit=limit)
 
     @app.get("/api/v1/strategies/{strategy_id}/kpis")
     def strategy_kpis(
@@ -8541,6 +8768,55 @@ def create_app() -> FastAPI:
         items = store.list_bot_instances(recommendations=recs)
         enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
         return {"ok": True, "bot": enriched}
+
+    @app.get("/api/v1/bots/{bot_id}/policy-state")
+    def bot_policy_state(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {"bot_id": bot_id, "policy_state": store.bot_policy_state_or_404(bot_id)}
+
+    @app.patch("/api/v1/bots/{bot_id}/policy-state")
+    def patch_bot_policy_state(bot_id: str, body: BotPolicyStatePatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        if (
+            body.engine is None
+            and body.mode is None
+            and body.status is None
+            and body.pool_strategy_ids is None
+            and body.universe is None
+            and body.notes is None
+        ):
+            raise HTTPException(status_code=400, detail="At least one policy_state field is required")
+        ensure_bot_live_mode_allowed(body.mode)
+        policy_state = store.patch_bot_policy_state(
+            bot_id,
+            engine=body.engine,
+            mode=body.mode,
+            status=body.status,
+            pool_strategy_ids=body.pool_strategy_ids,
+            universe=body.universe,
+            notes=body.notes,
+        )
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "bot_id": bot_id, "policy_state": policy_state}
+
+    @app.get("/api/v1/bots/{bot_id}/decision-log")
+    def bot_decision_log(
+        bot_id: str,
+        severity: str | None = None,
+        module: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.bot_decision_log(
+            bot_id,
+            severity=severity,
+            module=module,
+            since=since,
+            until=until,
+            page=page,
+            page_size=page_size,
+        )
 
     @app.delete("/api/v1/bots/{bot_id}")
     def delete_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
