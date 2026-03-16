@@ -1,6 +1,32 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-06
+Fecha de actualizacion: 2026-03-16
+
+## RTLRESE-14 API contracts por dominio - 2026-03-16
+
+- FastAPI ya expone endpoints separados por dominio operativo:
+  - `GET /api/v1/strategies/{strategy_id}/truth`
+  - `GET /api/v1/strategies/{strategy_id}/evidence`
+  - `GET /api/v1/bots/{bot_id}/policy-state`
+  - `PATCH /api/v1/bots/{bot_id}/policy-state`
+  - `GET /api/v1/bots/{bot_id}/decision-log`
+- `GET /api/v1/strategies/{strategy_id}` queda como contrato legado de compatibilidad:
+  - sigue devolviendo `last_oos`;
+  - internamente se recompone desde `truth + evidence`.
+- Frontera semantica vigente en backend:
+  - `strategy_truth`: metadata/flags/params/registry de la estrategia.
+  - `strategy_evidence`: resumen de runs y evidencia observada (`latest_run`, `last_oos`, `run_count`).
+  - `bot_policy_state`: configuracion operativa del bot (`engine`, `mode`, `status`, `pool_strategy_ids`, `universe`, `notes`).
+  - `bot_decision_log`: logs y `breaker_events` filtrados por `bot_id`.
+- Alcance explicitamente acotado en esta sub-issue:
+  - sin cambios de frontend;
+  - sin mezclar RTLRESE-15 ni RTLRESE-16;
+  - sin refactor masivo de routers.
+- Validacion local ejecutada:
+  - `uv run --project rtlab_autotrader --extra dev python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - smoke funcional directo sobre `ConsoleStore` en `user_data` temporal -> PASS
+- Limitacion abierta de entorno:
+  - el smoke HTTP de `pytest` para estos endpoints no corrio porque `starlette.testclient` requiere `httpx` instalado en la venv actual.
 
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 

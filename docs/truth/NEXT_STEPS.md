@@ -1,6 +1,20 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-16
+
+## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
+- [x] RTLRESE-13:
+  - persistencia backend separada por dominio (`truth/evidence/policy_state/decision_log`).
+- [x] RTLRESE-14:
+  - contratos FastAPI separados por dominio:
+    - `GET /api/v1/strategies/{strategy_id}/truth`
+    - `GET /api/v1/strategies/{strategy_id}/evidence`
+    - `GET /api/v1/bots/{bot_id}/policy-state`
+    - `PATCH /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/decision-log`
+- [ ] Seguimiento chico posterior a RTLRESE-14:
+  - migrar consumidores hacia estos contratos de dominio y reducir dependencia de endpoints legacy mezclados (`GET /api/v1/strategies/{id}`, `PATCH /api/v1/bots/{id}`, `GET /api/v1/logs`);
+  - agregar smoke HTTP de estos endpoints cuando la venv tenga `httpx` y pueda correr `starlette.testclient`.
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.

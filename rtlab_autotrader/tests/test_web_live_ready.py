@@ -3392,6 +3392,79 @@ def test_strategy_kpis_endpoints_and_run_provenance(tmp_path: Path, monkeypatch)
   assert {"trend", "range", "high_vol", "toxic"} <= set(regimes.keys())
 
 
+def test_api_domain_contracts_split_truth_evidence_policy_state_and_decision_log(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  assert strategies.status_code == 200, strategies.text
+  strategy_id = strategies.json()[0]["id"]
+
+  legacy_res = client.get(f"/api/v1/strategies/{strategy_id}", headers=headers)
+  truth_res = client.get(f"/api/v1/strategies/{strategy_id}/truth", headers=headers)
+  evidence_res = client.get(f"/api/v1/strategies/{strategy_id}/evidence?limit=2", headers=headers)
+  assert legacy_res.status_code == 200, legacy_res.text
+  assert truth_res.status_code == 200, truth_res.text
+  assert evidence_res.status_code == 200, evidence_res.text
+
+  legacy_payload = legacy_res.json()
+  truth_payload = truth_res.json()
+  evidence_payload = evidence_res.json()
+  assert truth_payload["id"] == strategy_id
+  assert "last_oos" not in truth_payload
+  assert "last_oos" in legacy_payload
+  assert evidence_payload["strategy_id"] == strategy_id
+  assert "items" in evidence_payload and isinstance(evidence_payload["items"], list)
+  assert "latest_run" in evidence_payload
+
+  bots_res = client.get("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0", headers=headers)
+  assert bots_res.status_code == 200, bots_res.text
+  bot_id = str((bots_res.json().get("items") or [])[0]["id"])
+
+  policy_state_res = client.get(f"/api/v1/bots/{bot_id}/policy-state", headers=headers)
+  assert policy_state_res.status_code == 200, policy_state_res.text
+  policy_state_payload = policy_state_res.json()
+  assert policy_state_payload["bot_id"] == bot_id
+  assert "name" not in (policy_state_payload.get("policy_state") or {})
+  assert "mode" in (policy_state_payload.get("policy_state") or {})
+
+  patch_policy_state_res = client.patch(
+    f"/api/v1/bots/{bot_id}/policy-state",
+    headers=headers,
+    json={"status": "paused", "notes": "rtlrese-14 smoke"},
+  )
+  assert patch_policy_state_res.status_code == 200, patch_policy_state_res.text
+  patched_policy_state = patch_policy_state_res.json()["policy_state"]
+  assert patched_policy_state["status"] == "paused"
+  assert patched_policy_state["notes"] == "rtlrese-14 smoke"
+
+  module.store.add_log(
+    event_type="decision_snapshot",
+    severity="info",
+    module="tests",
+    message="RTLRESE_14_DECISION",
+    related_ids=[bot_id],
+    payload={"bot_id": bot_id, "decision": "hold"},
+  )
+  module.store.add_log(
+    event_type="breaker_triggered",
+    severity="warn",
+    module="risk",
+    message="RTLRESE_14_BREAKER",
+    related_ids=[bot_id],
+    payload={"bot_id": bot_id, "mode": "paper", "reason": "rtlrese_14_smoke", "run_id": "RUN-SMOKE"},
+  )
+
+  decision_log_res = client.get(f"/api/v1/bots/{bot_id}/decision-log", headers=headers)
+  assert decision_log_res.status_code == 200, decision_log_res.text
+  decision_log_payload = decision_log_res.json()
+  assert decision_log_payload["bot_id"] == bot_id
+  messages = [str(row.get("message") or "") for row in (decision_log_payload.get("items") or [])]
+  assert "RTLRESE_14_DECISION" in messages
+  assert any(str(row.get("reason") or "") == "rtlrese_14_smoke" for row in (decision_log_payload.get("breaker_events") or []))
+
+
 def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
