@@ -1,6 +1,64 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-06
+Fecha de actualizacion: 2026-03-16
+
+## RTLRESE-13: separacion backend por dominio operativo y dominio de verdad - 2026-03-16
+
+- Rama de trabajo:
+  - `feature/rtlrese-13-backend-domains`
+- Se aplico una separacion minima y segura del backend sin cambiar contratos FastAPI ni tocar frontend.
+- El backend ahora tiene una frontera explicita en:
+  - `rtlab_autotrader/rtlab_core/domains/truth/`
+  - `rtlab_autotrader/rtlab_core/domains/evidence/`
+  - `rtlab_autotrader/rtlab_core/domains/policy_state/`
+  - `rtlab_autotrader/rtlab_core/domains/decision_log/`
+
+### Mapeo real de dominios
+
+- `strategy_truth`
+  - persistencia de metadata de estrategias (`strategy_meta.json`)
+  - repositorio: `StrategyTruthRepository`
+- `strategy_evidence`
+  - runs persistidos (`runs.json`)
+  - cableado a `ExperienceStore` para evidencia/episodios
+  - repositorio: `StrategyEvidenceRepository`
+- `bot_policy_state`
+  - `console_settings.json`
+  - `logs/bot_state.json`
+  - `learning/bots.json`
+  - repositorio: `BotPolicyStateRepository`
+- `bot_decision_log`
+  - `console_api.sqlite3`
+  - tablas/flujo operativo de `logs` y `breaker_events`
+  - repositorio: `BotDecisionLogRepository`
+
+### Cambio arquitectonico real
+
+- `ConsoleStore` pasa a ser un orquestador fino que delega persistencia a repositorios por dominio.
+- La separacion se hizo sin refactor masivo:
+  - se preservan endpoints y payloads actuales
+  - se preserva el cableado actual con `ExperienceStore`, `BacktestCatalogDB` y `RegistryDB`
+- Esto mantiene la frontera de backend mas clara sin abrir una migracion grande en esta rama.
+
+### Lo que NO se hizo en este tramo
+
+- NO se hizo split profundo de `RegistryDB` tabla por tabla.
+- NO se reescribieron servicios de rollout ni learning fuera de lo minimo necesario para la frontera de persistencia.
+- NO se tocaron contratos frontend ni UI.
+- NO se mezclo esta sub-issue con RTLRESE-14/15/16.
+
+### Pendiente consciente
+
+- `RegistryDB` todavia agrupa tablas de:
+  - `strategy_registry`
+  - `experience_*`
+  - `learning_proposal`
+  - `strategy_policy_guidance`
+- Si el siguiente paso de RTLRESE-13 requiere profundizar la separacion, conviene partir ese storage interno en repositorios/submodulos por dominio sin romper contratos actuales.
+
+### Validacion local de este tramo
+
+- `uv run python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/domains/common.py rtlab_autotrader/rtlab_core/domains/truth/repository.py rtlab_autotrader/rtlab_core/domains/evidence/repository.py rtlab_autotrader/rtlab_core/domains/policy_state/repository.py rtlab_autotrader/rtlab_core/domains/decision_log/repository.py` -> PASS
 
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 

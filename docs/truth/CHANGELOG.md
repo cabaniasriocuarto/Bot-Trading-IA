@@ -1,5 +1,31 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-16
+
+### RTLRESE-13 backend domains: separacion minima por dominio
+- Backend:
+  - nuevo arbol operativo en `rtlab_autotrader/rtlab_core/domains/`:
+    - `truth/`
+    - `evidence/`
+    - `policy_state/`
+    - `decision_log/`
+  - `ConsoleStore` deja de persistir directo `strategy_meta`, `runs`, `settings`, `bot_state`, `bots` y `logs`;
+  - ahora delega esa persistencia a repositorios de dominio explicitos.
+- Frontera semantica aplicada:
+  - `strategy_truth` -> metadata persistente de estrategias
+  - `strategy_evidence` -> runs + cableado a `ExperienceStore`
+  - `bot_policy_state` -> `console_settings.json`, `bot_state.json`, `bots.json`
+  - `bot_decision_log` -> `console_api.sqlite3` (`logs`, `breaker_events`)
+- Alcance:
+  - sin refactor masivo de endpoints
+  - sin cambios de frontend
+  - sin mezclar RTLRESE-14/15/16
+- Pendiente documentado:
+  - `RegistryDB` sigue agrupando tablas de truth/evidence/policy guidance;
+  - si hace falta profundizar la separacion, ese split interno queda para un tramo posterior.
+- Validacion local:
+  - `uv run python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/domains/common.py rtlab_autotrader/rtlab_core/domains/truth/repository.py rtlab_autotrader/rtlab_core/domains/evidence/repository.py rtlab_autotrader/rtlab_core/domains/policy_state/repository.py rtlab_autotrader/rtlab_core/domains/decision_log/repository.py` -> PASS
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

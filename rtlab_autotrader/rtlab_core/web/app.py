@@ -28,6 +28,12 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from rtlab_core.config import load_config
+from rtlab_core.domains import (
+    BotDecisionLogRepository,
+    BotPolicyStateRepository,
+    StrategyEvidenceRepository,
+    StrategyTruthRepository,
+)
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
@@ -1784,7 +1790,34 @@ class ConsoleStore:
     def __init__(self) -> None:
         ensure_paths()
         self.registry = RegistryDB(REGISTRY_DB_PATH)
-        self.experience_store = ExperienceStore(self.registry)
+        self.strategy_truth = StrategyTruthRepository(meta_path=STRATEGY_META_PATH)
+        self.strategy_evidence = StrategyEvidenceRepository(
+            runs_path=RUNS_PATH,
+            experience_store=ExperienceStore(self.registry),
+        )
+        self.policy_state = BotPolicyStateRepository(
+            settings_path=SETTINGS_PATH,
+            bot_state_path=BOT_STATE_PATH,
+            bots_path=BOTS_PATH,
+            default_mode=default_mode,
+            exchange_name=exchange_name,
+            exchange_keys_present=exchange_keys_present,
+            get_env=get_env,
+            runtime_engine_default=runtime_engine_default,
+            runtime_engine_real=RUNTIME_ENGINE_REAL,
+            runtime_engine_simulated=RUNTIME_ENGINE_SIMULATED,
+            runtime_contract_version=RUNTIME_CONTRACT_VERSION,
+            runtime_telemetry_source_synthetic=RUNTIME_TELEMETRY_SOURCE_SYNTHETIC,
+            runtime_telemetry_source_real=RUNTIME_TELEMETRY_SOURCE_REAL,
+        )
+        self.decision_log = BotDecisionLogRepository(
+            db_path=CONSOLE_DB_PATH,
+            schema_sql=LOG_SCHEMA_SQL,
+            backfill_max_rows=BOTS_LOGS_REF_BACKFILL_MAX_ROWS,
+            integrity_window_hours=BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS,
+            unknown_ratio_warn=BREAKER_EVENTS_UNKNOWN_RATIO_WARN,
+            unknown_min_events=BREAKER_EVENTS_UNKNOWN_MIN_EVENTS,
+        )
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
@@ -1798,9 +1831,7 @@ class ConsoleStore:
         source_override: str | None = None,
         bot_id: str | None = None,
     ) -> dict[str, Any] | None:
-        if not isinstance(run, dict):
-            return None
-        return self.experience_store.record_run(run, source_override=source_override, bot_id=bot_id)
+        return self.strategy_evidence.record_run(run, source_override=source_override, bot_id=bot_id)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(CONSOLE_DB_PATH)
@@ -1808,11 +1839,7 @@ class ConsoleStore:
         return conn
 
     def _init_console_db(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(LOG_SCHEMA_SQL)
-            self._ensure_console_db_migrations(conn)
-            self._backfill_breaker_events_from_logs(conn)
-            conn.commit()
+        self.decision_log.initialize()
 
     def _ensure_console_db_migrations(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
@@ -2001,96 +2028,7 @@ class ConsoleStore:
             )
 
     def breaker_events_integrity(self, *, window_hours: int | None = None, strict: bool = True) -> dict[str, Any]:
-        window_h = max(1, int(window_hours or BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS))
-        since = (utc_now() - timedelta(hours=window_h)).isoformat()
-        ratio_warn = float(BREAKER_EVENTS_UNKNOWN_RATIO_WARN)
-        min_events_warn = int(BREAKER_EVENTS_UNKNOWN_MIN_EVENTS)
-        strict_mode = bool(strict)
-
-        def _query_counts(conn: sqlite3.Connection, *, since_ts: str | None = None) -> dict[str, Any]:
-            where_sql = "WHERE ts >= ?" if since_ts else ""
-            params: tuple[Any, ...] = (since_ts,) if since_ts else ()
-            row = conn.execute(
-                f"""
-                SELECT
-                    COUNT(*) AS total,
-                    SUM(CASE WHEN bot_id='unknown_bot' THEN 1 ELSE 0 END) AS unknown_bot_total,
-                    SUM(CASE WHEN mode='unknown' THEN 1 ELSE 0 END) AS unknown_mode_total,
-                    SUM(CASE WHEN bot_id='unknown_bot' OR mode='unknown' THEN 1 ELSE 0 END) AS unknown_any_total
-                FROM breaker_events
-                {where_sql}
-                """,
-                params,
-            ).fetchone()
-            mode_rows = conn.execute(
-                f"""
-                SELECT mode, COUNT(*) AS n
-                FROM breaker_events
-                {where_sql}
-                GROUP BY mode
-                """,
-                params,
-            ).fetchall()
-            total = int((row["total"] if row is not None else 0) or 0)
-            unknown_bot_total = int((row["unknown_bot_total"] if row is not None else 0) or 0)
-            unknown_mode_total = int((row["unknown_mode_total"] if row is not None else 0) or 0)
-            unknown_any_total = int((row["unknown_any_total"] if row is not None else 0) or 0)
-            mode_counts = {str(r["mode"] or "unknown"): int(r["n"] or 0) for r in mode_rows}
-            return {
-                "total": total,
-                "unknown_bot_total": unknown_bot_total,
-                "unknown_mode_total": unknown_mode_total,
-                "unknown_any_total": unknown_any_total,
-                "unknown_bot_ratio": round((unknown_bot_total / total), 6) if total else 0.0,
-                "unknown_mode_ratio": round((unknown_mode_total / total), 6) if total else 0.0,
-                "unknown_any_ratio": round((unknown_any_total / total), 6) if total else 0.0,
-                "mode_counts": mode_counts,
-            }
-
-        with self._connect() as conn:
-            overall = _query_counts(conn)
-            window = _query_counts(conn, since_ts=since)
-
-        warnings: list[str] = []
-
-        def _warn_if_high_unknown(scope_name: str, payload: dict[str, Any]) -> None:
-            if int(payload.get("total") or 0) < min_events_warn:
-                return
-            if float(payload.get("unknown_any_ratio") or 0.0) > ratio_warn:
-                warnings.append(
-                    f"{scope_name}: unknown_any_ratio={payload.get('unknown_any_ratio')} "
-                    f"supera umbral={round(ratio_warn, 6)} con total={payload.get('total')}"
-                )
-
-        _warn_if_high_unknown("overall", overall)
-        _warn_if_high_unknown(f"window_{window_h}h", window)
-
-        if int(overall.get("total") or 0) == 0:
-            status = "NO_DATA"
-        elif warnings:
-            status = "WARN"
-        else:
-            status = "PASS"
-
-        if strict_mode:
-            ok = status == "PASS"
-        else:
-            ok = status != "WARN"
-
-        return {
-            "status": status,
-            "ok": ok,
-            "strict_mode": strict_mode,
-            "generated_at": utc_now_iso(),
-            "window_hours": window_h,
-            "thresholds": {
-                "unknown_ratio_warn": round(ratio_warn, 6),
-                "min_events_warn": min_events_warn,
-            },
-            "overall": overall,
-            "window": window,
-            "warnings": warnings,
-        }
+        return self.decision_log.breaker_events_integrity(window_hours=window_hours, strict=strict)
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
@@ -2110,172 +2048,10 @@ class ConsoleStore:
         )
 
     def _ensure_default_settings(self) -> None:
-        settings = json_load(SETTINGS_PATH, {})
-        if not isinstance(settings, dict):
-            settings = {}
-        learning_defaults = LearningService.default_learning_settings()
-        rollout_defaults = RolloutManager.default_rollout_config()
-        blending_defaults = RolloutManager.default_blending_config()
-        risk_defaults = {
-            "max_daily_loss": 5.0,
-            "max_dd": 22.0,
-            "max_positions": 20,
-            "risk_per_trade": 0.75,
-        }
-        execution_defaults = {
-            "post_only_default": True,
-            "slippage_max_bps": 12,
-            "request_timeout_ms": 4000,
-        }
-        feature_flag_defaults = {
-            "orderflow": True,
-            "vpin": True,
-            "ml": False,
-            "alerts": True,
-        }
-        if not settings:
-            settings = {
-                "mode": default_mode().upper(),
-                "exchange": exchange_name(),
-                "exchange_plugin_options": ["binance", "bybit", "oanda", "alpaca"],
-                "credentials": {
-                    "exchange_configured": exchange_keys_present(default_mode()),
-                    "telegram_configured": bool(get_env("TELEGRAM_BOT_TOKEN") and get_env("TELEGRAM_CHAT_ID")),
-                    "telegram_chat_id": get_env("TELEGRAM_CHAT_ID"),
-                },
-                "telegram": {
-                    "enabled": get_env("TELEGRAM_ENABLED", "false").lower() == "true",
-                    "chat_id": get_env("TELEGRAM_CHAT_ID"),
-                },
-                "risk_defaults": risk_defaults,
-                "execution": execution_defaults,
-                "feature_flags": feature_flag_defaults,
-                "learning": learning_defaults,
-                "rollout": rollout_defaults,
-                "blending": blending_defaults,
-                "gate_checklist": [],
-            }
-        if not isinstance(settings.get("mode"), str) or not str(settings.get("mode") or "").strip():
-            settings["mode"] = default_mode().upper()
-        if not isinstance(settings.get("exchange"), str) or not str(settings.get("exchange") or "").strip():
-            settings["exchange"] = exchange_name()
-        if not isinstance(settings.get("exchange_plugin_options"), list):
-            settings["exchange_plugin_options"] = ["binance", "bybit", "oanda", "alpaca"]
-        if not isinstance(settings.get("credentials"), dict):
-            settings["credentials"] = {}
-        if not isinstance(settings.get("telegram"), dict):
-            settings["telegram"] = {"enabled": get_env("TELEGRAM_ENABLED", "false").lower() == "true", "chat_id": get_env("TELEGRAM_CHAT_ID")}
-        else:
-            settings["telegram"] = {
-                "enabled": bool(settings["telegram"].get("enabled", get_env("TELEGRAM_ENABLED", "false").lower() == "true")),
-                "chat_id": str(settings["telegram"].get("chat_id") or get_env("TELEGRAM_CHAT_ID")),
-            }
-        if not isinstance(settings.get("risk_defaults"), dict):
-            settings["risk_defaults"] = risk_defaults
-        else:
-            settings["risk_defaults"] = {**risk_defaults, **settings["risk_defaults"]}
-        if not isinstance(settings.get("execution"), dict):
-            settings["execution"] = execution_defaults
-        else:
-            settings["execution"] = {**execution_defaults, **settings["execution"]}
-        if not isinstance(settings.get("feature_flags"), dict):
-            settings["feature_flags"] = feature_flag_defaults
-        else:
-            settings["feature_flags"] = {**feature_flag_defaults, **settings["feature_flags"]}
-        if not isinstance(settings.get("gate_checklist"), list):
-            settings["gate_checklist"] = []
-        if not isinstance(settings.get("learning"), dict):
-            settings["learning"] = learning_defaults
-        else:
-            settings["learning"] = {
-                **learning_defaults,
-                **settings["learning"],
-                "validation": {
-                    **learning_defaults["validation"],
-                    **(settings["learning"].get("validation") if isinstance(settings["learning"].get("validation"), dict) else {}),
-                },
-                "promotion": {
-                    **learning_defaults["promotion"],
-                    **(settings["learning"].get("promotion") if isinstance(settings["learning"].get("promotion"), dict) else {}),
-                },
-                "risk_profile": {
-                    **learning_defaults["risk_profile"],
-                    **(settings["learning"].get("risk_profile") if isinstance(settings["learning"].get("risk_profile"), dict) else {}),
-                },
-            }
-        settings["learning"]["promotion"]["allow_auto_apply"] = False
-        settings["learning"]["promotion"]["allow_live"] = False
-        if not isinstance(settings.get("rollout"), dict):
-            settings["rollout"] = rollout_defaults
-        else:
-            settings["rollout"] = {
-                **rollout_defaults,
-                **settings["rollout"],
-                "phases": settings["rollout"].get("phases") if isinstance(settings["rollout"].get("phases"), list) else rollout_defaults["phases"],
-                "abort_thresholds": {
-                    **rollout_defaults["abort_thresholds"],
-                    **(settings["rollout"].get("abort_thresholds") if isinstance(settings["rollout"].get("abort_thresholds"), dict) else {}),
-                },
-                "improve_vs_baseline": {
-                    **rollout_defaults["improve_vs_baseline"],
-                    **(settings["rollout"].get("improve_vs_baseline") if isinstance(settings["rollout"].get("improve_vs_baseline"), dict) else {}),
-                },
-                "testnet_checks": {
-                    **rollout_defaults["testnet_checks"],
-                    **(settings["rollout"].get("testnet_checks") if isinstance(settings["rollout"].get("testnet_checks"), dict) else {}),
-                },
-            }
-        if not isinstance(settings.get("blending"), dict):
-            settings["blending"] = blending_defaults
-        else:
-            settings["blending"] = {**blending_defaults, **settings["blending"]}
-        settings["credentials"]["exchange_configured"] = exchange_keys_present(default_mode())
-        settings["credentials"]["telegram_configured"] = bool(get_env("TELEGRAM_BOT_TOKEN") and get_env("TELEGRAM_CHAT_ID"))
-        settings["credentials"]["telegram_chat_id"] = get_env("TELEGRAM_CHAT_ID")
-        if get_env("TELEGRAM_CHAT_ID"):
-            settings["telegram"]["chat_id"] = get_env("TELEGRAM_CHAT_ID")
-        json_save(SETTINGS_PATH, settings)
+        self.policy_state.save_settings(self.policy_state.load_settings())
 
     def _ensure_default_bot_state(self) -> None:
-        state = json_load(BOT_STATE_PATH, {})
-        if not state:
-            state = {
-                "mode": default_mode(),
-                "runtime_engine": runtime_engine_default(),
-                "runtime_contract_version": RUNTIME_CONTRACT_VERSION,
-                "runtime_telemetry_source": RUNTIME_TELEMETRY_SOURCE_SYNTHETIC,
-                "runtime_loop_alive": False,
-                "runtime_executor_connected": False,
-                "runtime_reconciliation_ok": False,
-                "runtime_exchange_connector_ok": False,
-                "runtime_exchange_order_ok": False,
-                "runtime_exchange_mode": "",
-                "runtime_exchange_verified_at": "",
-                "runtime_exchange_reason": "",
-                "runtime_account_positions_ok": False,
-                "runtime_account_positions_verified_at": "",
-                "runtime_account_positions_reason": "",
-                "runtime_last_remote_submit_at": "",
-                "runtime_last_remote_client_order_id": "",
-                "runtime_last_remote_submit_error": "",
-                "runtime_last_signal_action": "",
-                "runtime_last_signal_reason": "",
-                "runtime_last_signal_strategy_id": "",
-                "runtime_last_signal_symbol": "",
-                "runtime_last_signal_side": "",
-                "runtime_heartbeat_at": "",
-                "runtime_last_reconcile_at": "",
-                "bot_status": "PAUSED",
-                "running": False,
-                "safe_mode": False,
-                "killed": False,
-                "equity": 10000.0,
-                "daily_pnl": 0.0,
-                "max_dd": -0.04,
-                "daily_loss": -0.01,
-                "last_heartbeat": utc_now_iso(),
-            }
-            json_save(BOT_STATE_PATH, state)
+        self.policy_state.ensure_default_bot_state()
 
     def _write_default_strategy_pack(self) -> Path:
         target = UPLOADS_DIR / f"{DEFAULT_STRATEGY_ID}_{DEFAULT_STRATEGY_VERSION}.zip"
@@ -2947,131 +2723,22 @@ def risk_hooks(context):
             )
 
     def load_settings(self) -> dict[str, Any]:
-        settings = json_load(SETTINGS_PATH, {})
-        if not isinstance(settings, dict) or not settings:
-            self._ensure_default_settings()
-            settings = json_load(SETTINGS_PATH, {})
-        if not isinstance(settings, dict):
-            self._ensure_default_settings()
-            settings = json_load(SETTINGS_PATH, {})
-        if not isinstance(settings, dict):
-            return {}
-        return settings
+        return self.policy_state.load_settings()
 
     def save_settings(self, settings: dict[str, Any]) -> None:
-        if not isinstance(settings, dict):
-            settings = {}
-        if not isinstance(settings.get("credentials"), dict):
-            settings["credentials"] = {}
-        if not isinstance(settings.get("telegram"), dict):
-            settings["telegram"] = {"enabled": False, "chat_id": ""}
-        else:
-            settings["telegram"] = {
-                "enabled": bool(settings["telegram"].get("enabled", False)),
-                "chat_id": str(settings["telegram"].get("chat_id") or ""),
-            }
-        if not isinstance(settings.get("risk_defaults"), dict):
-            settings["risk_defaults"] = {}
-        if not isinstance(settings.get("execution"), dict):
-            settings["execution"] = {}
-        if not isinstance(settings.get("feature_flags"), dict):
-            settings["feature_flags"] = {}
-        if not isinstance(settings.get("exchange_plugin_options"), list):
-            settings["exchange_plugin_options"] = ["binance", "bybit", "oanda", "alpaca"]
-        if not isinstance(settings.get("gate_checklist"), list):
-            settings["gate_checklist"] = []
-        if not isinstance(settings.get("mode"), str) or not str(settings.get("mode") or "").strip():
-            settings["mode"] = default_mode().upper()
-        if not isinstance(settings.get("exchange"), str) or not str(settings.get("exchange") or "").strip():
-            settings["exchange"] = exchange_name()
-        settings["credentials"]["exchange_configured"] = exchange_keys_present(settings.get("mode", default_mode()).lower())
-        settings["credentials"]["telegram_configured"] = bool(get_env("TELEGRAM_BOT_TOKEN") and (settings.get("telegram", {}).get("chat_id") or get_env("TELEGRAM_CHAT_ID")))
-        learning_defaults = LearningService.default_learning_settings()
-        rollout_defaults = RolloutManager.default_rollout_config()
-        blending_defaults = RolloutManager.default_blending_config()
-        learning = settings.get("learning") if isinstance(settings.get("learning"), dict) else {}
-        settings["learning"] = {
-            **learning_defaults,
-            **learning,
-            "validation": {**learning_defaults["validation"], **(learning.get("validation") if isinstance(learning.get("validation"), dict) else {})},
-            "promotion": {**learning_defaults["promotion"], **(learning.get("promotion") if isinstance(learning.get("promotion"), dict) else {})},
-            "risk_profile": {**learning_defaults["risk_profile"], **(learning.get("risk_profile") if isinstance(learning.get("risk_profile"), dict) else {})},
-        }
-        settings["learning"]["promotion"]["allow_auto_apply"] = False
-        settings["learning"]["promotion"]["allow_live"] = False
-        rollout = settings.get("rollout") if isinstance(settings.get("rollout"), dict) else {}
-        settings["rollout"] = {
-            **rollout_defaults,
-            **rollout,
-            "phases": rollout.get("phases") if isinstance(rollout.get("phases"), list) else rollout_defaults["phases"],
-            "abort_thresholds": {**rollout_defaults["abort_thresholds"], **(rollout.get("abort_thresholds") if isinstance(rollout.get("abort_thresholds"), dict) else {})},
-            "improve_vs_baseline": {
-                **rollout_defaults["improve_vs_baseline"],
-                **(rollout.get("improve_vs_baseline") if isinstance(rollout.get("improve_vs_baseline"), dict) else {}),
-            },
-            "testnet_checks": {**rollout_defaults["testnet_checks"], **(rollout.get("testnet_checks") if isinstance(rollout.get("testnet_checks"), dict) else {})},
-        }
-        blending = settings.get("blending") if isinstance(settings.get("blending"), dict) else {}
-        settings["blending"] = {**blending_defaults, **blending}
-        json_save(SETTINGS_PATH, settings)
+        self.policy_state.save_settings(settings)
 
     def load_bot_state(self) -> dict[str, Any]:
-        state = json_load(BOT_STATE_PATH, {})
-        if not state:
-            self._ensure_default_bot_state()
-            state = json_load(BOT_STATE_PATH, {})
-        changed = False
-        if str(state.get("runtime_engine") or "").strip().lower() not in {RUNTIME_ENGINE_REAL, RUNTIME_ENGINE_SIMULATED}:
-            state["runtime_engine"] = runtime_engine_default()
-            changed = True
-        if str(state.get("runtime_contract_version") or "").strip() != RUNTIME_CONTRACT_VERSION:
-            state["runtime_contract_version"] = RUNTIME_CONTRACT_VERSION
-            changed = True
-        telemetry_source = str(state.get("runtime_telemetry_source") or "").strip().lower()
-        if telemetry_source not in {RUNTIME_TELEMETRY_SOURCE_SYNTHETIC, RUNTIME_TELEMETRY_SOURCE_REAL}:
-            state["runtime_telemetry_source"] = RUNTIME_TELEMETRY_SOURCE_SYNTHETIC
-            changed = True
-        for key in (
-            "runtime_loop_alive",
-            "runtime_executor_connected",
-            "runtime_reconciliation_ok",
-            "runtime_exchange_connector_ok",
-            "runtime_exchange_order_ok",
-        ):
-            if key not in state or not isinstance(state.get(key), bool):
-                state[key] = bool(state.get(key, False))
-                changed = True
-        for key in (
-            "runtime_heartbeat_at",
-            "runtime_last_reconcile_at",
-            "runtime_exchange_verified_at",
-            "runtime_exchange_mode",
-            "runtime_exchange_reason",
-            "runtime_last_signal_action",
-            "runtime_last_signal_reason",
-            "runtime_last_signal_strategy_id",
-            "runtime_last_signal_symbol",
-            "runtime_last_signal_side",
-        ):
-            if key not in state:
-                state[key] = ""
-                changed = True
-        if changed:
-            json_save(BOT_STATE_PATH, state)
-        return state
+        return self.policy_state.load_bot_state()
 
     def save_bot_state(self, state: dict[str, Any]) -> None:
-        state["last_heartbeat"] = utc_now_iso()
-        json_save(BOT_STATE_PATH, state)
+        self.policy_state.save_bot_state(state)
 
     def load_strategy_meta(self) -> dict[str, dict[str, Any]]:
-        payload = json_load(STRATEGY_META_PATH, {})
-        if not isinstance(payload, dict):
-            return {}
-        return payload
+        return self.strategy_truth.load_meta()
 
     def save_strategy_meta(self, payload: dict[str, dict[str, Any]]) -> None:
-        json_save(STRATEGY_META_PATH, payload)
+        self.strategy_truth.save_meta(payload)
 
     @staticmethod
     def _normalize_bot_mode(value: str | None) -> str:
@@ -3144,7 +2811,7 @@ def risk_hooks(context):
         }
 
     def load_bots(self) -> list[dict[str, Any]]:
-        payload = json_load(BOTS_PATH, [])
+        payload = self.policy_state.load_bot_rows()
         if not isinstance(payload, list):
             payload = []
         valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
@@ -3166,7 +2833,7 @@ def risk_hooks(context):
         return normalized
 
     def save_bots(self, rows: list[dict[str, Any]]) -> None:
-        json_save(BOTS_PATH, rows)
+        self.policy_state.save_bot_rows(rows)
 
     def _ensure_default_bots(self) -> None:
         rows = self.load_bots()
@@ -4435,13 +4102,10 @@ def risk_hooks(context):
         return self.strategy_or_404(strategy_id)
 
     def load_runs(self) -> list[dict[str, Any]]:
-        payload = json_load(RUNS_PATH, [])
-        if not isinstance(payload, list):
-            return []
-        return payload
+        return self.strategy_evidence.load_runs()
 
     def save_runs(self, rows: list[dict[str, Any]]) -> None:
-        json_save(RUNS_PATH, rows)
+        self.strategy_evidence.save_runs(rows)
 
     def delete_catalog_runs(self, run_ids: list[str]) -> dict[str, Any]:
         normalized: list[str] = []
@@ -4611,11 +4275,7 @@ def risk_hooks(context):
             self.save_runs(runs)
 
     def latest_run_for_strategy(self, strategy_id: str) -> dict[str, Any] | None:
-        rows = [row for row in self.load_runs() if row.get("strategy_id") == strategy_id]
-        if not rows:
-            return None
-        rows.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return rows[0]
+        return self.strategy_evidence.latest_run_for_strategy(strategy_id)
 
     def find_trade(self, trade_id: str) -> dict[str, Any] | None:
         for run in self.load_runs():
@@ -5495,48 +5155,15 @@ def risk_hooks(context):
         related_ids: list[str],
         payload: dict[str, Any],
     ) -> int:
-        with self._connect() as conn:
-            ts_now = utc_now_iso()
-            event_type_norm = str(event_type or "").strip().lower()
-            related_ids_list = related_ids if isinstance(related_ids, list) else []
-            payload_map = payload if isinstance(payload, dict) else {}
-            has_bot_ref = 1 if self._log_has_bot_ref(related_ids_list, payload_map) else 0
-            cursor = conn.execute(
-                """
-                INSERT INTO logs (ts, type, severity, module, message, related_ids, payload_json, has_bot_ref)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    ts_now,
-                    event_type,
-                    severity,
-                    module,
-                    message,
-                    json.dumps(related_ids_list),
-                    json.dumps(payload_map),
-                    has_bot_ref,
-                ),
-            )
-            if has_bot_ref:
-                bot_refs = self._extract_bot_refs_from_log(related_ids_list, payload_map)
-                if bot_refs:
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO log_bot_refs (log_id, bot_id) VALUES (?, ?)",
-                        [(int(cursor.lastrowid), bot_id) for bot_id in bot_refs],
-                    )
-            if event_type_norm == "breaker_triggered":
-                self._insert_breaker_event(
-                    conn,
-                    ts=ts_now,
-                    bot_id=str(payload_map.get("bot_id") or ""),
-                    mode=str(payload_map.get("mode") or ""),
-                    reason=str(payload_map.get("reason") or message or "breaker_triggered"),
-                    run_id=str(payload_map.get("run_id") or ""),
-                    symbol=str(payload_map.get("symbol") or ""),
-                    source_log_id=int(cursor.lastrowid),
-                )
-            conn.commit()
-            log_id = int(cursor.lastrowid)
+        event_type_norm = str(event_type or "").strip().lower()
+        log_id = self.decision_log.add_log(
+            event_type=event_type,
+            severity=severity,
+            module=module,
+            message=message,
+            related_ids=related_ids,
+            payload=payload,
+        )
         if event_type_norm == "breaker_triggered":
             try:
                 _invalidate_bots_overview_cache()
@@ -5545,12 +5172,7 @@ def risk_hooks(context):
         return log_id
 
     def logs_since(self, min_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM logs WHERE id > ? ORDER BY id ASC",
-                (min_id,),
-            ).fetchall()
-        return [self._log_row_to_dict(row) for row in rows]
+        return self.decision_log.logs_since(min_id)
 
     def list_logs(
         self,
@@ -5561,34 +5183,14 @@ def risk_hooks(context):
         page: int,
         page_size: int,
     ) -> dict[str, Any]:
-        clauses = []
-        params: list[Any] = []
-        if severity:
-            clauses.append("severity = ?")
-            params.append(severity)
-        if module:
-            clauses.append("module = ?")
-            params.append(module)
-        if since:
-            clauses.append("ts >= ?")
-            params.append(since)
-        if until:
-            clauses.append("ts <= ?")
-            params.append(until)
-        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        offset = (max(page, 1) - 1) * max(page_size, 1)
-        with self._connect() as conn:
-            total_row = conn.execute(f"SELECT COUNT(*) AS n FROM logs {where_sql}", tuple(params)).fetchone()
-            rows = conn.execute(
-                f"SELECT * FROM logs {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
-                tuple(params + [page_size, offset]),
-            ).fetchall()
-        return {
-            "items": [self._log_row_to_dict(row) for row in rows],
-            "total": int(total_row["n"]) if total_row else 0,
-            "page": page,
-            "page_size": page_size,
-        }
+        return self.decision_log.list_logs(
+            severity=severity,
+            module=module,
+            since=since,
+            until=until,
+            page=page,
+            page_size=page_size,
+        )
 
     @staticmethod
     def _log_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

@@ -1,6 +1,20 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-16
+
+## Tramo vigente: RTLRESE-13 separacion backend por dominio
+- [x] Arbol backend explicito agregado:
+  - `rtlab_autotrader/rtlab_core/domains/truth/`
+  - `rtlab_autotrader/rtlab_core/domains/evidence/`
+  - `rtlab_autotrader/rtlab_core/domains/policy_state/`
+  - `rtlab_autotrader/rtlab_core/domains/decision_log/`
+- [x] `ConsoleStore` delega persistencia principal a repositorios por dominio.
+- [x] Contratos FastAPI preservados; no hizo falta tocar frontend.
+- [x] Validacion local de sintaxis hecha con `uv run python -m py_compile ...`.
+- [ ] Pendiente chico si este frente sigue:
+  - partir `RegistryDB` en repos internos por subdominio
+  - sacar helpers residuales de bot refs / breaker mode del `ConsoleStore`
+  - evaluar si `strategy_policy_guidance` debe quedar en `truth/` o migrar a un subdominio de policy mas especifico
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.
