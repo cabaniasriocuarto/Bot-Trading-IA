@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api";
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api";
 import type {
   BacktestRun,
   BotInstance,
@@ -814,7 +814,12 @@ export default function StrategiesPage() {
     setBotActionBusyId(botId);
     setError("");
     try {
-      await apiPatch(`/api/v1/bots/${botId}`, patch);
+      try {
+        await apiPatch(`/api/v1/bots/${botId}/policy-state`, patch);
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.status !== 404) throw err;
+        await apiPatch(`/api/v1/bots/${botId}`, patch);
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo actualizar el bot.");
@@ -1206,18 +1211,21 @@ export default function StrategiesPage() {
 
           {selected && latestBacktestByStrategy.get(selected.id) ? (
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-300">
-              Ultimo MaxDD: {fmtPct(latestBacktestByStrategy.get(selected.id)!.metrics.max_dd)} | Winrate: {fmtPct(latestBacktestByStrategy.get(selected.id)!.metrics.winrate)}
+              Evidence derivada (legacy): ultimo Max DD {fmtPct(latestBacktestByStrategy.get(selected.id)!.metrics.max_dd)} | Winrate {fmtPct(latestBacktestByStrategy.get(selected.id)!.metrics.winrate)}
             </div>
           ) : null}
 
           {selected && selectedKpis ? (
             <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">KPIs de Estrategia ({kpiMode.toUpperCase()})</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Evidence agregada de estrategia ({kpiMode.toUpperCase()})</p>
                 <Badge variant={selectedKpis.dataset_hash_warning ? "warn" : "success"}>
                   {selectedKpis.dataset_hash_warning ? "datasets distintos" : "dataset consistente"}
                 </Badge>
               </div>
+              <p className="text-[11px] text-slate-400">
+                Estas metricas son evidence agregada de runs, no verdad base declarativa de la estrategia.
+              </p>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded border border-slate-800 p-2">Winrate: <strong>{fmtPct(selectedKpis.winrate)}</strong></div>
                 <div className="rounded border border-slate-800 p-2">Trades: <strong>{selectedKpis.trade_count}</strong></div>
@@ -1242,7 +1250,7 @@ export default function StrategiesPage() {
 
           {selected && selectedRegimeKpis ? (
             <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">KPIs por RÃ©gimen</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Evidence por regimen</p>
               <div className="overflow-x-auto">
                 <Table>
                   <THead>
@@ -1556,7 +1564,7 @@ export default function StrategiesPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bots / AutoBots (multi-instancia)</p>
-                <p className="text-[11px] text-slate-400">Administra operadores (shadow/paper/testnet/live), engine y pool de estrategias sin tocar LIVE autom&aacute;ticamente.</p>
+                <p className="text-[11px] text-slate-400">Izquierda: policy_state del bot (engine/modo/status/pool). Derecha: evidence y decision log derivados (trades, Sharpe, breakers, experiencia).</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void refresh()}>
@@ -1579,16 +1587,16 @@ export default function StrategiesPage() {
                   <THead>
                     <TR>
                       <TH>Bot</TH>
-                      <TH>Engine</TH>
-                      <TH>Modo</TH>
-                      <TH>Estado</TH>
-                      <TH>Pool</TH>
-                      <TH>Trades</TH>
-                      <TH>WinRate</TH>
-                      <TH>PnL neto</TH>
-                      <TH>Sharpe</TH>
+                      <TH>Policy engine</TH>
+                      <TH>Policy mode</TH>
+                      <TH>Policy status</TH>
+                      <TH>Policy pool</TH>
+                      <TH>Evidence trades</TH>
+                      <TH>Evidence winRate</TH>
+                      <TH>Evidence PnL</TH>
+                      <TH>Evidence Sharpe</TH>
                       <TH>Recs</TH>
-                      <TH>Kills</TH>
+                      <TH>Breakers</TH>
                       <TH>&Uacute;ltimo run</TH>
                       <TH>Acciones</TH>
                     </TR>

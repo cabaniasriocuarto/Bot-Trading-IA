@@ -9,8 +9,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
-import { apiDelete, apiGet, apiPost } from "@/lib/client-api";
-import type { BotInstance, BotStatusResponse, ExchangeDiagnoseResponse, ExecutionStats, HealthResponse, SettingsResponse, Strategy, TradingMode } from "@/lib/types";
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api";
+import type {
+  BotDecisionLogResponse,
+  BotInstance,
+  BotPolicyStateResponse,
+  BotStatusResponse,
+  ExchangeDiagnoseResponse,
+  ExecutionStats,
+  HealthResponse,
+  LogEvent,
+  SettingsResponse,
+  Strategy,
+  TradingMode,
+} from "@/lib/types";
 import { fmtNum, fmtPct, fmtUsd } from "@/lib/utils";
 
 type GatesResponse = {
@@ -24,6 +36,13 @@ type RolloutStatusLite = {
   pending_live_approval_target?: string | null;
   live_stable_100_requires_approve?: boolean;
   routing?: { mode?: string; phase?: string; phase_type?: string; shadow_only?: boolean } | null;
+};
+
+type LogsResponse = {
+  items: LogEvent[];
+  total: number;
+  page: number;
+  page_size: number;
 };
 
 type ControlActionPath =
@@ -66,6 +85,11 @@ export default function ExecutionPage() {
   });
   const [primaryBusyMode, setPrimaryBusyMode] = useState<"paper" | "testnet" | "live" | null>(null);
   const [botInstances, setBotInstances] = useState<BotInstance[]>([]);
+  const [selectedBotPolicyState, setSelectedBotPolicyState] = useState<BotPolicyStateResponse | null>(null);
+  const [selectedBotDecisionLog, setSelectedBotDecisionLog] = useState<BotDecisionLogResponse | null>(null);
+  const [selectedBotDomainLoading, setSelectedBotDomainLoading] = useState(false);
+  const [selectedBotDomainError, setSelectedBotDomainError] = useState("");
+  const [selectedBotDomainNotice, setSelectedBotDomainNotice] = useState("");
   const [botModeFilter, setBotModeFilter] = useState<"all" | "shadow" | "paper" | "testnet" | "live">("all");
   const [botStatusFilter, setBotStatusFilter] = useState<"all" | "active" | "paused" | "archived">("all");
   const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
@@ -441,19 +465,13 @@ export default function ExecutionPage() {
     setControlError("");
     setMessage("");
     try {
-      const res = await apiPost<{
-        ok: boolean;
-        updated_count: number;
-        error_count: number;
-      }>("/api/v1/bots/bulk-patch", {
-        ids: [botId],
-        ...patch,
-      });
-      if (res.error_count) {
-        setControlError(`${label}: error al actualizar ${botId}.`);
-      } else {
-        setMessage(`${label}: ${botId} actualizado.`);
+      try {
+        await apiPatch(`/api/v1/bots/${encodeURIComponent(botId)}/policy-state`, patch);
+      } catch (err) {
+        if (!isMissingRouteError(err)) throw err;
+        await apiPatch(`/api/v1/bots/${encodeURIComponent(botId)}`, patch);
       }
+      setMessage(`${label}: ${botId} actualizado.`);
       await refreshAll(false);
     } catch (err) {
       setControlError(err instanceof Error ? err.message : `No se pudo ejecutar: ${label}`);
@@ -569,6 +587,70 @@ export default function ExecutionPage() {
       botInstances[0];
     if (preferred) setSelectedExecutionBotId(preferred.id);
   }, [botInstances, botSelectedIds, runtimeModeKey, selectedExecutionBotId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!selectedExecutionBotId) {
+      setSelectedBotPolicyState(null);
+      setSelectedBotDecisionLog(null);
+      setSelectedBotDomainError("");
+      setSelectedBotDomainNotice("");
+      setSelectedBotDomainLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const loadSelectedBotDomains = async () => {
+      setSelectedBotDomainLoading(true);
+      setSelectedBotDomainError("");
+      setSelectedBotDomainNotice("");
+      try {
+        const [policyState, decisionLog] = await Promise.all([
+          apiGet<BotPolicyStateResponse>(`/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/policy-state`),
+          apiGet<BotDecisionLogResponse>(`/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/decision-log?page_size=8`),
+        ]);
+        if (cancelled) return;
+        setSelectedBotPolicyState(policyState);
+        setSelectedBotDecisionLog(decisionLog);
+      } catch (err) {
+        if (cancelled) return;
+        const selectedBot = botInstances.find((row) => row.id === selectedExecutionBotId) || null;
+        if (isMissingRouteError(err) && selectedBot) {
+          try {
+            const logsPayload = await apiGet<LogEvent[] | LogsResponse>("/api/v1/logs?page=1&page_size=100");
+            const logsRows = Array.isArray(logsPayload) ? logsPayload : logsPayload.items;
+            if (cancelled) return;
+            setSelectedBotPolicyState(buildLegacyPolicyState(selectedBot));
+            setSelectedBotDecisionLog(buildLegacyDecisionLog(selectedBot.id, logsRows));
+            setSelectedBotDomainNotice(
+              "Compatibilidad legacy activa: policy_state se reconstruye desde /api/v1/bots y decision_log desde /api/v1/logs mientras RTLRESE-14 no este integrado.",
+            );
+          } catch (fallbackErr) {
+            if (cancelled) return;
+            setSelectedBotPolicyState(buildLegacyPolicyState(selectedBot));
+            setSelectedBotDecisionLog(buildLegacyDecisionLog(selectedBot.id, []));
+            setSelectedBotDomainNotice(
+              "Compatibilidad legacy parcial: policy_state se reconstruye desde /api/v1/bots. No hubo logs legacy disponibles para este bot.",
+            );
+            setSelectedBotDomainError(fallbackErr instanceof Error ? fallbackErr.message : "No se pudieron cargar logs legacy del bot seleccionado.");
+          }
+          return;
+        }
+        setSelectedBotPolicyState(null);
+        setSelectedBotDecisionLog(null);
+        setSelectedBotDomainError(err instanceof Error ? err.message : "No se pudieron cargar los dominios del bot seleccionado.");
+      } finally {
+        if (!cancelled) setSelectedBotDomainLoading(false);
+      }
+    };
+
+    void loadSelectedBotDomains();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedExecutionBotId, botInstances]);
 
   return (
     <div className="space-y-4">
@@ -741,7 +823,7 @@ export default function ExecutionPage() {
                   <Badge variant="neutral">sin bot</Badge>
                 )}
               </div>
-              <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.5fr)_repeat(5,minmax(0,1fr))]">
+              <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1.7fr)_repeat(6,minmax(0,1fr))]">
                 <div>
                   <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Bot / operador</label>
                   <Select value={selectedExecutionBotId} onChange={(e) => setSelectedExecutionBotId(e.target.value)} disabled={!botInstances.length}>
@@ -753,11 +835,12 @@ export default function ExecutionPage() {
                     ))}
                   </Select>
                 </div>
-                <Metric title="Modo bot" value={selectedExecutionBot ? selectedExecutionBot.mode.toUpperCase() : "--"} compact />
-                <Metric title="Engine" value={selectedExecutionBot?.engine || "--"} compact />
-                <Metric title="Pool" value={selectedExecutionBot ? String(selectedExecutionBot.metrics?.strategy_count ?? selectedExecutionBot.pool_strategy_ids.length) : "--"} compact />
-                <Metric title="Trades" value={selectedExecutionBot ? String(selectedExecutionBot.metrics?.trade_count ?? 0) : "--"} compact />
-                <Metric title="WinRate" value={selectedExecutionBot ? fmtPct(selectedExecutionBot.metrics?.winrate ?? 0) : "--"} compact />
+                <Metric title="Policy status" value={selectedBotPolicyState?.policy_state.status || selectedExecutionBot?.status || "--"} compact />
+                <Metric title="Policy mode" value={selectedBotPolicyState?.policy_state.mode?.toUpperCase() || (selectedExecutionBot ? selectedExecutionBot.mode.toUpperCase() : "--")} compact />
+                <Metric title="Policy engine" value={selectedBotPolicyState?.policy_state.engine || selectedExecutionBot?.engine || "--"} compact />
+                <Metric title="Policy pool" value={selectedExecutionBot ? String(selectedBotPolicyState?.policy_state.pool_strategy_ids.length ?? selectedExecutionBot.pool_strategy_ids.length) : "--"} compact />
+                <Metric title="Evidence trades" value={selectedExecutionBot ? String(selectedExecutionBot.metrics?.trade_count ?? 0) : "--"} compact />
+                <Metric title="Evidence winRate" value={selectedExecutionBot ? fmtPct(selectedExecutionBot.metrics?.winrate ?? 0) : "--"} compact />
               </div>
               {selectedExecutionBot ? (
                 <>
@@ -795,12 +878,123 @@ export default function ExecutionPage() {
                     </Button>
                   </div>
                   <p className="mt-2 text-[11px] text-slate-400">
-                    Pool actual: <strong>{selectedExecutionBot.pool_strategy_ids.length}</strong> estrategias
+                    Policy pool: <strong>{selectedBotPolicyState?.policy_state.pool_strategy_ids.length ?? selectedExecutionBot.pool_strategy_ids.length}</strong> estrategias
                     {selectedExecutionBot.metrics?.last_run_at ? ` · último run ${new Date(selectedExecutionBot.metrics.last_run_at).toLocaleString()}` : ""}
                     {selectedExecutionBot.metrics?.experience_by_source
                       ? ` · shadow ${selectedExecutionBot.metrics.experience_by_source.shadow?.episode_count ?? 0} / backtest ${selectedExecutionBot.metrics.experience_by_source.backtest?.episode_count ?? 0}`
                       : ""}
                   </p>
+                  <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bot policy state</p>
+                          <p className="text-[11px] text-slate-400">Configuracion operativa declarativa del bot seleccionado. No mezcla evidence ni runtime global.</p>
+                        </div>
+                        <Badge variant={selectedBotPolicyState?.policy_state.status === "active" ? "success" : selectedBotPolicyState?.policy_state.status === "paused" ? "warn" : "neutral"}>
+                          {selectedBotPolicyState?.policy_state.status || selectedExecutionBot.status}
+                        </Badge>
+                      </div>
+                      {selectedBotDomainLoading && !selectedBotPolicyState ? (
+                        <p className="mt-3 text-xs text-slate-400">Cargando policy state...</p>
+                      ) : selectedBotPolicyState ? (
+                        <div className="mt-3 space-y-2 text-xs text-slate-300">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="rounded border border-slate-800 p-2">Mode: <strong>{selectedBotPolicyState.policy_state.mode.toUpperCase()}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Engine: <strong>{selectedBotPolicyState.policy_state.engine}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Pool: <strong>{selectedBotPolicyState.policy_state.pool_strategy_ids.length}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Updated: <strong>{selectedBotPolicyState.policy_state.updated_at ? new Date(selectedBotPolicyState.policy_state.updated_at).toLocaleString() : "-"}</strong></div>
+                          </div>
+                          <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">Pool strategy IDs</p>
+                            <p className="mt-1 break-all text-slate-200">
+                              {selectedBotPolicyState.policy_state.pool_strategy_ids.length ? selectedBotPolicyState.policy_state.pool_strategy_ids.join(", ") : "Sin estrategias asignadas"}
+                            </p>
+                          </div>
+                          <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">Universe / notes</p>
+                            <p className="mt-1 text-slate-200">
+                              Universe: {selectedBotPolicyState.policy_state.universe.length ? selectedBotPolicyState.policy_state.universe.join(", ") : "none"}
+                            </p>
+                            <p className="mt-1 text-slate-400">{selectedBotPolicyState.policy_state.notes || "Sin notas declarativas."}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-xs text-slate-400">Sin policy state detallado para este bot.</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bot decision log</p>
+                          <p className="text-[11px] text-slate-400">Logs recientes y breaker events asociados al bot seleccionado. Es evidencia operativa, no truth ni runtime base.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant="neutral">{selectedBotDecisionLog?.total ?? 0} logs</Badge>
+                          <Badge variant="warn">{selectedBotDecisionLog?.breaker_events.length ?? 0} breakers</Badge>
+                        </div>
+                      </div>
+                      {selectedBotDomainLoading && !selectedBotDecisionLog ? (
+                        <p className="mt-3 text-xs text-slate-400">Cargando decision log...</p>
+                      ) : selectedBotDecisionLog ? (
+                        <div className="mt-3 space-y-3">
+                          <div>
+                            <p className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">Logs recientes</p>
+                            <div className="space-y-2">
+                              {selectedBotDecisionLog.items.length ? (
+                                selectedBotDecisionLog.items.slice(0, 5).map((row) => (
+                                  <div key={row.id} className="rounded border border-slate-800 bg-slate-900/40 p-2 text-xs">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="font-semibold text-slate-200">{row.message}</span>
+                                      <Badge variant={row.severity === "error" ? "danger" : row.severity === "warn" ? "warn" : "neutral"}>
+                                        {row.severity}
+                                      </Badge>
+                                    </div>
+                                    <p className="mt-1 text-slate-400">
+                                      {row.ts ? new Date(row.ts).toLocaleString() : "-"} · {row.module} · {row.type}
+                                    </p>
+                                  </div>
+                                ))
+                              ) : (
+                                <p className="text-xs text-slate-400">Sin logs recientes asociados al bot.</p>
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <p className="mb-2 text-[10px] uppercase tracking-wide text-slate-500">Breaker events</p>
+                            <div className="space-y-2">
+                              {selectedBotDecisionLog.breaker_events.length ? (
+                                selectedBotDecisionLog.breaker_events.slice(0, 3).map((row) => (
+                                  <div key={`${row.id}-${row.ts}`} className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-xs">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="font-semibold text-amber-100">{row.reason}</span>
+                                      <Badge variant="warn">{row.mode.toUpperCase()}</Badge>
+                                    </div>
+                                    <p className="mt-1 text-amber-200/80">
+                                      {row.ts ? new Date(row.ts).toLocaleString() : "-"}
+                                      {row.run_id ? ` · run ${row.run_id}` : ""}
+                                      {row.symbol ? ` · ${row.symbol}` : ""}
+                                    </p>
+                                  </div>
+                                ))
+                              ) : (
+                                <p className="text-xs text-slate-400">Sin breaker events recientes para este bot.</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-xs text-slate-400">Sin decision log detallado para este bot.</p>
+                      )}
+                      {selectedBotDomainNotice ? (
+                        <p className="mt-3 text-xs text-amber-200">{selectedBotDomainNotice}</p>
+                      ) : null}
+                      {selectedBotDomainError ? (
+                        <p className="mt-3 text-xs text-amber-300">{selectedBotDomainError}</p>
+                      ) : null}
+                    </div>
+                  </div>
                 </>
               ) : (
                 <p className="mt-3 text-xs text-slate-400">No hay bots cargados todavía. Crealos o editalos desde Estrategias.</p>
@@ -1271,6 +1465,59 @@ function modeLabel(mode: TradingMode | string): string {
   if (normalized === "TESTNET") return "Testnet";
   if (normalized === "LIVE") return "Live";
   return normalized;
+}
+
+function isMissingRouteError(err: unknown) {
+  return err instanceof ApiError && err.status === 404;
+}
+
+function buildLegacyPolicyState(bot: BotInstance): BotPolicyStateResponse {
+  return {
+    bot_id: bot.id,
+    policy_state: {
+      engine: bot.engine,
+      mode: bot.mode,
+      status: bot.status,
+      pool_strategy_ids: bot.pool_strategy_ids,
+      universe: bot.universe || [],
+      notes: bot.notes || "",
+      created_at: bot.created_at,
+      updated_at: bot.updated_at,
+    },
+  };
+}
+
+function buildLegacyDecisionLog(botId: string, logs: LogEvent[]): BotDecisionLogResponse {
+  const items = logs.filter((row) => logReferencesBot(row, botId)).slice(0, 8);
+  return {
+    bot_id: botId,
+    items,
+    total: items.length,
+    page: 1,
+    page_size: items.length || 8,
+    breaker_events: items
+      .filter((row) => row.type === "breaker_triggered")
+      .map((row, index) => ({
+        id: index + 1,
+        ts: row.ts,
+        bot_id: botId,
+        mode: String(row.payload?.mode || "unknown"),
+        reason: String(row.payload?.reason || row.message || "breaker_triggered"),
+        run_id: typeof row.payload?.run_id === "string" ? row.payload.run_id : null,
+        symbol: typeof row.payload?.symbol === "string" ? row.payload.symbol : null,
+        source_log_id: null,
+      })),
+  };
+}
+
+function logReferencesBot(row: LogEvent, botId: string) {
+  if ((row.related_ids || []).some((relatedId) => String(relatedId) === botId)) return true;
+  const payload = row.payload || {};
+  if (String(payload.bot_id || "") === botId) return true;
+  if (String(payload.botId || "") === botId) return true;
+  if (String(payload.related_bot_id || "") === botId) return true;
+  if (String(payload.relatedBotId || "") === botId) return true;
+  return Array.isArray(payload.related_ids) && payload.related_ids.some((relatedId) => String(relatedId) === botId);
 }
 
 function statusLabel(status: BotStatusResponse["bot_status"] | string): string {

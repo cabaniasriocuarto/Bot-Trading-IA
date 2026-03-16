@@ -1,6 +1,47 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-06
+Fecha de actualizacion: 2026-03-16
+
+## RTLRESE-15 - frontend por dominios con compatibilidad legacy controlada - 2026-03-16
+
+- Scope real de este tramo:
+  - solo frontend/dashboard + `docs/truth`;
+  - sin cambios backend;
+  - sin mezcla con RTLRESE-16.
+- Pantallas ajustadas:
+  - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`
+    - separa visualmente `strategy_truth` y `strategy_evidence`;
+    - deja de mostrar KPIs/evidence como si fueran verdad base;
+    - elimina charts sinteticos que mezclaban narrativa de truth con evidencia inventada.
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - hoy es la superficie operativa real del bot; no existe una `bots/page.tsx` dedicada en esta rama;
+    - toma el rol de vista operativa del bot;
+    - separa `bot_policy_state` de `bot_decision_log`;
+    - distingue runtime global de estado declarativo del bot.
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - relabela evidencia agregada y columnas de bots para no confundir `policy_state` con `evidence`.
+- Tipos frontend nuevos/explicitos en `rtlab_dashboard/src/lib/types.ts`:
+  - `StrategyTruth`
+  - `StrategyEvidenceResponse`
+  - `BotPolicyStateResponse`
+  - `BotDecisionLogResponse`
+- Estado de contratos en esta rama:
+  - el frontend intenta usar endpoints de dominio:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+    - `GET /api/v1/bots/{id}/policy-state`
+    - `GET /api/v1/bots/{id}/decision-log`
+    - `PATCH /api/v1/bots/{id}/policy-state`
+  - pero mantiene fallback legacy porque en `main` actual todavia se observan contratos legacy:
+    - `GET /api/v1/strategies/{id}`
+    - `GET /api/v1/backtests/runs`
+    - `PATCH /api/v1/bots/{id}`
+    - `GET /api/v1/logs`
+- Decision arquitectonica de este tramo:
+  - priorizar separacion semantica visible y segura en UI sin bloquear la rama por falta de merge previo de RTLRESE-14.
+- Limitacion de validacion en este entorno:
+  - no se pudo correr `lint`/`build` de Next.js porque el entorno no tiene `node.exe` disponible;
+  - la verificacion de este tramo fue por inspeccion de contratos/codigo y consistencia del diff, no por build frontend ejecutado.
 
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 

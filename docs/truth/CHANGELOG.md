@@ -1,5 +1,28 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-16
+
+### RTLRESE-15 - frontend domains split con fallback legacy
+- Frontend `Strategy detail`:
+  - consume `truth/evidence` por separado cuando los endpoints nuevos existen;
+  - cae de forma controlada a `GET /api/v1/strategies/{id}` + `GET /api/v1/backtests/runs` cuando el backend actual no expone RTLRESE-14.
+- Frontend `Execution`:
+  - agrega bloques separados de `Bot policy state` y `Bot decision log`;
+  - usa `GET /api/v1/bots/{id}/policy-state` y `GET /api/v1/bots/{id}/decision-log` si existen;
+  - si no existen, recompone desde `GET /api/v1/bots` y `GET /api/v1/logs`.
+- Frontend `Strategies`:
+  - deja mas explicito que KPIs/sharpe/max-dd son evidence agregada;
+  - las acciones de bot intentan `PATCH /policy-state` y mantienen fallback a `PATCH /api/v1/bots/{id}`.
+- Tipos:
+  - nuevos tipos de dominio frontend en `src/lib/types.ts` para `truth`, `evidence`, `policy_state` y `decision_log`.
+- No incluido:
+  - sin cambios backend;
+  - sin cambios frontend fuera de pantallas/consumo de contratos;
+  - sin mezcla con RTLRESE-16.
+- Validacion:
+  - inspeccion manual del diff + chequeo de contratos legacy/nuevos en repo.
+  - limitacion de entorno: no se pudo correr `next lint` / `tsc` / `next build` porque falta `node.exe` en esta sesion.
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

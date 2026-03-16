@@ -1,6 +1,24 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-16
+
+## Cierre inmediato post RTLRESE-15
+- [x] Separacion visual frontend entre:
+  - `strategy_truth`
+  - `strategy_evidence`
+  - `bot_policy_state`
+  - `bot_decision_log`
+- [x] Compatibilidad razonable mantenida mientras RTLRESE-14 no este integrado en `main`.
+- [ ] Cuando RTLRESE-14 quede integrado en la base real:
+  - retirar fallbacks legacy de `strategies/[id]`, `strategies/page` y `execution/page`;
+  - dejar solo contratos de dominio.
+- [ ] Reejecutar validacion frontend real cuando el entorno tenga Node:
+  - `next lint`
+  - `tsc --noEmit`
+  - `next build`
+- [ ] Si aparece una pagina dedicada de bots en RTLRESE-16:
+  - conservar la misma separacion semantica ya aplicada en `Execution`;
+  - no volver a mezclar runtime global con `policy_state` del bot.
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.
