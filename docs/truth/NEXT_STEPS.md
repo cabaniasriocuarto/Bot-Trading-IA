@@ -1,6 +1,30 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-06
+Fecha: 2026-03-16
+
+## Cierre inmediato post RTLRESE-16
+- [x] Frontera documental canonica consolidada en `docs/truth`:
+  - `strategy_truth`
+  - `strategy_evidence`
+  - `bot_policy_state`
+  - `bot_decision_log`
+- [x] Queda explicitado que RTLRESE-13/14/15 se cerraron en ramas dedicadas, pero no aparecen integradas en esta base activa.
+- [ ] Siguiente paso chico 1:
+  - mergear o recrear sobre la base actual el split backend de RTLRESE-13 y verificar que `rtlab_autotrader/rtlab_core/domains/*.py` quede trackeado.
+- [ ] Siguiente paso chico 2:
+  - mergear o recrear sobre la base actual el split API de RTLRESE-14 y verificar presencia real de:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+    - `GET /api/v1/bots/{id}/policy-state`
+    - `PATCH /api/v1/bots/{id}/policy-state`
+    - `GET /api/v1/bots/{id}/decision-log`
+- [ ] Siguiente paso chico 3:
+  - mergear o recrear sobre la base actual el split frontend de RTLRESE-15 y verificar que:
+    - `rtlab_dashboard/src/lib/types.ts` ya no use `last_oos` como eje principal de lectura;
+    - `strategies/[id]` separe `truth` de `evidence`;
+    - `execution` separe `policy_state` de `decision_log`.
+- [ ] Siguiente paso chico 4:
+  - retirar etiquetas o contratos legacy solo despues de que 13/14/15 esten efectivamente integradas y validadas en la base real.
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.
