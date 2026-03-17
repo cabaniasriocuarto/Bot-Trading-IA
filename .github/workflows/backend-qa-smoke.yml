@@ -38,4 +38,4 @@ jobs:
         run: |
           set -euo pipefail
           uv --directory rtlab_autotrader run python -m pytest --version
-          uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -k "mass_backtest or rate_limiter" -q
+          uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q

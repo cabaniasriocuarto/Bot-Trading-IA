@@ -2,7 +2,7 @@
 
 Fecha: 2026-03-17
 
-## Siguiente bloque recomendado post hardening QA backend - 2026-03-17
+## Siguiente bloque recomendado post segmentacion de web suite - 2026-03-17
 - [x] Fuente unica de tooling dev del backend consolidada en `rtlab_autotrader/pyproject.toml`.
 - [x] Comando canonico backend fijado:
   - `uv --directory rtlab_autotrader run python -m pytest ...`
@@ -11,10 +11,16 @@ Fecha: 2026-03-17
   - `scripts/test-web-live-ready.ps1`
 - [x] Smoke CI chico agregado:
   - `backend-qa-smoke`
+- [x] Segmentacion inicial aplicada en `tests/test_web_live_ready.py`:
+  - `web_smoke`
+  - `web_integration`
+  - `web_slow`
+- [x] Smoke CI migrado de filtro ad hoc a marker estable:
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q`
 - [ ] Siguiente bloque 1:
-  - segmentar `tests/test_web_live_ready.py` en `smoke / integration / slow` para bajar tiempo total y aislar mejor fallos.
+  - agregar smoke UI con Playwright sobre esta base ya segmentada, sin mezclarlo con cambios de producto.
 - [ ] Siguiente bloque 2:
-  - despues de esa segmentacion, agregar smoke UI con Playwright sin mezclarlo con este hardening backend.
+  - refinar la clasificacion de algunos tests borderline de `web_integration` / `web_slow` usando las mediciones reales de `--durations`.
 - [ ] Pendiente menor:
   - revisar el warning local de `.pytest_cache` en Windows solo como higiene de entorno local, no como bloqueo de packaging/QA.
 

@@ -2,6 +2,65 @@
 
 Fecha de actualizacion: 2026-03-17
 
+## Segmentacion operativa de `test_web_live_ready.py` - 2026-03-17
+
+- La suite monolitica `rtlab_autotrader/tests/test_web_live_ready.py` ya no se corre solo como un bloque opaco.
+- Quedan registrados markers canonicos en `rtlab_autotrader/pyproject.toml`:
+  - `web_smoke`
+  - `web_integration`
+  - `web_slow`
+- Criterio semantico vigente:
+  - `web_smoke`:
+    - pruebas rapidas, deterministicas y de alto valor para detectar roturas del backend web;
+    - sin polling largo ni runtime/backtest pesado.
+  - `web_integration`:
+    - flujos medianos y multi-endpoint utiles para cobertura operativa del backend web;
+    - mas amplios que smoke, pero sin entrar deliberadamente en los casos mas costosos.
+  - `web_slow`:
+    - polling largo;
+    - runtime sync pesado;
+    - mass backtest;
+    - research/aprendizaje costoso;
+    - cualquier caso que por medicion real tiende a volver inestable o lento el smoke.
+- Implementacion aplicada:
+  - no se partio el archivo en muchos archivos;
+  - no se reescribieron fixtures grandes;
+  - la clasificacion se hace dentro del mismo archivo con una primera frontera operativa conservadora.
+- Distribucion real validada en esta rama:
+  - `web_smoke`: 7 tests
+  - `web_integration`: 58 tests
+  - `web_slow`: 48 tests
+- Comandos canonicos backend web:
+  - smoke:
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q`
+  - integration:
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_integration -q`
+  - slow:
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_slow -q`
+  - suite completa:
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -q`
+- Wrappers canonicos ya existentes:
+  - `scripts/test-web-live-ready.sh`
+  - `scripts/test-web-live-ready.ps1`
+  - admiten pasar `-m web_smoke`, `-m web_integration`, `-m web_slow` o cualquier otro argumento de `pytest`.
+- Smoke automatico vigente en CI:
+  - workflow `/.github/workflows/backend-qa-smoke.yml`
+  - valida:
+    - `uv --directory rtlab_autotrader run python -m pytest --version`
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q`
+- Validacion real ejecutada sobre esta segmentacion:
+  - `pytest --markers` -> PASS
+  - `web_smoke` -> PASS
+  - `web_integration` -> PASS
+  - `web_slow` -> PASS
+  - `tests/test_web_live_ready.py --durations=20 -q` -> PASS
+- Medicion operativa relevante:
+  - el smoke bajo de ~4.7 minutos con una primera seleccion demasiado amplia a ~2.2 minutos con la frontera final de 7 tests;
+  - sigue siendo un smoke de backend relativamente pesado por el costo de setup del archivo, pero ya es bastante mas chico y confiable que la suite completa.
+- Limitacion abierta conocida:
+  - sigue apareciendo `PytestCacheWarning` en Windows por `.pytest_cache`;
+  - se mantiene como ruido de entorno local y no se agrego `--cache-clear` al comando canonico para no ensuciar la invocacion base.
+
 ## Hardening QA backend local + tooling dev canonico - 2026-03-17
 
 - Subproyecto backend real:
@@ -29,7 +88,7 @@ Fecha de actualizacion: 2026-03-17
   - workflow `/.github/workflows/backend-qa-smoke.yml`
   - valida:
     - `uv --directory rtlab_autotrader run python -m pytest --version`
-    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -k "mass_backtest or rate_limiter" -q`
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q`
 - Hardening puntual de QA:
   - `test_mass_backtest_research_endpoints_and_mark_candidate` deja de depender de un polling demasiado corto en suite completa;
   - el polling del test ahora usa deadline temporal acotado en vez de una cantidad fija de iteraciones;

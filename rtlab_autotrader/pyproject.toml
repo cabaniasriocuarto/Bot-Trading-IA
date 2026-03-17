@@ -39,6 +39,11 @@ include = ["rtlab_core*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "web_smoke: pruebas web rapidas, deterministicas y de alto valor para smoke",
+  "web_integration: pruebas web de integracion operativa con setup medio",
+  "web_slow: pruebas web pesadas, con polling largo o runtime/backtest costoso",
+]
 
 [dependency-groups]
 dev = [

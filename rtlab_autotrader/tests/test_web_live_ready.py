@@ -144,6 +144,62 @@ def _make_zip(files: dict[str, str]) -> bytes:
   return buffer.getvalue()
 
 
+_WEB_SMOKE_TESTS = {
+  "test_auth_and_admin_protection",
+  "test_internal_headers_require_proxy_token",
+  "test_api_general_rate_limit_guard",
+  "test_api_expensive_rate_limit_guard",
+  "test_api_research_readonly_endpoints_use_general_bucket",
+  "test_health_reports_storage_persistence_status",
+  "test_config_learning_endpoint_reads_yaml_and_exposes_capabilities",
+}
+
+_WEB_SLOW_TESTS = {
+  "test_live_mode_blocked_when_runtime_engine_is_simulated",
+  "test_runtime_contract_snapshot_defaults_are_exposed_in_status",
+  "test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk",
+  "test_runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live",
+  "test_evaluate_gates_does_not_persist_runtime_state_side_effects",
+  "test_strategy_upload_validation_and_primary_assignment",
+  "test_learning_research_loop_and_adopt_option_b",
+  "test_learning_eval_candidate_uses_purged_cv_when_walk_forward_disabled",
+  "test_learning_eval_candidate_supports_cpcv_mode_from_settings",
+  "test_backtest_costs_and_entry_metrics_are_exposed",
+  "test_backtests_run_supports_purged_cv_and_cpcv",
+  "test_event_backtest_engine_runs_for_crypto_forex_equities",
+  "test_runs_catalog_preserves_explicit_bot_link_after_pool_change",
+  "test_validate_promotion_blocks_mixed_orderflow_feature_set",
+  "test_e2e_critical_flow_login_backtest_validate_promote_rollout",
+  "test_thompson_respects_max_switch_per_day_and_weights_history",
+  "test_mass_backtest_research_endpoints_and_mark_candidate",
+  "test_research_funnel_and_trial_ledger_expose_evidence_statuses",
+  "test_api_domain_contracts_split_truth_evidence_policy_state_and_decision_log",
+  "test_bots_overview_prefers_exact_bot_experience_over_current_pool",
+  "test_bots_overview_scopes_kills_by_bot_and_mode",
+  "test_exchange_diagnose_reports_missing_env_vars_for_testnet",
+  "test_learning_recommend_uses_only_allow_learning_pool",
+}
+
+assert not (_WEB_SMOKE_TESTS & _WEB_SLOW_TESTS)
+
+
+def _web_suite_marker_for(name: str) -> pytest.MarkDecorator:
+  if name in _WEB_SMOKE_TESTS:
+    return pytest.mark.web_smoke
+  if name.startswith("test_runtime_sync_") or name.startswith("test_g9_live_"):
+    return pytest.mark.web_slow
+  if name in _WEB_SLOW_TESTS:
+    return pytest.mark.web_slow
+  return pytest.mark.web_integration
+
+
+def _apply_web_suite_markers() -> None:
+  for name, obj in list(globals().items()):
+    if not name.startswith("test_") or not callable(obj):
+      continue
+    globals()[name] = _web_suite_marker_for(name)(obj)
+
+
 def test_auth_and_admin_protection(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
 
@@ -5382,4 +5438,7 @@ def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
   assert isinstance(detail_payload.get("best_runs_cache"), list)
   assert len(detail_payload["best_runs_cache"]) == 2
   assert detail_payload["best_runs_cache"][0]["run_id"] == "BT-000123"
+
+
+_apply_web_suite_markers()
 

@@ -2,6 +2,36 @@
 
 ## 2026-03-17
 
+### Segmentacion operativa de `test_web_live_ready.py`
+- Se registran markers backend web en `rtlab_autotrader/pyproject.toml`:
+  - `web_smoke`
+  - `web_integration`
+  - `web_slow`
+- `rtlab_autotrader/tests/test_web_live_ready.py` queda con una primera clasificacion operativa incremental:
+  - `7` tests en `web_smoke`
+  - `58` tests en `web_integration`
+  - `48` tests en `web_slow`
+- La clasificacion se hace sin partir el archivo ni reescribir fixtures grandes:
+  - `web_smoke` queda reservado para happy paths/backend guards rapidos y de alto valor;
+  - `web_slow` absorbe polling/runtime sync/backtests/research pesados;
+  - el resto pasa a `web_integration` por descarte consciente.
+- Wrappers canonicos existentes se actualizan documentalmente para usar:
+  - `-m web_smoke`
+  - `-m web_integration`
+  - `-m web_slow`
+- `/.github/workflows/backend-qa-smoke.yml` deja el filtro ad hoc por `-k` y pasa a validar el marker estable:
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q`
+- Validacion real ejecutada:
+  - `uv --directory rtlab_autotrader run python -m pytest --markers` -> PASS
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q` -> PASS
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_integration -q` -> PASS
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_slow -q` -> PASS
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py --durations=20 -q` -> PASS
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-web-live-ready.ps1 -m web_smoke -k "test_health_reports_storage_persistence_status" -q` -> PASS
+- Observacion operativa:
+  - el smoke quedo sensiblemente mas chico que la seleccion inicial, pero sigue teniendo costo no trivial por el setup del archivo;
+  - `PytestCacheWarning` en Windows sigue siendo ruido de entorno local, no una regresion funcional.
+
 ### Hardening QA backend / packaging dev / smoke CI
 - Packaging backend:
   - `rtlab_autotrader/pyproject.toml` consolida tooling QA en `[dependency-groups].dev`:
@@ -19,7 +49,7 @@
   - `scripts/test-web-live-ready.ps1`
 - Smoke CI nuevo:
   - `/.github/workflows/backend-qa-smoke.yml`
-  - valida `pytest --version` y el subset `mass_backtest or rate_limiter` de `test_web_live_ready.py`.
+  - valida `pytest --version` y el marker `web_smoke` de `test_web_live_ready.py`.
 - Limpieza tecnica puntual:
   - `mass_backtest_engine.py` migra `fillna(method="bfill"/"ffill")` a `.bfill()` / `.ffill()`.
 - Hardening de test:
