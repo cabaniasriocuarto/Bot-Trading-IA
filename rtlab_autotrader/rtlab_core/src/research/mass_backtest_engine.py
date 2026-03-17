@@ -523,7 +523,7 @@ class MassBacktestEngine:
         # Price-change sigma and bulk buy/sell volume proxy from 1m bars (L1)
         data["dprice"] = data["close"].diff().fillna(0.0)
         sigma = data["dprice"].rolling(sigma_lb, min_periods=max(10, sigma_lb // 6)).std(ddof=0)
-        sigma = sigma.replace(0, float("nan")).fillna(method="bfill").fillna(method="ffill")
+        sigma = sigma.replace(0, float("nan")).bfill().ffill()
         data["z"] = (data["dprice"] / sigma).replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
         data["buy_prob"] = data["z"].map(_norm_cdf_scalar)
         data["sell_prob"] = 1.0 - data["buy_prob"]
@@ -571,7 +571,7 @@ class MassBacktestEngine:
         bdf = pd.DataFrame(buckets)
         bdf["OI"] = (bdf["V_B"] - bdf["V_S"]).abs()
         bdf["VPIN"] = bdf["OI"].rolling(win_buckets, min_periods=max(5, win_buckets // 3)).mean() / float(bucket_v)
-        bdf["VPIN"] = bdf["VPIN"].clip(lower=0.0).fillna(method="bfill").fillna(method="ffill").fillna(0.0)
+        bdf["VPIN"] = bdf["VPIN"].clip(lower=0.0).bfill().ffill().fillna(0.0)
 
         # Empirical rolling CDF over ~30 days worth of draws
         cdf_window = max(win_buckets, target_draws * 30)

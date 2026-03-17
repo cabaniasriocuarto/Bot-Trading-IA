@@ -1,0 +1,41 @@
+name: Backend QA Smoke
+
+on:
+  push:
+    paths:
+      - ".github/workflows/backend-qa-smoke.yml"
+      - "rtlab_autotrader/**"
+      - "scripts/test-web-live-ready.sh"
+      - "scripts/test-web-live-ready.ps1"
+  pull_request:
+    paths:
+      - ".github/workflows/backend-qa-smoke.yml"
+      - "rtlab_autotrader/**"
+      - "scripts/test-web-live-ready.sh"
+      - "scripts/test-web-live-ready.ps1"
+  workflow_dispatch:
+
+jobs:
+  backend-qa-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Backend tooling smoke
+        run: |
+          set -euo pipefail
+          uv --directory rtlab_autotrader run python -m pytest --version
+          uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -k "mass_backtest or rate_limiter" -q

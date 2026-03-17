@@ -13,10 +13,9 @@ Requires-Dist: typer>=0.12
 Requires-Dist: rich>=13.7
 Requires-Dist: lark>=1.1
 Requires-Dist: requests>=2.32
-Provides-Extra: dev
-Requires-Dist: pytest>=8.2; extra == "dev"
-Requires-Dist: pytest-cov>=5.0; extra == "dev"
-Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn[standard]>=0.30
+Requires-Dist: python-multipart>=0.0.9
 Provides-Extra: trading
 Requires-Dist: freqtrade>=2024.9; extra == "trading"
 
@@ -58,6 +57,33 @@ Variables minimas en `.env`:
 - `TELEGRAM_ENABLED=true|false`
 - `TELEGRAM_BOT_TOKEN=...`
 - `TELEGRAM_CHAT_ID=...`
+
+Variables recomendadas para API/BFF en Railway:
+
+- `AUTH_SECRET=<32+ chars>`
+- `ADMIN_USERNAME=Wadmin`
+- `ADMIN_PASSWORD=moroco123`
+- `VIEWER_USERNAME=viewer`
+- `VIEWER_PASSWORD=<tu-pass>`
+- `MODE=paper|testnet|live`
+- `EXCHANGE_NAME=binance|bybit`
+- `RTLAB_USER_DATA_DIR=/data/rtlab_user_data` (recomendado en Railway con volumen persistente)
+- `PORT` (Railway lo inyecta automaticamente)
+
+## API Web (Railway)
+
+El backend HTTP de consola expone:
+
+- REST: `/api/v1/*`
+- Stream SSE: `/api/v1/stream`
+
+Ejecutar local:
+
+```bash
+python -m rtlab_core.web.main
+```
+
+Debe escuchar en `0.0.0.0:$PORT`.
 
 ## 4) Setup de `user_data/` (Freqtrade userdir)
 

@@ -4866,7 +4866,8 @@ def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, mon
   run_id = start.json()["run_id"]
 
   status_payload = None
-  for _ in range(200):
+  deadline = time.monotonic() + 60.0
+  while time.monotonic() < deadline:
     st = client.get(f"/api/v1/research/mass-backtest/status?run_id={run_id}", headers=headers)
     assert st.status_code == 200, st.text
     status_payload = st.json()

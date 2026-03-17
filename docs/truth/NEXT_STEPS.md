@@ -1,6 +1,22 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-16
+Fecha: 2026-03-17
+
+## Siguiente bloque recomendado post hardening QA backend - 2026-03-17
+- [x] Fuente unica de tooling dev del backend consolidada en `rtlab_autotrader/pyproject.toml`.
+- [x] Comando canonico backend fijado:
+  - `uv --directory rtlab_autotrader run python -m pytest ...`
+- [x] Wrappers canonicos agregados:
+  - `scripts/test-web-live-ready.sh`
+  - `scripts/test-web-live-ready.ps1`
+- [x] Smoke CI chico agregado:
+  - `backend-qa-smoke`
+- [ ] Siguiente bloque 1:
+  - segmentar `tests/test_web_live_ready.py` en `smoke / integration / slow` para bajar tiempo total y aislar mejor fallos.
+- [ ] Siguiente bloque 2:
+  - despues de esa segmentacion, agregar smoke UI con Playwright sin mezclarlo con este hardening backend.
+- [ ] Pendiente menor:
+  - revisar el warning local de `.pytest_cache` en Windows solo como higiene de entorno local, no como bloqueo de packaging/QA.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

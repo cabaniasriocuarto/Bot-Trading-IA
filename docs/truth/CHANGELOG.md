@@ -1,5 +1,38 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-17
+
+### Hardening QA backend / packaging dev / smoke CI
+- Packaging backend:
+  - `rtlab_autotrader/pyproject.toml` consolida tooling QA en `[dependency-groups].dev`:
+    - `httpx`
+    - `pytest`
+    - `pytest-cov`
+    - `ruff`
+    - `coverage`
+  - se elimina el extra opcional `dev` duplicado; `trading` se preserva como extra real de producto.
+- Comando canonico backend:
+  - `uv --directory rtlab_autotrader run python -m pytest ...`
+  - ya no requiere `--extra dev`.
+- Wrappers nuevos:
+  - `scripts/test-web-live-ready.sh`
+  - `scripts/test-web-live-ready.ps1`
+- Smoke CI nuevo:
+  - `/.github/workflows/backend-qa-smoke.yml`
+  - valida `pytest --version` y el subset `mass_backtest or rate_limiter` de `test_web_live_ready.py`.
+- Limpieza tecnica puntual:
+  - `mass_backtest_engine.py` migra `fillna(method="bfill"/"ffill")` a `.bfill()` / `.ffill()`.
+- Hardening de test:
+  - `test_mass_backtest_research_endpoints_and_mark_candidate` usa un deadline temporal acotado para polling;
+  - evita falsos negativos en suite completa por timeout fijo demasiado corto.
+- Validacion real ejecutada:
+  - `uv --directory rtlab_autotrader lock` -> PASS
+  - `uv --directory rtlab_autotrader sync` -> PASS
+  - `uv --directory rtlab_autotrader run python -m pytest --version` -> PASS
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -q` -> PASS
+  - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py --durations=20 -q` -> PASS
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-web-live-ready.ps1 -k "mass_backtest or rate_limiter" -q` -> PASS
+
 ## 2026-03-16
 
 ### RTLRESE-13 backend domains: separacion minima por dominio

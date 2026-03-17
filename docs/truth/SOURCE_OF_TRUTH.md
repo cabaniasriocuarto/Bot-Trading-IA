@@ -1,6 +1,45 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-16
+Fecha de actualizacion: 2026-03-17
+
+## Hardening QA backend local + tooling dev canonico - 2026-03-17
+
+- Subproyecto backend real:
+  - el proyecto Python no vive en la raiz del repo;
+  - la fuente de verdad de packaging/backend es `rtlab_autotrader/pyproject.toml`.
+- Tooling dev consolidado:
+  - `pytest`
+  - `pytest-cov`
+  - `ruff`
+  - `coverage`
+  - `httpx`
+  - ahora quedan consolidados en `[dependency-groups].dev`.
+- Decision de packaging aplicada:
+  - se elimina la duplicacion semantica entre `[project.optional-dependencies].dev` y `[dependency-groups].dev`;
+  - los extras opcionales quedan reservados para features reales de producto, por ejemplo `trading`.
+- Comando canonico nuevo para pytest backend:
+  - `uv --directory rtlab_autotrader run python -m pytest ...`
+  - ya no hace falta recordar `--extra dev` para correr tooling de QA del backend.
+- Wrappers canonicos agregados en raiz:
+  - `scripts/test-web-live-ready.sh`
+  - `scripts/test-web-live-ready.ps1`
+  - ambos ejecutan desde la raiz:
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py ...`
+- Smoke automatico nuevo:
+  - workflow `/.github/workflows/backend-qa-smoke.yml`
+  - valida:
+    - `uv --directory rtlab_autotrader run python -m pytest --version`
+    - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -k "mass_backtest or rate_limiter" -q`
+- Hardening puntual de QA:
+  - `test_mass_backtest_research_endpoints_and_mark_candidate` deja de depender de un polling demasiado corto en suite completa;
+  - el polling del test ahora usa deadline temporal acotado en vez de una cantidad fija de iteraciones;
+  - esto no cambia comportamiento de producto, solo reduce fragilidad del test bajo carga.
+- Limpieza puntual de warnings:
+  - `rtlab_core/src/research/mass_backtest_engine.py` reemplaza `fillna(method="bfill"/"ffill")` por `.bfill()` / `.ffill()` con la misma semantica.
+- Decision explicita sobre `.pytest_cache`:
+  - NO se agrego `--cache-clear` al wrapper canonico ni al smoke CI;
+  - el warning observado en Windows es ruido de cache local, no un problema del packaging ni del comando canonico;
+  - se priorizo no ensuciar el comando base con limpieza forzada en cada corrida.
 
 ## RTLRESE-13: separacion backend por dominio operativo y dominio de verdad - 2026-03-16
 
