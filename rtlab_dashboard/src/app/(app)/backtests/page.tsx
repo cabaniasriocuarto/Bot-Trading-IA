@@ -28,6 +28,9 @@ import type {
   BeastModeStatusResponse,
   BeastModeJobsResponse,
   BotInstance,
+  ResearchFunnelResponse,
+  ResearchTrialLedgerItem,
+  ResearchTrialLedgerResponse,
   Strategy,
 } from "@/lib/types";
 import { fmtNum, fmtPct } from "@/lib/utils";
@@ -280,6 +283,109 @@ function sourceVariant(source: (typeof BOT_EXPERIENCE_SOURCES)[number]): "succes
   }
 }
 
+function badgeToneVariant(value: string | null | undefined): "neutral" | "success" | "warn" | "danger" | "info" {
+  const tone = String(value || "").toLowerCase();
+  switch (tone) {
+    case "success":
+      return "success";
+    case "warn":
+      return "warn";
+    case "danger":
+      return "danger";
+    case "info":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
+function evidenceStatusLabel(status: string | null | undefined): string {
+  const normalized = String(status || "").toLowerCase();
+  switch (normalized) {
+    case "trusted":
+      return "Trusted";
+    case "legacy":
+      return "Legacy";
+    case "quarantine":
+      return "Quarantine";
+    default:
+      return normalized || "-";
+  }
+}
+
+function evidenceStatusVariant(status: string | null | undefined): "success" | "warn" | "danger" | "neutral" {
+  const normalized = String(status || "").toLowerCase();
+  switch (normalized) {
+    case "trusted":
+      return "success";
+    case "legacy":
+      return "warn";
+    case "quarantine":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
+function candidateStageLabel(stage: string | null | undefined): string {
+  const normalized = String(stage || "").toLowerCase();
+  switch (normalized) {
+    case "candidate_ready":
+      return "Candidate ready";
+    case "shortlisted":
+      return "Shortlisted";
+    case "gates_pass":
+      return "Gates pass";
+    case "catalogued":
+      return "Catalogado";
+    case "episode_only":
+      return "Episode only";
+    case "failed":
+      return "Failed";
+    case "canceled":
+      return "Canceled";
+    case "archived":
+      return "Archived";
+    default:
+      return normalized || "-";
+  }
+}
+
+function candidateStageVariant(stage: string | null | undefined): "success" | "warn" | "info" | "neutral" | "danger" {
+  const normalized = String(stage || "").toLowerCase();
+  switch (normalized) {
+    case "candidate_ready":
+      return "success";
+    case "shortlisted":
+      return "info";
+    case "gates_pass":
+      return "warn";
+    case "failed":
+    case "canceled":
+      return "danger";
+    case "archived":
+      return "warn";
+    default:
+      return "neutral";
+  }
+}
+
+function proposalStatusLabel(status: string | null | undefined): string {
+  const normalized = String(status || "").toLowerCase();
+  switch (normalized) {
+    case "pending":
+      return "Pending";
+    case "needs_validation":
+      return "Needs validation";
+    case "approved":
+      return "Approved";
+    case "rejected":
+      return "Rejected";
+    default:
+      return normalized || "-";
+  }
+}
+
 function massSummaryNum(row: MassBacktestResultRow, key: "trade_count_oos" | "winrate_oos" | "sharpe_oos" | "calmar_oos" | "expectancy_net_usd" | "max_dd_oos_pct" | "costs_ratio"): number {
   return Number(row.summary?.[key] ?? 0);
 }
@@ -504,6 +610,10 @@ export default function BacktestsPage() {
   const [dataStatus, setDataStatus] = useState<DataStatusResponse | null>(null);
   const [dataStatusLoading, setDataStatusLoading] = useState(false);
   const [dataStatusError, setDataStatusError] = useState("");
+  const [researchFunnel, setResearchFunnel] = useState<ResearchFunnelResponse | null>(null);
+  const [trialLedger, setTrialLedger] = useState<ResearchTrialLedgerResponse | null>(null);
+  const [researchLoading, setResearchLoading] = useState(false);
+  const [researchError, setResearchError] = useState("");
 
   const [form, setForm] = useState<RunForm>({
     strategy_id: "",
@@ -633,6 +743,25 @@ export default function BacktestsPage() {
     }
   }, []);
 
+  const refreshResearchView = useCallback(async () => {
+    setResearchLoading(true);
+    setResearchError("");
+    try {
+      const [funnelPayload, ledgerPayload] = await Promise.all([
+        apiGet<ResearchFunnelResponse>("/api/v1/research/funnel"),
+        apiGet<ResearchTrialLedgerResponse>("/api/v1/research/trial-ledger?limit=12"),
+      ]);
+      setResearchFunnel(funnelPayload);
+      setTrialLedger(ledgerPayload);
+    } catch (err) {
+      setResearchFunnel(null);
+      setTrialLedger(null);
+      setResearchError(uiErrMsg(err, "No se pudo cargar Research Funnel / Trial Ledger."));
+    } finally {
+      setResearchLoading(false);
+    }
+  }, []);
+
   const refreshCatalogRankings = useCallback(async () => {
     try {
       const params = new URLSearchParams();
@@ -705,7 +834,8 @@ export default function BacktestsPage() {
     void refreshCatalogRuns();
     void refreshCatalogBatches();
     void refreshCatalogRankings();
-  }, [refreshCatalogRuns, refreshCatalogBatches, refreshCatalogRankings]);
+    void refreshResearchView();
+  }, [refreshCatalogRuns, refreshCatalogBatches, refreshCatalogRankings, refreshResearchView]);
 
   useEffect(() => {
     setCatalogPage(1);
@@ -757,6 +887,8 @@ export default function BacktestsPage() {
       cancelled = true;
     };
   }, [catalogComparePreview]);
+
+  const researchLedgerRows = useMemo(() => trialLedger?.items || [], [trialLedger]);
 
   useEffect(() => {
     const symbols = MARKET_OPTIONS[form.market];
@@ -1923,6 +2055,200 @@ export default function BacktestsPage() {
               <p>Metricas: walk-forward, robustez, costos, ranking</p>
               <p>Cuando usarlo: comparar muchas variantes y producir candidatos (Opcion B)</p>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardTitle>Research Funnel y Trial Ledger</CardTitle>
+        <CardDescription>
+          Vista operativa del research offline. Separa runs catalogados, evidence confiable y evidencia degradada sin mezclar truth ni runtime.
+        </CardDescription>
+        <CardContent className="space-y-4">
+          {researchError ? <p className="text-sm text-rose-300">{researchError}</p> : null}
+
+          <div className="grid gap-3 xl:grid-cols-5">
+            {(researchFunnel?.stages || []).map((stage) => (
+              <div key={`research-stage-${stage.id}`} className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">{stage.label}</p>
+                  <Badge variant={badgeToneVariant(stage.tone)}>{stage.count ?? 0}</Badge>
+                </div>
+                <p className="mt-3 text-2xl font-semibold text-slate-100">{stage.count ?? 0}</p>
+                <p className="mt-2 text-xs text-slate-400">{stage.description || "Sin descripcion."}</p>
+              </div>
+            ))}
+            {!researchLoading && !researchFunnel?.stages?.length ? (
+              <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3 text-xs text-slate-400 xl:col-span-5">
+                Todavia no hay funnel operativo cargado para esta vista.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-3">
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Evidence status</p>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                <p>Trusted: <span className="text-emerald-300">{researchFunnel?.evidence?.trusted ?? 0}</span></p>
+                <p>Legacy: <span className="text-amber-300">{researchFunnel?.evidence?.legacy ?? 0}</span></p>
+                <p>Quarantine: <span className="text-rose-300">{researchFunnel?.evidence?.quarantine ?? 0}</span></p>
+                <p>Learning eligible: <span className="text-slate-100">{researchFunnel?.evidence?.learning_eligible ?? 0}</span></p>
+                <p>Learning excluded: <span className="text-slate-100">{researchFunnel?.evidence?.learning_excluded ?? 0}</span></p>
+                <p>Runs catalogados: <span className="text-slate-100">{researchFunnel?.counts?.runs_total ?? 0}</span></p>
+              </div>
+              <p className="mt-3 text-xs text-slate-400">
+                `trusted` exige metadata, costos y trazabilidad completas. `legacy` se muestra pero no debe venderse como evidencia fuerte. `quarantine` requiere revision antes de aprendizaje o promotion.
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Pipeline de research</p>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                <p>Quick runs: <span className="text-slate-100">{researchFunnel?.counts?.quick_runs ?? 0}</span></p>
+                <p>Batch child: <span className="text-slate-100">{researchFunnel?.counts?.batch_child_runs ?? 0}</span></p>
+                <p>Batches activos: <span className="text-slate-100">{researchFunnel?.counts?.batches_active ?? 0}</span></p>
+                <p>Shortlisted: <span className="text-slate-100">{researchFunnel?.counts?.shortlisted ?? 0}</span></p>
+                <p>Gates pass+: <span className="text-slate-100">{researchFunnel?.counts?.gates_pass ?? 0}</span></p>
+                <p>Candidate ready: <span className="text-slate-100">{researchFunnel?.counts?.candidate_ready ?? 0}</span></p>
+                <p>Proposals pending: <span className="text-slate-100">{researchFunnel?.counts?.proposals_pending ?? 0}</span></p>
+                <p>Needs validation: <span className="text-slate-100">{researchFunnel?.counts?.proposals_needs_validation ?? 0}</span></p>
+              </div>
+              <p className="mt-3 text-xs text-slate-400">
+                Esta capa resume research y evidence. No redefine `strategy_truth`, ni muestra confidence runtime como si fuera verdad base.
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs uppercase tracking-wide text-slate-400">Candidates recientes</p>
+                <Button type="button" variant="outline" onClick={() => void refreshResearchView()} disabled={researchLoading}>
+                  {researchLoading ? "Actualizando..." : "Refrescar"}
+                </Button>
+              </div>
+              <div className="mt-3 space-y-2 text-xs text-slate-300">
+                {(researchFunnel?.recent_candidates || []).length ? (
+                  (researchFunnel?.recent_candidates || []).map((row) => (
+                    <div key={`research-candidate-${row.run_id}`} className="rounded border border-slate-800 bg-slate-950/40 p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant={candidateStageVariant(row.candidate_stage)}>{candidateStageLabel(row.candidate_stage)}</Badge>
+                        <Badge variant={evidenceStatusVariant(row.evidence_status)}>{evidenceStatusLabel(row.evidence_status)}</Badge>
+                      </div>
+                      <p className="mt-2 text-slate-100">{row.strategy_name || row.run_id}</p>
+                      <p className="text-slate-400">
+                        {row.asset || "-"} · {row.timeframe || "-"} · {row.run_id}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-slate-400">Sin candidatos recientes visibles en este ledger.</p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/40">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Trial Ledger</p>
+                <p className="text-xs text-slate-500">Primeros {researchLedgerRows.length} trials del ledger operativo.</p>
+              </div>
+              <Badge variant="neutral">{trialLedger?.count ?? 0} total</Badge>
+            </div>
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Run</TH>
+                  <TH>Estrategia</TH>
+                  <TH>Mercado</TH>
+                  <TH>Evidence</TH>
+                  <TH>Research stage</TH>
+                  <TH>Proposals</TH>
+                  <TH>Metricas</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {researchLedgerRows.map((row: ResearchTrialLedgerItem) => (
+                  <TR key={`trial-ledger-${row.run_id}`}>
+                    <TD>
+                      <div className="space-y-1">
+                        <p className="font-medium text-slate-100">{row.run_id}</p>
+                        <p className="text-xs text-slate-500">{compactDate(row.created_at)}</p>
+                        {row.batch_id ? <p className="text-xs text-slate-500">Batch: {row.batch_id}</p> : null}
+                      </div>
+                    </TD>
+                    <TD>
+                      <div className="space-y-1">
+                        <p className="font-medium text-slate-100">{row.strategy_name || row.strategy_id}</p>
+                        <p className="text-xs text-slate-500">{row.strategy_id}</p>
+                        <p className="text-xs text-slate-500">Feature set: {row.feature_set || "-"}</p>
+                      </div>
+                    </TD>
+                    <TD>
+                      <div className="space-y-1 text-xs text-slate-300">
+                        <p>{row.asset || "-"} · {row.timeframe || "-"}</p>
+                        <p>Dataset: {row.dataset_source || "-"}</p>
+                        <p>Hash: {shortHash(row.dataset_hash, 12)}</p>
+                      </div>
+                    </TD>
+                    <TD>
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap gap-1">
+                          <Badge variant={evidenceStatusVariant(row.evidence_status)}>{evidenceStatusLabel(row.evidence_status)}</Badge>
+                          {row.learning_excluded ? <Badge variant="danger">learning_excluded</Badge> : null}
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {(row.evidence_flags || []).slice(0, 3).map((flag) => (
+                            <Badge key={`trial-flag-${row.run_id}-${flag}`} variant="neutral">{flag}</Badge>
+                          ))}
+                          {!row.evidence_flags?.length ? <span className="text-xs text-slate-500">sin flags</span> : null}
+                        </div>
+                      </div>
+                    </TD>
+                    <TD>
+                      <div className="space-y-2">
+                        <Badge variant={candidateStageVariant(row.candidate_stage)}>{candidateStageLabel(row.candidate_stage)}</Badge>
+                        <div className="flex flex-wrap gap-1">
+                          {row.candidate_flags?.shortlisted ? <Badge variant="info">shortlist</Badge> : null}
+                          {row.candidate_flags?.paso_gates ? <Badge variant="warn">PASO</Badge> : null}
+                          {row.candidate_flags?.strict_strategy_id ? <Badge variant="success">strict</Badge> : null}
+                        </div>
+                      </div>
+                    </TD>
+                    <TD>
+                      <div className="space-y-1 text-xs text-slate-300">
+                        <p>Count: <span className="text-slate-100">{row.proposal_count ?? 0}</span></p>
+                        <div className="flex flex-wrap gap-1">
+                          {(row.proposal_statuses || []).map((status) => (
+                            <Badge
+                              key={`trial-proposal-${row.run_id}-${status}`}
+                              variant={status === "approved" ? "success" : status === "needs_validation" ? "warn" : status === "rejected" ? "danger" : "neutral"}
+                            >
+                              {proposalStatusLabel(status)}
+                            </Badge>
+                          ))}
+                          {!row.proposal_statuses?.length ? <span className="text-slate-500">sin proposal link</span> : null}
+                        </div>
+                      </div>
+                    </TD>
+                    <TD>
+                      <div className="space-y-1 text-xs text-slate-300">
+                        <p>Trades: <span className="text-slate-100">{row.metrics?.trade_count ?? 0}</span></p>
+                        <p>Sharpe: <span className="text-slate-100">{fmtNum(Number(row.metrics?.sharpe ?? 0))}</span></p>
+                        <p>Max DD: <span className="text-slate-100">{fmtPct(Number(row.metrics?.max_dd ?? 0))}</span></p>
+                        <p>Cost total: <span className="text-slate-100">{fmtNum(Number(row.costs?.total_cost ?? 0))}</span></p>
+                      </div>
+                    </TD>
+                  </TR>
+                ))}
+                {!researchLedgerRows.length ? (
+                  <TR>
+                    <TD colSpan={7}>
+                      <p className="py-4 text-center text-sm text-slate-400">
+                        No hay trials visibles todavia. El ledger usa el catalogo de runs y la evidencia persistida para separar `trusted/legacy/quarantine`.
+                      </p>
+                    </TD>
+                  </TR>
+                ) : null}
+              </TBody>
+            </Table>
           </div>
         </CardContent>
       </Card>

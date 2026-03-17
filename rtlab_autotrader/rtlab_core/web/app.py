@@ -5503,6 +5503,466 @@ def _load_runtime_risk_policy_thresholds() -> dict[str, Any]:
         return defaults
 
 
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return None
+
+
+def _proposal_status_normalized(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"pending_review", "pending"}:
+        return "pending"
+    if raw in {"approved", "rejected", "needs_validation"}:
+        return raw
+    return raw or "unknown"
+
+
+def _proposal_signature_key(*, strategy_id: str, asset: str, timeframe: str) -> tuple[str, str, str]:
+    return (
+        str(strategy_id or "").strip(),
+        str(asset or "").strip().upper(),
+        str(timeframe or "").strip().lower(),
+    )
+
+
+def _trial_costs_snapshot(summary: dict[str, Any], catalog_run: dict[str, Any] | None) -> dict[str, Any]:
+    summary_costs = summary.get("costs_breakdown") if isinstance(summary.get("costs_breakdown"), dict) else {}
+    kpis = catalog_run.get("kpis") if isinstance((catalog_run or {}).get("kpis"), dict) else {}
+    gross_pnl = _first_number(summary_costs.get("gross_pnl_total"), summary_costs.get("gross_pnl"), kpis.get("gross_pnl"))
+    net_pnl = _first_number(summary_costs.get("net_pnl_total"), summary_costs.get("net_pnl"), kpis.get("net_pnl"))
+    fees_total = _first_number(summary_costs.get("fees_total"), summary_costs.get("fees"), kpis.get("fees_total"))
+    spread_total = _first_number(summary_costs.get("spread_total"), summary_costs.get("spread_cost"), kpis.get("spread_total"))
+    slippage_total = _first_number(summary_costs.get("slippage_total"), summary_costs.get("slippage_cost"), kpis.get("slippage_total"))
+    funding_total = _first_number(summary_costs.get("funding_total"), summary_costs.get("funding_cost"), kpis.get("funding_total"))
+    total_cost = _first_number(summary_costs.get("total_cost"), summary_costs.get("total_cost_usd"))
+    total_cost_source = "reported"
+    components_complete = all(value is not None for value in (fees_total, spread_total, slippage_total, funding_total))
+    components_present = any(value is not None for value in (fees_total, spread_total, slippage_total, funding_total))
+    if total_cost is None and components_complete:
+        total_cost = float((fees_total or 0.0) + (spread_total or 0.0) + (slippage_total or 0.0) + (funding_total or 0.0))
+        total_cost_source = "components_sum"
+    if total_cost is None and gross_pnl is not None and net_pnl is not None:
+        total_cost = abs(float(gross_pnl) - float(net_pnl))
+        total_cost_source = "gross_minus_net"
+    return {
+        "gross_pnl": gross_pnl,
+        "net_pnl": net_pnl,
+        "fees_total": fees_total,
+        "spread_total": spread_total,
+        "slippage_total": slippage_total,
+        "funding_total": funding_total,
+        "total_cost": total_cost,
+        "total_cost_source": total_cost_source,
+        "components_complete": bool(components_complete),
+        "components_present": bool(components_present),
+    }
+
+
+def _classify_trial_evidence(
+    *,
+    episode: dict[str, Any] | None,
+    catalog_run: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary = episode.get("summary") if isinstance((episode or {}).get("summary"), dict) else {}
+    symbols = (catalog_run or {}).get("symbols") if isinstance((catalog_run or {}).get("symbols"), list) else []
+    timeframes = (catalog_run or {}).get("timeframes") if isinstance((catalog_run or {}).get("timeframes"), list) else []
+    strategy_id = _first_text((episode or {}).get("strategy_id"), (catalog_run or {}).get("strategy_id"))
+    asset = _first_text((episode or {}).get("asset"), symbols[0] if symbols else "")
+    timeframe = _first_text((episode or {}).get("timeframe"), timeframes[0] if timeframes else "")
+    start_ts = _first_text((episode or {}).get("start_ts"), (catalog_run or {}).get("timerange_from"))
+    end_ts = _first_text((episode or {}).get("end_ts"), (catalog_run or {}).get("timerange_to"), (catalog_run or {}).get("finished_at"))
+    dataset_source = _first_text(
+        (episode or {}).get("dataset_source"),
+        summary.get("dataset_source"),
+        (catalog_run or {}).get("dataset_source"),
+    )
+    dataset_hash = _first_text((episode or {}).get("dataset_hash"), (catalog_run or {}).get("dataset_hash"))
+    commit_hash = _first_text((episode or {}).get("commit_hash"), (catalog_run or {}).get("code_commit_hash"))
+    feature_set = _first_text(summary.get("feature_set"), (episode or {}).get("feature_set"))
+    validation_quality = _first_text((episode or {}).get("validation_quality"))
+    cost_fidelity_level = _first_text((episode or {}).get("cost_fidelity_level"))
+    costs = _trial_costs_snapshot(summary, catalog_run)
+    flags: list[str] = []
+    critical_missing: list[str] = []
+    traceability_missing: list[str] = []
+    degraded_flags: list[str] = []
+
+    if episode is None:
+        flags.append("catalog_only_no_episode")
+        if not dataset_hash:
+            flags.append("missing_dataset_hash")
+        if not dataset_source:
+            flags.append("missing_dataset_source")
+        return {
+            "evidence_status": "legacy",
+            "evidence_flags": flags,
+            "learning_excluded": True,
+            "validation_quality": validation_quality or "catalog_only",
+            "cost_fidelity_level": cost_fidelity_level or "catalog_only",
+            "feature_set": feature_set or "unknown",
+            "costs": costs,
+        }
+
+    if not strategy_id:
+        critical_missing.append("missing_strategy_id")
+    if not asset:
+        critical_missing.append("missing_asset")
+    if not timeframe:
+        critical_missing.append("missing_timeframe")
+    if not start_ts:
+        critical_missing.append("missing_start_ts")
+    if not end_ts:
+        critical_missing.append("missing_end_ts")
+    if str((episode or {}).get("source") or "backtest").strip().lower() == "backtest" and not dataset_hash:
+        critical_missing.append("missing_dataset_hash")
+    if costs.get("gross_pnl") is None:
+        critical_missing.append("missing_gross_pnl")
+    if costs.get("net_pnl") is None:
+        critical_missing.append("missing_net_pnl")
+    if costs.get("total_cost") is None:
+        critical_missing.append("missing_total_cost")
+
+    if not dataset_source:
+        traceability_missing.append("missing_dataset_source")
+    if not commit_hash or commit_hash.lower() == "local":
+        traceability_missing.append("missing_commit_hash")
+
+    if feature_set.lower() in {"", "unknown"}:
+        degraded_flags.append("unknown_feature_set")
+    if validation_quality.lower() in {"", "unknown", "synthetic_or_bootstrap"}:
+        degraded_flags.append("validation_quality_degraded")
+    if cost_fidelity_level.lower() in {"", "unknown", "synthetic_seeded"}:
+        degraded_flags.append("cost_fidelity_degraded")
+    if bool(costs.get("components_present")) and not bool(costs.get("components_complete")):
+        degraded_flags.append("partial_cost_components")
+    if costs.get("total_cost") is not None and str(costs.get("total_cost_source") or "reported") != "reported":
+        degraded_flags.append(f"reconstructed_total_cost:{costs.get('total_cost_source')}")
+    if catalog_run is None:
+        degraded_flags.append("episode_without_catalog")
+
+    flags.extend(critical_missing)
+    flags.extend(traceability_missing)
+    flags.extend(degraded_flags)
+    if critical_missing:
+        status = "quarantine"
+        learning_excluded = True
+    elif traceability_missing or degraded_flags:
+        status = "legacy"
+        learning_excluded = False
+    else:
+        status = "trusted"
+        learning_excluded = False
+    return {
+        "evidence_status": status,
+        "evidence_flags": flags,
+        "learning_excluded": learning_excluded,
+        "validation_quality": validation_quality or "unknown",
+        "cost_fidelity_level": cost_fidelity_level or "unknown",
+        "feature_set": feature_set or "unknown",
+        "costs": costs,
+    }
+
+
+def _trial_candidate_stage(run_row: dict[str, Any] | None, *, shortlisted: bool) -> str:
+    if not isinstance(run_row, dict):
+        return "episode_only"
+    params = run_row.get("params_json") if isinstance(run_row.get("params_json"), dict) else {}
+    flags = run_row.get("flags") if isinstance(run_row.get("flags"), dict) else {}
+    artifacts = run_row.get("artifacts") if isinstance(run_row.get("artifacts"), dict) else {}
+    strict_strategy_id = bool(params.get("strict_strategy_id") or artifacts.get("strict_strategy_id"))
+    if strict_strategy_id:
+        return "candidate_ready"
+    if shortlisted:
+        return "shortlisted"
+    if bool(flags.get("PASO_GATES")) or bool(flags.get("GATES_ADV_PASS")):
+        return "gates_pass"
+    status = str(run_row.get("status") or "").strip().lower()
+    if status in {"failed", "canceled", "archived"}:
+        return status
+    return "catalogued"
+
+
+def _collect_research_trial_ledger_items() -> list[dict[str, Any]]:
+    catalog_runs = store.backtest_catalog.list_runs()
+    batches = store.backtest_catalog.list_batches()
+    proposals = option_b_engine.list_proposals()
+    shortlisted_run_ids: set[str] = set()
+    for batch in batches:
+        shortlist = batch.get("best_runs_cache") if isinstance(batch.get("best_runs_cache"), list) else []
+        for item in shortlist:
+            if not isinstance(item, dict):
+                continue
+            run_id = _first_text(item.get("run_id"), item.get("id"))
+            if run_id:
+                shortlisted_run_ids.add(run_id)
+
+    proposal_index: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        key = _proposal_signature_key(
+            strategy_id=str(proposal.get("proposed_strategy_id") or ""),
+            asset=str(proposal.get("asset") or ""),
+            timeframe=str(proposal.get("timeframe") or ""),
+        )
+        if key[0]:
+            proposal_index.setdefault(key, []).append(proposal)
+
+    episodes = store.registry.list_experience_episodes(sources=["backtest"])
+    episode_by_run_id: dict[str, dict[str, Any]] = {}
+    for episode in episodes:
+        run_id = str(episode.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        existing = episode_by_run_id.get(run_id)
+        if existing is None or str(episode.get("created_at") or "") > str(existing.get("created_at") or ""):
+            episode_by_run_id[run_id] = episode
+
+    matched_episode_ids: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for catalog_run in catalog_runs:
+        if not isinstance(catalog_run, dict):
+            continue
+        run_id = str(catalog_run.get("run_id") or "").strip()
+        legacy_json_id = str(catalog_run.get("legacy_json_id") or "").strip()
+        episode = episode_by_run_id.get(run_id) or (episode_by_run_id.get(legacy_json_id) if legacy_json_id else None)
+        if isinstance(episode, dict):
+            episode_id = str(episode.get("id") or "").strip()
+            if episode_id:
+                matched_episode_ids.add(episode_id)
+        summary = episode.get("summary") if isinstance((episode or {}).get("summary"), dict) else {}
+        classification = _classify_trial_evidence(episode=episode, catalog_run=catalog_run)
+        symbols = catalog_run.get("symbols") if isinstance(catalog_run.get("symbols"), list) else []
+        timeframes = catalog_run.get("timeframes") if isinstance(catalog_run.get("timeframes"), list) else []
+        asset = _first_text((episode or {}).get("asset"), symbols[0] if symbols else "")
+        timeframe = _first_text((episode or {}).get("timeframe"), timeframes[0] if timeframes else "")
+        strategy_id = _first_text((episode or {}).get("strategy_id"), catalog_run.get("strategy_id"))
+        linked_proposals = proposal_index.get(
+            _proposal_signature_key(strategy_id=strategy_id, asset=asset, timeframe=timeframe),
+            [],
+        )
+        proposal_statuses = sorted({_proposal_status_normalized(row.get("status")) for row in linked_proposals if isinstance(row, dict)})
+        candidate_stage = _trial_candidate_stage(catalog_run, shortlisted=(run_id in shortlisted_run_ids))
+        flags = catalog_run.get("flags") if isinstance(catalog_run.get("flags"), dict) else {}
+        params = catalog_run.get("params_json") if isinstance(catalog_run.get("params_json"), dict) else {}
+        kpis = catalog_run.get("kpis") if isinstance(catalog_run.get("kpis"), dict) else {}
+        rows.append(
+            {
+                "run_id": run_id,
+                "legacy_json_id": legacy_json_id or None,
+                "batch_id": str(catalog_run.get("batch_id") or "").strip() or None,
+                "run_type": str(catalog_run.get("run_type") or "single"),
+                "run_status": str(catalog_run.get("status") or ""),
+                "created_at": _first_text(catalog_run.get("created_at"), (episode or {}).get("created_at")),
+                "started_at": _first_text(catalog_run.get("started_at"), (episode or {}).get("start_ts")),
+                "finished_at": _first_text(catalog_run.get("finished_at"), (episode or {}).get("end_ts")),
+                "strategy_id": strategy_id,
+                "strategy_name": _first_text(catalog_run.get("strategy_name"), strategy_id),
+                "asset": asset,
+                "timeframe": timeframe,
+                "dataset_source": _first_text((episode or {}).get("dataset_source"), summary.get("dataset_source"), catalog_run.get("dataset_source")),
+                "dataset_hash": _first_text((episode or {}).get("dataset_hash"), catalog_run.get("dataset_hash")),
+                "commit_hash": _first_text((episode or {}).get("commit_hash"), catalog_run.get("code_commit_hash")),
+                "source": _first_text((episode or {}).get("source"), "backtest"),
+                "evidence_status": classification.get("evidence_status"),
+                "evidence_flags": classification.get("evidence_flags"),
+                "learning_excluded": bool(classification.get("learning_excluded")),
+                "validation_quality": classification.get("validation_quality"),
+                "cost_fidelity_level": classification.get("cost_fidelity_level"),
+                "feature_set": classification.get("feature_set"),
+                "candidate_stage": candidate_stage,
+                "candidate_flags": {
+                    "shortlisted": run_id in shortlisted_run_ids,
+                    "paso_gates": bool(flags.get("PASO_GATES")),
+                    "strict_strategy_id": bool(params.get("strict_strategy_id")),
+                },
+                "proposal_count": len(linked_proposals),
+                "proposal_statuses": proposal_statuses,
+                "proposal_needs_validation": any(bool((row or {}).get("needs_validation")) for row in linked_proposals if isinstance(row, dict)),
+                "metrics": {
+                    "trade_count": int(
+                        (summary.get("trade_count") if isinstance(summary, dict) else 0)
+                        or kpis.get("trade_count")
+                        or kpis.get("roundtrips")
+                        or 0
+                    ),
+                    "sharpe": _first_number((summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}).get("sharpe"), kpis.get("sharpe")),
+                    "winrate": _first_number((summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}).get("winrate"), kpis.get("winrate")),
+                    "max_dd": _first_number((summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}).get("max_dd"), kpis.get("max_dd")),
+                    "net_pnl": classification.get("costs", {}).get("net_pnl"),
+                },
+                "costs": classification.get("costs"),
+                "catalog_present": True,
+            }
+        )
+
+    for episode in episodes:
+        if not isinstance(episode, dict):
+            continue
+        episode_id = str(episode.get("id") or "").strip()
+        if episode_id and episode_id in matched_episode_ids:
+            continue
+        summary = episode.get("summary") if isinstance(episode.get("summary"), dict) else {}
+        classification = _classify_trial_evidence(episode=episode, catalog_run=None)
+        strategy_id = str(episode.get("strategy_id") or "").strip()
+        asset = str(episode.get("asset") or "").strip().upper()
+        timeframe = str(episode.get("timeframe") or "").strip().lower()
+        linked_proposals = proposal_index.get(
+            _proposal_signature_key(strategy_id=strategy_id, asset=asset, timeframe=timeframe),
+            [],
+        )
+        rows.append(
+            {
+                "run_id": str(episode.get("run_id") or episode_id),
+                "legacy_json_id": None,
+                "batch_id": None,
+                "run_type": "episode_only",
+                "run_status": "episode_only",
+                "created_at": _first_text(episode.get("created_at"), episode.get("end_ts"), episode.get("start_ts")),
+                "started_at": _first_text(episode.get("start_ts")),
+                "finished_at": _first_text(episode.get("end_ts")),
+                "strategy_id": strategy_id,
+                "strategy_name": strategy_id,
+                "asset": asset,
+                "timeframe": timeframe,
+                "dataset_source": _first_text(episode.get("dataset_source"), summary.get("dataset_source")),
+                "dataset_hash": _first_text(episode.get("dataset_hash")),
+                "commit_hash": _first_text(episode.get("commit_hash")),
+                "source": _first_text(episode.get("source"), "backtest"),
+                "evidence_status": classification.get("evidence_status"),
+                "evidence_flags": classification.get("evidence_flags"),
+                "learning_excluded": bool(classification.get("learning_excluded")),
+                "validation_quality": classification.get("validation_quality"),
+                "cost_fidelity_level": classification.get("cost_fidelity_level"),
+                "feature_set": classification.get("feature_set"),
+                "candidate_stage": "episode_only",
+                "candidate_flags": {"shortlisted": False, "paso_gates": False, "strict_strategy_id": False},
+                "proposal_count": len(linked_proposals),
+                "proposal_statuses": sorted({_proposal_status_normalized(row.get("status")) for row in linked_proposals if isinstance(row, dict)}),
+                "proposal_needs_validation": any(bool((row or {}).get("needs_validation")) for row in linked_proposals if isinstance(row, dict)),
+                "metrics": {
+                    "trade_count": int(summary.get("trade_count") or 0),
+                    "sharpe": _first_number((summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}).get("sharpe")),
+                    "winrate": _first_number((summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}).get("winrate")),
+                    "max_dd": _first_number((summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}).get("max_dd")),
+                    "net_pnl": classification.get("costs", {}).get("net_pnl"),
+                },
+                "costs": classification.get("costs"),
+                "catalog_present": False,
+            }
+        )
+
+    rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("run_id") or "")), reverse=True)
+    return rows
+
+
+def _research_funnel_payload() -> dict[str, Any]:
+    items = _collect_research_trial_ledger_items()
+    batches = store.backtest_catalog.list_batches()
+    proposals = [row for row in option_b_engine.list_proposals() if isinstance(row, dict)]
+    evidence_counts = {
+        "trusted": sum(1 for row in items if str(row.get("evidence_status") or "") == "trusted"),
+        "legacy": sum(1 for row in items if str(row.get("evidence_status") or "") == "legacy"),
+        "quarantine": sum(1 for row in items if str(row.get("evidence_status") or "") == "quarantine"),
+        "learning_eligible": sum(1 for row in items if not bool(row.get("learning_excluded"))),
+        "learning_excluded": sum(1 for row in items if bool(row.get("learning_excluded"))),
+    }
+    counts = {
+        "runs_total": sum(1 for row in items if bool(row.get("catalog_present"))),
+        "episode_only": sum(1 for row in items if not bool(row.get("catalog_present"))),
+        "quick_runs": sum(1 for row in items if str(row.get("run_type") or "") == "single"),
+        "batch_child_runs": sum(1 for row in items if str(row.get("run_type") or "") == "batch_child"),
+        "runs_completed": sum(1 for row in items if str(row.get("run_status") or "") in {"completed", "completed_warn"}),
+        "runs_failed": sum(1 for row in items if str(row.get("run_status") or "") == "failed"),
+        "batches_total": len(batches),
+        "batches_active": sum(1 for row in batches if str((row or {}).get("status") or "").lower() in {"queued", "preparing", "running"}),
+        "shortlisted": sum(1 for row in items if str(row.get("candidate_stage") or "") == "shortlisted"),
+        "gates_pass": sum(1 for row in items if str(row.get("candidate_stage") or "") in {"gates_pass", "shortlisted", "candidate_ready"}),
+        "candidate_ready": sum(1 for row in items if str(row.get("candidate_stage") or "") == "candidate_ready"),
+        "proposals_total": len(proposals),
+        "proposals_pending": sum(1 for row in proposals if _proposal_status_normalized(row.get("status")) == "pending"),
+        "proposals_needs_validation": sum(1 for row in proposals if _proposal_status_normalized(row.get("status")) == "needs_validation"),
+        "proposals_approved": sum(1 for row in proposals if _proposal_status_normalized(row.get("status")) == "approved"),
+        "proposals_rejected": sum(1 for row in proposals if _proposal_status_normalized(row.get("status")) == "rejected"),
+    }
+    recent_candidates = [
+        {
+            "run_id": row.get("run_id"),
+            "strategy_name": row.get("strategy_name"),
+            "asset": row.get("asset"),
+            "timeframe": row.get("timeframe"),
+            "candidate_stage": row.get("candidate_stage"),
+            "evidence_status": row.get("evidence_status"),
+        }
+        for row in items
+        if str(row.get("candidate_stage") or "") in {"gates_pass", "shortlisted", "candidate_ready"}
+    ][:8]
+    return {
+        "generated_at": utc_now_iso(),
+        "counts": counts,
+        "evidence": evidence_counts,
+        "stages": [
+            {
+                "id": "runs_catalogued",
+                "label": "Runs catalogados",
+                "count": counts["runs_total"],
+                "tone": "neutral",
+                "description": "Quick backtests y child runs visibles en catalogo.",
+            },
+            {
+                "id": "trusted_evidence",
+                "label": "Evidence trusted",
+                "count": evidence_counts["trusted"],
+                "tone": "success",
+                "description": "Metadata, costos y trazabilidad completas.",
+            },
+            {
+                "id": "legacy_evidence",
+                "label": "Evidence legacy",
+                "count": evidence_counts["legacy"],
+                "tone": "warn",
+                "description": "Usable con degradacion o solo catalogo; no vender como evidence fuerte.",
+            },
+            {
+                "id": "quarantine_evidence",
+                "label": "Evidence quarantine",
+                "count": evidence_counts["quarantine"],
+                "tone": "danger",
+                "description": "Falta metadata critica, costos o trazabilidad suficiente.",
+            },
+            {
+                "id": "candidate_ready",
+                "label": "Candidate ready",
+                "count": counts["candidate_ready"],
+                "tone": "info",
+                "description": "Runs con gating/research suficientemente avanzados para seguimiento humano.",
+            },
+        ],
+        "recent_candidates": recent_candidates,
+        "compatibility": {
+            "legacy_catalog_runs_visible": True,
+            "learning_excluded_is_operational_flag": True,
+            "status_is_derived_when_registry_has_no_explicit_evidence_status": True,
+        },
+    }
+
+
 class RuntimeBridge:
     def __init__(self) -> None:
         self._lock = RLock()
@@ -9448,6 +9908,22 @@ def create_app() -> FastAPI:
             payload={"config": cfg, "batch_id": batch_id},
         )
         return {"ok": True, "batch_id": batch_id, **started}
+
+    @app.get("/api/v1/research/funnel")
+    def research_funnel(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return _research_funnel_payload()
+
+    @app.get("/api/v1/research/trial-ledger")
+    def research_trial_ledger(
+        limit: int = Query(default=200, ge=1, le=1000),
+        evidence_status: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        items = _collect_research_trial_ledger_items()
+        if evidence_status:
+            normalized = str(evidence_status or "").strip().lower()
+            items = [row for row in items if str(row.get("evidence_status") or "").strip().lower() == normalized]
+        return {"generated_at": utc_now_iso(), "items": items[:limit], "count": len(items), "status_filter": evidence_status}
 
     @app.get("/api/v1/research/mass-backtest/status")
     def research_mass_backtest_status(run_id: str = Query(...), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

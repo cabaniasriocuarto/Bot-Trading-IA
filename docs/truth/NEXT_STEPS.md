@@ -68,6 +68,14 @@ Fecha: 2026-03-16
 - [ ] Extender esta misma frontera a rankings/catalogos fuera de Option B solo cuando exista un consumidor real y justificado.
 - [ ] Revisar si conviene un backfill chico para episodios legacy historicos que hoy no traen metadata suficiente para clasificacion fina.
 - [ ] Mantener RTLRESE-10 separado: no mezclar esta cuarentena de evidencia con cambios nuevos de producto, frontend o refactors masivos.
+## RTLRESE-10 · research funnel / trial ledger
+- [x] Exponer `GET /api/v1/research/funnel`.
+- [x] Exponer `GET /api/v1/research/trial-ledger`.
+- [x] Mostrar `Research Funnel y Trial Ledger` en `Backtests`.
+- [x] Marcar visualmente `trusted/legacy/quarantine` sin vender evidence degradada como confiable.
+- [ ] Repetir smoke HTTP de `test_web_live_ready.py` cuando la venv tenga `httpx`.
+- [ ] Correr `lint` / `tsc --noEmit` / `build` del dashboard en una maquina con `node`/`npm` disponibles en PATH.
+- [ ] Cuando exista estado canonico persistido de evidence en esta linea de codigo, hacer que funnel/ledger lo lean directamente y dejar de derivarlo on-the-fly.
 
 ## Tramo vigente (experience learning + shadow + no-live)
 - [x] Experience store persistente integrado al registry SQLite.
