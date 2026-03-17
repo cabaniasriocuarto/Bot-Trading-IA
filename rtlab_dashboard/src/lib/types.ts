@@ -79,12 +79,56 @@ export interface Strategy {
   notes: string;
   tags: string[];
   last_run_at?: string | null;
+  // Legacy mixed field from /api/v1/strategies/{id}; prefer StrategyEvidenceResponse.last_oos in new UI.
   last_oos?: BacktestRun["metrics"] | null;
   primary_for_modes?: Array<"paper" | "testnet" | "live">;
   manifest?: StrategyManifest;
   defaults_yaml?: string;
   schema?: Record<string, unknown>;
   pack_source?: "default" | "upload";
+}
+
+export interface StrategyTruth {
+  id: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  enabled_for_trading?: boolean;
+  allow_learning?: boolean;
+  is_primary?: boolean;
+  primary: boolean;
+  source?: "knowledge" | "uploaded" | string;
+  status?: "active" | "disabled" | "archived" | string;
+  description?: string;
+  params: Record<string, unknown>;
+  params_yaml?: string;
+  parameters_schema?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  notes: string;
+  tags: string[];
+  last_run_at?: string | null;
+  primary_for_modes?: Array<"paper" | "testnet" | "live">;
+}
+
+export interface StrategyEvidenceItem {
+  run_id: string;
+  mode: string;
+  created_at: string;
+  metrics: BacktestRun["metrics"];
+  tags: string[];
+  notes: string;
+  validation_mode: string;
+}
+
+export interface StrategyEvidenceResponse {
+  strategy_id: string;
+  strategy_version: string;
+  last_run_at?: string | null;
+  run_count: number;
+  last_oos?: BacktestRun["metrics"] | null;
+  latest_run?: StrategyEvidenceItem | null;
+  items: StrategyEvidenceItem[];
 }
 
 export interface StrategyKpis {
@@ -207,6 +251,22 @@ export interface BotInstance {
   created_at: string;
   updated_at: string;
   metrics?: BotInstanceMetrics;
+}
+
+export interface BotPolicyState {
+  engine: string;
+  mode: "shadow" | "paper" | "testnet" | "live";
+  status: "active" | "paused" | "archived";
+  pool_strategy_ids: string[];
+  universe: string[];
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BotPolicyStateResponse {
+  bot_id: string;
+  policy_state: BotPolicyState;
 }
 
 export interface StrategyComparison {
@@ -431,6 +491,26 @@ export interface LogEvent {
   message: string;
   related_ids?: string[];
   payload?: Record<string, unknown>;
+}
+
+export interface BreakerEvent {
+  id: number;
+  ts: string;
+  bot_id: string;
+  mode: string;
+  reason: string;
+  run_id?: string | null;
+  symbol?: string | null;
+  source_log_id?: number | null;
+}
+
+export interface BotDecisionLogResponse {
+  bot_id: string;
+  items: LogEvent[];
+  total: number;
+  page: number;
+  page_size: number;
+  breaker_events: BreakerEvent[];
 }
 
 export interface BotStatusResponse {
