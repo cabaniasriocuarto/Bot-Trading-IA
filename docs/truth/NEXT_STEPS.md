@@ -18,8 +18,12 @@ Fecha: 2026-03-17
 - [x] Smoke CI migrado de filtro ad hoc a marker estable:
   - `uv --directory rtlab_autotrader run python -m pytest tests/test_web_live_ready.py -m web_smoke -q`
 - [ ] Siguiente bloque 1:
-  - agregar smoke UI con Playwright sobre esta base ya segmentada, sin mezclarlo con cambios de producto.
+  - auditar Linear 11-16 contra el repo actual para verificar que estado documental, ramas cerradas e integracion real sigan alineados.
 - [ ] Siguiente bloque 2:
+  - reclasificar issues y sub-issues segun el resultado de esa auditoria, separando lo ya absorbido en repo de lo que sigue pendiente o desalineado.
+- [ ] Siguiente bloque 3:
+  - recien despues de esa auditoria continuar con Playwright smoke UI o retomar backlog 13-16, segun lo que la auditoria confirme como pendiente real.
+- [ ] Pendiente menor de este bloque:
   - refinar la clasificacion de algunos tests borderline de `web_integration` / `web_slow` usando las mediciones reales de `--durations`.
 - [ ] Pendiente menor:
   - revisar el warning local de `.pytest_cache` en Windows solo como higiene de entorno local, no como bloqueo de packaging/QA.
