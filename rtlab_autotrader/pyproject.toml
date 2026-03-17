@@ -44,3 +44,8 @@ include = ["rtlab_core*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]

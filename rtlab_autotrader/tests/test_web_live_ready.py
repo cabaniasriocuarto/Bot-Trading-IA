@@ -4682,6 +4682,12 @@ def test_thompson_respects_max_switch_per_day_and_weights_history(tmp_path: Path
 
 def test_mass_backtest_research_endpoints_and_mark_candidate(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
+  module.API_RATE_LIMITER = module.ApiRateLimiter(
+    enabled=True,
+    general_per_minute=1000,
+    expensive_per_minute=100,
+    window_seconds=60,
+  )
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
   user_data_dir = Path(module.USER_DATA_DIR)
