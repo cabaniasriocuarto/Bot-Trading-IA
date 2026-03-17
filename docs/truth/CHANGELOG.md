@@ -68,6 +68,30 @@
   - inspeccion manual del diff + chequeo de contratos legacy/nuevos en repo.
   - limitacion de entorno: no se pudo correr `next lint` / `tsc` / `next build` porque falta `node.exe` en esta sesion.
 
+### RTLRESE-16 - cierre documental de la frontera operativa
+- Se consolida en `docs/truth` la frontera canonica entre:
+  - `strategy_truth`
+  - `strategy_evidence`
+  - `bot_policy_state`
+  - `bot_decision_log`
+- Resumen de sub-issues previas:
+  - RTLRESE-11 / RTLRESE-12:
+    - fijan la frontera semantica y el lenguaje de contratos para separar verdad base, evidencia y estado operativo.
+  - RTLRESE-13:
+    - separacion backend por dominios cerrada en rama `feature/rtlrese-13-backend-domains` (`4497029`).
+  - RTLRESE-14:
+    - separacion API por endpoints cerrada en rama `feature/rtlrese-14-api-contracts` (`703cea8`).
+  - RTLRESE-15:
+    - separacion frontend por bloques y tipos cerrada en rama `feature/rtlrese-15-frontend-domains` (`1443789`).
+- Estado real asentado por RTLRESE-16:
+  - la base activa de esta rama todavia conserva contratos y pantallas legacy;
+  - por eso `SOURCE_OF_TRUTH` ahora diferencia explicitamente entre:
+    - frontera canonica ya definida/cerrada
+    - integracion realmente visible hoy en la base trackeada.
+- Sin cambios de producto:
+  - esta sub-issue toca solo `docs/truth`;
+  - no agrega features nuevas de backend ni frontend.
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

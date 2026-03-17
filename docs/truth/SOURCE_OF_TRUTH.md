@@ -127,6 +127,53 @@ Fecha de actualizacion: 2026-03-16
   - no se pudo correr `lint`/`build` de Next.js porque el entorno no tiene `node.exe` disponible;
   - la verificacion de este tramo fue por inspeccion de contratos/codigo y consistencia del diff, no por build frontend ejecutado.
 
+## RTLRESE-16 - consolidacion documental de la frontera operativa - 2026-03-16
+
+- Frontera canonica acordada para el dominio operativo:
+  - `strategy_truth`
+  - `strategy_evidence`
+  - `bot_policy_state`
+  - `bot_decision_log`
+- Lectura arquitectonica consolidada:
+  - `strategy_truth` = definicion declarativa de la estrategia, parametros, version, tags y notas base.
+  - `strategy_evidence` = runs, backtests, metricas agregadas y evidencia observada que respalda o cuestiona la estrategia.
+  - `bot_policy_state` = modo, engine, status, pool y notas operativas declarativas del bot.
+  - `bot_decision_log` = logs, breaker events y trazas de decisiones/alertas del bot.
+- Estado de las sub-issues RTLRESE-11 a RTLRESE-15:
+  - RTLRESE-11 / RTLRESE-12:
+    - dejaron fijada la frontera semantica y el lenguaje canonico de contratos para no mezclar verdad base con evidencia ni estado declarativo con decision log.
+  - RTLRESE-13:
+    - rama dedicada: `feature/rtlrese-13-backend-domains`
+    - commit de cierre: `4497029`
+    - resultado documentado: separacion backend de persistencia por dominios `truth/evidence/policy_state/decision_log`.
+  - RTLRESE-14:
+    - rama dedicada: `feature/rtlrese-14-api-contracts`
+    - commit de cierre: `703cea8`
+    - resultado documentado: separacion de endpoints FastAPI por dominio operativo.
+  - RTLRESE-15:
+    - rama dedicada: `feature/rtlrese-15-frontend-domains`
+    - commit de cierre: `1443789`
+    - resultado documentado: separacion visual y de tipos en frontend con fallback legacy acotado.
+- Estado real de integracion en ESTA base (`feature/rtlrese-16-docs-finalization`, misma base que `main` actual):
+  - el backend trackeado todavia expone contratos legacy visibles, por ejemplo:
+    - `POST /api/v1/bots/bulk-patch`
+    - `GET /api/v1/logs`
+  - el frontend trackeado todavia conserva mezcla legacy visible, por ejemplo:
+    - `Strategy.last_oos` en `rtlab_dashboard/src/lib/types.ts`
+    - `GET /api/v1/strategies/{id}` como contrato mixto en `strategies/[id]`
+    - tablas y cards de `strategies` / `execution` todavia no separadas por dominio en esta base.
+  - `rtlab_autotrader/rtlab_core/domains/` no aparece como arbol fuente trackeado en esta rama; solo se observaron residuos locales (`__pycache__`), no la integracion final del split.
+- Conclusión operativa honesta:
+  - la frontera nueva ya quedo decidida y cerrada en ramas dedicadas 13/14/15;
+  - la compatibilidad legacy sigue vigente desde el punto de vista de integracion, porque esas ramas todavia no aparecen absorbidas por la base actual;
+  - por lo tanto, cualquier lectura de `SOURCE_OF_TRUTH` debe distinguir:
+    - frontera canonica objetivo/cerrada
+    - estado efectivamente integrado hoy en la base activa
+- Criterio documental adoptado desde RTLRESE-16:
+  - no volver a describir `Sharpe`, `Max DD`, `WinRate`, `trades` o `confidence` runtime como si fueran parte de `strategy_truth`;
+  - no volver a mezclar `policy_state` del bot con `decision_log` en la misma definicion semantica;
+  - mantener explicitado cuando algo sea `legacy`, `derivado` o `agregado`.
+
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 
 - `ShadowRunConfig` ya no rompe import en Python 3.13:
