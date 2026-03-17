@@ -8,6 +8,13 @@ from statistics import mean, pstdev
 from typing import Any
 
 from rtlab_core.learning.brain import deflated_sharpe_ratio
+from rtlab_core.learning.experience_store import (
+    EVIDENCE_STATUS_LEGACY,
+    EVIDENCE_STATUS_QUARANTINE,
+    episode_evidence_flags,
+    episode_evidence_status,
+    episode_learning_excluded,
+)
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 
 VALID_SOURCES = ("backtest", "shadow", "paper", "testnet")
@@ -85,7 +92,8 @@ class OptionBLearningEngine:
     def _load_rows(self, strategies: list[dict[str, Any]]) -> dict[str, Any]:
         eligible = self._eligible_strategies(strategies)
         strategy_ids = list(eligible)
-        episodes = self.registry.list_experience_episodes(strategy_ids=strategy_ids, sources=list(VALID_SOURCES))
+        all_episodes = self.registry.list_experience_episodes(strategy_ids=strategy_ids, sources=list(VALID_SOURCES))
+        episodes = [row for row in all_episodes if not episode_learning_excluded(row)]
         episode_ids = [str(row.get("id") or "") for row in episodes if str(row.get("id") or "")]
         events = self.registry.list_experience_events(episode_ids=episode_ids) if episode_ids else []
         regime_kpis = [row for row in self.registry.list_regime_kpis() if str(row.get("strategy_id") or "") in eligible]
@@ -93,6 +101,7 @@ class OptionBLearningEngine:
         guidance = {str(row.get("strategy_id") or ""): row for row in guidance_rows}
         return {
             "eligible": eligible,
+            "all_episodes": all_episodes,
             "episodes": episodes,
             "events": events,
             "regime_kpis": regime_kpis,
@@ -164,6 +173,7 @@ class OptionBLearningEngine:
     def _build_contexts(self, *, strategies: list[dict[str, Any]]) -> dict[str, Any]:
         rows = self._load_rows(strategies)
         eligible = rows["eligible"]
+        all_episodes = rows["all_episodes"]
         episodes = rows["episodes"]
         events = rows["events"]
         regime_kpis = rows["regime_kpis"]
@@ -171,8 +181,33 @@ class OptionBLearningEngine:
 
         episode_by_id = {str(row.get("id") or ""): row for row in episodes}
         totals: dict[tuple[str, str, str], dict[str, Any]] = {}
+        evidence_summary: dict[tuple[str, str, str], dict[str, Any]] = {}
         regime_events: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
         primary_feature_sets: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for episode in all_episodes:
+            strategy_id = str(episode.get("strategy_id") or "")
+            if strategy_id not in eligible:
+                continue
+            asset = str(episode.get("asset") or "")
+            timeframe = str(episode.get("timeframe") or "")
+            key = (strategy_id, asset, timeframe)
+            bucket = evidence_summary.setdefault(
+                key,
+                {
+                    "trusted_episode_count": 0,
+                    "legacy_episode_count": 0,
+                    "quarantine_episode_count": 0,
+                    "evidence_flags": set(),
+                },
+            )
+            status = episode_evidence_status(episode)
+            if status == EVIDENCE_STATUS_QUARANTINE:
+                bucket["quarantine_episode_count"] += 1
+            elif status == EVIDENCE_STATUS_LEGACY:
+                bucket["legacy_episode_count"] += 1
+            else:
+                bucket["trusted_episode_count"] += 1
+            bucket["evidence_flags"].update(episode_evidence_flags(episode))
         for episode in episodes:
             strategy_id = str(episode.get("strategy_id") or "")
             asset = str(episode.get("asset") or "")
@@ -236,6 +271,15 @@ class OptionBLearningEngine:
             regime = raw_regime if raw_regime in VALID_REGIMES else "unknown"
             total_key = (strategy_id, asset, timeframe)
             total_info = totals.get(total_key, {"trade_count": 0, "days": set(), "feature_sets": set(), "sources": {}, "validation_qualities": set(), "episode_net_pnls": []})
+            evidence_info = evidence_summary.get(
+                total_key,
+                {
+                    "trusted_episode_count": 0,
+                    "legacy_episode_count": 0,
+                    "quarantine_episode_count": 0,
+                    "evidence_flags": set(),
+                },
+            )
             exit_rows = regime_events.get((strategy_id, asset, timeframe, regime), [])
             if _safe_int(row.get("n_trades"), 0) < 30:
                 regime = "unknown"
@@ -285,6 +329,8 @@ class OptionBLearningEngine:
             validation_factor = 1.0
             needs_validation = False
             validation_qualities = {str(x) for x in (total_info.get("validation_qualities") or set()) if str(x)}
+            legacy_episode_count = _safe_int(evidence_info.get("legacy_episode_count"), 0)
+            quarantine_episode_count = _safe_int(evidence_info.get("quarantine_episode_count"), 0)
             if any("synthetic" in quality for quality in validation_qualities):
                 validation_factor *= 0.6
                 needs_validation = True
@@ -296,6 +342,12 @@ class OptionBLearningEngine:
                 needs_validation = True
             if mixed_feature_set:
                 validation_factor *= 0.5
+                needs_validation = True
+            if legacy_episode_count > 0:
+                validation_factor *= 0.75
+                needs_validation = True
+            if quarantine_episode_count > 0:
+                validation_factor *= 0.85
                 needs_validation = True
             weights = [max(0.0, _safe_float(event.get("source_weight"), 0.0)) for event in exit_rows]
             net_pnls = [_safe_float(event.get("realized_pnl_net"), 0.0) for event in exit_rows]
@@ -359,6 +411,10 @@ class OptionBLearningEngine:
                 "validation_factor": max(0.0, min(1.0, validation_factor)),
                 "stability_factor": max(0.0, min(1.0, stability_factor)),
                 "needs_validation": needs_validation,
+                "trusted_episode_count": _safe_int(evidence_info.get("trusted_episode_count"), 0),
+                "legacy_episode_count": legacy_episode_count,
+                "quarantine_episode_count": quarantine_episode_count,
+                "evidence_flags": sorted(str(flag) for flag in (evidence_info.get("evidence_flags") or set()) if str(flag)),
                 "source_summary": source_summary,
                 "guidance": guidance.get(strategy_id) or {},
             }
@@ -367,6 +423,7 @@ class OptionBLearningEngine:
             "contexts": contexts,
             "eligible": eligible,
             "primary_strategy_id": rows["primary_strategy_id"],
+            "all_episodes": all_episodes,
             "episodes": episodes,
             "events": events,
         }
@@ -374,10 +431,16 @@ class OptionBLearningEngine:
     def summarize(self, *, strategies: list[dict[str, Any]]) -> dict[str, Any]:
         payload = self._build_contexts(strategies=strategies)
         proposals = self.registry.list_learning_proposals()
+        all_episodes = payload.get("all_episodes") or []
         return {
             "generated_at": _utc_iso(),
             "eligible_strategies": len(payload["eligible"]),
-            "experience_episodes": len(payload["episodes"]),
+            "experience_episodes": len(all_episodes),
+            "experience_episodes_eligible": len(payload["episodes"]),
+            "experience_episodes_excluded": sum(1 for row in all_episodes if episode_learning_excluded(row)),
+            "experience_episodes_trusted": sum(1 for row in all_episodes if episode_evidence_status(row) not in {EVIDENCE_STATUS_LEGACY, EVIDENCE_STATUS_QUARANTINE}),
+            "experience_episodes_legacy": sum(1 for row in all_episodes if episode_evidence_status(row) == EVIDENCE_STATUS_LEGACY),
+            "experience_episodes_quarantine": sum(1 for row in all_episodes if episode_evidence_status(row) == EVIDENCE_STATUS_QUARANTINE),
             "experience_events": len(payload["events"]),
             "contexts": len(payload["contexts"]),
             "proposals_pending": sum(1 for row in proposals if str(row.get("status") or "") == "pending"),
@@ -443,6 +506,10 @@ class OptionBLearningEngine:
                     reasons.append("same_feature_set_fail")
                 if not bool(row.get("feature_set_matches_baseline", True)):
                     reasons.append("feature_set_vs_baseline_fail")
+                if _safe_int(row.get("legacy_episode_count"), 0) > 0:
+                    reasons.append("legacy_evidence_present")
+                if _safe_int(row.get("quarantine_episode_count"), 0) > 0:
+                    reasons.append("quarantine_evidence_excluded")
                 if needs_validation:
                     reasons.append("needs_validation")
                 # Hard-block gates: cost stress failure and negative expectancy are non-negotiable.
@@ -534,6 +601,10 @@ class OptionBLearningEngine:
                         "baseline_feature_set": top.get("baseline_feature_set"),
                         "feature_set_matches_baseline": bool(top.get("feature_set_matches_baseline", True)),
                         "mixed_feature_set": bool(top.get("mixed_feature_set")),
+                        "trusted_episode_count": top.get("trusted_episode_count"),
+                        "legacy_episode_count": top.get("legacy_episode_count"),
+                        "quarantine_episode_count": top.get("quarantine_episode_count"),
+                        "evidence_flags": top.get("evidence_flags") or [],
                         "reasons": top.get("reasons") or [],
                     },
                 "source_summary": {
@@ -541,6 +612,9 @@ class OptionBLearningEngine:
                     "validation_factor": top.get("validation_factor"),
                     "source_quality_factor": top.get("source_quality_factor"),
                     "stability_factor": top.get("stability_factor"),
+                    "trusted_episode_count": top.get("trusted_episode_count"),
+                    "legacy_episode_count": top.get("legacy_episode_count"),
+                    "quarantine_episode_count": top.get("quarantine_episode_count"),
                 },
                 "needs_validation": str(top.get("status") or "") == "needs_validation",
                 "status": str(top.get("status") or "needs_validation"),

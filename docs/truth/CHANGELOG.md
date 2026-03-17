@@ -92,6 +92,29 @@
   - esta sub-issue toca solo `docs/truth`;
   - no agrega features nuevas de backend ni frontend.
 
+### RTLRESE-7: strategy_evidence legacy/quarantine
+- `ExperienceStore` ahora clasifica evidencia en:
+  - `trusted`
+  - `legacy`
+  - `quarantine`
+- `quarantine` se aplica cuando falta metadata critica, trazabilidad temporal minima, `dataset_hash` de backtest o costos totales completos.
+- `legacy` se aplica cuando la evidencia sigue siendo usable pero degradada:
+  - `costs_breakdown` faltante y reconstruido desde trades
+  - `commit_hash` faltante
+  - `dataset_source`/`validation_mode` faltantes en backtest
+  - `feature_set` faltante/unknown
+  - componentes de costo incompletos
+  - `validation_quality=synthetic_or_bootstrap`
+- `RegistryDB.list_experience_episodes(...)` expone `evidence_status`, `evidence_flags` y `learning_excluded`.
+- `OptionBLearningEngine` ahora:
+  - excluye episodios `quarantine` de contexts/eventos/rankings
+  - mantiene episodios `legacy`, pero los marca `needs_validation`
+  - agrega conteos/flags de evidencia en summary y proposals
+- `strategy_policy_guidance` anota presencia de `legacy` y exclusion de `quarantine` en `notes`.
+- Validacion:
+  - `uv run --project rtlab_autotrader python -m py_compile rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/learning/option_b_engine.py rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/tests/test_learning_experience_option_b.py` -> PASS
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS (`8 passed`)
+
 ## 2026-03-06
 
 ### Vista bot-centrica en Backtests / Runs

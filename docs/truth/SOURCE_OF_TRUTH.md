@@ -174,6 +174,53 @@ Fecha de actualizacion: 2026-03-16
   - no volver a mezclar `policy_state` del bot con `decision_log` en la misma definicion semantica;
   - mantener explicitado cuando algo sea `legacy`, `derivado` o `agregado`.
 
+## Actualizacion tecnica RTLRESE-7 (strategy_evidence legacy/quarantine) - 2026-03-16
+
+- Se consolida una frontera minima y explicita para `strategy_evidence` en:
+  - `ExperienceStore`
+  - `RegistryDB`
+  - `OptionBLearningEngine`
+- Estados canonicos de evidencia:
+  - `trusted`: metadata critica, costos y trazabilidad suficientes.
+  - `legacy`: evidencia usable pero degradada.
+  - `quarantine`: evidencia no confiable para aprendizaje/ranking/guidance.
+- Reglas minimas implementadas:
+  - `quarantine` cuando falta alguno de estos minimos:
+    - `asset` o `timeframe`
+    - trazabilidad temporal suficiente (`start_ts`, `end_ts` o `created_at`)
+    - `dataset_hash` en `source=backtest`
+    - costos totales completos (`gross_pnl_total`, `net_pnl_total`, `total_cost`)
+  - `legacy` cuando la evidencia sigue siendo usable pero llega degradada:
+    - `costs_breakdown` faltante pero reconstruible desde trades
+    - `dataset_source` faltante en `backtest`
+    - `commit_hash` faltante
+    - `validation_mode` faltante en `backtest`
+    - `feature_set` faltante o `unknown`
+    - componentes de costo faltantes
+    - `validation_quality=synthetic_or_bootstrap`
+- Efecto operativo real:
+  - `quarantine` queda excluida de:
+    - `regime_kpi`
+    - `strategy_policy_guidance`
+    - contexts/rankings/proposals de Option B
+  - `legacy` sigue visible, pero:
+    - baja `validation_factor`
+    - fuerza `needs_validation`
+    - agrega `legacy_evidence_present` en razones de proposal
+  - guidance deja nota explicita cuando hubo episodios `legacy` o `quarantine`.
+- Persistencia/lectura actual:
+  - cada `experience_episode.summary` guarda:
+    - `evidence_status`
+    - `evidence_flags`
+    - `learning_excluded`
+  - `RegistryDB.list_experience_episodes(...)` materializa esos campos para consumidores internos.
+- Alcance deliberadamente acotado:
+  - no se tocaron frontend ni endpoints nuevos en esta issue;
+  - no se mezclo RTLRESE-7 con RTLRESE-10.
+- Validacion local ejecutada:
+  - `uv run --project rtlab_autotrader python -m py_compile rtlab_autotrader/rtlab_core/learning/experience_store.py rtlab_autotrader/rtlab_core/learning/option_b_engine.py rtlab_autotrader/rtlab_core/strategy_packs/registry_db.py rtlab_autotrader/tests/test_learning_experience_option_b.py` -> PASS
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_learning_experience_option_b.py -q` -> PASS (`8 passed`)
+
 ## Hotfix shadow/beast + evidencia local controlada - 2026-03-06
 
 - `ShadowRunConfig` ya no rompe import en Python 3.13:

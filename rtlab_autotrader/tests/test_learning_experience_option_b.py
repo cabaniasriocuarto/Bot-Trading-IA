@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from rtlab_core.learning.experience_store import ExperienceStore
+from rtlab_core.learning.experience_store import (
+    EVIDENCE_STATUS_LEGACY,
+    EVIDENCE_STATUS_QUARANTINE,
+    ExperienceStore,
+)
 from rtlab_core.learning.option_b_engine import OptionBLearningEngine
 from rtlab_core.learning.shadow_runner import ShadowRunConfig
 from rtlab_core.strategy_packs.registry_db import RegistryDB
@@ -34,6 +38,9 @@ def _seed_run(
     funding_cost: float = 0.0,
     feature_set: str = "orderflow_on",
     pbo: float = 0.12,
+    include_costs_breakdown: bool = True,
+    include_commit_hash: bool = True,
+    include_validation_mode: bool = True,
 ) -> None:
     end_dt = start_dt + timedelta(minutes=5)
     created_at = start_dt + timedelta(days=2)
@@ -47,8 +54,6 @@ def _seed_run(
         "timeframe": "5m",
         "data_source": "dataset",
         "dataset_hash": f"dataset-{strategy_id}-{feature_set}",
-        "git_commit": "deadbeef",
-        "validation_mode": "walk-forward",
         "feature_set": feature_set,
         "orderflow_feature_set": feature_set,
         "use_orderflow_data": feature_set == "orderflow_on",
@@ -62,15 +67,6 @@ def _seed_run(
             "spread_bps": 4.0,
             "slippage_bps": 3.0,
             "funding_bps": 1.0,
-        },
-        "costs_breakdown": {
-            "gross_pnl_total": gross,
-            "net_pnl_total": net,
-            "total_cost": total_cost,
-            "fees_total": fee,
-            "spread_total": spread_cost,
-            "slippage_total": slippage_cost,
-            "funding_total": funding_cost,
         },
         "metrics": {
             "trade_count": 3,
@@ -102,6 +98,20 @@ def _seed_run(
             }
         ],
     }
+    if include_commit_hash:
+        run["git_commit"] = "deadbeef"
+    if include_validation_mode:
+        run["validation_mode"] = "walk-forward"
+    if include_costs_breakdown:
+        run["costs_breakdown"] = {
+            "gross_pnl_total": gross,
+            "net_pnl_total": net,
+            "total_cost": total_cost,
+            "fees_total": fee,
+            "spread_total": spread_cost,
+            "slippage_total": slippage_cost,
+            "funding_total": funding_cost,
+        }
     store.record_run(run, source_override=source)
 
 
@@ -115,6 +125,9 @@ def _seed_strategy_history(
     spread_cost: float,
     slippage_cost: float,
     runs: int = 45,
+    include_costs_breakdown: bool = True,
+    include_commit_hash: bool = True,
+    include_validation_mode: bool = True,
 ) -> None:
     base = datetime(2025, 1, 1, tzinfo=timezone.utc)
     for idx in range(runs):
@@ -130,6 +143,9 @@ def _seed_strategy_history(
             fee=fee,
             spread_cost=spread_cost,
             slippage_cost=slippage_cost,
+            include_costs_breakdown=include_costs_breakdown,
+            include_commit_hash=include_commit_hash,
+            include_validation_mode=include_validation_mode,
         )
 
 
@@ -250,6 +266,119 @@ def test_option_b_engine_blocks_negative_cost_stress(tmp_path: Path) -> None:
     assert proposal["needs_validation"] is True
     assert proposal["status"] == "needs_validation"
     assert "cost_stress_1_5x<0" in proposal["metrics"]["reasons"]
+
+
+def test_experience_store_quarantines_runs_with_missing_cost_totals(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "quarantine_missing_costs_v1"
+    start_dt = datetime(2025, 2, 1, tzinfo=timezone.utc)
+    end_dt = start_dt + timedelta(minutes=5)
+
+    run = {
+        "id": "run-missing-cost-totals",
+        "strategy_id": strategy_id,
+        "mode": "backtest",
+        "symbol": "BTCUSDT",
+        "timeframe": "5m",
+        "data_source": "dataset",
+        "dataset_hash": "dataset-quarantine-costs",
+        "git_commit": "deadbeef",
+        "validation_mode": "walk-forward",
+        "feature_set": "orderflow_on",
+        "period": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
+        "created_at": (start_dt + timedelta(days=1)).isoformat(),
+        "metrics": {"trade_count": 1, "roundtrips": 1, "expectancy": 12.0, "pbo": 0.12, "max_dd": 0.04},
+        "trades": [
+            {
+                "symbol": "BTCUSDT",
+                "timeframe": "5m",
+                "side": "long",
+                "entry_time": start_dt.isoformat(),
+                "exit_time": end_dt.isoformat(),
+                "pnl": 12.0,
+                "latency_ms": 18.0,
+                "spread_bps": 4.0,
+                "features": {"vpin": 0.22, "imbalance": 0.08},
+            }
+        ],
+    }
+
+    store.record_run(run, source_override="backtest")
+
+    episodes = registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest"])
+    assert len(episodes) == 1
+    episode = episodes[0]
+    assert episode["evidence_status"] == EVIDENCE_STATUS_QUARANTINE
+    assert episode["learning_excluded"] is True
+    assert "missing_cost_totals" in episode["evidence_flags"]
+    assert registry.list_regime_kpis(strategy_id=strategy_id) == []
+
+    guidance_rows = [row for row in registry.list_strategy_policy_guidance() if str(row.get("strategy_id") or "") == strategy_id]
+    assert len(guidance_rows) == 1
+    assert "quarantine" in str(guidance_rows[0].get("notes") or "").lower()
+
+
+def test_experience_store_marks_reconstructed_costs_as_legacy(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    strategy_id = "legacy_reconstructed_costs_v1"
+
+    _seed_run(
+        store,
+        strategy_id=strategy_id,
+        run_id="legacy-costs-run",
+        source="backtest",
+        start_dt=datetime(2025, 3, 1, tzinfo=timezone.utc),
+        gross=14.0,
+        fee=1.0,
+        spread_cost=1.0,
+        slippage_cost=1.0,
+        include_costs_breakdown=False,
+    )
+
+    episodes = registry.list_experience_episodes(strategy_ids=[strategy_id], sources=["backtest"])
+    assert len(episodes) == 1
+    episode = episodes[0]
+    assert episode["evidence_status"] == EVIDENCE_STATUS_LEGACY
+    assert episode["learning_excluded"] is False
+    assert "costs_breakdown_missing" in episode["evidence_flags"]
+    assert "costs_reconstructed_from_trades" in episode["evidence_flags"]
+    assert registry.list_regime_kpis(strategy_id=strategy_id)
+
+
+def test_option_b_engine_marks_legacy_evidence_for_validation(tmp_path: Path) -> None:
+    registry = RegistryDB(tmp_path / "registry.sqlite")
+    store = ExperienceStore(registry)
+    engine = OptionBLearningEngine(registry)
+    strategy_id = "trend_pullback_legacy_commit_v1"
+
+    _seed_strategy_history(
+        store,
+        strategy_id=strategy_id,
+        source="shadow",
+        gross=12.0,
+        fee=1.0,
+        spread_cost=1.0,
+        slippage_cost=1.0,
+        include_commit_hash=False,
+    )
+
+    result = engine.recalculate(
+        strategies=[_strategy_row(strategy_id, allow_learning=True, is_primary=True)],
+        pbo_max=0.25,
+        dsr_min=0.0,
+    )
+
+    proposals = [row for row in result["proposals"] if row["proposed_strategy_id"] == strategy_id]
+    assert proposals
+    proposal = proposals[0]
+    assert proposal["needs_validation"] is True
+    assert proposal["status"] == "needs_validation"
+    assert "legacy_evidence_present" in proposal["metrics"]["reasons"]
+    assert proposal["metrics"]["legacy_episode_count"] > 0
+    assert result["summary"]["experience_episodes_legacy"] > 0
+    assert result["summary"]["experience_episodes_quarantine"] == 0
 
 
 def test_shadow_run_config_uses_safe_defaults() -> None:
