@@ -1,6 +1,29 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-16
+Fecha: 2026-03-17
+
+## Auditoria Linear 11-16 vs repo actual - 2026-03-17
+- [x] Auditoria completada usando:
+  - repo actual
+  - `docs/truth`
+  - Linear MCP para `RTLRESE-11` a `RTLRESE-16` y proyectos relacionados
+- [x] Resultado consolidado:
+  - `RTLRESE-11` a `RTLRESE-16` quedan alineadas como base mayormente hecha en el repo actual
+  - el desfasaje principal ya no esta en codigo de esa frontera sino en backlog/proyectos de Linear que quedaron viejos, duplicados o demasiado amplios
+- [ ] Siguiente bloque recomendado 1:
+  - reclasificar en Linear las issues de los bloques 11-16 usando cuatro estados operativos:
+    - `HECHA`
+    - `PARCIAL`
+    - `PENDIENTE`
+    - `PARA REESCRIBIR`
+- [ ] Siguiente bloque recomendado 2:
+  - reescribir primero las issues desalineadas o absorbidas por el repo real, especialmente en:
+    - `Research Funnel + Beast/Batch`
+    - `Núcleo Arquitectónico y Policies`
+    - `Frontend Console + Playwright QA`
+- [ ] Siguiente bloque recomendado 3:
+  - despues de esa reclasificacion atacar antes el bloque estructural `Binance Catalog + Universes + Live Parity`;
+  - recien despues evaluar si conviene seguir con `Playwright smoke UI` o con backlog 13-16 remanente segun el resultado de la auditoria.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:
