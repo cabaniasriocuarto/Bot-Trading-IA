@@ -4,6 +4,14 @@ import { resolveRoleViaBackend } from "@/lib/auth-backend";
 
 const ORIGINAL_FETCH = global.fetch;
 
+function buildTestEnv(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: "test",
+    BACKEND_API_URL: "https://api.example.com",
+    ...overrides,
+  } as NodeJS.ProcessEnv;
+}
+
 describe("resolveRoleViaBackend", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -12,7 +20,11 @@ describe("resolveRoleViaBackend", () => {
 
   it("returns null when BACKEND_API_URL is not configured", async () => {
     const fetchSpy = vi.spyOn(global, "fetch");
-    const res = await resolveRoleViaBackend("Wadmin", "secret", {} as NodeJS.ProcessEnv);
+    const res = await resolveRoleViaBackend(
+      "Wadmin",
+      "secret",
+      buildTestEnv({ BACKEND_API_URL: undefined }),
+    );
     expect(res).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -25,9 +37,7 @@ describe("resolveRoleViaBackend", () => {
       }),
     ) as typeof fetch;
 
-    const res = await resolveRoleViaBackend("Wadmin", "secret", {
-      BACKEND_API_URL: "https://api.example.com",
-    } as NodeJS.ProcessEnv);
+    const res = await resolveRoleViaBackend("Wadmin", "secret", buildTestEnv());
 
     expect(res).toEqual({ ok: true, role: "admin" });
     expect(global.fetch).toHaveBeenCalledTimes(1);
@@ -45,9 +55,7 @@ describe("resolveRoleViaBackend", () => {
       }),
     ) as typeof fetch;
 
-    const res = await resolveRoleViaBackend("Wadmin", "wrong", {
-      BACKEND_API_URL: "https://api.example.com",
-    } as NodeJS.ProcessEnv);
+    const res = await resolveRoleViaBackend("Wadmin", "wrong", buildTestEnv());
 
     expect(res).toEqual({ ok: false, status: 401, error: "Invalid credentials" });
   });
@@ -60,9 +68,7 @@ describe("resolveRoleViaBackend", () => {
       }),
     ) as typeof fetch;
 
-    const res = await resolveRoleViaBackend("Wadmin", "secret", {
-      BACKEND_API_URL: "https://api.example.com",
-    } as NodeJS.ProcessEnv);
+    const res = await resolveRoleViaBackend("Wadmin", "secret", buildTestEnv());
 
     expect(res).toEqual({
       ok: false,
@@ -74,9 +80,7 @@ describe("resolveRoleViaBackend", () => {
   it("returns 502 when backend is unreachable", async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("network")) as typeof fetch;
 
-    const res = await resolveRoleViaBackend("Wadmin", "secret", {
-      BACKEND_API_URL: "https://api.example.com",
-    } as NodeJS.ProcessEnv);
+    const res = await resolveRoleViaBackend("Wadmin", "secret", buildTestEnv());
 
     expect(res).toEqual({ ok: false, status: 502, error: "Backend no disponible." });
   });

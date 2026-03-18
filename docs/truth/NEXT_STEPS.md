@@ -6,6 +6,13 @@ Fecha: 2026-03-18
 - [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.
 - [x] Dejar `rtlab_autotrader/config/policies/` solo como compatibilidad/fallback y no como autoridad equivalente.
 - [x] Exponer por API la metadata de autoridad (`authority`) y la taxonomia canonica (`mode_taxonomy`).
+- [x] Cerrar el micro-hardening final del frontend de authority/runtime:
+  - `lint` deja de escanear `rtlab_dashboard/.pytest_cache` por ignores explicitos en flat config.
+  - `auth-backend.test.ts` usa un helper de env de test valido con `NODE_ENV=test` y `BACKEND_API_URL=https://api.example.com`.
+  - validacion local final ejecutada:
+    - `npm.cmd run lint`
+    - `npm.cmd run build`
+    - `npx.cmd tsc --noEmit`
 - [x] Documentar jerarquia de autoridad tecnica en:
   - `docs/truth/SOURCE_OF_TRUTH.md`
   - `docs/plan/AUTHORITY_HIERARCHY.md`
