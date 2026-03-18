@@ -4594,6 +4594,9 @@ def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, 
   assert "gates" in body["policies"] and "microstructure" in body["policies"]
   assert body["summary"]["pbo_reject_if_gt"] == 0.05
   assert body["summary"]["vpin_soft_kill_cdf"] == 0.9
+  assert "authority" in body and isinstance(body["authority"], dict)
+  assert body["authority"]["canonical_role"] == "monorepo_root"
+  assert "mode_taxonomy" in body and body["mode_taxonomy"]["global_runtime_modes"] == ["PAPER", "TESTNET", "LIVE"]
 
 
 def test_learning_default_risk_profile_prefers_policy_yaml(tmp_path: Path, monkeypatch) -> None:

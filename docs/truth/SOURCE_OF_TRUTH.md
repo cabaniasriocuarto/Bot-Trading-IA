@@ -1,6 +1,69 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-16
+Fecha de actualizacion: 2026-03-18
+
+## RTLOPS-2 / RTLOPS-1 / RTLOPS-7: autoridad de policies + taxonomia de modos + jerarquia documental - 2026-03-18
+
+- Fuente operativa unica de verdad para policies numericas y gates:
+  - `config/policies/` en la raiz del monorepo.
+- Compatibilidad permitida, pero no equivalente en autoridad:
+  - `rtlab_autotrader/config/policies/`
+  - solo se usa como fallback de empaquetado/deploy cuando la raiz canonica no esta disponible o esta incompleta.
+- Cambio real aplicado:
+  - el backend ahora expone en `GET /api/v1/config/policies`:
+    - `authority`
+    - `mode_taxonomy`
+  - eso deja visible:
+    - cual es la raiz runtime seleccionada
+    - cual es la raiz canonica esperada
+    - si el runtime cayo en compatibilidad
+    - si existen YAML duplicados y divergentes entre la raiz canonica y la nested
+- Criterio de autoridad tecnica documentado tambien en:
+  - `docs/plan/AUTHORITY_HIERARCHY.md`
+
+### Taxonomia canonica de modos
+
+- Runtime global del backend / settings API:
+  - `PAPER`
+  - `TESTNET`
+  - `LIVE`
+- Modo operativo por bot:
+  - `shadow`
+  - `paper`
+  - `testnet`
+  - `live`
+- Fuentes de evidence / learning:
+  - `backtest`
+  - `shadow`
+  - `paper`
+  - `testnet`
+
+### Alias legacy explicitados
+
+- `MOCK`:
+  - queda tratado como alias legado del mock local de frontend;
+  - no es modo canonico del runtime real del backend.
+- `demo`:
+  - queda tratado como contexto legacy de research/promocion;
+  - no es modo operativo canonico.
+
+### Ajuste real en frontend
+
+- `Settings` y `Execution` ya no presentan `MOCK` como si fuera equivalente a runtime real.
+- La UI lo rotula como:
+  - alias legado local
+  - separado de `SHADOW`
+  - separado del runtime global `PAPER / TESTNET / LIVE`
+
+### Regla de decision operativa
+
+Cuando codigo, docs y configuracion discrepan:
+
+1. manda el runtime real del backend y los contratos API efectivos
+2. despues manda `config/policies/`
+3. despues mandan los defaults fail-closed
+4. despues `docs/truth`
+5. despues `docs/plan`
 
 ## RTLRESE-13: separacion backend por dominio operativo y dominio de verdad - 2026-03-16
 

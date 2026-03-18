@@ -1,6 +1,25 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-16
+Fecha: 2026-03-18
+
+## Cierre del bloque RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - 2026-03-18
+- [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.
+- [x] Dejar `rtlab_autotrader/config/policies/` solo como compatibilidad/fallback y no como autoridad equivalente.
+- [x] Exponer por API la metadata de autoridad (`authority`) y la taxonomia canonica (`mode_taxonomy`).
+- [x] Documentar jerarquia de autoridad tecnica en:
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+  - `docs/plan/AUTHORITY_HIERARCHY.md`
+- [x] Normalizar semanticamente la taxonomia visible:
+  - runtime global `PAPER / TESTNET / LIVE`
+  - bots `shadow / paper / testnet / live`
+  - evidence `backtest / shadow / paper / testnet`
+  - `MOCK` como alias legado local, no como runtime real
+
+## Siguiente bloque recomendado
+- [ ] Cerrar M2 de `Nucleo Arquitectonico y Policies` en pasos chicos:
+  - centralizar thresholds numericos explicitos en YAML;
+  - auditar y acotar `execution_modes`, `observability`, `drift`, `health_scoring` y `alert_thresholds` para que no queden como backlog demasiado amplio.
+- [ ] Solo despues de ese cierre, abrir el bloque `Binance Catalog + Universes + Live Parity`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:
