@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rtlab_core.policy_paths import describe_policy_root_resolution, resolve_policy_root
+from rtlab_core.policy_paths import EXPECTED_POLICY_FILENAMES, describe_policy_root_resolution, resolve_policy_root
 
 
 def test_describe_policy_root_resolution_marks_nested_as_compat_when_root_is_empty(tmp_path: Path) -> None:
@@ -29,7 +29,9 @@ def test_describe_policy_root_resolution_flags_divergent_duplicate_yaml(tmp_path
   root_policies.mkdir(parents=True, exist_ok=True)
   nested_policies.mkdir(parents=True, exist_ok=True)
 
-  for name in ("gates.yaml", "microstructure.yaml", "risk_policy.yaml", "beast_mode.yaml", "fees.yaml", "fundamentals_credit_filter.yaml"):
+  assert "runtime_controls.yaml" in EXPECTED_POLICY_FILENAMES
+
+  for name in EXPECTED_POLICY_FILENAMES:
     root_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
     nested_policies.joinpath(name).write_text("nested: true\n", encoding="utf-8")
 

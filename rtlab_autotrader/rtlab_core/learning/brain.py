@@ -6,6 +6,8 @@ import random
 from statistics import mean, pstdev
 from typing import Any
 
+from rtlab_core.runtime_controls import drift_policy
+
 
 MEDIUM_RISK_PROFILE: dict[str, Any] = {
     "risk_profile": "medium",
@@ -140,8 +142,8 @@ def _standardize(values: list[float]) -> list[float]:
     return [(x - mu) / sigma for x in values]
 
 
-def _adwin_like(series: list[float]) -> dict[str, Any]:
-    if len(series) < 20:
+def _adwin_like(series: list[float], *, min_points: int, mean_shift_zscore_threshold: float) -> dict[str, Any]:
+    if len(series) < max(3, min_points):
         return {"drift": False, "score": 0.0, "algo": "adwin", "reason": "insufficient_data"}
     half = len(series) // 2
     left = series[:half]
@@ -150,17 +152,20 @@ def _adwin_like(series: list[float]) -> dict[str, Any]:
     m2 = mean(right)
     v = pstdev(series) or 1e-9
     score = abs(m2 - m1) / v
-    return {"drift": score > 1.1, "score": round(score, 4), "algo": "adwin", "reason": f"mean_shift={m2-m1:.4f}"}
+    return {
+        "drift": score > mean_shift_zscore_threshold,
+        "score": round(score, 4),
+        "algo": "adwin",
+        "reason": f"mean_shift={m2-m1:.4f}",
+    }
 
 
-def _page_hinkley(series: list[float]) -> dict[str, Any]:
-    if len(series) < 20:
+def _page_hinkley(series: list[float], *, min_points: int, delta: float, lam: float) -> dict[str, Any]:
+    if len(series) < max(3, min_points):
         return {"drift": False, "score": 0.0, "algo": "page_hinkley", "reason": "insufficient_data"}
     avg = 0.0
     cumulative = 0.0
     min_cum = 0.0
-    delta = 0.01
-    lam = 5.0
     max_gap = 0.0
     for idx, x in enumerate(series, start=1):
         avg += (x - avg) / idx
@@ -170,9 +175,22 @@ def _page_hinkley(series: list[float]) -> dict[str, Any]:
     return {"drift": max_gap > lam, "score": round(max_gap, 4), "algo": "page_hinkley", "reason": f"cum_gap={max_gap:.4f}"}
 
 
-def detect_drift(streams: dict[str, list[float]], algo: str = "adwin") -> dict[str, Any]:
-    algo_n = (algo or "adwin").lower().strip()
-    metrics = ["returns", "realized_vol", "atr", "spread_bps", "slippage_bps", "expectancy_usd", "max_dd"]
+def detect_drift(streams: dict[str, list[float]], algo: str | None = None) -> dict[str, Any]:
+    cfg = drift_policy()
+    algo_default = str(cfg.get("default_algorithm") or "adwin").strip().lower()
+    algo_n = (algo or algo_default or "adwin").lower().strip()
+    metrics = [
+        str(item).strip()
+        for item in (cfg.get("metrics") or [])
+        if isinstance(item, str) and str(item).strip()
+    ] or ["returns", "realized_vol", "atr", "spread_bps", "slippage_bps", "expectancy_usd", "max_dd"]
+    min_points = max(3, int(cfg.get("min_points", 20) or 20))
+    trigger_votes_required = max(1, int(cfg.get("trigger_votes_required", 2) or 2))
+    adwin_cfg = cfg.get("adwin") if isinstance(cfg.get("adwin"), dict) else {}
+    page_cfg = cfg.get("page_hinkley") if isinstance(cfg.get("page_hinkley"), dict) else {}
+    adwin_threshold = _safe_float(adwin_cfg.get("mean_shift_zscore_threshold"), 1.1)
+    page_delta = _safe_float(page_cfg.get("delta"), 0.01)
+    page_lambda = _safe_float(page_cfg.get("lambda"), 5.0)
     per_metric: dict[str, Any] = {}
     votes = 0
     for key in metrics:
@@ -183,14 +201,24 @@ def detect_drift(streams: dict[str, list[float]], algo: str = "adwin") -> dict[s
             per_metric[key] = {"drift": False, "score": 0.0, "reason": "no_data"}
             continue
         standardized = _standardize(values)
-        result = _page_hinkley(standardized) if algo_n == "page_hinkley" else _adwin_like(standardized)
+        result = (
+            _page_hinkley(standardized, min_points=min_points, delta=page_delta, lam=page_lambda)
+            if algo_n == "page_hinkley"
+            else _adwin_like(
+                standardized,
+                min_points=min_points,
+                mean_shift_zscore_threshold=adwin_threshold,
+            )
+        )
         per_metric[key] = result
         votes += 1 if result.get("drift") else 0
-    drift = votes >= 2
+    drift = votes >= trigger_votes_required
     return {
         "algo": "page_hinkley" if algo_n == "page_hinkley" else "adwin",
         "drift": drift,
         "votes": votes,
+        "trigger_votes_required": trigger_votes_required,
+        "policy_source": "config/policies/runtime_controls.yaml",
         "metrics": per_metric,
     }
 

@@ -13,6 +13,7 @@ EXPECTED_POLICY_FILENAMES: tuple[str, ...] = (
     "beast_mode.yaml",
     "fees.yaml",
     "fundamentals_credit_filter.yaml",
+    "runtime_controls.yaml",
 )
 
 

@@ -9,6 +9,8 @@ from typing import Any, Callable
 
 import yaml
 
+from rtlab_core.runtime_controls import default_drift_algorithm
+
 from .brain import (
     MEDIUM_RISK_PROFILE,
     StrategySelector,
@@ -100,7 +102,7 @@ class LearningService:
             "mode": "OFF",
             "engine_id": "bandit_thompson",
             "selector_algo": "thompson",
-            "drift_algo": "adwin",
+            "drift_algo": default_drift_algorithm(),
             "max_candidates": 30,
             "top_n": 5,
             "validation": {

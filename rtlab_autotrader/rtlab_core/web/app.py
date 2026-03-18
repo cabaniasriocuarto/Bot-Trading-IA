@@ -47,6 +47,11 @@ from rtlab_core.policy_paths import describe_policy_root_resolution, resolve_pol
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
+from rtlab_core.runtime_controls import (
+    alert_thresholds_policy,
+    default_global_runtime_mode as runtime_default_global_mode,
+    observability_policy,
+)
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.data.loader import DataLoader
@@ -61,6 +66,32 @@ PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve()
 MONOREPO_ROOT = (PROJECT_ROOT.parent if (PROJECT_ROOT.parent / "knowledge").exists() else PROJECT_ROOT).resolve()
 DEFAULT_CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
 CONFIG_POLICIES_ROOT = resolve_policy_root(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
+_OBSERVABILITY_POLICY = observability_policy(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+_ALERT_THRESHOLDS_POLICY = alert_thresholds_policy(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+_RUNTIME_TELEMETRY_POLICY = (
+    _OBSERVABILITY_POLICY.get("runtime_telemetry")
+    if isinstance(_OBSERVABILITY_POLICY.get("runtime_telemetry"), dict)
+    else {}
+)
+_OBSERVABILITY_LOGGING_POLICY = (
+    _OBSERVABILITY_POLICY.get("logging")
+    if isinstance(_OBSERVABILITY_POLICY.get("logging"), dict)
+    else {}
+)
+_BREAKER_ALERT_THRESHOLDS = (
+    _ALERT_THRESHOLDS_POLICY.get("breaker_integrity")
+    if isinstance(_ALERT_THRESHOLDS_POLICY.get("breaker_integrity"), dict)
+    else {}
+)
+_OPS_ALERT_THRESHOLDS = (
+    _ALERT_THRESHOLDS_POLICY.get("operations")
+    if isinstance(_ALERT_THRESHOLDS_POLICY.get("operations"), dict)
+    else {}
+)
+DEFAULT_GLOBAL_RUNTIME_MODE = runtime_default_global_mode(
+    repo_root=MONOREPO_ROOT,
+    explicit_root=DEFAULT_CONFIG_POLICIES_ROOT,
+)
 
 
 def _resolve_user_data_dir() -> Path:
@@ -137,8 +168,12 @@ DEFAULT_VIEWER_PASSWORD = ""  # No hay default seguro — configurar VIEWER_PASS
 RUNTIME_ENGINE_REAL = "real"
 RUNTIME_ENGINE_SIMULATED = "simulated"
 RUNTIME_CONTRACT_VERSION = "runtime_snapshot_v1"
-RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = "synthetic_v1"
-RUNTIME_TELEMETRY_SOURCE_REAL = "runtime_loop_v1"
+RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = str(
+    _RUNTIME_TELEMETRY_POLICY.get("synthetic_source") or "synthetic_v1"
+).strip().lower() or "synthetic_v1"
+RUNTIME_TELEMETRY_SOURCE_REAL = str(
+    _RUNTIME_TELEMETRY_POLICY.get("real_source") or "runtime_loop_v1"
+).strip().lower() or "runtime_loop_v1"
 BINANCE_TESTNET_BASE_URL_DEFAULT = "https://testnet.binance.vision"
 BINANCE_TESTNET_WS_URL_DEFAULT = "wss://testnet.binance.vision/ws"
 BINANCE_LIVE_BASE_URL_DEFAULT = "https://api.binance.com"
@@ -208,14 +243,62 @@ RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER
 RUNTIME_REMOTE_ORDER_SYMBOL = str(os.getenv("RUNTIME_REMOTE_ORDER_SYMBOL", os.getenv("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))).strip().upper()
 RUNTIME_REMOTE_ORDER_SIDE = str(os.getenv("RUNTIME_REMOTE_ORDER_SIDE", "BUY")).strip().upper()
 RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC = max(1, _env_int("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", 20))
-BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
-BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
-BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
-SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(1, _env_int("SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC", 60))
-OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(0.1, _env_float("OPS_ALERT_SLIPPAGE_P95_WARN_BPS", 8.0))
-OPS_ALERT_API_ERRORS_WARN = max(1, _env_int("OPS_ALERT_API_ERRORS_WARN", 1))
-OPS_ALERT_BREAKER_WINDOW_HOURS = max(1, _env_int("OPS_ALERT_BREAKER_WINDOW_HOURS", 24))
-OPS_ALERT_DRIFT_ENABLED = _env_bool("OPS_ALERT_DRIFT_ENABLED", True)
+BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(
+    1,
+    _env_int(
+        "BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS",
+        int(_BREAKER_ALERT_THRESHOLDS.get("integrity_window_hours", 24) or 24),
+    ),
+)
+BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(
+    1.0,
+    max(
+        0.0,
+        _env_float(
+            "BREAKER_EVENTS_UNKNOWN_RATIO_WARN",
+            float(_BREAKER_ALERT_THRESHOLDS.get("unknown_ratio_warn", 0.10) or 0.10),
+        ),
+    ),
+)
+BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(
+    1,
+    _env_int(
+        "BREAKER_EVENTS_UNKNOWN_MIN_EVENTS",
+        int(_BREAKER_ALERT_THRESHOLDS.get("min_events_warn", 10) or 10),
+    ),
+)
+SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(
+    1,
+    _env_int(
+        "SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC",
+        int(_OBSERVABILITY_LOGGING_POLICY.get("security_internal_header_alert_throttle_sec", 60) or 60),
+    ),
+)
+OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(
+    0.1,
+    _env_float(
+        "OPS_ALERT_SLIPPAGE_P95_WARN_BPS",
+        float(_OPS_ALERT_THRESHOLDS.get("slippage_p95_warn_bps", 8.0) or 8.0),
+    ),
+)
+OPS_ALERT_API_ERRORS_WARN = max(
+    1,
+    _env_int(
+        "OPS_ALERT_API_ERRORS_WARN",
+        int(_OPS_ALERT_THRESHOLDS.get("api_errors_warn", 1) or 1),
+    ),
+)
+OPS_ALERT_BREAKER_WINDOW_HOURS = max(
+    1,
+    _env_int(
+        "OPS_ALERT_BREAKER_WINDOW_HOURS",
+        int(_OPS_ALERT_THRESHOLDS.get("breaker_window_hours", 24) or 24),
+    ),
+)
+OPS_ALERT_DRIFT_ENABLED = _env_bool(
+    "OPS_ALERT_DRIFT_ENABLED",
+    bool(_OPS_ALERT_THRESHOLDS.get("drift_enabled", True)),
+)
 SHADOW_MARKETDATA_BASE_URL = str(os.getenv("SHADOW_MARKETDATA_BASE_URL", BINANCE_PUBLIC_MARKETDATA_BASE_URL)).strip() or BINANCE_PUBLIC_MARKETDATA_BASE_URL
 SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 300))
 SHADOW_DEFAULT_POLL_SEC = max(10, _env_int("SHADOW_DEFAULT_POLL_SEC", 30))
@@ -616,6 +699,7 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "beast_mode": root / "beast_mode.yaml",
         "fees": root / "fees.yaml",
         "fundamentals_credit_filter": root / "fundamentals_credit_filter.yaml",
+        "runtime_controls": root / "runtime_controls.yaml",
     }
 
 
@@ -626,17 +710,32 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     beast = bundle.get("beast_mode") if isinstance(bundle.get("beast_mode"), dict) else {}
     fees = bundle.get("fees") if isinstance(bundle.get("fees"), dict) else {}
     fundamentals = bundle.get("fundamentals_credit_filter") if isinstance(bundle.get("fundamentals_credit_filter"), dict) else {}
+    runtime_controls = bundle.get("runtime_controls") if isinstance(bundle.get("runtime_controls"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
     fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
+    rc = runtime_controls.get("runtime_controls") if isinstance(runtime_controls.get("runtime_controls"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
     thresholds = vpin.get("thresholds") if isinstance(vpin.get("thresholds"), dict) else {}
     surrogate = g.get("surrogate_adjustments") if isinstance(g.get("surrogate_adjustments"), dict) else {}
+    execution_modes = rc.get("execution_modes") if isinstance(rc.get("execution_modes"), dict) else {}
+    observability = rc.get("observability") if isinstance(rc.get("observability"), dict) else {}
+    runtime_telemetry = observability.get("runtime_telemetry") if isinstance(observability.get("runtime_telemetry"), dict) else {}
+    drift = rc.get("drift") if isinstance(rc.get("drift"), dict) else {}
+    drift_adwin = drift.get("adwin") if isinstance(drift.get("adwin"), dict) else {}
+    drift_page_hinkley = drift.get("page_hinkley") if isinstance(drift.get("page_hinkley"), dict) else {}
+    health_scoring = rc.get("health_scoring") if isinstance(rc.get("health_scoring"), dict) else {}
+    circuit_breakers = health_scoring.get("circuit_breakers") if isinstance(health_scoring.get("circuit_breakers"), dict) else {}
+    execution_guard = health_scoring.get("execution_guard") if isinstance(health_scoring.get("execution_guard"), dict) else {}
+    alert_thresholds = rc.get("alert_thresholds") if isinstance(rc.get("alert_thresholds"), dict) else {}
+    breaker_integrity = alert_thresholds.get("breaker_integrity") if isinstance(alert_thresholds.get("breaker_integrity"), dict) else {}
+    operations = alert_thresholds.get("operations") if isinstance(alert_thresholds.get("operations"), dict) else {}
+    legacy_aliases = execution_modes.get("legacy_aliases") if isinstance(execution_modes.get("legacy_aliases"), dict) else {}
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -658,6 +757,33 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "surrogate_adjustments_enabled": surrogate.get("enabled"),
         "surrogate_adjustments_allowed_execution_modes": surrogate.get("allowed_execution_modes") if isinstance(surrogate.get("allowed_execution_modes"), list) else [],
         "surrogate_adjustments_promotion_blocked": surrogate.get("promotion_blocked"),
+        "runtime_default_mode": execution_modes.get("default_global_runtime_mode"),
+        "runtime_global_modes": execution_modes.get("global_runtime_modes") if isinstance(execution_modes.get("global_runtime_modes"), list) else [],
+        "bot_policy_modes": execution_modes.get("bot_policy_modes") if isinstance(execution_modes.get("bot_policy_modes"), list) else [],
+        "legacy_non_runtime_aliases": sorted(
+            [("MOCK" if str(alias).strip().lower() == "mock" else str(alias)) for alias in legacy_aliases]
+        ),
+        "telemetry_real_source": runtime_telemetry.get("real_source"),
+        "telemetry_synthetic_source": runtime_telemetry.get("synthetic_source"),
+        "drift_default_algorithm": drift.get("default_algorithm"),
+        "drift_min_points": drift.get("min_points"),
+        "drift_trigger_votes_required": drift.get("trigger_votes_required"),
+        "drift_adwin_mean_shift_zscore_threshold": drift_adwin.get("mean_shift_zscore_threshold"),
+        "drift_page_hinkley_delta": drift_page_hinkley.get("delta"),
+        "drift_page_hinkley_lambda": drift_page_hinkley.get("lambda"),
+        "health_max_error_streak": circuit_breakers.get("max_error_streak"),
+        "health_max_ws_lag_ms": circuit_breakers.get("max_ws_lag_ms"),
+        "health_max_desync_count": circuit_breakers.get("max_desync_count"),
+        "health_max_spread_spike_bps": circuit_breakers.get("max_spread_spike_bps"),
+        "health_max_vpin_percentile": circuit_breakers.get("max_vpin_percentile"),
+        "health_critical_error_limit": execution_guard.get("critical_error_limit"),
+        "ops_alert_drift_enabled": operations.get("drift_enabled"),
+        "ops_alert_slippage_p95_warn_bps": operations.get("slippage_p95_warn_bps"),
+        "ops_alert_api_errors_warn": operations.get("api_errors_warn"),
+        "ops_alert_breaker_window_hours": operations.get("breaker_window_hours"),
+        "breaker_unknown_ratio_warn": breaker_integrity.get("unknown_ratio_warn"),
+        "breaker_min_events_warn": breaker_integrity.get("min_events_warn"),
+        "breaker_integrity_window_hours": breaker_integrity.get("integrity_window_hours"),
     }
 
 
@@ -1281,7 +1407,10 @@ def exchange_name() -> str:
 
 
 def default_mode() -> str:
-    return normalize_global_runtime_mode(get_env("MODE", "paper"), default="paper")
+    return normalize_global_runtime_mode(
+        get_env("MODE", DEFAULT_GLOBAL_RUNTIME_MODE),
+        default=DEFAULT_GLOBAL_RUNTIME_MODE,
+    )
 
 
 def running_on_railway() -> bool:
@@ -8748,6 +8877,8 @@ def build_operational_alerts_payload() -> dict[str, Any]:
             "slippage_p95_warn_bps": OPS_ALERT_SLIPPAGE_P95_WARN_BPS,
             "api_errors_warn": OPS_ALERT_API_ERRORS_WARN,
             "breaker_window_hours": OPS_ALERT_BREAKER_WINDOW_HOURS,
+            "breaker_unknown_ratio_warn": BREAKER_EVENTS_UNKNOWN_RATIO_WARN,
+            "breaker_min_events_warn": BREAKER_EVENTS_UNKNOWN_MIN_EVENTS,
         },
         "signals": {
             "drift": drift_payload,

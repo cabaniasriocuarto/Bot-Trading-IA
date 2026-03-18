@@ -5,7 +5,16 @@ from dataclasses import dataclass
 from rtlab_core.risk.circuit_breakers import CircuitBreakers
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.safe_mode import SafeModeController
+from rtlab_core.runtime_controls import health_scoring_policy
 from rtlab_core.types import HealthMetrics
+
+
+_HEALTH_SCORING = health_scoring_policy()
+_EXECUTION_GUARD = (
+    _HEALTH_SCORING.get("execution_guard")
+    if isinstance(_HEALTH_SCORING.get("execution_guard"), dict)
+    else {}
+)
 
 
 @dataclass(slots=True)
@@ -21,7 +30,7 @@ class ExecutionGuard:
         circuit_breakers: CircuitBreakers,
         safe_mode: SafeModeController,
         kill_switch: KillSwitch,
-        critical_error_limit: int = 5,
+        critical_error_limit: int = int(_EXECUTION_GUARD.get("critical_error_limit", 5) or 5),
     ) -> None:
         self.circuit_breakers = circuit_breakers
         self.safe_mode = safe_mode

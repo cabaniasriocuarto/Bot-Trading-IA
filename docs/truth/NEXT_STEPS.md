@@ -22,11 +22,32 @@ Fecha: 2026-03-18
   - evidence `backtest / shadow / paper / testnet`
   - `MOCK` como alias legado local, no como runtime real
 
+## Cierre M2 de `Nucleo Arquitectonico y Policies` - 2026-03-18
+- [x] Centralizar en `config/policies/runtime_controls.yaml` los grupos:
+  - `execution_modes`
+  - `observability`
+  - `drift`
+  - `health_scoring`
+  - `alert_thresholds`
+- [x] Hacer que el backend lea estos grupos desde YAML canonico en:
+  - `mode_taxonomy`
+  - drift/learning
+  - circuit breakers / exec guard
+  - alertas operativas e integridad de breaker
+- [x] Exponer en `GET /api/v1/config/policies` un resumen visible de M2:
+  - runtime modes canonicos
+  - defaults de drift
+  - thresholds de health
+  - thresholds de alertas operativas
+- [x] Mantener compatibilidad acotada:
+  - `rtlab_autotrader/config/policies/runtime_controls.yaml` solo como fallback de empaquetado
+  - ENV vars existentes solo como override tecnico de YAML, no como fuente paralela
+- [ ] Deuda chica consciente:
+  - `rtlab_config.yaml.example` y `ModeLiteral` de `rtlab_core/config.py` siguen cubriendo runtime config mas amplia (`backtest/dryrun/capture_only`);
+  - no pasan a redefinir la taxonomia canonica del runtime global de este bloque.
+
 ## Siguiente bloque recomendado
-- [ ] Cerrar M2 de `Nucleo Arquitectonico y Policies` en pasos chicos:
-  - centralizar thresholds numericos explicitos en YAML;
-  - auditar y acotar `execution_modes`, `observability`, `drift`, `health_scoring` y `alert_thresholds` para que no queden como backlog demasiado amplio.
-- [ ] Solo despues de ese cierre, abrir el bloque `Binance Catalog + Universes + Live Parity`.
+- [ ] Solo despues de validar/revisar este cierre de M2, abrir `Binance Catalog + Universes + Live Parity`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

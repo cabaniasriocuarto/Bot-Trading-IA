@@ -2,6 +2,92 @@
 
 Fecha de actualizacion: 2026-03-18
 
+## RTLOPS-M2: Nucleo Arquitectonico y Policies - thresholds explicitos + runtime controls - 2026-03-18
+
+- Fuente canonica nueva para este bloque dentro de `config/policies/`:
+  - `config/policies/runtime_controls.yaml`
+- Compatibilidad permitida, pero no equivalente en autoridad:
+  - `rtlab_autotrader/config/policies/runtime_controls.yaml`
+  - queda solo como fallback de empaquetado/deploy cuando la raiz canonica no esta disponible.
+- Grupos que ahora quedan centralizados en YAML explicito:
+  - `execution_modes`
+  - `observability`
+  - `drift`
+  - `health_scoring`
+  - `alert_thresholds`
+
+### Lectura runtime aplicada
+
+- Loader canonico:
+  - `rtlab_autotrader/rtlab_core/runtime_controls.py`
+- Consumidores ajustados al YAML canonico:
+  - `rtlab_autotrader/rtlab_core/mode_taxonomy.py`
+    - runtime global permitido
+    - modos por bot
+    - sources de evidence
+    - alias legacy que no cuentan como runtime real
+  - `rtlab_autotrader/rtlab_core/learning/brain.py`
+  - `rtlab_autotrader/rtlab_core/learning/service.py`
+  - `rtlab_autotrader/rtlab_core/config.py`
+    - drift default tomado desde YAML canonico
+  - `rtlab_autotrader/rtlab_core/risk/circuit_breakers.py`
+  - `rtlab_autotrader/rtlab_core/execution/exec_guard.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - telemetry sources
+    - alert thresholds operativos
+    - resumen expuesto en `GET /api/v1/config/policies`
+
+### Thresholds y reglas explicitadas
+
+- `execution_modes`:
+  - runtime global canonico: `paper / testnet / live`
+  - modos por bot: `shadow / paper / testnet / live`
+  - evidence: `backtest / shadow / paper / testnet`
+  - `shadow` no cuenta como runtime real
+  - aliases legacy:
+    - `MOCK` -> alias local de frontend, no runtime real
+    - `demo` -> contexto legacy de research, no runtime real
+- `observability`:
+  - `runtime_loop_v1` = telemetry real
+  - `synthetic_v1` = telemetry sintetica fail-closed
+  - throttle minimo de alerta de header interno: `60s`
+- `drift`:
+  - algoritmo default: `adwin`
+  - puntos minimos: `20`
+  - votos requeridos: `2`
+  - umbral `adwin_like mean_shift_zscore`: `1.1`
+  - `page_hinkley`: `delta=0.01`, `lambda=5.0`
+- `health_scoring`:
+  - `max_error_streak=3`
+  - `max_ws_lag_ms=5000`
+  - `max_desync_count=2`
+  - `max_spread_spike_bps=25.0`
+  - `max_vpin_percentile=90.0`
+  - `critical_error_limit=5`
+- `alert_thresholds`:
+  - `slippage_p95_warn_bps=8.0`
+  - `api_errors_warn=1`
+  - `breaker_window_hours=24`
+  - `unknown_ratio_warn=0.10`
+  - `min_events_warn=10`
+
+### Regla de autoridad tecnica para este bloque
+
+Cuando haya dudas sobre estos grupos:
+
+1. manda `config/policies/runtime_controls.yaml`
+2. despues manda el runtime efectivo del backend
+3. despues mandan overrides por ENV solo si pisan valores ya definidos en YAML canonico
+4. despues `docs/truth`
+
+### Pendiente consciente acotado
+
+- NO se toco Binance.
+- NO se abrio `Binance Catalog + Universes + Live Parity`.
+- `rtlab_config.yaml.example` y `ModeLiteral` de `rtlab_core/config.py` no pasan a ser autoridad del runtime global canonico:
+  - siguen siendo compatibilidad de runtime config mas amplia (`backtest/dryrun/capture_only`);
+  - no redefinen la taxonomia canonica de `PAPER / TESTNET / LIVE` ni los modos por bot.
+
 ## RTLOPS-2 / RTLOPS-1 / RTLOPS-7: autoridad de policies + taxonomia de modos + jerarquia documental - 2026-03-18
 
 - Fuente operativa unica de verdad para policies numericas y gates:

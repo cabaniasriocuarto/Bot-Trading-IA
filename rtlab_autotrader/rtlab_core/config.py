@@ -7,6 +7,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from rtlab_core.runtime_controls import default_drift_algorithm
+
 
 ModeLiteral = Literal["backtest", "dryrun", "paper", "testnet", "live", "capture_only"]
 
@@ -149,7 +151,7 @@ class LearningConfig(BaseModel):
     enabled: bool = False
     mode: Literal["OFF", "RESEARCH"] = "OFF"
     selector_algo: Literal["thompson", "ucb1", "regime_rules"] = "thompson"
-    drift_algo: Literal["adwin", "page_hinkley"] = "adwin"
+    drift_algo: Literal["adwin", "page_hinkley"] = Field(default_factory=default_drift_algorithm)
     max_candidates: int = Field(default=30, ge=1, le=500)
     top_n: int = Field(default=5, ge=1, le=50)
     validation: LearningValidationConfig = Field(default_factory=LearningValidationConfig)

@@ -4594,6 +4594,10 @@ def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, 
   assert "gates" in body["policies"] and "microstructure" in body["policies"]
   assert body["summary"]["pbo_reject_if_gt"] == 0.05
   assert body["summary"]["vpin_soft_kill_cdf"] == 0.9
+  assert body["summary"]["runtime_default_mode"] == "paper"
+  assert body["summary"]["drift_default_algorithm"] == "adwin"
+  assert body["summary"]["ops_alert_slippage_p95_warn_bps"] == 8.0
+  assert body["summary"]["health_max_error_streak"] == 3
   assert "authority" in body and isinstance(body["authority"], dict)
   assert body["authority"]["canonical_role"] == "monorepo_root"
   assert "mode_taxonomy" in body and body["mode_taxonomy"]["global_runtime_modes"] == ["PAPER", "TESTNET", "LIVE"]

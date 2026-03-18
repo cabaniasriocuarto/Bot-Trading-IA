@@ -2,6 +2,33 @@
 
 ## 2026-03-18
 
+### RTLOPS-M2 - Nucleo Arquitectonico y Policies: thresholds explicitos + runtime controls
+- Backend / config:
+  - nuevo `config/policies/runtime_controls.yaml` como fuente canonica para:
+    - `execution_modes`
+    - `observability`
+    - `drift`
+    - `health_scoring`
+    - `alert_thresholds`
+  - `rtlab_autotrader/config/policies/runtime_controls.yaml` queda solo como compatibilidad/fallback de empaquetado.
+- Wiring minimo aplicado:
+  - `rtlab_core/runtime_controls.py` agrega loader canonico del bloque.
+  - `mode_taxonomy.py` deja de fijar la taxonomia solo en constantes internas y la lee desde YAML canonico.
+  - `learning/brain.py`, `learning/service.py` y `config.py` toman desde YAML el default/thresholds de drift.
+  - `risk/circuit_breakers.py` y `execution/exec_guard.py` toman desde YAML los limites de `health_scoring`.
+  - `web/app.py` toma desde YAML:
+    - telemetry sources
+    - `breaker_integrity`
+    - `ops alert thresholds`
+    - y expone el resumen de M2 en `GET /api/v1/config/policies`.
+- Compatibilidad acotada:
+  - los ENV existentes quedan solo como override tecnico de valores ya definidos en YAML canonico;
+  - no quedan como fuente paralela de thresholds para este bloque.
+- Validacion local del cierre:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/runtime_controls.py rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/rtlab_core/mode_taxonomy.py rtlab_autotrader/rtlab_core/config.py rtlab_autotrader/rtlab_core/learning/brain.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/rtlab_core/risk/circuit_breakers.py rtlab_autotrader/rtlab_core/execution/exec_guard.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_runtime_controls.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_runtime_controls.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+
 ### RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - micro-hardening final frontend de authority/runtime
 - Frontend `rtlab_dashboard`:
   - `eslint.config.mjs` agrega ignores explicitos y minimos para `.pytest_cache/**`, `.next/**` y `node_modules/**` usando flat config (`globalIgnores`) para evitar el `EPERM` del cache local en `lint`.
