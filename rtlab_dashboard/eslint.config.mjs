@@ -7,8 +7,10 @@ const eslintConfig = defineConfig([
   ...nextTs,
   // Override default ignores of eslint-config-next.
   globalIgnores([
+    ".pytest_cache/**",
     // Default ignores of eslint-config-next:
     ".next/**",
+    "node_modules/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

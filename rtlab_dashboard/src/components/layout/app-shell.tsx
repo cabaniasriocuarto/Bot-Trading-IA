@@ -93,7 +93,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
             <div className="flex items-center gap-2">
               <Badge variant="info">Panel en vivo</Badge>
-              {mode === "MOCK" ? <Badge variant="warn">MOCK</Badge> : null}
+              {mode === "MOCK" ? <Badge variant="warn">MOCK local</Badge> : null}
               {user?.role === "admin" ? <Badge variant="warn">admin</Badge> : <Badge>visualizador</Badge>}
             </div>
             <div className="flex items-center gap-2">

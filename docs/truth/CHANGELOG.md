@@ -1,5 +1,47 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-18
+
+### RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - micro-hardening final frontend de authority/runtime
+- Frontend `rtlab_dashboard`:
+  - `eslint.config.mjs` agrega ignores explicitos y minimos para `.pytest_cache/**`, `.next/**` y `node_modules/**` usando flat config (`globalIgnores`) para evitar el `EPERM` del cache local en `lint`.
+  - `src/lib/auth-backend.test.ts` reemplaza casts repetidos a `NodeJS.ProcessEnv` por un helper de test valido con `NODE_ENV=test` y `BACKEND_API_URL=https://api.example.com`.
+- Validacion local final del micro-cierre:
+  - `npm.cmd run lint` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npx.cmd tsc --noEmit` -> PASS
+
+### RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - autoridad de policies + taxonomia de modos
+- Backend:
+  - se explicita la autoridad de `config/policies` con metadata runtime en `GET /api/v1/config/policies`:
+    - `authority`
+    - `mode_taxonomy`
+  - la raiz canonica queda fijada en `config/policies/`;
+  - `rtlab_autotrader/config/policies/` queda solo como compatibilidad/fallback.
+- Deteccion operativa:
+  - si existen YAML duplicados y divergentes entre la raiz canonica y la nested, el backend ahora lo expone como warning de autoridad.
+- Taxonomia canonica documentada y usada:
+  - runtime global:
+    - `PAPER`
+    - `TESTNET`
+    - `LIVE`
+  - modos por bot:
+    - `shadow`
+    - `paper`
+    - `testnet`
+    - `live`
+  - fuentes de evidence:
+    - `backtest`
+    - `shadow`
+    - `paper`
+    - `testnet`
+- Frontend:
+  - `Settings` y `Execution` dejan de vender `MOCK` como modo runtime real;
+  - `MOCK` queda rotulado como alias legado del mock local.
+- Documentacion:
+  - nueva `docs/plan/AUTHORITY_HIERARCHY.md`
+  - `docs/truth` actualizadas con jerarquia de autoridad tecnica y siguiente bloque recomendado
+
 ## 2026-03-16
 
 ### RTLRESE-13 backend domains: separacion minima por dominio

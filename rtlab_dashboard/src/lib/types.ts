@@ -1,7 +1,13 @@
 export type Role = "admin" | "viewer";
 
 export type BotStatus = "RUNNING" | "PAUSED" | "SAFE_MODE" | "KILLED";
-export type TradingMode = "MOCK" | "PAPER" | "TESTNET" | "LIVE";
+export type RuntimeMode = "PAPER" | "TESTNET" | "LIVE";
+export type LegacyMockRuntimeAlias = "MOCK";
+// Compatibilidad: el mock local del frontend todavia usa MOCK, pero el runtime
+// real canonico del backend opera con PAPER / TESTNET / LIVE.
+export type TradingMode = RuntimeMode | LegacyMockRuntimeAlias;
+export type BotPolicyMode = "shadow" | "paper" | "testnet" | "live";
+export type ResearchEvidenceMode = "backtest" | "shadow" | "paper" | "testnet";
 
 export interface HealthResponse {
   ok: boolean;
@@ -208,7 +214,7 @@ export interface BotInstanceMetrics {
   last_kill_at?: string | null;
   by_mode?: Record<string, { trade_count: number; winrate: number; net_pnl: number; avg_sharpe: number; expectancy_value?: number; run_count: number }>;
   experience_by_source?: Record<
-    "backtest" | "shadow" | "paper" | "testnet",
+    ResearchEvidenceMode,
     {
       episode_count: number;
       run_count: number;
@@ -242,7 +248,7 @@ export interface BotInstance {
   id: string;
   name: string;
   engine: string;
-  mode: "shadow" | "paper" | "testnet" | "live";
+  mode: BotPolicyMode;
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
   pool_strategies?: BotInstanceStrategyRef[];
@@ -255,7 +261,7 @@ export interface BotInstance {
 
 export interface BotPolicyState {
   engine: string;
-  mode: "shadow" | "paper" | "testnet" | "live";
+  mode: BotPolicyMode;
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
   universe: string[];

@@ -534,6 +534,10 @@ export default function ExecutionPage() {
     setMessage("");
     try {
       const mode = modeDraft.toLowerCase();
+      if (mode === "mock") {
+        setControlError("MOCK es un alias legado del mock local del frontend. El runtime real usa PAPER / TESTNET / LIVE y los operadores usan SHADOW por separado.");
+        return;
+      }
       if (mode === "live") {
         const ok = window.confirm("Vas a cambiar el modo operativo a LIVE. Esto no inicia trading, pero habilita controles de live. Continuar?");
         if (!ok) return;
@@ -690,13 +694,13 @@ export default function ExecutionPage() {
               <div>
                 <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Modo operativo</label>
                 <Select value={modeDraft} onChange={(e) => setModeDraft(e.target.value as TradingMode)} disabled={modeBusy || role !== "admin"}>
-                  <option value="MOCK">Mock (sin ordenes reales)</option>
+                  <option value="MOCK">Mock local legado (no runtime real)</option>
                   <option value="PAPER">Paper</option>
                   <option value="TESTNET">Testnet</option>
                   <option value="LIVE">Live</option>
                 </Select>
                 <p className="mt-1 text-xs text-slate-400">
-                  Cambia el modo runtime del bot. Para LIVE, el backend exige gates PASS y confirmacion explicita.
+                  Runtime global canonico: PAPER / TESTNET / LIVE. SHADOW aplica a operadores individuales; MOCK queda solo como alias legado del mock local.
                 </p>
                 {modeDraft === "LIVE" && liveBlockingItems.length ? (
                   <p className="mt-1 text-xs text-amber-300">
@@ -1460,7 +1464,7 @@ export default function ExecutionPage() {
 
 function modeLabel(mode: TradingMode | string): string {
   const normalized = String(mode).toUpperCase();
-  if (normalized === "MOCK") return "Mock";
+  if (normalized === "MOCK") return "Mock local (legado)";
   if (normalized === "PAPER") return "Paper";
   if (normalized === "TESTNET") return "Testnet";
   if (normalized === "LIVE") return "Live";

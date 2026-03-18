@@ -42,7 +42,8 @@ from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.learning.option_b_engine import OptionBLearningEngine
 from rtlab_core.learning.shadow_runner import BINANCE_PUBLIC_MARKETDATA_BASE_URL, ShadowRunConfig, ShadowRunner
-from rtlab_core.policy_paths import resolve_policy_root
+from rtlab_core.mode_taxonomy import GLOBAL_RUNTIME_MODES, mode_taxonomy_payload, normalize_bot_policy_mode, normalize_global_runtime_mode
+from rtlab_core.policy_paths import describe_policy_root_resolution, resolve_policy_root
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
@@ -128,7 +129,7 @@ SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]
 ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
 ALLOWED_ROLES = {ROLE_ADMIN, ROLE_VIEWER}
-ALLOWED_MODES = {"paper", "testnet", "live"}
+ALLOWED_MODES = set(GLOBAL_RUNTIME_MODES)
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = ""  # No hay default seguro — configurar ADMIN_PASSWORD en variables de entorno
 DEFAULT_VIEWER_USERNAME = "viewer"
@@ -661,10 +662,11 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_numeric_policies_bundle() -> dict[str, Any]:
+    authority = describe_policy_root_resolution(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
     root, files = _config_policy_files()
     payloads: dict[str, Any] = {}
     meta: dict[str, Any] = {}
-    warnings: list[str] = []
+    warnings: list[str] = list(authority.get("warnings") or [])
     for name, path in files.items():
         exists = path.exists()
         data = _yaml_file_or_default(path, {})
@@ -683,6 +685,8 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
         "ok": True,
         "source_root": str(root),
         "available": root.exists(),
+        "authority": authority,
+        "mode_taxonomy": mode_taxonomy_payload(),
         "warnings": warnings,
         "files": meta,
         "policies": payloads,
@@ -1277,10 +1281,7 @@ def exchange_name() -> str:
 
 
 def default_mode() -> str:
-    mode = get_env("MODE", "paper").lower()
-    if mode not in ALLOWED_MODES:
-        return "paper"
-    return mode
+    return normalize_global_runtime_mode(get_env("MODE", "paper"), default="paper")
 
 
 def running_on_railway() -> bool:
@@ -2761,10 +2762,7 @@ def risk_hooks(context):
 
     @staticmethod
     def _normalize_bot_mode(value: str | None) -> str:
-        mode = str(value or "paper").strip().lower()
-        if mode not in {"shadow", "paper", "testnet", "live"}:
-            return "paper"
-        return mode
+        return normalize_bot_policy_mode(value, default="paper")
 
     @staticmethod
     def _normalize_bot_status(value: str | None) -> str:

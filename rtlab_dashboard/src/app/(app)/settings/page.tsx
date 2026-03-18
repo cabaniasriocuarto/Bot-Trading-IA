@@ -485,6 +485,11 @@ export default function SettingsPage() {
     setDiag((prev) => ({ ...prev, exchange: "probando..." }));
     try {
       const mode = settings?.mode?.toLowerCase() || "paper";
+      if (mode === "mock") {
+        setExchangeDiag(null);
+        setDiag((prev) => ({ ...prev, exchange: "MOCK legado: el runtime real del backend usa PAPER / TESTNET / LIVE." }));
+        return;
+      }
       const res = await fetch(`/api/v1/exchange/diagnose?force=true&mode=${encodeURIComponent(mode)}`, {
         method: "GET",
         credentials: "include",
@@ -561,12 +566,12 @@ export default function SettingsPage() {
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardTitle>Modo y Exchange</CardTitle>
-          <CardDescription>MOCK / PAPER / TESTNET / LIVE (LIVE con bloqueo por checklist).</CardDescription>
+          <CardDescription>Runtime global canonico: PAPER / TESTNET / LIVE. MOCK queda solo como alias legado del mock local.</CardDescription>
           <CardContent className="space-y-3">
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">Modo</label>
               <Select value={settings.mode} onChange={(e) => setSettings((prev) => (prev ? { ...prev, mode: e.target.value as SettingsResponse["mode"] } : prev))} disabled={role !== "admin"}>
-                <option value="MOCK">MOCK</option>
+                <option value="MOCK">MOCK legado (solo mock local)</option>
                 <option value="PAPER">PAPER</option>
                 <option value="TESTNET">TESTNET</option>
                 <option value="LIVE" disabled={gatesOverall !== "PASS"}>
@@ -585,7 +590,8 @@ export default function SettingsPage() {
               </Select>
             </div>
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">
-              Estado: <Badge variant={settings.mode === "LIVE" ? "danger" : settings.mode === "TESTNET" ? "warn" : "success"}>{settings.mode}</Badge>
+              Estado: <Badge variant={settings.mode === "LIVE" ? "danger" : settings.mode === "TESTNET" ? "warn" : settings.mode === "MOCK" ? "neutral" : "success"}>{settings.mode}</Badge>
+              {settings.mode === "MOCK" ? <p className="mt-2 text-xs text-slate-400">MOCK es alias legado del mock local; no representa el runtime real del backend.</p> : null}
               {liveLocked ? <p className="mt-2 text-xs text-amber-300">LIVE bloqueado: checklist incompleto.</p> : null}
             </div>
           </CardContent>
