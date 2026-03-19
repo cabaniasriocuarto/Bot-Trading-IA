@@ -2,6 +2,41 @@
 
 Fecha de actualizacion: 2026-03-19
 
+## RTLOPS-21 Correctivo 3A - authority/trazabilidad mas rigurosa para Execution Reality - 2026-03-19
+
+- `config/policies/execution_safety.yaml` y `config/policies/execution_router.yaml` quedan como fuente primaria real del bloque `Execution Reality + Live Safety`.
+- `rtlab_autotrader/config/policies/execution_safety.yaml` y `rtlab_autotrader/config/policies/execution_router.yaml` se mantienen solo como compatibilidad de empaquetado/deploy.
+- Cambio correctivo real aplicado:
+  - `rtlab_autotrader/rtlab_core/execution/reality.py` deja de mantener bundles espejo completos de `execution_safety.yaml` y `execution_router.yaml`.
+  - el loader ya no hace merge con defaults espejo completos;
+  - si la policy falta o es invalida, aplica fallback `fail-closed` minimo y explicito.
+- Trazabilidad corregida para execution:
+  - `source_hash` = hash del archivo YAML efectivamente cargado.
+  - `policy_hash` = hash del payload efectivo activo despues de validacion/fallback.
+  - `policy_source` de execution ahora expone:
+    - `source`
+    - `path`
+    - `source_root`
+    - `source_hash`
+    - `policy_hash`
+    - `errors`
+    - `warnings`
+    - `fallback_used`
+    - `selected_role`
+    - `canonical_root`
+    - `canonical_role`
+    - `divergent_candidates`
+- Donde queda visible esta trazabilidad:
+  - `ExecutionRealityService.bootstrap_summary()`
+  - `ExecutionRealityService.live_safety_summary()`
+  - `GET /api/v1/config/policies` en `files.execution_safety` y `files.execution_router`
+  - `execution_intents.policy_hash` / `execution_orders` siguen guardando el hash combinado efectivo del par `execution_safety + execution_router`
+- Alcance del correctivo:
+  - no reabre 3.1/3.2/3.3 desde cero;
+  - no toca bloque 3.4;
+  - no cambia la logica funcional de `preflight`, `create_order`, `list_orders`, `cancel_order` ni `cancel_all`;
+  - deja a execution con el mismo nivel de rigor de authority/trazabilidad ya aplicado en `1A` y `2A`.
+
 ## RTLOPS-M2 Correctivo 1A - authority runtime_controls mas rigurosa - 2026-03-19
 
 - `config/policies/runtime_controls.yaml` sigue siendo la fuente canonica del bloque.

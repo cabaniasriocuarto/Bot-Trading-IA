@@ -250,14 +250,25 @@ def test_config_policies_exposes_execution_bootstrap_metadata(tmp_path: Path, mo
     assert res.status_code == 200, res.text
     payload = res.json()
     summary = payload["summary"]
+    files = payload["files"]
 
     assert summary["execution_allow_live"] is True
     assert summary["execution_quote_stale_block_ms"] == 3000
     assert "spot" in summary["execution_router_families_enabled"]
     assert summary["execution_router_supported_order_types"]["spot"] == ["MARKET", "LIMIT"]
+    assert files["execution_safety"]["valid"] is True
+    assert files["execution_router"]["valid"] is True
+    assert files["execution_safety"]["source_hash"]
+    assert files["execution_router"]["source_hash"]
+    assert files["execution_safety"]["policy_hash"]
+    assert files["execution_router"]["policy_hash"]
+    assert files["execution_safety"]["source_hash"] != files["execution_safety"]["policy_hash"]
 
     bootstrap = module.store.execution_reality.bootstrap_summary()
     assert bootstrap["policy_loaded"] is True
+    assert bootstrap["policy_hash"]
+    assert bootstrap["policy_source"]["execution_safety"]["source_hash"]
+    assert bootstrap["policy_source"]["execution_safety"]["policy_hash"]
     assert "execution_intents" in bootstrap["tables"]
     assert bootstrap["dependencies"]["instrument_registry_service"] is True
 
@@ -367,6 +378,9 @@ def test_execution_live_safety_summary_endpoint_reports_preflight_state(tmp_path
     payload = res.json()
 
     assert payload["execution_policy_loaded"] is True
+    assert payload["policy_hash"]
+    assert payload["policy_source"]["execution_router"]["source_hash"]
+    assert payload["policy_source"]["execution_router"]["policy_hash"]
     assert payload["degraded_mode"] is True
     assert payload["capabilities_known"] is True
     assert "spot" in payload["supported_families"]

@@ -32,6 +32,8 @@ def test_describe_policy_root_resolution_flags_divergent_duplicate_yaml(tmp_path
   assert "runtime_controls.yaml" in EXPECTED_POLICY_FILENAMES
   assert "instrument_registry.yaml" in EXPECTED_POLICY_FILENAMES
   assert "universes.yaml" in EXPECTED_POLICY_FILENAMES
+  assert "execution_safety.yaml" in EXPECTED_POLICY_FILENAMES
+  assert "execution_router.yaml" in EXPECTED_POLICY_FILENAMES
 
   for name in EXPECTED_POLICY_FILENAMES:
     root_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
@@ -73,3 +75,39 @@ def test_describe_policy_root_resolution_flags_runtime_controls_divergence(tmp_p
   divergent = payload["divergent_candidates"]
   assert divergent
   assert "runtime_controls.yaml" in divergent[0]["differing_files_vs_selected"]
+
+
+def test_describe_policy_root_resolution_flags_execution_policy_divergence(tmp_path: Path) -> None:
+  repo_root = tmp_path / "repo"
+  root_policies = repo_root / "config" / "policies"
+  nested_policies = repo_root / "rtlab_autotrader" / "config" / "policies"
+  root_policies.mkdir(parents=True, exist_ok=True)
+  nested_policies.mkdir(parents=True, exist_ok=True)
+
+  for name in EXPECTED_POLICY_FILENAMES:
+    root_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
+    nested_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
+
+  root_policies.joinpath("execution_safety.yaml").write_text(
+    "execution_safety:\n  modes:\n    allow_live: true\n",
+    encoding="utf-8",
+  )
+  nested_policies.joinpath("execution_safety.yaml").write_text(
+    "execution_safety:\n  modes:\n    allow_live: false\n",
+    encoding="utf-8",
+  )
+  root_policies.joinpath("execution_router.yaml").write_text(
+    "execution_router:\n  conditional_orders_phase1: false\n",
+    encoding="utf-8",
+  )
+  nested_policies.joinpath("execution_router.yaml").write_text(
+    "execution_router:\n  conditional_orders_phase1: true\n",
+    encoding="utf-8",
+  )
+
+  payload = describe_policy_root_resolution(repo_root, explicit=root_policies)
+
+  divergent = payload["divergent_candidates"]
+  assert divergent
+  assert "execution_safety.yaml" in divergent[0]["differing_files_vs_selected"]
+  assert "execution_router.yaml" in divergent[0]["differing_files_vs_selected"]

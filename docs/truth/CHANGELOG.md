@@ -2,6 +2,34 @@
 
 ## 2026-03-19
 
+### RTLOPS-21 Correctivo 3A - authority/trazabilidad mas rigurosa para Execution Reality
+- Execution policy loaders:
+  - `rtlab_core/execution/reality.py` deja de duplicar `execution_safety.yaml` y `execution_router.yaml` como bundles espejo completos.
+  - el loader valida estructura, usa `describe_policy_root_resolution(...)` y cae a fallback minimo `fail-closed` cuando falta o falla una policy.
+- Trazabilidad corregida:
+  - `source_hash` pasa a representar el hash real del archivo YAML cargado.
+  - `policy_hash` pasa a representar el hash del payload efectivo activo.
+  - `ExecutionRealityService.policy_source()` ahora expone `source`, `path`, `source_root`, `source_hash`, `policy_hash`, `errors`, `warnings`, `fallback_used`, `selected_role`, `canonical_root`, `canonical_role`, `divergent_candidates`.
+  - `bootstrap_summary()` y `live_safety_summary()` exponen el `policy_hash` correcto de execution.
+- Wiring de API:
+  - `web/app.py` hace que `GET /api/v1/config/policies` refleje la metadata real de `execution_safety` / `execution_router` en `files.*`.
+- Tests ampliados:
+  - `test_execution_reality.py` ahora cubre:
+    - separacion `source_hash` vs `policy_hash`
+    - falta de `execution_safety.yaml`
+    - falta de `execution_router.yaml`
+    - divergencia root/nested
+    - bloqueo explicito cuando falta la policy de execution
+    - trazabilidad real en `bootstrap_summary()` / `live_safety_summary()`
+  - `test_web_execution_reality_api.py` valida metadata real de execution en `/api/v1/config/policies` y en el summary de execution.
+  - `test_policy_paths.py` agrega divergencia especifica de `execution_safety.yaml` / `execution_router.yaml`.
+- Validacion local del correctivo:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py rtlab_autotrader/tests/test_policy_paths.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+
 ### RTLOPS-M2 Correctivo 1A - authority runtime_controls mas rigurosa
 - Backend / config:
   - `rtlab_core/runtime_controls.py` deja de duplicar el bundle numerico completo de `runtime_controls.yaml`.

@@ -18,7 +18,7 @@ from uuid import uuid4
 import requests
 import yaml
 
-from rtlab_core.policy_paths import resolve_policy_root
+from rtlab_core.policy_paths import describe_policy_root_resolution
 
 
 EXECUTION_SAFETY_FILENAME = "execution_safety.yaml"
@@ -43,13 +43,13 @@ RECONCILE_TYPES = {
 RECONCILE_SEVERITIES = {"INFO", "WARN", "BLOCK"}
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 
-DEFAULT_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
+FAIL_CLOSED_MINIMAL_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
     "execution_safety": {
         "modes": {
-            "allow_live": True,
-            "allow_testnet": True,
-            "allow_paper": True,
-            "allow_shadow": True,
+            "allow_live": False,
+            "allow_testnet": False,
+            "allow_paper": False,
+            "allow_shadow": False,
         },
         "preflight": {
             "require_policy_loaded": True,
@@ -58,56 +58,56 @@ DEFAULT_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
             "require_live_eligible": True,
             "require_capability_snapshot": True,
             "require_snapshot_fresh": True,
-            "snapshot_block_if_older_than_hours": 72,
-            "quote_stale_block_ms": 3000,
-            "orderbook_stale_warn_ms": 1500,
-            "orderbook_stale_block_ms": 5000,
+            "snapshot_block_if_older_than_hours": 1,
+            "quote_stale_block_ms": 1,
+            "orderbook_stale_warn_ms": 1,
+            "orderbook_stale_block_ms": 1,
             "reject_if_missing_basic_filters": True,
             "reject_if_missing_fee_source_in_live": True,
         },
         "sizing": {
-            "max_notional_per_order_usd": 5000.0,
-            "max_open_orders_per_symbol": 6,
-            "max_open_orders_total": 40,
-            "min_notional_buffer_pct_above_exchange_min": 5.0,
+            "max_notional_per_order_usd": 0.0,
+            "max_open_orders_per_symbol": 0,
+            "max_open_orders_total": 0,
+            "min_notional_buffer_pct_above_exchange_min": 100.0,
         },
         "slippage": {
-            "warn_bps_spot": 10.0,
-            "block_bps_spot": 25.0,
-            "warn_bps_margin": 12.0,
-            "block_bps_margin": 30.0,
-            "warn_bps_usdm": 8.0,
-            "block_bps_usdm": 20.0,
-            "warn_bps_coinm": 10.0,
-            "block_bps_coinm": 25.0,
+            "warn_bps_spot": 0.0,
+            "block_bps_spot": 0.0,
+            "warn_bps_margin": 0.0,
+            "block_bps_margin": 0.0,
+            "warn_bps_usdm": 0.0,
+            "block_bps_usdm": 0.0,
+            "warn_bps_coinm": 0.0,
+            "block_bps_coinm": 0.0,
         },
         "reconciliation": {
-            "poll_open_orders_sec": 5,
-            "poll_order_status_sec": 3,
-            "poll_user_trades_sec": 10,
-            "order_ack_timeout_sec": 8,
-            "fill_reconcile_timeout_sec": 20,
-            "orphan_order_warn_sec": 30,
-            "orphan_order_block_sec": 120,
+            "poll_open_orders_sec": 1,
+            "poll_order_status_sec": 1,
+            "poll_user_trades_sec": 1,
+            "order_ack_timeout_sec": 1,
+            "fill_reconcile_timeout_sec": 1,
+            "orphan_order_warn_sec": 1,
+            "orphan_order_block_sec": 1,
         },
         "kill_switch": {
             "enabled": True,
             "auto_cancel_all_on_trip": True,
-            "cooldown_sec": 300,
-            "critical_rejects_5m_block": 8,
-            "consecutive_failed_submits_block": 5,
-            "stale_market_data_block_ms": 5000,
-            "repeated_reconcile_mismatch_block_count": 5,
+            "cooldown_sec": 1,
+            "critical_rejects_5m_block": 1,
+            "consecutive_failed_submits_block": 1,
+            "stale_market_data_block_ms": 1,
+            "repeated_reconcile_mismatch_block_count": 1,
         },
         "futures_auto_cancel": {
             "enabled": True,
-            "heartbeat_sec": 30,
-            "countdown_ms": 120000,
+            "heartbeat_sec": 1,
+            "countdown_ms": 1,
         },
         "margin": {
             "require_margin_level_visible": True,
-            "warn_margin_level_below": 1.50,
-            "block_margin_level_below": 1.25,
+            "warn_margin_level_below": 999999.0,
+            "block_margin_level_below": 999999.0,
         },
         "risk_reduce_only_priority": {
             "enabled": True,
@@ -120,27 +120,27 @@ DEFAULT_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
     }
 }
 
-DEFAULT_EXECUTION_ROUTER_POLICY: dict[str, Any] = {
+FAIL_CLOSED_MINIMAL_EXECUTION_ROUTER_POLICY: dict[str, Any] = {
     "execution_router": {
         "families_enabled": {
-            "spot": True,
-            "margin": True,
-            "usdm_futures": True,
-            "coinm_futures": True,
+            "spot": False,
+            "margin": False,
+            "usdm_futures": False,
+            "coinm_futures": False,
         },
         "first_iteration_supported_order_types": {
-            "spot": ["MARKET", "LIMIT"],
-            "margin": ["MARKET", "LIMIT"],
-            "usdm_futures": ["MARKET", "LIMIT"],
-            "coinm_futures": ["MARKET", "LIMIT"],
+            "spot": [],
+            "margin": [],
+            "usdm_futures": [],
+            "coinm_futures": [],
         },
         "time_in_force_allowed": {
-            "spot": ["GTC", "IOC", "FOK"],
-            "margin": ["GTC", "IOC", "FOK"],
-            "usdm_futures": ["GTC", "IOC", "FOK", "GTX"],
-            "coinm_futures": ["GTC", "IOC", "FOK", "GTX"],
+            "spot": [],
+            "margin": [],
+            "usdm_futures": [],
+            "coinm_futures": [],
         },
-        "prefer_cancel_replace_spot": True,
+        "prefer_cancel_replace_spot": False,
         "enable_batch_orders_usdm": False,
         "enable_batch_orders_coinm": False,
         "conditional_orders_phase1": False,
@@ -154,16 +154,6 @@ def _utc_now() -> datetime:
 
 def utc_now_iso() -> str:
     return _utc_now().isoformat()
-
-
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = copy.deepcopy(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
 
 
 def _json_dumps(value: Any) -> str:
@@ -183,8 +173,59 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _sha256_bytes(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _sha256_json(value: Any) -> str:
     return _sha256_text(_json_dumps(value))
+
+
+def _stable_payload_hash(value: Any) -> str:
+    return _sha256_json(value)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _require_dict(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        errors.append(f"{path}.{key} debe ser dict")
+        return {}
+    return value
+
+
+def _require_bool(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> bool:
+    value = parent.get(key)
+    if not isinstance(value, bool):
+        errors.append(f"{path}.{key} debe ser bool")
+        return False
+    return value
+
+
+def _require_number(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> float:
+    value = parent.get(key)
+    if not _is_number(value):
+        errors.append(f"{path}.{key} debe ser numero")
+        return 0.0
+    return float(value)
+
+
+def _require_str_list(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> list[str]:
+    value = parent.get(key)
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        errors.append(f"{path}.{key} debe ser lista de strings no vacios")
+        return []
+    return [str(item).strip() for item in value]
+
+
+def _execution_policy_source_label(repo_root: Path, policy_path: Path) -> str:
+    try:
+        return str(policy_path.resolve().relative_to(repo_root.resolve())).replace("\\", "/")
+    except ValueError:
+        return str(policy_path.resolve())
 
 
 def _db_bool(value: Any) -> int | None:
@@ -248,6 +289,135 @@ def _resolve_repo_root_for_policy() -> Path | None:
         if (parent / "rtlab_autotrader" / "config" / "policies").exists():
             return parent
     return None
+
+
+def _validate_execution_safety_policy(candidate: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(candidate, dict):
+        return ["execution_safety policy debe ser dict"]
+
+    root = _require_dict(candidate, "execution_safety", errors=errors, path="execution")
+    modes = _require_dict(root, "modes", errors=errors, path="execution.execution_safety")
+    for key in ("allow_live", "allow_testnet", "allow_paper", "allow_shadow"):
+        _require_bool(modes, key, errors=errors, path="execution.execution_safety.modes")
+
+    preflight = _require_dict(root, "preflight", errors=errors, path="execution.execution_safety")
+    for key in (
+        "require_policy_loaded",
+        "require_instrument_registry_match",
+        "require_universe_membership_for_live",
+        "require_live_eligible",
+        "require_capability_snapshot",
+        "require_snapshot_fresh",
+        "reject_if_missing_basic_filters",
+        "reject_if_missing_fee_source_in_live",
+    ):
+        _require_bool(preflight, key, errors=errors, path="execution.execution_safety.preflight")
+    for key in ("snapshot_block_if_older_than_hours", "quote_stale_block_ms", "orderbook_stale_warn_ms", "orderbook_stale_block_ms"):
+        _require_number(preflight, key, errors=errors, path="execution.execution_safety.preflight")
+
+    sizing = _require_dict(root, "sizing", errors=errors, path="execution.execution_safety")
+    for key in (
+        "max_notional_per_order_usd",
+        "max_open_orders_per_symbol",
+        "max_open_orders_total",
+        "min_notional_buffer_pct_above_exchange_min",
+    ):
+        _require_number(sizing, key, errors=errors, path="execution.execution_safety.sizing")
+
+    slippage = _require_dict(root, "slippage", errors=errors, path="execution.execution_safety")
+    for key in (
+        "warn_bps_spot",
+        "block_bps_spot",
+        "warn_bps_margin",
+        "block_bps_margin",
+        "warn_bps_usdm",
+        "block_bps_usdm",
+        "warn_bps_coinm",
+        "block_bps_coinm",
+    ):
+        _require_number(slippage, key, errors=errors, path="execution.execution_safety.slippage")
+
+    reconciliation = _require_dict(root, "reconciliation", errors=errors, path="execution.execution_safety")
+    for key in (
+        "poll_open_orders_sec",
+        "poll_order_status_sec",
+        "poll_user_trades_sec",
+        "order_ack_timeout_sec",
+        "fill_reconcile_timeout_sec",
+        "orphan_order_warn_sec",
+        "orphan_order_block_sec",
+    ):
+        _require_number(reconciliation, key, errors=errors, path="execution.execution_safety.reconciliation")
+
+    kill_switch = _require_dict(root, "kill_switch", errors=errors, path="execution.execution_safety")
+    for key in ("enabled", "auto_cancel_all_on_trip"):
+        _require_bool(kill_switch, key, errors=errors, path="execution.execution_safety.kill_switch")
+    for key in (
+        "cooldown_sec",
+        "critical_rejects_5m_block",
+        "consecutive_failed_submits_block",
+        "stale_market_data_block_ms",
+        "repeated_reconcile_mismatch_block_count",
+    ):
+        _require_number(kill_switch, key, errors=errors, path="execution.execution_safety.kill_switch")
+
+    futures_auto_cancel = _require_dict(root, "futures_auto_cancel", errors=errors, path="execution.execution_safety")
+    _require_bool(futures_auto_cancel, "enabled", errors=errors, path="execution.execution_safety.futures_auto_cancel")
+    _require_number(futures_auto_cancel, "heartbeat_sec", errors=errors, path="execution.execution_safety.futures_auto_cancel")
+    _require_number(futures_auto_cancel, "countdown_ms", errors=errors, path="execution.execution_safety.futures_auto_cancel")
+
+    margin = _require_dict(root, "margin", errors=errors, path="execution.execution_safety")
+    _require_bool(margin, "require_margin_level_visible", errors=errors, path="execution.execution_safety.margin")
+    _require_number(margin, "warn_margin_level_below", errors=errors, path="execution.execution_safety.margin")
+    _require_number(margin, "block_margin_level_below", errors=errors, path="execution.execution_safety.margin")
+
+    risk_reduce_only_priority = _require_dict(root, "risk_reduce_only_priority", errors=errors, path="execution.execution_safety")
+    _require_bool(
+        risk_reduce_only_priority,
+        "enabled",
+        errors=errors,
+        path="execution.execution_safety.risk_reduce_only_priority",
+    )
+
+    persistence = _require_dict(root, "persistence", errors=errors, path="execution.execution_safety")
+    _require_bool(persistence, "write_intents_before_submit", errors=errors, path="execution.execution_safety.persistence")
+    _require_bool(persistence, "write_raw_payloads", errors=errors, path="execution.execution_safety.persistence")
+    _require_number(persistence, "keep_raw_days", errors=errors, path="execution.execution_safety.persistence")
+
+    return errors
+
+
+def _validate_execution_router_policy(candidate: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(candidate, dict):
+        return ["execution_router policy debe ser dict"]
+
+    root = _require_dict(candidate, "execution_router", errors=errors, path="execution")
+    families_enabled = _require_dict(root, "families_enabled", errors=errors, path="execution.execution_router")
+    supported_order_types = _require_dict(root, "first_iteration_supported_order_types", errors=errors, path="execution.execution_router")
+    time_in_force_allowed = _require_dict(root, "time_in_force_allowed", errors=errors, path="execution.execution_router")
+
+    for family in ("spot", "margin", "usdm_futures", "coinm_futures"):
+        _require_bool(families_enabled, family, errors=errors, path="execution.execution_router.families_enabled")
+        _require_str_list(
+            supported_order_types,
+            family,
+            errors=errors,
+            path="execution.execution_router.first_iteration_supported_order_types",
+        )
+        _require_str_list(
+            time_in_force_allowed,
+            family,
+            errors=errors,
+            path="execution.execution_router.time_in_force_allowed",
+        )
+
+    _require_bool(root, "prefer_cancel_replace_spot", errors=errors, path="execution.execution_router")
+    _require_bool(root, "enable_batch_orders_usdm", errors=errors, path="execution.execution_router")
+    _require_bool(root, "enable_batch_orders_coinm", errors=errors, path="execution.execution_router")
+    _require_bool(root, "conditional_orders_phase1", errors=errors, path="execution.execution_router")
+    return errors
 
 
 def _bool(value: Any) -> bool:
@@ -395,69 +565,89 @@ def _decimal_floor(value: Any, step: Any) -> float:
     return float(units * step_dec)
 
 
+def clear_execution_policy_cache() -> None:
+    _load_policy_bundle_cached.cache_clear()
+
+
 @lru_cache(maxsize=16)
 def _load_policy_bundle_cached(
     filename: str,
     repo_root_str: str,
     explicit_root_str: str,
-    default_payload_text: str,
 ) -> dict[str, Any]:
     repo_root = Path(repo_root_str).resolve()
     explicit_root = Path(explicit_root_str).resolve() if explicit_root_str else None
-    selected_root = resolve_policy_root(
+    resolution = describe_policy_root_resolution(
         repo_root,
         explicit=explicit_root,
         expected_files=POLICY_EXPECTED_FILES,
-    ).resolve()
+    )
+    selected_root = Path(resolution["selected_root"]).resolve()
     policy_path = (selected_root / filename).resolve()
+
+    if filename == EXECUTION_SAFETY_FILENAME:
+        fallback_policy = FAIL_CLOSED_MINIMAL_EXECUTION_SAFETY_POLICY
+        validator = _validate_execution_safety_policy
+    elif filename == EXECUTION_ROUTER_FILENAME:
+        fallback_policy = FAIL_CLOSED_MINIMAL_EXECUTION_ROUTER_POLICY
+        validator = _validate_execution_router_policy
+    else:
+        raise ValueError(f"execution policy filename no soportado: {filename}")
 
     payload: dict[str, Any] = {}
     valid = False
     source_hash = ""
+    errors: list[str] = []
+    warnings: list[str] = list(resolution.get("warnings") or [])
     if policy_path.exists():
         try:
-            raw_text = policy_path.read_text(encoding="utf-8")
-            source_hash = _sha256_text(raw_text)
+            raw_bytes = policy_path.read_bytes()
+            raw_text = raw_bytes.decode("utf-8")
+            source_hash = _sha256_bytes(raw_bytes)
             raw = yaml.safe_load(raw_text) or {}
-            if isinstance(raw, dict) and raw:
+            validation_errors = validator(raw) if isinstance(raw, dict) and raw else [f"{filename} vacio o ausente"]
+            if isinstance(raw, dict) and raw and not validation_errors:
                 payload = raw
                 valid = True
+            else:
+                errors.extend(validation_errors)
         except Exception:
             payload = {}
             valid = False
+            errors.append(f"{filename} no pudo parsearse como YAML valido")
+    else:
+        errors.append(f"{filename} no existe en la raiz seleccionada")
 
-    default_payload = yaml.safe_load(default_payload_text) or {}
-    merged = _deep_merge(default_payload if isinstance(default_payload, dict) else {}, payload)
-    if not source_hash:
-        source_hash = _sha256_json(merged)
+    active_policy = copy.deepcopy(payload if valid else fallback_policy)
+    policy_hash = _stable_payload_hash(active_policy)
     return {
         "source_root": str(selected_root),
         "path": str(policy_path),
         "exists": policy_path.exists(),
         "valid": valid,
+        "fallback_used": bool(resolution.get("fallback_used")),
+        "selected_role": resolution.get("selected_role"),
+        "canonical_root": resolution.get("canonical_root"),
+        "canonical_role": resolution.get("canonical_role"),
+        "divergent_candidates": copy.deepcopy(resolution.get("divergent_candidates") or []),
         "source_hash": source_hash,
-        "source": f"config/policies/{filename}" if valid else "default_fail_closed",
-        "payload": merged,
+        "policy_hash": policy_hash,
+        "source": _execution_policy_source_label(repo_root, policy_path) if valid else "default_fail_closed_minimal",
+        "errors": errors,
+        "warnings": warnings,
+        "payload": active_policy,
     }
 
 
 def _load_policy_bundle(
     filename: str,
-    default_payload: dict[str, Any],
     repo_root: Path | None,
     *,
     explicit_root: Path | None = None,
 ) -> dict[str, Any]:
     resolved_repo_root = (repo_root or _resolve_repo_root_for_policy() or Path.cwd()).resolve()
     explicit_root_str = str(explicit_root.resolve()) if explicit_root is not None else ""
-    return copy.deepcopy(
-        _load_policy_bundle_cached(
-            filename,
-            str(resolved_repo_root),
-            explicit_root_str,
-            yaml.safe_dump(default_payload, sort_keys=True),
-        )
-    )
+    return copy.deepcopy(_load_policy_bundle_cached(filename, str(resolved_repo_root), explicit_root_str))
 
 
 def load_execution_safety_bundle(
@@ -465,12 +655,7 @@ def load_execution_safety_bundle(
     *,
     explicit_root: Path | None = None,
 ) -> dict[str, Any]:
-    return _load_policy_bundle(
-        EXECUTION_SAFETY_FILENAME,
-        DEFAULT_EXECUTION_SAFETY_POLICY,
-        repo_root,
-        explicit_root=explicit_root,
-    )
+    return _load_policy_bundle(EXECUTION_SAFETY_FILENAME, repo_root, explicit_root=explicit_root)
 
 
 def load_execution_router_bundle(
@@ -478,12 +663,7 @@ def load_execution_router_bundle(
     *,
     explicit_root: Path | None = None,
 ) -> dict[str, Any]:
-    return _load_policy_bundle(
-        EXECUTION_ROUTER_FILENAME,
-        DEFAULT_EXECUTION_ROUTER_POLICY,
-        repo_root,
-        explicit_root=explicit_root,
-    )
+    return _load_policy_bundle(EXECUTION_ROUTER_FILENAME, repo_root, explicit_root=explicit_root)
 
 
 def execution_safety_policy(
@@ -493,7 +673,7 @@ def execution_safety_policy(
 ) -> dict[str, Any]:
     bundle = load_execution_safety_bundle(repo_root, explicit_root=explicit_root)
     payload = bundle.get("payload")
-    return copy.deepcopy(payload if isinstance(payload, dict) else DEFAULT_EXECUTION_SAFETY_POLICY)
+    return copy.deepcopy(payload if isinstance(payload, dict) else FAIL_CLOSED_MINIMAL_EXECUTION_SAFETY_POLICY)
 
 
 def execution_router_policy(
@@ -503,7 +683,7 @@ def execution_router_policy(
 ) -> dict[str, Any]:
     bundle = load_execution_router_bundle(repo_root, explicit_root=explicit_root)
     payload = bundle.get("payload")
-    return copy.deepcopy(payload if isinstance(payload, dict) else DEFAULT_EXECUTION_ROUTER_POLICY)
+    return copy.deepcopy(payload if isinstance(payload, dict) else FAIL_CLOSED_MINIMAL_EXECUTION_ROUTER_POLICY)
 
 
 class ExecutionRealityDB:
@@ -1145,26 +1325,53 @@ class ExecutionRealityService:
         payload = execution_router_policy(self.repo_root, explicit_root=self.explicit_policy_root)
         return payload.get("execution_router") if isinstance(payload.get("execution_router"), dict) else {}
 
+    def policies_loaded(self) -> bool:
+        source = self.policy_source()
+        return bool(source["execution_safety"]["valid"]) and bool(source["execution_router"]["valid"])
+
     def policy_source(self) -> dict[str, Any]:
         safety_bundle = self.safety_bundle()
         router_bundle = self.router_bundle()
         return {
             "execution_safety": {
                 "path": safety_bundle.get("path"),
-                "hash": safety_bundle.get("source_hash"),
+                "source_root": safety_bundle.get("source_root"),
+                "source_hash": safety_bundle.get("source_hash"),
+                "policy_hash": safety_bundle.get("policy_hash"),
                 "source": safety_bundle.get("source"),
                 "valid": bool(safety_bundle.get("valid")),
+                "errors": list(safety_bundle.get("errors") or []),
+                "warnings": list(safety_bundle.get("warnings") or []),
+                "fallback_used": bool(safety_bundle.get("fallback_used")),
+                "selected_role": safety_bundle.get("selected_role"),
+                "canonical_root": safety_bundle.get("canonical_root"),
+                "canonical_role": safety_bundle.get("canonical_role"),
+                "divergent_candidates": copy.deepcopy(safety_bundle.get("divergent_candidates") or []),
             },
             "execution_router": {
                 "path": router_bundle.get("path"),
-                "hash": router_bundle.get("source_hash"),
+                "source_root": router_bundle.get("source_root"),
+                "source_hash": router_bundle.get("source_hash"),
+                "policy_hash": router_bundle.get("policy_hash"),
                 "source": router_bundle.get("source"),
                 "valid": bool(router_bundle.get("valid")),
+                "errors": list(router_bundle.get("errors") or []),
+                "warnings": list(router_bundle.get("warnings") or []),
+                "fallback_used": bool(router_bundle.get("fallback_used")),
+                "selected_role": router_bundle.get("selected_role"),
+                "canonical_root": router_bundle.get("canonical_root"),
+                "canonical_role": router_bundle.get("canonical_role"),
+                "divergent_candidates": copy.deepcopy(router_bundle.get("divergent_candidates") or []),
             },
         }
 
     def policy_hash(self) -> str:
-        return _sha256_json(self.policy_source())
+        return _stable_payload_hash(
+            {
+                "execution_safety": self.safety_policy(),
+                "execution_router": self.router_policy(),
+            }
+        )
 
     def _cost_stack_policy(self) -> dict[str, Any]:
         if self.reporting_bridge_service is None:
@@ -1445,7 +1652,7 @@ class ExecutionRealityService:
             "db_path": str(self.db.db_path),
             "tables": self.db.table_names(),
             "counts": self.db.counts(),
-            "policy_loaded": bool(policy_source["execution_safety"]["valid"]) and bool(policy_source["execution_router"]["valid"]),
+            "policy_loaded": self.policies_loaded(),
             "policy_hash": self.policy_hash(),
             "policy_source": policy_source,
             "modes": safety.get("modes") if isinstance(safety.get("modes"), dict) else {},
@@ -1832,11 +2039,11 @@ class ExecutionRealityService:
             blocking.append("family_or_symbol_missing")
         if not self._mode_allowed(mode):
             blocking.append(f"mode_disabled:{mode}")
-        if family and not _bool((self.router_policy().get("families_enabled") or {}).get(family, False)):
+        if family and not _bool((self.router_policy().get("families_enabled") or {}).get(family)):
             blocking.append(f"family_disabled:{family}")
 
         instrument = self._instrument_row(family, symbol) if family and symbol else None
-        if instrument is None and _bool((self.safety_policy().get("preflight") or {}).get("require_instrument_registry_match", True)):
+        if instrument is None and _bool((self.safety_policy().get("preflight") or {}).get("require_instrument_registry_match")):
             blocking.append("instrument_not_in_registry")
 
         capability = self._capability_snapshot(family, environment) if family else None
@@ -1872,7 +2079,7 @@ class ExecutionRealityService:
         cost_policy = self._cost_stack_policy()
         estimation_cfg = cost_policy.get("estimation") if isinstance(cost_policy.get("estimation"), dict) else {}
 
-        if _bool(preflight_cfg.get("require_policy_loaded", True)):
+        if _bool(preflight_cfg.get("require_policy_loaded")):
             source = self.policy_source()
             if not bool(source["execution_safety"]["valid"]) or not bool(source["execution_router"]["valid"]):
                 blocking.append("execution_policy_not_loaded")
@@ -1890,13 +2097,13 @@ class ExecutionRealityService:
             status = str(instrument.get("status") or "").upper()
             if status != "TRADING":
                 blocking.append("instrument_status_not_operational")
-            if environment == "live" and _bool(preflight_cfg.get("require_live_eligible", True)) and not _bool(instrument.get("live_eligible")):
+            if environment == "live" and _bool(preflight_cfg.get("require_live_eligible")) and not _bool(instrument.get("live_eligible")):
                 blocking.append("instrument_not_live_eligible")
             if environment == "testnet" and not _bool(instrument.get("testnet_eligible")):
                 blocking.append("instrument_not_testnet_eligible")
 
             filters = instrument.get("filter_summary") if isinstance(instrument.get("filter_summary"), dict) else {}
-            if _bool(preflight_cfg.get("reject_if_missing_basic_filters", True)):
+            if _bool(preflight_cfg.get("reject_if_missing_basic_filters")):
                 if not isinstance(filters.get("price_filter"), dict) or not isinstance(filters.get("lot_size"), dict):
                     blocking.append("missing_basic_filters")
 
@@ -1935,27 +2142,27 @@ class ExecutionRealityService:
                 (notional_filters or {}).get("min_notional"),
                 ((filters.get("min_notional") if isinstance(filters.get("min_notional"), dict) else {}) or {}).get("min_notional"),
             )
-            buffer_pct = _safe_float(sizing_cfg.get("min_notional_buffer_pct_above_exchange_min"), 5.0)
+            buffer_pct = _safe_float(sizing_cfg.get("min_notional_buffer_pct_above_exchange_min"))
             min_required = 0.0 if min_notional is None else min_notional * (1.0 + buffer_pct / 100.0)
             if _safe_float(preview.get("requested_notional"), 0.0) < min_required:
                 blocking.append("notional_below_exchange_min_with_buffer")
 
-        max_notional = _safe_float(sizing_cfg.get("max_notional_per_order_usd"), 5000.0)
+        max_notional = _safe_float(sizing_cfg.get("max_notional_per_order_usd"))
         if _safe_float(preview.get("requested_notional"), 0.0) > max_notional:
             blocking.append("max_notional_per_order_exceeded")
 
         open_symbol = len(self.db.open_orders(family=family, symbol=symbol))
         open_total = len(self.db.open_orders())
-        if open_symbol >= int(sizing_cfg.get("max_open_orders_per_symbol", 6) or 6):
+        if open_symbol >= int(sizing_cfg.get("max_open_orders_per_symbol") or 0):
             blocking.append("max_open_orders_per_symbol_reached")
-        if open_total >= int(sizing_cfg.get("max_open_orders_total", 40) or 40):
+        if open_total >= int(sizing_cfg.get("max_open_orders_total") or 0):
             blocking.append("max_open_orders_total_reached")
 
         membership = self._universe_membership(family, symbol) if family and symbol else {"matched": False, "universes": []}
-        if environment in {"live", "testnet"} and _bool(preflight_cfg.get("require_universe_membership_for_live", True)) and not _bool(membership.get("matched")):
+        if environment in {"live", "testnet"} and _bool(preflight_cfg.get("require_universe_membership_for_live")) and not _bool(membership.get("matched")):
             blocking.append("symbol_not_in_active_universe")
 
-        if environment in {"live", "testnet"} and _bool(preflight_cfg.get("require_capability_snapshot", True)) and capability is None:
+        if environment in {"live", "testnet"} and _bool(preflight_cfg.get("require_capability_snapshot")) and capability is None:
             blocking.append("capability_snapshot_missing")
         if capability is not None and not _bool(capability.get("can_trade")) and environment in {"live", "testnet"}:
             blocking.append("account_cannot_trade")
@@ -1963,7 +2170,7 @@ class ExecutionRealityService:
             blocking.append("margin_capability_missing")
 
         freshness = self._freshness_payload(latest_snapshot.get("fetched_at") if latest_snapshot else None)
-        if _bool(preflight_cfg.get("require_snapshot_fresh", True)):
+        if _bool(preflight_cfg.get("require_snapshot_fresh")):
             if freshness.get("status") == "missing":
                 blocking.append("instrument_snapshot_missing")
                 if mode == "live":
@@ -1980,7 +2187,7 @@ class ExecutionRealityService:
             blocking.append("quote_snapshot_missing")
         else:
             age_ms = max(0, int(time.time() * 1000) - int(quote_ts_ms))
-            if age_ms >= int(preflight_cfg.get("quote_stale_block_ms", 3000) or 3000):
+            if age_ms >= int(preflight_cfg.get("quote_stale_block_ms") or 0):
                 blocking.append("quote_stale")
                 if mode == "live":
                     fail_closed = True
@@ -1988,15 +2195,15 @@ class ExecutionRealityService:
         orderbook_ts_ms = quote.get("orderbook_ts_ms")
         if orderbook_ts_ms is not None:
             ob_age_ms = max(0, int(time.time() * 1000) - int(orderbook_ts_ms))
-            if ob_age_ms >= int(preflight_cfg.get("orderbook_stale_block_ms", 5000) or 5000):
+            if ob_age_ms >= int(preflight_cfg.get("orderbook_stale_block_ms") or 0):
                 blocking.append("orderbook_stale")
                 if mode == "live":
                     fail_closed = True
-            elif ob_age_ms >= int(preflight_cfg.get("orderbook_stale_warn_ms", 1500) or 1500):
+            elif ob_age_ms >= int(preflight_cfg.get("orderbook_stale_warn_ms") or 0):
                 warnings.append("orderbook_stale_warn")
 
         fee_state = self._fee_source_state(family, environment) if family else {"available": False, "fresh": False, "latest": None}
-        if mode == "live" and _bool(preflight_cfg.get("reject_if_missing_fee_source_in_live", True)) and not _bool(fee_state.get("available")):
+        if mode == "live" and _bool(preflight_cfg.get("reject_if_missing_fee_source_in_live")) and not _bool(fee_state.get("available")):
             blocking.append("fee_source_missing_in_live")
             fail_closed = True
         elif mode == "live" and not _bool(fee_state.get("fresh")):
@@ -2006,18 +2213,18 @@ class ExecutionRealityService:
             fail_closed = True
 
         margin_level = self._margin_levels.get(environment)
-        if family == "margin" and _bool(margin_cfg.get("require_margin_level_visible", True)):
+        if family == "margin" and _bool(margin_cfg.get("require_margin_level_visible")):
             if not isinstance(margin_level, dict) or margin_level.get("level") is None:
                 blocking.append("margin_level_missing")
                 if mode == "live":
                     fail_closed = True
             else:
                 level = _safe_float(margin_level.get("level"), 0.0)
-                if level < _safe_float(margin_cfg.get("block_margin_level_below"), 1.25):
+                if level < _safe_float(margin_cfg.get("block_margin_level_below")):
                     blocking.append("margin_level_blocked")
                     if mode == "live":
                         fail_closed = True
-                elif level < _safe_float(margin_cfg.get("warn_margin_level_below"), 1.5):
+                elif level < _safe_float(margin_cfg.get("warn_margin_level_below")):
                     warnings.append("margin_level_warn")
 
         slip_warn, slip_block = self._slippage_thresholds(family)
@@ -2475,7 +2682,7 @@ class ExecutionRealityService:
         if not self._quotes:
             stale_market_data = True
         else:
-            block_ms = int((self.safety_policy().get("preflight") or {}).get("quote_stale_block_ms", 3000) or 3000)
+            block_ms = int((self.safety_policy().get("preflight") or {}).get("quote_stale_block_ms") or 0)
             for snapshot in self._quotes.values():
                 quote_ts_ms = snapshot.get("quote_ts_ms")
                 if quote_ts_ms is None:
@@ -2492,9 +2699,9 @@ class ExecutionRealityService:
         margin_status = "unknown"
         if margin_payload.get("level") is not None:
             level = _safe_float(margin_payload.get("level"), 0.0)
-            if level < _safe_float((self.safety_policy().get("margin") or {}).get("block_margin_level_below"), 1.25):
+            if level < _safe_float((self.safety_policy().get("margin") or {}).get("block_margin_level_below")):
                 margin_status = "BLOCK"
-            elif level < _safe_float((self.safety_policy().get("margin") or {}).get("warn_margin_level_below"), 1.5):
+            elif level < _safe_float((self.safety_policy().get("margin") or {}).get("warn_margin_level_below")):
                 margin_status = "WARN"
             else:
                 margin_status = "OK"
@@ -2509,7 +2716,8 @@ class ExecutionRealityService:
                 ((parity.get(family) or {}).get("live") or {}).get("live_parity_base_ready", False)
                 for family in supported_families
             ) if supported_families else False,
-            "execution_policy_loaded": bool(self.policy_source()["execution_safety"]["valid"]) and bool(self.policy_source()["execution_router"]["valid"]),
+            "execution_policy_loaded": self.policies_loaded(),
+            "policy_hash": self.policy_hash(),
             "stale_market_data": stale_market_data,
             "fee_source_fresh": fee_fresh,
             "snapshot_fresh": snapshot_fresh,

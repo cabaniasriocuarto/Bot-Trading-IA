@@ -2,6 +2,29 @@
 
 Fecha: 2026-03-19
 
+## Correctivo 3A de Execution Reality - 2026-03-19
+- [x] Eliminar bundles espejo completos en codigo para:
+  - `execution_safety`
+  - `execution_router`
+- [x] Dejar fallback minimo `fail-closed` explicito en `rtlab_core/execution/reality.py`.
+- [x] Separar con claridad:
+  - `source_hash` = hash del archivo fuente cargado
+  - `policy_hash` = hash del payload efectivo activo
+- [x] Exponer trazabilidad corregida de execution en:
+  - `bootstrap_summary()`
+  - `live_safety_summary()`
+  - `GET /api/v1/config/policies`
+- [x] Ampliar tests focalizados de execution para:
+  - fuente exacta cargada
+  - falta de YAML
+  - divergencia root/nested
+  - hashes correctos
+  - no regresion de preflight / router phase 1
+- [x] Dejar la base lista para continuar con `3.4` sin arrastrar la deuda de authority/trazabilidad detectada en auditoria.
+- [ ] Deuda chica consciente que sigue fuera de 3A:
+  - migrar `startup` FastAPI a lifespan;
+  - la materializacion `estimated -> realized` y reconcile siguen siendo trabajo propio de `3.4`.
+
 ## Correctivo 1A de M2 - 2026-03-19
 - [x] Quitar la duplicacion numerica completa de `DEFAULT_RUNTIME_CONTROLS` en `rtlab_core/runtime_controls.py`.
 - [x] Mantener solo un fallback `fail-closed` minimo y explicito cuando `runtime_controls.yaml` falta o es invalido.
@@ -163,7 +186,7 @@ Fecha: 2026-03-19
   - live safety final
 
 ## Siguiente subparte recomendada
-- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.4`.
+- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.4` sobre la base ya corregida con `1A + 2A + 3A`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

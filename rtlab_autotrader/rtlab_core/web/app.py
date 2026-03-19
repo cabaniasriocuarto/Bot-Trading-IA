@@ -36,6 +36,7 @@ from rtlab_core.domains import (
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution import ExecutionRealityService
+from rtlab_core.execution.reality import load_execution_router_bundle, load_execution_safety_bundle
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
 from rtlab_core.instruments import BinanceInstrumentRegistryService
@@ -904,6 +905,32 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
                 "source_hash": str(runtime_bundle.get("source_hash") or ""),
                 "policy_hash": str(runtime_bundle.get("policy_hash") or ""),
                 "errors": list(runtime_bundle.get("errors") or []),
+            }
+            continue
+        if name in {"execution_safety", "execution_router"}:
+            execution_bundle = (
+                load_execution_safety_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+                if name == "execution_safety"
+                else load_execution_router_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            )
+            if execution_bundle.get("errors"):
+                warnings.extend(str(row) for row in (execution_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = execution_bundle.get("payload") if isinstance(execution_bundle.get("payload"), dict) else {}
+            meta[name] = {
+                "path": str(execution_bundle.get("path") or path),
+                "source_root": str(execution_bundle.get("source_root") or root),
+                "exists": bool(execution_bundle.get("exists", False)),
+                "valid": bool(execution_bundle.get("valid", False)),
+                "source": str(execution_bundle.get("source") or ""),
+                "source_hash": str(execution_bundle.get("source_hash") or ""),
+                "policy_hash": str(execution_bundle.get("policy_hash") or ""),
+                "errors": list(execution_bundle.get("errors") or []),
+                "warnings": list(execution_bundle.get("warnings") or []),
+                "fallback_used": bool(execution_bundle.get("fallback_used", False)),
+                "selected_role": execution_bundle.get("selected_role"),
+                "canonical_root": execution_bundle.get("canonical_root"),
+                "canonical_role": execution_bundle.get("canonical_role"),
+                "divergent_candidates": execution_bundle.get("divergent_candidates") or [],
             }
             continue
         exists = path.exists()

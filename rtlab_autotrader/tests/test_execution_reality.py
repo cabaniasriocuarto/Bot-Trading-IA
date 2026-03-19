@@ -6,6 +6,7 @@ from typing import Any
 
 from rtlab_core.execution.reality import (
     ExecutionRealityService,
+    clear_execution_policy_cache,
     load_execution_router_bundle,
     load_execution_safety_bundle,
 )
@@ -286,9 +287,43 @@ def _build_service(
     )
 
 
+def _canonical_execution_policy_text(filename: str) -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    return (repo_root / "config" / "policies" / filename).read_text(encoding="utf-8")
+
+
+def _prepare_execution_policy_repo(
+    repo_root: Path,
+    *,
+    root_safety: str | None,
+    root_router: str | None,
+    nested_safety: str | None = None,
+    nested_router: str | None = None,
+) -> tuple[Path, Path]:
+    root_policies = repo_root / "config" / "policies"
+    nested_policies = repo_root / "rtlab_autotrader" / "config" / "policies"
+    root_policies.mkdir(parents=True, exist_ok=True)
+    nested_policies.mkdir(parents=True, exist_ok=True)
+
+    for name in ("instrument_registry.yaml", "universes.yaml", "cost_stack.yaml", "reporting_exports.yaml"):
+        root_policies.joinpath(name).write_text("placeholder: true\n", encoding="utf-8")
+        nested_policies.joinpath(name).write_text("placeholder: true\n", encoding="utf-8")
+
+    if root_safety is not None:
+        root_policies.joinpath("execution_safety.yaml").write_text(root_safety, encoding="utf-8")
+    if root_router is not None:
+        root_policies.joinpath("execution_router.yaml").write_text(root_router, encoding="utf-8")
+    if nested_safety is not None:
+        nested_policies.joinpath("execution_safety.yaml").write_text(nested_safety, encoding="utf-8")
+    if nested_router is not None:
+        nested_policies.joinpath("execution_router.yaml").write_text(nested_router, encoding="utf-8")
+    return root_policies, nested_policies
+
+
 def test_execution_reality_policies_load_from_canonical_yaml() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     explicit_root = repo_root / "config" / "policies"
+    clear_execution_policy_cache()
 
     safety = load_execution_safety_bundle(repo_root, explicit_root=explicit_root)
     router = load_execution_router_bundle(repo_root, explicit_root=explicit_root)
@@ -297,8 +332,90 @@ def test_execution_reality_policies_load_from_canonical_yaml() -> None:
     assert router["valid"] is True
     assert safety["source"] == "config/policies/execution_safety.yaml"
     assert router["source"] == "config/policies/execution_router.yaml"
+    assert safety["source_hash"]
+    assert router["source_hash"]
+    assert safety["policy_hash"]
+    assert router["policy_hash"]
+    assert safety["source_hash"] != safety["policy_hash"]
+    assert router["source_hash"] != router["policy_hash"]
     assert safety["payload"]["execution_safety"]["preflight"]["quote_stale_block_ms"] == 3000
     assert router["payload"]["execution_router"]["conditional_orders_phase1"] is False
+
+
+def test_execution_policy_bundle_missing_yaml_uses_minimal_fail_closed_payload(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=None,
+        root_router=_canonical_execution_policy_text("execution_router.yaml"),
+    )
+    clear_execution_policy_cache()
+
+    safety = load_execution_safety_bundle(repo_root, explicit_root=root_policies)
+
+    assert safety["valid"] is False
+    assert safety["exists"] is False
+    assert safety["source"] == "default_fail_closed_minimal"
+    assert safety["source_hash"] == ""
+    assert safety["policy_hash"]
+    assert safety["errors"]
+    assert safety["payload"]["execution_safety"]["modes"]["allow_live"] is False
+    assert safety["payload"]["execution_safety"]["sizing"]["max_notional_per_order_usd"] == 0.0
+
+
+def test_execution_router_bundle_missing_yaml_uses_minimal_fail_closed_payload(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=_canonical_execution_policy_text("execution_safety.yaml"),
+        root_router=None,
+    )
+    clear_execution_policy_cache()
+
+    router = load_execution_router_bundle(repo_root, explicit_root=root_policies)
+
+    assert router["valid"] is False
+    assert router["exists"] is False
+    assert router["source"] == "default_fail_closed_minimal"
+    assert router["source_hash"] == ""
+    assert router["policy_hash"]
+    assert router["errors"]
+    assert router["payload"]["execution_router"]["families_enabled"]["spot"] is False
+    assert router["payload"]["execution_router"]["first_iteration_supported_order_types"]["spot"] == []
+
+
+def test_execution_policy_bundle_tracks_root_nested_divergence(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_safety = _canonical_execution_policy_text("execution_safety.yaml")
+    nested_safety = root_safety.replace("quote_stale_block_ms: 3000", "quote_stale_block_ms: 9999")
+    root_router = _canonical_execution_policy_text("execution_router.yaml")
+    nested_router = root_router.replace('spot: ["MARKET", "LIMIT"]', 'spot: ["MARKET"]')
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=root_safety,
+        root_router=root_router,
+        nested_safety=nested_safety,
+        nested_router=nested_router,
+    )
+    clear_execution_policy_cache()
+
+    safety = load_execution_safety_bundle(repo_root, explicit_root=root_policies)
+    router = load_execution_router_bundle(repo_root, explicit_root=root_policies)
+
+    assert safety["valid"] is True
+    assert router["valid"] is True
+    assert safety["selected_role"] == "monorepo_root"
+    assert router["selected_role"] == "monorepo_root"
+    assert safety["fallback_used"] is False
+    assert router["fallback_used"] is False
+    assert any(
+        "execution_safety.yaml" in (row.get("differing_files_vs_selected") or [])
+        for row in (safety.get("divergent_candidates") or [])
+    )
+    assert any(
+        "execution_router.yaml" in (row.get("differing_files_vs_selected") or [])
+        for row in (router.get("divergent_candidates") or [])
+    )
 
 
 def test_execution_reality_db_creates_tables_and_persists_core_rows(tmp_path: Path) -> None:
@@ -387,12 +504,66 @@ def test_execution_reality_bootstrap_summary_and_live_safety_wiring(tmp_path: Pa
     summary = service.live_safety_summary()
 
     assert bootstrap["policy_loaded"] is True
+    assert bootstrap["policy_hash"]
+    assert bootstrap["policy_hash"] == service.policy_hash()
+    assert bootstrap["policy_source"]["execution_safety"]["source_hash"]
+    assert bootstrap["policy_source"]["execution_safety"]["policy_hash"]
+    assert bootstrap["policy_source"]["execution_router"]["source_hash"]
+    assert bootstrap["policy_source"]["execution_router"]["policy_hash"]
     assert bootstrap["dependencies"]["instrument_registry_service"] is True
     assert bootstrap["cache_sizes"]["market_snapshots"] == 1
     assert summary["execution_policy_loaded"] is True
+    assert summary["policy_hash"] == bootstrap["policy_hash"]
+    assert summary["policy_source"]["execution_safety"]["source_hash"] == bootstrap["policy_source"]["execution_safety"]["source_hash"]
     assert summary["capabilities_known"] is True
     assert summary["degraded_mode"] is True
     assert summary["overall_status"] == "WARN"
+
+
+def test_preflight_blocks_when_execution_policy_is_missing(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=None,
+        root_router=_canonical_execution_policy_text("execution_router.yaml"),
+    )
+    clear_execution_policy_cache()
+
+    service = ExecutionRealityService(
+        user_data_dir=tmp_path / "user_data",
+        repo_root=repo_root,
+        explicit_policy_root=root_policies,
+        instrument_registry_service=_FakeRegistryService(
+            family="spot",
+            instrument_row=_instrument_row(family="spot"),
+            snapshot_fetched_at=_iso_hours_ago(1),
+            capability_snapshot=_capability_snapshot(),
+        ),
+        universe_service=_FakeUniverseService(matched=True),
+        reporting_bridge_service=_FakeReportingBridge(
+            family="spot",
+            available=True,
+            fresh=True,
+        ),
+        runs_loader=lambda: [],
+    )
+    service.set_market_snapshot(family="spot", environment="paper", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+        }
+    )
+
+    assert result["allowed"] is False
+    assert "execution_policy_not_loaded" in result["blocking_reasons"]
 
 
 def test_preflight_accepts_live_order_and_normalizes_price_qty(tmp_path: Path) -> None:
