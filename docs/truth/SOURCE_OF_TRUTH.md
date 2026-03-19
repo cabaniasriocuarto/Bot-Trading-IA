@@ -2,6 +2,95 @@
 
 Fecha de actualizacion: 2026-03-19
 
+## RTLOPS-36: Validacion operativa `paper -> testnet -> canary` antes de live serio - 2026-03-19
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-36`
+  - issue paraguas ya cerrada y reutilizada como contexto: `RTLOPS-21`
+  - rama incremental usada: `feature/validation-paper-testnet-canary-rtlops-36`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+- Autoridad canonica nueva del bloque:
+  - `config/policies/validation_gates.yaml`
+  - `rtlab_autotrader/config/policies/validation_gates.yaml` queda solo como compatibilidad de empaquetado/deploy
+- Alcance real cerrado:
+  - etapas cableadas:
+    - `PAPER`
+    - `TESTNET`
+    - `CANARY`
+    - `LIVE_SERIO` solo como destino futuro; no se activa ni se promueve automaticamente en este bloque
+  - `ValidationService` nuevo y persistente en `rtlab_core/validation/service.py`
+  - storage auditable nuevo:
+    - `validation_runs`
+    - `validation_gate_results`
+    - `validation_stage_evidence`
+  - resumenes y API minima:
+    - `GET /api/v1/validation/summary`
+    - `GET /api/v1/validation/runs`
+    - `GET /api/v1/validation/runs/{id}`
+    - `POST /api/v1/validation/evaluate`
+    - `GET /api/v1/validation/readiness`
+- Reglas/gates explicitos aplicados desde policy:
+  - `paper -> testnet`
+  - `testnet -> canary`
+  - `canary -> live_serio`
+  - thresholds numericos para:
+    - ordenes minimas
+    - dias de operacion / runtime minimo
+    - `unresolved_reconcile_rate_pct`
+    - `reject_rate_pct`
+    - `cost_mismatch_rate_pct`
+    - `fill_coverage_pct`
+    - `cost_materialization_coverage_pct`
+    - `cancel_success_rate_pct`
+    - `gross_net_inconsistency_rate_pct`
+    - `kill_switch_trip_count` y `margin_guard_block_count` en `CANARY`
+  - bloqueos globales:
+    - `block_if_kill_switch_active`
+    - `block_if_fee_source_missing_in_live_like_modes`
+    - `block_if_snapshot_stale`
+    - `block_if_policy_missing`
+    - `allow_manual_override: false`
+- Integracion real con sistemas ya existentes:
+  - reutiliza `ExecutionRealityService`, `live_safety_summary()`, `reconcile_orders()`, `kill_switch_status()`, fills/realized y `trade_cost_ledger`
+  - reutiliza `instrument_registry`, `live_parity_matrix()`, `capabilities_summary()` y `cost_source_snapshots`
+  - no crea otra verdad paralela para execution/reporting
+- Trazabilidad y authority del bloque:
+  - `source_hash` = hash del YAML efectivamente cargado
+  - `policy_hash` = hash del payload efectivo activo despues de validacion/fallback
+  - `policy_source()` de validacion expone:
+    - `source`
+    - `path`
+    - `source_root`
+    - `source_hash`
+    - `policy_hash`
+    - `errors`
+    - `warnings`
+    - `fallback_used`
+    - `selected_role`
+    - `canonical_root`
+    - `canonical_role`
+    - `divergent_candidates`
+- Reglas operativas explicitamente preservadas:
+  - `Spot Testnet` no equivale a `live`
+  - `Demo/Simulacion` no equivale a `live`
+  - `Futures Testnet` usa endpoints/base URLs separados
+  - `CANARY` es una rebanada controlada de `live`, no `live serio`
+  - `live_serio_ready` puede quedar `true`, pero RTLOPS-36 no activa `LIVE_SERIO`
+- Limites conscientes:
+  - no se toca frontend grande
+  - no se implementa Playwright
+  - no se abre `main`
+  - no se redefine la logica de `3.1 -> 3.5`; solo se agrega la capa de promotion/readiness previa a `live serio`
+
 ## RTLOPS-39 / RTLOPS-21 Parte 3.5: Kill switch operativo + live safety final - 2026-03-19
 
 - Trazabilidad del bloque:

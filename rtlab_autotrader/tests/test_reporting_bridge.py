@@ -255,3 +255,54 @@ def test_reporting_bridge_upserts_execution_trade_rows_without_erasing_backfill_
     rows_after_refresh = service.db.trade_rows()
     assert len(rows_after_refresh) == 2
     assert any(row["trade_ref"] == "execution-fill-1" for row in rows_after_refresh)
+
+
+def test_reporting_bridge_preserves_incremental_execution_runtime_upserts(tmp_path: Path) -> None:
+    service = _service(tmp_path, [_run(run_id="BT-6", trades=[_trade(trade_id="tr-base-2")])])
+    service.refresh_materialized_views()
+
+    row_one = {
+        "trade_cost_id": "TCL-EXEC-A",
+        "trade_ref": "execution-fill-A",
+        "run_id": None,
+        "venue": "binance",
+        "family": "spot",
+        "environment": "paper",
+        "symbol": "BTCUSDT",
+        "strategy_id": "STRAT-1",
+        "bot_id": "bot-1",
+        "executed_at": "2026-03-19T12:00:00+00:00",
+        "exchange_fee_estimated": 0.0,
+        "exchange_fee_realized": 0.25,
+        "fee_asset": "USDT",
+        "spread_estimated": 0.0,
+        "spread_realized": 0.1,
+        "slippage_estimated": 0.0,
+        "slippage_realized": 0.2,
+        "funding_estimated": 0.0,
+        "funding_realized": None,
+        "borrow_interest_estimated": 0.0,
+        "borrow_interest_realized": None,
+        "rebates_or_discounts": 0.0,
+        "total_cost_estimated": 0.0,
+        "total_cost_realized": 0.55,
+        "gross_pnl": 2.0,
+        "net_pnl": 1.45,
+        "cost_source": {"cost_classification": "mixed"},
+        "provenance": {"source_kind": "execution_reality_fill"},
+        "created_at": "2026-03-19T12:00:00+00:00",
+    }
+    row_two = {
+        **row_one,
+        "trade_cost_id": "TCL-EXEC-B",
+        "trade_ref": "execution-fill-B",
+        "executed_at": "2026-03-19T13:00:00+00:00",
+    }
+
+    service.upsert_execution_trade_rows([row_one])
+    service.upsert_execution_trade_rows([row_two])
+
+    rows = service.db.trade_rows()
+    refs = {row["trade_ref"] for row in rows}
+    assert len(rows) == 3
+    assert {"tr-base-2", "execution-fill-A", "execution-fill-B"} <= refs

@@ -2,6 +2,53 @@
 
 ## 2026-03-19
 
+### RTLOPS-36 - Validacion operativa `paper -> testnet -> canary` antes de live serio
+- Policy canonica nueva:
+  - `config/policies/validation_gates.yaml`
+  - compatibilidad nested en `rtlab_autotrader/config/policies/validation_gates.yaml`
+- Backend / storage:
+  - nuevo `rtlab_core/validation/service.py` con:
+    - loader canonicamente trazable
+    - fallback minimo `fail-closed`
+    - `ValidationDB`
+    - `ValidationService`
+  - nuevas tablas:
+    - `validation_runs`
+    - `validation_gate_results`
+    - `validation_stage_evidence`
+- Gates operativos reales:
+  - etapas:
+    - `PAPER`
+    - `TESTNET`
+    - `CANARY`
+    - `LIVE_SERIO` solo como destino, no auto-promovido
+  - criterios `PASS / HOLD / BLOCK` explicitamente persistidos por corrida
+  - reuse de:
+    - `live_safety_summary()`
+    - `reconcile_orders()`
+    - `kill_switch_status()`
+    - `trade_cost_ledger`
+    - registry / capabilities / cost source freshness
+- API minima nueva:
+  - `GET /api/v1/validation/summary`
+  - `GET /api/v1/validation/runs`
+  - `GET /api/v1/validation/runs/{id}`
+  - `POST /api/v1/validation/evaluate`
+  - `GET /api/v1/validation/readiness`
+- Integracion reporting/execution:
+  - `validation` filtra el ledger a filas runtime de `execution_reality_*`, sin mezclar backfill historico ajeno a la validacion operativa
+  - `reporting/service.py` corrige el merge incremental de filas runtime para no perder fills previos en `upsert_execution_trade_rows(...)`
+- Validacion local de RTLOPS-36:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/validation/service.py rtlab_autotrader/rtlab_core/reporting/service.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/tests/test_validation_service.py rtlab_autotrader/tests/test_web_validation_api.py rtlab_autotrader/tests/test_reporting_bridge.py rtlab_autotrader/tests/test_policy_paths.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_validation_service.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_validation_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_reporting_bridge.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+  - nota operativa: `test_web_validation_api.py` y `test_web_execution_reality_api.py` tardan varios minutos porque recargan la app completa por caso
+
 ### RTLOPS-39 / RTLOPS-21 - Execution Reality + Live Safety - Parte 3.5
 - Kill switch operativo:
   - `ExecutionRealityService` agrega `trip_kill_switch()`, `reset_kill_switch()` y `kill_switch_status()` de servicio.

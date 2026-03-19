@@ -2,6 +2,42 @@
 
 Fecha: 2026-03-19
 
+## RTLOPS-36 - Validacion operativa `paper -> testnet -> canary` antes de live serio - 2026-03-19
+- [x] Agregar autoridad canonica nueva:
+  - `config/policies/validation_gates.yaml`
+- [x] Crear storage auditable para:
+  - `validation_runs`
+  - `validation_gate_results`
+  - `validation_stage_evidence`
+- [x] Implementar `ValidationService` para:
+  - consolidar metricas desde execution/reporting/registry
+  - emitir `PASS / HOLD / BLOCK`
+  - persistir evidence y gate results
+- [x] Cablear etapas y readiness:
+  - `PAPER`
+  - `TESTNET`
+  - `CANARY`
+  - `LIVE_SERIO` como destino no auto-activado
+- [x] Exponer API minima:
+  - `GET /api/v1/validation/summary`
+  - `GET /api/v1/validation/runs`
+  - `GET /api/v1/validation/runs/{id}`
+  - `POST /api/v1/validation/evaluate`
+  - `GET /api/v1/validation/readiness`
+- [x] Reutilizar execution/reporting existentes sin crear sistema paralelo.
+- [x] Corregir el merge incremental de filas runtime en `reporting/service.py` para preservar evidencia de fills de execution entre upserts sucesivos.
+- [x] Revalidar:
+  - `test_policy_paths.py`
+  - `test_validation_service.py`
+  - `test_web_validation_api.py`
+  - `test_reporting_bridge.py`
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
+- [ ] Deuda chica consciente fuera de RTLOPS-36:
+  - migrar `startup` FastAPI a lifespan;
+  - si en una iteracion futura hace falta promotion manual con firma/aprobacion, diseniarlo como capa operativa adicional y no como override silencioso del gate engine.
+
 ## Correctivo 3A de Execution Reality - 2026-03-19
 - [x] Eliminar bundles espejo completos en codigo para:
   - `execution_safety`
@@ -188,11 +224,11 @@ Fecha: 2026-03-19
   - kill switch operativo
   - live safety final
 
-## Siguiente subparte recomendada
-- [x] Ejecutar `Execution Reality + Live Safety - Parte 3.5` sobre la base ya corregida con `1A + 2A + 3A + 3.4`.
-- [ ] Siguiente bloque logico real:
-  - `RTLOPS-36` Validacion `paper -> testnet -> canary` antes de `live` serio.
-  - `RTLOPS-23` queda como seguimiento posterior para persistencia/clasificacion operativa mas fina de errores/reconcile.
+## Siguiente bloque logico real
+- [x] Ejecutar `RTLOPS-36` sobre la base ya cerrada hasta `3.5`.
+- [ ] Siguiente bloque logico real despues de RTLOPS-36:
+  - `RTLOPS-23` como seguimiento backend para persistencia/clasificacion operativa mas fina de errores, mismatch y estados de reconcile/live.
+  - `RTLOPS-24` queda como frente UI/operaciones posterior, no como siguiente inmediato.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

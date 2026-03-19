@@ -66,6 +66,7 @@ from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngin
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 from rtlab_core.types import OrderStatus, Side
 from rtlab_core.universe import InstrumentUniverseService
+from rtlab_core.validation import ValidationService, load_validation_gates_bundle
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
@@ -684,6 +685,13 @@ class ExecutionKillSwitchResetBody(BaseModel):
     reason: str = "manual_reset"
 
 
+class ValidationEvaluateBody(BaseModel):
+    stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
+    venue: str = "binance"
+    family: str | None = None
+    symbol: str | None = None
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -764,6 +772,7 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "reporting_exports": root / "reporting_exports.yaml",
         "execution_safety": root / "execution_safety.yaml",
         "execution_router": root / "execution_router.yaml",
+        "validation_gates": root / "validation_gates.yaml",
     }
 
 
@@ -779,6 +788,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     reporting_exports = bundle.get("reporting_exports") if isinstance(bundle.get("reporting_exports"), dict) else {}
     execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
     execution_router = bundle.get("execution_router") if isinstance(bundle.get("execution_router"), dict) else {}
+    validation_gates = bundle.get("validation_gates") if isinstance(bundle.get("validation_gates"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
@@ -790,6 +800,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     rexp = reporting_exports.get("reporting_exports") if isinstance(reporting_exports.get("reporting_exports"), dict) else {}
     exs = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
     exr = execution_router.get("execution_router") if isinstance(execution_router.get("execution_router"), dict) else {}
+    vg = validation_gates.get("validation_gates") if isinstance(validation_gates.get("validation_gates"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
@@ -824,6 +835,12 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         if isinstance(exr.get("first_iteration_supported_order_types"), dict)
         else {}
     )
+    vg_stages = vg.get("stages") if isinstance(vg.get("stages"), dict) else {}
+    vg_paper = vg_stages.get("paper") if isinstance(vg_stages.get("paper"), dict) else {}
+    vg_testnet = vg_stages.get("testnet") if isinstance(vg_stages.get("testnet"), dict) else {}
+    vg_canary = vg_stages.get("canary") if isinstance(vg_stages.get("canary"), dict) else {}
+    vg_blocks = vg.get("blocks") if isinstance(vg.get("blocks"), dict) else {}
+    vg_promotion = vg.get("promotion") if isinstance(vg.get("promotion"), dict) else {}
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -894,6 +911,12 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_kill_switch_auto_cancel_all": exs_kill.get("auto_cancel_all_on_trip"),
         "execution_router_families_enabled": sorted([name for name, enabled in exr_families.items() if enabled]),
         "execution_router_supported_order_types": exr_supported,
+        "validation_stage_order": vg_promotion.get("order") if isinstance(vg_promotion.get("order"), list) else [],
+        "validation_paper_min_orders": vg_paper.get("min_orders"),
+        "validation_testnet_min_orders": vg_testnet.get("min_orders"),
+        "validation_canary_min_orders": vg_canary.get("min_orders"),
+        "validation_block_if_policy_missing": vg_blocks.get("block_if_policy_missing"),
+        "validation_allow_manual_override": vg_blocks.get("allow_manual_override"),
     }
 
 
@@ -943,6 +966,32 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
                 "canonical_root": execution_bundle.get("canonical_root"),
                 "canonical_role": execution_bundle.get("canonical_role"),
                 "divergent_candidates": execution_bundle.get("divergent_candidates") or [],
+            }
+            continue
+        if name == "validation_gates":
+            validation_bundle = load_validation_gates_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if validation_bundle.get("errors"):
+                warnings.extend(str(row) for row in (validation_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = (
+                validation_bundle.get("validation_gates_bundle")
+                if isinstance(validation_bundle.get("validation_gates_bundle"), dict)
+                else {}
+            )
+            meta[name] = {
+                "path": str(validation_bundle.get("path") or path),
+                "source_root": str(validation_bundle.get("source_root") or root),
+                "exists": bool(validation_bundle.get("exists", False)),
+                "valid": bool(validation_bundle.get("valid", False)),
+                "source": str(validation_bundle.get("source") or ""),
+                "source_hash": str(validation_bundle.get("source_hash") or ""),
+                "policy_hash": str(validation_bundle.get("policy_hash") or ""),
+                "errors": list(validation_bundle.get("errors") or []),
+                "warnings": list(validation_bundle.get("warnings") or []),
+                "fallback_used": bool(validation_bundle.get("fallback_used", False)),
+                "selected_role": validation_bundle.get("selected_role"),
+                "canonical_root": validation_bundle.get("canonical_root"),
+                "canonical_role": validation_bundle.get("canonical_role"),
+                "divergent_candidates": validation_bundle.get("divergent_candidates") or [],
             }
             continue
         exists = path.exists()
@@ -2133,6 +2182,15 @@ class ConsoleStore:
             universe_service=self.instrument_universes,
             reporting_bridge_service=self.reporting_bridge,
             runs_loader=self.load_runs,
+        )
+        self.validation = ValidationService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            execution_service=self.execution_reality,
+            reporting_bridge_service=self.reporting_bridge,
+            instrument_registry_service=self.instrument_registry,
+            universe_service=self.instrument_universes,
         )
         self.instrument_registry_startup_sync: dict[str, Any] = {
             "ok": True,
@@ -9484,6 +9542,46 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/execution/live-safety/summary")
     def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.execution_reality.live_safety_summary()
+
+    @app.get("/api/v1/validation/summary")
+    def validation_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.validation.summary()
+
+    @app.get("/api/v1/validation/runs")
+    def validation_runs(
+        stage: str | None = Query(default=None),
+        result: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.validation.runs(limit=limit, offset=offset, stage=stage, result=result)
+
+    @app.get("/api/v1/validation/runs/{validation_run_id}")
+    def validation_run_detail(
+        validation_run_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.validation.run_detail(validation_run_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="validation_run_not_found")
+        return payload
+
+    @app.post("/api/v1/validation/evaluate")
+    def validation_evaluate(
+        body: ValidationEvaluateBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.validation.evaluate(
+            stage=body.stage,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.get("/api/v1/validation/readiness")
+    def validation_readiness(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.validation.readiness()
 
     def _refresh_reporting_views() -> None:
         try:

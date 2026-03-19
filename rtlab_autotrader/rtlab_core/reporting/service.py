@@ -908,12 +908,7 @@ class ReportingBridgeService:
         }
 
     def upsert_execution_trade_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        existing = [
-            row
-            for row in self.db.trade_rows()
-            if str((row.get("provenance") if isinstance(row.get("provenance"), dict) else {}).get("source_kind") or "")
-            not in {"execution_reality_fill", "execution_reality_runtime"}
-        ]
+        existing = self.db.trade_rows()
         merged = self._merge_trade_rows(existing, rows)
         snapshots = self._build_performance_snapshots(merged)
         cost_sources = self._cost_source_binding_rows()

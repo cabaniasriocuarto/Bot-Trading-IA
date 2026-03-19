@@ -4475,8 +4475,9 @@ class ExecutionRealityService:
             ],
         }
 
-    def live_safety_summary(self) -> dict[str, Any]:
-        reconcile_summary = self.reconcile_orders() if self.db.counts().get("execution_orders", 0) else None
+    def live_safety_summary(self, reconcile_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+        if reconcile_summary is None:
+            reconcile_summary = self.reconcile_orders() if self.db.counts().get("execution_orders", 0) else None
         parity = self.instrument_registry_service.live_parity_matrix() if self.instrument_registry_service is not None else {}
         supported_families = self._supported_live_families(parity)
         fee_details: list[dict[str, Any]] = []
