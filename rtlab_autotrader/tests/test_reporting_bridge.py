@@ -203,3 +203,55 @@ def test_reporting_bridge_exports_write_manifest_xlsx_and_pdf(tmp_path: Path) ->
 
     manifests = service.db.list_exports(limit=10)
     assert len(manifests) == 2
+
+
+def test_reporting_bridge_upserts_execution_trade_rows_without_erasing_backfill_rows(tmp_path: Path) -> None:
+    service = _service(tmp_path, [_run(run_id="BT-5", trades=[_trade(trade_id="tr-base")])])
+    service.refresh_materialized_views()
+
+    result = service.upsert_execution_trade_rows(
+        [
+            {
+                "trade_cost_id": "TCL-EXEC-1",
+                "trade_ref": "execution-fill-1",
+                "run_id": None,
+                "venue": "binance",
+                "family": "spot",
+                "environment": "live",
+                "symbol": "BTCUSDT",
+                "strategy_id": "STRAT-1",
+                "bot_id": "bot-1",
+                "executed_at": "2026-03-19T12:00:00+00:00",
+                "exchange_fee_estimated": 0.0,
+                "exchange_fee_realized": 0.25,
+                "fee_asset": "USDT",
+                "spread_estimated": 0.0,
+                "spread_realized": 0.1,
+                "slippage_estimated": 0.0,
+                "slippage_realized": 0.2,
+                "funding_estimated": 0.0,
+                "funding_realized": None,
+                "borrow_interest_estimated": 0.0,
+                "borrow_interest_realized": None,
+                "rebates_or_discounts": 0.0,
+                "total_cost_estimated": 0.0,
+                "total_cost_realized": 0.55,
+                "gross_pnl": 0.0,
+                "net_pnl": -0.55,
+                "cost_source": {"cost_classification": "mixed"},
+                "provenance": {"source_kind": "execution_reality_fill"},
+                "created_at": "2026-03-19T12:00:00+00:00",
+            }
+        ]
+    )
+
+    rows = service.db.trade_rows()
+    assert result["ok"] is True
+    assert result["trade_rows_upserted"] == 1
+    assert len(rows) == 2
+    assert any(row["trade_ref"] == "execution-fill-1" for row in rows)
+
+    service.refresh_materialized_views()
+    rows_after_refresh = service.db.trade_rows()
+    assert len(rows_after_refresh) == 2
+    assert any(row["trade_ref"] == "execution-fill-1" for row in rows_after_refresh)

@@ -97,6 +97,98 @@ Fecha de actualizacion: 2026-03-19
   - no toca execution reality;
   - no cambia la regla de `live_parity_base_ready`, solo limpia autoridad primaria, fallback y trazabilidad.
 
+## RTLOPS-21 Parte 3.4: Reconcile basico + ingestión de fills + estimated vs realized - 2026-03-19
+
+- Trazabilidad del bloque:
+  - issue operativa usada: `RTLOPS-21`
+  - rama incremental: `feature/execution-reality-live-safety-p34`
+  - base preservada sin reabrir bloques:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+- Autoridad canonica que gobierna esta subparte:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+  - `config/policies/instrument_registry.yaml`
+  - `config/policies/universes.yaml`
+  - `config/policies/cost_stack.yaml`
+- Endpoints nuevos/minimos cerrados en 3.4:
+  - `GET /api/v1/execution/reconcile/summary`
+  - `GET /api/v1/execution/orders/{id}` enriquecido con realized/reconcile/degraded mode
+
+### Alcance real cerrado en la parte 3.4
+
+- `ExecutionRealityService` ahora materializa reconcile base para:
+  - `execution_intent -> ack`
+  - `ack -> last order status`
+  - `order -> fills`
+  - `fills -> trade_cost_ledger / reporting bridge`
+  - `estimated -> realized`
+  - `local order state -> remote exchange state`
+- El reconcile persiste `execution_reconcile_events` reales con:
+  - `ack_missing`
+  - `fill_missing`
+  - `status_mismatch`
+  - `orphan_order`
+  - `cost_mismatch`
+- Reglas operativas explicitas:
+  - se respetan `order_ack_timeout_sec` y `fill_reconcile_timeout_sec` desde `execution_safety.yaml`
+  - si el stream privado no esta disponible o falla, execution entra en `degraded_mode` explicito y usa fallback REST controlado
+  - no se inventan fills ni realized cuando no existe evidencia remota/local suficiente
+
+### Ingestion base de eventos y fallback operativo
+
+- Spot:
+  - `executionReport` actua como fuente rapida para ack/status/fill
+  - si el estado no aparece o el stream esta degradado, execution consulta `query order / open orders / myTrades`
+- USDⓈ-M Futures:
+  - `ORDER_TRADE_UPDATE` actua como fuente rapida para ack/status/fill
+  - si el stream esta degradado o incompleto, execution consulta `query order / open orders / userTrades / income`
+- COIN-M Futures:
+  - `ORDER_TRADE_UPDATE` actua como fuente rapida para ack/status/fill
+  - si el stream esta degradado o incompleto, execution consulta `query order / open orders / userTrades / income`
+- Regla de diseño aplicada:
+  - `degraded_mode` queda visible en `order_detail` y en `reconcile/summary`; no se oculta ni se maquilla
+
+### Estimated vs realized y conexion con reporting bridge
+
+- `execution_fills` ahora preserva, cuando existe evidencia suficiente:
+  - `exchange_fee_realized`
+  - `commission_asset`
+  - `maker`
+  - `spread_realized`
+  - `slippage_realized`
+  - `funding_component`
+  - `borrow_interest_component`
+  - `gross_pnl`
+  - `net_pnl`
+  - `cost_source_json`
+  - `provenance_json`
+  - `provisional`
+  - `unresolved_components_json`
+- `ExecutionRealityService` no crea un ledger rival:
+  - materializa filas runtime-aware compatibles con `trade_cost_ledger`
+  - delega la consolidacion a `rtlab_autotrader/rtlab_core/reporting/service.py`
+  - preserva `policy_hash` y provenance tecnica por orden/fill
+- Regla vigente en `live`:
+  - si la policy exige fee source real y no existe evidencia valida, execution sigue fail-closed antes del submit;
+  - en reconcile/runtime no se inventan componentes realizados faltantes, se marcan como provisionales/no resueltos.
+
+### Limites conscientes de la parte 3.4
+
+- Esta subparte NO cierra todavia:
+  - kill switch final
+  - live safety final
+  - conditional/algo orders complejos
+  - trailing stops
+  - stop/take profit complejos
+- `3.4` deja cerrados reconcile base, fills runtime-aware y `estimated -> realized`;
+  `3.5` sigue siendo el bloque de kill switch operativo y live safety final.
+
 ## RTLOPS-21 Parte 3.3: Submit / query / cancel / cancel-all fase 1 - 2026-03-19
 
 - Trazabilidad del bloque:

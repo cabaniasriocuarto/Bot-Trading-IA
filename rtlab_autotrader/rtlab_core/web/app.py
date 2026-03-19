@@ -9441,6 +9441,10 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get("/api/v1/execution/reconcile/summary")
+    def execution_reconcile_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.reconcile_orders()
+
     @app.get("/api/v1/execution/live-safety/summary")
     def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.execution_reality.live_safety_summary()

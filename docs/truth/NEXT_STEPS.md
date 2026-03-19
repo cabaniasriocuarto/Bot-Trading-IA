@@ -177,16 +177,19 @@ Fecha: 2026-03-19
   - intents persistidos antes del submit
   - estados locales auditables
   - endpoints `/api/v1/execution/orders*`
-- [ ] Parte 3.4:
-  - reconcile basico
-  - fills -> reporting bridge
-  - estimated vs realized
+- [x] Parte 3.4:
+  - reconcile basico real
+  - ingestión base de `executionReport` / `ORDER_TRADE_UPDATE`
+  - fallback REST controlado con `degraded_mode` explicito
+  - fills -> reporting bridge / `trade_cost_ledger`
+  - estimated vs realized por orden/fill
+  - `GET /api/v1/execution/reconcile/summary`
 - [ ] Parte 3.5:
   - kill switch operativo
   - live safety final
 
 ## Siguiente subparte recomendada
-- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.4` sobre la base ya corregida con `1A + 2A + 3A`.
+- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.5` sobre la base ya corregida con `1A + 2A + 3A + 3.4`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

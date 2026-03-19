@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from rtlab_core.execution.reality import (
     ExecutionRealityService,
     clear_execution_policy_cache,
@@ -170,6 +172,7 @@ class _FakeReportingDB:
         self._family = family
         self._available = available
         self._fetched_at = fetched_at
+        self._trade_rows: list[dict[str, Any]] = []
 
     def cost_source_snapshots(self) -> list[dict[str, Any]]:
         if not self._available:
@@ -184,11 +187,16 @@ class _FakeReportingDB:
             }
         ]
 
+    def trade_rows(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self._trade_rows]
+
 
 class _FakeReportingBridge:
     def __init__(self, *, family: str, available: bool, fresh: bool, fetched_at: str | None = None) -> None:
         self.db = _FakeReportingDB(family=family, available=available, fetched_at=fetched_at or _iso_hours_ago(1))
         self._fresh = fresh
+        self._policy_hash = "cost-stack-policy-hash"
+        self._source_hash = "cost-stack-source-hash"
 
     def cost_stack(self) -> dict[str, Any]:
         return {
@@ -200,6 +208,32 @@ class _FakeReportingBridge:
             },
             "alerts": {"warn_if_fee_source_stale_hours_gt": 24},
         }
+
+    def cost_stack_bundle(self) -> dict[str, Any]:
+        return {
+            "policy_hash": self._policy_hash,
+            "source_hash": self._source_hash,
+            "valid": True,
+            "source": "config/policies/cost_stack.yaml",
+        }
+
+    def policy_source(self) -> dict[str, Any]:
+        return {
+            "cost_stack": {
+                "hash": self._source_hash,
+                "policy_hash": self._policy_hash,
+                "source": "config/policies/cost_stack.yaml",
+                "valid": True,
+            }
+        }
+
+    def upsert_execution_trade_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        merged = {str(row.get("trade_cost_id") or ""): dict(row) for row in self.db._trade_rows if str(row.get("trade_cost_id") or "")}
+        for row in rows:
+            merged[str(row.get("trade_cost_id") or "")] = dict(row)
+        self.db._trade_rows = list(merged.values())
+        self.db._trade_rows.sort(key=lambda row: (str(row.get("executed_at") or ""), str(row.get("trade_cost_id") or "")))
+        return {"ok": True, "trade_rows_upserted": len(rows), "trade_rows_total": len(self.db._trade_rows)}
 
     def _latest_cost_source_status(self, *, family: str) -> str:
         return "fresh" if self._fresh else "stale"
@@ -285,6 +319,73 @@ def _build_service(
         ),
         runs_loader=lambda: [],
     )
+
+
+def _seed_order(
+    service: ExecutionRealityService,
+    *,
+    family: str = "spot",
+    environment: str = "live",
+    mode: str | None = None,
+    symbol: str = "BTCUSDT",
+    side: str = "BUY",
+    order_type: str = "LIMIT",
+    quantity: float = 0.01,
+    price: float = 50000.0,
+    order_status: str = "NEW",
+    submitted_at: str | None = None,
+    acknowledged_at: str | None = None,
+    executed_qty: float | None = None,
+    cum_quote_qty: float | None = None,
+    estimated_fee: float = 0.25,
+    estimated_slippage_bps: float = 6.0,
+    estimated_total_cost: float = 0.75,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    intent = service.db.insert_intent(
+        {
+            "family": family,
+            "environment": environment,
+            "mode": mode or environment,
+            "strategy_id": "strat-1",
+            "bot_id": "bot-1",
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
+            "quantity": quantity,
+            "limit_price": price if order_type == "LIMIT" else None,
+            "requested_notional": quantity * price,
+            "estimated_fee": estimated_fee,
+            "estimated_slippage_bps": estimated_slippage_bps,
+            "estimated_total_cost": estimated_total_cost,
+            "preflight_status": "submitted",
+            "policy_hash": service.policy_hash(),
+            "submitted_at": submitted_at or _iso_hours_ago(1),
+            "raw_request_json": {
+                "market_snapshot": {"bid": price - 1.0, "ask": price + 1.0},
+                "price": price,
+            },
+        }
+    )
+    order = service.db.upsert_order(
+        {
+            "execution_intent_id": intent["execution_intent_id"],
+            "client_order_id": intent["client_order_id"],
+            "venue_order_id": "123456",
+            "symbol": symbol,
+            "family": family,
+            "environment": environment,
+            "order_status": order_status,
+            "submitted_at": submitted_at or _iso_hours_ago(1),
+            "acknowledged_at": acknowledged_at,
+            "price": price,
+            "orig_qty": quantity,
+            "executed_qty": executed_qty,
+            "cum_quote_qty": cum_quote_qty,
+            "raw_ack_json": {"side": side, "type": order_type, "symbol": symbol, "price": price, "origQty": quantity},
+            "raw_last_status_json": {"status": order_status, "symbol": symbol, "side": side},
+        }
+    )
+    return intent, order
 
 
 def _canonical_execution_policy_text(filename: str) -> str:
@@ -881,3 +982,264 @@ def test_create_order_live_fail_closed_when_fee_source_missing(tmp_path: Path) -
     assert result["execution_order_id"] is None
     assert result["fail_closed"] is True
     assert "fee_source_missing_in_live" in result["blocking_reasons"]
+
+
+def test_reconcile_ack_missing_generates_event(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        acknowledged_at=None,
+        submitted_at=_iso_hours_ago(1),
+    )
+
+    service._signed_request = lambda *args, **kwargs: (None, {"ok": False, "reason": "missing_credentials"})  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    events = service.db.list_reconcile_events(reconcile_type="ack_missing")
+
+    assert summary["ack_missing"] == 1
+    assert events
+    assert events[0]["execution_order_id"] == order["execution_order_id"]
+    assert events[0]["severity"] == "BLOCK"
+    assert events[0]["resolved"] is False
+
+
+def test_reconcile_fill_missing_generates_event(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.0",
+                "updateTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    events = service.db.list_reconcile_events(reconcile_type="fill_missing")
+
+    assert summary["fill_missing"] == 1
+    assert events
+    assert events[0]["execution_order_id"] == order["execution_order_id"]
+    assert events[0]["resolved"] is False
+
+
+def test_reconcile_status_mismatch_generates_resolved_event(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        acknowledged_at=_iso_hours_ago(1),
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "CANCELED",
+                "executedQty": "0",
+                "cummulativeQuoteQty": "0",
+                "updateTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    events = service.db.list_reconcile_events(reconcile_type="status_mismatch")
+    updated = service.db.order_by_id(str(order["execution_order_id"]))
+
+    assert summary["status_mismatches"] == 0
+    assert updated is not None
+    assert updated["order_status"] == "CANCELED"
+    assert events
+    assert events[0]["resolved"] is True
+    assert events[0]["details_json"]["local_status_before"] == "NEW"
+    assert events[0]["details_json"]["remote_status"] == "CANCELED"
+
+
+def test_reconcile_spot_rest_fallback_materializes_fill_and_reporting_row(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+        estimated_total_cost=1.0,
+    )
+    service.mark_user_stream_status(family="spot", environment="live", available=False, degraded_reason="rest_fallback")
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.01",
+                "updateTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 77,
+                    "orderId": 123456,
+                    "price": "50001.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.01",
+                    "commission": "0.25",
+                    "commissionAsset": "USDT",
+                    "time": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    "isMaker": False,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    detail = service.order_detail(str(order["execution_order_id"]))
+    ledger_rows = service.reporting_bridge_service.db.trade_rows()  # type: ignore[union-attr]
+
+    assert summary["degraded_mode"] is True
+    assert detail is not None
+    assert detail["degraded_mode"] is True
+    assert len(detail["fills"]) == 1
+    assert detail["realized_costs"]["exchange_fee_realized"] == pytest.approx(0.25)
+    assert detail["estimated_costs"]["total_cost_estimated"] == pytest.approx(1.0)
+    assert detail["realized_costs"]["cost_classification"] == "mixed"
+    assert ledger_rows
+    assert ledger_rows[0]["trade_ref"] == detail["fills"][0]["execution_fill_id"]
+
+
+def test_reconcile_futures_rest_fallback_materializes_funding_and_net_pnl(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    _, order = _seed_order(
+        service,
+        family="usdm_futures",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+        estimated_total_cost=1.2,
+    )
+    service.mark_user_stream_status(family="usdm_futures", environment="live", available=False, degraded_reason="rest_fallback")
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if endpoint.endswith("/fapi/v1/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cumQuote": "500.10",
+                "avgPrice": "50010.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/userTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 88,
+                    "orderId": 123456,
+                    "price": "50010.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.10",
+                    "commission": "0.12",
+                    "commissionAsset": "USDT",
+                    "realizedPnl": "5.0",
+                    "time": now_ms,
+                    "maker": False,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/income"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "incomeType": "FUNDING_FEE",
+                    "income": "-0.50",
+                    "time": now_ms,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    service.reconcile_orders()
+    detail = service.order_detail(str(order["execution_order_id"]))
+
+    assert detail is not None
+    assert len(detail["fills"]) == 1
+    assert detail["realized_costs"]["funding_realized"] == pytest.approx(0.5)
+    assert detail["gross_pnl"] == pytest.approx(5.0)
+    assert detail["net_pnl"] == pytest.approx(5.0 - detail["realized_costs"]["total_cost_realized"])
+    assert detail["fills"][0]["net_pnl"] == pytest.approx(detail["net_pnl"])
+
+
+def test_paper_submit_reconcile_materializes_fill(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    service.reconcile_orders()
+    detail = service.order_detail(str(result["execution_order_id"]))
+    ledger_rows = service.reporting_bridge_service.db.trade_rows()  # type: ignore[union-attr]
+
+    assert detail is not None
+    assert detail["order"]["order_status"] == "FILLED"
+    assert len(detail["fills"]) == 1
+    assert detail["realized_costs"]["cost_classification"] == "mixed"
+    assert ledger_rows

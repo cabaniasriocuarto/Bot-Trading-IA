@@ -484,3 +484,92 @@ def test_execution_orders_cancel_all_endpoint_cancels_symbol_orders(tmp_path: Pa
     assert res.status_code == 200, res.text
     payload = res.json()
     assert payload["canceled_count"] == 2
+
+
+def test_execution_order_detail_endpoint_exposes_fills_and_realized_costs(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+
+    created = client.post(
+        "/api/v1/execution/orders",
+        headers=_auth_headers(token),
+        json=_paper_execution_payload(order_type="MARKET", price=None),
+    ).json()
+
+    detail = client.get(
+        f"/api/v1/execution/orders/{created['execution_order_id']}",
+        headers=_auth_headers(token),
+    )
+
+    assert detail.status_code == 200, detail.text
+    payload = detail.json()
+    assert payload["intent"]["execution_intent_id"] == created["execution_intent_id"]
+    assert payload["order"]["execution_order_id"] == created["execution_order_id"]
+    assert len(payload["fills"]) == 1
+    assert isinstance(payload["reconcile_events"], list)
+    assert payload["estimated_costs"]["total_cost_estimated"] > 0
+    assert payload["realized_costs"]["cost_classification"] == "mixed"
+    assert payload["degraded_mode"] is False
+
+
+def test_execution_reconcile_summary_endpoint_reports_degraded_mode(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+
+    service = module.store.execution_reality
+    intent = service.db.insert_intent(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "limit_price": 50000.0,
+            "requested_notional": 500.0,
+            "estimated_fee": 0.25,
+            "estimated_slippage_bps": 6.0,
+            "estimated_total_cost": 0.75,
+            "preflight_status": "submitted",
+            "submitted_at": "2026-03-19T10:00:00+00:00",
+            "policy_hash": service.policy_hash(),
+            "raw_request_json": {"market_snapshot": {"bid": 50000.0, "ask": 50001.0}},
+        }
+    )
+    service.db.upsert_order(
+        {
+            "execution_intent_id": intent["execution_intent_id"],
+            "client_order_id": intent["client_order_id"],
+            "venue_order_id": "123456",
+            "symbol": "BTCUSDT",
+            "family": "spot",
+            "environment": "live",
+            "order_status": "NEW",
+            "submitted_at": "2026-03-19T10:00:00+00:00",
+            "acknowledged_at": None,
+            "price": 50000.0,
+            "orig_qty": 0.01,
+            "raw_ack_json": {"side": "BUY", "type": "LIMIT", "symbol": "BTCUSDT", "price": 50000.0, "origQty": 0.01},
+            "raw_last_status_json": {"status": "NEW", "symbol": "BTCUSDT"},
+        }
+    )
+    service.mark_user_stream_status(family="spot", environment="live", available=False, degraded_reason="rest_fallback")
+    service._signed_request = lambda *args, **kwargs: (None, {"ok": False, "reason": "missing_credentials"})  # type: ignore[method-assign]
+
+    res = client.get("/api/v1/execution/reconcile/summary", headers=_auth_headers(token))
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["degraded_mode"] is True
+    assert payload["ack_missing"] == 1
+    assert payload["policy_source"]["execution_safety"]["source_hash"]

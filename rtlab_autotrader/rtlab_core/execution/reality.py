@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from functools import lru_cache
@@ -161,8 +162,10 @@ def _json_dumps(value: Any) -> str:
 
 
 def _json_loads(value: Any, default: Any) -> Any:
-    if value in {None, ""}:
+    if value is None or value == "":
         return copy.deepcopy(default)
+    if isinstance(value, (dict, list, int, float, bool)):
+        return copy.deepcopy(value)
     try:
         return json.loads(str(value))
     except Exception:
@@ -267,8 +270,13 @@ def _hydrate_fill_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     out = copy.deepcopy(payload)
     out["raw_fill_json"] = _json_loads(out.get("raw_fill_json"), {})
+    out["cost_source_json"] = _json_loads(out.get("cost_source_json"), {})
+    out["provenance_json"] = _json_loads(out.get("provenance_json"), {})
+    out["unresolved_components_json"] = _json_loads(out.get("unresolved_components_json"), [])
     if out.get("maker") is not None:
         out["maker"] = _bool(out.get("maker"))
+    if out.get("provisional") is not None:
+        out["provisional"] = _bool(out.get("provisional"))
     return out
 
 
@@ -697,6 +705,15 @@ class ExecutionRealityDB:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    def _ensure_column(self, conn: sqlite3.Connection, table_name: str, column_name: str, ddl: str) -> None:
+        if column_name in self._table_columns(conn, table_name):
+            return
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
+
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(
@@ -782,9 +799,18 @@ class ExecutionRealityDB:
                   maker INTEGER,
                   funding_component REAL,
                   borrow_interest_component REAL,
+                  spread_realized REAL,
+                  slippage_realized REAL,
+                  gross_pnl REAL,
+                  net_pnl REAL,
+                  cost_source_json TEXT NOT NULL DEFAULT '{}',
+                  provenance_json TEXT NOT NULL DEFAULT '{}',
+                  provisional INTEGER NOT NULL DEFAULT 0,
+                  unresolved_components_json TEXT NOT NULL DEFAULT '[]',
                   raw_fill_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_execution_fills_fill_time ON execution_fills(fill_time DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_fills_trade ON execution_fills(execution_order_id, venue_trade_id);
 
                 CREATE TABLE IF NOT EXISTS execution_reconcile_events (
                   reconcile_event_id TEXT PRIMARY KEY,
@@ -816,6 +842,14 @@ class ExecutionRealityDB:
                 CREATE INDEX IF NOT EXISTS idx_kill_switch_events_created_at ON kill_switch_events(created_at DESC);
                 """
             )
+            self._ensure_column(conn, "execution_fills", "spread_realized", "REAL")
+            self._ensure_column(conn, "execution_fills", "slippage_realized", "REAL")
+            self._ensure_column(conn, "execution_fills", "gross_pnl", "REAL")
+            self._ensure_column(conn, "execution_fills", "net_pnl", "REAL")
+            self._ensure_column(conn, "execution_fills", "cost_source_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(conn, "execution_fills", "provenance_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(conn, "execution_fills", "provisional", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "execution_fills", "unresolved_components_json", "TEXT NOT NULL DEFAULT '[]'")
 
     def table_names(self) -> list[str]:
         with self._connect() as conn:
@@ -1091,6 +1125,17 @@ class ExecutionRealityDB:
         return _hydrate_order_row(_row_to_dict(stored) or row) or row
 
     def insert_fill(self, payload: dict[str, Any]) -> dict[str, Any]:
+        venue_trade_id = payload.get("venue_trade_id")
+        if not payload.get("execution_fill_id"):
+            dedupe_key = (
+                str(payload.get("execution_order_id") or ""),
+                str(venue_trade_id or ""),
+                str(payload.get("fill_time") or ""),
+                str(payload.get("price") or ""),
+                str(payload.get("qty") or ""),
+            )
+            payload = copy.deepcopy(payload)
+            payload["execution_fill_id"] = f"FILL-{hashlib.sha256('|'.join(dedupe_key).encode('utf-8')).hexdigest()[:16].upper()}"
         row = {
             "execution_fill_id": str(payload.get("execution_fill_id") or uuid4()),
             "execution_order_id": str(payload.get("execution_order_id") or ""),
@@ -1107,19 +1152,31 @@ class ExecutionRealityDB:
             "maker": _db_bool(payload.get("maker")),
             "funding_component": payload.get("funding_component"),
             "borrow_interest_component": payload.get("borrow_interest_component"),
+            "spread_realized": payload.get("spread_realized"),
+            "slippage_realized": payload.get("slippage_realized"),
+            "gross_pnl": payload.get("gross_pnl"),
+            "net_pnl": payload.get("net_pnl"),
+            "cost_source_json": _json_dumps(payload.get("cost_source_json") or {}),
+            "provenance_json": _json_dumps(payload.get("provenance_json") or {}),
+            "provisional": _db_bool(payload.get("provisional", False)) or 0,
+            "unresolved_components_json": _json_dumps(payload.get("unresolved_components_json") or []),
             "raw_fill_json": _json_dumps(payload.get("raw_fill_json") or {}),
         }
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO execution_fills (
+                INSERT OR REPLACE INTO execution_fills (
                   execution_fill_id, execution_order_id, venue_trade_id, fill_time, symbol, family,
                   price, qty, quote_qty, commission, commission_asset, realized_pnl, maker,
-                  funding_component, borrow_interest_component, raw_fill_json
+                  funding_component, borrow_interest_component, spread_realized, slippage_realized,
+                  gross_pnl, net_pnl, cost_source_json, provenance_json, provisional,
+                  unresolved_components_json, raw_fill_json
                 ) VALUES (
                   :execution_fill_id, :execution_order_id, :venue_trade_id, :fill_time, :symbol, :family,
                   :price, :qty, :quote_qty, :commission, :commission_asset, :realized_pnl, :maker,
-                  :funding_component, :borrow_interest_component, :raw_fill_json
+                  :funding_component, :borrow_interest_component, :spread_realized, :slippage_realized,
+                  :gross_pnl, :net_pnl, :cost_source_json, :provenance_json, :provisional,
+                  :unresolved_components_json, :raw_fill_json
                 )
                 """,
                 row,
@@ -1129,6 +1186,32 @@ class ExecutionRealityDB:
                 (row["execution_fill_id"],),
             ).fetchone()
         return _hydrate_fill_row(_row_to_dict(stored) or row) or row
+
+    def list_reconcile_events(
+        self,
+        *,
+        resolved: bool | None = None,
+        reconcile_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if resolved is not None:
+            clauses.append("resolved = ?")
+            params.append(1 if resolved else 0)
+        if reconcile_type:
+            clauses.append("reconcile_type = ?")
+            params.append(str(reconcile_type))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_reconcile_events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC, reconcile_event_id DESC
+                """,
+                tuple(params),
+            ).fetchall()
+        return [_hydrate_reconcile_row(_row_to_dict(row)) or {} for row in rows]
 
     def insert_reconcile_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         reconcile_type = str(payload.get("reconcile_type") or "status_mismatch")
@@ -1196,16 +1279,44 @@ class ExecutionRealityDB:
         return [_hydrate_reconcile_row(_row_to_dict(row)) or {} for row in rows]
 
     def unresolved_reconcile_events(self) -> list[dict[str, Any]]:
+        return self.list_reconcile_events(resolved=False)
+
+    def resolve_reconcile_events(
+        self,
+        *,
+        reconcile_type: str | None = None,
+        execution_order_id: str | None = None,
+        client_order_id: str | None = None,
+        family: str | None = None,
+        environment: str | None = None,
+    ) -> int:
+        clauses = ["resolved = 0"]
+        params: list[Any] = []
+        if reconcile_type:
+            clauses.append("reconcile_type = ?")
+            params.append(str(reconcile_type))
+        if execution_order_id:
+            clauses.append("execution_order_id = ?")
+            params.append(str(execution_order_id))
+        if client_order_id:
+            clauses.append("client_order_id = ?")
+            params.append(str(client_order_id))
+        if family:
+            clauses.append("family = ?")
+            params.append(str(family))
+        if environment:
+            clauses.append("environment = ?")
+            params.append(str(environment))
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM execution_reconcile_events
-                WHERE resolved = 0
-                ORDER BY created_at DESC
-                """
-            ).fetchall()
-        return [_hydrate_reconcile_row(_row_to_dict(row)) or {} for row in rows]
+            cursor = conn.execute(
+                f"""
+                UPDATE execution_reconcile_events
+                SET resolved = 1, resolved_at = ?
+                WHERE {' AND '.join(clauses)}
+                """,
+                tuple([utc_now_iso(), *params]),
+            )
+            return int(cursor.rowcount or 0)
 
     def trip_kill_switch(
         self,
@@ -1720,21 +1831,28 @@ class ExecutionRealityService:
             ("spot", "open_orders"): "/api/v3/openOrders",
             ("spot", "cancel"): "/api/v3/order",
             ("spot", "cancel_all"): "/api/v3/openOrders",
+            ("spot", "my_trades"): "/api/v3/myTrades",
             ("margin", "submit"): "/sapi/v1/margin/order",
             ("margin", "query"): "/sapi/v1/margin/order",
             ("margin", "open_orders"): "/sapi/v1/margin/openOrders",
             ("margin", "cancel"): "/sapi/v1/margin/order",
             ("margin", "cancel_all"): "/sapi/v1/margin/openOrders",
+            ("margin", "my_trades"): "/sapi/v1/margin/myTrades",
+            ("margin", "interest_history"): "/sapi/v1/margin/interestHistory",
             ("usdm_futures", "submit"): "/fapi/v1/order",
             ("usdm_futures", "query"): "/fapi/v1/order",
             ("usdm_futures", "open_orders"): "/fapi/v1/openOrders",
             ("usdm_futures", "cancel"): "/fapi/v1/order",
             ("usdm_futures", "cancel_all"): "/fapi/v1/allOpenOrders",
+            ("usdm_futures", "user_trades"): "/fapi/v1/userTrades",
+            ("usdm_futures", "income"): "/fapi/v1/income",
             ("coinm_futures", "submit"): "/dapi/v1/order",
             ("coinm_futures", "query"): "/dapi/v1/order",
             ("coinm_futures", "open_orders"): "/dapi/v1/openOrders",
             ("coinm_futures", "cancel"): "/dapi/v1/order",
             ("coinm_futures", "cancel_all"): "/dapi/v1/allOpenOrders",
+            ("coinm_futures", "user_trades"): "/dapi/v1/userTrades",
+            ("coinm_futures", "income"): "/dapi/v1/income",
         }
         path = mapping.get((_normalize_family(family), str(operation).strip().lower()))
         if not path:
@@ -1859,13 +1977,28 @@ class ExecutionRealityService:
         payload = ack_payload if isinstance(ack_payload, dict) else {}
         current = existing or {}
         raw_last = payload or current.get("raw_last_status_json") or {}
+        executed_qty = _first_number(payload.get("executedQty"), payload.get("z"), current.get("executed_qty")) or 0.0
+        cum_quote_qty = _first_number(payload.get("cummulativeQuoteQty"), payload.get("cumQuote"), payload.get("Z"), payload.get("cumQuoteQty"), current.get("cum_quote_qty")) or 0.0
+        avg_fill_price = _first_number(payload.get("avgPrice"), payload.get("ap"), current.get("avg_fill_price"))
+        if avg_fill_price is None and executed_qty > 0 and cum_quote_qty > 0:
+            avg_fill_price = cum_quote_qty / executed_qty
         order_status = str(
             payload.get("status")
+            or payload.get("X")
             or raw_last.get("status")
+            or raw_last.get("X")
             or current.get("order_status")
             or ("CANCELED" if canceled else "NEW")
         ).upper()
-        ack_time = acknowledged_at or _ms_to_iso(payload.get("updateTime")) or _ms_to_iso(payload.get("transactTime")) or current.get("acknowledged_at") or submitted_at
+        ack_time = (
+            acknowledged_at
+            or _ms_to_iso(payload.get("updateTime"))
+            or _ms_to_iso(payload.get("transactTime"))
+            or _ms_to_iso(payload.get("T"))
+            or _ms_to_iso(payload.get("E"))
+            or current.get("acknowledged_at")
+            or submitted_at
+        )
         canceled_at = (
             utc_now_iso()
             if canceled or order_status == "CANCELED"
@@ -1874,10 +2007,12 @@ class ExecutionRealityService:
         return {
             "execution_order_id": str(current.get("execution_order_id") or execution_order_id),
             "execution_intent_id": execution_intent_id,
-            "venue_order_id": str(payload.get("orderId") or current.get("venue_order_id") or "") or None,
+            "venue_order_id": str(payload.get("orderId") or payload.get("i") or current.get("venue_order_id") or "") or None,
             "client_order_id": str(
                 payload.get("clientOrderId")
+                or payload.get("c")
                 or payload.get("origClientOrderId")
+                or payload.get("C")
                 or current.get("client_order_id")
                 or client_order_id
             ),
@@ -1885,20 +2020,20 @@ class ExecutionRealityService:
             "family": family,
             "environment": environment,
             "order_status": order_status,
-            "execution_type_last": str(payload.get("executionType") or current.get("execution_type_last") or order_status),
+            "execution_type_last": str(payload.get("executionType") or payload.get("x") or current.get("execution_type_last") or order_status),
             "submitted_at": str(current.get("submitted_at") or submitted_at),
             "acknowledged_at": ack_time,
             "canceled_at": canceled_at,
             "expired_at": current.get("expired_at"),
             "reduce_only": current.get("reduce_only") if current.get("reduce_only") is not None else preview.get("reduce_only"),
-            "tif": str(payload.get("timeInForce") or preview.get("time_in_force") or current.get("tif") or "") or None,
-            "price": _first_number(payload.get("price"), preview.get("limit_price"), current.get("price")),
-            "orig_qty": _first_number(payload.get("origQty"), preview.get("quantity"), current.get("orig_qty")),
-            "executed_qty": _first_number(payload.get("executedQty"), current.get("executed_qty")) or 0.0,
-            "cum_quote_qty": _first_number(payload.get("cummulativeQuoteQty"), payload.get("cumQuote"), current.get("cum_quote_qty")) or 0.0,
-            "avg_fill_price": _first_number(payload.get("avgPrice"), current.get("avg_fill_price")),
-            "reject_code": payload.get("code") or current.get("reject_code"),
-            "reject_reason": payload.get("msg") or current.get("reject_reason"),
+            "tif": str(payload.get("timeInForce") or payload.get("f") or preview.get("time_in_force") or current.get("tif") or "") or None,
+            "price": _first_number(payload.get("price"), payload.get("p"), preview.get("limit_price"), current.get("price")),
+            "orig_qty": _first_number(payload.get("origQty"), payload.get("q"), preview.get("quantity"), current.get("orig_qty")),
+            "executed_qty": executed_qty,
+            "cum_quote_qty": cum_quote_qty,
+            "avg_fill_price": avg_fill_price,
+            "reject_code": payload.get("code") or payload.get("r") or current.get("reject_code"),
+            "reject_reason": payload.get("msg") or payload.get("r") or current.get("reject_reason"),
             "raw_ack_json": payload if payload else current.get("raw_ack_json") or {},
             "raw_last_status_json": raw_last,
         }
@@ -1918,6 +2053,1027 @@ class ExecutionRealityService:
             "transactTime": int(_parse_ts(submitted_at).timestamp() * 1000) if _parse_ts(submitted_at) else int(time.time() * 1000),
             "source": "paper_local",
         }
+
+    def _reconciliation_policy(self) -> dict[str, Any]:
+        payload = self.safety_policy().get("reconciliation")
+        return payload if isinstance(payload, dict) else {}
+
+    def _stream_state(self, family: str, environment: str) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        if normalized_environment not in {"live", "testnet"}:
+            return {
+                "available": True,
+                "degraded_mode": False,
+                "reason": "not_required",
+                "updated_at": None,
+            }
+        cached = copy.deepcopy(self._user_stream_status.get((normalized_family, normalized_environment)) or {})
+        if not cached:
+            return {
+                "available": False,
+                "degraded_mode": True,
+                "reason": "stream_status_unknown",
+                "updated_at": None,
+            }
+        return {
+            "available": _bool(cached.get("available")),
+            "degraded_mode": _bool(cached.get("degraded_mode")),
+            "reason": str(cached.get("reason") or ("ok" if _bool(cached.get("available")) else "stream_unavailable")),
+            "updated_at": cached.get("updated_at"),
+        }
+
+    def _cost_stack_policy_hash(self) -> str:
+        if self.reporting_bridge_service is None:
+            return ""
+        if hasattr(self.reporting_bridge_service, "cost_stack_bundle"):
+            try:
+                bundle = self.reporting_bridge_service.cost_stack_bundle()
+            except Exception:
+                bundle = {}
+            if isinstance(bundle, dict):
+                return str(bundle.get("policy_hash") or bundle.get("source_hash") or "")
+        if hasattr(self.reporting_bridge_service, "policy_source"):
+            try:
+                source = self.reporting_bridge_service.policy_source()
+            except Exception:
+                source = {}
+            if isinstance(source, dict):
+                cost_stack = source.get("cost_stack") if isinstance(source.get("cost_stack"), dict) else {}
+                return str(cost_stack.get("policy_hash") or cost_stack.get("hash") or "")
+        return ""
+
+    def _quote_reference_for_order(self, order: dict[str, Any], intent: dict[str, Any] | None) -> dict[str, Any]:
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        symbol = _canonical_symbol(order.get("symbol"))
+        request = (intent or {}).get("raw_request_json") if isinstance((intent or {}).get("raw_request_json"), dict) else {}
+        market_snapshot = request.get("market_snapshot") if isinstance(request.get("market_snapshot"), dict) else {}
+        cached = self._quote_snapshot(family, environment, symbol)
+        bid = _first_number((market_snapshot or {}).get("bid"), cached.get("bid"))
+        ask = _first_number((market_snapshot or {}).get("ask"), cached.get("ask"))
+        mid = ((bid + ask) / 2.0) if bid is not None and ask is not None else None
+        side = str((intent or {}).get("side") or order.get("raw_ack_json", {}).get("side") or "").upper()
+        best_quote = ask if side == "BUY" else bid
+        preview_price = _first_number(
+            (intent or {}).get("limit_price"),
+            request.get("price"),
+            (order.get("raw_ack_json") if isinstance(order.get("raw_ack_json"), dict) else {}).get("price"),
+            order.get("price"),
+        )
+        if preview_price is None:
+            preview_price = best_quote or mid
+        return {
+            "bid": bid,
+            "ask": ask,
+            "mid": mid,
+            "best_quote": best_quote,
+            "preview_price": preview_price,
+        }
+
+    def _normalize_trade_payload(
+        self,
+        *,
+        family: str,
+        order: dict[str, Any],
+        row: dict[str, Any],
+        source_kind: str,
+    ) -> dict[str, Any] | None:
+        symbol = _canonical_symbol(row.get("symbol") or row.get("s") or order.get("symbol"))
+        price = _first_number(row.get("price"), row.get("L"), row.get("p"), row.get("ap"))
+        qty = _first_number(row.get("qty"), row.get("l"), row.get("lastFilledQty"), row.get("q"))
+        quote_qty = _first_number(
+            row.get("quoteQty"),
+            row.get("Y"),
+            row.get("lastQuoteQty"),
+            row.get("baseQty"),
+        )
+        if quote_qty is None and price is not None and qty is not None:
+            quote_qty = price * qty
+        if price is None or qty is None or qty <= 0:
+            return None
+        fill_time = (
+            _ms_to_iso(row.get("time"))
+            or _ms_to_iso(row.get("T"))
+            or _ms_to_iso(row.get("transactTime"))
+            or _ms_to_iso(row.get("updateTime"))
+            or utc_now_iso()
+        )
+        maker = row.get("maker")
+        if maker is None:
+            maker = row.get("m")
+        if maker is None:
+            maker = row.get("isMaker")
+        return {
+            "venue_trade_id": str(row.get("id") or row.get("t") or row.get("tradeId") or "").strip() or None,
+            "venue_order_id": str(row.get("orderId") or row.get("i") or order.get("venue_order_id") or "").strip() or None,
+            "fill_time": fill_time,
+            "symbol": symbol,
+            "family": _normalize_family(family),
+            "price": price,
+            "qty": qty,
+            "quote_qty": quote_qty,
+            "commission": _safe_float(_first_number(row.get("commission"), row.get("n"), 0.0), 0.0),
+            "commission_asset": str(row.get("commissionAsset") or row.get("N") or row.get("feeAsset") or "").strip() or None,
+            "realized_pnl": _first_number(row.get("realizedPnl"), row.get("rp")),
+            "maker": None if maker is None else _bool(maker),
+            "raw_fill_json": copy.deepcopy(row),
+            "source_kind": source_kind,
+        }
+
+    def _fetch_remote_trade_rows(self, order: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        params: dict[str, Any] = {"symbol": _canonical_symbol(order.get("symbol"))}
+        if order.get("venue_order_id"):
+            params["orderId"] = order.get("venue_order_id")
+        operation = "my_trades" if family in {"spot", "margin"} else "user_trades"
+        payload, meta = self._signed_request(
+            "GET",
+            self._execution_endpoint(family, environment, operation),
+            family=family,
+            environment=environment,
+            params=params,
+        )
+        rows = payload if isinstance(payload, list) else []
+        normalized = [
+            normalized_row
+            for row in rows
+            if isinstance(row, dict)
+            for normalized_row in [self._normalize_trade_payload(family=family, order=order, row=row, source_kind=f"{operation}_rest")]
+            if normalized_row is not None
+        ]
+        return normalized, meta
+
+    def _fetch_remote_income_rows(self, order: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        if family not in {"usdm_futures", "coinm_futures"}:
+            return [], {"ok": True, "reason": "not_applicable"}
+        payload, meta = self._signed_request(
+            "GET",
+            self._execution_endpoint(family, environment, "income"),
+            family=family,
+            environment=environment,
+            params={"symbol": _canonical_symbol(order.get("symbol")), "limit": 50},
+        )
+        rows = payload if isinstance(payload, list) else []
+        return [copy.deepcopy(row) for row in rows if isinstance(row, dict)], meta
+
+    def _fetch_margin_interest_rows(self, order: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        if family != "margin":
+            return [], {"ok": True, "reason": "not_applicable"}
+        instrument = self._instrument_row(family, order.get("symbol")) or {}
+        candidate_assets = [
+            str(asset).strip().upper()
+            for asset in (
+                instrument.get("margin_asset"),
+                instrument.get("quote_asset"),
+                instrument.get("base_asset"),
+            )
+            if str(asset or "").strip()
+        ]
+        rows: list[dict[str, Any]] = []
+        last_meta: dict[str, Any] = {"ok": True, "reason": "not_available"}
+        for asset in list(dict.fromkeys(candidate_assets)):
+            payload, meta = self._signed_request(
+                "GET",
+                self._execution_endpoint(family, environment, "interest_history"),
+                family=family,
+                environment=environment,
+                params={"asset": asset, "size": 50},
+            )
+            last_meta = meta
+            if isinstance(payload, list):
+                rows.extend(copy.deepcopy(row) for row in payload if isinstance(row, dict))
+        return rows, last_meta
+
+    def _distributed_component_map(
+        self,
+        fills: list[dict[str, Any]],
+        *,
+        total_component: float | None,
+    ) -> dict[str, float | None]:
+        if total_component is None or not fills:
+            return {}
+        weights: list[float] = []
+        for row in fills:
+            weight = abs(_safe_float(row.get("quote_qty"), 0.0))
+            if weight <= 0:
+                weight = abs(_safe_float(row.get("price"), 0.0) * _safe_float(row.get("qty"), 0.0))
+            if weight <= 0:
+                weight = 1.0
+            weights.append(weight)
+        total_weight = sum(weights)
+        if total_weight <= 0:
+            total_weight = float(len(fills))
+        distributed: dict[str, float | None] = {}
+        for idx, row in enumerate(fills):
+            share = (weights[idx] / total_weight) if total_weight > 0 else (1.0 / len(fills))
+            distributed[str(row.get("execution_fill_id") or row.get("venue_trade_id") or idx)] = float(total_component) * share
+        return distributed
+
+    def _futures_income_total(self, order: dict[str, Any], income_rows: list[dict[str, Any]]) -> float | None:
+        if not income_rows:
+            return None
+        symbol = _canonical_symbol(order.get("symbol"))
+        submitted_dt = _parse_ts(order.get("submitted_at")) or _utc_now()
+        cutoff_before = submitted_dt.timestamp() - (12 * 3600)
+        cutoff_after = submitted_dt.timestamp() + (12 * 3600)
+        total = 0.0
+        matched = False
+        for row in income_rows:
+            if _canonical_symbol(row.get("symbol")) != symbol:
+                continue
+            income_type = str(row.get("incomeType") or "").upper()
+            if income_type != "FUNDING_FEE":
+                continue
+            row_time = _first_number(row.get("time"))
+            if row_time is not None:
+                row_ts = float(row_time) / 1000.0
+                if row_ts < cutoff_before or row_ts > cutoff_after:
+                    continue
+            total += -_safe_float(_first_number(row.get("income"), row.get("incomeAmount"), 0.0), 0.0)
+            matched = True
+        return total if matched else None
+
+    def _margin_borrow_total(self, order: dict[str, Any], interest_rows: list[dict[str, Any]]) -> float | None:
+        if not interest_rows:
+            return None
+        submitted_dt = _parse_ts(order.get("submitted_at")) or _utc_now()
+        cutoff_before = submitted_dt.timestamp() - (12 * 3600)
+        cutoff_after = submitted_dt.timestamp() + (12 * 3600)
+        total = 0.0
+        matched = False
+        for row in interest_rows:
+            interest_time = _first_number(row.get("interestAccuredTime"), row.get("timestamp"), row.get("createdTime"))
+            if interest_time is not None:
+                row_ts = float(interest_time) / 1000.0
+                if row_ts < cutoff_before or row_ts > cutoff_after:
+                    continue
+            interest_value = _first_number(row.get("interest"), row.get("interestAccrued"), row.get("interestAccured"))
+            if interest_value is None:
+                continue
+            total += float(interest_value)
+            matched = True
+        return total if matched else None
+
+    def _fill_payload_from_trade(
+        self,
+        *,
+        order: dict[str, Any],
+        intent: dict[str, Any] | None,
+        trade: dict[str, Any],
+        event_source: str,
+        degraded_mode: bool,
+        funding_component: float | None = None,
+        borrow_interest_component: float | None = None,
+    ) -> dict[str, Any]:
+        family = _normalize_family(order.get("family"))
+        side = str((intent or {}).get("side") or (order.get("raw_ack_json") if isinstance(order.get("raw_ack_json"), dict) else {}).get("side") or "").upper()
+        quote_reference = self._quote_reference_for_order(order, intent)
+        qty = _safe_float(trade.get("qty"), 0.0)
+        price = _safe_float(trade.get("price"), 0.0)
+        quote_qty = _first_number(trade.get("quote_qty"))
+        if quote_qty is None and qty > 0 and price > 0:
+            quote_qty = qty * price
+        best_quote = _first_number(quote_reference.get("best_quote"))
+        mid = _first_number(quote_reference.get("mid"))
+        preview_price = _first_number(quote_reference.get("preview_price"), price)
+        spread_realized = None
+        if mid is not None and best_quote is not None and qty > 0:
+            spread_realized = abs(best_quote - mid) * qty
+        slippage_reference = best_quote if best_quote is not None else preview_price
+        slippage_realized = None
+        if slippage_reference is not None and qty > 0:
+            if side == "SELL":
+                slippage_realized = max(float(slippage_reference) - price, 0.0) * qty
+            else:
+                slippage_realized = max(price - float(slippage_reference), 0.0) * qty
+        commission = _safe_float(trade.get("commission"), 0.0)
+        gross_pnl = _first_number(trade.get("realized_pnl"))
+        total_realized_cost = (
+            commission
+            + _safe_float(spread_realized, 0.0)
+            + _safe_float(slippage_realized, 0.0)
+            + _safe_float(funding_component, 0.0)
+            + _safe_float(borrow_interest_component, 0.0)
+        )
+        net_pnl = None if gross_pnl is None else float(gross_pnl) - total_realized_cost
+        unresolved_components: list[str] = []
+        if family in {"usdm_futures", "coinm_futures"} and funding_component is None:
+            unresolved_components.append("funding_realized")
+        if family == "margin" and borrow_interest_component is None:
+            unresolved_components.append("borrow_interest_realized")
+        provisional = bool(unresolved_components)
+        return {
+            "execution_fill_id": trade.get("execution_fill_id"),
+            "execution_order_id": str(order.get("execution_order_id")),
+            "venue_trade_id": trade.get("venue_trade_id"),
+            "fill_time": trade.get("fill_time"),
+            "symbol": _canonical_symbol(trade.get("symbol") or order.get("symbol")),
+            "family": family,
+            "price": price,
+            "qty": qty,
+            "quote_qty": quote_qty,
+            "commission": commission,
+            "commission_asset": trade.get("commission_asset"),
+            "realized_pnl": gross_pnl,
+            "maker": trade.get("maker"),
+            "funding_component": funding_component,
+            "borrow_interest_component": borrow_interest_component,
+            "spread_realized": spread_realized,
+            "slippage_realized": slippage_realized,
+            "gross_pnl": gross_pnl,
+            "net_pnl": net_pnl,
+            "cost_source_json": {
+                "source_kind": event_source,
+                "degraded_mode": degraded_mode,
+                "execution_policy_hash": self.policy_hash(),
+                "cost_stack_policy_hash": self._cost_stack_policy_hash(),
+                "reference": {
+                    "preview_price": preview_price,
+                    "best_quote": best_quote,
+                    "mid": mid,
+                },
+            },
+            "provenance_json": {
+                "execution_intent_id": (intent or {}).get("execution_intent_id"),
+                "execution_order_id": order.get("execution_order_id"),
+                "client_order_id": order.get("client_order_id"),
+                "venue_order_id": order.get("venue_order_id"),
+                "venue_trade_id": trade.get("venue_trade_id"),
+                "source_kind": "execution_reality_fill",
+                "event_source": event_source,
+                "policy_hash": self.policy_hash(),
+            },
+            "provisional": provisional,
+            "unresolved_components_json": unresolved_components,
+            "raw_fill_json": trade.get("raw_fill_json") or {},
+        }
+
+    def _rebuild_order_from_fills(self, order: dict[str, Any]) -> dict[str, Any]:
+        fills = self.db.fills_for_order(str(order.get("execution_order_id")))
+        if not fills:
+            return order
+        executed_qty = sum(_safe_float(fill.get("qty"), 0.0) for fill in fills)
+        cum_quote_qty = sum(
+            _safe_float(fill.get("quote_qty"), 0.0)
+            if fill.get("quote_qty") is not None
+            else (_safe_float(fill.get("price"), 0.0) * _safe_float(fill.get("qty"), 0.0))
+            for fill in fills
+        )
+        avg_fill_price = (cum_quote_qty / executed_qty) if executed_qty > 0 else None
+        orig_qty = _safe_float(order.get("orig_qty"), 0.0)
+        status = str(order.get("order_status") or "NEW").upper()
+        if executed_qty > 0:
+            if orig_qty > 0 and executed_qty + 1e-12 >= orig_qty:
+                status = "FILLED"
+            elif status not in TERMINAL_ORDER_STATUSES:
+                status = "PARTIALLY_FILLED"
+        payload = copy.deepcopy(order)
+        payload.update(
+            {
+                "executed_qty": executed_qty,
+                "cum_quote_qty": cum_quote_qty,
+                "avg_fill_price": avg_fill_price,
+                "order_status": status,
+                "execution_type_last": "TRADE" if executed_qty > 0 else order.get("execution_type_last"),
+                "acknowledged_at": order.get("acknowledged_at") or fills[0].get("fill_time") or order.get("submitted_at"),
+            }
+        )
+        return self.db.upsert_order(payload)
+
+    def _aggregate_order_costs(
+        self,
+        *,
+        order: dict[str, Any],
+        intent: dict[str, Any] | None,
+        fills: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        estimated = {
+            "requested_notional": _first_number((intent or {}).get("requested_notional")),
+            "exchange_fee_estimated": _first_number((intent or {}).get("estimated_fee")),
+            "spread_estimated": None,
+            "slippage_estimated": None,
+            "slippage_bps": _first_number((intent or {}).get("estimated_slippage_bps")),
+            "total_cost_estimated": _first_number((intent or {}).get("estimated_total_cost")),
+        }
+        if not fills:
+            return {
+                "estimated_costs": estimated,
+                "realized_costs": {
+                    "exchange_fee_realized": None,
+                    "spread_realized": None,
+                    "slippage_realized": None,
+                    "funding_realized": None,
+                    "borrow_interest_realized": None,
+                    "total_cost_realized": None,
+                    "cost_classification": "estimated_only",
+                    "provisional": False,
+                    "unresolved_components": [],
+                },
+                "gross_pnl": None,
+                "net_pnl": None,
+            }
+
+        def _sum_if_present(key: str) -> float | None:
+            values = [float(fill[key]) for fill in fills if fill.get(key) is not None]
+            return sum(values) if values else None
+
+        unresolved_components = sorted(
+            {
+                str(item)
+                for fill in fills
+                for item in (_json_loads(fill.get("unresolved_components_json"), []) if isinstance(fill, dict) else [])
+                if str(item).strip()
+            }
+        )
+        exchange_fee_realized = _sum_if_present("commission")
+        spread_realized = _sum_if_present("spread_realized")
+        slippage_realized = _sum_if_present("slippage_realized")
+        funding_realized = _sum_if_present("funding_component")
+        borrow_interest_realized = _sum_if_present("borrow_interest_component")
+        gross_pnl = _sum_if_present("gross_pnl")
+        total_realized_cost = sum(
+            _safe_float(value, 0.0)
+            for value in (
+                exchange_fee_realized,
+                spread_realized,
+                slippage_realized,
+                funding_realized,
+                borrow_interest_realized,
+            )
+            if value is not None
+        )
+        net_pnl = _sum_if_present("net_pnl")
+        if net_pnl is None and gross_pnl is not None:
+            net_pnl = gross_pnl - total_realized_cost
+        has_realized = any(
+            value is not None
+            for value in (
+                exchange_fee_realized,
+                spread_realized,
+                slippage_realized,
+                funding_realized,
+                borrow_interest_realized,
+            )
+        )
+        classification = "estimated_only"
+        if has_realized and estimated.get("total_cost_estimated") is not None:
+            classification = "mixed"
+        elif has_realized:
+            classification = "realized"
+        return {
+            "estimated_costs": estimated,
+            "realized_costs": {
+                "exchange_fee_realized": exchange_fee_realized,
+                "spread_realized": spread_realized,
+                "slippage_realized": slippage_realized,
+                "funding_realized": funding_realized,
+                "borrow_interest_realized": borrow_interest_realized,
+                "total_cost_realized": total_realized_cost if has_realized else None,
+                "cost_classification": classification,
+                "provisional": bool(unresolved_components),
+                "unresolved_components": unresolved_components,
+            },
+            "gross_pnl": gross_pnl,
+            "net_pnl": net_pnl,
+        }
+
+    def _sync_fills_to_reporting_bridge(
+        self,
+        *,
+        order: dict[str, Any],
+        intent: dict[str, Any] | None,
+        fills: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if self.reporting_bridge_service is None or not hasattr(self.reporting_bridge_service, "upsert_execution_trade_rows"):
+            return None
+        strategy_id = (intent or {}).get("strategy_id")
+        bot_id = (intent or {}).get("bot_id")
+        execution_policy_hash = self.policy_hash()
+        cost_stack_policy_hash = self._cost_stack_policy_hash()
+        rows: list[dict[str, Any]] = []
+        for fill in fills:
+            quote_qty = _first_number(fill.get("quote_qty"))
+            if quote_qty is None:
+                quote_qty = _safe_float(fill.get("price"), 0.0) * _safe_float(fill.get("qty"), 0.0)
+            rows.append(
+                {
+                    "trade_cost_id": f"TCL-{hashlib.sha256(str(fill.get('execution_fill_id')).encode('utf-8')).hexdigest()[:16].upper()}",
+                    "trade_ref": str(fill.get("execution_fill_id") or fill.get("venue_trade_id") or ""),
+                    "run_id": None,
+                    "venue": "binance",
+                    "family": order.get("family"),
+                    "environment": order.get("environment"),
+                    "symbol": order.get("symbol"),
+                    "strategy_id": strategy_id,
+                    "bot_id": bot_id,
+                    "executed_at": str(fill.get("fill_time") or utc_now_iso()),
+                    "exchange_fee_estimated": 0.0,
+                    "exchange_fee_realized": _first_number(fill.get("commission")),
+                    "fee_asset": fill.get("commission_asset"),
+                    "spread_estimated": 0.0,
+                    "spread_realized": _first_number(fill.get("spread_realized")),
+                    "slippage_estimated": 0.0,
+                    "slippage_realized": _first_number(fill.get("slippage_realized")),
+                    "funding_estimated": 0.0,
+                    "funding_realized": _first_number(fill.get("funding_component")),
+                    "borrow_interest_estimated": 0.0,
+                    "borrow_interest_realized": _first_number(fill.get("borrow_interest_component")),
+                    "rebates_or_discounts": 0.0,
+                    "total_cost_estimated": 0.0,
+                    "total_cost_realized": sum(
+                        _safe_float(value, 0.0)
+                        for value in (
+                            _first_number(fill.get("commission")),
+                            _first_number(fill.get("spread_realized")),
+                            _first_number(fill.get("slippage_realized")),
+                            _first_number(fill.get("funding_component")),
+                            _first_number(fill.get("borrow_interest_component")),
+                        )
+                        if value is not None
+                    ),
+                    "gross_pnl": _safe_float(fill.get("gross_pnl"), 0.0),
+                    "net_pnl": _safe_float(fill.get("net_pnl"), 0.0),
+                    "cost_source": {
+                        **(_json_loads(fill.get("cost_source_json"), {}) if isinstance(fill, dict) else {}),
+                        "execution_policy_hash": execution_policy_hash,
+                        "cost_stack_policy_hash": cost_stack_policy_hash,
+                        "quote_qty": quote_qty,
+                    },
+                    "provenance": {
+                        **(_json_loads(fill.get("provenance_json"), {}) if isinstance(fill, dict) else {}),
+                        "execution_order_id": order.get("execution_order_id"),
+                        "execution_intent_id": (intent or {}).get("execution_intent_id"),
+                        "source_kind": "execution_reality_fill",
+                    },
+                    "created_at": utc_now_iso(),
+                }
+            )
+        return self.reporting_bridge_service.upsert_execution_trade_rows(rows)
+
+    def _materialize_trade_rows(
+        self,
+        *,
+        order: dict[str, Any],
+        intent: dict[str, Any] | None,
+        trade_rows: list[dict[str, Any]],
+        event_source: str,
+        degraded_mode: bool,
+        income_rows: list[dict[str, Any]] | None = None,
+        interest_rows: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        normalized_rows = [copy.deepcopy(row) for row in trade_rows if isinstance(row, dict)]
+        if not normalized_rows:
+            return {"fills": [], "order": order, "reporting_sync": None}
+        normalized_rows.sort(key=lambda row: (str(row.get("fill_time") or ""), str(row.get("venue_trade_id") or "")))
+        temp_fill_keys: list[str] = []
+        for idx, row in enumerate(normalized_rows):
+            if not row.get("execution_fill_id"):
+                fill_seed = f"{order.get('execution_order_id')}:{row.get('venue_trade_id') or idx}"
+                row["execution_fill_id"] = f"FILL-{hashlib.sha256(fill_seed.encode('utf-8')).hexdigest()[:16].upper()}"
+            temp_fill_keys.append(str(row["execution_fill_id"]))
+        funding_map = self._distributed_component_map(
+            normalized_rows,
+            total_component=self._futures_income_total(order, income_rows or []),
+        )
+        borrow_map = self._distributed_component_map(
+            normalized_rows,
+            total_component=self._margin_borrow_total(order, interest_rows or []),
+        )
+        persisted: list[dict[str, Any]] = []
+        for row in normalized_rows:
+            fill_key = str(row.get("execution_fill_id"))
+            fill_payload = self._fill_payload_from_trade(
+                order=order,
+                intent=intent,
+                trade=row,
+                event_source=event_source,
+                degraded_mode=degraded_mode,
+                funding_component=funding_map.get(fill_key),
+                borrow_interest_component=borrow_map.get(fill_key),
+            )
+            persisted.append(self.db.insert_fill(fill_payload))
+        updated_order = self._rebuild_order_from_fills(order)
+        reporting_sync = self._sync_fills_to_reporting_bridge(order=updated_order, intent=intent, fills=persisted)
+        return {
+            "fills": persisted,
+            "order": updated_order,
+            "reporting_sync": reporting_sync,
+        }
+
+    def _record_reconcile_event(
+        self,
+        *,
+        reconcile_type: str,
+        severity: str,
+        family: str,
+        environment: str,
+        execution_order_id: str | None,
+        client_order_id: str | None,
+        details: dict[str, Any],
+        resolved: bool = False,
+    ) -> dict[str, Any]:
+        details_payload = copy.deepcopy(details)
+        details_payload.setdefault(
+            "signature_hash",
+            _stable_payload_hash(
+                {
+                    "reconcile_type": reconcile_type,
+                    "execution_order_id": execution_order_id,
+                    "client_order_id": client_order_id,
+                    "details": details,
+                }
+            ),
+        )
+        if not resolved:
+            for existing in self.db.list_reconcile_events(resolved=False, reconcile_type=reconcile_type):
+                if str(existing.get("execution_order_id") or "") != str(execution_order_id or ""):
+                    continue
+                if str(existing.get("client_order_id") or "") != str(client_order_id or ""):
+                    continue
+                if str((existing.get("details_json") or {}).get("signature_hash") or "") == str(details_payload["signature_hash"]):
+                    return existing
+        return self.db.insert_reconcile_event(
+            {
+                "family": family,
+                "environment": environment,
+                "reconcile_type": reconcile_type,
+                "severity": severity,
+                "execution_order_id": execution_order_id,
+                "client_order_id": client_order_id,
+                "details_json": details_payload,
+                "resolved": resolved,
+                "resolved_at": utc_now_iso() if resolved else None,
+            }
+        )
+
+    def _materialize_paper_fill(self, order: dict[str, Any], intent: dict[str, Any] | None) -> dict[str, Any]:
+        if _normalize_environment(order.get("environment")) != "paper":
+            return {"fills": [], "order": order, "reporting_sync": None}
+        if str(order.get("order_status") or "").upper() in TERMINAL_ORDER_STATUSES:
+            return {"fills": self.db.fills_for_order(str(order.get("execution_order_id"))), "order": order, "reporting_sync": None}
+        if self.db.fills_for_order(str(order.get("execution_order_id"))):
+            return {"fills": self.db.fills_for_order(str(order.get("execution_order_id"))), "order": order, "reporting_sync": None}
+        reference = self._quote_reference_for_order(order, intent)
+        side = str((intent or {}).get("side") or "").upper()
+        order_type = str((intent or {}).get("order_type") or (order.get("raw_ack_json") if isinstance(order.get("raw_ack_json"), dict) else {}).get("type") or "").upper()
+        qty = _first_number(order.get("orig_qty"), (intent or {}).get("quantity"))
+        if qty is None or qty <= 0:
+            return {"fills": [], "order": order, "reporting_sync": None}
+        fill_price = None
+        if order_type == "MARKET":
+            fill_price = _first_number(reference.get("best_quote"), reference.get("preview_price"), order.get("price"))
+        else:
+            limit_price = _first_number(order.get("price"), (intent or {}).get("limit_price"))
+            bid = _first_number(reference.get("bid"))
+            ask = _first_number(reference.get("ask"))
+            if side == "BUY" and ask is not None and limit_price is not None and ask <= limit_price:
+                fill_price = limit_price
+            elif side == "SELL" and bid is not None and limit_price is not None and bid >= limit_price:
+                fill_price = limit_price
+        if fill_price is None:
+            return {"fills": [], "order": order, "reporting_sync": None}
+        fill_time = utc_now_iso()
+        fill_seed = f"{order.get('execution_order_id')}:{fill_time}"
+        trade_row = {
+            "execution_fill_id": f"PFILL-{hashlib.sha256(fill_seed.encode('utf-8')).hexdigest()[:16].upper()}",
+            "venue_trade_id": None,
+            "fill_time": fill_time,
+            "symbol": order.get("symbol"),
+            "family": order.get("family"),
+            "price": fill_price,
+            "qty": qty,
+            "quote_qty": fill_price * qty,
+            "commission": 0.0,
+            "commission_asset": None,
+            "realized_pnl": None,
+            "maker": False,
+            "raw_fill_json": {"source": "paper_local_fill", "fill_price": fill_price},
+        }
+        return self._materialize_trade_rows(
+            order=order,
+            intent=intent,
+            trade_rows=[trade_row],
+            event_source="paper_local_fill",
+            degraded_mode=False,
+        )
+
+    def ingest_user_stream_event(self, *, family: str, environment: str, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        self.mark_user_stream_status(family=normalized_family, environment=normalized_environment, available=True)
+        event_payload = copy.deepcopy(payload if isinstance(payload, dict) else {})
+        order_payload = event_payload
+        event_name = str(event_payload.get("e") or "").strip()
+        if normalized_family in {"usdm_futures", "coinm_futures"}:
+            order_payload = event_payload.get("o") if isinstance(event_payload.get("o"), dict) else {}
+        venue_order_id = str(order_payload.get("orderId") or order_payload.get("i") or "").strip() or None
+        client_order_id = str(order_payload.get("clientOrderId") or order_payload.get("c") or order_payload.get("origClientOrderId") or order_payload.get("C") or "").strip() or None
+        order = None
+        if venue_order_id:
+            order = self.db.order_by_venue_order_id(venue_order_id)
+        if order is None and client_order_id:
+            order = self.db.order_by_client_order_id(client_order_id)
+        if order is None:
+            event_details = {
+                "event_name": event_name or "unknown",
+                "source_kind": "user_stream_orphan",
+                "payload": event_payload,
+            }
+            self._record_reconcile_event(
+                reconcile_type="orphan_order",
+                severity="WARN",
+                family=normalized_family,
+                environment=normalized_environment,
+                execution_order_id=None,
+                client_order_id=client_order_id,
+                details=event_details,
+                resolved=False,
+            )
+            return {"ok": False, "reason": "local_order_not_found", "event_name": event_name}
+        intent = self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None
+        updated_order = self.db.upsert_order(
+            self._order_row_from_exchange(
+                execution_order_id=str(order.get("execution_order_id")),
+                execution_intent_id=str(order.get("execution_intent_id") or ""),
+                client_order_id=str(order.get("client_order_id") or client_order_id or ""),
+                family=normalized_family,
+                environment=normalized_environment,
+                preview=order,
+                ack_payload=order_payload,
+                submitted_at=str(order.get("submitted_at") or utc_now_iso()),
+                existing=order,
+            )
+        )
+        trade_rows: list[dict[str, Any]] = []
+        if normalized_family in {"spot", "margin"} and event_name == "executionReport":
+            normalized_trade = self._normalize_trade_payload(
+                family=normalized_family,
+                order=updated_order,
+                row=event_payload,
+                source_kind="executionReport_stream",
+            )
+            if normalized_trade is not None and _safe_float(normalized_trade.get("qty"), 0.0) > 0 and str(event_payload.get("x") or "").upper() == "TRADE":
+                trade_rows.append(normalized_trade)
+        elif normalized_family in {"usdm_futures", "coinm_futures"} and event_name == "ORDER_TRADE_UPDATE":
+            normalized_trade = self._normalize_trade_payload(
+                family=normalized_family,
+                order=updated_order,
+                row=order_payload,
+                source_kind="ORDER_TRADE_UPDATE_stream",
+            )
+            if normalized_trade is not None and _safe_float(normalized_trade.get("qty"), 0.0) > 0 and str(order_payload.get("x") or "").upper() == "TRADE":
+                trade_rows.append(normalized_trade)
+        materialized = self._materialize_trade_rows(
+            order=updated_order,
+            intent=intent,
+            trade_rows=trade_rows,
+            event_source="user_stream_event",
+            degraded_mode=False,
+        )
+        final_order = materialized["order"] if materialized["fills"] else updated_order
+        return {
+            "ok": True,
+            "event_name": event_name,
+            "execution_order_id": final_order.get("execution_order_id"),
+            "order": final_order,
+            "fills": materialized["fills"],
+            "degraded_mode": False,
+        }
+
+    def _reconcile_single_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        intent = self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None
+        recon_cfg = self._reconciliation_policy()
+        stream_state = self._stream_state(family, environment)
+        now = _utc_now()
+        updated_order = copy.deepcopy(order)
+        remote_meta: dict[str, Any] | None = None
+        touched_events: list[dict[str, Any]] = []
+
+        if environment == "paper":
+            materialized = self._materialize_paper_fill(updated_order, intent)
+            if materialized["fills"]:
+                updated_order = materialized["order"]
+            fills = self.db.fills_for_order(str(updated_order.get("execution_order_id")))
+            return {
+                "order": updated_order,
+                "intent": intent,
+                "fills": fills,
+                "degraded_mode": False,
+                "remote_source": {"ok": True, "reason": "paper_local"},
+                "events": touched_events,
+            }
+
+        previous_status = str(updated_order.get("order_status") or "").upper()
+        remote_order, remote_meta = self._query_remote_order_snapshot(updated_order)
+        if remote_order is not None:
+            updated_order = remote_order
+            remote_status = str(remote_order.get("order_status") or "").upper()
+            if remote_status != previous_status:
+                touched_events.append(
+                    self._record_reconcile_event(
+                        reconcile_type="status_mismatch",
+                        severity="WARN",
+                        family=family,
+                        environment=environment,
+                        execution_order_id=str(updated_order.get("execution_order_id")),
+                        client_order_id=str(updated_order.get("client_order_id") or ""),
+                        details={
+                            "local_status_before": previous_status,
+                            "remote_status": remote_status,
+                            "source": "rest_query",
+                        },
+                        resolved=True,
+                    )
+                )
+
+        ack_timeout_sec = float(recon_cfg.get("order_ack_timeout_sec") or 0.0)
+        submitted_dt = _parse_ts(updated_order.get("submitted_at")) or now
+        ack_dt = _parse_ts(updated_order.get("acknowledged_at"))
+        ack_age_sec = max(0.0, (now - submitted_dt).total_seconds())
+        if ack_dt is None and ack_age_sec >= ack_timeout_sec:
+            severity = "BLOCK" if ack_age_sec >= float(recon_cfg.get("orphan_order_block_sec") or ack_timeout_sec) else "WARN"
+            touched_events.append(
+                self._record_reconcile_event(
+                    reconcile_type="ack_missing",
+                    severity=severity,
+                    family=family,
+                    environment=environment,
+                    execution_order_id=str(updated_order.get("execution_order_id")),
+                    client_order_id=str(updated_order.get("client_order_id") or ""),
+                    details={"ack_age_sec": round(ack_age_sec, 4), "source": "reconcile_timeout"},
+                    resolved=False,
+                )
+            )
+        else:
+            self.db.resolve_reconcile_events(
+                reconcile_type="ack_missing",
+                execution_order_id=str(updated_order.get("execution_order_id")),
+            )
+
+        should_fetch_trades = stream_state["degraded_mode"] or str(updated_order.get("order_status") or "").upper() in {"FILLED", "PARTIALLY_FILLED"} or _safe_float(updated_order.get("executed_qty"), 0.0) > 0
+        fills_before = self.db.fills_for_order(str(updated_order.get("execution_order_id")))
+        if should_fetch_trades:
+            trade_rows, trade_meta = self._fetch_remote_trade_rows(updated_order)
+            income_rows, _ = self._fetch_remote_income_rows(updated_order)
+            interest_rows, _ = self._fetch_margin_interest_rows(updated_order)
+            if trade_rows:
+                known_fill_ids = {str(fill.get("execution_fill_id") or "") for fill in fills_before}
+                materialized = self._materialize_trade_rows(
+                    order=updated_order,
+                    intent=intent,
+                    trade_rows=trade_rows,
+                    event_source="rest_fallback",
+                    degraded_mode=stream_state["degraded_mode"],
+                    income_rows=income_rows,
+                    interest_rows=interest_rows,
+                )
+                updated_order = materialized["order"]
+                new_fill_count = sum(
+                    1
+                    for fill in materialized["fills"]
+                    if str(fill.get("execution_fill_id") or "") not in known_fill_ids
+                )
+                if new_fill_count > 0:
+                    self.db.resolve_reconcile_events(
+                        reconcile_type="fill_missing",
+                        execution_order_id=str(updated_order.get("execution_order_id")),
+                    )
+                    touched_events.append(
+                        self._record_reconcile_event(
+                            reconcile_type="fill_missing",
+                            severity="WARN",
+                            family=family,
+                            environment=environment,
+                            execution_order_id=str(updated_order.get("execution_order_id")),
+                            client_order_id=str(updated_order.get("client_order_id") or ""),
+                            details={
+                                "backfilled_count": new_fill_count,
+                                "source": trade_meta,
+                            },
+                            resolved=True,
+                        )
+                    )
+
+        fills = self.db.fills_for_order(str(updated_order.get("execution_order_id")))
+        fill_timeout_sec = float(recon_cfg.get("fill_reconcile_timeout_sec") or 0.0)
+        if (
+            not fills
+            and (str(updated_order.get("order_status") or "").upper() in {"FILLED", "PARTIALLY_FILLED"} or _safe_float(updated_order.get("executed_qty"), 0.0) > 0)
+            and ack_age_sec >= fill_timeout_sec
+        ):
+            severity = "BLOCK" if ack_age_sec >= float(recon_cfg.get("orphan_order_block_sec") or fill_timeout_sec) else "WARN"
+            touched_events.append(
+                self._record_reconcile_event(
+                    reconcile_type="fill_missing",
+                    severity=severity,
+                    family=family,
+                    environment=environment,
+                    execution_order_id=str(updated_order.get("execution_order_id")),
+                    client_order_id=str(updated_order.get("client_order_id") or ""),
+                    details={"fill_age_sec": round(ack_age_sec, 4), "source": "reconcile_timeout"},
+                    resolved=False,
+                )
+            )
+        elif fills:
+            self.db.resolve_reconcile_events(
+                reconcile_type="fill_missing",
+                execution_order_id=str(updated_order.get("execution_order_id")),
+            )
+
+        costs = self._aggregate_order_costs(order=updated_order, intent=intent, fills=fills)
+        estimated_total = _first_number((costs.get("estimated_costs") if isinstance(costs.get("estimated_costs"), dict) else {}).get("total_cost_estimated"))
+        realized_total = _first_number((costs.get("realized_costs") if isinstance(costs.get("realized_costs"), dict) else {}).get("total_cost_realized"))
+        if estimated_total is not None and realized_total is not None:
+            notional = _first_number(
+                (costs.get("estimated_costs") if isinstance(costs.get("estimated_costs"), dict) else {}).get("requested_notional"),
+                updated_order.get("cum_quote_qty"),
+            )
+            delta_abs = abs(realized_total - estimated_total)
+            delta_bps = ((delta_abs / notional) * 10000.0) if notional and notional > 0 else 0.0
+            warn_bps, block_bps = self._slippage_thresholds(family)
+            if delta_bps >= warn_bps:
+                severity = "BLOCK" if delta_bps >= block_bps else "WARN"
+                touched_events.append(
+                    self._record_reconcile_event(
+                        reconcile_type="cost_mismatch",
+                        severity=severity,
+                        family=family,
+                        environment=environment,
+                        execution_order_id=str(updated_order.get("execution_order_id")),
+                        client_order_id=str(updated_order.get("client_order_id") or ""),
+                        details={
+                            "estimated_total_cost": estimated_total,
+                            "realized_total_cost": realized_total,
+                            "delta_abs": delta_abs,
+                            "delta_bps": round(delta_bps, 8),
+                        },
+                        resolved=False,
+                    )
+                )
+            else:
+                self.db.resolve_reconcile_events(
+                    reconcile_type="cost_mismatch",
+                    execution_order_id=str(updated_order.get("execution_order_id")),
+                )
+
+        return {
+            "order": updated_order,
+            "intent": intent,
+            "fills": fills,
+            "degraded_mode": bool(stream_state["degraded_mode"]),
+            "remote_source": remote_meta,
+            "events": touched_events,
+        }
+
+    def _reconcile_orphan_orders(self, *, family: str, environment: str) -> list[dict[str, Any]]:
+        if environment not in {"live", "testnet"}:
+            return []
+        recon_cfg = self._reconciliation_policy()
+        now = _utc_now()
+        self.db.resolve_reconcile_events(
+            reconcile_type="orphan_order",
+            family=family,
+            environment=environment,
+        )
+        items, meta = self._remote_open_orders_snapshot(family=family, environment=environment)
+        created: list[dict[str, Any]] = []
+        for item in items:
+            if item.get("execution_order_id"):
+                continue
+            submitted_dt = _parse_ts(item.get("submitted_at")) or now
+            age_sec = max(0.0, (now - submitted_dt).total_seconds())
+            warn_after = float(recon_cfg.get("orphan_order_warn_sec") or 0.0)
+            block_after = float(recon_cfg.get("orphan_order_block_sec") or warn_after)
+            severity = "INFO"
+            if age_sec >= block_after:
+                severity = "BLOCK"
+            elif age_sec >= warn_after:
+                severity = "WARN"
+            created.append(
+                self._record_reconcile_event(
+                    reconcile_type="orphan_order",
+                    severity=severity,
+                    family=family,
+                    environment=environment,
+                    execution_order_id=None,
+                    client_order_id=str(item.get("client_order_id") or ""),
+                    details={
+                        "remote_order": item,
+                        "remote_source": meta,
+                        "orphan_age_sec": round(age_sec, 4),
+                    },
+                    resolved=False,
+                )
+            )
+        return created
 
     def _query_remote_order_snapshot(self, order: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         family = _normalize_family(order.get("family"))
@@ -2517,20 +3673,23 @@ class ExecutionRealityService:
         order = self.db.order_by_id(execution_order_id)
         if order is None:
             return None
-        remote_status = None
-        remote_meta = None
-        if str(order.get("environment") or "").lower() in {"live", "testnet"}:
-            remote_status, remote_meta = self._query_remote_order_snapshot(order)
-            if remote_status is not None:
-                order = remote_status
-        intent = self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None
+        reconcile_result = self._reconcile_single_order(order)
+        order = reconcile_result["order"]
+        intent = reconcile_result["intent"]
+        fills = reconcile_result["fills"]
+        costs = self._aggregate_order_costs(order=order, intent=intent, fills=fills)
         return {
             "order": order,
             "intent": intent,
-            "fills": self.db.fills_for_order(str(order.get("execution_order_id"))),
+            "fills": fills,
             "reconcile_events": self.db.reconcile_events_for_order(str(order.get("execution_order_id"))),
-            "remote_status": remote_status.get("raw_last_status_json") if isinstance(remote_status, dict) else None,
-            "remote_source": remote_meta,
+            "remote_status": order.get("raw_last_status_json") if isinstance(order, dict) else None,
+            "remote_source": reconcile_result.get("remote_source"),
+            "estimated_costs": costs.get("estimated_costs"),
+            "realized_costs": costs.get("realized_costs"),
+            "gross_pnl": costs.get("gross_pnl"),
+            "net_pnl": costs.get("net_pnl"),
+            "degraded_mode": reconcile_result.get("degraded_mode"),
         }
 
     def cancel_order(self, execution_order_id: str) -> dict[str, Any]:
@@ -2665,9 +3824,43 @@ class ExecutionRealityService:
         }
 
     def reconcile_orders(self) -> dict[str, Any]:
-        raise NotImplementedError("Execution reconcile se implementa en la parte 3.4 del bloque.")
+        orders = self.db.list_orders(limit=1000, offset=0)
+        pairs = {
+            (_normalize_family(order.get("family")), _normalize_environment(order.get("environment")))
+            for order in orders
+            if _normalize_environment(order.get("environment")) in {"live", "testnet"}
+        }
+        degraded_mode = any(self._stream_state(family, environment)["degraded_mode"] for family, environment in pairs)
+        results: list[dict[str, Any]] = []
+        for order in orders:
+            results.append(self._reconcile_single_order(order))
+        orphan_events: list[dict[str, Any]] = []
+        for family, environment in sorted(pairs):
+            orphan_events.extend(self._reconcile_orphan_orders(family=family, environment=environment))
+        unresolved = self.db.unresolved_reconcile_events()
+        grouped: dict[str, int] = defaultdict(int)
+        for row in unresolved:
+            grouped[str(row.get("reconcile_type") or "")] += 1
+        return {
+            "ack_missing": grouped.get("ack_missing", 0),
+            "fill_missing": grouped.get("fill_missing", 0),
+            "orphan_orders": grouped.get("orphan_order", 0),
+            "status_mismatches": grouped.get("status_mismatch", 0),
+            "cost_mismatches": grouped.get("cost_mismatch", 0),
+            "unresolved_count": len(unresolved),
+            "degraded_mode": degraded_mode,
+            "policy_hash": self.policy_hash(),
+            "policy_source": self.policy_source(),
+            "processed_orders": len(orders),
+            "orphan_events_seen": len(orphan_events),
+            "pairs_checked": [
+                {"family": family, "environment": environment, "stream_state": self._stream_state(family, environment)}
+                for family, environment in sorted(pairs)
+            ],
+        }
 
     def live_safety_summary(self) -> dict[str, Any]:
+        reconcile_summary = self.reconcile_orders() if self.db.counts().get("execution_orders", 0) else None
         parity = self.instrument_registry_service.live_parity_matrix() if self.instrument_registry_service is not None else {}
         fee_fresh = True
         supported_families = []
@@ -2727,4 +3920,5 @@ class ExecutionRealityService:
             "supported_families": supported_families,
             "overall_status": overall,
             "policy_source": self.policy_source(),
+            "unresolved_reconcile_count": int((reconcile_summary or {}).get("unresolved_count") or 0),
         }

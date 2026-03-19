@@ -2,6 +2,33 @@
 
 ## 2026-03-19
 
+### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.4
+- Backend / reconcile base:
+  - `ExecutionRealityService` agrega reconcile real para `intent -> ack -> status -> fills`.
+  - persiste `execution_reconcile_events` para:
+    - `ack_missing`
+    - `fill_missing`
+    - `status_mismatch`
+    - `orphan_order`
+    - `cost_mismatch`
+  - `GET /api/v1/execution/reconcile/summary` expone resumen util y `degraded_mode`.
+- Ingestion de eventos / fallback:
+  - base operativa para `executionReport` de Spot/Margin y `ORDER_TRADE_UPDATE` de Futures.
+  - si el stream no esta disponible o no confirma estado/fills, execution entra en `degraded_mode` y consulta REST (`query order / open orders / myTrades / userTrades / income`) de forma controlada.
+- Fills / costos realizados:
+  - `execution_fills` pasa a persistir `spread_realized`, `slippage_realized`, `gross_pnl`, `net_pnl`, `cost_source_json`, `provenance_json`, `provisional` y `unresolved_components_json`.
+  - `GET /api/v1/execution/orders/{id}` devuelve `fills`, `reconcile_events`, `realized_costs`, `gross_pnl`, `net_pnl` y `degraded_mode`.
+- Reporting bridge:
+  - `rtlab_core/reporting/service.py` agrega merge/upsert de filas provenientes de `execution_reality` sin borrar filas ya materializadas por el bridge previo.
+  - `trade_cost_ledger` pasa a poder consumir fills runtime-aware sin crear un modelo rival.
+- Validacion local de la parte 3.4:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/reporting/service.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py rtlab_autotrader/tests/test_reporting_bridge.py rtlab_autotrader/tests/test_web_reporting_bridge_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_reporting_bridge.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_reporting_bridge_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+
 ### RTLOPS-21 Correctivo 3A - authority/trazabilidad mas rigurosa para Execution Reality
 - Execution policy loaders:
   - `rtlab_core/execution/reality.py` deja de duplicar `execution_safety.yaml` y `execution_router.yaml` como bundles espejo completos.

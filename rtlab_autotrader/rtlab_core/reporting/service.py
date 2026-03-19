@@ -884,7 +884,16 @@ class ReportingBridgeService:
         return rows
 
     def refresh_materialized_views(self, runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        rows = self._build_trade_rows(runs if runs is not None else self.load_runs())
+        runtime_rows = [
+            row
+            for row in self.db.trade_rows()
+            if str((row.get("provenance") if isinstance(row.get("provenance"), dict) else {}).get("source_kind") or "")
+            in {"execution_reality_fill", "execution_reality_runtime"}
+        ]
+        rows = self._merge_trade_rows(
+            self._build_trade_rows(runs if runs is not None else self.load_runs()),
+            runtime_rows,
+        )
         snapshots = self._build_performance_snapshots(rows)
         cost_sources = self._cost_source_binding_rows()
         self.db.replace_trade_rows(rows)
@@ -897,6 +906,48 @@ class ReportingBridgeService:
             "cost_source_snapshots": len(cost_sources),
             "policy_source": self.policy_source(),
         }
+
+    def upsert_execution_trade_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        existing = [
+            row
+            for row in self.db.trade_rows()
+            if str((row.get("provenance") if isinstance(row.get("provenance"), dict) else {}).get("source_kind") or "")
+            not in {"execution_reality_fill", "execution_reality_runtime"}
+        ]
+        merged = self._merge_trade_rows(existing, rows)
+        snapshots = self._build_performance_snapshots(merged)
+        cost_sources = self._cost_source_binding_rows()
+        self.db.replace_trade_rows(merged)
+        self.db.replace_performance_snapshots(snapshots)
+        self.db.replace_cost_source_snapshots(cost_sources)
+        return {
+            "ok": True,
+            "trade_rows_upserted": len(rows),
+            "trade_rows_total": len(merged),
+            "performance_snapshots": len(snapshots),
+            "cost_source_snapshots": len(cost_sources),
+            "policy_source": self.policy_source(),
+        }
+
+    def _merge_trade_rows(self, base_rows: list[dict[str, Any]], overlay_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for row in base_rows:
+            if not isinstance(row, dict):
+                continue
+            trade_cost_id = str(row.get("trade_cost_id") or "").strip()
+            if not trade_cost_id:
+                continue
+            merged[trade_cost_id] = copy.deepcopy(row)
+        for row in overlay_rows:
+            if not isinstance(row, dict):
+                continue
+            trade_cost_id = str(row.get("trade_cost_id") or "").strip()
+            if not trade_cost_id:
+                continue
+            merged[trade_cost_id] = copy.deepcopy(row)
+        items = list(merged.values())
+        items.sort(key=lambda row: (str(row.get("executed_at") or ""), str(row.get("trade_cost_id") or "")))
+        return items
 
     def _build_trade_rows(self, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         policy = self.cost_stack()
