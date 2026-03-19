@@ -25,6 +25,16 @@ def _default_filters() -> dict[str, Any]:
     }
 
 
+def _fresh_market_snapshot(*, bid: float = 50000.0, ask: float = 50001.0) -> dict[str, Any]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return {
+        "bid": bid,
+        "ask": ask,
+        "quote_ts_ms": now_ms,
+        "orderbook_ts_ms": now_ms,
+    }
+
+
 class _FakeRegistryDB:
     def __init__(
         self,
@@ -536,3 +546,167 @@ def test_preflight_blocks_margin_capability_and_margin_level(tmp_path: Path) -> 
     assert result["fail_closed"] is True
     assert "margin_capability_missing" in result["blocking_reasons"]
     assert "margin_level_blocked" in result["blocking_reasons"]
+
+
+def test_create_market_order_paper_persists_intent_before_submit_and_estimated_costs(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "NEW"
+    assert result["execution_intent_id"] is not None
+    assert result["execution_order_id"] is not None
+    assert result["estimated_costs"]["requested_notional"] > 0
+    assert result["estimated_costs"]["total_cost_estimated"] > 0
+    counts = service.db.counts()
+    assert counts["execution_intents"] == 1
+    assert counts["execution_orders"] == 1
+
+    intent = service.db.intent_by_id(str(result["execution_intent_id"]))
+    assert intent is not None
+    assert intent["submitted_at"] is not None
+    assert intent["preflight_status"] == "submitted"
+
+
+def test_create_limit_order_paper_requires_explicit_price(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert result["execution_order_id"] is None
+    assert "limit_price_required" in result["blocking_reasons"]
+    assert service.db.counts()["execution_intents"] == 1
+    assert service.db.counts()["execution_orders"] == 0
+
+
+def test_create_limit_order_paper_and_query_single_order_detail(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.001234,
+            "price": 50000.129,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    detail = service.order_detail(str(result["execution_order_id"]))
+
+    assert detail is not None
+    assert detail["order"]["order_status"] == "NEW"
+    assert detail["order"]["price"] == 50000.12
+    assert detail["intent"]["execution_intent_id"] == result["execution_intent_id"]
+    assert detail["fills"] == []
+    assert detail["reconcile_events"] == []
+
+
+def test_list_open_orders_and_cancel_single_paper(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    first = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+    service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "order_type": "LIMIT",
+            "quantity": 0.02,
+            "price": 51000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    listed = service.list_orders(family="spot", environment="paper", symbol="BTCUSDT", status="OPEN")
+    canceled = service.cancel_order(str(first["execution_order_id"]))
+    open_after = service.list_orders(family="spot", environment="paper", symbol="BTCUSDT", status="OPEN")
+
+    assert listed["count"] == 2
+    assert canceled["order_status"] == "CANCELED"
+    assert open_after["count"] == 1
+
+
+def test_cancel_all_paper_orders_for_symbol(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    for side in ("BUY", "SELL"):
+        service.create_order(
+            {
+                "family": "spot",
+                "environment": "paper",
+                "mode": "paper",
+                "symbol": "BTCUSDT",
+                "side": side,
+                "order_type": "LIMIT",
+                "quantity": 0.01,
+                "price": 50000.0 if side == "BUY" else 51000.0,
+                "market_snapshot": _fresh_market_snapshot(),
+            }
+        )
+
+    result = service.cancel_all(family="spot", environment="paper", symbol="BTCUSDT")
+
+    assert result["canceled_count"] == 2
+    assert len(service.db.open_orders(family="spot", symbol="BTCUSDT")) == 0
+
+
+def test_create_order_live_fail_closed_when_fee_source_missing(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot", fee_source_available=False, fee_source_fresh=False)
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert result["execution_order_id"] is None
+    assert result["fail_closed"] is True
+    assert "fee_source_missing_in_live" in result["blocking_reasons"]

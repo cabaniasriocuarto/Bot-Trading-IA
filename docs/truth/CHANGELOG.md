@@ -2,6 +2,50 @@
 
 ## 2026-03-19
 
+### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.3
+- Backend / router fase 1:
+  - `ExecutionRealityService` deja de tener stubs para:
+    - `create_order(...)`
+    - `list_orders(...)`
+    - `order_detail(...)`
+    - `cancel_order(...)`
+    - `cancel_all(...)`
+  - el submit reusa obligatoriamente el `preflight` de `3.2` y persiste `execution_intent` antes del submit.
+- Alcance real cerrado:
+  - familias:
+    - `spot`
+    - `margin`
+    - `usdm_futures`
+    - `coinm_futures`
+  - tipos:
+    - `MARKET`
+    - `LIMIT`
+  - operaciones:
+    - submit
+    - query single
+    - query open orders
+    - cancel single
+    - cancel all por simbolo
+- Estado local auditable:
+  - `execution_intents` conserva `preflight_status`, errores, request crudo y `policy_hash`.
+  - `execution_orders` conserva `raw_ack_json`, `raw_last_status_json` y las transiciones de cancelacion.
+  - en `paper`, el router crea orden local auditable sin inventar fills/realized antes de `3.4`.
+- Reglas de diseno clave:
+  - `LIMIT` exige `price` y `quantity` explicitos.
+  - futuros exigen `quantity` explicita.
+  - `live` sigue fail-closed si el preflight marca faltantes criticos, incluido fee source real.
+  - no se habilitan conditional/algo orders de `USDⓈ-M`; la fase 1 queda solo en `MARKET/LIMIT`.
+- API minima agregada:
+  - `POST /api/v1/execution/orders`
+  - `GET /api/v1/execution/orders`
+  - `GET /api/v1/execution/orders/{id}`
+  - `POST /api/v1/execution/orders/{id}/cancel`
+  - `POST /api/v1/execution/orders/cancel-all`
+- Validacion local de la parte 3.3:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle -q` -> PASS
+
 ### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.2
 - Backend / preflight:
   - `ExecutionRealityService.preflight(...)` deja de ser stub y pasa a validar de forma real:

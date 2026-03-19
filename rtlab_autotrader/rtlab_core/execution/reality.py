@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -10,8 +12,10 @@ from decimal import Decimal, ROUND_DOWN
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
+import requests
 import yaml
 
 from rtlab_core.policy_paths import resolve_policy_root
@@ -37,6 +41,7 @@ RECONCILE_TYPES = {
     "position_mismatch",
 }
 RECONCILE_SEVERITIES = {"INFO", "WARN", "BLOCK"}
+TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
 
 DEFAULT_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
     "execution_safety": {
@@ -194,6 +199,47 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return {key: row[key] for key in row.keys()}
 
 
+def _hydrate_intent_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["preflight_errors_json"] = _json_loads(out.get("preflight_errors_json"), [])
+    out["raw_request_json"] = _json_loads(out.get("raw_request_json"), {})
+    if out.get("reduce_only") is not None:
+        out["reduce_only"] = _bool(out.get("reduce_only"))
+    return out
+
+
+def _hydrate_order_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["raw_ack_json"] = _json_loads(out.get("raw_ack_json"), {})
+    out["raw_last_status_json"] = _json_loads(out.get("raw_last_status_json"), {})
+    if out.get("reduce_only") is not None:
+        out["reduce_only"] = _bool(out.get("reduce_only"))
+    return out
+
+
+def _hydrate_fill_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["raw_fill_json"] = _json_loads(out.get("raw_fill_json"), {})
+    if out.get("maker") is not None:
+        out["maker"] = _bool(out.get("maker"))
+    return out
+
+
+def _hydrate_reconcile_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["details_json"] = _json_loads(out.get("details_json"), {})
+    out["resolved"] = _bool(out.get("resolved"))
+    return out
+
+
 def _resolve_repo_root_for_policy() -> Path | None:
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -247,6 +293,16 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def _ms_to_iso(value: Any) -> str | None:
+    numeric = _first_number(value)
+    if numeric is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(numeric) / 1000.0, tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
 def _canonical_symbol(value: Any) -> str:
     return str(value or "").replace("/", "").replace("-", "").strip().upper()
 
@@ -272,6 +328,62 @@ def _normalize_mode(value: Any, environment: str | None = None) -> str:
     if env == "live":
         return "live"
     return "paper"
+
+
+def _url_root(url: str) -> str:
+    parts = urlsplit(str(url or "").strip())
+    return f"{parts.scheme}://{parts.netloc}".rstrip("/")
+
+
+def _url_path(url: str) -> str:
+    return urlsplit(str(url or "").strip()).path
+
+
+def _apply_base_override(endpoint_url: str, override: str | None) -> str:
+    raw_override = str(override or "").strip()
+    if not raw_override:
+        return endpoint_url
+    base = raw_override.rstrip("/")
+    path = _url_path(endpoint_url)
+    return f"{base}{path}"
+
+
+def _first_env_pair(pairs: list[tuple[str, str]]) -> tuple[str, str, list[str]]:
+    tried: list[str] = []
+    for key_name, secret_name in pairs:
+        tried.extend([key_name, secret_name])
+        key = str(os.getenv(key_name, "")).strip()
+        secret = str(os.getenv(secret_name, "")).strip()
+        if key and secret:
+            return key, secret, tried
+    return "", "", tried
+
+
+def _credentials_for_family(family: str, environment: str) -> tuple[str, str, list[str]]:
+    mapping: dict[tuple[str, str], list[tuple[str, str]]] = {
+        ("spot", "live"): [("BINANCE_API_KEY", "BINANCE_API_SECRET")],
+        ("spot", "testnet"): [("BINANCE_TESTNET_API_KEY", "BINANCE_TESTNET_API_SECRET")],
+        ("margin", "live"): [("BINANCE_API_KEY", "BINANCE_API_SECRET")],
+        ("usdm_futures", "live"): [
+            ("BINANCE_USDM_API_KEY", "BINANCE_USDM_API_SECRET"),
+            ("BINANCE_FUTURES_API_KEY", "BINANCE_FUTURES_API_SECRET"),
+            ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
+        ],
+        ("usdm_futures", "testnet"): [
+            ("BINANCE_USDM_TESTNET_API_KEY", "BINANCE_USDM_TESTNET_API_SECRET"),
+            ("BINANCE_FUTURES_TESTNET_API_KEY", "BINANCE_FUTURES_TESTNET_API_SECRET"),
+        ],
+        ("coinm_futures", "live"): [
+            ("BINANCE_COINM_API_KEY", "BINANCE_COINM_API_SECRET"),
+            ("BINANCE_FUTURES_API_KEY", "BINANCE_FUTURES_API_SECRET"),
+            ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
+        ],
+        ("coinm_futures", "testnet"): [
+            ("BINANCE_COINM_TESTNET_API_KEY", "BINANCE_COINM_TESTNET_API_SECRET"),
+            ("BINANCE_FUTURES_TESTNET_API_KEY", "BINANCE_FUTURES_TESTNET_API_SECRET"),
+        ],
+    }
+    return _first_env_pair(mapping.get((_normalize_family(family), _normalize_environment(environment)), []))
 
 
 def _decimal_floor(value: Any, step: Any) -> float:
@@ -544,7 +656,7 @@ class ExecutionRealityDB:
             return {table: int(conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]) for table in tables}
 
     def open_orders(self, *, family: str | None = None, symbol: str | None = None) -> list[dict[str, Any]]:
-        clauses = ["order_status NOT IN ('FILLED', 'CANCELED', 'REJECTED', 'EXPIRED')"]
+        clauses = [f"order_status NOT IN ({', '.join(repr(status) for status in sorted(TERMINAL_ORDER_STATUSES))})"]
         params: list[Any] = []
         if family:
             clauses.append("family = ?")
@@ -562,13 +674,133 @@ class ExecutionRealityDB:
                 """,
                 tuple(params),
             ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            payload = _row_to_dict(row) or {}
-            payload["raw_ack_json"] = _json_loads(payload.get("raw_ack_json"), {})
-            payload["raw_last_status_json"] = _json_loads(payload.get("raw_last_status_json"), {})
-            items.append(payload)
-        return items
+        return [_hydrate_order_row(_row_to_dict(row)) or {} for row in rows]
+
+    def list_orders(
+        self,
+        *,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        status: str | None = None,
+        strategy_id: str | None = None,
+        bot_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if family:
+            clauses.append("o.family = ?")
+            params.append(_normalize_family(family))
+        if environment:
+            clauses.append("o.environment = ?")
+            params.append(_normalize_environment(environment))
+        if symbol:
+            clauses.append("o.symbol = ?")
+            params.append(_canonical_symbol(symbol))
+        if strategy_id:
+            clauses.append("i.strategy_id = ?")
+            params.append(str(strategy_id))
+        if bot_id:
+            clauses.append("i.bot_id = ?")
+            params.append(str(bot_id))
+        normalized_status = str(status or "").strip().upper()
+        if normalized_status:
+            if normalized_status == "OPEN":
+                clauses.append(f"o.order_status NOT IN ({', '.join(repr(item) for item in sorted(TERMINAL_ORDER_STATUSES))})")
+            else:
+                clauses.append("o.order_status = ?")
+                params.append(normalized_status)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                  o.*,
+                  i.mode,
+                  i.strategy_id,
+                  i.bot_id,
+                  i.signal_id,
+                  i.venue,
+                  i.requested_notional,
+                  i.estimated_fee,
+                  i.estimated_slippage_bps,
+                  i.estimated_total_cost
+                FROM execution_orders AS o
+                LEFT JOIN execution_intents AS i
+                  ON i.execution_intent_id = o.execution_intent_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY o.submitted_at DESC, o.execution_order_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple([*params, int(limit), int(offset)]),
+            ).fetchall()
+        return [_hydrate_order_row(_row_to_dict(row)) or {} for row in rows]
+
+    def intent_by_id(self, execution_intent_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_intents WHERE execution_intent_id = ?",
+                (str(execution_intent_id),),
+            ).fetchone()
+        return _hydrate_intent_row(_row_to_dict(row))
+
+    def update_intent_submission(
+        self,
+        execution_intent_id: str,
+        *,
+        submitted_at: str | None = None,
+        preflight_status: str | None = None,
+        preflight_errors_json: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        assignments: list[str] = []
+        params: list[Any] = []
+        if submitted_at is not None:
+            assignments.append("submitted_at = ?")
+            params.append(str(submitted_at))
+        if preflight_status is not None:
+            assignments.append("preflight_status = ?")
+            params.append(str(preflight_status))
+        if preflight_errors_json is not None:
+            assignments.append("preflight_errors_json = ?")
+            params.append(_json_dumps(preflight_errors_json))
+        if not assignments:
+            return self.intent_by_id(execution_intent_id)
+        params.append(str(execution_intent_id))
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE execution_intents SET {', '.join(assignments)} WHERE execution_intent_id = ?",
+                tuple(params),
+            )
+            row = conn.execute(
+                "SELECT * FROM execution_intents WHERE execution_intent_id = ?",
+                (str(execution_intent_id),),
+            ).fetchone()
+        return _hydrate_intent_row(_row_to_dict(row))
+
+    def order_by_id(self, execution_order_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_orders WHERE execution_order_id = ?",
+                (str(execution_order_id),),
+            ).fetchone()
+        return _hydrate_order_row(_row_to_dict(row))
+
+    def order_by_client_order_id(self, client_order_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_orders WHERE client_order_id = ? ORDER BY submitted_at DESC LIMIT 1",
+                (str(client_order_id),),
+            ).fetchone()
+        return _hydrate_order_row(_row_to_dict(row))
+
+    def order_by_venue_order_id(self, venue_order_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_orders WHERE venue_order_id = ? ORDER BY submitted_at DESC LIMIT 1",
+                (str(venue_order_id),),
+            ).fetchone()
+        return _hydrate_order_row(_row_to_dict(row))
 
     def insert_intent(self, payload: dict[str, Any]) -> dict[str, Any]:
         row = {
@@ -626,10 +858,7 @@ class ExecutionRealityDB:
                 "SELECT * FROM execution_intents WHERE execution_intent_id = ?",
                 (row["execution_intent_id"],),
             ).fetchone()
-        out = _row_to_dict(stored) or row
-        out["preflight_errors_json"] = _json_loads(out.get("preflight_errors_json"), [])
-        out["raw_request_json"] = _json_loads(out.get("raw_request_json"), {})
-        return out
+        return _hydrate_intent_row(_row_to_dict(stored) or row) or row
 
     def upsert_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         row = {
@@ -679,10 +908,7 @@ class ExecutionRealityDB:
                 "SELECT * FROM execution_orders WHERE execution_order_id = ?",
                 (row["execution_order_id"],),
             ).fetchone()
-        out = _row_to_dict(stored) or row
-        out["raw_ack_json"] = _json_loads(out.get("raw_ack_json"), {})
-        out["raw_last_status_json"] = _json_loads(out.get("raw_last_status_json"), {})
-        return out
+        return _hydrate_order_row(_row_to_dict(stored) or row) or row
 
     def insert_fill(self, payload: dict[str, Any]) -> dict[str, Any]:
         row = {
@@ -722,9 +948,7 @@ class ExecutionRealityDB:
                 "SELECT * FROM execution_fills WHERE execution_fill_id = ?",
                 (row["execution_fill_id"],),
             ).fetchone()
-        out = _row_to_dict(stored) or row
-        out["raw_fill_json"] = _json_loads(out.get("raw_fill_json"), {})
-        return out
+        return _hydrate_fill_row(_row_to_dict(stored) or row) or row
 
     def insert_reconcile_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         reconcile_type = str(payload.get("reconcile_type") or "status_mismatch")
@@ -763,9 +987,33 @@ class ExecutionRealityDB:
                 "SELECT * FROM execution_reconcile_events WHERE reconcile_event_id = ?",
                 (row["reconcile_event_id"],),
             ).fetchone()
-        out = _row_to_dict(stored) or row
-        out["details_json"] = _json_loads(out.get("details_json"), {})
-        return out
+        return _hydrate_reconcile_row(_row_to_dict(stored) or row) or row
+
+    def fills_for_order(self, execution_order_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM execution_fills
+                WHERE execution_order_id = ?
+                ORDER BY fill_time ASC, execution_fill_id ASC
+                """,
+                (str(execution_order_id),),
+            ).fetchall()
+        return [_hydrate_fill_row(_row_to_dict(row)) or {} for row in rows]
+
+    def reconcile_events_for_order(self, execution_order_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM execution_reconcile_events
+                WHERE execution_order_id = ?
+                ORDER BY created_at DESC, reconcile_event_id DESC
+                """,
+                (str(execution_order_id),),
+            ).fetchall()
+        return [_hydrate_reconcile_row(_row_to_dict(row)) or {} for row in rows]
 
     def unresolved_reconcile_events(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -777,12 +1025,7 @@ class ExecutionRealityDB:
                 ORDER BY created_at DESC
                 """
             ).fetchall()
-        items = []
-        for row in rows:
-            payload = _row_to_dict(row) or {}
-            payload["details_json"] = _json_loads(payload.get("details_json"), {})
-            items.append(payload)
-        return items
+        return [_hydrate_reconcile_row(_row_to_dict(row)) or {} for row in rows]
 
     def trip_kill_switch(
         self,
@@ -1222,6 +1465,360 @@ class ExecutionRealityService:
             },
         }
 
+    def _instrument_registry_policy(self) -> dict[str, Any]:
+        if self.instrument_registry_service is None or not hasattr(self.instrument_registry_service, "policy"):
+            return {}
+        try:
+            policy = self.instrument_registry_service.policy()
+        except Exception:
+            return {}
+        return policy if isinstance(policy, dict) else {}
+
+    def _request_timeout(self) -> float:
+        sync_cfg = self._instrument_registry_policy().get("sync") if isinstance(self._instrument_registry_policy().get("sync"), dict) else {}
+        return float(sync_cfg.get("request_timeout_sec", 12) or 12)
+
+    def _execution_api_root(self, family: str, environment: str) -> str:
+        family = _normalize_family(family)
+        environment = _normalize_environment(environment)
+        policy = self._instrument_registry_policy()
+        endpoints = policy.get("endpoints") if isinstance(policy.get("endpoints"), dict) else {}
+        if family == "spot":
+            cfg = endpoints.get("spot") if isinstance(endpoints.get("spot"), dict) else {}
+            endpoint = str(cfg.get("testnet" if environment == "testnet" else "live") or "").strip()
+            override = os.getenv("BINANCE_SPOT_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_SPOT_BASE_URL")
+            return _url_root(_apply_base_override(endpoint, override))
+        if family == "margin":
+            cfg = endpoints.get("margin") if isinstance(endpoints.get("margin"), dict) else {}
+            endpoint = str(cfg.get("live_account") or "").strip()
+            override = os.getenv("BINANCE_MARGIN_BASE_URL") or os.getenv("BINANCE_SPOT_BASE_URL")
+            return _url_root(_apply_base_override(endpoint, override))
+        if family == "usdm_futures":
+            cfg = endpoints.get("usdm_futures") if isinstance(endpoints.get("usdm_futures"), dict) else {}
+            endpoint = str(cfg.get("testnet" if environment == "testnet" else "live") or "").strip()
+            override = os.getenv("BINANCE_USDM_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_USDM_BASE_URL")
+            return _url_root(_apply_base_override(endpoint, override))
+        if family == "coinm_futures":
+            cfg = endpoints.get("coinm_futures") if isinstance(endpoints.get("coinm_futures"), dict) else {}
+            endpoint = str(cfg.get("testnet" if environment == "testnet" else "live") or "").strip()
+            override = os.getenv("BINANCE_COINM_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_COINM_BASE_URL")
+            return _url_root(_apply_base_override(endpoint, override))
+        raise ValueError(f"Unsupported family: {family}")
+
+    def _execution_endpoint(self, family: str, environment: str, operation: str) -> str:
+        root = self._execution_api_root(family, environment)
+        mapping = {
+            ("spot", "submit"): "/api/v3/order",
+            ("spot", "query"): "/api/v3/order",
+            ("spot", "open_orders"): "/api/v3/openOrders",
+            ("spot", "cancel"): "/api/v3/order",
+            ("spot", "cancel_all"): "/api/v3/openOrders",
+            ("margin", "submit"): "/sapi/v1/margin/order",
+            ("margin", "query"): "/sapi/v1/margin/order",
+            ("margin", "open_orders"): "/sapi/v1/margin/openOrders",
+            ("margin", "cancel"): "/sapi/v1/margin/order",
+            ("margin", "cancel_all"): "/sapi/v1/margin/openOrders",
+            ("usdm_futures", "submit"): "/fapi/v1/order",
+            ("usdm_futures", "query"): "/fapi/v1/order",
+            ("usdm_futures", "open_orders"): "/fapi/v1/openOrders",
+            ("usdm_futures", "cancel"): "/fapi/v1/order",
+            ("usdm_futures", "cancel_all"): "/fapi/v1/allOpenOrders",
+            ("coinm_futures", "submit"): "/dapi/v1/order",
+            ("coinm_futures", "query"): "/dapi/v1/order",
+            ("coinm_futures", "open_orders"): "/dapi/v1/openOrders",
+            ("coinm_futures", "cancel"): "/dapi/v1/order",
+            ("coinm_futures", "cancel_all"): "/dapi/v1/allOpenOrders",
+        }
+        path = mapping.get((_normalize_family(family), str(operation).strip().lower()))
+        if not path:
+            raise ValueError(f"Unsupported execution operation: {family}:{operation}")
+        return f"{root}{path}"
+
+    def _signed_request(
+        self,
+        method: str,
+        endpoint_url: str,
+        *,
+        family: str,
+        environment: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
+        api_key, api_secret, env_names = _credentials_for_family(family, environment)
+        if not api_key or not api_secret or not endpoint_url:
+            return None, {
+                "ok": False,
+                "reason": "missing_credentials",
+                "credentials_present": False,
+                "credential_envs_tried": env_names,
+                "endpoint": endpoint_url,
+                "method": method.upper(),
+            }
+        filtered = {
+            str(key): value
+            for key, value in (params or {}).items()
+            if value is not None and str(value) != ""
+        }
+        filtered.setdefault("timestamp", int(time.time() * 1000))
+        filtered.setdefault("recvWindow", 5000)
+        query = urlencode(filtered, doseq=True)
+        signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+        url = f"{endpoint_url}?{query}&signature={signature}"
+        headers = {"X-MBX-APIKEY": api_key}
+        try:
+            response = requests.request(method.upper(), url, headers=headers, timeout=self._request_timeout())
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            return payload, {
+                "ok": True,
+                "reason": "ok",
+                "credentials_present": True,
+                "credential_envs_tried": env_names,
+                "endpoint": endpoint_url,
+                "method": method.upper(),
+            }
+        except Exception as exc:
+            return None, {
+                "ok": False,
+                "reason": "signed_request_failed",
+                "credentials_present": True,
+                "credential_envs_tried": env_names,
+                "endpoint": endpoint_url,
+                "method": method.upper(),
+                "error": str(exc),
+            }
+
+    def _build_submit_params(
+        self,
+        *,
+        family: str,
+        environment: str,
+        preview: dict[str, Any],
+        client_order_id: str,
+    ) -> tuple[dict[str, Any], list[str]]:
+        family = _normalize_family(family)
+        order_type = str(preview.get("order_type") or "").upper()
+        quantity = _first_number(preview.get("quantity"))
+        quote_quantity = _first_number(preview.get("quote_quantity"))
+        limit_price = _first_number(preview.get("limit_price"))
+        params: dict[str, Any] = {
+            "symbol": _canonical_symbol(preview.get("symbol")),
+            "side": str(preview.get("side") or "").upper(),
+            "type": order_type,
+            "newClientOrderId": str(client_order_id),
+            "newOrderRespType": "ACK",
+        }
+        local_blocking: list[str] = []
+        if order_type == "LIMIT":
+            if quantity is None:
+                local_blocking.append("quantity_required_for_limit")
+            if limit_price is None:
+                local_blocking.append("limit_price_required")
+            if preview.get("time_in_force"):
+                params["timeInForce"] = preview.get("time_in_force")
+            params["price"] = limit_price
+            params["quantity"] = quantity
+        elif family in {"usdm_futures", "coinm_futures"}:
+            if quantity is None:
+                local_blocking.append("quantity_required_for_futures")
+            params["quantity"] = quantity
+        else:
+            if quantity is None and quote_quantity is None:
+                local_blocking.append("quantity_or_quote_quantity_required")
+            if quantity is not None:
+                params["quantity"] = quantity
+            if quantity is None and quote_quantity is not None:
+                params["quoteOrderQty"] = quote_quantity
+        if family in {"usdm_futures", "coinm_futures"} and preview.get("reduce_only") is not None:
+            params["reduceOnly"] = "true" if _bool(preview.get("reduce_only")) else "false"
+        if family == "margin":
+            params["isIsolated"] = "FALSE"
+        return params, local_blocking
+
+    def _order_row_from_exchange(
+        self,
+        *,
+        execution_order_id: str,
+        execution_intent_id: str,
+        client_order_id: str,
+        family: str,
+        environment: str,
+        preview: dict[str, Any],
+        ack_payload: dict[str, Any] | None,
+        submitted_at: str,
+        acknowledged_at: str | None = None,
+        existing: dict[str, Any] | None = None,
+        canceled: bool = False,
+    ) -> dict[str, Any]:
+        payload = ack_payload if isinstance(ack_payload, dict) else {}
+        current = existing or {}
+        raw_last = payload or current.get("raw_last_status_json") or {}
+        order_status = str(
+            payload.get("status")
+            or raw_last.get("status")
+            or current.get("order_status")
+            or ("CANCELED" if canceled else "NEW")
+        ).upper()
+        ack_time = acknowledged_at or _ms_to_iso(payload.get("updateTime")) or _ms_to_iso(payload.get("transactTime")) or current.get("acknowledged_at") or submitted_at
+        canceled_at = (
+            utc_now_iso()
+            if canceled or order_status == "CANCELED"
+            else current.get("canceled_at")
+        )
+        return {
+            "execution_order_id": str(current.get("execution_order_id") or execution_order_id),
+            "execution_intent_id": execution_intent_id,
+            "venue_order_id": str(payload.get("orderId") or current.get("venue_order_id") or "") or None,
+            "client_order_id": str(
+                payload.get("clientOrderId")
+                or payload.get("origClientOrderId")
+                or current.get("client_order_id")
+                or client_order_id
+            ),
+            "symbol": _canonical_symbol(payload.get("symbol") or preview.get("symbol") or current.get("symbol")),
+            "family": family,
+            "environment": environment,
+            "order_status": order_status,
+            "execution_type_last": str(payload.get("executionType") or current.get("execution_type_last") or order_status),
+            "submitted_at": str(current.get("submitted_at") or submitted_at),
+            "acknowledged_at": ack_time,
+            "canceled_at": canceled_at,
+            "expired_at": current.get("expired_at"),
+            "reduce_only": current.get("reduce_only") if current.get("reduce_only") is not None else preview.get("reduce_only"),
+            "tif": str(payload.get("timeInForce") or preview.get("time_in_force") or current.get("tif") or "") or None,
+            "price": _first_number(payload.get("price"), preview.get("limit_price"), current.get("price")),
+            "orig_qty": _first_number(payload.get("origQty"), preview.get("quantity"), current.get("orig_qty")),
+            "executed_qty": _first_number(payload.get("executedQty"), current.get("executed_qty")) or 0.0,
+            "cum_quote_qty": _first_number(payload.get("cummulativeQuoteQty"), payload.get("cumQuote"), current.get("cum_quote_qty")) or 0.0,
+            "avg_fill_price": _first_number(payload.get("avgPrice"), current.get("avg_fill_price")),
+            "reject_code": payload.get("code") or current.get("reject_code"),
+            "reject_reason": payload.get("msg") or current.get("reject_reason"),
+            "raw_ack_json": payload if payload else current.get("raw_ack_json") or {},
+            "raw_last_status_json": raw_last,
+        }
+
+    def _paper_ack_payload(self, preview: dict[str, Any], client_order_id: str, submitted_at: str) -> dict[str, Any]:
+        return {
+            "symbol": _canonical_symbol(preview.get("symbol")),
+            "clientOrderId": client_order_id,
+            "status": "NEW",
+            "type": str(preview.get("order_type") or "").upper(),
+            "side": str(preview.get("side") or "").upper(),
+            "price": preview.get("limit_price") or 0.0,
+            "origQty": preview.get("quantity") or 0.0,
+            "executedQty": 0.0,
+            "cummulativeQuoteQty": 0.0,
+            "timeInForce": preview.get("time_in_force"),
+            "transactTime": int(_parse_ts(submitted_at).timestamp() * 1000) if _parse_ts(submitted_at) else int(time.time() * 1000),
+            "source": "paper_local",
+        }
+
+    def _query_remote_order_snapshot(self, order: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        params: dict[str, Any] = {
+            "symbol": _canonical_symbol(order.get("symbol")),
+            "origClientOrderId": order.get("client_order_id"),
+        }
+        if order.get("venue_order_id"):
+            params["orderId"] = order.get("venue_order_id")
+        payload, meta = self._signed_request(
+            "GET",
+            self._execution_endpoint(family, environment, "query"),
+            family=family,
+            environment=environment,
+            params=params,
+        )
+        if isinstance(payload, dict):
+            updated = self.db.upsert_order(
+                self._order_row_from_exchange(
+                    execution_order_id=str(order.get("execution_order_id")),
+                    execution_intent_id=str(order.get("execution_intent_id") or ""),
+                    client_order_id=str(order.get("client_order_id") or ""),
+                    family=family,
+                    environment=environment,
+                    preview=order,
+                    ack_payload=payload,
+                    submitted_at=str(order.get("submitted_at") or utc_now_iso()),
+                    existing=order,
+                )
+            )
+            return updated, meta
+        return None, meta
+
+    def _remote_open_orders_snapshot(
+        self,
+        *,
+        family: str,
+        environment: str,
+        symbol: str | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        params = {"symbol": _canonical_symbol(symbol)} if symbol else {}
+        payload, meta = self._signed_request(
+            "GET",
+            self._execution_endpoint(family, environment, "open_orders"),
+            family=family,
+            environment=environment,
+            params=params,
+        )
+        rows = payload if isinstance(payload, list) else []
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            local = None
+            if row.get("orderId"):
+                local = self.db.order_by_venue_order_id(str(row.get("orderId")))
+            if local is None and row.get("clientOrderId"):
+                local = self.db.order_by_client_order_id(str(row.get("clientOrderId")))
+            if local is not None:
+                updated = self.db.upsert_order(
+                    self._order_row_from_exchange(
+                        execution_order_id=str(local.get("execution_order_id")),
+                        execution_intent_id=str(local.get("execution_intent_id") or ""),
+                        client_order_id=str(local.get("client_order_id") or row.get("clientOrderId") or ""),
+                        family=family,
+                        environment=environment,
+                        preview=local,
+                        ack_payload=row,
+                        submitted_at=str(local.get("submitted_at") or utc_now_iso()),
+                        existing=local,
+                    )
+                )
+                items.append(updated)
+            else:
+                items.append(
+                    _hydrate_order_row(
+                        {
+                            "execution_order_id": None,
+                            "execution_intent_id": None,
+                            "venue_order_id": str(row.get("orderId") or "") or None,
+                            "client_order_id": str(row.get("clientOrderId") or ""),
+                            "symbol": _canonical_symbol(row.get("symbol")),
+                            "family": family,
+                            "environment": environment,
+                            "order_status": str(row.get("status") or "NEW").upper(),
+                            "execution_type_last": str(row.get("executionType") or row.get("status") or "NEW").upper(),
+                            "submitted_at": _ms_to_iso(row.get("time")) or utc_now_iso(),
+                            "acknowledged_at": _ms_to_iso(row.get("updateTime")) or _ms_to_iso(row.get("time")) or utc_now_iso(),
+                            "canceled_at": None,
+                            "expired_at": None,
+                            "reduce_only": row.get("reduceOnly"),
+                            "tif": row.get("timeInForce"),
+                            "price": _first_number(row.get("price")),
+                            "orig_qty": _first_number(row.get("origQty")),
+                            "executed_qty": _first_number(row.get("executedQty")) or 0.0,
+                            "cum_quote_qty": _first_number(row.get("cummulativeQuoteQty"), row.get("cumQuote")) or 0.0,
+                            "avg_fill_price": _first_number(row.get("avgPrice")),
+                            "reject_code": None,
+                            "reject_reason": None,
+                            "raw_ack_json": {},
+                            "raw_last_status_json": row,
+                        }
+                    )
+                    or {}
+                )
+        return items, meta
+
     def preflight(self, request: dict[str, Any]) -> dict[str, Any]:
         family = _normalize_family(request.get("family"))
         environment = _normalize_environment(request.get("environment"))
@@ -1313,6 +1910,10 @@ class ExecutionRealityService:
             quote_qty = _first_number(preview.get("quote_quantity"))
             if qty is None and quote_qty is None:
                 blocking.append("quantity_or_quote_quantity_required")
+            if preview.get("order_type") == "LIMIT" and qty is None:
+                blocking.append("quantity_required_for_limit")
+            if family in {"usdm_futures", "coinm_futures"} and qty is None:
+                blocking.append("quantity_required_for_futures")
             if qty is not None and min_qty is not None and qty < min_qty:
                 blocking.append("quantity_below_min_qty")
             if qty is not None and max_qty is not None and qty > max_qty:
@@ -1470,16 +2071,391 @@ class ExecutionRealityService:
         }
 
     def create_order(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError("Execution router fase 1 se implementa en la parte 3.3 del bloque.")
+        request = copy.deepcopy(payload)
+        preflight = self.preflight(request)
+        normalized = preflight.get("normalized_order_preview") if isinstance(preflight.get("normalized_order_preview"), dict) else {}
+        estimated_costs = preflight.get("estimated_costs") if isinstance(preflight.get("estimated_costs"), dict) else {}
+        family = _normalize_family(request.get("family"))
+        environment = _normalize_environment(request.get("environment"))
+        mode = _normalize_mode(request.get("mode"), environment)
+        submitted_at = utc_now_iso()
+
+        intent = self.db.insert_intent(
+            {
+                "venue": "binance",
+                "family": family,
+                "environment": environment,
+                "mode": mode,
+                "strategy_id": request.get("strategy_id"),
+                "bot_id": request.get("bot_id"),
+                "signal_id": request.get("signal_id"),
+                "symbol": normalized.get("symbol") or _canonical_symbol(request.get("symbol")),
+                "side": normalized.get("side") or str(request.get("side") or "").upper(),
+                "order_type": normalized.get("order_type") or str(request.get("order_type") or "").upper(),
+                "time_in_force": normalized.get("time_in_force"),
+                "quantity": normalized.get("quantity"),
+                "quote_quantity": normalized.get("quote_quantity"),
+                "limit_price": normalized.get("limit_price"),
+                "reduce_only": normalized.get("reduce_only"),
+                "requested_notional": estimated_costs.get("requested_notional"),
+                "estimated_fee": estimated_costs.get("exchange_fee_estimated"),
+                "estimated_slippage_bps": estimated_costs.get("slippage_bps"),
+                "estimated_total_cost": estimated_costs.get("total_cost_estimated"),
+                "preflight_status": "blocked" if not _bool(preflight.get("allowed")) else "allowed",
+                "preflight_errors_json": preflight.get("blocking_reasons") or [],
+                "policy_hash": self.policy_hash(),
+                "snapshot_id": ((preflight.get("snapshot_source") or {}).get("snapshot_id") if isinstance(preflight.get("snapshot_source"), dict) else None),
+                "capability_snapshot_id": ((preflight.get("capability_source") or {}).get("capability_snapshot_id") if isinstance(preflight.get("capability_source"), dict) else None),
+                "raw_request_json": request,
+            }
+        )
+
+        if not _bool(preflight.get("allowed")):
+            return {
+                "execution_intent_id": intent.get("execution_intent_id"),
+                "execution_order_id": None,
+                "client_order_id": intent.get("client_order_id"),
+                "family": family,
+                "environment": environment,
+                "mode": mode,
+                "order_status": "BLOCKED",
+                "estimated_costs": estimated_costs,
+                "fail_closed": _bool(preflight.get("fail_closed")),
+                "warnings": preflight.get("warnings") or [],
+                "blocking_reasons": preflight.get("blocking_reasons") or [],
+                "preflight": preflight,
+            }
+
+        if environment == "paper":
+            order = self.db.upsert_order(
+                self._order_row_from_exchange(
+                    execution_order_id=str(uuid4()),
+                    execution_intent_id=str(intent.get("execution_intent_id")),
+                    client_order_id=str(intent.get("client_order_id")),
+                    family=family,
+                    environment=environment,
+                    preview=normalized,
+                    ack_payload=self._paper_ack_payload(normalized, str(intent.get("client_order_id")), submitted_at),
+                    submitted_at=submitted_at,
+                    acknowledged_at=submitted_at,
+                )
+            )
+            self.db.update_intent_submission(
+                str(intent.get("execution_intent_id")),
+                submitted_at=submitted_at,
+                preflight_status="submitted",
+            )
+            return {
+                "execution_intent_id": intent.get("execution_intent_id"),
+                "execution_order_id": order.get("execution_order_id"),
+                "client_order_id": order.get("client_order_id"),
+                "family": family,
+                "environment": environment,
+                "mode": mode,
+                "order_status": order.get("order_status"),
+                "estimated_costs": estimated_costs,
+                "fail_closed": False,
+                "warnings": preflight.get("warnings") or [],
+                "blocking_reasons": [],
+            }
+
+        params, local_blocking = self._build_submit_params(
+            family=family,
+            environment=environment,
+            preview=normalized,
+            client_order_id=str(intent.get("client_order_id")),
+        )
+        if local_blocking:
+            self.db.update_intent_submission(
+                str(intent.get("execution_intent_id")),
+                preflight_status="blocked",
+                preflight_errors_json=list(local_blocking),
+            )
+            return {
+                "execution_intent_id": intent.get("execution_intent_id"),
+                "execution_order_id": None,
+                "client_order_id": intent.get("client_order_id"),
+                "family": family,
+                "environment": environment,
+                "mode": mode,
+                "order_status": "BLOCKED",
+                "estimated_costs": estimated_costs,
+                "fail_closed": mode == "live",
+                "warnings": preflight.get("warnings") or [],
+                "blocking_reasons": list(local_blocking),
+                "preflight": preflight,
+            }
+
+        endpoint = self._execution_endpoint(family, environment, "submit")
+        ack_payload, meta = self._signed_request(
+            "POST",
+            endpoint,
+            family=family,
+            environment=environment,
+            params=params,
+        )
+        if not isinstance(ack_payload, dict):
+            self.db.update_intent_submission(
+                str(intent.get("execution_intent_id")),
+                preflight_status="submit_failed",
+                preflight_errors_json=[str(meta.get("reason") or "submit_failed")],
+            )
+            return {
+                "execution_intent_id": intent.get("execution_intent_id"),
+                "execution_order_id": None,
+                "client_order_id": intent.get("client_order_id"),
+                "family": family,
+                "environment": environment,
+                "mode": mode,
+                "order_status": "SUBMIT_FAILED",
+                "estimated_costs": estimated_costs,
+                "fail_closed": mode == "live",
+                "warnings": preflight.get("warnings") or [],
+                "blocking_reasons": [str(meta.get("reason") or "submit_failed")],
+                "submit_meta": meta,
+            }
+
+        order = self.db.upsert_order(
+            self._order_row_from_exchange(
+                execution_order_id=str(uuid4()),
+                execution_intent_id=str(intent.get("execution_intent_id")),
+                client_order_id=str(intent.get("client_order_id")),
+                family=family,
+                environment=environment,
+                preview=normalized,
+                ack_payload=ack_payload,
+                submitted_at=submitted_at,
+            )
+        )
+        self.db.update_intent_submission(
+            str(intent.get("execution_intent_id")),
+            submitted_at=submitted_at,
+            preflight_status="submitted",
+        )
+        return {
+            "execution_intent_id": intent.get("execution_intent_id"),
+            "execution_order_id": order.get("execution_order_id"),
+            "client_order_id": order.get("client_order_id"),
+            "family": family,
+            "environment": environment,
+            "mode": mode,
+            "order_status": order.get("order_status"),
+            "estimated_costs": estimated_costs,
+            "fail_closed": False,
+            "warnings": preflight.get("warnings") or [],
+            "blocking_reasons": [],
+            "submit_meta": meta,
+        }
+
+    def list_orders(
+        self,
+        *,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        status: str | None = None,
+        strategy_id: str | None = None,
+        bot_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family) if family else None
+        normalized_environment = _normalize_environment(environment) if environment else None
+        items = self.db.list_orders(
+            family=normalized_family,
+            environment=normalized_environment,
+            symbol=symbol,
+            status=status,
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            limit=limit,
+            offset=offset,
+        )
+        remote_snapshot: list[dict[str, Any]] = []
+        remote_meta: dict[str, Any] | None = None
+        if normalized_family and normalized_environment in {"live", "testnet"}:
+            remote_snapshot, remote_meta = self._remote_open_orders_snapshot(
+                family=normalized_family,
+                environment=normalized_environment,
+                symbol=symbol,
+            )
+            items = self.db.list_orders(
+                family=normalized_family,
+                environment=normalized_environment,
+                symbol=symbol,
+                status=status,
+                strategy_id=strategy_id,
+                bot_id=bot_id,
+                limit=limit,
+                offset=offset,
+            )
+        return {
+            "items": items,
+            "count": len(items),
+            "filters": {
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "symbol": _canonical_symbol(symbol) if symbol else None,
+                "status": str(status or "").upper() or None,
+                "strategy_id": strategy_id,
+                "bot_id": bot_id,
+                "limit": int(limit),
+                "offset": int(offset),
+            },
+            "remote_open_orders": remote_snapshot,
+            "remote_source": remote_meta,
+        }
 
     def order_detail(self, execution_order_id: str) -> dict[str, Any] | None:
-        raise NotImplementedError("Execution order detail se implementa en la parte 3.3 del bloque.")
+        order = self.db.order_by_id(execution_order_id)
+        if order is None:
+            return None
+        remote_status = None
+        remote_meta = None
+        if str(order.get("environment") or "").lower() in {"live", "testnet"}:
+            remote_status, remote_meta = self._query_remote_order_snapshot(order)
+            if remote_status is not None:
+                order = remote_status
+        intent = self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None
+        return {
+            "order": order,
+            "intent": intent,
+            "fills": self.db.fills_for_order(str(order.get("execution_order_id"))),
+            "reconcile_events": self.db.reconcile_events_for_order(str(order.get("execution_order_id"))),
+            "remote_status": remote_status.get("raw_last_status_json") if isinstance(remote_status, dict) else None,
+            "remote_source": remote_meta,
+        }
 
     def cancel_order(self, execution_order_id: str) -> dict[str, Any]:
-        raise NotImplementedError("Execution cancel se implementa en la parte 3.3 del bloque.")
+        order = self.db.order_by_id(execution_order_id)
+        if order is None:
+            raise ValueError("execution_order_not_found")
+        if str(order.get("order_status") or "").upper() in TERMINAL_ORDER_STATUSES:
+            return {
+                "execution_order_id": order.get("execution_order_id"),
+                "order_status": order.get("order_status"),
+                "already_terminal": True,
+                "order": order,
+            }
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        if environment == "paper":
+            updated = self.db.upsert_order(
+                self._order_row_from_exchange(
+                    execution_order_id=str(order.get("execution_order_id")),
+                    execution_intent_id=str(order.get("execution_intent_id") or ""),
+                    client_order_id=str(order.get("client_order_id") or ""),
+                    family=family,
+                    environment=environment,
+                    preview=order,
+                    ack_payload={"status": "CANCELED", "symbol": order.get("symbol"), "clientOrderId": order.get("client_order_id"), "source": "paper_local_cancel"},
+                    submitted_at=str(order.get("submitted_at") or utc_now_iso()),
+                    existing=order,
+                    canceled=True,
+                )
+            )
+            return {
+                "execution_order_id": updated.get("execution_order_id"),
+                "order_status": updated.get("order_status"),
+                "canceled_count": 1,
+                "order": updated,
+                "remote_source": {"ok": True, "reason": "paper_local"},
+            }
+        params: dict[str, Any] = {
+            "symbol": _canonical_symbol(order.get("symbol")),
+            "origClientOrderId": order.get("client_order_id"),
+        }
+        if order.get("venue_order_id"):
+            params["orderId"] = order.get("venue_order_id")
+        payload, meta = self._signed_request(
+            "DELETE",
+            self._execution_endpoint(family, environment, "cancel"),
+            family=family,
+            environment=environment,
+            params=params,
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError(str(meta.get("error") or meta.get("reason") or "cancel_failed"))
+        updated = self.db.upsert_order(
+            self._order_row_from_exchange(
+                execution_order_id=str(order.get("execution_order_id")),
+                execution_intent_id=str(order.get("execution_intent_id") or ""),
+                client_order_id=str(order.get("client_order_id") or ""),
+                family=family,
+                environment=environment,
+                preview=order,
+                ack_payload=payload,
+                submitted_at=str(order.get("submitted_at") or utc_now_iso()),
+                existing=order,
+                canceled=True,
+            )
+        )
+        return {
+            "execution_order_id": updated.get("execution_order_id"),
+            "order_status": updated.get("order_status"),
+            "canceled_count": 1,
+            "order": updated,
+            "remote_source": meta,
+        }
 
     def cancel_all(self, *, family: str, environment: str, symbol: str | None = None) -> dict[str, Any]:
-        raise NotImplementedError("Execution cancel-all se implementa en la parte 3.3 del bloque.")
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        target_symbol = _canonical_symbol(symbol) if symbol else None
+        if not target_symbol:
+            raise ValueError("symbol_required_for_cancel_all")
+        open_orders = [
+            row
+            for row in self.db.open_orders(family=normalized_family, symbol=target_symbol)
+            if str(row.get("environment") or "").lower() == normalized_environment
+        ]
+        if normalized_environment == "paper":
+            canceled: list[dict[str, Any]] = []
+            for row in open_orders:
+                canceled.append(self.cancel_order(str(row.get("execution_order_id")))["order"])
+            return {
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "symbol": target_symbol,
+                "canceled_count": len(canceled),
+                "items": canceled,
+                "remote_source": {"ok": True, "reason": "paper_local"},
+            }
+        params = {"symbol": target_symbol}
+        payload, meta = self._signed_request(
+            "DELETE",
+            self._execution_endpoint(normalized_family, normalized_environment, "cancel_all"),
+            family=normalized_family,
+            environment=normalized_environment,
+            params=params,
+        )
+        if payload is None:
+            raise RuntimeError(str(meta.get("error") or meta.get("reason") or "cancel_all_failed"))
+        canceled: list[dict[str, Any]] = []
+        for row in open_orders:
+            updated = self.db.upsert_order(
+                self._order_row_from_exchange(
+                    execution_order_id=str(row.get("execution_order_id")),
+                    execution_intent_id=str(row.get("execution_intent_id") or ""),
+                    client_order_id=str(row.get("client_order_id") or ""),
+                    family=normalized_family,
+                    environment=normalized_environment,
+                    preview=row,
+                    ack_payload={"status": "CANCELED", "symbol": row.get("symbol"), "clientOrderId": row.get("client_order_id"), "raw_cancel_all_payload": payload},
+                    submitted_at=str(row.get("submitted_at") or utc_now_iso()),
+                    existing=row,
+                    canceled=True,
+                )
+            )
+            canceled.append(updated)
+        return {
+            "family": normalized_family,
+            "environment": normalized_environment,
+            "symbol": target_symbol,
+            "canceled_count": len(canceled),
+            "items": canceled,
+            "remote_source": {**meta, "raw_payload": payload},
+        }
 
     def reconcile_orders(self) -> dict[str, Any]:
         raise NotImplementedError("Execution reconcile se implementa en la parte 3.4 del bloque.")

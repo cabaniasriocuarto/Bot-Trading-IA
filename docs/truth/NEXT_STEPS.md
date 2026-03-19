@@ -102,8 +102,12 @@ Fecha: 2026-03-19
   - fail-closed en `live`
   - endpoint `POST /api/v1/execution/preflight`
   - summary minimo `GET /api/v1/execution/live-safety/summary`
-- [ ] Parte 3.3:
+- [x] Parte 3.3:
   - submit/query/cancel/cancel-all fase 1
+  - router limitado explicitamente a `MARKET/LIMIT`
+  - intents persistidos antes del submit
+  - estados locales auditables
+  - endpoints `/api/v1/execution/orders*`
 - [ ] Parte 3.4:
   - reconcile basico
   - fills -> reporting bridge
@@ -113,7 +117,7 @@ Fecha: 2026-03-19
   - live safety final
 
 ## Siguiente subparte recomendada
-- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.3`.
+- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.4`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

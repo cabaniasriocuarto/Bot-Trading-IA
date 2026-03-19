@@ -2,6 +2,100 @@
 
 Fecha de actualizacion: 2026-03-19
 
+## RTLOPS-21 Parte 3.3: Submit / query / cancel / cancel-all fase 1 - 2026-03-19
+
+- Trazabilidad del bloque:
+  - issue operativa usada: `RTLOPS-21`
+  - rama incremental: `feature/execution-reality-live-safety-p1`
+  - base preservada sin reabrir bloques:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+- Autoridad canonica que gobierna esta subparte:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+  - `config/policies/instrument_registry.yaml`
+  - `config/policies/universes.yaml`
+  - `config/policies/cost_stack.yaml`
+- Endpoints nuevos/minimos cerrados en 3.3:
+  - `POST /api/v1/execution/orders`
+  - `GET /api/v1/execution/orders`
+  - `GET /api/v1/execution/orders/{id}`
+  - `POST /api/v1/execution/orders/{id}/cancel`
+  - `POST /api/v1/execution/orders/cancel-all`
+
+### Alcance real cerrado en la parte 3.3
+
+- `ExecutionRealityService.create_order(...)` ahora:
+  - reusa obligatoriamente `preflight(...)` de `3.2`
+  - persiste `execution_intent` antes del submit
+  - persiste `execution_order` inicial cuando el submit queda aceptado
+  - devuelve `execution_intent_id / execution_order_id / client_order_id / family / environment / mode / estimated_costs / fail_closed`
+- Router fase 1 soportado en esta subparte:
+  - familias:
+    - `spot`
+    - `margin`
+    - `usdm_futures`
+    - `coinm_futures`
+  - tipos de orden:
+    - `MARKET`
+    - `LIMIT`
+  - operaciones:
+    - submit
+    - query single order
+    - query open orders
+    - cancel single
+    - cancel all por simbolo
+- Regla operativa explicita:
+  - `LIMIT` exige `price` explicito y `quantity` explicita
+  - futuros (`usdm_futures` / `coinm_futures`) exigen `quantity` explicita
+  - `live` sigue fail-closed si el preflight detecta faltantes criticos, incluido fee source real
+  - `paper` no finge capabilities `live`; crea orden local auditable y no inventa fills/realized todavia
+
+### Arquitectura real de estado local en 3.3
+
+- `execution_intents` conserva:
+  - request crudo
+  - `preflight_status`
+  - errores de preflight
+  - `policy_hash`
+  - snapshot/capability source ids
+- `execution_orders` conserva:
+  - estado local auditable
+  - `raw_ack_json`
+  - `raw_last_status_json`
+  - transiciones de cancelacion
+- Query/detail en `live/testnet`:
+  - intentan resolver estado remoto firmado contra Binance
+  - refrescan localmente el estado de la orden cuando la consulta remota responde
+  - si el remoto no responde, devuelven la vista local sin inventar fills ni reconcile final
+
+### Diferencia real entre estimated y realized en 3.3
+
+- Antes del submit:
+  - toda orden sale con `estimated_costs` provenientes del preflight/cost stack
+- Todavia NO cerrado en esta subparte:
+  - fills reales
+  - `estimated -> realized`
+  - `trade_cost_ledger` runtime-aware
+  - reconcile completo
+- Regla vigente:
+  - `3.3` deja el submit cost-aware y auditable;
+  - `3.4` sigue siendo la subparte que materializa fills, costos realizados y reconcile base.
+
+### Limites conscientes de la parte 3.3
+
+- Fuera de alcance por diseno en esta fase:
+  - conditional orders
+  - algo orders
+  - trailing stops
+  - stop/take profit complejos
+- Restriccion explicita mantenida:
+  - no se asume compatibilidad historica de conditional orders de `USDⓈ-M`;
+  - `3.3` queda limitado a `MARKET/LIMIT` hasta validar esa familia en subfase futura contra documentacion oficial vigente.
+
 ## RTLOPS-21 Parte 3.2: Preflight serio + endpoints backend minimos - 2026-03-19
 
 - Trazabilidad del bloque:

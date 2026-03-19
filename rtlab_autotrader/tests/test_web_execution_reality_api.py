@@ -226,6 +226,21 @@ def _login(client: TestClient, username: str, password: str) -> str:
     return str(res.json()["token"])
 
 
+def _paper_execution_payload(*, order_type: str = "LIMIT", price: float | None = 50000.0, quantity: float = 0.01) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "family": "spot",
+        "environment": "paper",
+        "mode": "paper",
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "order_type": order_type,
+        "quantity": quantity,
+    }
+    if price is not None:
+        payload["price"] = price
+    return payload
+
+
 def test_config_policies_exposes_execution_bootstrap_metadata(tmp_path: Path, monkeypatch) -> None:
     module, client = _build_app(tmp_path, monkeypatch)
     _ensure_execution_prereqs(module)
@@ -356,3 +371,102 @@ def test_execution_live_safety_summary_endpoint_reports_preflight_state(tmp_path
     assert payload["capabilities_known"] is True
     assert "spot" in payload["supported_families"]
     assert payload["overall_status"] == "WARN"
+
+
+def test_execution_orders_create_endpoint_persists_paper_order(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+
+    res = client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload())
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["order_status"] == "NEW"
+    assert payload["execution_intent_id"]
+    assert payload["execution_order_id"]
+    assert payload["estimated_costs"]["total_cost_estimated"] > 0
+
+
+def test_execution_orders_list_and_detail_endpoints_return_created_order(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+    created = client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload()).json()
+
+    listed = client.get(
+        "/api/v1/execution/orders?family=spot&environment=paper&symbol=BTCUSDT&status=OPEN",
+        headers=_auth_headers(token),
+    )
+    detail = client.get(
+        f"/api/v1/execution/orders/{created['execution_order_id']}",
+        headers=_auth_headers(token),
+    )
+
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["count"] == 1
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["order"]["execution_order_id"] == created["execution_order_id"]
+    assert detail.json()["intent"]["execution_intent_id"] == created["execution_intent_id"]
+
+
+def test_execution_orders_cancel_endpoint_cancels_single_order(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+    created = client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload()).json()
+
+    res = client.post(
+        f"/api/v1/execution/orders/{created['execution_order_id']}/cancel",
+        headers=_auth_headers(token),
+    )
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["order_status"] == "CANCELED"
+
+
+def test_execution_orders_cancel_all_endpoint_cancels_symbol_orders(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+    client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload(price=50000.0))
+    client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload(price=50010.0))
+
+    res = client.post(
+        "/api/v1/execution/orders/cancel-all",
+        headers=_auth_headers(token),
+        json={"family": "spot", "environment": "paper", "symbol": "BTCUSDT"},
+    )
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["canceled_count"] == 2

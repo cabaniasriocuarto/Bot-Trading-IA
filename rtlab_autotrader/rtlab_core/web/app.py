@@ -664,6 +664,12 @@ class ExecutionPreflightBody(BaseModel):
     market_snapshot: dict[str, Any] | None = None
 
 
+class ExecutionCancelAllBody(BaseModel):
+    family: str
+    environment: str
+    symbol: str
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -9317,6 +9323,80 @@ def create_app() -> FastAPI:
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
         return store.execution_reality.preflight(body.model_dump())
+
+    @app.post("/api/v1/execution/orders")
+    def execution_create_order(
+        body: ExecutionPreflightBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.create_order(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/orders")
+    def execution_list_orders(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.list_orders(
+                family=family,
+                environment=environment,
+                symbol=symbol,
+                status=status,
+                strategy_id=strategy_id,
+                bot_id=bot_id,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/orders/{execution_order_id}")
+    def execution_order_detail(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.order_detail(execution_order_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return payload
+
+    @app.post("/api/v1/execution/orders/{execution_order_id}/cancel")
+    def execution_cancel_order(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.cancel_order(execution_order_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/orders/cancel-all")
+    def execution_cancel_all(
+        body: ExecutionCancelAllBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.cancel_all(
+                family=body.family,
+                environment=body.environment,
+                symbol=body.symbol,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/v1/execution/live-safety/summary")
     def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
