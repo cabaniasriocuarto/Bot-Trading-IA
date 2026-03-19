@@ -1,6 +1,72 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-18
+Fecha de actualizacion: 2026-03-19
+
+## RTLOPS-21 Parte 3.1: Execution Reality + Live Safety base - 2026-03-19
+
+- Trazabilidad del bloque:
+  - issue operativa usada: `RTLOPS-21`
+  - base previa reutilizada sin reabrir bloques:
+    - `4a6bccf` (`M2 runtime controls / thresholds`)
+    - `7d4dc97` (`Binance Catalog + Universes + Live Parity base`)
+    - `9854b30` (`Bridge cost stack + reporting / export`)
+- Fuente canonica nueva dentro de `config/policies/`:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+- Compatibilidad permitida, pero no equivalente en autoridad:
+  - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - `rtlab_autotrader/config/policies/execution_router.yaml`
+  - quedan solo como fallback de empaquetado/deploy.
+- Persistencia canonica nueva:
+  - `user_data/execution/execution.sqlite3`
+  - tablas base creadas:
+    - `execution_intents`
+    - `execution_orders`
+    - `execution_fills`
+    - `execution_reconcile_events`
+    - `kill_switch_events`
+
+### Alcance real cerrado en la parte 3.1
+
+- Servicio canonico nuevo:
+  - `rtlab_autotrader/rtlab_core/execution/reality.py`
+- Wiring minimo aplicado:
+  - `rtlab_autotrader/rtlab_core/web/app.py` instancia `ExecutionRealityService` dentro de `ConsoleStore`
+  - `GET /api/v1/config/policies` ya expone metadata visible de `execution_safety` y `execution_router`
+  - `rtlab_autotrader/rtlab_core/policy_paths.py` reconoce estos YAML como parte del set canonico esperado
+- Estado funcional que SI queda listo:
+  - storage auditable base
+  - carga de policies canonicas
+  - servicio base instanciable
+  - caches base para quote / stream / margin level
+  - stubs explicitos para `preflight`, router, reconcile y live safety sin esconder defaults magicos
+
+### Integracion con bloques previos
+
+- `registry / universes / capabilities` siguen viniendo de:
+  - `rtlab_autotrader/rtlab_core/instruments/registry.py`
+  - `rtlab_autotrader/rtlab_core/universe/service.py`
+- `cost_stack / reporting_exports` siguen viniendo de:
+  - `rtlab_autotrader/rtlab_core/reporting/service.py`
+- Regla de diseno vigente desde 3.1:
+  - `Execution Reality + Live Safety` sigue siendo cost-aware por diseno
+  - la materializacion estimated vs realized no se rehace ni se duplica fuera del bridge `9854b30`
+  - la parte 3.1 deja la base compatible para que 3.2-3.5 agreguen comportamiento sin romper storage/modelos
+
+### Pendiente explicitamente diferido a las siguientes subpartes
+
+- Parte 3.2:
+  - `preflight` cost-aware y fail-closed en `live`
+  - endpoint `POST /api/v1/execution/preflight`
+- Parte 3.3:
+  - submit/query/cancel/cancel-all fase 1
+- Parte 3.4:
+  - reconcile base
+  - fills -> reporting bridge
+  - estimated vs realized runtime
+- Parte 3.5:
+  - kill switch operativo
+  - live safety summary final
 
 ## RTLOPS Bridge: Cost Stack + Reporting / Export Contracts - 2026-03-18
 

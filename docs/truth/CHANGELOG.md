@@ -1,5 +1,40 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-19
+
+### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.1
+- Backend / persistencia:
+  - nuevo `user_data/execution/execution.sqlite3` para lifecycle base auditable de execution reality.
+  - nuevas tablas base:
+    - `execution_intents`
+    - `execution_orders`
+    - `execution_fills`
+    - `execution_reconcile_events`
+    - `kill_switch_events`
+- Policies nuevas:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+  - sus copias nested en `rtlab_autotrader/config/policies/` quedan solo como compatibilidad/fallback.
+- Wiring minimo aplicado:
+  - `rtlab_core/execution/reality.py` agrega:
+    - loaders canonicos
+    - servicio base instanciable
+    - storage SQLite auditable
+    - caches runtime base
+    - stubs explicitos para las partes 3.2-3.5
+  - `web/app.py` instancia el servicio en `ConsoleStore`.
+  - `GET /api/v1/config/policies` expone tambien metadata base de `execution_safety` / `execution_router`.
+- Decision de diseno clave:
+  - el bloque 3 se parte en subcapas chicas sin recortar el alcance original;
+  - `3.1` deja lista la infraestructura y no simula tener `preflight/router/reconcile` ya cerrados.
+- Limitaciones conscientes:
+  - `preflight`, router fase 1, reconcile y live safety operativo quedan pendientes para `3.2-3.5`.
+  - no se agrego frontend operativo; solo wiring backend y autoridad tecnica.
+- Validacion local de la parte 3.1:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/execution/__init__.py rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle -q` -> PASS
+
 ## 2026-03-18
 
 ### RTLOPS Bridge - Cost Stack + Reporting / Export Contracts

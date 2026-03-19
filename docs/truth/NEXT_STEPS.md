@@ -1,6 +1,6 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-18
+Fecha: 2026-03-19
 
 ## Cierre del bloque RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - 2026-03-18
 - [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.
@@ -90,8 +90,29 @@ Fecha: 2026-03-18
   - download endpoint dedicado para artefactos si la UI lo necesita
   - migrar `startup` FastAPI a lifespan para quitar warning deprecado
 
-## Siguiente bloque recomendado
-- [ ] Abrir `Execution Reality + Live Safety (continuacion cost-aware)`.
+## Ejecucion incremental del bloque `Execution Reality + Live Safety` - 2026-03-19
+- [x] Parte 3.1:
+  - policies canonicas `execution_safety` / `execution_router`
+  - storage base auditable
+  - servicio base instanciable
+  - wiring minimo en backend
+  - tests focalizados de storage/policies/wiring
+- [ ] Parte 3.2:
+  - preflight serio y cost-aware
+  - fail-closed en `live`
+  - endpoint `POST /api/v1/execution/preflight`
+- [ ] Parte 3.3:
+  - submit/query/cancel/cancel-all fase 1
+- [ ] Parte 3.4:
+  - reconcile basico
+  - fills -> reporting bridge
+  - estimated vs realized
+- [ ] Parte 3.5:
+  - kill switch operativo
+  - live safety final
+
+## Siguiente subparte recomendada
+- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.2`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

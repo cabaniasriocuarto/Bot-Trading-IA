@@ -35,6 +35,7 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.execution import ExecutionRealityService
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
 from rtlab_core.instruments import BinanceInstrumentRegistryService
@@ -720,6 +721,8 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "runtime_controls": root / "runtime_controls.yaml",
         "cost_stack": root / "cost_stack.yaml",
         "reporting_exports": root / "reporting_exports.yaml",
+        "execution_safety": root / "execution_safety.yaml",
+        "execution_router": root / "execution_router.yaml",
     }
 
 
@@ -733,6 +736,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     runtime_controls = bundle.get("runtime_controls") if isinstance(bundle.get("runtime_controls"), dict) else {}
     cost_stack = bundle.get("cost_stack") if isinstance(bundle.get("cost_stack"), dict) else {}
     reporting_exports = bundle.get("reporting_exports") if isinstance(bundle.get("reporting_exports"), dict) else {}
+    execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
+    execution_router = bundle.get("execution_router") if isinstance(bundle.get("execution_router"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
@@ -742,6 +747,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     rc = runtime_controls.get("runtime_controls") if isinstance(runtime_controls.get("runtime_controls"), dict) else {}
     cs = cost_stack.get("cost_stack") if isinstance(cost_stack.get("cost_stack"), dict) else {}
     rexp = reporting_exports.get("reporting_exports") if isinstance(reporting_exports.get("reporting_exports"), dict) else {}
+    exs = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
+    exr = execution_router.get("execution_router") if isinstance(execution_router.get("execution_router"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
@@ -766,6 +773,16 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     cs_alerts = cs.get("alerts") if isinstance(cs.get("alerts"), dict) else {}
     rexp_formats = rexp.get("formats") if isinstance(rexp.get("formats"), dict) else {}
     rexp_limits = rexp.get("limits") if isinstance(rexp.get("limits"), dict) else {}
+    exs_modes = exs.get("modes") if isinstance(exs.get("modes"), dict) else {}
+    exs_preflight = exs.get("preflight") if isinstance(exs.get("preflight"), dict) else {}
+    exs_sizing = exs.get("sizing") if isinstance(exs.get("sizing"), dict) else {}
+    exs_kill = exs.get("kill_switch") if isinstance(exs.get("kill_switch"), dict) else {}
+    exr_families = exr.get("families_enabled") if isinstance(exr.get("families_enabled"), dict) else {}
+    exr_supported = (
+        exr.get("first_iteration_supported_order_types")
+        if isinstance(exr.get("first_iteration_supported_order_types"), dict)
+        else {}
+    )
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -827,6 +844,15 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "cost_stack_block_total_cost_pct_gross": cs_alerts.get("block_if_total_cost_pct_of_gross_pnl_gt"),
         "reporting_export_formats": sorted([fmt for fmt, enabled in rexp_formats.items() if enabled]),
         "reporting_export_max_rows": rexp_limits.get("max_rows_per_export"),
+        "execution_allow_live": exs_modes.get("allow_live"),
+        "execution_quote_stale_block_ms": exs_preflight.get("quote_stale_block_ms"),
+        "execution_require_capability_snapshot": exs_preflight.get("require_capability_snapshot"),
+        "execution_max_notional_per_order_usd": exs_sizing.get("max_notional_per_order_usd"),
+        "execution_max_open_orders_total": exs_sizing.get("max_open_orders_total"),
+        "execution_kill_switch_enabled": exs_kill.get("enabled"),
+        "execution_kill_switch_auto_cancel_all": exs_kill.get("auto_cancel_all_on_trip"),
+        "execution_router_families_enabled": sorted([name for name, enabled in exr_families.items() if enabled]),
+        "execution_router_supported_order_types": exr_supported,
     }
 
 
@@ -2016,6 +2042,15 @@ class ConsoleStore:
             explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
             instrument_registry_service=self.instrument_registry,
             runs_path=RUNS_PATH,
+        )
+        self.execution_reality = ExecutionRealityService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            instrument_registry_service=self.instrument_registry,
+            universe_service=self.instrument_universes,
+            reporting_bridge_service=self.reporting_bridge,
+            runs_loader=self.load_runs,
         )
         self.instrument_registry_startup_sync: dict[str, Any] = {
             "ok": True,
