@@ -91,6 +91,28 @@ Fecha: 2026-03-19
   - private websockets completos
   - pre-flight/live safety de execution real
 
+## Correctivo 2A del bloque `Binance Catalog + Universes + Live Parity Base` - 2026-03-19
+- [x] Eliminar bundles espejo completos en codigo para:
+  - `instrument_registry`
+  - `universes`
+- [x] Dejar fallback minimo `fail-closed` explicito en lugar de defaults espejo completos.
+- [x] Separar con claridad:
+  - `source_hash` = hash del archivo fuente cargado
+  - `policy_hash` = hash del payload efectivo activo
+- [x] Exponer trazabilidad corregida en:
+  - `registry summary`
+  - `snapshots`
+  - `universes`
+  - `account capabilities` (via `policy_source`)
+- [x] Ampliar tests focalizados para:
+  - fuente exacta cargada
+  - divergencia root/nested
+  - falta de YAML
+  - hashes y trazabilidad real
+- [ ] Deuda chica restante:
+  - si en una iteracion futura se quiere una autoridad todavia mas estricta, puede evaluarse validacion estructural mas fina por family/universe especifico;
+  - no hace falta un `2B` inmediato para seguir con el programa.
+
 ## Cierre del bloque puente `Cost Stack + Reporting / Export Contracts` - 2026-03-18
 - [x] Crear autoridad canonica nueva en:
   - `config/policies/cost_stack.yaml`

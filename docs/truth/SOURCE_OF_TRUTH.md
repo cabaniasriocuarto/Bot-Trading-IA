@@ -32,6 +32,36 @@ Fecha de actualizacion: 2026-03-19
   - no toca reporting bridge;
   - no toca bloque 3.
 
+## RTLOPS-4 / RTLOPS-15 / RTLOPS-18 Correctivo 2A - authority/trazabilidad mas rigurosa - 2026-03-19
+
+- `config/policies/instrument_registry.yaml` y `config/policies/universes.yaml` siguen siendo la fuente primaria del bloque.
+- `rtlab_autotrader/config/policies/instrument_registry.yaml` y `rtlab_autotrader/config/policies/universes.yaml` se mantienen solo como compatibilidad de empaquetado/deploy.
+- Cambio correctivo real aplicado:
+  - `rtlab_autotrader/rtlab_core/instruments/registry.py` ya no mantiene un bundle espejo completo de `instrument_registry.yaml`.
+  - `rtlab_autotrader/rtlab_core/universe/service.py` ya no mantiene un bundle espejo completo de `universes.yaml`.
+  - ambos loaders aplican fallback `fail-closed` minimo y explicito cuando la policy falta o es invalida.
+- Trazabilidad corregida:
+  - `source_hash` = hash del archivo YAML fuente efectivamente cargado.
+  - `policy_hash` = hash del payload activo efectivo despues de validacion/fallback.
+  - `policy_source` de registry/capabilities/universes/snapshots expone:
+    - `source`
+    - `path`
+    - `source_root`
+    - `source_hash`
+    - `policy_hash`
+    - `errors`
+    - `warnings`
+    - `fallback_used`
+    - `selected_role`
+    - `canonical_root`
+    - `canonical_role`
+    - `divergent_candidates`
+- Alcance del correctivo:
+  - no reabre el bloque 2 desde cero;
+  - no toca reporting bridge;
+  - no toca execution reality;
+  - no cambia la regla de `live_parity_base_ready`, solo limpia autoridad primaria, fallback y trazabilidad.
+
 ## RTLOPS-21 Parte 3.3: Submit / query / cancel / cancel-all fase 1 - 2026-03-19
 
 - Trazabilidad del bloque:
@@ -375,6 +405,9 @@ Fecha de actualizacion: 2026-03-19
   - `rtlab_autotrader/config/policies/instrument_registry.yaml`
   - `rtlab_autotrader/config/policies/universes.yaml`
   - quedan solo como fallback de empaquetado/deploy cuando la raiz canonica no esta disponible.
+- Fallback tecnico restante en codigo:
+  - si la policy falta o es invalida, el backend cae a un fallback minimo `fail-closed`;
+  - ya no mantiene un bundle espejo completo de `instrument_registry.yaml` o `universes.yaml` dentro del codigo.
 - Persistencia canonica nueva:
   - `user_data/instruments/registry.sqlite3`
   - tablas reales:
@@ -389,6 +422,13 @@ Fecha de actualizacion: 2026-03-19
   - `rtlab_autotrader/rtlab_core/instruments/registry.py`
 - Servicio de universos canonicos:
   - `rtlab_autotrader/rtlab_core/universe/service.py`
+- Trazabilidad operativa visible del loader:
+  - `source`
+  - `path`
+  - `source_hash` = hash del archivo YAML efectivamente cargado
+  - `policy_hash` = hash del payload efectivo activo
+  - `errors` / `warnings`
+  - `fallback_used`
 - Wiring runtime / API:
   - `rtlab_autotrader/rtlab_core/web/app.py`
     - `GET /api/v1/instruments/registry/summary`
@@ -443,6 +483,8 @@ Fecha de actualizacion: 2026-03-19
     - la policy cargo correctamente
     - existe capability snapshot
     - y el ultimo diff no quedo en severidad `BLOCK`
+  - el Correctivo 2A no cambia esa regla:
+    - solo limpia autoridad primaria, fallback y trazabilidad del bloque
 
 ### Universos canonicos del bloque
 
@@ -458,6 +500,8 @@ Fecha de actualizacion: 2026-03-19
   - `min_live_eligible`
   - `require_margin_capability`
   - exclusion de leveraged tokens via suffixes explicitos en policy
+- Resumenes expuestos:
+  - `registry_summary`, `snapshots` y `universes` ahora muestran `source_hash` y `policy_hash` separados para auditoria.
 
 ### Fuera de alcance y deuda controlada
 

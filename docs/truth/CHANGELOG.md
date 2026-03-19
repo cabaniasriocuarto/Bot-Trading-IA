@@ -25,6 +25,40 @@
   - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
   - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
 
+### RTLOPS-4 / RTLOPS-15 / RTLOPS-18 - Correctivo 2A de autoridad/trazabilidad
+- Autoridad primaria reforzada:
+  - `config/policies/instrument_registry.yaml`
+  - `config/policies/universes.yaml`
+  - sus copias nested se mantienen solo como compatibilidad de empaquetado/deploy.
+- Loader / fallback:
+  - `rtlab_core/instruments/registry.py` deja de mantener un bundle espejo completo de `instrument_registry.yaml`;
+  - `rtlab_core/universe/service.py` deja de mantener un bundle espejo completo de `universes.yaml`;
+  - ambos pasan a usar fallback minimo `fail-closed` cuando la policy falta o es invalida.
+- Trazabilidad corregida:
+  - `source_hash` ahora representa el hash real del archivo fuente cargado;
+  - `policy_hash` representa el hash del payload efectivo activo;
+  - `policy_source` de registry/capabilities/universes/snapshots expone:
+    - `source`
+    - `path`
+    - `source_hash`
+    - `policy_hash`
+    - `errors`
+    - `warnings`
+    - `fallback_used`
+- Validacion ampliada:
+  - nuevos tests para:
+    - fuente exacta cargada
+    - separacion `source_hash` vs `policy_hash`
+    - falta de `instrument_registry.yaml`
+    - falta de `universes.yaml`
+    - divergencia root/nested
+    - resumenes de trazabilidad en API
+- Validacion local del correctivo:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/instruments/registry.py rtlab_autotrader/rtlab_core/universe/service.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_binance_instrument_registry.py rtlab_autotrader/tests/test_web_binance_registry_api.py rtlab_autotrader/tests/test_policy_paths.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_binance_instrument_registry.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_binance_registry_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+
 ### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.3
 - Backend / router fase 1:
   - `ExecutionRealityService` deja de tener stubs para:

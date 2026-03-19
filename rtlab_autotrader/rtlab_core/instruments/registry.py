@@ -17,7 +17,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 import yaml
 
-from rtlab_core.policy_paths import resolve_policy_root
+from rtlab_core.policy_paths import describe_policy_root_resolution
 
 
 VENUE_BINANCE = "binance"
@@ -27,25 +27,25 @@ PARSER_VERSION = "binance_catalog_v1"
 INSTRUMENT_REGISTRY_FILENAME = "instrument_registry.yaml"
 POLICY_EXPECTED_FILES: tuple[str, ...] = ("instrument_registry.yaml", "universes.yaml")
 
-DEFAULT_INSTRUMENT_REGISTRY_POLICY: dict[str, Any] = {
+FAIL_CLOSED_MINIMAL_INSTRUMENT_REGISTRY_POLICY: dict[str, Any] = {
     "sync": {
-        "manual_enabled": True,
-        "startup_enabled": True,
-        "startup_timeout_sec": 20,
-        "request_timeout_sec": 12,
-        "retries": 3,
-        "retry_backoff_sec": [0.5, 1.0, 2.0],
+        "manual_enabled": False,
+        "startup_enabled": False,
+        "startup_timeout_sec": 5,
+        "request_timeout_sec": 5,
+        "retries": 0,
+        "retry_backoff_sec": [0.0],
     },
     "freshness": {
-        "warn_if_snapshot_older_than_hours": 24,
-        "block_if_snapshot_older_than_hours": 72,
+        "warn_if_snapshot_older_than_hours": 1,
+        "block_if_snapshot_older_than_hours": 1,
     },
     "diffing": {
         "enabled": True,
-        "symbol_count_warn_delta_pct": 10.0,
-        "symbol_count_block_delta_pct": 35.0,
-        "removed_live_eligible_warn_count": 5,
-        "removed_live_eligible_block_count": 20,
+        "symbol_count_warn_delta_pct": 0.0,
+        "symbol_count_block_delta_pct": 0.0,
+        "removed_live_eligible_warn_count": 1,
+        "removed_live_eligible_block_count": 1,
     },
     "eligibility": {
         "require_status_active": True,
@@ -54,33 +54,33 @@ DEFAULT_INSTRUMENT_REGISTRY_POLICY: dict[str, Any] = {
         "delivery_block_if_hours_to_expiry_lt": 72,
     },
     "environments": {
-        "spot": {"live": True, "testnet": True},
-        "margin": {"live": True, "testnet": False},
-        "usdm_futures": {"live": True, "testnet": True},
-        "coinm_futures": {"live": True, "testnet": True},
+        "spot": {"live": False, "testnet": False},
+        "margin": {"live": False, "testnet": False},
+        "usdm_futures": {"live": False, "testnet": False},
+        "coinm_futures": {"live": False, "testnet": False},
     },
     "endpoints": {
         "spot": {
-            "live": "https://api.binance.com/api/v3/exchangeInfo",
-            "testnet": "https://testnet.binance.vision/api/v3/exchangeInfo",
+            "live": "",
+            "testnet": "",
             "account": "/api/v3/account",
         },
         "margin": {
             "live_catalog_from": "spot",
-            "live_account": "https://api.binance.com/sapi/v1/margin/account",
+            "live_account": "",
             "testnet_account": None,
         },
         "usdm_futures": {
-            "live": "https://fapi.binance.com/fapi/v1/exchangeInfo",
-            "testnet": "https://demo-fapi.binance.com/fapi/v1/exchangeInfo",
-            "account_live": "https://fapi.binance.com/fapi/v2/account",
-            "account_testnet": "https://demo-fapi.binance.com/fapi/v2/account",
+            "live": "",
+            "testnet": "",
+            "account_live": "",
+            "account_testnet": "",
         },
         "coinm_futures": {
-            "live": "https://dapi.binance.com/dapi/v1/exchangeInfo",
-            "testnet": "https://testnet.binancefuture.com/dapi/v1/exchangeInfo",
-            "account_live": "https://dapi.binance.com/dapi/v1/account",
-            "account_testnet": "https://testnet.binancefuture.com/dapi/v1/account",
+            "live": "",
+            "testnet": "",
+            "account_live": "",
+            "account_testnet": "",
         },
     },
 }
@@ -115,14 +115,132 @@ def _sha256_json(value: Any) -> str:
     return _sha256_bytes(_json_dumps(value).encode("utf-8"))
 
 
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = copy.deepcopy(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
+def _stable_payload_hash(value: Any) -> str:
+    return _sha256_json(value)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _require_dict(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        errors.append(f"{path}.{key} debe ser dict")
+        return {}
+    return value
+
+
+def _require_str(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> str:
+    value = parent.get(key)
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{path}.{key} debe ser string no vacio")
+        return ""
+    return value.strip()
+
+
+def _require_bool(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> bool:
+    value = parent.get(key)
+    if not isinstance(value, bool):
+        errors.append(f"{path}.{key} debe ser bool")
+        return False
+    return value
+
+
+def _require_number(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> float:
+    value = parent.get(key)
+    if not _is_number(value):
+        errors.append(f"{path}.{key} debe ser numero")
+        return 0.0
+    return float(value)
+
+
+def _require_list(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> list[Any]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not value:
+        errors.append(f"{path}.{key} debe ser lista no vacia")
+        return []
+    return value
+
+
+def _require_optional_str_or_none(parent: dict[str, Any], key: str, *, errors: list[str], path: str) -> str | None:
+    value = parent.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{path}.{key} debe ser string no vacio o null")
+        return None
+    return value.strip()
+
+
+def _validate_instrument_registry_policy(candidate: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(candidate, dict):
+        return ["instrument_registry debe ser dict"]
+
+    sync_cfg = _require_dict(candidate, "sync", errors=errors, path="instrument_registry")
+    _require_bool(sync_cfg, "manual_enabled", errors=errors, path="instrument_registry.sync")
+    _require_bool(sync_cfg, "startup_enabled", errors=errors, path="instrument_registry.sync")
+    _require_number(sync_cfg, "startup_timeout_sec", errors=errors, path="instrument_registry.sync")
+    _require_number(sync_cfg, "request_timeout_sec", errors=errors, path="instrument_registry.sync")
+    _require_number(sync_cfg, "retries", errors=errors, path="instrument_registry.sync")
+    retry_backoff = _require_list(sync_cfg, "retry_backoff_sec", errors=errors, path="instrument_registry.sync")
+    if retry_backoff and not all(_is_number(item) for item in retry_backoff):
+        errors.append("instrument_registry.sync.retry_backoff_sec debe contener solo numeros")
+
+    freshness_cfg = _require_dict(candidate, "freshness", errors=errors, path="instrument_registry")
+    _require_number(freshness_cfg, "warn_if_snapshot_older_than_hours", errors=errors, path="instrument_registry.freshness")
+    _require_number(freshness_cfg, "block_if_snapshot_older_than_hours", errors=errors, path="instrument_registry.freshness")
+
+    diff_cfg = _require_dict(candidate, "diffing", errors=errors, path="instrument_registry")
+    _require_bool(diff_cfg, "enabled", errors=errors, path="instrument_registry.diffing")
+    _require_number(diff_cfg, "symbol_count_warn_delta_pct", errors=errors, path="instrument_registry.diffing")
+    _require_number(diff_cfg, "symbol_count_block_delta_pct", errors=errors, path="instrument_registry.diffing")
+    _require_number(diff_cfg, "removed_live_eligible_warn_count", errors=errors, path="instrument_registry.diffing")
+    _require_number(diff_cfg, "removed_live_eligible_block_count", errors=errors, path="instrument_registry.diffing")
+
+    eligibility_cfg = _require_dict(candidate, "eligibility", errors=errors, path="instrument_registry")
+    _require_bool(eligibility_cfg, "require_status_active", errors=errors, path="instrument_registry.eligibility")
+    _require_bool(eligibility_cfg, "require_basic_filters", errors=errors, path="instrument_registry.eligibility")
+    _require_bool(eligibility_cfg, "require_permission_metadata_for_margin", errors=errors, path="instrument_registry.eligibility")
+    _require_number(eligibility_cfg, "delivery_block_if_hours_to_expiry_lt", errors=errors, path="instrument_registry.eligibility")
+
+    environments_cfg = _require_dict(candidate, "environments", errors=errors, path="instrument_registry")
+    for family in FAMILIES:
+        family_cfg = _require_dict(environments_cfg, family, errors=errors, path="instrument_registry.environments")
+        _require_bool(family_cfg, "live", errors=errors, path=f"instrument_registry.environments.{family}")
+        _require_bool(family_cfg, "testnet", errors=errors, path=f"instrument_registry.environments.{family}")
+
+    endpoints_cfg = _require_dict(candidate, "endpoints", errors=errors, path="instrument_registry")
+    spot_cfg = _require_dict(endpoints_cfg, "spot", errors=errors, path="instrument_registry.endpoints")
+    _require_str(spot_cfg, "live", errors=errors, path="instrument_registry.endpoints.spot")
+    _require_str(spot_cfg, "testnet", errors=errors, path="instrument_registry.endpoints.spot")
+    _require_str(spot_cfg, "account", errors=errors, path="instrument_registry.endpoints.spot")
+
+    margin_cfg = _require_dict(endpoints_cfg, "margin", errors=errors, path="instrument_registry.endpoints")
+    _require_str(margin_cfg, "live_catalog_from", errors=errors, path="instrument_registry.endpoints.margin")
+    _require_str(margin_cfg, "live_account", errors=errors, path="instrument_registry.endpoints.margin")
+    _require_optional_str_or_none(margin_cfg, "testnet_account", errors=errors, path="instrument_registry.endpoints.margin")
+
+    for family in ("usdm_futures", "coinm_futures"):
+        family_cfg = _require_dict(endpoints_cfg, family, errors=errors, path="instrument_registry.endpoints")
+        _require_str(family_cfg, "live", errors=errors, path=f"instrument_registry.endpoints.{family}")
+        _require_str(family_cfg, "testnet", errors=errors, path=f"instrument_registry.endpoints.{family}")
+        _require_str(family_cfg, "account_live", errors=errors, path=f"instrument_registry.endpoints.{family}")
+        _require_str(family_cfg, "account_testnet", errors=errors, path=f"instrument_registry.endpoints.{family}")
+
+    return errors
+
+
+def clear_instrument_registry_policy_cache() -> None:
+    _load_instrument_registry_bundle_cached.cache_clear()
+
+
+def _instrument_registry_source_label(repo_root: Path, policy_path: Path) -> str:
+    try:
+        return str(policy_path.resolve().relative_to(repo_root.resolve())).replace("\\", "/")
+    except ValueError:
+        return str(policy_path.resolve())
 
 
 def _resolve_repo_root_for_policy() -> Path | None:
@@ -139,40 +257,57 @@ def _resolve_repo_root_for_policy() -> Path | None:
 def _load_instrument_registry_bundle_cached(repo_root_str: str, explicit_root_str: str) -> dict[str, Any]:
     repo_root = Path(repo_root_str).resolve()
     explicit_root = Path(explicit_root_str).resolve() if explicit_root_str else None
-    selected_root = resolve_policy_root(
+    resolution = describe_policy_root_resolution(
         repo_root,
         explicit=explicit_root,
         expected_files=POLICY_EXPECTED_FILES,
-    ).resolve()
+    )
+    selected_root = Path(resolution["selected_root"]).resolve()
     policy_path = (selected_root / INSTRUMENT_REGISTRY_FILENAME).resolve()
 
     payload: dict[str, Any] = {}
     valid = False
     source_hash = ""
+    errors: list[str] = []
+    warnings = list(resolution.get("warnings") or [])
     if policy_path.exists():
         try:
-            raw_text = policy_path.read_text(encoding="utf-8")
-            source_hash = _sha256_bytes(raw_text.encode("utf-8"))
+            raw_bytes = policy_path.read_bytes()
+            raw_text = raw_bytes.decode("utf-8")
+            source_hash = _sha256_bytes(raw_bytes)
             raw = yaml.safe_load(raw_text) or {}
             candidate = raw.get("instrument_registry") if isinstance(raw.get("instrument_registry"), dict) else {}
-            if isinstance(candidate, dict) and candidate:
+            validation_errors = _validate_instrument_registry_policy(candidate) if isinstance(candidate, dict) and candidate else ["instrument_registry vacio o ausente"]
+            if isinstance(candidate, dict) and candidate and not validation_errors:
                 payload = candidate
                 valid = True
+            else:
+                errors.extend(validation_errors)
         except Exception:
             payload = {}
             valid = False
+            errors.append("instrument_registry.yaml no pudo parsearse como YAML valido")
+    else:
+        errors.append("instrument_registry.yaml no existe en la raiz seleccionada")
 
-    merged = _deep_merge(DEFAULT_INSTRUMENT_REGISTRY_POLICY, payload)
-    if not source_hash:
-        source_hash = _sha256_json(merged)
+    active_policy = copy.deepcopy(payload if valid else FAIL_CLOSED_MINIMAL_INSTRUMENT_REGISTRY_POLICY)
+    policy_hash = _stable_payload_hash(active_policy)
     return {
         "source_root": str(selected_root),
         "path": str(policy_path),
         "exists": policy_path.exists(),
         "valid": valid,
+        "fallback_used": bool(resolution.get("fallback_used")),
+        "selected_role": resolution.get("selected_role"),
+        "canonical_root": resolution.get("canonical_root"),
+        "canonical_role": resolution.get("canonical_role"),
+        "divergent_candidates": copy.deepcopy(resolution.get("divergent_candidates") or []),
         "source_hash": source_hash,
-        "source": "config/policies/instrument_registry.yaml" if valid else "default_fail_closed",
-        "instrument_registry": merged,
+        "policy_hash": policy_hash,
+        "source": _instrument_registry_source_label(repo_root, policy_path) if valid else "default_fail_closed_minimal",
+        "errors": errors,
+        "warnings": warnings,
+        "instrument_registry": active_policy,
     }
 
 
@@ -193,7 +328,11 @@ def instrument_registry_policy(
 ) -> dict[str, Any]:
     bundle = load_instrument_registry_bundle(repo_root, explicit_root=explicit_root)
     payload = bundle.get("instrument_registry")
-    return payload if isinstance(payload, dict) else copy.deepcopy(DEFAULT_INSTRUMENT_REGISTRY_POLICY)
+    return payload if isinstance(payload, dict) else copy.deepcopy(FAIL_CLOSED_MINIMAL_INSTRUMENT_REGISTRY_POLICY)
+
+
+def _coerce_instrument_registry_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
+    return copy.deepcopy(policy) if isinstance(policy, dict) else copy.deepcopy(FAIL_CLOSED_MINIMAL_INSTRUMENT_REGISTRY_POLICY)
 
 
 def _normalize_family(value: str | None) -> str:
@@ -397,6 +536,7 @@ def _status_is_operational(status: str) -> bool:
 def _delivery_is_blocked(item: dict[str, Any], policy: dict[str, Any]) -> bool:
     if item.get("family") not in {"usdm_futures", "coinm_futures"}:
         return False
+    policy_map = _coerce_instrument_registry_policy(policy)
     contract_type = str(item.get("contract_type") or "").strip().upper()
     if contract_type == "PERPETUAL":
         return False
@@ -407,13 +547,7 @@ def _delivery_is_blocked(item: dict[str, Any], policy: dict[str, Any]) -> bool:
         delivery_ms = int(raw_delivery)
     except Exception:
         return True
-    hours_threshold = float(
-        ((policy.get("eligibility") if isinstance(policy.get("eligibility"), dict) else {}) or {}).get(
-            "delivery_block_if_hours_to_expiry_lt",
-            72,
-        )
-        or 72
-    )
+    hours_threshold = float(policy_map["eligibility"]["delivery_block_if_hours_to_expiry_lt"])
     hours_to_expiry = (delivery_ms / 1000.0 - time.time()) / 3600.0
     return hours_to_expiry < hours_threshold
 
@@ -427,12 +561,12 @@ def evaluate_item_eligibility(
     environment = _normalize_environment(environment)
     family = _normalize_family(item.get("family"))
     status = _normalize_status(item.get("status"))
-    elig_cfg = policy.get("eligibility") if isinstance(policy.get("eligibility"), dict) else {}
-    env_cfg = policy.get("environments") if isinstance(policy.get("environments"), dict) else {}
-    family_env = env_cfg.get(family) if isinstance(env_cfg.get(family), dict) else {}
-    require_status_active = _bool(elig_cfg.get("require_status_active", True))
-    require_basic_filters = _bool(elig_cfg.get("require_basic_filters", True))
-    require_margin_metadata = _bool(elig_cfg.get("require_permission_metadata_for_margin", True))
+    policy_map = _coerce_instrument_registry_policy(policy)
+    elig_cfg = policy_map["eligibility"]
+    family_env = policy_map["environments"][family]
+    require_status_active = bool(elig_cfg["require_status_active"])
+    require_basic_filters = bool(elig_cfg["require_basic_filters"])
+    require_margin_metadata = bool(elig_cfg["require_permission_metadata_for_margin"])
 
     consistency_errors: list[str] = []
     if not _normalize_symbol(item.get("symbol")):
@@ -451,7 +585,7 @@ def evaluate_item_eligibility(
     if require_status_active and not _status_is_operational(status):
         consistency_errors.append("status_not_operational")
 
-    delivery_blocked = _delivery_is_blocked(item, policy)
+    delivery_blocked = _delivery_is_blocked(item, policy_map)
     if delivery_blocked:
         consistency_errors.append("delivery_too_close_or_expired")
 
@@ -484,7 +618,7 @@ def evaluate_item_eligibility(
         and "missing_margin_permission_metadata" not in consistency_errors
         and "margin_not_supported_for_symbol" not in consistency_errors
     )
-    env_supported = _bool(family_env.get(environment, False))
+    env_supported = bool(family_env[environment])
     testnet_eligible = bool(environment == "testnet" and env_supported and live_eligible)
 
     return {
@@ -541,7 +675,7 @@ def parse_spot_exchange_info(
     policy: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     environment = _normalize_environment(environment)
-    policy_map = policy if isinstance(policy, dict) else copy.deepcopy(DEFAULT_INSTRUMENT_REGISTRY_POLICY)
+    policy_map = _coerce_instrument_registry_policy(policy)
     symbols = payload.get("symbols") if isinstance(payload.get("symbols"), list) else []
     items: list[dict[str, Any]] = []
     for row in symbols:
@@ -579,7 +713,7 @@ def parse_usdm_exchange_info(
     policy: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     environment = _normalize_environment(environment)
-    policy_map = policy if isinstance(policy, dict) else copy.deepcopy(DEFAULT_INSTRUMENT_REGISTRY_POLICY)
+    policy_map = _coerce_instrument_registry_policy(policy)
     symbols = payload.get("symbols") if isinstance(payload.get("symbols"), list) else []
     items: list[dict[str, Any]] = []
     for row in symbols:
@@ -617,7 +751,7 @@ def parse_coinm_exchange_info(
     policy: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     environment = _normalize_environment(environment)
-    policy_map = policy if isinstance(policy, dict) else copy.deepcopy(DEFAULT_INSTRUMENT_REGISTRY_POLICY)
+    policy_map = _coerce_instrument_registry_policy(policy)
     symbols = payload.get("symbols") if isinstance(payload.get("symbols"), list) else []
     items: list[dict[str, Any]] = []
     for row in symbols:
@@ -656,7 +790,7 @@ def derive_margin_catalog_from_spot(
     account_capability: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     environment = _normalize_environment(environment)
-    policy_map = policy if isinstance(policy, dict) else copy.deepcopy(DEFAULT_INSTRUMENT_REGISTRY_POLICY)
+    policy_map = _coerce_instrument_registry_policy(policy)
     account_capability = account_capability if isinstance(account_capability, dict) else {}
     items: list[dict[str, Any]] = []
     for spot_item in spot_items:
@@ -702,8 +836,8 @@ def diff_snapshot_items(
     *,
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    policy_map = policy if isinstance(policy, dict) else copy.deepcopy(DEFAULT_INSTRUMENT_REGISTRY_POLICY)
-    diff_cfg = policy_map.get("diffing") if isinstance(policy_map.get("diffing"), dict) else {}
+    policy_map = _coerce_instrument_registry_policy(policy)
+    diff_cfg = policy_map["diffing"]
 
     before_map = {str(item.get("instrument_id")): item for item in before if item.get("instrument_id")}
     after_map = {str(item.get("instrument_id")): item for item in after if item.get("instrument_id")}
@@ -750,16 +884,16 @@ def diff_snapshot_items(
 
     severity = "OK"
     blockers: list[str] = []
-    if _bool(diff_cfg.get("enabled", True)) and before_count > 0:
-        if delta_pct >= float(diff_cfg.get("symbol_count_block_delta_pct", 35.0) or 35.0):
+    if bool(diff_cfg["enabled"]) and before_count > 0:
+        if delta_pct >= float(diff_cfg["symbol_count_block_delta_pct"]):
             severity = "BLOCK"
             blockers.append("symbol_count_block_delta_pct")
-        elif delta_pct >= float(diff_cfg.get("symbol_count_warn_delta_pct", 10.0) or 10.0):
+        elif delta_pct >= float(diff_cfg["symbol_count_warn_delta_pct"]):
             severity = "WARN"
-        if removed_live_eligible >= int(diff_cfg.get("removed_live_eligible_block_count", 20) or 20):
+        if removed_live_eligible >= int(diff_cfg["removed_live_eligible_block_count"]):
             severity = "BLOCK"
             blockers.append("removed_live_eligible_block_count")
-        elif severity != "BLOCK" and removed_live_eligible >= int(diff_cfg.get("removed_live_eligible_warn_count", 5) or 5):
+        elif severity != "BLOCK" and removed_live_eligible >= int(diff_cfg["removed_live_eligible_warn_count"]):
             severity = "WARN"
 
     return {
@@ -782,9 +916,10 @@ def diff_snapshot_items(
 
 
 def _freshness_payload(fetched_at: str | None, policy: dict[str, Any]) -> dict[str, Any]:
-    freshness_cfg = policy.get("freshness") if isinstance(policy.get("freshness"), dict) else {}
-    warn_hours = float(freshness_cfg.get("warn_if_snapshot_older_than_hours", 24) or 24)
-    block_hours = float(freshness_cfg.get("block_if_snapshot_older_than_hours", 72) or 72)
+    policy_map = _coerce_instrument_registry_policy(policy)
+    freshness_cfg = policy_map["freshness"]
+    warn_hours = float(freshness_cfg["warn_if_snapshot_older_than_hours"])
+    block_hours = float(freshness_cfg["block_if_snapshot_older_than_hours"])
     if not fetched_at:
         return {
             "status": "missing",
@@ -1544,23 +1679,31 @@ class BinanceInstrumentRegistryService:
         return {
             "path": bundle.get("path"),
             "source_root": bundle.get("source_root"),
-            "hash": bundle.get("source_hash"),
+            "source_hash": bundle.get("source_hash"),
+            "policy_hash": bundle.get("policy_hash"),
             "valid": bool(bundle.get("valid")),
             "source": bundle.get("source"),
+            "errors": list(bundle.get("errors") or []),
+            "warnings": list(bundle.get("warnings") or []),
+            "fallback_used": bool(bundle.get("fallback_used")),
+            "selected_role": bundle.get("selected_role"),
+            "canonical_root": bundle.get("canonical_root"),
+            "canonical_role": bundle.get("canonical_role"),
+            "divergent_candidates": copy.deepcopy(bundle.get("divergent_candidates") or []),
         }
 
     def _family_environment_supported(self, family: str, environment: str) -> bool:
         policy_map = self.policy()
-        env_cfg = policy_map.get("environments") if isinstance(policy_map.get("environments"), dict) else {}
-        family_cfg = env_cfg.get(_normalize_family(family)) if isinstance(env_cfg.get(_normalize_family(family)), dict) else {}
-        return _bool(family_cfg.get(_normalize_environment(environment), False))
+        family_name = _normalize_family(family)
+        environment_name = _normalize_environment(environment)
+        return bool(policy_map["environments"][family_name][environment_name])
 
     def _public_exchange_endpoint(self, family: str, environment: str) -> str:
         family = _normalize_family(family)
         environment = _normalize_environment(environment)
-        endpoints = self.policy().get("endpoints") if isinstance(self.policy().get("endpoints"), dict) else {}
-        family_cfg = endpoints.get(family) if isinstance(endpoints.get(family), dict) else {}
-        endpoint = str(family_cfg.get(environment) or "").strip()
+        endpoints = self.policy()["endpoints"]
+        family_cfg = endpoints[family]
+        endpoint = str(family_cfg[environment] or "").strip()
         if family == "spot":
             override = os.getenv("BINANCE_SPOT_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_SPOT_BASE_URL")
             return _apply_base_override(endpoint, override)
@@ -1575,34 +1718,34 @@ class BinanceInstrumentRegistryService:
     def _account_endpoint(self, family: str, environment: str) -> str:
         family = _normalize_family(family)
         environment = _normalize_environment(environment)
-        endpoints = self.policy().get("endpoints") if isinstance(self.policy().get("endpoints"), dict) else {}
+        endpoints = self.policy()["endpoints"]
         if family == "spot":
-            spot_cfg = endpoints.get("spot") if isinstance(endpoints.get("spot"), dict) else {}
-            exchange_endpoint = str(spot_cfg.get(environment) or "").strip()
+            spot_cfg = endpoints["spot"]
+            exchange_endpoint = str(spot_cfg[environment] or "").strip()
             root = _url_root(self._public_exchange_endpoint("spot", environment) or exchange_endpoint)
-            return f"{root}{str(spot_cfg.get('account') or '/api/v3/account').strip()}"
+            return f"{root}{str(spot_cfg['account']).strip()}"
         if family == "margin":
-            margin_cfg = endpoints.get("margin") if isinstance(endpoints.get("margin"), dict) else {}
+            margin_cfg = endpoints["margin"]
             if environment == "testnet":
-                return str(margin_cfg.get("testnet_account") or "").strip()
-            return str(margin_cfg.get("live_account") or "").strip()
+                return str(margin_cfg["testnet_account"] or "").strip()
+            return str(margin_cfg["live_account"] or "").strip()
         if family == "usdm_futures":
-            futures_cfg = endpoints.get("usdm_futures") if isinstance(endpoints.get("usdm_futures"), dict) else {}
-            endpoint = str(futures_cfg.get("account_testnet" if environment == "testnet" else "account_live") or "").strip()
+            futures_cfg = endpoints["usdm_futures"]
+            endpoint = str(futures_cfg["account_testnet" if environment == "testnet" else "account_live"] or "").strip()
             override = os.getenv("BINANCE_USDM_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_USDM_BASE_URL")
             return _apply_base_override(endpoint, override)
         if family == "coinm_futures":
-            futures_cfg = endpoints.get("coinm_futures") if isinstance(endpoints.get("coinm_futures"), dict) else {}
-            endpoint = str(futures_cfg.get("account_testnet" if environment == "testnet" else "account_live") or "").strip()
+            futures_cfg = endpoints["coinm_futures"]
+            endpoint = str(futures_cfg["account_testnet" if environment == "testnet" else "account_live"] or "").strip()
             override = os.getenv("BINANCE_COINM_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_COINM_BASE_URL")
             return _apply_base_override(endpoint, override)
         raise ValueError(f"Unsupported account endpoint family: {family}")
 
     def _request_json(self, url: str) -> dict[str, Any]:
-        sync_cfg = self.policy().get("sync") if isinstance(self.policy().get("sync"), dict) else {}
-        timeout = float(sync_cfg.get("request_timeout_sec", 12) or 12)
-        retries = int(sync_cfg.get("retries", 3) or 3)
-        backoff = sync_cfg.get("retry_backoff_sec") if isinstance(sync_cfg.get("retry_backoff_sec"), list) else [0.5, 1.0, 2.0]
+        sync_cfg = self.policy()["sync"]
+        timeout = float(sync_cfg["request_timeout_sec"])
+        retries = int(sync_cfg["retries"])
+        backoff = list(sync_cfg["retry_backoff_sec"])
         last_error: Exception | None = None
         for attempt in range(retries + 1):
             try:
@@ -1627,8 +1770,8 @@ class BinanceInstrumentRegistryService:
                 "endpoint": endpoint_url,
                 "reason": "missing_credentials",
             }
-        sync_cfg = self.policy().get("sync") if isinstance(self.policy().get("sync"), dict) else {}
-        timeout = float(sync_cfg.get("request_timeout_sec", 12) or 12)
+        sync_cfg = self.policy()["sync"]
+        timeout = float(sync_cfg["request_timeout_sec"])
         params = {
             "timestamp": int(time.time() * 1000),
             "recvWindow": 5000,
@@ -1771,13 +1914,13 @@ class BinanceInstrumentRegistryService:
         startup: bool = False,
     ) -> dict[str, Any]:
         policy_map = self.policy()
-        sync_cfg = policy_map.get("sync") if isinstance(policy_map.get("sync"), dict) else {}
-        if not startup and not _bool(sync_cfg.get("manual_enabled", True)):
+        sync_cfg = policy_map["sync"]
+        if not startup and not bool(sync_cfg["manual_enabled"]):
             raise RuntimeError("Manual instrument sync disabled by policy")
 
         families = [_normalize_family(family)] if family else list(FAMILIES)
         envs = [_normalize_environment(environment)] if environment else list(ENVIRONMENTS)
-        deadline = time.time() + float(sync_cfg.get("startup_timeout_sec", 20) or 20) if startup else None
+        deadline = time.time() + float(sync_cfg["startup_timeout_sec"]) if startup else None
 
         results: list[dict[str, Any]] = []
         for family_name in families:
@@ -1803,7 +1946,7 @@ class BinanceInstrumentRegistryService:
                         source_endpoint=endpoint,
                         raw_payload=raw_payload,
                         items=items,
-                        policy_hash=str(self.policy_source().get("hash") or ""),
+                        policy_hash=str(self.policy_source().get("policy_hash") or ""),
                     )
                     capability = self._build_capability_snapshot(family_name, env_name, catalog_success=True)
                     results.append(
@@ -1826,7 +1969,7 @@ class BinanceInstrumentRegistryService:
                         environment=env_name,
                         source_endpoint=source_endpoint,
                         error_message=str(exc),
-                        policy_hash=str(self.policy_source().get("hash") or ""),
+                        policy_hash=str(self.policy_source().get("policy_hash") or ""),
                     )
                     capability = self._build_capability_snapshot(family_name, env_name, catalog_success=False)
                     results.append(
@@ -1848,8 +1991,8 @@ class BinanceInstrumentRegistryService:
 
     def sync_on_startup(self, *, force: bool = False) -> dict[str, Any]:
         policy_map = self.policy()
-        sync_cfg = policy_map.get("sync") if isinstance(policy_map.get("sync"), dict) else {}
-        if not _bool(sync_cfg.get("startup_enabled", True)):
+        sync_cfg = policy_map["sync"]
+        if not bool(sync_cfg["startup_enabled"]):
             return {"ok": True, "startup": True, "skipped": True, "reason": "startup_disabled_by_policy"}
         if not force and ("pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST")):
             return {"ok": True, "startup": True, "skipped": True, "reason": "pytest_harness"}
