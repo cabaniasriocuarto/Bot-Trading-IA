@@ -7,20 +7,16 @@ from rtlab_core.types import HealthMetrics
 
 
 _HEALTH_SCORING = health_scoring_policy()
-_CIRCUIT_BREAKERS = (
-    _HEALTH_SCORING.get("circuit_breakers")
-    if isinstance(_HEALTH_SCORING.get("circuit_breakers"), dict)
-    else {}
-)
+_CIRCUIT_BREAKERS = _HEALTH_SCORING["circuit_breakers"]
 
 
 @dataclass(slots=True)
 class CircuitBreakerThresholds:
-    max_error_streak: int = int(_CIRCUIT_BREAKERS.get("max_error_streak", 3) or 3)
-    max_ws_lag_ms: int = int(_CIRCUIT_BREAKERS.get("max_ws_lag_ms", 5000) or 5000)
-    max_desync_count: int = int(_CIRCUIT_BREAKERS.get("max_desync_count", 2) or 2)
-    max_spread_spike_bps: float = float(_CIRCUIT_BREAKERS.get("max_spread_spike_bps", 25.0) or 25.0)
-    max_vpin_percentile: float = float(_CIRCUIT_BREAKERS.get("max_vpin_percentile", 90.0) or 90.0)
+    max_error_streak: int = int(_CIRCUIT_BREAKERS["max_error_streak"])
+    max_ws_lag_ms: int = int(_CIRCUIT_BREAKERS["max_ws_lag_ms"])
+    max_desync_count: int = int(_CIRCUIT_BREAKERS["max_desync_count"])
+    max_spread_spike_bps: float = float(_CIRCUIT_BREAKERS["max_spread_spike_bps"])
+    max_vpin_percentile: float = float(_CIRCUIT_BREAKERS["max_vpin_percentile"])
 
 
 class CircuitBreakers:

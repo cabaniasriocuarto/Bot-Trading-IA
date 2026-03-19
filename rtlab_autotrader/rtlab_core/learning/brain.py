@@ -6,7 +6,7 @@ import random
 from statistics import mean, pstdev
 from typing import Any
 
-from rtlab_core.runtime_controls import drift_policy
+from rtlab_core.runtime_controls import drift_policy, load_runtime_controls_bundle
 
 
 MEDIUM_RISK_PROFILE: dict[str, Any] = {
@@ -176,21 +176,23 @@ def _page_hinkley(series: list[float], *, min_points: int, delta: float, lam: fl
 
 
 def detect_drift(streams: dict[str, list[float]], algo: str | None = None) -> dict[str, Any]:
+    policy_bundle = load_runtime_controls_bundle()
     cfg = drift_policy()
-    algo_default = str(cfg.get("default_algorithm") or "adwin").strip().lower()
-    algo_n = (algo or algo_default or "adwin").lower().strip()
+    algo_default = str(cfg["default_algorithm"]).strip().lower()
+    algo_requested = str(algo or algo_default).strip().lower()
+    algo_n = algo_requested if algo_requested in {"adwin", "page_hinkley"} else algo_default
     metrics = [
         str(item).strip()
-        for item in (cfg.get("metrics") or [])
+        for item in cfg["metrics"]
         if isinstance(item, str) and str(item).strip()
-    ] or ["returns", "realized_vol", "atr", "spread_bps", "slippage_bps", "expectancy_usd", "max_dd"]
-    min_points = max(3, int(cfg.get("min_points", 20) or 20))
-    trigger_votes_required = max(1, int(cfg.get("trigger_votes_required", 2) or 2))
-    adwin_cfg = cfg.get("adwin") if isinstance(cfg.get("adwin"), dict) else {}
-    page_cfg = cfg.get("page_hinkley") if isinstance(cfg.get("page_hinkley"), dict) else {}
-    adwin_threshold = _safe_float(adwin_cfg.get("mean_shift_zscore_threshold"), 1.1)
-    page_delta = _safe_float(page_cfg.get("delta"), 0.01)
-    page_lambda = _safe_float(page_cfg.get("lambda"), 5.0)
+    ]
+    min_points = max(3, int(cfg["min_points"]))
+    trigger_votes_required = max(1, int(cfg["trigger_votes_required"]))
+    adwin_cfg = cfg["adwin"]
+    page_cfg = cfg["page_hinkley"]
+    adwin_threshold = _safe_float(adwin_cfg["mean_shift_zscore_threshold"])
+    page_delta = _safe_float(page_cfg["delta"])
+    page_lambda = _safe_float(page_cfg["lambda"])
     per_metric: dict[str, Any] = {}
     votes = 0
     for key in metrics:
@@ -218,7 +220,8 @@ def detect_drift(streams: dict[str, list[float]], algo: str | None = None) -> di
         "drift": drift,
         "votes": votes,
         "trigger_votes_required": trigger_votes_required,
-        "policy_source": "config/policies/runtime_controls.yaml",
+        "policy_source": str(policy_bundle.get("source") or ""),
+        "policy_hash": str(policy_bundle.get("policy_hash") or ""),
         "metrics": per_metric,
     }
 

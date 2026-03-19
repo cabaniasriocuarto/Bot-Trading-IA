@@ -4600,6 +4600,11 @@ def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, 
   assert body["summary"]["health_max_error_streak"] == 3
   assert "authority" in body and isinstance(body["authority"], dict)
   assert body["authority"]["canonical_role"] == "monorepo_root"
+  runtime_controls_meta = body["files"]["runtime_controls"]
+  assert runtime_controls_meta["source"] == "config/policies/runtime_controls.yaml"
+  assert isinstance(runtime_controls_meta["source_hash"], str) and len(runtime_controls_meta["source_hash"]) == 64
+  assert isinstance(runtime_controls_meta["policy_hash"], str) and len(runtime_controls_meta["policy_hash"]) == 64
+  assert runtime_controls_meta["errors"] == []
   assert "mode_taxonomy" in body and body["mode_taxonomy"]["global_runtime_modes"] == ["PAPER", "TESTNET", "LIVE"]
 
 
