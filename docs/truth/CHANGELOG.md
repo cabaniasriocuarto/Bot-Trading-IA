@@ -2,6 +2,46 @@
 
 ## 2026-03-18
 
+### RTLOPS-4 / RTLOPS-15 / RTLOPS-18 - Binance Catalog + Universes + Live Parity Base
+- Backend / persistencia:
+  - nuevo `user_data/instruments/registry.sqlite3` para registry persistente y auditable.
+  - nuevas tablas:
+    - `instrument_registry`
+    - `instrument_catalog_snapshots`
+    - `instrument_catalog_snapshot_items`
+    - `account_capability_snapshots`
+- Policies nuevas:
+  - `config/policies/instrument_registry.yaml`
+  - `config/policies/universes.yaml`
+  - sus copias nested en `rtlab_autotrader/config/policies/` quedan solo como compatibilidad/fallback.
+- Wiring minimo aplicado:
+  - `rtlab_core/instruments/registry.py` agrega:
+    - loaders canonicos
+    - sync Binance por family/environment
+    - diff entre snapshots
+    - provenance minima
+    - capability snapshots
+    - `live_parity_base_ready`
+  - `rtlab_core/universe/service.py` agrega universos canonicos basados en YAML.
+  - `web/app.py` agrega:
+    - `GET /api/v1/instruments/registry/summary`
+    - `GET /api/v1/instruments/registry/snapshots`
+    - `POST /api/v1/instruments/registry/sync`
+    - `GET /api/v1/instruments/universes`
+    - `GET /api/v1/account/capabilities/summary`
+- Decision de diseno clave:
+  - Margin se deriva de Spot `exchangeInfo` + `permissions / permissionSets` + capability snapshot;
+  - no se inventa un catalogo Margin separado.
+- Limitaciones conscientes:
+  - sin routing live multi-family
+  - sin order placement real
+  - sin private websockets completos
+  - capability de futuros queda fail-closed si faltan credenciales especificas
+- Validacion local del bloque:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/instruments/registry.py rtlab_autotrader/rtlab_core/universe/service.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/tests/test_binance_instrument_registry.py rtlab_autotrader/tests/test_web_binance_registry_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_binance_instrument_registry.py rtlab_autotrader/tests/test_web_binance_registry_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+
 ### RTLOPS-M2 - Nucleo Arquitectonico y Policies: thresholds explicitos + runtime controls
 - Backend / config:
   - nuevo `config/policies/runtime_controls.yaml` como fuente canonica para:

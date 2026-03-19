@@ -46,8 +46,29 @@ Fecha: 2026-03-18
   - `rtlab_config.yaml.example` y `ModeLiteral` de `rtlab_core/config.py` siguen cubriendo runtime config mas amplia (`backtest/dryrun/capture_only`);
   - no pasan a redefinir la taxonomia canonica del runtime global de este bloque.
 
+## Cierre del bloque `Binance Catalog + Universes + Live Parity Base` - 2026-03-18
+- [x] Crear instrument registry persistente y auditable para:
+  - `spot`
+  - `margin`
+  - `usdm_futures`
+  - `coinm_futures`
+- [x] Registrar snapshots por family/environment con:
+  - diff contra snapshot previo
+  - provenance minima
+  - resumen de severidad
+- [x] Derivar `margin` desde Spot + permissions/capability de forma explicita.
+- [x] Crear universos canonicos desde `config/policies/universes.yaml`.
+- [x] Exponer summary de registry, snapshots, sync, universes y account capabilities por API.
+- [x] Calcular `live_parity_base_ready` de forma fail-closed y visible.
+- [x] Actualizar `docs/truth` y dejar traza minima en Linear (`RTLOPS-4`).
+- [ ] Deuda consciente ya fuera de este bloque:
+  - routing live multi-family real
+  - order placement real
+  - private websockets completos
+  - pre-flight/live safety de execution real
+
 ## Siguiente bloque recomendado
-- [ ] Solo despues de validar/revisar este cierre de M2, abrir `Binance Catalog + Universes + Live Parity`.
+- [ ] Abrir `Execution Reality + Live Safety`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

@@ -37,6 +37,7 @@ from rtlab_core.domains import (
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
+from rtlab_core.instruments import BinanceInstrumentRegistryService
 from rtlab_core.learning import LearningService
 from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.knowledge import KnowledgeLoader
@@ -60,6 +61,7 @@ from rtlab_core.src.research import MassBacktestCoordinator, MassBacktestEngine
 from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngine
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 from rtlab_core.types import OrderStatus, Side
+from rtlab_core.universe import InstrumentUniverseService
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
@@ -154,6 +156,7 @@ BOT_STATE_PATH = USER_DATA_DIR / "logs" / "bot_state.json"
 STRATEGY_META_PATH = STRATEGY_PACKS_DIR / "strategy_meta.json"
 RUNS_PATH = USER_DATA_DIR / "backtests" / "runs.json"
 BACKTEST_CATALOG_DB_PATH = USER_DATA_DIR / "backtests" / "catalog.sqlite3"
+INSTRUMENT_REGISTRY_DB_PATH = USER_DATA_DIR / "instruments" / "registry.sqlite3"
 BOTS_PATH = USER_DATA_DIR / "learning" / "bots.json"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -622,6 +625,11 @@ class TradesBulkDeleteBody(BaseModel):
     date_from: str | None = None
     date_to: str | None = None
     dry_run: bool = False
+
+
+class InstrumentRegistrySyncBody(BaseModel):
+    family: Literal["spot", "margin", "usdm_futures", "coinm_futures"] | None = None
+    environment: Literal["live", "testnet"] | None = None
 
 
 def utc_now() -> datetime:
@@ -1923,6 +1931,7 @@ def ensure_paths() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     (USER_DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
     (USER_DATA_DIR / "backtests").mkdir(parents=True, exist_ok=True)
+    (USER_DATA_DIR / "instruments").mkdir(parents=True, exist_ok=True)
 
 
 class ConsoleStore:
@@ -1960,6 +1969,18 @@ class ConsoleStore:
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
+        self.instrument_registry = BinanceInstrumentRegistryService(
+            db_path=INSTRUMENT_REGISTRY_DB_PATH,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+        )
+        self.instrument_universes = InstrumentUniverseService(self.instrument_registry)
+        self.instrument_registry_startup_sync: dict[str, Any] = {
+            "ok": True,
+            "startup": True,
+            "skipped": True,
+            "reason": "not_run",
+        }
         self._init_console_db()
         self._ensure_defaults()
 
@@ -8978,6 +8999,27 @@ def parse_strategy_yaml_upload(payload: bytes) -> dict[str, Any]:
 def create_app() -> FastAPI:
     app = FastAPI(title="RTLAB API", version=APP_VERSION)
 
+    @app.on_event("startup")
+    async def instrument_registry_startup_sync() -> None:
+        try:
+            store.instrument_registry_startup_sync = store.instrument_registry.sync_on_startup()
+        except Exception as exc:
+            store.instrument_registry_startup_sync = {
+                "ok": False,
+                "startup": True,
+                "skipped": False,
+                "reason": "startup_sync_failed",
+                "error": str(exc),
+            }
+            store.add_log(
+                event_type="instrument_registry",
+                severity="warn",
+                module="instruments",
+                message="Instrument registry startup sync failed",
+                related_ids=[],
+                payload={"error": str(exc)},
+            )
+
     @app.middleware("http")
     async def api_rate_limit_middleware(request: Request, call_next):
         allowed, retry_after_sec, bucket = API_RATE_LIMITER.check(
@@ -9111,6 +9153,61 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/data/status")
     def data_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return DataCatalog(USER_DATA_DIR).status()
+
+    @app.get("/api/v1/instruments/registry/summary")
+    def instruments_registry_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_registry.registry_summary()
+
+    @app.get("/api/v1/instruments/registry/snapshots")
+    def instruments_registry_snapshots(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            items = store.instrument_registry.db.list_snapshots(
+                family=family,
+                environment=environment,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "items": items,
+            "policy_source": store.instrument_registry.policy_source(),
+        }
+
+    @app.post("/api/v1/instruments/registry/sync")
+    def instruments_registry_sync(
+        body: InstrumentRegistrySyncBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            payload = store.instrument_registry.sync(
+                family=body.family,
+                environment=body.environment,
+                startup=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="instrument_registry",
+            severity="info",
+            module="instruments",
+            message="Instrument registry sync requested",
+            related_ids=[],
+            payload={"family": body.family, "environment": body.environment, "ok": payload.get("ok")},
+        )
+        return payload
+
+    @app.get("/api/v1/instruments/universes")
+    def instruments_universes(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_universes.summary()
+
+    @app.get("/api/v1/account/capabilities/summary")
+    def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_registry.capabilities_summary()
 
     @app.get("/api/v1/strategies")
     def list_strategies(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:

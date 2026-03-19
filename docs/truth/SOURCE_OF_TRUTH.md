@@ -2,6 +2,112 @@
 
 Fecha de actualizacion: 2026-03-18
 
+## RTLOPS-4 / RTLOPS-15 / RTLOPS-18: Binance Catalog + Universes + Live Parity Base - 2026-03-18
+
+- Trazabilidad del bloque:
+  - proyecto Linear: `Binance Catalog + Universes + Live Parity`
+  - issue contenedor usado para dejar referencia operativa: `RTLOPS-4`
+- Fuente canonica nueva para este bloque dentro de `config/policies/`:
+  - `config/policies/instrument_registry.yaml`
+  - `config/policies/universes.yaml`
+- Compatibilidad permitida, pero no equivalente en autoridad:
+  - `rtlab_autotrader/config/policies/instrument_registry.yaml`
+  - `rtlab_autotrader/config/policies/universes.yaml`
+  - quedan solo como fallback de empaquetado/deploy cuando la raiz canonica no esta disponible.
+- Persistencia canonica nueva:
+  - `user_data/instruments/registry.sqlite3`
+  - tablas reales:
+    - `instrument_registry`
+    - `instrument_catalog_snapshots`
+    - `instrument_catalog_snapshot_items`
+    - `account_capability_snapshots`
+
+### Lectura runtime aplicada
+
+- Loader/servicio canonico:
+  - `rtlab_autotrader/rtlab_core/instruments/registry.py`
+- Servicio de universos canonicos:
+  - `rtlab_autotrader/rtlab_core/universe/service.py`
+- Wiring runtime / API:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - `GET /api/v1/instruments/registry/summary`
+    - `GET /api/v1/instruments/registry/snapshots`
+    - `POST /api/v1/instruments/registry/sync`
+    - `GET /api/v1/instruments/universes`
+    - `GET /api/v1/account/capabilities/summary`
+
+### Autoridad tecnica de catalogo Binance
+
+- Autoridad local del repo:
+  - los YAML canonicos anteriores
+  - el runtime efectivo del backend
+  - la base persistida del registry
+- Autoridad externa validada para completar el bloque:
+  - Binance Spot REST `exchangeInfo`
+  - Binance Spot account endpoints / Testnet FAQ
+  - Binance USDⓈ-M Futures `exchangeInfo` y account info
+  - Binance COIN-M Futures `exchangeInfo` y account info
+- Regla operativa real:
+  - Spot / Margin leen catalogo base desde Spot `exchangeInfo`.
+  - Margin NO inventa un `exchangeInfo` separado:
+    - se deriva desde Spot
+    - usa `permissions / permissionSets`
+    - y se cruza con capability snapshot de margin
+  - USDⓈ-M Futures usa `exchangeInfo` propio.
+  - COIN-M Futures usa `exchangeInfo` propio.
+
+### Eligibility y live parity base
+
+- `paper_eligible`:
+  - verdadero solo si hay metadata minima util para simulacion:
+    - `symbol`
+    - `family`
+    - `status`
+    - `PRICE_FILTER`
+    - `LOT_SIZE`
+- `live_eligible`:
+  - verdadero solo si:
+    - `status=TRADING`
+    - filtros basicos parseables
+    - no esta archivado
+    - no esta manualmente excluido
+    - no hay contradicciones fuertes de payload
+    - y, para delivery, no queda dentro de la ventana de bloqueo previa al vencimiento
+- `testnet_eligible`:
+  - verdadero solo cuando la family tiene soporte testnet en policy y existe snapshot real de testnet consistente
+- `live_parity_base_ready`:
+  - verdadero solo si:
+    - existe snapshot exitoso
+    - el snapshot esta fresco
+    - la policy cargo correctamente
+    - existe capability snapshot
+    - y el ultimo diff no quedo en severidad `BLOCK`
+
+### Universos canonicos del bloque
+
+- `config/policies/universes.yaml` gobierna:
+  - `core_spot_usdt`
+  - `core_margin_usdt`
+  - `core_usdm_perps`
+  - `core_coinm_perps`
+- Filtros explicitados y auditables:
+  - `quote_assets`
+  - `require_status`
+  - `contract_types`
+  - `min_live_eligible`
+  - `require_margin_capability`
+  - exclusion de leveraged tokens via suffixes explicitos en policy
+
+### Fuera de alcance y deuda controlada
+
+- NO se implemento routing live multi-family.
+- NO se implemento order placement real.
+- NO se implementaron private websockets completos.
+- NO se toco portfolio margin profundo.
+- Si faltan credenciales especificas de futuros:
+  - el capability snapshot queda visible
+  - pero `can_trade/can_user_data` se mantienen en `false` fail-closed para esa family/environment.
+
 ## RTLOPS-M2: Nucleo Arquitectonico y Policies - thresholds explicitos + runtime controls - 2026-03-18
 
 - Fuente canonica nueva para este bloque dentro de `config/policies/`:
