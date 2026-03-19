@@ -2,6 +2,75 @@
 
 Fecha de actualizacion: 2026-03-19
 
+## RTLOPS-21 Parte 3.2: Preflight serio + endpoints backend minimos - 2026-03-19
+
+- Trazabilidad del bloque:
+  - issue operativa usada: `RTLOPS-21`
+  - rama incremental: `feature/execution-reality-live-safety-p1`
+  - base preservada sin reabrir bloques:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+- Autoridad canonica que gobierna esta subparte:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+  - `config/policies/instrument_registry.yaml`
+  - `config/policies/universes.yaml`
+  - `config/policies/cost_stack.yaml`
+- Endpoints nuevos/minimos cerrados en 3.2:
+  - `POST /api/v1/execution/preflight`
+  - `GET /api/v1/execution/live-safety/summary`
+
+### Alcance real cerrado en la parte 3.2
+
+- `ExecutionRealityService.preflight(...)` ahora valida de forma canonica y cost-aware:
+  - existencia en `instrument_registry`
+  - membership en universos canonicos para `live/testnet`
+  - `live_eligible / testnet_eligible`
+  - capability snapshot y coherencia de trading
+  - freshness del snapshot de catalogo
+  - filtros `PRICE_FILTER / LOT_SIZE / MARKET_LOT_SIZE / MIN_NOTIONAL`
+  - normalizacion `tickSize / stepSize`
+  - buffer sobre notional minimo
+  - `max_notional_per_order_usd`
+  - limites de open orders
+  - fee source para `live`
+  - stale quote / stale orderbook
+  - margin capability / margin level
+  - thresholds de slippage
+- Regla operativa explicita:
+  - `live` falla cerrado cuando faltan fuentes o validaciones criticas.
+  - `paper` sigue siendo cost-aware, pero no depende artificialmente de capability snapshot como si fuera `live`.
+  - `LIMIT` exige precio explicito; el preflight no inventa un limit price para vender un pase falso.
+- Wiring backend efectivo:
+  - `rtlab_autotrader/rtlab_core/web/app.py` expone el body/endpoint de preflight y un summary minimo de live safety ligado a esta subparte.
+  - `rtlab_autotrader/rtlab_core/universe/service.py` agrega chequeo de membership por simbolo para reusar los universos canonicos existentes.
+
+### Diferencia real entre estimated y realized en 3.2
+
+- Antes del submit:
+  - toda orden recibe `estimated_costs` desde el preflight.
+- Todavia NO cerrado en esta subparte:
+  - submit/query/cancel/cancel-all
+  - reconcile operativo
+  - materializacion runtime de fills/costos realizados
+- Regla vigente:
+  - `3.2` prepara el preview cost-aware y fail-closed;
+  - `3.4` sigue siendo la subparte que materializa `estimated -> realized` sobre fills reales.
+
+### Pendiente explicitamente diferido desde 3.2
+
+- Parte 3.3:
+  - submit/query/cancel/cancel-all fase 1 (`MARKET/LIMIT` solamente)
+- Parte 3.4:
+  - reconcile base
+  - fills -> reporting bridge
+  - estimated vs realized runtime
+- Parte 3.5:
+  - kill switch operativo
+  - live safety final
+
 ## RTLOPS-21 Parte 3.1: Execution Reality + Live Safety base - 2026-03-19
 
 - Trazabilidad del bloque:
@@ -55,9 +124,6 @@ Fecha de actualizacion: 2026-03-19
 
 ### Pendiente explicitamente diferido a las siguientes subpartes
 
-- Parte 3.2:
-  - `preflight` cost-aware y fail-closed en `live`
-  - endpoint `POST /api/v1/execution/preflight`
 - Parte 3.3:
   - submit/query/cancel/cancel-all fase 1
 - Parte 3.4:

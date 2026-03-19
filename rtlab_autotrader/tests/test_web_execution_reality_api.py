@@ -211,6 +211,11 @@ def _build_app(tmp_path: Path, monkeypatch):
     return module, TestClient(module.app)
 
 
+def _ensure_execution_prereqs(module) -> None:  # noqa: ANN001
+    module.store.instrument_registry.sync(startup=False)
+    module.store.reporting_bridge.refresh_materialized_views(module.store.load_runs())
+
+
 def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -223,6 +228,7 @@ def _login(client: TestClient, username: str, password: str) -> str:
 
 def test_config_policies_exposes_execution_bootstrap_metadata(tmp_path: Path, monkeypatch) -> None:
     module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
     token = _login(client, "Wadmin", "moroco123")
 
     res = client.get("/api/v1/config/policies", headers=_auth_headers(token))
@@ -239,3 +245,114 @@ def test_config_policies_exposes_execution_bootstrap_metadata(tmp_path: Path, mo
     assert bootstrap["policy_loaded"] is True
     assert "execution_intents" in bootstrap["tables"]
     assert bootstrap["dependencies"]["instrument_registry_service"] is True
+
+
+def test_execution_preflight_endpoint_accepts_paper_order(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+
+    res = client.post(
+        "/api/v1/execution/preflight",
+        headers=_auth_headers(token),
+        json={
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.001234,
+            "price": 50000.129,
+        },
+    )
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["allowed"] is True
+    assert payload["fail_closed"] is False
+    assert payload["normalized_order_preview"]["quantity"] == 0.0012
+    assert payload["normalized_order_preview"]["limit_price"] == 50000.12
+
+
+def test_execution_preflight_endpoint_blocks_live_without_fee_source(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="live",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+    module.store.execution_reality._fee_source_state = lambda family, environment: {  # type: ignore[method-assign]
+        "available": False,
+        "fresh": False,
+        "latest": None,
+    }
+
+    res = client.post(
+        "/api/v1/execution/preflight",
+        headers=_auth_headers(token),
+        json={
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+        },
+    )
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["allowed"] is False
+    assert payload["fail_closed"] is True
+    assert "fee_source_missing_in_live" in payload["blocking_reasons"]
+
+
+def test_execution_live_safety_summary_endpoint_reports_preflight_state(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="live",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+    module.store.execution_reality.mark_user_stream_status(
+        family="spot",
+        environment="live",
+        available=False,
+        degraded_reason="rest_fallback",
+    )
+    module.store.execution_reality._fee_source_state = lambda family, environment: {  # type: ignore[method-assign]
+        "available": True,
+        "fresh": True,
+        "latest": {"family": family, "environment": environment},
+    }
+
+    res = client.get("/api/v1/execution/live-safety/summary", headers=_auth_headers(token))
+    assert res.status_code == 200, res.text
+    payload = res.json()
+
+    assert payload["execution_policy_loaded"] is True
+    assert payload["degraded_mode"] is True
+    assert payload["capabilities_known"] is True
+    assert "spot" in payload["supported_families"]
+    assert payload["overall_status"] == "WARN"

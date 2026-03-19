@@ -643,6 +643,27 @@ class ReportingExportBody(BaseModel):
     report_scope: Literal["summary", "daily", "monthly", "trades", "costs", "full"] = "full"
 
 
+class ExecutionPreflightBody(BaseModel):
+    family: str
+    environment: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: float | None = None
+    quote_quantity: float | None = None
+    price: float | None = None
+    time_in_force: str | None = None
+    mode: str | None = None
+    strategy_id: str | None = None
+    bot_id: str | None = None
+    reduce_only: bool | None = None
+    requested_notional: float | None = None
+    slippage_bps: float | None = None
+    spread_bps: float | None = None
+    estimated_fee: float | None = None
+    market_snapshot: dict[str, Any] | None = None
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -9289,6 +9310,17 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/account/capabilities/summary")
     def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.instrument_registry.capabilities_summary()
+
+    @app.post("/api/v1/execution/preflight")
+    def execution_preflight(
+        body: ExecutionPreflightBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.preflight(body.model_dump())
+
+    @app.get("/api/v1/execution/live-safety/summary")
+    def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.live_safety_summary()
 
     def _refresh_reporting_views() -> None:
         try:

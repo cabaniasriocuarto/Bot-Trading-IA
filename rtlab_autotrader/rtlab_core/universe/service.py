@@ -241,6 +241,7 @@ class InstrumentUniverseService:
                     },
                     "capability_required": require_margin_capability,
                     "capability_available": capability_available,
+                    "symbols": [str(row.get("symbol") or "") for row in selected],
                     "sample_symbols": [str(row.get("symbol") or "") for row in selected[:10]],
                 }
             )
@@ -253,4 +254,24 @@ class InstrumentUniverseService:
                 "source": self.policy_bundle().get("source"),
                 "valid": bool(self.policy_bundle().get("valid")),
             },
+        }
+
+    def membership(self, *, family: str, symbol: str, venue: str = "binance") -> dict[str, Any]:
+        summary = self.summary()
+        items = summary.get("items") if isinstance(summary.get("items"), list) else []
+        target_symbol = str(symbol or "").strip().upper()
+        matched: list[dict[str, Any]] = []
+        for row in items:
+            if str(row.get("family") or "").strip().lower() != str(family or "").strip().lower():
+                continue
+            if str(row.get("venue") or "").strip().lower() != str(venue or "binance").strip().lower():
+                continue
+            symbols = row.get("symbols") if isinstance(row.get("symbols"), list) else []
+            if target_symbol in {str(item or "").strip().upper() for item in symbols}:
+                matched.append(row)
+        return {
+            "matched": bool(matched),
+            "universes": [str(row.get("name") or "") for row in matched],
+            "snapshot_source": next((row.get("snapshot_source") for row in matched), None),
+            "policy_source": summary.get("policy_source"),
         }

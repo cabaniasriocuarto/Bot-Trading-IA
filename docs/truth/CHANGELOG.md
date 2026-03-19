@@ -2,6 +2,43 @@
 
 ## 2026-03-19
 
+### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.2
+- Backend / preflight:
+  - `ExecutionRealityService.preflight(...)` deja de ser stub y pasa a validar de forma real:
+    - `instrument_registry`
+    - universos activos
+    - eligibility
+    - capability snapshots
+    - freshness de snapshot
+    - filtros de exchange
+    - normalizacion `price/qty`
+    - notional minimo con buffer
+    - `max_notional`
+    - limites de open orders
+    - fee source
+    - stale market data
+    - margin guards
+- Fail-closed en `live`:
+  - `quote/orderbook` stale
+  - fee source faltante
+  - snapshot faltante o vencido
+  - margin capability/level invalido
+  - instrumento no elegible / fuera de universo / sin filtros basicos
+- API minima agregada:
+  - `POST /api/v1/execution/preflight`
+  - `GET /api/v1/execution/live-safety/summary`
+- Wiring de apoyo:
+  - `rtlab_core/universe/service.py` agrega `membership(...)` por simbolo/family para reutilizar los universos canonicos ya existentes.
+  - `web/app.py` agrega el body de preflight y expone el summary minimo ligado a esta subparte.
+- Decision de diseno clave:
+  - `LIMIT` no inventa precio; exige `price` explicito.
+  - `paper` sigue siendo cost-aware pero no queda bloqueado artificialmente por capability snapshot de `live`.
+  - `3.2` no invade `3.3`: no hay submit/query/cancel/cancel-all todavia.
+- Validacion local de la parte 3.2:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/universe/service.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle -q` -> PASS
+
 ### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.1
 - Backend / persistencia:
   - nuevo `user_data/execution/execution.sqlite3` para lifecycle base auditable de execution reality.

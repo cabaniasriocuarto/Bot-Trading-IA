@@ -97,10 +97,11 @@ Fecha: 2026-03-19
   - servicio base instanciable
   - wiring minimo en backend
   - tests focalizados de storage/policies/wiring
-- [ ] Parte 3.2:
+- [x] Parte 3.2:
   - preflight serio y cost-aware
   - fail-closed en `live`
   - endpoint `POST /api/v1/execution/preflight`
+  - summary minimo `GET /api/v1/execution/live-safety/summary`
 - [ ] Parte 3.3:
   - submit/query/cancel/cancel-all fase 1
 - [ ] Parte 3.4:
@@ -112,7 +113,7 @@ Fecha: 2026-03-19
   - live safety final
 
 ## Siguiente subparte recomendada
-- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.2`.
+- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.3`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:
