@@ -1,5 +1,30 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-19
+
+### RTLOPS-M2 Correctivo 1A - authority runtime_controls mas rigurosa
+- Backend / config:
+  - `rtlab_core/runtime_controls.py` deja de duplicar el bundle numerico completo de `runtime_controls.yaml`.
+  - el loader valida la estructura requerida del bloque y, si el YAML falta o es invalido, cae a un fallback `fail-closed` minimo y explicito.
+  - se agregan `source_hash`, `policy_hash` y `errors` al bundle cargado.
+- Wiring real corregido:
+  - `learning/brain.py` toma thresholds de drift desde la policy cargada y expone `policy_hash`.
+  - `learning/service.py` deja de caer a `"adwin"` hardcodeado en `compute_drift`.
+  - `risk/circuit_breakers.py` y `execution/exec_guard.py` dejan de mantener fallbacks numericos locales redundantes.
+  - `web/app.py` usa thresholds operativos desde la policy cargada y expone la trazabilidad real de `runtime_controls` en `GET /api/v1/config/policies`.
+- Tests del correctivo:
+  - se amplian `test_runtime_controls.py` y `test_policy_paths.py` para cubrir:
+    - `source_hash/policy_hash`
+    - ausencia de `runtime_controls.yaml`
+    - divergencia root vs nested
+    - consumidores relevantes sin defaults numericos redundantes
+  - `test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle"` ahora valida la trazabilidad real del bundle.
+- Validacion local del correctivo:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/runtime_controls.py rtlab_autotrader/rtlab_core/learning/brain.py rtlab_autotrader/rtlab_core/learning/service.py rtlab_autotrader/rtlab_core/risk/circuit_breakers.py rtlab_autotrader/rtlab_core/execution/exec_guard.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_runtime_controls.py rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_runtime_controls.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+
 ## 2026-03-18
 
 ### RTLOPS-M2 - Nucleo Arquitectonico y Policies: thresholds explicitos + runtime controls

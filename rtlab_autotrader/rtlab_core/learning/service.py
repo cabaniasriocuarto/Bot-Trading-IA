@@ -211,9 +211,11 @@ class LearningService:
 
     def compute_drift(self, *, settings: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
         cfg = self.ensure_settings_shape(dict(settings))
-        drift = detect_drift(self._streams_from_runs(runs), algo=str(cfg["learning"].get("drift_algo", "adwin")))
+        drift_algo = str(cfg["learning"].get("drift_algo") or default_drift_algorithm()).strip().lower()
+        drift = detect_drift(self._streams_from_runs(runs), algo=drift_algo)
         payload = {
             **drift,
+            "drift_algo": drift_algo,
             "updated_at": _utc_iso(),
             "research_loop_triggered": bool(drift.get("drift")),
             "live_auto_change": False,

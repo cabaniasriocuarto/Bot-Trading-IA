@@ -1,6 +1,30 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-18
+Fecha: 2026-03-19
+
+## Correctivo 1A de M2 - 2026-03-19
+- [x] Quitar la duplicacion numerica completa de `DEFAULT_RUNTIME_CONTROLS` en `rtlab_core/runtime_controls.py`.
+- [x] Mantener solo un fallback `fail-closed` minimo y explicito cuando `runtime_controls.yaml` falta o es invalido.
+- [x] Exponer trazabilidad real del bundle en runtime:
+  - `source`
+  - `source_hash`
+  - `policy_hash`
+  - `errors`
+- [x] Reflejar esa trazabilidad en `GET /api/v1/config/policies`.
+- [x] Recortar fallbacks numericos redundantes en consumidores M2 relevantes:
+  - `learning/brain.py`
+  - `learning/service.py`
+  - `risk/circuit_breakers.py`
+  - `execution/exec_guard.py`
+  - `web/app.py`
+- [x] Revalidar tests focalizados del bloque 1 con cobertura adicional de:
+  - fuente exacta cargada
+  - ausencia de policy
+  - divergencia root vs nested
+  - consumidores sin defaults numericos redundantes
+- [ ] Deuda chica consciente que sigue fuera de 1A:
+  - `rtlab_config.yaml.example` y `ModeLiteral` de `rtlab_core/config.py` siguen cubriendo runtime config mas amplia (`backtest/dryrun/capture_only`);
+  - no redefinen la taxonomia canonica del runtime global, pero tampoco se tocaron en este correctivo.
 
 ## Cierre del bloque RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - 2026-03-18
 - [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.
@@ -47,7 +71,7 @@ Fecha: 2026-03-18
   - no pasan a redefinir la taxonomia canonica del runtime global de este bloque.
 
 ## Siguiente bloque recomendado
-- [ ] Solo despues de validar/revisar este cierre de M2, abrir `Binance Catalog + Universes + Live Parity`.
+- [ ] Solo despues de validar/revisar este cierre de M2 + Correctivo 1A, abrir `Binance Catalog + Universes + Live Parity`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

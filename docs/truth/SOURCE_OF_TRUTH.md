@@ -1,6 +1,36 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-18
+Fecha de actualizacion: 2026-03-19
+
+## RTLOPS-M2 Correctivo 1A - authority runtime_controls mas rigurosa - 2026-03-19
+
+- `config/policies/runtime_controls.yaml` sigue siendo la fuente canonica del bloque.
+- `rtlab_autotrader/config/policies/runtime_controls.yaml` se mantiene solo como compatibilidad de empaquetado/deploy.
+- Cambio correctivo real aplicado:
+  - `rtlab_autotrader/rtlab_core/runtime_controls.py` ya no mantiene un bundle numerico espejo del YAML canonico.
+  - si el YAML falta o es invalido, el loader aplica un fallback `fail-closed` minimo y explicito, no una segunda copia completa del bundle.
+  - el loader ahora expone:
+    - `source`
+    - `path`
+    - `source_hash`
+    - `policy_hash`
+    - `errors`
+- `GET /api/v1/config/policies` refleja esta trazabilidad real en:
+  - `files.runtime_controls.source`
+  - `files.runtime_controls.source_hash`
+  - `files.runtime_controls.policy_hash`
+  - `files.runtime_controls.errors`
+- Consumidores corregidos para reducir defaults numericos redundantes y leer desde la policy cargada/fail-closed central:
+  - `rtlab_autotrader/rtlab_core/learning/brain.py`
+  - `rtlab_autotrader/rtlab_core/learning/service.py`
+  - `rtlab_autotrader/rtlab_core/risk/circuit_breakers.py`
+  - `rtlab_autotrader/rtlab_core/execution/exec_guard.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+- Alcance del correctivo:
+  - no reabre M2 desde cero;
+  - no toca Binance Catalog;
+  - no toca reporting bridge;
+  - no toca bloque 3.
 
 ## RTLOPS-M2: Nucleo Arquitectonico y Policies - thresholds explicitos + runtime controls - 2026-03-18
 
@@ -76,9 +106,10 @@ Fecha de actualizacion: 2026-03-18
 Cuando haya dudas sobre estos grupos:
 
 1. manda `config/policies/runtime_controls.yaml`
-2. despues manda el runtime efectivo del backend
-3. despues mandan overrides por ENV solo si pisan valores ya definidos en YAML canonico
-4. despues `docs/truth`
+2. si el YAML falta o es invalido, manda el fallback `fail-closed` minimo de `rtlab_core/runtime_controls.py`
+3. despues manda el runtime efectivo del backend
+4. despues mandan overrides por ENV solo si pisan valores ya definidos en YAML canonico
+5. despues `docs/truth`
 
 ### Pendiente consciente acotado
 

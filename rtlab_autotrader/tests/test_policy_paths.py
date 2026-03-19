@@ -42,3 +42,30 @@ def test_describe_policy_root_resolution_flags_divergent_duplicate_yaml(tmp_path
   assert divergent
   assert divergent[0]["role"] == "nested_backend_compat"
   assert "gates.yaml" in divergent[0]["differing_files_vs_selected"]
+
+
+def test_describe_policy_root_resolution_flags_runtime_controls_divergence(tmp_path: Path) -> None:
+  repo_root = tmp_path / "repo"
+  root_policies = repo_root / "config" / "policies"
+  nested_policies = repo_root / "rtlab_autotrader" / "config" / "policies"
+  root_policies.mkdir(parents=True, exist_ok=True)
+  nested_policies.mkdir(parents=True, exist_ok=True)
+
+  for name in EXPECTED_POLICY_FILENAMES:
+    root_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
+    nested_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
+
+  root_policies.joinpath("runtime_controls.yaml").write_text(
+    "runtime_controls:\n  execution_modes: {}\n",
+    encoding="utf-8",
+  )
+  nested_policies.joinpath("runtime_controls.yaml").write_text(
+    "runtime_controls:\n  execution_modes:\n    default_global_runtime_mode: paper\n",
+    encoding="utf-8",
+  )
+
+  payload = describe_policy_root_resolution(repo_root, explicit=root_policies)
+
+  divergent = payload["divergent_candidates"]
+  assert divergent
+  assert "runtime_controls.yaml" in divergent[0]["differing_files_vs_selected"]

@@ -10,11 +10,7 @@ from rtlab_core.types import HealthMetrics
 
 
 _HEALTH_SCORING = health_scoring_policy()
-_EXECUTION_GUARD = (
-    _HEALTH_SCORING.get("execution_guard")
-    if isinstance(_HEALTH_SCORING.get("execution_guard"), dict)
-    else {}
-)
+_EXECUTION_GUARD = _HEALTH_SCORING["execution_guard"]
 
 
 @dataclass(slots=True)
@@ -30,7 +26,7 @@ class ExecutionGuard:
         circuit_breakers: CircuitBreakers,
         safe_mode: SafeModeController,
         kill_switch: KillSwitch,
-        critical_error_limit: int = int(_EXECUTION_GUARD.get("critical_error_limit", 5) or 5),
+        critical_error_limit: int = int(_EXECUTION_GUARD["critical_error_limit"]),
     ) -> None:
         self.circuit_breakers = circuit_breakers
         self.safe_mode = safe_mode

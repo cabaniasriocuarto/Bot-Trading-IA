@@ -50,6 +50,7 @@ from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
 from rtlab_core.runtime_controls import (
     alert_thresholds_policy,
     default_global_runtime_mode as runtime_default_global_mode,
+    load_runtime_controls_bundle,
     observability_policy,
 )
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
@@ -169,11 +170,11 @@ RUNTIME_ENGINE_REAL = "real"
 RUNTIME_ENGINE_SIMULATED = "simulated"
 RUNTIME_CONTRACT_VERSION = "runtime_snapshot_v1"
 RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = str(
-    _RUNTIME_TELEMETRY_POLICY.get("synthetic_source") or "synthetic_v1"
-).strip().lower() or "synthetic_v1"
+    _RUNTIME_TELEMETRY_POLICY["synthetic_source"]
+).strip().lower()
 RUNTIME_TELEMETRY_SOURCE_REAL = str(
-    _RUNTIME_TELEMETRY_POLICY.get("real_source") or "runtime_loop_v1"
-).strip().lower() or "runtime_loop_v1"
+    _RUNTIME_TELEMETRY_POLICY["real_source"]
+).strip().lower()
 BINANCE_TESTNET_BASE_URL_DEFAULT = "https://testnet.binance.vision"
 BINANCE_TESTNET_WS_URL_DEFAULT = "wss://testnet.binance.vision/ws"
 BINANCE_LIVE_BASE_URL_DEFAULT = "https://api.binance.com"
@@ -247,7 +248,7 @@ BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(
     1,
     _env_int(
         "BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS",
-        int(_BREAKER_ALERT_THRESHOLDS.get("integrity_window_hours", 24) or 24),
+        int(_BREAKER_ALERT_THRESHOLDS["integrity_window_hours"]),
     ),
 )
 BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(
@@ -256,7 +257,7 @@ BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(
         0.0,
         _env_float(
             "BREAKER_EVENTS_UNKNOWN_RATIO_WARN",
-            float(_BREAKER_ALERT_THRESHOLDS.get("unknown_ratio_warn", 0.10) or 0.10),
+            float(_BREAKER_ALERT_THRESHOLDS["unknown_ratio_warn"]),
         ),
     ),
 )
@@ -264,40 +265,40 @@ BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(
     1,
     _env_int(
         "BREAKER_EVENTS_UNKNOWN_MIN_EVENTS",
-        int(_BREAKER_ALERT_THRESHOLDS.get("min_events_warn", 10) or 10),
+        int(_BREAKER_ALERT_THRESHOLDS["min_events_warn"]),
     ),
 )
 SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(
     1,
     _env_int(
         "SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC",
-        int(_OBSERVABILITY_LOGGING_POLICY.get("security_internal_header_alert_throttle_sec", 60) or 60),
+        int(_OBSERVABILITY_LOGGING_POLICY["security_internal_header_alert_throttle_sec"]),
     ),
 )
 OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(
     0.1,
     _env_float(
         "OPS_ALERT_SLIPPAGE_P95_WARN_BPS",
-        float(_OPS_ALERT_THRESHOLDS.get("slippage_p95_warn_bps", 8.0) or 8.0),
+        float(_OPS_ALERT_THRESHOLDS["slippage_p95_warn_bps"]),
     ),
 )
 OPS_ALERT_API_ERRORS_WARN = max(
     1,
     _env_int(
         "OPS_ALERT_API_ERRORS_WARN",
-        int(_OPS_ALERT_THRESHOLDS.get("api_errors_warn", 1) or 1),
+        int(_OPS_ALERT_THRESHOLDS["api_errors_warn"]),
     ),
 )
 OPS_ALERT_BREAKER_WINDOW_HOURS = max(
     1,
     _env_int(
         "OPS_ALERT_BREAKER_WINDOW_HOURS",
-        int(_OPS_ALERT_THRESHOLDS.get("breaker_window_hours", 24) or 24),
+        int(_OPS_ALERT_THRESHOLDS["breaker_window_hours"]),
     ),
 )
 OPS_ALERT_DRIFT_ENABLED = _env_bool(
     "OPS_ALERT_DRIFT_ENABLED",
-    bool(_OPS_ALERT_THRESHOLDS.get("drift_enabled", True)),
+    bool(_OPS_ALERT_THRESHOLDS["drift_enabled"]),
 )
 SHADOW_MARKETDATA_BASE_URL = str(os.getenv("SHADOW_MARKETDATA_BASE_URL", BINANCE_PUBLIC_MARKETDATA_BASE_URL)).strip() or BINANCE_PUBLIC_MARKETDATA_BASE_URL
 SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 300))
@@ -794,6 +795,21 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
     meta: dict[str, Any] = {}
     warnings: list[str] = list(authority.get("warnings") or [])
     for name, path in files.items():
+        if name == "runtime_controls":
+            runtime_bundle = load_runtime_controls_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if runtime_bundle.get("errors"):
+                warnings.extend(str(row) for row in (runtime_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = {"runtime_controls": runtime_bundle.get("runtime_controls", {})}
+            meta[name] = {
+                "path": str(runtime_bundle.get("path") or path),
+                "exists": bool(runtime_bundle.get("exists", False)),
+                "valid": bool(runtime_bundle.get("valid", False)),
+                "source": str(runtime_bundle.get("source") or ""),
+                "source_hash": str(runtime_bundle.get("source_hash") or ""),
+                "policy_hash": str(runtime_bundle.get("policy_hash") or ""),
+                "errors": list(runtime_bundle.get("errors") or []),
+            }
+            continue
         exists = path.exists()
         data = _yaml_file_or_default(path, {})
         valid = isinstance(data, dict) and bool(data)
