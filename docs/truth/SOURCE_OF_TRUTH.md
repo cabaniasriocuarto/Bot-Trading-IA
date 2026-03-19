@@ -2,6 +2,148 @@
 
 Fecha de actualizacion: 2026-03-18
 
+## RTLOPS-21: Execution Reality + Live Safety - 2026-03-18
+
+- Trazabilidad del bloque:
+  - issue operativa usada: `RTLOPS-21`
+  - proyecto Linear relacionado: `Execution Reality + Live Safety`
+  - base previa reutilizada sin reabrir bloques:
+    - `4a6bccf` (`M2 runtime controls / thresholds`)
+    - `7d4dc97` (`Binance Catalog + Universes + Live Parity base`)
+    - `9854b30` (`Bridge cost stack + reporting / export`)
+- Fuente canonica nueva dentro de `config/policies/`:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+- Compatibilidad permitida, pero no equivalente en autoridad:
+  - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - `rtlab_autotrader/config/policies/execution_router.yaml`
+  - quedan solo como fallback de empaquetado/deploy.
+- Persistencia canonica nueva:
+  - `user_data/execution/execution.sqlite3`
+  - tablas reales:
+    - `execution_intents`
+    - `execution_orders`
+    - `execution_fills`
+    - `execution_reconcile_events`
+    - `kill_switch_events`
+
+### Arquitectura runtime aplicada
+
+- Servicio canonico:
+  - `rtlab_autotrader/rtlab_core/execution/reality.py`
+- Wiring runtime / API:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - `POST /api/v1/execution/preflight`
+    - `POST /api/v1/execution/orders`
+    - `GET /api/v1/execution/orders`
+    - `GET /api/v1/execution/orders/{id}`
+    - `POST /api/v1/execution/orders/{id}/cancel`
+    - `POST /api/v1/execution/orders/cancel-all`
+    - `GET /api/v1/execution/reconcile/summary`
+    - `GET /api/v1/execution/kill-switch/status`
+    - `POST /api/v1/execution/kill-switch/trip`
+    - `POST /api/v1/execution/kill-switch/reset`
+    - `GET /api/v1/execution/live-safety/summary`
+- Integracion canonica con bloques previos:
+  - `registry/universes/capabilities` siguen saliendo de:
+    - `rtlab_autotrader/rtlab_core/instruments/registry.py`
+    - `rtlab_autotrader/rtlab_core/universe/service.py`
+  - `estimated vs realized`, `gross/net` y export siguen saliendo de:
+    - `rtlab_autotrader/rtlab_core/reporting/service.py`
+  - `execution_reality` no duplica el bridge:
+    - materializa fills reales como filas compatibles con `trade_cost_ledger`
+    - refresca `performance_cost_snapshots` y `cost_source_snapshots` sobre la misma base existente
+
+### Autoridad tecnica de execution safety
+
+- Autoridad local del repo:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+  - runtime efectivo de `execution_reality`
+  - storage persistido en `user_data/execution/execution.sqlite3`
+- Autoridad externa validada para este bloque:
+  - Binance Spot trading endpoints / user data `executionReport`
+  - Binance Margin new order
+  - Binance USDⓈ-M new order / auto-cancel / user trades / `ORDER_TRADE_UPDATE`
+  - Binance COIN-M new order / auto-cancel / user trades / `ORDER_TRADE_UPDATE`
+- Regla operativa real:
+  - el bloque fase 1 soporta solo `MARKET` y `LIMIT`
+  - `cancel`, `cancel-all`, `query/open orders` y `reduce_only` quedan cableados donde aplica
+  - conditional/algo orders quedan explicitamente fuera de esta iteracion
+
+### Preflight, reconcile y kill switch
+
+- Preflight canonico obligatorio valida:
+  - policy cargada
+  - instrumento presente en registry
+  - membership a universo activo
+  - `live_eligible / testnet_eligible`
+  - capability snapshot
+  - freshness de snapshot
+  - `PRICE_FILTER`, `LOT_SIZE`, `MIN_NOTIONAL/NOTIONAL`, `MARKET_LOT_SIZE` cuando aplica
+  - normalizacion a `tickSize / stepSize`
+  - min/max notional
+  - limite de open orders
+  - fee source disponible en `live`
+  - stale quote / stale orderbook
+  - margin level cuando la family es `margin`
+- Reconciliation base aplicada:
+  - `intent -> ack`
+  - `ack -> order status`
+  - `order -> fills`
+  - `fills -> trade_cost_ledger`
+  - `estimated -> realized`
+  - divergencias persistidas en `execution_reconcile_events`
+- Kill switch persistente:
+  - bloquea submits nuevos cuando queda armado
+  - puede autocancelar open orders
+  - exige cooldown/reset explicito segun policy
+  - deja evidencia en `kill_switch_events`
+
+### Estimated vs realized post-trade
+
+- Antes del submit:
+  - toda orden pasa por `preflight`
+  - toda orden guarda `estimated_costs`
+- Despues del fill:
+  - `execution_fills` intenta materializar:
+    - `exchange_fee_realized`
+    - `commission_asset`
+    - `funding_realized`
+    - `borrow_interest_realized`
+    - `slippage_realized`
+    - `gross_pnl`
+    - `net_pnl`
+- Regla cost-aware vigente:
+  - en `live`, si falta fee real y la policy exige fuente real, el submit/preflight falla cerrado
+  - `funding/borrow` pueden quedar provisionales si Binance o la capa actual no entregan el dato en el mismo momento del fill
+
+### Live safety real del bloque
+
+- `GET /api/v1/execution/live-safety/summary` resume:
+  - `live_parity_base_ready`
+  - `execution_policy_loaded`
+  - `kill_switch_armed`
+  - `stale_market_data`
+  - `fee_source_fresh`
+  - `snapshot_fresh`
+  - `unresolved_reconcile_count`
+  - `margin_guard_status`
+  - `overall_status`
+- `degraded_mode` existe y queda visible cuando:
+  - no hay stream usable
+  - el runtime cae a REST polling / reconciliation controlada
+
+### Fuera de alcance y deuda controlada
+
+- NO se reabrieron M1/M2 ni Binance Catalog base.
+- NO se rehizo el bridge `9854b30`.
+- NO se implemento suite completa de conditional/algo orders.
+- NO se implemento framework grande de private websockets.
+- NO se implemento routing live multi-family completo ni order placement portfolio-margin profundo.
+- La siguiente capa recomendada ya pasa a ser:
+  - `Monitoring / Observability / Drift / Alerts / Kill Switches / Health`
+
 ## RTLOPS Bridge: Cost Stack + Reporting / Export Contracts - 2026-03-18
 
 - Trazabilidad del bloque:

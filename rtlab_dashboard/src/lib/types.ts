@@ -1328,3 +1328,91 @@ export interface ReportingExportsResponse {
   items: ReportingExportManifest[];
   policy_source: Record<string, unknown>;
 }
+
+export interface ExecutionEstimatedCosts {
+  requested_notional: number;
+  exchange_fee_estimated: number;
+  spread_estimated: number;
+  slippage_estimated: number;
+  slippage_bps: number;
+  total_cost_estimated: number;
+  family: string;
+  instrument_id?: string | null;
+}
+
+export interface ExecutionPreflightResponse {
+  allowed: boolean;
+  warnings: string[];
+  blocking_reasons: string[];
+  normalized_order_preview: Record<string, unknown>;
+  estimated_costs: ExecutionEstimatedCosts;
+  policy_source: Record<string, unknown>;
+  snapshot_source: Record<string, unknown>;
+  capability_source: Record<string, unknown>;
+  fail_closed: boolean;
+}
+
+export interface ExecutionOrderRow {
+  execution_order_id: string;
+  execution_intent_id: string;
+  venue_order_id?: string | null;
+  client_order_id: string;
+  symbol: string;
+  family: string;
+  environment: string;
+  order_status: string;
+  execution_type_last?: string | null;
+  submitted_at: string;
+  acknowledged_at?: string | null;
+  canceled_at?: string | null;
+  expired_at?: string | null;
+  reduce_only?: boolean | null;
+  tif?: string | null;
+  price?: number | null;
+  orig_qty?: number | null;
+  executed_qty?: number | null;
+  cum_quote_qty?: number | null;
+  avg_fill_price?: number | null;
+  reject_code?: string | null;
+  reject_reason?: string | null;
+  raw_ack?: Record<string, unknown>;
+  raw_last_status?: Record<string, unknown>;
+  mode?: string | null;
+  strategy_id?: string | null;
+  bot_id?: string | null;
+}
+
+export interface ExecutionOrdersResponse {
+  items: ExecutionOrderRow[];
+  policy_source: Record<string, unknown>;
+}
+
+export interface ExecutionOrderDetailResponse {
+  order: ExecutionOrderRow;
+  intent: Record<string, unknown> | null;
+  ack: Record<string, unknown>;
+  last_status: Record<string, unknown>;
+  fills: Array<Record<string, unknown>>;
+  realized_costs: {
+    exchange_fee_realized: number;
+    funding_realized: number;
+    borrow_interest_realized: number;
+    gross_pnl: number;
+    net_pnl: number;
+  };
+  reconcile_events: Array<Record<string, unknown>>;
+}
+
+export interface ExecutionLiveSafetySummary {
+  live_parity_base_ready: boolean;
+  execution_policy_loaded: boolean;
+  kill_switch_armed: boolean;
+  stale_market_data: boolean;
+  fee_source_fresh: boolean;
+  snapshot_fresh: boolean;
+  unresolved_reconcile_count: number;
+  margin_guard_status: string;
+  degraded_mode: boolean;
+  overall_status: "OK" | "WARN" | "BLOCK" | string;
+  policy_source: Record<string, unknown>;
+}

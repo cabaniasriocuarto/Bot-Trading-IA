@@ -2,6 +2,57 @@
 
 ## 2026-03-18
 
+### RTLOPS-21 - Execution Reality + Live Safety
+- Backend / persistencia:
+  - nuevo `user_data/execution/execution.sqlite3` para execution lifecycle auditable.
+  - nuevas tablas:
+    - `execution_intents`
+    - `execution_orders`
+    - `execution_fills`
+    - `execution_reconcile_events`
+    - `kill_switch_events`
+- Policies nuevas:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+  - sus copias nested en `rtlab_autotrader/config/policies/` quedan solo como compatibilidad/fallback.
+- Wiring minimo aplicado:
+  - `rtlab_core/execution/reality.py` agrega:
+    - loader canonico de `execution_safety` / `execution_router`
+    - preflight cost-aware y fail-closed en `live`
+    - submit/query/cancel/cancel-all fase 1
+    - reconciliacion base `intent -> ack -> fill`
+    - kill switch persistente
+    - degraded mode con fallback REST controlado
+    - auto-cancel heartbeat minimo para futures
+  - `rtlab_core/universe/service.py` agrega membership explicita por simbolo para no duplicar filtros del registry.
+  - `web/app.py` agrega:
+    - `POST /api/v1/execution/preflight`
+    - `POST /api/v1/execution/orders`
+    - `GET /api/v1/execution/orders`
+    - `GET /api/v1/execution/orders/{id}`
+    - `POST /api/v1/execution/orders/{id}/cancel`
+    - `POST /api/v1/execution/orders/cancel-all`
+    - `GET /api/v1/execution/reconcile/summary`
+    - `GET /api/v1/execution/kill-switch/status`
+    - `POST /api/v1/execution/kill-switch/trip`
+    - `POST /api/v1/execution/kill-switch/reset`
+    - `GET /api/v1/execution/live-safety/summary`
+  - `GET /api/v1/config/policies` expone tambien thresholds y wiring de `execution_safety` / `execution_router`.
+- Decision de diseno clave:
+  - el bloque arranca cost-aware sobre `9854b30`;
+  - los fills reales se materializan en filas compatibles con `trade_cost_ledger` en vez de abrir un ledger paralelo incompatible.
+- Limitaciones conscientes:
+  - fase 1 soporta `MARKET/LIMIT`; conditional/algo orders quedan pendientes explicitos.
+  - `funding/borrow` pueden quedar provisionales si la fuente real no llega junto al fill.
+  - la migracion de `@app.on_event("startup")` a lifespan sigue como deuda chica no bloqueante.
+- Validacion local del bloque:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/execution/__init__.py rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/rtlab_core/universe/service.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_web_reporting_bridge_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+
 ### RTLOPS Bridge - Cost Stack + Reporting / Export Contracts
 - Backend / persistencia:
   - nuevo `user_data/reporting/reporting.sqlite3` para reporting/costos/export auditable.

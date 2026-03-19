@@ -90,8 +90,35 @@ Fecha: 2026-03-18
   - download endpoint dedicado para artefactos si la UI lo necesita
   - migrar `startup` FastAPI a lifespan para quitar warning deprecado
 
+## Cierre del bloque `Execution Reality + Live Safety` - 2026-03-18
+- [x] Crear autoridad canonica nueva en:
+  - `config/policies/execution_safety.yaml`
+  - `config/policies/execution_router.yaml`
+- [x] Persistir lifecycle auditable de:
+  - intents
+  - orders
+  - fills
+  - reconcile events
+  - kill switch events
+- [x] Implementar preflight cost-aware y fail-closed en `live`.
+- [x] Implementar fase 1 de router:
+  - `MARKET`
+  - `LIMIT`
+  - query/open orders
+  - cancel
+  - cancel-all
+  - auto-cancel minimo de futures
+- [x] Integrar fills reales con el bridge de reporting/cost stack ya existente.
+- [x] Exponer endpoints backend minimos de execution / reconcile / kill switch / live safety.
+- [x] Dejar contracts TS minimos para conectar UI operativa despues sin rediseño grande.
+- [ ] Deuda consciente ya fuera de este bloque:
+  - conditional/algo orders
+  - framework completo de private user data streams
+  - routing live multi-family completo
+  - migrar startup FastAPI a lifespan
+
 ## Siguiente bloque recomendado
-- [ ] Abrir `Execution Reality + Live Safety (continuacion cost-aware)`.
+- [ ] Abrir `Monitoring / Observability / Drift / Alerts / Kill Switches / Health`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

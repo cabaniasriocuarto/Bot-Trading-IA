@@ -18,6 +18,8 @@ EXPECTED_POLICY_FILENAMES: tuple[str, ...] = (
     "universes.yaml",
     "cost_stack.yaml",
     "reporting_exports.yaml",
+    "execution_safety.yaml",
+    "execution_router.yaml",
 )
 
 

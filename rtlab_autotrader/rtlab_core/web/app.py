@@ -35,6 +35,7 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.execution import ExecutionRealityService
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
 from rtlab_core.instruments import BinanceInstrumentRegistryService
@@ -642,6 +643,42 @@ class ReportingExportBody(BaseModel):
     report_scope: Literal["summary", "daily", "monthly", "trades", "costs", "full"] = "full"
 
 
+class ExecutionPreflightBody(BaseModel):
+    family: Literal["spot", "margin", "usdm_futures", "coinm_futures"]
+    environment: Literal["live", "testnet"] = "live"
+    mode: Literal["paper", "shadow", "testnet", "live"] | None = None
+    symbol: str
+    side: Literal["BUY", "SELL"]
+    order_type: Literal["MARKET", "LIMIT"]
+    quantity: float | None = None
+    quote_quantity: float | None = None
+    price: float | None = None
+    time_in_force: Literal["GTC", "IOC", "FOK", "GTX"] | None = None
+    reduce_only: bool | None = None
+    strategy_id: str | None = None
+    bot_id: str | None = None
+    signal_id: str | None = None
+    market_snapshot: dict[str, Any] | None = None
+
+
+class ExecutionOrderCreateBody(ExecutionPreflightBody):
+    client_order_id: str | None = None
+
+
+class ExecutionCancelAllBody(BaseModel):
+    family: Literal["spot", "margin", "usdm_futures", "coinm_futures"]
+    environment: Literal["live", "testnet"] = "live"
+    symbol: str | None = None
+
+
+class ExecutionKillSwitchTripBody(BaseModel):
+    trigger_type: str = "manual_trip"
+    severity: Literal["INFO", "WARN", "BLOCK"] = "BLOCK"
+    family: Literal["spot", "margin", "usdm_futures", "coinm_futures"] | None = None
+    symbol: str | None = None
+    reason: str = "manual_trip"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -720,6 +757,8 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "runtime_controls": root / "runtime_controls.yaml",
         "cost_stack": root / "cost_stack.yaml",
         "reporting_exports": root / "reporting_exports.yaml",
+        "execution_safety": root / "execution_safety.yaml",
+        "execution_router": root / "execution_router.yaml",
     }
 
 
@@ -733,6 +772,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     runtime_controls = bundle.get("runtime_controls") if isinstance(bundle.get("runtime_controls"), dict) else {}
     cost_stack = bundle.get("cost_stack") if isinstance(bundle.get("cost_stack"), dict) else {}
     reporting_exports = bundle.get("reporting_exports") if isinstance(bundle.get("reporting_exports"), dict) else {}
+    execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
+    execution_router = bundle.get("execution_router") if isinstance(bundle.get("execution_router"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
@@ -742,6 +783,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     rc = runtime_controls.get("runtime_controls") if isinstance(runtime_controls.get("runtime_controls"), dict) else {}
     cs = cost_stack.get("cost_stack") if isinstance(cost_stack.get("cost_stack"), dict) else {}
     rexp = reporting_exports.get("reporting_exports") if isinstance(reporting_exports.get("reporting_exports"), dict) else {}
+    exs = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
+    exr = execution_router.get("execution_router") if isinstance(execution_router.get("execution_router"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
@@ -766,6 +809,12 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     cs_alerts = cs.get("alerts") if isinstance(cs.get("alerts"), dict) else {}
     rexp_formats = rexp.get("formats") if isinstance(rexp.get("formats"), dict) else {}
     rexp_limits = rexp.get("limits") if isinstance(rexp.get("limits"), dict) else {}
+    exs_preflight = exs.get("preflight") if isinstance(exs.get("preflight"), dict) else {}
+    exs_sizing = exs.get("sizing") if isinstance(exs.get("sizing"), dict) else {}
+    exs_kill = exs.get("kill_switch") if isinstance(exs.get("kill_switch"), dict) else {}
+    exs_reconcile = exs.get("reconciliation") if isinstance(exs.get("reconciliation"), dict) else {}
+    exr_families = exr.get("families_enabled") if isinstance(exr.get("families_enabled"), dict) else {}
+    exr_supported = exr.get("first_iteration_supported_order_types") if isinstance(exr.get("first_iteration_supported_order_types"), dict) else {}
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -827,6 +876,16 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "cost_stack_block_total_cost_pct_gross": cs_alerts.get("block_if_total_cost_pct_of_gross_pnl_gt"),
         "reporting_export_formats": sorted([fmt for fmt, enabled in rexp_formats.items() if enabled]),
         "reporting_export_max_rows": rexp_limits.get("max_rows_per_export"),
+        "execution_require_snapshot_fresh": exs_preflight.get("require_snapshot_fresh"),
+        "execution_quote_stale_block_ms": exs_preflight.get("quote_stale_block_ms"),
+        "execution_reject_missing_fee_source_live": exs_preflight.get("reject_if_missing_fee_source_in_live"),
+        "execution_max_notional_per_order_usd": exs_sizing.get("max_notional_per_order_usd"),
+        "execution_max_open_orders_per_symbol": exs_sizing.get("max_open_orders_per_symbol"),
+        "execution_kill_switch_enabled": exs_kill.get("enabled"),
+        "execution_kill_switch_cooldown_sec": exs_kill.get("cooldown_sec"),
+        "execution_reconcile_ack_timeout_sec": exs_reconcile.get("order_ack_timeout_sec"),
+        "execution_router_families_enabled": sorted([name for name, enabled in exr_families.items() if enabled]),
+        "execution_router_supported_order_types": exr_supported,
     }
 
 
@@ -2017,6 +2076,15 @@ class ConsoleStore:
             instrument_registry_service=self.instrument_registry,
             runs_path=RUNS_PATH,
         )
+        self.execution_reality = ExecutionRealityService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            instrument_registry_service=self.instrument_registry,
+            universe_service=self.instrument_universes,
+            reporting_bridge_service=self.reporting_bridge,
+            runs_loader=self.load_runs,
+        )
         self.instrument_registry_startup_sync: dict[str, Any] = {
             "ok": True,
             "startup": True,
@@ -2251,7 +2319,7 @@ class ConsoleStore:
         self._ensure_seed_backtest()
         self._sync_backtest_runs_catalog()
         try:
-            self.reporting_bridge.refresh_materialized_views(self.load_runs())
+            self.execution_reality.refresh_reporting_views(self.load_runs())
         except Exception:
             pass
         self.add_log(
@@ -9255,9 +9323,109 @@ def create_app() -> FastAPI:
     def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.instrument_registry.capabilities_summary()
 
+    @app.post("/api/v1/execution/preflight")
+    def execution_preflight(
+        body: ExecutionPreflightBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.preflight(body.model_dump())
+
+    @app.post("/api/v1/execution/orders")
+    def execution_orders_create(
+        body: ExecutionOrderCreateBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.create_order(body.model_dump())
+
+    @app.get("/api/v1/execution/orders")
+    def execution_orders_list(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {
+            "items": store.execution_reality.db.list_orders(
+                family=family,
+                environment=environment,
+                symbol=symbol,
+                status=status,
+                strategy_id=strategy_id,
+                bot_id=bot_id,
+                limit=limit,
+                offset=offset,
+            ),
+            "policy_source": store.execution_reality.policy_source(),
+        }
+
+    @app.get("/api/v1/execution/orders/{execution_order_id}")
+    def execution_order_detail(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.order_detail(execution_order_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Execution order not found")
+        return payload
+
+    @app.post("/api/v1/execution/orders/{execution_order_id}/cancel")
+    def execution_order_cancel(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.cancel_order(execution_order_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/orders/cancel-all")
+    def execution_orders_cancel_all(
+        body: ExecutionCancelAllBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.cancel_all(
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+        )
+
+    @app.get("/api/v1/execution/reconcile/summary")
+    def execution_reconcile_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.reconcile_orders()
+
+    @app.get("/api/v1/execution/kill-switch/status")
+    def execution_kill_switch_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.db.kill_switch_status()
+
+    @app.post("/api/v1/execution/kill-switch/trip")
+    def execution_kill_switch_trip(
+        body: ExecutionKillSwitchTripBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.trip_kill_switch(
+            trigger_type=body.trigger_type,
+            severity=body.severity,
+            family=body.family,
+            symbol=body.symbol,
+            reason=body.reason,
+        )
+
+    @app.post("/api/v1/execution/kill-switch/reset")
+    def execution_kill_switch_reset(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        return store.execution_reality.reset_kill_switch()
+
+    @app.get("/api/v1/execution/live-safety/summary")
+    def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.live_safety_summary()
+
     def _refresh_reporting_views() -> None:
         try:
-            store.reporting_bridge.refresh_materialized_views(store.load_runs())
+            store.execution_reality.refresh_reporting_views(store.load_runs())
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
