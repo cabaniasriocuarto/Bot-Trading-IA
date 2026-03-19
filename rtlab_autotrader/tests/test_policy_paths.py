@@ -30,6 +30,8 @@ def test_describe_policy_root_resolution_flags_divergent_duplicate_yaml(tmp_path
   nested_policies.mkdir(parents=True, exist_ok=True)
 
   assert "runtime_controls.yaml" in EXPECTED_POLICY_FILENAMES
+  assert "instrument_registry.yaml" in EXPECTED_POLICY_FILENAMES
+  assert "universes.yaml" in EXPECTED_POLICY_FILENAMES
 
   for name in EXPECTED_POLICY_FILENAMES:
     root_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
@@ -42,3 +44,5 @@ def test_describe_policy_root_resolution_flags_divergent_duplicate_yaml(tmp_path
   assert divergent
   assert divergent[0]["role"] == "nested_backend_compat"
   assert "gates.yaml" in divergent[0]["differing_files_vs_selected"]
+  assert "instrument_registry.yaml" in divergent[0]["differing_files_vs_selected"]
+  assert "universes.yaml" in divergent[0]["differing_files_vs_selected"]

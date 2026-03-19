@@ -1,6 +1,6 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-18
+Fecha de actualizacion: 2026-03-19
 
 ## RTLOPS-4 / RTLOPS-15 / RTLOPS-18: Binance Catalog + Universes + Live Parity Base - 2026-03-18
 
@@ -14,6 +14,9 @@ Fecha de actualizacion: 2026-03-18
   - `rtlab_autotrader/config/policies/instrument_registry.yaml`
   - `rtlab_autotrader/config/policies/universes.yaml`
   - quedan solo como fallback de empaquetado/deploy cuando la raiz canonica no esta disponible.
+- Fallback tecnico restante en codigo:
+  - si la policy falta o es invalida, el backend cae a un fallback minimo `fail-closed`;
+  - ya no mantiene un bundle espejo completo de `instrument_registry.yaml` o `universes.yaml` dentro del codigo.
 - Persistencia canonica nueva:
   - `user_data/instruments/registry.sqlite3`
   - tablas reales:
@@ -28,6 +31,13 @@ Fecha de actualizacion: 2026-03-18
   - `rtlab_autotrader/rtlab_core/instruments/registry.py`
 - Servicio de universos canonicos:
   - `rtlab_autotrader/rtlab_core/universe/service.py`
+- Trazabilidad operativa visible del loader:
+  - `source`
+  - `path`
+  - `source_hash` = hash del archivo YAML efectivamente cargado
+  - `policy_hash` = hash del payload efectivo activo
+  - `errors` / `warnings`
+  - `fallback_used`
 - Wiring runtime / API:
   - `rtlab_autotrader/rtlab_core/web/app.py`
     - `GET /api/v1/instruments/registry/summary`
@@ -82,6 +92,8 @@ Fecha de actualizacion: 2026-03-18
     - la policy cargo correctamente
     - existe capability snapshot
     - y el ultimo diff no quedo en severidad `BLOCK`
+  - el Correctivo 2A no cambia esa regla:
+    - solo limpia autoridad primaria, fallback y trazabilidad del bloque
 
 ### Universos canonicos del bloque
 
@@ -97,6 +109,8 @@ Fecha de actualizacion: 2026-03-18
   - `min_live_eligible`
   - `require_margin_capability`
   - exclusion de leveraged tokens via suffixes explicitos en policy
+- Resumenes expuestos:
+  - `registry_summary`, `snapshots` y `universes` ahora muestran `source_hash` y `policy_hash` separados para auditoria.
 
 ### Fuera de alcance y deuda controlada
 

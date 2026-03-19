@@ -265,13 +265,23 @@ def test_registry_summary_universes_and_capabilities_endpoints_expose_counts(tmp
     assert summary_payload["by_family"]["spot"] == 2
     assert summary_payload["by_family"]["margin"] == 1
     assert summary_payload["live_parity_base_ready"]["spot"]["live"]["live_parity_base_ready"] is True
+    assert summary_payload["policy_source"]["source"] == "config/policies/instrument_registry.yaml"
+    assert len(summary_payload["policy_source"]["source_hash"]) == 64
+    assert len(summary_payload["policy_source"]["policy_hash"]) == 64
+    assert summary_payload["policy_source"]["errors"] == []
 
     universes = client.get("/api/v1/instruments/universes", headers=headers)
     assert universes.status_code == 200, universes.text
-    universe_items = {row["name"]: row for row in universes.json()["items"]}
+    universes_payload = universes.json()
+    universe_items = {row["name"]: row for row in universes_payload["items"]}
     assert universe_items["core_spot_usdt"]["size"] == 1
     assert universe_items["core_margin_usdt"]["size"] == 1
     assert universe_items["core_usdm_perps"]["size"] == 1
+    assert universes_payload["policy_source"]["source"] == "config/policies/universes.yaml"
+    assert len(universes_payload["policy_source"]["source_hash"]) == 64
+    assert len(universes_payload["policy_source"]["policy_hash"]) == 64
+    assert universes_payload["policy_source"]["errors"] == []
+    assert universe_items["core_spot_usdt"]["policy_source"]["policy_hash"] == universes_payload["policy_source"]["policy_hash"]
 
     capabilities = client.get("/api/v1/account/capabilities/summary", headers=headers)
     assert capabilities.status_code == 200, capabilities.text
@@ -309,11 +319,16 @@ def test_sync_endpoint_registers_snapshot_and_diff(tmp_path: Path, monkeypatch) 
         headers=headers,
     )
     assert snapshots.status_code == 200, snapshots.text
-    latest = snapshots.json()["items"][0]
+    snapshots_payload = snapshots.json()
+    latest = snapshots_payload["items"][0]
     assert latest["diff_summary"]["symbol_count_before"] == 2
     assert latest["diff_summary"]["symbol_count_after"] == 1
     assert latest["diff_summary"]["removed_live_eligible_count"] == 1
     assert latest["diff_severity"] == "BLOCK"
+    assert len(latest["policy_hash"]) == 64
+    assert snapshots_payload["policy_source"]["source"] == "config/policies/instrument_registry.yaml"
+    assert len(snapshots_payload["policy_source"]["source_hash"]) == 64
+    assert len(snapshots_payload["policy_source"]["policy_hash"]) == 64
 
 
 def test_startup_sync_force_and_stale_snapshot_blocks_live_parity(tmp_path: Path, monkeypatch) -> None:
