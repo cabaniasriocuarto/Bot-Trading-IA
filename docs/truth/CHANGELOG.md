@@ -2,6 +2,51 @@
 
 ## 2026-03-18
 
+### RTLOPS Bridge - Cost Stack + Reporting / Export Contracts
+- Backend / persistencia:
+  - nuevo `user_data/reporting/reporting.sqlite3` para reporting/costos/export auditable.
+  - nuevas tablas:
+    - `performance_cost_snapshots`
+    - `trade_cost_ledger`
+    - `export_manifest`
+    - `cost_source_snapshots`
+- Policies nuevas:
+  - `config/policies/cost_stack.yaml`
+  - `config/policies/reporting_exports.yaml`
+  - sus copias nested en `rtlab_autotrader/config/policies/` quedan solo como compatibilidad/fallback.
+- Wiring minimo aplicado:
+  - `rtlab_core/reporting/service.py` agrega:
+    - loaders canonicos de cost stack/reporting exports
+    - backfill idempotente desde `user_data/backtests/runs.json`
+    - agregacion `day/week/month/ytd/all_time`
+    - export `xlsx` y `pdf` sin dependencias nuevas
+    - provenance oficial de fuentes Binance por family/environment
+  - `web/app.py` agrega:
+    - `GET /api/v1/reporting/performance/summary`
+    - `GET /api/v1/reporting/performance/daily`
+    - `GET /api/v1/reporting/performance/monthly`
+    - `GET /api/v1/reporting/costs/breakdown`
+    - `GET /api/v1/reporting/trades`
+    - `POST /api/v1/reporting/exports/xlsx`
+    - `POST /api/v1/reporting/exports/pdf`
+    - `GET /api/v1/reporting/exports`
+  - `GET /api/v1/config/policies` expone tambien:
+    - source names de costos Binance
+    - defaults explicitos de spread/slippage
+    - limites de export y formatos habilitados
+- Decision de diseno clave:
+  - el puente distingue `estimated_only / mixed / realized`;
+  - en `live`, si falta `exchange_fee_realized` y, cuando aplica, `funding_realized` o `borrow_interest_realized`, el bloque falla cerrado por policy.
+- Limitaciones conscientes:
+  - `spread/slippage` siguen pudiendo ser estimados en este puente;
+  - la realizacion fina y runtime execution reality queda para el bloque siguiente.
+  - no se agrego UI grande; solo contratos TS minimos para conectar despues.
+- Validacion local del bloque:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/reporting/service.py rtlab_autotrader/rtlab_core/reporting/__init__.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/policy_paths.py rtlab_autotrader/tests/test_reporting_bridge.py rtlab_autotrader/tests/test_web_reporting_bridge_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_reporting_bridge.py rtlab_autotrader/tests/test_web_reporting_bridge_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle -q` -> PASS
+
 ### RTLOPS-4 / RTLOPS-15 / RTLOPS-18 - Binance Catalog + Universes + Live Parity Base
 - Backend / persistencia:
   - nuevo `user_data/instruments/registry.sqlite3` para registry persistente y auditable.

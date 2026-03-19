@@ -67,8 +67,31 @@ Fecha: 2026-03-18
   - private websockets completos
   - pre-flight/live safety de execution real
 
+## Cierre del bloque puente `Cost Stack + Reporting / Export Contracts` - 2026-03-18
+- [x] Crear autoridad canonica nueva en:
+  - `config/policies/cost_stack.yaml`
+  - `config/policies/reporting_exports.yaml`
+- [x] Backfillear storage auditable para:
+  - `performance_cost_snapshots`
+  - `trade_cost_ledger`
+  - `export_manifest`
+  - `cost_source_snapshots`
+- [x] Exponer contratos backend minimos de reporting:
+  - summary
+  - daily
+  - monthly
+  - costs breakdown
+  - trades
+  - exports `xlsx/pdf`
+- [x] Distinguir `estimated_only / mixed / realized` con fail-closed en `live` cuando falten fuentes reales criticas.
+- [x] Dejar contracts TS minimos en dashboard para conectar la UI despues sin rehacer frontend.
+- [ ] Deuda consciente ya fuera de este bloque:
+  - realizacion fina de `spread/slippage` en runtime real
+  - download endpoint dedicado para artefactos si la UI lo necesita
+  - migrar `startup` FastAPI a lifespan para quitar warning deprecado
+
 ## Siguiente bloque recomendado
-- [ ] Abrir `Execution Reality + Live Safety`.
+- [ ] Abrir `Execution Reality + Live Safety (continuacion cost-aware)`.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

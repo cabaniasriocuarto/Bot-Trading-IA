@@ -2,6 +2,111 @@
 
 Fecha de actualizacion: 2026-03-18
 
+## RTLOPS Bridge: Cost Stack + Reporting / Export Contracts - 2026-03-18
+
+- Trazabilidad del bloque:
+  - issue/puente operativa usada: `RTLOPS-22`
+  - proyecto Linear relacionado: `Execution Reality + Live Safety`
+  - siguiente bloque principal que habilita: `Execution Reality + Live Safety (continuacion cost-aware)`
+- Fuente canonica nueva dentro de `config/policies/`:
+  - `config/policies/cost_stack.yaml`
+  - `config/policies/reporting_exports.yaml`
+- Compatibilidad permitida, pero no equivalente en autoridad:
+  - `rtlab_autotrader/config/policies/cost_stack.yaml`
+  - `rtlab_autotrader/config/policies/reporting_exports.yaml`
+  - quedan solo como fallback de empaquetado/deploy si la raiz canonica no esta disponible.
+- Persistencia canonica nueva:
+  - `user_data/reporting/reporting.sqlite3`
+  - tablas reales:
+    - `performance_cost_snapshots`
+    - `trade_cost_ledger`
+    - `export_manifest`
+    - `cost_source_snapshots`
+
+### Lectura runtime aplicada
+
+- Loader/servicio canonico:
+  - `rtlab_autotrader/rtlab_core/reporting/service.py`
+- Wiring runtime / API:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - `GET /api/v1/reporting/performance/summary`
+    - `GET /api/v1/reporting/performance/daily`
+    - `GET /api/v1/reporting/performance/monthly`
+    - `GET /api/v1/reporting/costs/breakdown`
+    - `GET /api/v1/reporting/trades`
+    - `POST /api/v1/reporting/exports/xlsx`
+    - `POST /api/v1/reporting/exports/pdf`
+    - `GET /api/v1/reporting/exports`
+  - `GET /api/v1/config/policies` ahora tambien resume thresholds/source names de `cost_stack` y limites/formatos de `reporting_exports`.
+
+### Autoridad tecnica de costos y reporting
+
+- Autoridad local del repo:
+  - `config/policies/cost_stack.yaml`
+  - `config/policies/reporting_exports.yaml`
+  - el runtime efectivo del backend
+  - `user_data/reporting/reporting.sqlite3`
+- Autoridad externa validada para este bloque:
+  - Binance Spot `GET /api/v3/account/commission`
+  - Binance Spot `POST /api/v3/order/test` con `computeCommissionRates=true`
+  - Binance USDⓈ-M `GET /fapi/v1/income`
+  - Binance USDⓈ-M `GET /fapi/v1/commissionRate`
+  - Binance COIN-M `GET /dapi/v1/commissionRate`
+  - Binance Margin `GET /sapi/v1/margin/interestHistory`
+- Regla operativa real:
+  - `exchange_fee_estimated`, `spread_estimated`, `slippage_estimated`, `total_cost_estimated` salen del cost stack canonico o de metadata explicita por trade/run.
+  - `exchange_fee_realized`, `funding_realized`, `borrow_interest_realized` solo cuentan como reales cuando vienen con source/provenance auditable.
+  - `spread/slippage` pueden seguir como estimados en este puente; la realizacion fina queda para `Execution Reality + Live Safety`.
+
+### Estimated vs realized
+
+- `estimated_only`:
+  - backtests / paper / shadow
+  - usa costos del run/trade o fallback explicito de policy
+- `mixed`:
+  - live/testnet con fee/funding/interest reales visibles pero spread/slippage aun estimados
+- `realized`:
+  - todas las fuentes relevantes del trade vienen desde metadata auditable del broker/runtime
+- Fail-closed vigente:
+  - si `block_if_missing_real_cost_source_in_live=true`, un trade `live` sin `exchange_fee_realized` y, cuando aplica, sin `funding_realized` o `borrow_interest_realized`, bloquea el materializado/reporting del bloque.
+
+### Reporting y exports canonicos
+
+- `performance_cost_snapshots` materializa:
+  - `day`
+  - `week`
+  - `month`
+  - `ytd`
+  - `all_time`
+- `trade_cost_ledger` conserva por trade/fill:
+  - gross/net
+  - fees
+  - spread
+  - slippage
+  - funding
+  - borrow interest
+  - provenance y source binding
+- `export_manifest` deja trazabilidad de:
+  - `xlsx`
+  - `pdf`
+  - path de artefacto
+  - snapshot ids usados
+  - usuario / fecha
+- `cost_source_snapshots` deja visible la vinculacion oficial de fuentes Binance por family/environment:
+  - `spot`
+  - `margin`
+  - `usdm_futures`
+  - `coinm_futures`
+
+### Fuera de alcance y deuda controlada
+
+- NO se reabrio M2 runtime controls.
+- NO se rehizo Binance Catalog + Universes + Live Parity base.
+- NO se implemento live execution multi-family.
+- NO se implementaron private websockets completos.
+- NO se implemento order placement real.
+- NO se agrego frontend grande; solo contratos TS minimos para acoplar la UI despues.
+
 ## RTLOPS-4 / RTLOPS-15 / RTLOPS-18: Binance Catalog + Universes + Live Parity Base - 2026-03-18
 
 - Trazabilidad del bloque:

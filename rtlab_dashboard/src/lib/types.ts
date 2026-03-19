@@ -1210,3 +1210,121 @@ export interface RunValidatePromotionResponse {
     next_step?: string;
   };
 }
+
+export interface ReportingPerformanceBlock {
+  gross_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  net_pnl: number;
+  trade_count: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  expectancy: number | null;
+  max_drawdown: number | null;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingPerformanceSummaryResponse {
+  today: ReportingPerformanceBlock;
+  week: ReportingPerformanceBlock;
+  month: ReportingPerformanceBlock;
+  ytd: ReportingPerformanceBlock;
+  all_time: ReportingPerformanceBlock;
+}
+
+export interface ReportingPerformanceSeriesPoint {
+  bucket: string;
+  gross_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  net_pnl: number;
+  trade_count: number;
+}
+
+export interface ReportingPerformanceSeriesResponse {
+  items: ReportingPerformanceSeriesPoint[];
+  count: number;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingCostsBreakdownResponse {
+  exchange_fee_estimated: number;
+  exchange_fee_realized: number;
+  spread_estimated: number;
+  spread_realized: number;
+  slippage_estimated: number;
+  slippage_realized: number;
+  funding_realized: number;
+  borrow_interest_realized: number;
+  rebates_or_discounts: number;
+  gross_pnl: number;
+  net_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  total_cost_pct_of_gross_pnl: number;
+  alert_status: string;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingTradeCostRow {
+  trade_cost_id: string;
+  trade_ref: string;
+  run_id?: string | null;
+  venue: string;
+  family: string;
+  environment: string;
+  symbol: string;
+  strategy_id?: string | null;
+  bot_id?: string | null;
+  executed_at: string;
+  exchange_fee_estimated: number;
+  exchange_fee_realized?: number | null;
+  fee_asset?: string | null;
+  spread_estimated: number;
+  spread_realized?: number | null;
+  slippage_estimated: number;
+  slippage_realized?: number | null;
+  funding_estimated: number;
+  funding_realized?: number | null;
+  borrow_interest_estimated: number;
+  borrow_interest_realized?: number | null;
+  rebates_or_discounts: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  gross_pnl: number;
+  net_pnl: number;
+  cost_source: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+}
+
+export interface ReportingTradesResponse {
+  items: ReportingTradeCostRow[];
+  count: number;
+  limit: number;
+  offset: number;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingExportManifest {
+  export_id: string;
+  export_type: "xlsx" | "pdf" | string;
+  report_scope: "summary" | "daily" | "monthly" | "trades" | "costs" | "full" | string;
+  generated_at: string;
+  generated_by: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  row_count: number;
+  artifact_path: string;
+  source_snapshot_ids: string[];
+  success: boolean;
+  error_message?: string | null;
+  provenance: Record<string, unknown>;
+}
+
+export interface ReportingExportsResponse {
+  items: ReportingExportManifest[];
+  policy_source: Record<string, unknown>;
+}

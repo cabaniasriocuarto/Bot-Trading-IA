@@ -45,6 +45,7 @@ from rtlab_core.learning.option_b_engine import OptionBLearningEngine
 from rtlab_core.learning.shadow_runner import BINANCE_PUBLIC_MARKETDATA_BASE_URL, ShadowRunConfig, ShadowRunner
 from rtlab_core.mode_taxonomy import GLOBAL_RUNTIME_MODES, mode_taxonomy_payload, normalize_bot_policy_mode, normalize_global_runtime_mode
 from rtlab_core.policy_paths import describe_policy_root_resolution, resolve_policy_root
+from rtlab_core.reporting import ReportingBridgeService
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
@@ -632,6 +633,15 @@ class InstrumentRegistrySyncBody(BaseModel):
     environment: Literal["live", "testnet"] | None = None
 
 
+class ReportingExportBody(BaseModel):
+    strategy_id: str | None = None
+    bot_id: str | None = None
+    venue: str | None = None
+    family: str | None = None
+    symbol: str | None = None
+    report_scope: Literal["summary", "daily", "monthly", "trades", "costs", "full"] = "full"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -708,6 +718,8 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "fees": root / "fees.yaml",
         "fundamentals_credit_filter": root / "fundamentals_credit_filter.yaml",
         "runtime_controls": root / "runtime_controls.yaml",
+        "cost_stack": root / "cost_stack.yaml",
+        "reporting_exports": root / "reporting_exports.yaml",
     }
 
 
@@ -719,6 +731,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     fees = bundle.get("fees") if isinstance(bundle.get("fees"), dict) else {}
     fundamentals = bundle.get("fundamentals_credit_filter") if isinstance(bundle.get("fundamentals_credit_filter"), dict) else {}
     runtime_controls = bundle.get("runtime_controls") if isinstance(bundle.get("runtime_controls"), dict) else {}
+    cost_stack = bundle.get("cost_stack") if isinstance(bundle.get("cost_stack"), dict) else {}
+    reporting_exports = bundle.get("reporting_exports") if isinstance(bundle.get("reporting_exports"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
@@ -726,6 +740,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
     fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
     rc = runtime_controls.get("runtime_controls") if isinstance(runtime_controls.get("runtime_controls"), dict) else {}
+    cs = cost_stack.get("cost_stack") if isinstance(cost_stack.get("cost_stack"), dict) else {}
+    rexp = reporting_exports.get("reporting_exports") if isinstance(reporting_exports.get("reporting_exports"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
@@ -744,6 +760,12 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     breaker_integrity = alert_thresholds.get("breaker_integrity") if isinstance(alert_thresholds.get("breaker_integrity"), dict) else {}
     operations = alert_thresholds.get("operations") if isinstance(alert_thresholds.get("operations"), dict) else {}
     legacy_aliases = execution_modes.get("legacy_aliases") if isinstance(execution_modes.get("legacy_aliases"), dict) else {}
+    cs_sources = cs.get("sources") if isinstance(cs.get("sources"), dict) else {}
+    cs_estimation = cs.get("estimation") if isinstance(cs.get("estimation"), dict) else {}
+    cs_aggregation = cs.get("aggregation") if isinstance(cs.get("aggregation"), dict) else {}
+    cs_alerts = cs.get("alerts") if isinstance(cs.get("alerts"), dict) else {}
+    rexp_formats = rexp.get("formats") if isinstance(rexp.get("formats"), dict) else {}
+    rexp_limits = rexp.get("limits") if isinstance(rexp.get("limits"), dict) else {}
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -792,6 +814,19 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "breaker_unknown_ratio_warn": breaker_integrity.get("unknown_ratio_warn"),
         "breaker_min_events_warn": breaker_integrity.get("min_events_warn"),
         "breaker_integrity_window_hours": breaker_integrity.get("integrity_window_hours"),
+        "cost_stack_spot_commission_source": cs_sources.get("spot_commission_source"),
+        "cost_stack_futures_income_source": cs_sources.get("futures_income_source"),
+        "cost_stack_margin_interest_source": cs_sources.get("margin_interest_source"),
+        "cost_stack_spread_bps_default": cs_estimation.get("spread_bps_default"),
+        "cost_stack_slippage_bps_default": cs_estimation.get("slippage_bps_default"),
+        "cost_stack_block_missing_live_real_source": cs_estimation.get("block_if_missing_real_cost_source_in_live"),
+        "cost_stack_allow_fallback_estimation_in_paper": cs_estimation.get("allow_fallback_estimation_in_paper"),
+        "cost_stack_supported_periods": cs_aggregation.get("supported_periods") if isinstance(cs_aggregation.get("supported_periods"), list) else [],
+        "cost_stack_fee_source_stale_warn_hours": cs_alerts.get("warn_if_fee_source_stale_hours_gt"),
+        "cost_stack_warn_total_cost_pct_gross": cs_alerts.get("warn_if_total_cost_pct_of_gross_pnl_gt"),
+        "cost_stack_block_total_cost_pct_gross": cs_alerts.get("block_if_total_cost_pct_of_gross_pnl_gt"),
+        "reporting_export_formats": sorted([fmt for fmt, enabled in rexp_formats.items() if enabled]),
+        "reporting_export_max_rows": rexp_limits.get("max_rows_per_export"),
     }
 
 
@@ -1975,6 +2010,13 @@ class ConsoleStore:
             explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
         )
         self.instrument_universes = InstrumentUniverseService(self.instrument_registry)
+        self.reporting_bridge = ReportingBridgeService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            instrument_registry_service=self.instrument_registry,
+            runs_path=RUNS_PATH,
+        )
         self.instrument_registry_startup_sync: dict[str, Any] = {
             "ok": True,
             "startup": True,
@@ -2208,6 +2250,10 @@ class ConsoleStore:
         self._ensure_default_bots()
         self._ensure_seed_backtest()
         self._sync_backtest_runs_catalog()
+        try:
+            self.reporting_bridge.refresh_materialized_views(self.load_runs())
+        except Exception:
+            pass
         self.add_log(
             event_type="health",
             severity="info",
@@ -9208,6 +9254,151 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/account/capabilities/summary")
     def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.instrument_registry.capabilities_summary()
+
+    def _refresh_reporting_views() -> None:
+        try:
+            store.reporting_bridge.refresh_materialized_views(store.load_runs())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/reporting/performance/summary")
+    def reporting_performance_summary(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.performance_summary(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/performance/daily")
+    def reporting_performance_daily(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.daily_series(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/performance/monthly")
+    def reporting_performance_monthly(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.monthly_series(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/costs/breakdown")
+    def reporting_costs_breakdown(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.costs_breakdown(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/trades")
+    def reporting_trades(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.trades(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post("/api/v1/reporting/exports/xlsx")
+    def reporting_export_xlsx(
+        body: ReportingExportBody,
+        user: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.create_export(
+            export_type="xlsx",
+            generated_by=str(user.get("username") or "system"),
+            report_scope=body.report_scope,
+            strategy_id=body.strategy_id,
+            bot_id=body.bot_id,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.post("/api/v1/reporting/exports/pdf")
+    def reporting_export_pdf(
+        body: ReportingExportBody,
+        user: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.create_export(
+            export_type="pdf",
+            generated_by=str(user.get("username") or "system"),
+            report_scope=body.report_scope,
+            strategy_id=body.strategy_id,
+            bot_id=body.bot_id,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.get("/api/v1/reporting/exports")
+    def reporting_exports(
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return {
+            "items": store.reporting_bridge.db.list_exports(limit=limit),
+            "policy_source": store.reporting_bridge.policy_source(),
+        }
 
     @app.get("/api/v1/strategies")
     def list_strategies(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:

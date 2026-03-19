@@ -1,0 +1,28 @@
+cost_stack:
+  sources:
+    spot_commission_source: "binance_account_commission"
+    spot_order_commission_estimation_source: "binance_order_test_computeCommissionRates"
+    futures_income_source: "binance_futures_income"
+    margin_interest_source: "binance_margin_interest_history"
+  estimation:
+    spread_bps_default: 4.0
+    slippage_bps_default: 6.0
+    block_if_missing_real_cost_source_in_live: true
+    allow_fallback_estimation_in_paper: true
+  funding:
+    enabled: true
+    default_if_missing: 0.0
+  borrow_interest:
+    enabled: true
+    default_if_missing: 0.0
+  aggregation:
+    supported_periods: ["day", "week", "month", "ytd", "all_time"]
+    trading_day_cutoff_tz: "UTC"
+  display:
+    show_gross_and_net_always: true
+    require_cost_breakdown_for_strategy_kpis: true
+  alerts:
+    warn_if_total_cost_pct_of_gross_pnl_gt: 35.0
+    block_if_total_cost_pct_of_gross_pnl_gt: 80.0
+    warn_if_slippage_bps_gt: 12.0
+    warn_if_fee_source_stale_hours_gt: 24
