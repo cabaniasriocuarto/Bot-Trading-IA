@@ -1243,3 +1243,260 @@ def test_paper_submit_reconcile_materializes_fill(tmp_path: Path) -> None:
     assert len(detail["fills"]) == 1
     assert detail["realized_costs"]["cost_classification"] == "mixed"
     assert ledger_rows
+
+
+def test_kill_switch_trip_reset_blocks_submit_and_auto_cancels_open_orders(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    for side in ("BUY", "SELL"):
+        service.create_order(
+            {
+                "family": "spot",
+                "environment": "paper",
+                "mode": "paper",
+                "symbol": "BTCUSDT",
+                "side": side,
+                "order_type": "LIMIT",
+                "quantity": 0.01,
+                "price": 50000.0 if side == "BUY" else 50010.0,
+                "market_snapshot": _fresh_market_snapshot(),
+            }
+        )
+
+    trip = service.trip_kill_switch(
+        trigger_type="manual",
+        severity="BLOCK",
+        family="spot",
+        symbol="BTCUSDT",
+        reason="manual_operator_trip",
+    )
+
+    assert trip["active"] is True
+    assert trip["trip_recorded"] is True
+    assert trip["auto_actions"]
+    assert trip["auto_actions"][0]["canceled_count"] == 2
+    assert len(service.db.open_orders(family="spot", symbol="BTCUSDT")) == 0
+
+    blocked = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert blocked["order_status"] == "BLOCKED"
+    assert "kill_switch_active" in blocked["blocking_reasons"]
+
+    reset = service.reset_kill_switch(reason="operator_reset")
+
+    assert reset["active"] is False
+    assert reset["reset_applied"] is True
+    assert reset["cooldown_active"] is True
+    assert reset["last_event"]["cleared_reason"] == "operator_reset"
+
+
+def test_reject_storm_blocker_trips_kill_switch(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    for idx in range(8):
+        _seed_order(
+            service,
+            family="spot",
+            environment="live",
+            symbol="BTCUSDT",
+            order_status="REJECTED",
+            submitted_at=recent,
+            acknowledged_at=recent,
+            price=50000.0 + idx,
+        )
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert "reject_storm_block" in result["blocking_reasons"]
+    assert service.kill_switch_status()["active"] is True
+
+
+def test_consecutive_failed_submit_blocker_trips_kill_switch(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+    for _ in range(5):
+        service.db.insert_intent(
+            {
+                "family": "spot",
+                "environment": "live",
+                "mode": "live",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "quantity": 0.01,
+                "limit_price": 50000.0,
+                "requested_notional": 500.0,
+                "estimated_fee": 0.25,
+                "estimated_slippage_bps": 6.0,
+                "estimated_total_cost": 0.75,
+                "preflight_status": "submit_failed",
+                "policy_hash": service.policy_hash(),
+                "raw_request_json": {"market_snapshot": _fresh_market_snapshot()},
+            }
+        )
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert "consecutive_failed_submit_block" in result["blocking_reasons"]
+    assert service.kill_switch_status()["active"] is True
+
+
+def test_repeated_reconcile_mismatch_blocker_trips_kill_switch(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+    for idx in range(5):
+        service.db.insert_reconcile_event(
+            {
+                "family": "spot",
+                "environment": "live",
+                "reconcile_type": "status_mismatch",
+                "severity": "WARN",
+                "execution_order_id": None,
+                "client_order_id": f"cli-{idx}",
+                "details_json": {"reason": "synthetic_mismatch"},
+                "resolved": False,
+            }
+        )
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert "repeated_reconcile_mismatch_block" in result["blocking_reasons"]
+    assert service.kill_switch_status()["active"] is True
+
+
+def test_futures_auto_cancel_heartbeat_refreshes_during_reconcile(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    _, order = _seed_order(
+        service,
+        family="usdm_futures",
+        environment="live",
+        symbol="BTCUSDT",
+        order_status="NEW",
+        submitted_at=_iso_hours_ago(1),
+        acknowledged_at=_iso_hours_ago(1),
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if endpoint.endswith("/fapi/v1/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "NEW",
+                "executedQty": "0.0",
+                "cumQuote": "0.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/userTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/income"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/countdownCancelAll"):
+            return {"symbol": "BTCUSDT", "countdownTime": "120000"}, {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    safety = service.live_safety_summary()
+
+    assert summary["futures_auto_cancel"]
+    assert summary["futures_auto_cancel"][0]["ok"] is True
+    assert safety["futures_auto_cancel"]
+    assert safety["futures_auto_cancel"][0]["effective_countdown_ms"] == 120000
+
+
+def test_live_safety_summary_reports_final_blockers_and_overall_status(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures", fee_source_available=False, fee_source_fresh=False)
+    old_ms = int((datetime.now(timezone.utc) - timedelta(seconds=10)).timestamp() * 1000)
+    service.set_market_snapshot(
+        family="usdm_futures",
+        environment="live",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+        quote_ts_ms=old_ms,
+        orderbook_ts_ms=old_ms,
+    )
+    service.mark_user_stream_status(
+        family="usdm_futures",
+        environment="live",
+        available=False,
+        degraded_reason="rest_fallback",
+    )
+    service.set_margin_level(environment="live", level=1.0)
+    service.db.insert_reconcile_event(
+        {
+            "family": "usdm_futures",
+            "environment": "live",
+            "reconcile_type": "status_mismatch",
+            "severity": "WARN",
+            "client_order_id": "late-1",
+            "details_json": {"reason": "pending"},
+            "resolved": False,
+        }
+    )
+
+    summary = service.live_safety_summary()
+
+    assert summary["stale_market_data"] is True
+    assert summary["fee_source_fresh"] is False
+    assert summary["margin_guard_status"] == "BLOCK"
+    assert summary["degraded_mode"] is True
+    assert summary["overall_status"] == "BLOCK"
+    assert "cost_source_missing_blocker" in summary["safety_blockers"]
+    assert "stale_quote_blocker" in summary["safety_blockers"]
+    assert "stale_orderbook_blocker" in summary["safety_blockers"]

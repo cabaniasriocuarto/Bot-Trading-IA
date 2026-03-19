@@ -2,6 +2,35 @@
 
 ## 2026-03-19
 
+### RTLOPS-39 / RTLOPS-21 - Execution Reality + Live Safety - Parte 3.5
+- Kill switch operativo:
+  - `ExecutionRealityService` agrega `trip_kill_switch()`, `reset_kill_switch()` y `kill_switch_status()` de servicio.
+  - `kill_switch_events` pasa a registrar `cleared_reason` y a sostener cooldown auditable.
+  - los nuevos submits quedan bloqueados cuando el kill switch esta activo o en cooldown.
+  - si la policy lo exige, el trip ejecuta `cancel_all` sobre ordenes abiertas y deja `auto_actions` persistidas.
+- Live safety final:
+  - `live_safety_summary()` ahora consolida `kill_switch`, `stale_market_data`, `fee_source_fresh`, `snapshot_fresh`, `margin_guard_status`, `degraded_mode`, `open_orders_guard`, contadores de `reject storm` / `failed submits` / `reconcile mismatches` y `overall_status`.
+  - `create_order()` agrega un `live_safety_gate` real que bloquea por:
+    - `kill_switch_active`
+    - `kill_switch_cooldown_active`
+    - `reject_storm_block`
+    - `consecutive_failed_submit_block`
+    - `repeated_reconcile_mismatch_block`
+- Futures heartbeat / auto-cancel:
+  - `usdm_futures` y `coinm_futures` agregan wiring base de `countdownCancelAll`.
+  - reconcile y cancelaciones actualizan el estado `futures_auto_cancel` de forma explicita sin fingir exito cuando faltan credenciales o soporte.
+- API minima de 3.5:
+  - `GET /api/v1/execution/kill-switch/status`
+  - `POST /api/v1/execution/kill-switch/trip`
+  - `POST /api/v1/execution/kill-switch/reset`
+  - `GET /api/v1/execution/live-safety/summary` enriquecido con guardrails finales.
+- Validacion local de la parte 3.5:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_reporting_bridge.py -q` -> PASS
+  - nota operativa: `test_web_execution_reality_api.py` necesita timeout mayor porque recarga la app completa por caso y cierra en ~5m19s sobre esta maquina.
+
 ### RTLOPS-21 - Execution Reality + Live Safety - Parte 3.4
 - Backend / reconcile base:
   - `ExecutionRealityService` agrega reconcile real para `intent -> ack -> status -> fills`.

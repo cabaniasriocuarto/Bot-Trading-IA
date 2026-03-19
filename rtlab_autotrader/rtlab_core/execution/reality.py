@@ -8,7 +8,7 @@ import os
 import sqlite3
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from functools import lru_cache
 from pathlib import Path
@@ -481,6 +481,16 @@ def _ms_to_iso(value: Any) -> str | None:
         return None
 
 
+def _iso_plus_seconds(value: Any, seconds: float) -> str | None:
+    parsed = _parse_ts(value)
+    if parsed is None:
+        return None
+    try:
+        return (parsed + timedelta(seconds=float(seconds or 0.0))).isoformat()
+    except Exception:
+        return None
+
+
 def _canonical_symbol(value: Any) -> str:
     return str(value or "").replace("/", "").replace("-", "").strip().upper()
 
@@ -837,7 +847,8 @@ class ExecutionRealityDB:
                   symbol TEXT,
                   reason TEXT NOT NULL,
                   auto_actions_json TEXT NOT NULL DEFAULT '[]',
-                  cleared_at TEXT
+                  cleared_at TEXT,
+                  cleared_reason TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_kill_switch_events_created_at ON kill_switch_events(created_at DESC);
                 """
@@ -850,6 +861,7 @@ class ExecutionRealityDB:
             self._ensure_column(conn, "execution_fills", "provenance_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column(conn, "execution_fills", "provisional", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "execution_fills", "unresolved_components_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "kill_switch_events", "cleared_reason", "TEXT")
 
     def table_names(self) -> list[str]:
         with self._connect() as conn:
@@ -868,6 +880,39 @@ class ExecutionRealityDB:
         )
         with self._connect() as conn:
             return {table: int(conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]) for table in tables}
+
+    def list_intents(
+        self,
+        *,
+        family: str | None = None,
+        environment: str | None = None,
+        preflight_status: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if family:
+            clauses.append("family = ?")
+            params.append(_normalize_family(family))
+        if environment:
+            clauses.append("environment = ?")
+            params.append(_normalize_environment(environment))
+        if preflight_status:
+            clauses.append("preflight_status = ?")
+            params.append(str(preflight_status))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_intents
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC, execution_intent_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple([*params, int(limit), int(offset)]),
+            ).fetchall()
+        return [_hydrate_intent_row(_row_to_dict(row)) or {} for row in rows]
 
     def open_orders(self, *, family: str | None = None, symbol: str | None = None) -> list[dict[str, Any]]:
         clauses = [f"order_status NOT IN ({', '.join(repr(status) for status in sorted(TERMINAL_ORDER_STATUSES))})"]
@@ -1338,14 +1383,15 @@ class ExecutionRealityDB:
             "reason": str(reason or "manual_trip"),
             "auto_actions_json": _json_dumps(auto_actions or []),
             "cleared_at": None,
+            "cleared_reason": None,
         }
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO kill_switch_events (
-                  kill_switch_event_id, created_at, trigger_type, severity, family, symbol, reason, auto_actions_json, cleared_at
+                  kill_switch_event_id, created_at, trigger_type, severity, family, symbol, reason, auto_actions_json, cleared_at, cleared_reason
                 ) VALUES (
-                  :kill_switch_event_id, :created_at, :trigger_type, :severity, :family, :symbol, :reason, :auto_actions_json, :cleared_at
+                  :kill_switch_event_id, :created_at, :trigger_type, :severity, :family, :symbol, :reason, :auto_actions_json, :cleared_at, :cleared_reason
                 )
                 """,
                 row,
@@ -1358,11 +1404,33 @@ class ExecutionRealityDB:
         out["auto_actions_json"] = _json_loads(out.get("auto_actions_json"), [])
         return out
 
-    def reset_kill_switch(self) -> dict[str, Any]:
+    def reset_kill_switch(self, *, reason: str | None = None) -> dict[str, Any]:
         cleared_at = utc_now_iso()
+        cleared_reason = str(reason or "manual_reset")
         with self._connect() as conn:
-            conn.execute("UPDATE kill_switch_events SET cleared_at = ? WHERE cleared_at IS NULL", (cleared_at,))
+            conn.execute(
+                "UPDATE kill_switch_events SET cleared_at = ?, cleared_reason = ? WHERE cleared_at IS NULL",
+                (cleared_at, cleared_reason),
+            )
         return self.kill_switch_status()
+
+    def kill_switch_events(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM kill_switch_events
+                ORDER BY created_at DESC, kill_switch_event_id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            payload = _row_to_dict(row) or {}
+            payload["auto_actions_json"] = _json_loads(payload.get("auto_actions_json"), [])
+            items.append(payload)
+        return items
 
     def kill_switch_status(self) -> dict[str, Any]:
         with self._connect() as conn:
@@ -1421,6 +1489,7 @@ class ExecutionRealityService:
         self._quotes: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._user_stream_status: dict[tuple[str, str], dict[str, Any]] = {}
         self._margin_levels: dict[str, dict[str, Any]] = {}
+        self._futures_auto_cancel_status: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def safety_bundle(self) -> dict[str, Any]:
         return load_execution_safety_bundle(self.repo_root, explicit_root=self.explicit_policy_root)
@@ -1483,6 +1552,287 @@ class ExecutionRealityService:
                 "execution_router": self.router_policy(),
             }
         )
+
+    def _kill_switch_policy(self) -> dict[str, Any]:
+        payload = self.safety_policy().get("kill_switch")
+        return payload if isinstance(payload, dict) else {}
+
+    def _futures_auto_cancel_policy(self) -> dict[str, Any]:
+        payload = self.safety_policy().get("futures_auto_cancel")
+        return payload if isinstance(payload, dict) else {}
+
+    def _risk_reduce_only_priority_policy(self) -> dict[str, Any]:
+        payload = self.safety_policy().get("risk_reduce_only_priority")
+        return payload if isinstance(payload, dict) else {}
+
+    def kill_switch_status(self) -> dict[str, Any]:
+        raw = self.db.kill_switch_status()
+        cfg = self._kill_switch_policy()
+        enabled = _bool(cfg.get("enabled"))
+        cooldown_sec = max(0, int(_safe_float(cfg.get("cooldown_sec"), 0.0)))
+        reference_event = raw.get("active_event") if isinstance(raw.get("active_event"), dict) else raw.get("last_event")
+        trigger_at = (reference_event or {}).get("created_at") if isinstance(reference_event, dict) else None
+        cooldown_until = _iso_plus_seconds(trigger_at, cooldown_sec) if trigger_at else None
+        cooldown_active = False
+        cooldown_until_dt = _parse_ts(cooldown_until)
+        if not _bool(raw.get("armed")) and cooldown_until_dt is not None:
+            cooldown_active = _utc_now() < cooldown_until_dt
+        return {
+            "enabled": enabled,
+            "armed": _bool(raw.get("armed")),
+            "active": _bool(raw.get("armed")),
+            "blocking_submit": enabled and (_bool(raw.get("armed")) or cooldown_active),
+            "cooldown_sec": cooldown_sec,
+            "cooldown_until": cooldown_until,
+            "cooldown_active": cooldown_active,
+            "auto_cancel_all_on_trip": _bool(cfg.get("auto_cancel_all_on_trip")),
+            "active_event": copy.deepcopy(raw.get("active_event")),
+            "last_event": copy.deepcopy(raw.get("last_event")),
+            "last_trigger_at": raw.get("last_trigger_at") or trigger_at,
+            "last_cleared_at": raw.get("last_cleared_at"),
+            "policy_hash": self.policy_hash(),
+        }
+
+    def _supported_live_families(self, parity: dict[str, Any]) -> list[str]:
+        supported: list[str] = []
+        for family in ("spot", "margin", "usdm_futures", "coinm_futures"):
+            live_payload = ((parity.get(family) or {}).get("live") or {}) if isinstance(parity, dict) else {}
+            if _bool(live_payload.get("supported")):
+                supported.append(family)
+        return supported
+
+    def _recent_rejected_order_count(self, *, window_sec: float = 300.0) -> int:
+        cutoff = _utc_now() - timedelta(seconds=max(1.0, float(window_sec or 300.0)))
+        count = 0
+        for row in self.db.list_orders(limit=1000, offset=0):
+            if _normalize_environment(row.get("environment")) not in {"live", "testnet"}:
+                continue
+            ts = _parse_ts(row.get("acknowledged_at")) or _parse_ts(row.get("submitted_at"))
+            if ts is None or ts < cutoff:
+                continue
+            status = str(row.get("order_status") or "").upper()
+            if status == "REJECTED" or row.get("reject_code") or row.get("reject_reason"):
+                count += 1
+        return count
+
+    def _consecutive_failed_submit_count(self) -> int:
+        count = 0
+        for row in self.db.list_intents(limit=300, offset=0):
+            if _normalize_environment(row.get("environment")) not in {"live", "testnet"}:
+                continue
+            status = str(row.get("preflight_status") or "").strip().lower()
+            if status == "submitted":
+                break
+            if status == "submit_failed":
+                count += 1
+        return count
+
+    def _repeated_reconcile_mismatch_count(self) -> int:
+        blocking_types = {"ack_missing", "fill_missing", "status_mismatch", "cost_mismatch"}
+        return sum(
+            1
+            for row in self.db.unresolved_reconcile_events()
+            if str(row.get("reconcile_type") or "") in blocking_types
+        )
+
+    def _open_order_safety_state(self) -> dict[str, Any]:
+        sizing_cfg = self.safety_policy().get("sizing") if isinstance(self.safety_policy().get("sizing"), dict) else {}
+        per_symbol_limit = max(0, int(_safe_float(sizing_cfg.get("max_open_orders_per_symbol"), 0.0)))
+        total_limit = max(0, int(_safe_float(sizing_cfg.get("max_open_orders_total"), 0.0)))
+        open_orders = [
+            row
+            for row in self.db.open_orders()
+            if _normalize_environment(row.get("environment")) in {"live", "testnet"}
+        ]
+        by_symbol: dict[tuple[str, str], int] = defaultdict(int)
+        for row in open_orders:
+            by_symbol[(_normalize_family(row.get("family")), _canonical_symbol(row.get("symbol")))] += 1
+        breached_symbols = [
+            {
+                "family": family,
+                "symbol": symbol,
+                "count": count,
+                "limit": per_symbol_limit,
+            }
+            for (family, symbol), count in sorted(by_symbol.items())
+            if per_symbol_limit > 0 and count >= per_symbol_limit
+        ]
+        total_breached = total_limit > 0 and len(open_orders) >= total_limit
+        return {
+            "open_orders_total": len(open_orders),
+            "max_open_orders_total": total_limit,
+            "max_open_orders_per_symbol": per_symbol_limit,
+            "breached_total": total_breached,
+            "breached_symbols": breached_symbols,
+            "breached": total_breached or bool(breached_symbols),
+        }
+
+    def _market_data_safety_state(self) -> dict[str, Any]:
+        preflight_cfg = self.safety_policy().get("preflight") if isinstance(self.safety_policy().get("preflight"), dict) else {}
+        ks_cfg = self._kill_switch_policy()
+        quote_block_ms = max(
+            int(_safe_float(preflight_cfg.get("quote_stale_block_ms"), 0.0)),
+            int(_safe_float(ks_cfg.get("stale_market_data_block_ms"), 0.0)),
+        )
+        orderbook_block_ms = max(
+            int(_safe_float(preflight_cfg.get("orderbook_stale_block_ms"), 0.0)),
+            int(_safe_float(ks_cfg.get("stale_market_data_block_ms"), 0.0)),
+        )
+        live_quotes = [
+            {"family": family, "symbol": symbol, **copy.deepcopy(snapshot)}
+            for (family, environment, symbol), snapshot in self._quotes.items()
+            if _normalize_environment(environment) == "live"
+        ]
+        quote_stale = not live_quotes
+        orderbook_stale = not live_quotes
+        now_ms = int(time.time() * 1000)
+        stale_items: list[dict[str, Any]] = []
+        for snapshot in live_quotes:
+            quote_ts_ms = snapshot.get("quote_ts_ms")
+            orderbook_ts_ms = snapshot.get("orderbook_ts_ms")
+            quote_age_ms = None if quote_ts_ms is None else max(0, now_ms - int(quote_ts_ms))
+            orderbook_age_ms = None if orderbook_ts_ms is None else max(0, now_ms - int(orderbook_ts_ms))
+            item_quote_stale = quote_age_ms is None or quote_age_ms >= quote_block_ms
+            item_orderbook_stale = orderbook_age_ms is None or orderbook_age_ms >= orderbook_block_ms
+            quote_stale = quote_stale or item_quote_stale
+            orderbook_stale = orderbook_stale or item_orderbook_stale
+            if item_quote_stale or item_orderbook_stale:
+                stale_items.append(
+                    {
+                        "family": snapshot.get("family"),
+                        "symbol": snapshot.get("symbol"),
+                        "quote_age_ms": quote_age_ms,
+                        "orderbook_age_ms": orderbook_age_ms,
+                        "quote_stale": item_quote_stale,
+                        "orderbook_stale": item_orderbook_stale,
+                    }
+                )
+        return {
+            "quote_stale": quote_stale,
+            "orderbook_stale": orderbook_stale,
+            "stale_market_data": quote_stale or orderbook_stale,
+            "quote_block_ms": quote_block_ms,
+            "orderbook_block_ms": orderbook_block_ms,
+            "items_checked": len(live_quotes),
+            "stale_items": stale_items,
+        }
+
+    def _margin_guard_state(self, *, supported_families: list[str]) -> dict[str, Any]:
+        margin_cfg = self.safety_policy().get("margin") if isinstance(self.safety_policy().get("margin"), dict) else {}
+        requires_visibility = _bool(margin_cfg.get("require_margin_level_visible"))
+        relevant = any(family in {"margin", "usdm_futures", "coinm_futures"} for family in supported_families)
+        payload = copy.deepcopy(self._margin_levels.get("live") or {})
+        level = _first_number(payload.get("level"))
+        if not relevant:
+            return {"status": "NOT_REQUIRED", "level": None, "source": payload.get("source"), "visible": False}
+        if level is None:
+            return {
+                "status": "BLOCK" if requires_visibility else "UNKNOWN",
+                "level": None,
+                "source": payload.get("source"),
+                "visible": False,
+            }
+        block_below = _safe_float(margin_cfg.get("block_margin_level_below"), 0.0)
+        warn_below = _safe_float(margin_cfg.get("warn_margin_level_below"), block_below)
+        if level < block_below:
+            status = "BLOCK"
+        elif level < warn_below:
+            status = "WARN"
+        else:
+            status = "OK"
+        return {
+            "status": status,
+            "level": level,
+            "source": payload.get("source"),
+            "visible": True,
+            "warn_margin_level_below": warn_below,
+            "block_margin_level_below": block_below,
+        }
+
+    def _arm_futures_auto_cancel_heartbeat(
+        self,
+        *,
+        family: str,
+        environment: str,
+        symbol: str,
+        stop_timer: bool = False,
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        target_symbol = _canonical_symbol(symbol)
+        cfg = self._futures_auto_cancel_policy()
+        key = (normalized_family, normalized_environment, target_symbol)
+        state = {
+            "family": normalized_family,
+            "environment": normalized_environment,
+            "symbol": target_symbol,
+            "supported": normalized_family in {"usdm_futures", "coinm_futures"} and normalized_environment in {"live", "testnet"},
+            "enabled": _bool(cfg.get("enabled")),
+            "heartbeat_sec": max(1, int(_safe_float(cfg.get("heartbeat_sec"), 0.0) or 1)),
+            "countdown_ms": max(0, int(_safe_float(cfg.get("countdown_ms"), 0.0))),
+            "countdown_stopped": bool(stop_timer),
+            "ok": False,
+            "reason": "not_evaluated",
+            "last_sent_at": utc_now_iso(),
+        }
+        if not state["supported"]:
+            state["reason"] = "unsupported_family_or_environment"
+            self._futures_auto_cancel_status[key] = state
+            return copy.deepcopy(state)
+        if not state["enabled"]:
+            state["reason"] = "policy_disabled"
+            self._futures_auto_cancel_status[key] = state
+            return copy.deepcopy(state)
+        countdown_ms = 0 if stop_timer else state["countdown_ms"]
+        endpoint = self._execution_endpoint(normalized_family, normalized_environment, "countdown_cancel_all")
+        payload, meta = self._signed_request(
+            "POST",
+            endpoint,
+            family=normalized_family,
+            environment=normalized_environment,
+            params={"symbol": target_symbol, "countdownTime": countdown_ms},
+        )
+        state.update(
+            {
+                "endpoint": endpoint,
+                "meta": meta,
+                "reason": str(meta.get("reason") or "signed_request_failed"),
+                "ok": isinstance(payload, dict) and _bool(meta.get("ok")),
+                "effective_countdown_ms": int(_safe_float((payload or {}).get("countdownTime"), countdown_ms)),
+                "raw_payload": copy.deepcopy(payload) if isinstance(payload, dict) else None,
+            }
+        )
+        self._futures_auto_cancel_status[key] = copy.deepcopy(state)
+        return state
+
+    def _refresh_futures_auto_cancel_heartbeats(self) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        open_orders = [
+            row
+            for row in self.db.open_orders()
+            if _normalize_family(row.get("family")) in {"usdm_futures", "coinm_futures"}
+            and _normalize_environment(row.get("environment")) in {"live", "testnet"}
+        ]
+        targets = sorted(
+            {
+                (
+                    _normalize_family(row.get("family")),
+                    _normalize_environment(row.get("environment")),
+                    _canonical_symbol(row.get("symbol")),
+                )
+                for row in open_orders
+                if row.get("symbol")
+            }
+        )
+        for family, environment, symbol in targets:
+            actions.append(
+                self._arm_futures_auto_cancel_heartbeat(
+                    family=family,
+                    environment=environment,
+                    symbol=symbol,
+                )
+            )
+        return actions
 
     def _cost_stack_policy(self) -> dict[str, Any]:
         if self.reporting_bridge_service is None:
@@ -1766,6 +2116,7 @@ class ExecutionRealityService:
             "policy_loaded": self.policies_loaded(),
             "policy_hash": self.policy_hash(),
             "policy_source": policy_source,
+            "kill_switch": self.kill_switch_status(),
             "modes": safety.get("modes") if isinstance(safety.get("modes"), dict) else {},
             "families_enabled": sorted([name for name, enabled in families_enabled.items() if enabled]),
             "supported_order_types": supported_order_types,
@@ -1780,6 +2131,7 @@ class ExecutionRealityService:
                 "market_snapshots": len(self._quotes),
                 "user_stream_status": len(self._user_stream_status),
                 "margin_levels": len(self._margin_levels),
+                "futures_auto_cancel_status": len(self._futures_auto_cancel_status),
             },
         }
 
@@ -1844,6 +2196,7 @@ class ExecutionRealityService:
             ("usdm_futures", "open_orders"): "/fapi/v1/openOrders",
             ("usdm_futures", "cancel"): "/fapi/v1/order",
             ("usdm_futures", "cancel_all"): "/fapi/v1/allOpenOrders",
+            ("usdm_futures", "countdown_cancel_all"): "/fapi/v1/countdownCancelAll",
             ("usdm_futures", "user_trades"): "/fapi/v1/userTrades",
             ("usdm_futures", "income"): "/fapi/v1/income",
             ("coinm_futures", "submit"): "/dapi/v1/order",
@@ -1851,6 +2204,7 @@ class ExecutionRealityService:
             ("coinm_futures", "open_orders"): "/dapi/v1/openOrders",
             ("coinm_futures", "cancel"): "/dapi/v1/order",
             ("coinm_futures", "cancel_all"): "/dapi/v1/allOpenOrders",
+            ("coinm_futures", "countdown_cancel_all"): "/dapi/v1/countdownCancelAll",
             ("coinm_futures", "user_trades"): "/dapi/v1/userTrades",
             ("coinm_futures", "income"): "/dapi/v1/income",
         }
@@ -3433,6 +3787,207 @@ class ExecutionRealityService:
             "fail_closed": fail_closed,
         }
 
+    def _cancel_open_orders_for_kill_switch(
+        self,
+        *,
+        family: str | None = None,
+        symbol: str | None = None,
+    ) -> list[dict[str, Any]]:
+        target_family = _normalize_family(family) if family else None
+        target_symbol = _canonical_symbol(symbol) if symbol else None
+        families = [target_family] if target_family else ["spot", "margin", "usdm_futures", "coinm_futures"]
+        for family_name in families:
+            for environment in ("live", "testnet"):
+                try:
+                    self._remote_open_orders_snapshot(
+                        family=family_name,
+                        environment=environment,
+                        symbol=target_symbol,
+                    )
+                except Exception:
+                    continue
+        local_open = [
+            row
+            for row in self.db.open_orders(family=target_family, symbol=target_symbol)
+            if (not target_family or _normalize_family(row.get("family")) == target_family)
+            and (not target_symbol or _canonical_symbol(row.get("symbol")) == target_symbol)
+        ]
+        grouped = sorted(
+            {
+                (
+                    _normalize_family(row.get("family")),
+                    _normalize_environment(row.get("environment")),
+                    _canonical_symbol(row.get("symbol")),
+                )
+                for row in local_open
+                if row.get("symbol")
+            }
+        )
+        actions: list[dict[str, Any]] = []
+        for family_name, environment, symbol_name in grouped:
+            try:
+                result = self.cancel_all(
+                    family=family_name,
+                    environment=environment,
+                    symbol=symbol_name,
+                )
+                actions.append(
+                    {
+                        "kind": "cancel_all",
+                        "family": family_name,
+                        "environment": environment,
+                        "symbol": symbol_name,
+                        "ok": True,
+                        "canceled_count": int(result.get("canceled_count") or 0),
+                        "remote_source": result.get("remote_source"),
+                    }
+                )
+            except Exception as exc:
+                actions.append(
+                    {
+                        "kind": "cancel_all",
+                        "family": family_name,
+                        "environment": environment,
+                        "symbol": symbol_name,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                )
+        return actions
+
+    def trip_kill_switch(
+        self,
+        *,
+        trigger_type: str,
+        severity: str = "BLOCK",
+        family: str | None = None,
+        symbol: str | None = None,
+        reason: str,
+    ) -> dict[str, Any]:
+        status_before = self.kill_switch_status()
+        if status_before.get("active"):
+            return {
+                **status_before,
+                "trip_recorded": False,
+                "event": status_before.get("active_event"),
+                "auto_actions": ((status_before.get("active_event") or {}).get("auto_actions_json") if isinstance(status_before.get("active_event"), dict) else []),
+            }
+        auto_actions: list[dict[str, Any]] = []
+        if _bool(self._kill_switch_policy().get("auto_cancel_all_on_trip")):
+            auto_actions = self._cancel_open_orders_for_kill_switch(family=family, symbol=symbol)
+        event = self.db.trip_kill_switch(
+            trigger_type=trigger_type,
+            severity=severity,
+            family=_normalize_family(family) if family else None,
+            symbol=_canonical_symbol(symbol) if symbol else None,
+            reason=reason,
+            auto_actions=auto_actions,
+        )
+        return {
+            **self.kill_switch_status(),
+            "trip_recorded": True,
+            "event": event,
+            "auto_actions": auto_actions,
+        }
+
+    def reset_kill_switch(self, *, reason: str = "manual_reset") -> dict[str, Any]:
+        self.db.reset_kill_switch(reason=reason)
+        return {
+            **self.kill_switch_status(),
+            "reset_applied": True,
+            "reset_reason": reason,
+        }
+
+    def _live_submit_safety_gate(
+        self,
+        *,
+        family: str,
+        environment: str,
+        symbol: str,
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        target_symbol = _canonical_symbol(symbol)
+        ks_cfg = self._kill_switch_policy()
+        kill_switch = self.kill_switch_status()
+        blockers: list[str] = []
+        warnings: list[str] = []
+        auto_trip: dict[str, Any] | None = None
+
+        if kill_switch.get("active"):
+            blockers.append("kill_switch_active")
+        elif kill_switch.get("cooldown_active"):
+            blockers.append("kill_switch_cooldown_active")
+
+        if normalized_environment in {"live", "testnet"}:
+            reject_count = self._recent_rejected_order_count(window_sec=300.0)
+            reject_threshold = max(0, int(_safe_float(ks_cfg.get("critical_rejects_5m_block"), 0.0)))
+            if reject_threshold > 0 and reject_count >= reject_threshold:
+                blockers.append("reject_storm_block")
+
+            failed_submit_count = self._consecutive_failed_submit_count()
+            failed_submit_threshold = max(0, int(_safe_float(ks_cfg.get("consecutive_failed_submits_block"), 0.0)))
+            if failed_submit_threshold > 0 and failed_submit_count >= failed_submit_threshold:
+                blockers.append("consecutive_failed_submit_block")
+
+            repeated_mismatch_count = self._repeated_reconcile_mismatch_count()
+            repeated_mismatch_threshold = max(
+                0,
+                int(_safe_float(ks_cfg.get("repeated_reconcile_mismatch_block_count"), 0.0)),
+            )
+            if repeated_mismatch_threshold > 0 and repeated_mismatch_count >= repeated_mismatch_threshold:
+                blockers.append("repeated_reconcile_mismatch_block")
+
+            if blockers and _bool(ks_cfg.get("enabled")) and not kill_switch.get("active"):
+                auto_trip_reason = next(
+                    (
+                        item
+                        for item in blockers
+                        if item in {
+                            "reject_storm_block",
+                            "consecutive_failed_submit_block",
+                            "repeated_reconcile_mismatch_block",
+                        }
+                    ),
+                    None,
+                )
+                if auto_trip_reason:
+                    auto_trip = self.trip_kill_switch(
+                        trigger_type=auto_trip_reason,
+                        severity="BLOCK",
+                        family=normalized_family,
+                        symbol=target_symbol,
+                        reason=auto_trip_reason,
+                    )
+                    kill_switch = self.kill_switch_status()
+                    blockers = sorted(set([*blockers, "kill_switch_active"]))
+        else:
+            reject_count = 0
+            reject_threshold = max(0, int(_safe_float(ks_cfg.get("critical_rejects_5m_block"), 0.0)))
+            failed_submit_count = self._consecutive_failed_submit_count()
+            failed_submit_threshold = max(0, int(_safe_float(ks_cfg.get("consecutive_failed_submits_block"), 0.0)))
+            repeated_mismatch_count = self._repeated_reconcile_mismatch_count()
+            repeated_mismatch_threshold = max(
+                0,
+                int(_safe_float(ks_cfg.get("repeated_reconcile_mismatch_block_count"), 0.0)),
+            )
+
+        if kill_switch.get("cooldown_active") and not kill_switch.get("active"):
+            warnings.append("kill_switch_recently_reset")
+
+        return {
+            "blocking_reasons": list(dict.fromkeys(blockers)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "kill_switch": kill_switch,
+            "auto_trip": auto_trip,
+            "reject_storm_count_5m": reject_count,
+            "reject_storm_threshold": reject_threshold,
+            "consecutive_failed_submit_count": failed_submit_count,
+            "consecutive_failed_submit_threshold": failed_submit_threshold,
+            "repeated_reconcile_mismatch_count": repeated_mismatch_count,
+            "repeated_reconcile_mismatch_threshold": repeated_mismatch_threshold,
+        }
+
     def create_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = copy.deepcopy(payload)
         preflight = self.preflight(request)
@@ -3442,6 +3997,11 @@ class ExecutionRealityService:
         environment = _normalize_environment(request.get("environment"))
         mode = _normalize_mode(request.get("mode"), environment)
         submitted_at = utc_now_iso()
+        safety_gate = self._live_submit_safety_gate(
+            family=family,
+            environment=environment,
+            symbol=normalized.get("symbol") or request.get("symbol") or "",
+        )
 
         intent = self.db.insert_intent(
             {
@@ -3473,7 +4033,16 @@ class ExecutionRealityService:
             }
         )
 
-        if not _bool(preflight.get("allowed")):
+        if not _bool(preflight.get("allowed")) or bool(safety_gate.get("blocking_reasons")):
+            blocking_reasons = list(preflight.get("blocking_reasons") or [])
+            blocking_reasons.extend(safety_gate.get("blocking_reasons") or [])
+            warnings = list(preflight.get("warnings") or [])
+            warnings.extend(safety_gate.get("warnings") or [])
+            self.db.update_intent_submission(
+                str(intent.get("execution_intent_id")),
+                preflight_status="blocked",
+                preflight_errors_json=list(dict.fromkeys(blocking_reasons)),
+            )
             return {
                 "execution_intent_id": intent.get("execution_intent_id"),
                 "execution_order_id": None,
@@ -3483,10 +4052,11 @@ class ExecutionRealityService:
                 "mode": mode,
                 "order_status": "BLOCKED",
                 "estimated_costs": estimated_costs,
-                "fail_closed": _bool(preflight.get("fail_closed")),
-                "warnings": preflight.get("warnings") or [],
-                "blocking_reasons": preflight.get("blocking_reasons") or [],
+                "fail_closed": _bool(preflight.get("fail_closed")) or mode == "live",
+                "warnings": list(dict.fromkeys(warnings)),
+                "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
                 "preflight": preflight,
+                "live_safety_gate": safety_gate,
             }
 
         if environment == "paper":
@@ -3518,7 +4088,7 @@ class ExecutionRealityService:
                 "order_status": order.get("order_status"),
                 "estimated_costs": estimated_costs,
                 "fail_closed": False,
-                "warnings": preflight.get("warnings") or [],
+                "warnings": [*(preflight.get("warnings") or []), *(safety_gate.get("warnings") or [])],
                 "blocking_reasons": [],
             }
 
@@ -3544,9 +4114,10 @@ class ExecutionRealityService:
                 "order_status": "BLOCKED",
                 "estimated_costs": estimated_costs,
                 "fail_closed": mode == "live",
-                "warnings": preflight.get("warnings") or [],
+                "warnings": [*(preflight.get("warnings") or []), *(safety_gate.get("warnings") or [])],
                 "blocking_reasons": list(local_blocking),
                 "preflight": preflight,
+                "live_safety_gate": safety_gate,
             }
 
         endpoint = self._execution_endpoint(family, environment, "submit")
@@ -3595,6 +4166,13 @@ class ExecutionRealityService:
             submitted_at=submitted_at,
             preflight_status="submitted",
         )
+        heartbeat_meta = None
+        if family in {"usdm_futures", "coinm_futures"} and environment in {"live", "testnet"}:
+            heartbeat_meta = self._arm_futures_auto_cancel_heartbeat(
+                family=family,
+                environment=environment,
+                symbol=normalized.get("symbol") or request.get("symbol") or "",
+            )
         return {
             "execution_intent_id": intent.get("execution_intent_id"),
             "execution_order_id": order.get("execution_order_id"),
@@ -3605,9 +4183,9 @@ class ExecutionRealityService:
             "order_status": order.get("order_status"),
             "estimated_costs": estimated_costs,
             "fail_closed": False,
-            "warnings": preflight.get("warnings") or [],
+            "warnings": [*(preflight.get("warnings") or []), *(safety_gate.get("warnings") or [])],
             "blocking_reasons": [],
-            "submit_meta": meta,
+            "submit_meta": {**meta, "futures_auto_cancel": heartbeat_meta},
         }
 
     def list_orders(
@@ -3720,12 +4298,26 @@ class ExecutionRealityService:
                     canceled=True,
                 )
             )
+            heartbeat_meta = None
+            if family in {"usdm_futures", "coinm_futures"} and environment in {"live", "testnet"}:
+                remaining = [
+                    row
+                    for row in self.db.open_orders(family=family, symbol=updated.get("symbol"))
+                    if _normalize_environment(row.get("environment")) == environment
+                ]
+                if not remaining:
+                    heartbeat_meta = self._arm_futures_auto_cancel_heartbeat(
+                        family=family,
+                        environment=environment,
+                        symbol=str(updated.get("symbol") or ""),
+                        stop_timer=True,
+                    )
             return {
                 "execution_order_id": updated.get("execution_order_id"),
                 "order_status": updated.get("order_status"),
                 "canceled_count": 1,
                 "order": updated,
-                "remote_source": {"ok": True, "reason": "paper_local"},
+                "remote_source": {"ok": True, "reason": "paper_local", "futures_auto_cancel": heartbeat_meta},
             }
         params: dict[str, Any] = {
             "symbol": _canonical_symbol(order.get("symbol")),
@@ -3756,12 +4348,26 @@ class ExecutionRealityService:
                 canceled=True,
             )
         )
+        heartbeat_meta = None
+        if family in {"usdm_futures", "coinm_futures"} and environment in {"live", "testnet"}:
+            remaining = [
+                row
+                for row in self.db.open_orders(family=family, symbol=updated.get("symbol"))
+                if _normalize_environment(row.get("environment")) == environment
+            ]
+            if not remaining:
+                heartbeat_meta = self._arm_futures_auto_cancel_heartbeat(
+                    family=family,
+                    environment=environment,
+                    symbol=str(updated.get("symbol") or ""),
+                    stop_timer=True,
+                )
         return {
             "execution_order_id": updated.get("execution_order_id"),
             "order_status": updated.get("order_status"),
             "canceled_count": 1,
             "order": updated,
-            "remote_source": meta,
+            "remote_source": {**meta, "futures_auto_cancel": heartbeat_meta},
         }
 
     def cancel_all(self, *, family: str, environment: str, symbol: str | None = None) -> dict[str, Any]:
@@ -3785,7 +4391,7 @@ class ExecutionRealityService:
                 "symbol": target_symbol,
                 "canceled_count": len(canceled),
                 "items": canceled,
-                "remote_source": {"ok": True, "reason": "paper_local"},
+                "remote_source": {"ok": True, "reason": "paper_local", "futures_auto_cancel": None},
             }
         params = {"symbol": target_symbol}
         payload, meta = self._signed_request(
@@ -3814,13 +4420,21 @@ class ExecutionRealityService:
                 )
             )
             canceled.append(updated)
+        heartbeat_meta = None
+        if normalized_family in {"usdm_futures", "coinm_futures"} and normalized_environment in {"live", "testnet"}:
+            heartbeat_meta = self._arm_futures_auto_cancel_heartbeat(
+                family=normalized_family,
+                environment=normalized_environment,
+                symbol=target_symbol,
+                stop_timer=True,
+            )
         return {
             "family": normalized_family,
             "environment": normalized_environment,
             "symbol": target_symbol,
             "canceled_count": len(canceled),
             "items": canceled,
-            "remote_source": {**meta, "raw_payload": payload},
+            "remote_source": {**meta, "raw_payload": payload, "futures_auto_cancel": heartbeat_meta},
         }
 
     def reconcile_orders(self) -> dict[str, Any]:
@@ -3841,6 +4455,7 @@ class ExecutionRealityService:
         grouped: dict[str, int] = defaultdict(int)
         for row in unresolved:
             grouped[str(row.get("reconcile_type") or "")] += 1
+        heartbeat_actions = self._refresh_futures_auto_cancel_heartbeats()
         return {
             "ack_missing": grouped.get("ack_missing", 0),
             "fill_missing": grouped.get("fill_missing", 0),
@@ -3853,6 +4468,7 @@ class ExecutionRealityService:
             "policy_source": self.policy_source(),
             "processed_orders": len(orders),
             "orphan_events_seen": len(orphan_events),
+            "futures_auto_cancel": heartbeat_actions,
             "pairs_checked": [
                 {"family": family, "environment": environment, "stream_state": self._stream_state(family, environment)}
                 for family, environment in sorted(pairs)
@@ -3862,48 +4478,81 @@ class ExecutionRealityService:
     def live_safety_summary(self) -> dict[str, Any]:
         reconcile_summary = self.reconcile_orders() if self.db.counts().get("execution_orders", 0) else None
         parity = self.instrument_registry_service.live_parity_matrix() if self.instrument_registry_service is not None else {}
-        fee_fresh = True
-        supported_families = []
-        capabilities_known = True
-        for family in {"spot", "margin", "usdm_futures", "coinm_futures"}:
-            live_payload = ((parity.get(family) or {}).get("live") or {}) if isinstance(parity, dict) else {}
-            if live_payload.get("supported"):
-                supported_families.append(family)
-                fee_fresh = fee_fresh and _bool(self._fee_source_state(family, "live").get("fresh"))
-                capabilities_known = capabilities_known and _bool(live_payload.get("capabilities_known"))
-        stale_market_data = False
-        if not self._quotes:
-            stale_market_data = True
-        else:
-            block_ms = int((self.safety_policy().get("preflight") or {}).get("quote_stale_block_ms") or 0)
-            for snapshot in self._quotes.values():
-                quote_ts_ms = snapshot.get("quote_ts_ms")
-                if quote_ts_ms is None:
-                    stale_market_data = True
-                    break
-                if int(time.time() * 1000) - int(quote_ts_ms) >= block_ms:
-                    stale_market_data = True
-                    break
-        snapshot_fresh = all(
-            ((parity.get(family) or {}).get("live") or {}).get("snapshot_fresh", False)
-            for family in supported_families
-        ) if supported_families else False
-        margin_payload = self._margin_levels.get("live") or {}
-        margin_status = "unknown"
-        if margin_payload.get("level") is not None:
-            level = _safe_float(margin_payload.get("level"), 0.0)
-            if level < _safe_float((self.safety_policy().get("margin") or {}).get("block_margin_level_below")):
-                margin_status = "BLOCK"
-            elif level < _safe_float((self.safety_policy().get("margin") or {}).get("warn_margin_level_below")):
-                margin_status = "WARN"
-            else:
-                margin_status = "OK"
-        degraded_mode = any(_bool(row.get("degraded_mode")) for row in self._user_stream_status.values())
-        overall = "OK"
-        if not snapshot_fresh or not fee_fresh or stale_market_data or not capabilities_known:
-            overall = "BLOCK"
-        elif margin_status == "WARN" or degraded_mode:
-            overall = "WARN"
+        supported_families = self._supported_live_families(parity)
+        fee_details: list[dict[str, Any]] = []
+        fee_fresh = bool(supported_families)
+        capabilities_known = bool(supported_families)
+        for family in supported_families:
+            state = self._fee_source_state(family, "live")
+            fee_details.append({"family": family, **state})
+            fee_fresh = fee_fresh and _bool(state.get("available")) and _bool(state.get("fresh"))
+            capabilities_known = capabilities_known and _bool((((parity.get(family) or {}).get("live") or {}).get("capabilities_known")))
+        market_data = self._market_data_safety_state()
+        snapshot_fresh = (
+            all(((parity.get(family) or {}).get("live") or {}).get("snapshot_fresh", False) for family in supported_families)
+            if supported_families
+            else False
+        )
+        margin_state = self._margin_guard_state(supported_families=supported_families)
+        degraded_mode = any(
+            _bool(row.get("degraded_mode"))
+            for (family, environment), row in self._user_stream_status.items()
+            if _normalize_environment(environment) in {"live", "testnet"}
+        )
+        kill_switch = self.kill_switch_status()
+        open_orders_guard = self._open_order_safety_state()
+        reject_storm_count = self._recent_rejected_order_count(window_sec=300.0)
+        consecutive_failed_submit_count = self._consecutive_failed_submit_count()
+        repeated_reconcile_mismatch_count = self._repeated_reconcile_mismatch_count()
+        ks_cfg = self._kill_switch_policy()
+        reject_storm_threshold = max(0, int(_safe_float(ks_cfg.get("critical_rejects_5m_block"), 0.0)))
+        consecutive_failed_submit_threshold = max(0, int(_safe_float(ks_cfg.get("consecutive_failed_submits_block"), 0.0)))
+        repeated_reconcile_mismatch_threshold = max(
+            0,
+            int(_safe_float(ks_cfg.get("repeated_reconcile_mismatch_block_count"), 0.0)),
+        )
+        futures_auto_cancel = [
+            copy.deepcopy(item)
+            for item in sorted(
+                self._futures_auto_cancel_status.values(),
+                key=lambda row: (str(row.get("family") or ""), str(row.get("environment") or ""), str(row.get("symbol") or "")),
+            )
+        ]
+        blockers: list[str] = []
+        warnings: list[str] = []
+        if not self.policies_loaded():
+            blockers.append("execution_policy_not_loaded")
+        if kill_switch.get("active"):
+            blockers.append("kill_switch_active")
+        elif kill_switch.get("cooldown_active"):
+            blockers.append("kill_switch_cooldown_active")
+        if market_data.get("quote_stale"):
+            blockers.append("stale_quote_blocker")
+        if market_data.get("orderbook_stale"):
+            blockers.append("stale_orderbook_blocker")
+        if reject_storm_threshold > 0 and reject_storm_count >= reject_storm_threshold:
+            blockers.append("reject_storm_blocker")
+        if consecutive_failed_submit_threshold > 0 and consecutive_failed_submit_count >= consecutive_failed_submit_threshold:
+            blockers.append("consecutive_failed_submit_blocker")
+        if repeated_reconcile_mismatch_threshold > 0 and repeated_reconcile_mismatch_count >= repeated_reconcile_mismatch_threshold:
+            blockers.append("repeated_reconcile_mismatch_blocker")
+        if open_orders_guard.get("breached"):
+            blockers.append("open_orders_limit_blocker")
+        if not fee_fresh:
+            blockers.append("cost_source_missing_blocker")
+        if not snapshot_fresh:
+            blockers.append("snapshot_freshness_blocker")
+        if not capabilities_known:
+            blockers.append("capability_snapshot_blocker")
+        if str(margin_state.get("status") or "").upper() == "BLOCK":
+            blockers.append("margin_level_blocker")
+        if degraded_mode:
+            warnings.append("degraded_mode")
+        if str(margin_state.get("status") or "").upper() == "WARN":
+            warnings.append("margin_level_warn")
+        if any(item.get("supported") and item.get("enabled") and not item.get("ok") for item in futures_auto_cancel):
+            warnings.append("futures_auto_cancel_unavailable")
+        overall = "BLOCK" if blockers else "WARN" if warnings else "OK"
         return {
             "live_parity_base_ready": all(
                 ((parity.get(family) or {}).get("live") or {}).get("live_parity_base_ready", False)
@@ -3911,13 +4560,32 @@ class ExecutionRealityService:
             ) if supported_families else False,
             "execution_policy_loaded": self.policies_loaded(),
             "policy_hash": self.policy_hash(),
-            "stale_market_data": stale_market_data,
+            "kill_switch_armed": _bool(kill_switch.get("armed")),
+            "kill_switch_active": _bool(kill_switch.get("active")),
+            "kill_switch_status": kill_switch,
+            "stale_market_data": _bool(market_data.get("stale_market_data")),
+            "stale_quote": _bool(market_data.get("quote_stale")),
+            "stale_orderbook": _bool(market_data.get("orderbook_stale")),
             "fee_source_fresh": fee_fresh,
+            "fee_source_details": fee_details,
             "snapshot_fresh": snapshot_fresh,
             "capabilities_known": capabilities_known,
-            "margin_guard_status": margin_status,
+            "margin_guard_status": margin_state.get("status"),
+            "margin_guard": margin_state,
             "degraded_mode": degraded_mode,
             "supported_families": supported_families,
+            "reject_storm_count_5m": reject_storm_count,
+            "reject_storm_threshold": reject_storm_threshold,
+            "consecutive_failed_submit_count": consecutive_failed_submit_count,
+            "consecutive_failed_submit_threshold": consecutive_failed_submit_threshold,
+            "repeated_reconcile_mismatch_count": repeated_reconcile_mismatch_count,
+            "repeated_reconcile_mismatch_threshold": repeated_reconcile_mismatch_threshold,
+            "open_orders_guard": open_orders_guard,
+            "market_data_guard": market_data,
+            "futures_auto_cancel": futures_auto_cancel,
+            "risk_reduce_only_priority_enabled": _bool(self._risk_reduce_only_priority_policy().get("enabled")),
+            "safety_blockers": blockers,
+            "safety_warnings": warnings,
             "overall_status": overall,
             "policy_source": self.policy_source(),
             "unresolved_reconcile_count": int((reconcile_summary or {}).get("unresolved_count") or 0),

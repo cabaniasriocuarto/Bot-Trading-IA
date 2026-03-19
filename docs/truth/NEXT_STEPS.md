@@ -184,12 +184,15 @@ Fecha: 2026-03-19
   - fills -> reporting bridge / `trade_cost_ledger`
   - estimated vs realized por orden/fill
   - `GET /api/v1/execution/reconcile/summary`
-- [ ] Parte 3.5:
+- [x] Parte 3.5:
   - kill switch operativo
   - live safety final
 
 ## Siguiente subparte recomendada
-- [ ] Ejecutar `Execution Reality + Live Safety - Parte 3.5` sobre la base ya corregida con `1A + 2A + 3A + 3.4`.
+- [x] Ejecutar `Execution Reality + Live Safety - Parte 3.5` sobre la base ya corregida con `1A + 2A + 3A + 3.4`.
+- [ ] Siguiente bloque logico real:
+  - `RTLOPS-36` Validacion `paper -> testnet -> canary` antes de `live` serio.
+  - `RTLOPS-23` queda como seguimiento posterior para persistencia/clasificacion operativa mas fina de errores/reconcile.
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

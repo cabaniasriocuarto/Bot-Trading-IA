@@ -672,6 +672,18 @@ class ExecutionCancelAllBody(BaseModel):
     symbol: str
 
 
+class ExecutionKillSwitchTripBody(BaseModel):
+    reason: str
+    severity: str = "BLOCK"
+    trigger_type: str = "manual"
+    family: str | None = None
+    symbol: str | None = None
+
+
+class ExecutionKillSwitchResetBody(BaseModel):
+    reason: str = "manual_reset"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -9440,6 +9452,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/kill-switch/status")
+    def execution_kill_switch_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.kill_switch_status()
+
+    @app.post("/api/v1/execution/kill-switch/trip")
+    def execution_kill_switch_trip(
+        body: ExecutionKillSwitchTripBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.trip_kill_switch(
+            trigger_type=body.trigger_type,
+            severity=body.severity,
+            family=body.family,
+            symbol=body.symbol,
+            reason=body.reason,
+        )
+
+    @app.post("/api/v1/execution/kill-switch/reset")
+    def execution_kill_switch_reset(
+        body: ExecutionKillSwitchResetBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reset_kill_switch(reason=body.reason)
 
     @app.get("/api/v1/execution/reconcile/summary")
     def execution_reconcile_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

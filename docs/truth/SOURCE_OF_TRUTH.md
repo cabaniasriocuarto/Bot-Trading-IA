@@ -2,6 +2,66 @@
 
 Fecha de actualizacion: 2026-03-19
 
+## RTLOPS-39 / RTLOPS-21 Parte 3.5: Kill switch operativo + live safety final - 2026-03-19
+
+- Trazabilidad del bloque:
+  - issue operativa principal: `RTLOPS-39`
+  - issue paraguas cerrable con este bloque: `RTLOPS-21`
+  - rama incremental usada: `feature/execution-reality-live-safety-p34`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+- Alcance real cerrado en `3.5`:
+  - `ExecutionRealityService` agrega kill switch operativo real con:
+    - `trip` manual
+    - `reset` manual
+    - `cooldown` explicito
+    - persistencia de `kill_switch_events`
+    - bloqueo de nuevos submits mientras el kill switch esta activo o en cooldown
+    - `auto_cancel_all_on_trip` si la policy lo exige
+  - `live_safety_summary()` pasa a ser el summary final del bloque y expone:
+    - `execution_policy_loaded`
+    - `kill_switch_armed`
+    - `kill_switch_active`
+    - `stale_market_data`
+    - `fee_source_fresh`
+    - `snapshot_fresh`
+    - `unresolved_reconcile_count`
+    - `margin_guard_status`
+    - `degraded_mode`
+    - `overall_status`
+  - guardrails finales efectivos:
+    - `stale quote blocker`
+    - `stale orderbook blocker`
+    - `reject storm blocker`
+    - `consecutive failed submit blocker`
+    - `repeated reconcile mismatch blocker`
+    - `margin level blocker`
+    - `cost source missing blocker`
+    - `open orders limit blocker`
+  - futures heartbeat base:
+    - `usdm_futures` y `coinm_futures` cablean `countdownCancelAll` segun `execution_safety.yaml`
+    - si falta soporte/credenciales o el entorno no aplica, queda expuesto de forma explicita en `futures_auto_cancel` y no se finge exito
+- Endpoints minimos cerrados en `3.5`:
+  - `GET /api/v1/execution/kill-switch/status`
+  - `POST /api/v1/execution/kill-switch/trip`
+  - `POST /api/v1/execution/kill-switch/reset`
+  - `GET /api/v1/execution/live-safety/summary`
+- Integracion preservada:
+  - no se crea un sistema paralelo a `preflight`, router fase 1, reconcile o reporting bridge;
+  - el bloque reutiliza `execution_intents`, `execution_orders`, `execution_fills`, `execution_reconcile_events`, `kill_switch_events` y `trade_cost_ledger`.
+- Limites conscientes:
+  - no se reabre `3.1/3.2/3.3/3.4`;
+  - no se implementan `conditional/algo orders`;
+  - no se toca `main`;
+  - la validacion paper/testnet/canary previa a live serio queda como paso operativo posterior (`RTLOPS-36`).
+
 ## RTLOPS-21 Correctivo 3A - authority/trazabilidad mas rigurosa para Execution Reality - 2026-03-19
 
 - `config/policies/execution_safety.yaml` y `config/policies/execution_router.yaml` quedan como fuente primaria real del bloque `Execution Reality + Live Safety`.

@@ -367,6 +367,7 @@ def test_execution_live_safety_summary_endpoint_reports_preflight_state(tmp_path
         available=False,
         degraded_reason="rest_fallback",
     )
+    module.store.execution_reality.set_margin_level(environment="live", level=2.0)
     module.store.execution_reality._fee_source_state = lambda family, environment: {  # type: ignore[method-assign]
         "available": True,
         "fresh": True,
@@ -573,3 +574,90 @@ def test_execution_reconcile_summary_endpoint_reports_degraded_mode(tmp_path: Pa
     assert payload["degraded_mode"] is True
     assert payload["ack_missing"] == 1
     assert payload["policy_source"]["execution_safety"]["source_hash"]
+
+
+def test_execution_kill_switch_trip_status_reset_endpoints(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+    client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload(price=50000.0))
+    client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload(price=50010.0))
+
+    tripped = client.post(
+        "/api/v1/execution/kill-switch/trip",
+        headers=_auth_headers(token),
+        json={"reason": "manual_trip", "trigger_type": "manual", "severity": "BLOCK", "family": "spot", "symbol": "BTCUSDT"},
+    )
+    status = client.get("/api/v1/execution/kill-switch/status", headers=_auth_headers(token))
+    blocked = client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_paper_execution_payload())
+    reset = client.post(
+        "/api/v1/execution/kill-switch/reset",
+        headers=_auth_headers(token),
+        json={"reason": "operator_reset"},
+    )
+
+    assert tripped.status_code == 200, tripped.text
+    assert tripped.json()["active"] is True
+    assert tripped.json()["auto_actions"][0]["canceled_count"] == 2
+    assert status.status_code == 200, status.text
+    assert status.json()["active"] is True
+    assert blocked.status_code == 200, blocked.text
+    assert blocked.json()["order_status"] == "BLOCKED"
+    assert "kill_switch_active" in blocked.json()["blocking_reasons"]
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["active"] is False
+    assert reset.json()["cooldown_active"] is True
+    assert reset.json()["last_event"]["cleared_reason"] == "operator_reset"
+
+
+def test_execution_live_safety_summary_endpoint_reports_final_guardrails(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    old_ms = int(__import__("time").time() * 1000) - 10000
+    module.store.execution_reality.set_market_snapshot(
+        family="spot",
+        environment="live",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+        quote_ts_ms=old_ms,
+        orderbook_ts_ms=old_ms,
+    )
+    module.store.execution_reality.mark_user_stream_status(
+        family="spot",
+        environment="live",
+        available=False,
+        degraded_reason="rest_fallback",
+    )
+    module.store.execution_reality._fee_source_state = lambda family, environment: {  # type: ignore[method-assign]
+        "available": False,
+        "fresh": False,
+        "latest": {"family": family, "environment": environment},
+    }
+    module.store.execution_reality.trip_kill_switch(
+        trigger_type="manual",
+        severity="BLOCK",
+        family="spot",
+        symbol="BTCUSDT",
+        reason="manual_trip",
+    )
+
+    res = client.get("/api/v1/execution/live-safety/summary", headers=_auth_headers(token))
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["kill_switch_active"] is True
+    assert payload["stale_market_data"] is True
+    assert payload["fee_source_fresh"] is False
+    assert payload["degraded_mode"] is True
+    assert payload["overall_status"] == "BLOCK"
+    assert "kill_switch_active" in payload["safety_blockers"]
+    assert "cost_source_missing_blocker" in payload["safety_blockers"]
