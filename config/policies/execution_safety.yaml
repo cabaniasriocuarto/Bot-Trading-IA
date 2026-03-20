@@ -17,6 +17,15 @@ execution_safety:
     orderbook_stale_block_ms: 5000
     reject_if_missing_basic_filters: true
     reject_if_missing_fee_source_in_live: true
+  exchange_filters:
+    max_age_ms: 300000
+    missing_symbol_filters: block
+    invalid_tick_alignment: block
+    invalid_step_alignment: block
+    invalid_min_notional: block
+    unsupported_family_filter_combo: block
+    missing_exchange_info: block
+    filter_source_mismatch: block
   exchange_adapter:
     signed_rest_enabled: true
     server_time_sync_enabled: true

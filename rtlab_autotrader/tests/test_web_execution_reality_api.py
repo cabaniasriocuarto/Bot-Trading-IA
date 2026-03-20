@@ -306,6 +306,8 @@ def test_config_policies_exposes_execution_bootstrap_metadata(tmp_path: Path, mo
 
     assert summary["execution_allow_live"] is True
     assert summary["execution_quote_stale_block_ms"] == 3000
+    assert summary["execution_exchange_filters_max_age_ms"] == 300000
+    assert summary["execution_exchange_filters_missing_symbol_filters"] == "block"
     assert "spot" in summary["execution_router_families_enabled"]
     assert summary["execution_router_supported_order_types"]["spot"] == ["MARKET", "LIMIT"]
     assert files["execution_safety"]["valid"] is True
@@ -355,10 +357,34 @@ def test_execution_preflight_endpoint_accepts_paper_order(tmp_path: Path, monkey
 
     assert res.status_code == 200, res.text
     payload = res.json()
-    assert payload["allowed"] is True
+    assert payload["allowed"] is False
     assert payload["fail_closed"] is False
+    assert "invalid_step_alignment" in payload["blocking_reasons"]
+    assert "invalid_tick_alignment" in payload["blocking_reasons"]
     assert payload["normalized_order_preview"]["quantity"] == 0.0012
     assert payload["normalized_order_preview"]["limit_price"] == 50000.12
+    assert payload["filter_validation"]["status"] == "BLOCK"
+
+
+def test_execution_filter_rules_endpoint_returns_family_specific_filters(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+
+    res = client.get(
+        "/api/v1/execution/filter-rules",
+        headers=_auth_headers(token),
+        params={"family": "usdm_futures", "environment": "live", "symbol": "BTCUSDT"},
+    )
+
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["family"] == "usdm_futures"
+    assert payload["market_family"] == "um_futures"
+    assert payload["execution_connector"] == "binance_um_futures"
+    assert payload["filter_source"] == "um_futures_exchange_info"
+    assert payload["filter_summary"]["market_lot_size"]["step_size"] == "0.001"
+    assert payload["max_age_ms"] == 300000
 
 
 def test_execution_preflight_endpoint_blocks_live_without_fee_source(tmp_path: Path, monkeypatch) -> None:
@@ -435,6 +461,7 @@ def test_execution_live_safety_summary_endpoint_reports_preflight_state(tmp_path
     assert payload["policy_source"]["execution_router"]["source_hash"]
     assert payload["policy_source"]["execution_router"]["policy_hash"]
     assert payload["degraded_mode"] is True
+    assert payload["exchange_filters_fresh"] is True
     assert payload["capabilities_known"] is True
     assert "spot" in payload["supported_families"]
     assert payload["overall_status"] == "WARN"
@@ -489,6 +516,8 @@ def test_execution_orders_list_and_detail_endpoints_return_created_order(tmp_pat
     assert detail.status_code == 200, detail.text
     assert detail.json()["order"]["execution_order_id"] == created["execution_order_id"]
     assert detail.json()["intent"]["execution_intent_id"] == created["execution_intent_id"]
+    assert detail.json()["filter_validation"]["status"] == "PASS"
+    assert detail.json()["normalized_order_preview"]["quantity"] == 0.01
 
 
 def test_execution_orders_cancel_endpoint_cancels_single_order(tmp_path: Path, monkeypatch) -> None:

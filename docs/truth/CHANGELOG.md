@@ -2,6 +2,44 @@
 
 ## 2026-03-20
 
+### RTLOPS-46 - Exchange Filters Pre-Validator hardening
+- Nuevo modulo:
+  - `rtlab_autotrader/rtlab_core/execution/filter_prevalidator.py`
+- `rtlab_core/instruments/registry.py` ahora resume filtros por familia y preserva:
+  - `PRICE_FILTER`
+  - `LOT_SIZE`
+  - `MIN_NOTIONAL`
+  - `NOTIONAL`
+  - `MARKET_LOT_SIZE`
+  - `PERCENT_PRICE`
+  - `PERCENT_PRICE_BY_SIDE`
+  - `MAX_NUM_ORDERS`
+  - `MAX_NUM_ALGO_ORDERS`
+  - `TRAILING_DELTA`
+  - `triggerProtect` cuando existe en futures
+- `config/policies/execution_safety.yaml` suma `execution_safety.exchange_filters` y la copia nested queda sincronizada con:
+  - `max_age_ms = 300000`
+  - bloqueos explicitos por `missing_exchange_info`, `missing_symbol_filters`, `filter_source_mismatch`, `invalid_tick_alignment`, `invalid_step_alignment` e `invalid_min_notional`
+- `rtlab_core/execution/reality.py` ahora:
+  - resuelve freshness de `exchangeInfo` por familia
+  - ejecuta `filter_validation` antes de `submit`
+  - integra el resultado en `preflight(...)`, `create_order(...)`, `order_detail(...)` y `live_safety_summary()`
+  - persiste `filter_validation` y `normalized_order_preview` dentro del contexto de orden
+- `rtlab_core/web/app.py` suma:
+  - `GET /api/v1/execution/filter-rules`
+  - metadata nueva de policy en `GET /api/v1/config/policies`
+- Comportamiento operativo nuevo:
+  - Spot y `um_futures` validan contra fuentes de filtros separadas
+  - la normalizacion local expone preview auditable pero no autocorrige silenciosamente el submit
+  - `live` queda fail-closed si falta `exchangeInfo`, si esta stale o si la orden rompe filtros base
+  - Spot `MARKET` con `quoteOrderQty` queda tratado como camino especial explicito
+- Validacion local de RTLOPS-46:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/filter_prevalidator.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/instruments/registry.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+
 ### RTLOPS-45 - User Data Stream lifecycle live
 - Nuevo modulo:
   - `rtlab_autotrader/rtlab_core/execution/live_user_stream_runtime.py`

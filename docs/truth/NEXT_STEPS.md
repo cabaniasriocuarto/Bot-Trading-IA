@@ -2,6 +2,41 @@
 
 Fecha: 2026-03-20
 
+## RTLOPS-46 - Exchange Filters Pre-Validator hardening - 2026-03-20
+- [x] Agregar policy explicita `execution_safety.exchange_filters` con:
+  - `max_age_ms = 300000`
+  - `missing_symbol_filters = block`
+  - `invalid_tick_alignment = block`
+  - `invalid_step_alignment = block`
+  - `invalid_min_notional = block`
+  - `unsupported_family_filter_combo = block`
+  - `missing_exchange_info = block`
+  - `filter_source_mismatch = block`
+- [x] Implementar motor dedicado en:
+  - `rtlab_autotrader/rtlab_core/execution/filter_prevalidator.py`
+- [x] Extender `instrument_registry` para resumir y exponer filtros por familia con metadata explicita.
+- [x] Separar validacion Spot vs `um_futures` con:
+  - `filter_source = spot_exchange_info | um_futures_exchange_info`
+  - `execution_connector = binance_spot | binance_um_futures`
+  - `account_scope = spot_wallet | futures_wallet`
+- [x] Integrar `filter_validation` con:
+  - `preflight(...)`
+  - `create_order(...)`
+  - `order_detail(...)`
+  - `live_safety_summary()`
+- [x] Exponer endpoint minimo:
+  - `GET /api/v1/execution/filter-rules`
+- [x] Revalidar:
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - `test_policy_paths.py`
+  - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
+- [ ] Limites conscientes fuera de RTLOPS-46:
+  - `PERCENT_PRICE`, `PERCENT_PRICE_BY_SIDE`, `TRAILING_DELTA` y `MAX_NUM_ALGO_ORDERS` quedan parseados pero no totalmente forzados localmente en este bloque
+  - `coinm_futures` no es objetivo central de este cierre
+  - ordenes condicionales avanzadas `um_futures` (`reduceOnly`, `closePosition`, hedge-mode y STOP/TAKE_PROFIT) siguen fuera del alcance formal actual
+  - Linear MCP sigue pendiente de recuperacion para sincronizar el cierre administrativo
+
 ## RTLOPS-45 - User Data Stream lifecycle live - 2026-03-20
 - [x] Extender `binance_live_runtime.yaml` con bloques `user_stream` explicitos por conector/familia.
 - [x] Implementar runtime privado dedicado en:
@@ -90,15 +125,15 @@ Fecha: 2026-03-20
   - integracion con `ExecutionRealityService`, `reconcile`, `fills` y `live_safety`
 
 ## Siguiente issue exacto
-- `RTLOPS-46` - Exchange Filters Pre-Validator hardening
+- `RTLOPS-47` - Live preflight + permissions + clock + filters + account scope
 - alcance inmediato esperado:
-  - endurecer `PRICE_FILTER`, `LOT_SIZE`, `MIN_NOTIONAL` y precision handling contra contratos oficiales del exchange
-  - dejar bloqueo fail-closed antes de cualquier submit live si la normalizacion no cierra
-  - preparar el terreno para que `RTLOPS-47` cierre el gate final de preflight live con:
+  - consolidar el gate final de preflight live sobre:
     - exchange adapter
     - market streams
     - user streams
     - filtros oficiales
+    - account scope
+    - permisos y reloj
 
 ## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
 - [x] Endurecer signed REST live con:

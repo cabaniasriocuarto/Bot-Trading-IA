@@ -462,6 +462,68 @@ def _notional_summary(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     return payload or None
 
 
+def _percent_price_summary(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    payload: dict[str, Any] = {}
+    for key, target in (
+        ("multiplierUp", "multiplier_up"),
+        ("multiplierDown", "multiplier_down"),
+        ("multiplierDecimal", "multiplier_decimal"),
+        ("avgPriceMins", "avg_price_mins"),
+    ):
+        value = raw.get(key)
+        if value not in {None, ""}:
+            payload[target] = value
+    return payload or None
+
+
+def _percent_price_by_side_summary(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    payload: dict[str, Any] = {}
+    for key, target in (
+        ("bidMultiplierUp", "bid_multiplier_up"),
+        ("bidMultiplierDown", "bid_multiplier_down"),
+        ("askMultiplierUp", "ask_multiplier_up"),
+        ("askMultiplierDown", "ask_multiplier_down"),
+        ("avgPriceMins", "avg_price_mins"),
+    ):
+        value = raw.get(key)
+        if value not in {None, ""}:
+            payload[target] = value
+    return payload or None
+
+
+def _limit_filter_summary(raw: dict[str, Any] | None, *, target_key: str) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("maxNumOrders")
+    if value in {None, ""}:
+        value = raw.get("maxNumAlgoOrders")
+    if value in {None, ""}:
+        value = raw.get("limit")
+    if value in {None, ""}:
+        return None
+    return {target_key: value, "limit": value}
+
+
+def _trailing_delta_summary(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    payload: dict[str, Any] = {}
+    for key, target in (
+        ("minTrailingAboveDelta", "min_trailing_above_delta"),
+        ("maxTrailingAboveDelta", "max_trailing_above_delta"),
+        ("minTrailingBelowDelta", "min_trailing_below_delta"),
+        ("maxTrailingBelowDelta", "max_trailing_below_delta"),
+    ):
+        value = raw.get(key)
+        if value not in {None, ""}:
+            payload[target] = value
+    return payload or None
+
+
 def _extract_filter_summary(
     filters: Any,
     *,
@@ -475,6 +537,11 @@ def _extract_filter_summary(
     market_lot_size = _lot_size_summary(indexed.get("MARKET_LOT_SIZE"))
     min_notional = _notional_summary(indexed.get("MIN_NOTIONAL"))
     notional = _notional_summary(indexed.get("NOTIONAL"))
+    percent_price = _percent_price_summary(indexed.get("PERCENT_PRICE"))
+    percent_price_by_side = _percent_price_by_side_summary(indexed.get("PERCENT_PRICE_BY_SIDE"))
+    max_num_orders = _limit_filter_summary(indexed.get("MAX_NUM_ORDERS"), target_key="max_num_orders")
+    max_num_algo_orders = _limit_filter_summary(indexed.get("MAX_NUM_ALGO_ORDERS"), target_key="max_num_algo_orders")
+    trailing_delta = _trailing_delta_summary(indexed.get("TRAILING_DELTA"))
     if price_filter is not None:
         summary["price_filter"] = price_filter
     if lot_size is not None:
@@ -485,6 +552,17 @@ def _extract_filter_summary(
         summary["min_notional"] = min_notional
     if notional is not None:
         summary["notional"] = notional
+    if percent_price is not None:
+        summary["percent_price"] = percent_price
+    if percent_price_by_side is not None:
+        summary["percent_price_by_side"] = percent_price_by_side
+    if max_num_orders is not None:
+        summary["max_num_orders"] = max_num_orders
+    if max_num_algo_orders is not None:
+        summary["max_num_algo_orders"] = max_num_algo_orders
+    if trailing_delta is not None:
+        summary["trailing_delta"] = trailing_delta
+    summary["filter_types_present"] = sorted(indexed.keys())
     if family in {"usdm_futures", "coinm_futures"}:
         trigger = str(trigger_protect or "").strip()
         if trigger:

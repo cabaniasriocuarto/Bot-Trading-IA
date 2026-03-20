@@ -2,6 +2,115 @@
 
 Fecha de actualizacion: 2026-03-20
 
+## RTLOPS-46: Exchange Filters Pre-Validator hardening - 2026-03-20
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-46`
+  - rama incremental usada: `feature/exchange-filters-prevalidator-hardening-rtlops-46`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+    - `27a2367`
+    - `8f615bc`
+    - `0c07d60`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+  - contratos oficiales del exchange desde documentacion oficial primaria de Binance:
+    - Spot Filters
+    - Spot Trading Endpoints
+    - Spot Request Security
+    - USDⓈ-M Futures Common Definition
+- Alcance real cerrado:
+  - nuevo modulo dedicado:
+    - `rtlab_autotrader/rtlab_core/execution/filter_prevalidator.py`
+  - `instrument_registry` resume y preserva filtros por familia con metadata explicita para:
+    - `PRICE_FILTER`
+    - `LOT_SIZE`
+    - `MIN_NOTIONAL`
+    - `NOTIONAL`
+    - `MARKET_LOT_SIZE`
+    - `PERCENT_PRICE`
+    - `PERCENT_PRICE_BY_SIDE`
+    - `MAX_NUM_ORDERS`
+    - `MAX_NUM_ALGO_ORDERS`
+    - `TRAILING_DELTA`
+    - `triggerProtect` cuando la familia lo expone
+  - `execution_safety.yaml` agrega autoridad explicita para freshness y fail-closed de filtros:
+    - `exchange_filters.max_age_ms = 300000`
+    - `missing_symbol_filters = block`
+    - `invalid_tick_alignment = block`
+    - `invalid_step_alignment = block`
+    - `invalid_min_notional = block`
+    - `unsupported_family_filter_combo = block`
+    - `missing_exchange_info = block`
+    - `filter_source_mismatch = block`
+  - `ExecutionRealityService` ahora:
+    - resuelve freshness de `exchangeInfo` por familia
+    - ejecuta `filter_validation` antes del submit
+    - integra la respuesta del pre-validator en:
+      - `preflight(...)`
+      - `create_order(...)`
+      - `order_detail(...)`
+      - `live_safety_summary()`
+    - persiste `filter_validation` y `normalized_order_preview` dentro del contexto de orden
+  - API minima nueva:
+    - `GET /api/v1/execution/filter-rules?family=...&symbol=...&environment=...`
+  - `GET /api/v1/config/policies` expone metadata numerica relevante:
+    - `execution_exchange_filters_max_age_ms`
+    - `execution_exchange_filters_missing_symbol_filters`
+- Comportamiento real del bloque:
+  - Spot y `um_futures` no comparten heuristicas ambiguas de filtros:
+    - `filter_source = spot_exchange_info | um_futures_exchange_info`
+    - `execution_connector = binance_spot | binance_um_futures`
+    - `account_scope = spot_wallet | futures_wallet`
+  - la normalizacion local calcula preview auditable pero no autocorrige silenciosamente el submit:
+    - si `price` o `qty` quedan fuera de grid, la respuesta expone `normalized_values`
+    - el submit se bloquea igual con reason code explicito
+  - `live` queda fail-closed si:
+    - falta `exchangeInfo`
+    - la metadata esta stale
+    - el simbolo no tiene filtros resolubles
+    - hay mismatch entre familia y fuente de filtros
+    - la orden rompe `tickSize`, `stepSize` o `min/max notional`
+  - Spot `MARKET` con `quoteOrderQty` queda tratado como camino especial documentado:
+    - no se fuerza `LOT_SIZE` local sobre una cantidad base no provista
+    - la respuesta deja trazabilidad explicita de este path
+  - `um_futures` puede usar `mark_price` del runtime cuando existe evidencia local para validar notional de forma mas consistente con la familia
+- Validacion real del bloque:
+  - tests locales:
+    - `test_execution_reality.py` -> PASS
+    - `test_web_execution_reality_api.py` -> PASS
+    - `test_policy_paths.py` -> PASS
+    - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle` -> PASS
+  - cobertura nueva/minima relevante:
+    - Spot PASS con filtros alineados
+    - Spot BLOCK por `tickSize` y `stepSize` invalidos con preview normalizado visible
+    - `um_futures` PASS con fuente de filtros propia
+    - bloqueo por freshness stale en `live`
+    - bloqueo por `filter_source_mismatch`
+    - `order_detail` conserva `filter_validation`
+    - endpoint `/api/v1/execution/filter-rules`
+- Decisiones de ingenieria explicitas:
+  - el exchange deja de ser el primer validador de `tick/step/notional` para rutas ya soportadas por el repo
+  - el motor local parsea algunos filtros adicionales aunque no los fuerce todavia, para no perder trazabilidad ni mezclar ausencia accidental con diferencia real de familia
+  - la normalizacion visible se usa como evidencia y ayuda operativa, no como permiso para enviar automaticamente una orden corregida
+- Limites conscientes:
+  - `PERCENT_PRICE`, `PERCENT_PRICE_BY_SIDE`, `TRAILING_DELTA` y `MAX_NUM_ALGO_ORDERS` quedan parseados pero no totalmente forzados localmente en este bloque
+  - `coinm_futures` no es el objetivo central de RTLOPS-46
+  - ordenes condicionales avanzadas `um_futures` (`reduceOnly`, `closePosition`, hedge-mode y familias STOP/TAKE_PROFIT) siguen fuera del alcance formal actual
+  - la sincronizacion administrativa de Linear depende de que el MCP vuelva a responder; el cierre tecnico del bloque no depende de eso
+
 ## RTLOPS-45: User Data Stream lifecycle live - 2026-03-20
 
 - Trazabilidad del bloque:
