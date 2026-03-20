@@ -2,6 +2,95 @@
 
 Fecha de actualizacion: 2026-03-19
 
+## RTLOPS-49: Exchange Adapter Live Hardening - 2026-03-19
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-49`
+  - rama incremental usada: `feature/exchange-adapter-live-hardening-rtlops-49`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+  - contratos live desde documentacion oficial primaria de Binance:
+    - Spot `General endpoints`, `Request security`, `Trading endpoints`, `Account endpoints`, `Errors`
+    - Margin `Margin Account New Order`, `Margin Account Cancel Order`, `Margin Account Cancel all Open Orders on a Symbol`, `Query Margin Account's Order`, `Query Margin Account's Open Orders`, `Query Cross Margin Account Details`
+    - USDⓈ-M `Check Server Time`, `Exchange Information`, `New Order`, `Cancel Order`, `Current All Open Orders`, `Account Information V2`
+    - COIN-M `Check Server time`, `Exchange Information`, `New Order`, `Cancel Order`, `Current All Open Orders`, `Cancel All Open Orders`, `Account Information`
+- Alcance real cerrado:
+  - nuevo adapter dedicado en:
+    - `rtlab_autotrader/rtlab_core/execution/binance_adapter.py`
+  - `ExecutionRealityService` deja de firmar requests live con una capa naive y delega el hardening a ese adapter.
+  - signed REST real con:
+    - firma HMAC SHA256
+    - `recvWindow` gobernado por policy
+    - `timestamp` ajustado con `server time sync`
+    - reintento unico ante `INVALID_TIMESTAMP (-1021)` con resincronizacion explicita
+  - contratos live cubiertos de forma explicita:
+    - `exchangeInfo`
+    - `balances/account`
+    - `new order`
+    - `query order`
+    - `query open orders`
+    - `cancel order`
+    - `cancel all open orders`
+    - `test order` para `spot`
+  - mapeo auditable de errores del exchange a razones internas:
+    - `invalid_timestamp`
+    - `invalid_signature`
+    - `auth_rejected`
+    - `rate_limit`
+    - `no_such_order`
+    - `cancel_rejected`
+    - `new_order_rejected`
+    - `insufficient_balance`
+    - `insufficient_margin`
+    - `filter_rejected`
+    - `invalid_request`
+    - `exchange_unavailable`
+    - `provider_restriction`
+- Autoridad/policy nueva dentro de execution:
+  - `config/policies/execution_safety.yaml`
+  - `rtlab_autotrader/config/policies/execution_safety.yaml` solo como compatibilidad de empaquetado/deploy
+  - nuevo grupo:
+    - `execution_safety.exchange_adapter`
+      - `signed_rest_enabled`
+      - `server_time_sync_enabled`
+      - `require_server_time_sync_in_live_like_modes`
+      - `server_time_cache_sec`
+      - `recv_window_ms`
+      - `max_clock_skew_ms`
+      - `retry_invalid_timestamp_once`
+- Trazabilidad visible del bloque:
+  - `ExecutionRealityService.bootstrap_summary()` agrega:
+    - `exchange_adapter.enabled`
+    - `exchange_adapter.recv_window_ms`
+    - `exchange_adapter.server_time_sync_enabled`
+    - `exchange_adapter.supported_contracts`
+    - `exchange_adapter.server_time_cache`
+  - nuevos helpers operativos:
+    - `fetch_exchange_info(...)`
+    - `fetch_account_balances(...)`
+    - `test_order_contract(...)`
+- Decision de ingenieria explicita:
+  - `margin` sigue derivando `exchangeInfo` desde el contrato spot porque el bloque 2 ya define `margin` como catalogo derivado de `spot + permissions/capabilities`; no se inventa un `exchangeInfo` margin separado.
+- Limites conscientes:
+  - `test order` queda soportado solo para `spot`
+  - para `margin`, `usdm_futures` y `coinm_futures` el servicio responde `unsupported_contract` en vez de inventar soporte no confirmado por la documentacion oficial accesible en esta corrida
+  - no se toco frontend
+  - no se tocaron `main` ni los bloques siguientes del LIVE runtime
+
 ## Reconciliacion LIVE repo <-> docs/truth <-> Linear - 2026-03-19
 
 - No hubo cambio de runtime adicional en esta regularizacion.
@@ -12,7 +101,7 @@ Fecha de actualizacion: 2026-03-19
   - `LIVE-B3`
   - `LIVE-B4`
 - El siguiente issue tecnico exacto para continuar LIVE es:
-  - `RTLOPS-49` = `Exchange Adapter Live Hardening`
+  - `RTLOPS-44` = `Market WebSocket Runtime live`
 
 ## RTLOPS-36: Validacion operativa `paper -> testnet -> canary` antes de live serio - 2026-03-19
 

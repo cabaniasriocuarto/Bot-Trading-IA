@@ -17,6 +17,14 @@ execution_safety:
     orderbook_stale_block_ms: 5000
     reject_if_missing_basic_filters: true
     reject_if_missing_fee_source_in_live: true
+  exchange_adapter:
+    signed_rest_enabled: true
+    server_time_sync_enabled: true
+    require_server_time_sync_in_live_like_modes: true
+    server_time_cache_sec: 30
+    recv_window_ms: 5000
+    max_clock_skew_ms: 1000
+    retry_invalid_timestamp_once: true
   sizing:
     max_notional_per_order_usd: 5000.0
     max_open_orders_per_symbol: 6

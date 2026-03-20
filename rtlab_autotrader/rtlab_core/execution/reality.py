@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import hmac
 import json
 import os
 import sqlite3
@@ -13,12 +12,12 @@ from decimal import Decimal, ROUND_DOWN
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 from uuid import uuid4
 
-import requests
 import yaml
 
+from rtlab_core.execution.binance_adapter import BinanceLiveAdapter
 from rtlab_core.policy_paths import describe_policy_root_resolution
 
 
@@ -65,6 +64,15 @@ FAIL_CLOSED_MINIMAL_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
             "orderbook_stale_block_ms": 1,
             "reject_if_missing_basic_filters": True,
             "reject_if_missing_fee_source_in_live": True,
+        },
+        "exchange_adapter": {
+            "signed_rest_enabled": True,
+            "server_time_sync_enabled": True,
+            "require_server_time_sync_in_live_like_modes": True,
+            "server_time_cache_sec": 1,
+            "recv_window_ms": 1000,
+            "max_clock_skew_ms": 1,
+            "retry_invalid_timestamp_once": True,
         },
         "sizing": {
             "max_notional_per_order_usd": 0.0,
@@ -323,6 +331,17 @@ def _validate_execution_safety_policy(candidate: Any) -> list[str]:
         _require_bool(preflight, key, errors=errors, path="execution.execution_safety.preflight")
     for key in ("snapshot_block_if_older_than_hours", "quote_stale_block_ms", "orderbook_stale_warn_ms", "orderbook_stale_block_ms"):
         _require_number(preflight, key, errors=errors, path="execution.execution_safety.preflight")
+
+    exchange_adapter = _require_dict(root, "exchange_adapter", errors=errors, path="execution.execution_safety")
+    for key in (
+        "signed_rest_enabled",
+        "server_time_sync_enabled",
+        "require_server_time_sync_in_live_like_modes",
+        "retry_invalid_timestamp_once",
+    ):
+        _require_bool(exchange_adapter, key, errors=errors, path="execution.execution_safety.exchange_adapter")
+    for key in ("server_time_cache_sec", "recv_window_ms", "max_clock_skew_ms"):
+        _require_number(exchange_adapter, key, errors=errors, path="execution.execution_safety.exchange_adapter")
 
     sizing = _require_dict(root, "sizing", errors=errors, path="execution.execution_safety")
     for key in (
@@ -1490,6 +1509,17 @@ class ExecutionRealityService:
         self._user_stream_status: dict[tuple[str, str], dict[str, Any]] = {}
         self._margin_levels: dict[str, dict[str, Any]] = {}
         self._futures_auto_cancel_status: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._binance_adapter = BinanceLiveAdapter(
+            credential_resolver=_credentials_for_family,
+            request_timeout_resolver=self._request_timeout,
+            recv_window_resolver=self._exchange_adapter_recv_window_ms,
+            server_time_url_resolver=self._server_time_endpoint,
+            server_time_sync_enabled_resolver=self._exchange_adapter_server_time_sync_enabled,
+            require_server_time_sync_resolver=self._exchange_adapter_require_server_time_sync,
+            server_time_cache_sec_resolver=self._exchange_adapter_server_time_cache_sec,
+            max_clock_skew_ms_resolver=self._exchange_adapter_max_clock_skew_ms,
+            retry_invalid_timestamp_once_resolver=self._exchange_adapter_retry_invalid_timestamp_once,
+        )
 
     def safety_bundle(self) -> dict[str, Any]:
         return load_execution_safety_bundle(self.repo_root, explicit_root=self.explicit_policy_root)
@@ -1552,6 +1582,301 @@ class ExecutionRealityService:
                 "execution_router": self.router_policy(),
             }
         )
+
+    def _exchange_adapter_policy(self) -> dict[str, Any]:
+        payload = self.safety_policy().get("exchange_adapter")
+        return payload if isinstance(payload, dict) else {}
+
+    def _exchange_adapter_recv_window_ms(self) -> float:
+        return _safe_float(self._exchange_adapter_policy().get("recv_window_ms"), 5000.0)
+
+    def _exchange_adapter_server_time_sync_enabled(self) -> bool:
+        return _bool(self._exchange_adapter_policy().get("server_time_sync_enabled", True))
+
+    def _exchange_adapter_require_server_time_sync(self, environment: str) -> bool:
+        normalized = _normalize_environment(environment)
+        if normalized not in {"live", "testnet"}:
+            return False
+        return _bool(self._exchange_adapter_policy().get("require_server_time_sync_in_live_like_modes", True))
+
+    def _exchange_adapter_server_time_cache_sec(self) -> float:
+        return _safe_float(self._exchange_adapter_policy().get("server_time_cache_sec"), 30.0)
+
+    def _exchange_adapter_max_clock_skew_ms(self) -> float:
+        return _safe_float(self._exchange_adapter_policy().get("max_clock_skew_ms"), 1000.0)
+
+    def _exchange_adapter_retry_invalid_timestamp_once(self) -> bool:
+        return _bool(self._exchange_adapter_policy().get("retry_invalid_timestamp_once", True))
+
+    def _server_time_endpoint(self, family: str, environment: str) -> str:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        if normalized_family == "margin":
+            return f"{self._execution_api_root('spot', normalized_environment)}/api/v3/time"
+        mapping = {
+            "spot": "/api/v3/time",
+            "usdm_futures": "/fapi/v1/time",
+            "coinm_futures": "/dapi/v1/time",
+        }
+        path = mapping.get(normalized_family)
+        if not path:
+            return ""
+        return f"{self._execution_api_root(normalized_family, normalized_environment)}{path}"
+
+    def _account_endpoint_from_policy(self, family: str, environment: str) -> str:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        policy = self._instrument_registry_policy()
+        endpoints = policy.get("endpoints") if isinstance(policy.get("endpoints"), dict) else {}
+        if normalized_family == "spot":
+            cfg = endpoints.get("spot") if isinstance(endpoints.get("spot"), dict) else {}
+            path = str(cfg.get("account") or "/api/v3/account").strip()
+            if not path.startswith("/"):
+                path = f"/{path}"
+            return f"{self._execution_api_root('spot', normalized_environment)}{path}"
+        if normalized_family == "margin":
+            cfg = endpoints.get("margin") if isinstance(endpoints.get("margin"), dict) else {}
+            endpoint = str(
+                cfg.get("testnet_account") if normalized_environment == "testnet" else cfg.get("live_account") or ""
+            ).strip()
+            override = os.getenv("BINANCE_MARGIN_BASE_URL") or os.getenv("BINANCE_SPOT_BASE_URL")
+            if endpoint:
+                return _apply_base_override(endpoint, override)
+            return f"{self._execution_api_root('spot', normalized_environment)}/sapi/v1/margin/account"
+        if normalized_family == "usdm_futures":
+            cfg = endpoints.get("usdm_futures") if isinstance(endpoints.get("usdm_futures"), dict) else {}
+            endpoint = str(
+                cfg.get("account_testnet") if normalized_environment == "testnet" else cfg.get("account_live") or ""
+            ).strip()
+            override = os.getenv("BINANCE_USDM_TESTNET_BASE_URL" if normalized_environment == "testnet" else "BINANCE_USDM_BASE_URL")
+            if endpoint:
+                return _apply_base_override(endpoint, override)
+            return f"{self._execution_api_root('usdm_futures', normalized_environment)}/fapi/v2/account"
+        if normalized_family == "coinm_futures":
+            cfg = endpoints.get("coinm_futures") if isinstance(endpoints.get("coinm_futures"), dict) else {}
+            endpoint = str(
+                cfg.get("account_testnet") if normalized_environment == "testnet" else cfg.get("account_live") or ""
+            ).strip()
+            override = os.getenv("BINANCE_COINM_TESTNET_BASE_URL" if normalized_environment == "testnet" else "BINANCE_COINM_BASE_URL")
+            if endpoint:
+                return _apply_base_override(endpoint, override)
+            return f"{self._execution_api_root('coinm_futures', normalized_environment)}/dapi/v1/account"
+        return ""
+
+    def _exchange_contract_endpoint(self, family: str, environment: str, operation: str) -> str:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        normalized_operation = str(operation or "").strip().lower()
+        if normalized_operation in {
+            "submit",
+            "query",
+            "open_orders",
+            "cancel",
+            "cancel_all",
+            "my_trades",
+            "user_trades",
+            "income",
+            "countdown_cancel_all",
+        }:
+            return self._execution_endpoint(normalized_family, normalized_environment, normalized_operation)
+        if normalized_operation == "server_time":
+            return self._server_time_endpoint(normalized_family, normalized_environment)
+        if normalized_operation == "exchange_info":
+            root_family = "spot" if normalized_family == "margin" else normalized_family
+            mapping = {
+                "spot": "/api/v3/exchangeInfo",
+                "usdm_futures": "/fapi/v1/exchangeInfo",
+                "coinm_futures": "/dapi/v1/exchangeInfo",
+            }
+            path = mapping.get(root_family)
+            if not path:
+                raise ValueError(f"Unsupported exchange info operation for family: {family}")
+            return f"{self._execution_api_root(root_family, normalized_environment)}{path}"
+        if normalized_operation == "balances":
+            endpoint = self._account_endpoint_from_policy(normalized_family, normalized_environment)
+            if not endpoint:
+                raise ValueError(f"Unsupported balances operation for family: {family}")
+            return endpoint
+        if normalized_operation == "test_order":
+            if normalized_family != "spot":
+                raise ValueError(f"Unsupported test order operation for family: {family}")
+            return f"{self._execution_api_root('spot', normalized_environment)}/api/v3/order/test"
+        raise ValueError(f"Unsupported exchange contract operation: {family}:{operation}")
+
+    def _exchange_adapter_supported_contracts(self) -> dict[str, dict[str, bool]]:
+        return {
+            "spot": {
+                "server_time": True,
+                "exchange_info": True,
+                "balances": True,
+                "test_order": True,
+                "new_order": True,
+                "query_order": True,
+                "query_open_orders": True,
+                "cancel_order": True,
+                "cancel_all_open_orders": True,
+            },
+            "margin": {
+                "server_time": True,
+                "exchange_info": True,
+                "balances": True,
+                "test_order": False,
+                "new_order": True,
+                "query_order": True,
+                "query_open_orders": True,
+                "cancel_order": True,
+                "cancel_all_open_orders": True,
+            },
+            "usdm_futures": {
+                "server_time": True,
+                "exchange_info": True,
+                "balances": True,
+                "test_order": False,
+                "new_order": True,
+                "query_order": True,
+                "query_open_orders": True,
+                "cancel_order": True,
+                "cancel_all_open_orders": True,
+            },
+            "coinm_futures": {
+                "server_time": True,
+                "exchange_info": True,
+                "balances": True,
+                "test_order": False,
+                "new_order": True,
+                "query_order": True,
+                "query_open_orders": True,
+                "cancel_order": True,
+                "cancel_all_open_orders": True,
+            },
+        }
+
+    def exchange_adapter_summary(self) -> dict[str, Any]:
+        policy = self._exchange_adapter_policy()
+        return {
+            "enabled": _bool(policy.get("signed_rest_enabled", True)),
+            "recv_window_ms": int(self._exchange_adapter_recv_window_ms()),
+            "server_time_sync_enabled": self._exchange_adapter_server_time_sync_enabled(),
+            "require_server_time_sync_in_live_like_modes": self._exchange_adapter_require_server_time_sync("live"),
+            "server_time_cache_sec": self._exchange_adapter_server_time_cache_sec(),
+            "max_clock_skew_ms": self._exchange_adapter_max_clock_skew_ms(),
+            "retry_invalid_timestamp_once": self._exchange_adapter_retry_invalid_timestamp_once(),
+            "supported_contracts": self._exchange_adapter_supported_contracts(),
+            "server_time_cache": self._binance_adapter.cache_status(),
+        }
+
+    def fetch_exchange_info(self, *, family: str, environment: str) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        endpoint = self._exchange_contract_endpoint(normalized_family, normalized_environment, "exchange_info")
+        payload, meta = self._public_request("GET", endpoint, family=normalized_family, environment=normalized_environment)
+        meta = copy.deepcopy(meta)
+        if normalized_family == "margin":
+            meta["contract_source"] = "spot_exchange_info_for_margin"
+        symbols = payload.get("symbols") if isinstance(payload, dict) and isinstance(payload.get("symbols"), list) else []
+        return {
+            "family": normalized_family,
+            "environment": normalized_environment,
+            "ok": bool(meta.get("ok")),
+            "symbol_count": len(symbols),
+            "exchange_info": payload if isinstance(payload, dict) else {},
+            "remote_source": meta,
+        }
+
+    def fetch_account_balances(
+        self,
+        *,
+        family: str,
+        environment: str,
+        omit_zero_balances: bool = True,
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        params: dict[str, Any] = {}
+        if normalized_family == "spot":
+            params["omitZeroBalances"] = "true" if omit_zero_balances else "false"
+        payload, meta = self._signed_request(
+            "GET",
+            self._exchange_contract_endpoint(normalized_family, normalized_environment, "balances"),
+            family=normalized_family,
+            environment=normalized_environment,
+            params=params,
+        )
+        account_payload = payload if isinstance(payload, dict) else {}
+        if normalized_family == "spot":
+            balances = account_payload.get("balances") if isinstance(account_payload.get("balances"), list) else []
+        elif normalized_family == "margin":
+            balances = account_payload.get("userAssets") if isinstance(account_payload.get("userAssets"), list) else []
+        else:
+            balances = account_payload.get("assets") if isinstance(account_payload.get("assets"), list) else []
+        return {
+            "family": normalized_family,
+            "environment": normalized_environment,
+            "ok": bool(meta.get("ok")),
+            "balances_count": len(balances),
+            "balances": copy.deepcopy(balances),
+            "account": account_payload,
+            "remote_source": meta,
+        }
+
+    def test_order_contract(
+        self,
+        *,
+        family: str,
+        environment: str,
+        preview: dict[str, Any],
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        try:
+            endpoint = self._exchange_contract_endpoint(normalized_family, normalized_environment, "test_order")
+        except ValueError:
+            return {
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "ok": False,
+                "supported": False,
+                "remote_source": {
+                    "ok": False,
+                    "reason": "unsupported_contract",
+                    "error_category": "endpoint",
+                },
+            }
+        params, local_blocking = self._build_submit_params(
+            family=normalized_family,
+            environment=normalized_environment,
+            preview=preview,
+            client_order_id=client_order_id,
+        )
+        if local_blocking:
+            return {
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "ok": False,
+                "supported": True,
+                "blocking_reasons": list(local_blocking),
+                "remote_source": {
+                    "ok": False,
+                    "reason": "invalid_local_contract_payload",
+                    "error_category": "request",
+                },
+            }
+        payload, meta = self._signed_request(
+            "POST",
+            endpoint,
+            family=normalized_family,
+            environment=normalized_environment,
+            params=params,
+        )
+        return {
+            "family": normalized_family,
+            "environment": normalized_environment,
+            "ok": bool(meta.get("ok")),
+            "supported": True,
+            "payload": payload if isinstance(payload, dict) else {},
+            "remote_source": meta,
+        }
 
     def _kill_switch_policy(self) -> dict[str, Any]:
         payload = self.safety_policy().get("kill_switch")
@@ -2116,6 +2441,7 @@ class ExecutionRealityService:
             "policy_loaded": self.policies_loaded(),
             "policy_hash": self.policy_hash(),
             "policy_source": policy_source,
+            "exchange_adapter": self.exchange_adapter_summary(),
             "kill_switch": self.kill_switch_status(),
             "modes": safety.get("modes") if isinstance(safety.get("modes"), dict) else {},
             "families_enabled": sorted([name for name, enabled in families_enabled.items() if enabled]),
@@ -2155,22 +2481,31 @@ class ExecutionRealityService:
         endpoints = policy.get("endpoints") if isinstance(policy.get("endpoints"), dict) else {}
         if family == "spot":
             cfg = endpoints.get("spot") if isinstance(endpoints.get("spot"), dict) else {}
-            endpoint = str(cfg.get("testnet" if environment == "testnet" else "live") or "").strip()
+            endpoint = str(
+                cfg.get("testnet" if environment == "testnet" else "live")
+                or ("https://testnet.binance.vision/api/v3/exchangeInfo" if environment == "testnet" else "https://api.binance.com/api/v3/exchangeInfo")
+            ).strip()
             override = os.getenv("BINANCE_SPOT_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_SPOT_BASE_URL")
             return _url_root(_apply_base_override(endpoint, override))
         if family == "margin":
             cfg = endpoints.get("margin") if isinstance(endpoints.get("margin"), dict) else {}
-            endpoint = str(cfg.get("live_account") or "").strip()
+            endpoint = str(cfg.get("live_account") or "https://api.binance.com/sapi/v1/margin/account").strip()
             override = os.getenv("BINANCE_MARGIN_BASE_URL") or os.getenv("BINANCE_SPOT_BASE_URL")
             return _url_root(_apply_base_override(endpoint, override))
         if family == "usdm_futures":
             cfg = endpoints.get("usdm_futures") if isinstance(endpoints.get("usdm_futures"), dict) else {}
-            endpoint = str(cfg.get("testnet" if environment == "testnet" else "live") or "").strip()
+            endpoint = str(
+                cfg.get("testnet" if environment == "testnet" else "live")
+                or ("https://demo-fapi.binance.com/fapi/v1/exchangeInfo" if environment == "testnet" else "https://fapi.binance.com/fapi/v1/exchangeInfo")
+            ).strip()
             override = os.getenv("BINANCE_USDM_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_USDM_BASE_URL")
             return _url_root(_apply_base_override(endpoint, override))
         if family == "coinm_futures":
             cfg = endpoints.get("coinm_futures") if isinstance(endpoints.get("coinm_futures"), dict) else {}
-            endpoint = str(cfg.get("testnet" if environment == "testnet" else "live") or "").strip()
+            endpoint = str(
+                cfg.get("testnet" if environment == "testnet" else "live")
+                or ("https://testnet.binancefuture.com/dapi/v1/exchangeInfo" if environment == "testnet" else "https://dapi.binance.com/dapi/v1/exchangeInfo")
+            ).strip()
             override = os.getenv("BINANCE_COINM_TESTNET_BASE_URL" if environment == "testnet" else "BINANCE_COINM_BASE_URL")
             return _url_root(_apply_base_override(endpoint, override))
         raise ValueError(f"Unsupported family: {family}")
@@ -2222,49 +2557,37 @@ class ExecutionRealityService:
         environment: str,
         params: dict[str, Any] | None = None,
     ) -> tuple[Any, dict[str, Any]]:
-        api_key, api_secret, env_names = _credentials_for_family(family, environment)
-        if not api_key or not api_secret or not endpoint_url:
+        if not _bool(self._exchange_adapter_policy().get("signed_rest_enabled", True)):
+            api_key, _api_secret, env_names = _credentials_for_family(family, environment)
             return None, {
                 "ok": False,
-                "reason": "missing_credentials",
-                "credentials_present": False,
+                "reason": "signed_rest_disabled_by_policy",
+                "error_category": "policy",
+                "retryable": False,
+                "credentials_present": bool(api_key),
                 "credential_envs_tried": env_names,
                 "endpoint": endpoint_url,
                 "method": method.upper(),
             }
-        filtered = {
-            str(key): value
-            for key, value in (params or {}).items()
-            if value is not None and str(value) != ""
-        }
-        filtered.setdefault("timestamp", int(time.time() * 1000))
-        filtered.setdefault("recvWindow", 5000)
-        query = urlencode(filtered, doseq=True)
-        signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-        url = f"{endpoint_url}?{query}&signature={signature}"
-        headers = {"X-MBX-APIKEY": api_key}
-        try:
-            response = requests.request(method.upper(), url, headers=headers, timeout=self._request_timeout())
-            response.raise_for_status()
-            payload = response.json() if response.content else {}
-            return payload, {
-                "ok": True,
-                "reason": "ok",
-                "credentials_present": True,
-                "credential_envs_tried": env_names,
-                "endpoint": endpoint_url,
-                "method": method.upper(),
-            }
-        except Exception as exc:
-            return None, {
-                "ok": False,
-                "reason": "signed_request_failed",
-                "credentials_present": True,
-                "credential_envs_tried": env_names,
-                "endpoint": endpoint_url,
-                "method": method.upper(),
-                "error": str(exc),
-            }
+        return self._binance_adapter.signed_request(
+            method,
+            endpoint_url,
+            family=family,
+            environment=environment,
+            params=params,
+        )
+
+    def _public_request(
+        self,
+        method: str,
+        endpoint_url: str,
+        *,
+        family: str,
+        environment: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
+        _ = (_normalize_family(family), _normalize_environment(environment))
+        return self._binance_adapter.public_request(method, endpoint_url, params=params)
 
     def _build_submit_params(
         self,

@@ -2,6 +2,46 @@
 
 ## 2026-03-19
 
+### RTLOPS-49 - Exchange Adapter Live Hardening
+- Nuevo adapter live dedicado:
+  - `rtlab_autotrader/rtlab_core/execution/binance_adapter.py`
+- `rtlab_core/execution/reality.py` ahora:
+  - delega signed REST a un adapter con HMAC real y sin exponer secretos en metadata/logs
+  - sincroniza `timestamp` con `server time` del exchange
+  - controla `recvWindow` desde `execution_safety.exchange_adapter`
+  - reintenta una sola vez cuando Binance devuelve `INVALID_TIMESTAMP (-1021)`
+  - expone `exchange_adapter` en `bootstrap_summary()`
+  - agrega helpers:
+    - `fetch_exchange_info(...)`
+    - `fetch_account_balances(...)`
+    - `test_order_contract(...)`
+- `config/policies/execution_safety.yaml` suma el grupo `exchange_adapter` y la copia nested queda sincronizada.
+- Contratos live endurecidos sobre documentacion oficial de Binance para:
+  - Spot `time / exchangeInfo / account / order test / order / openOrders`
+  - Margin `margin account / margin order / margin openOrders`
+  - USDⓈ-M `time / exchangeInfo / account / order / openOrders`
+  - COIN-M `time / exchangeInfo / account / order / openOrders`
+- Mapeo interno nuevo de errores del exchange:
+  - auth
+  - rate limit
+  - timestamp/signature
+  - order lifecycle
+  - insufficient balance / margin
+  - filter / invalid request
+  - exchange unavailable
+- Tests nuevos/minimos del adapter en `test_execution_reality.py`:
+  - `server time sync + recvWindow`
+  - `retry por invalid timestamp`
+  - `error mapping`
+  - `exchange info + balances` para margin/futures
+- Validacion local de RTLOPS-49:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/binance_adapter.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/tests/test_execution_reality.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+  - nota operativa: `test_web_execution_reality_api.py` necesita timeout amplio (~5m07s en esta maquina), pero quedo PASS
+
 ### Reconciliacion administrativa LIVE 10/10 con Linear
 - Se revalido `RTLOPS-36` contra:
   - repo real

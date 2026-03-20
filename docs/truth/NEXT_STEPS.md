@@ -2,6 +2,32 @@
 
 Fecha: 2026-03-19
 
+## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
+- [x] Endurecer signed REST live con:
+  - firma HMAC real
+  - `server time sync`
+  - `recvWindow` gobernado por policy
+  - reintento unico por `INVALID_TIMESTAMP`
+- [x] Cubrir contratos live minimos de adapter:
+  - `exchangeInfo`
+  - `balances/account`
+  - `new order`
+  - `query order`
+  - `query open orders`
+  - `cancel order`
+  - `cancel all open orders`
+  - `test order` para `spot`
+- [x] Mapear errores del exchange a razones internas auditables.
+- [x] Exponer metadata operativa del adapter en `bootstrap_summary()`.
+- [x] Revalidar:
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - `test_policy_paths.py`
+  - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
+- [ ] Deuda chica consciente fuera de RTLOPS-49:
+  - `test order` no se declara soportado para `margin/usdm/coinm` mientras no quede confirmado por documentacion oficial primaria accesible y versionada en una corrida posterior;
+  - migrar `startup` FastAPI a lifespan sigue siendo una deuda transversal.
+
 ## RTLOPS-36 - Validacion operativa `paper -> testnet -> canary` antes de live serio - 2026-03-19
 - [x] Agregar autoridad canonica nueva:
   - `config/policies/validation_gates.yaml`
@@ -226,11 +252,12 @@ Fecha: 2026-03-19
 
 ## Siguiente bloque logico real
 - [x] Ejecutar `RTLOPS-36` sobre la base ya cerrada hasta `3.5`.
-- [ ] Siguiente bloque logico real despues de RTLOPS-36:
-  - `RTLOPS-49` = `Exchange Adapter Live Hardening`.
-  - arranca el `LIVE-B1` para cerrar conectividad + contratos reales del exchange antes de seguir con `LIVE-B2`.
+- [x] Ejecutar `RTLOPS-49` para endurecer el adapter live y dejar contratos REST reales del exchange sobre la base de execution ya cerrada.
+- [ ] Siguiente bloque logico real despues de RTLOPS-49:
+  - `RTLOPS-44` = `Market WebSocket Runtime live`.
+  - sigue el `LIVE-B1` con streams de market data, reconnect, watchdog de stale data y heartbeat, ahora sobre una base REST ya endurecida.
 - [ ] Orden operativo LIVE reconciliado:
-  - `LIVE-B1`: `RTLOPS-49`, `RTLOPS-44`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`
+  - `LIVE-B1`: `RTLOPS-44`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47` con `RTLOPS-49` ya cerrado como base de contratos REST
   - `LIVE-B2`: `RTLOPS-48`, `RTLOPS-50`, `RTLOPS-23`, `RTLOPS-29` y `RTLOPS-22` ya cerrado como base de costos
   - `LIVE-B3`: `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-54`, `RTLOPS-25`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-30`, `RTLOPS-37`, `RTLOPS-53`
   - `LIVE-B4`: `RTLOPS-24`, `RTLOPS-31`, `RTLOPS-32`, `RTLOPS-33`, `RTLOPS-34`, `RTLOPS-35`, `RTLOPS-38`

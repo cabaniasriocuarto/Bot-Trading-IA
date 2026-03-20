@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from rtlab_core.execution.binance_adapter import map_exchange_error
 from rtlab_core.execution.reality import (
     ExecutionRealityService,
     clear_execution_policy_cache,
@@ -36,6 +39,26 @@ def _fresh_market_snapshot(*, bid: float = 50000.0, ask: float = 50001.0) -> dic
         "quote_ts_ms": now_ms,
         "orderbook_ts_ms": now_ms,
     }
+
+
+class _HTTPResponse:
+    def __init__(self, payload: Any, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload) if not isinstance(payload, str) else payload
+
+    @property
+    def content(self) -> bytes:
+        if self._payload is None:
+            return b""
+        if isinstance(self._payload, bytes):
+            return self._payload
+        if isinstance(self._payload, str):
+            return self._payload.encode("utf-8")
+        return json.dumps(self._payload).encode("utf-8")
+
+    def json(self) -> Any:
+        return self._payload
 
 
 class _FakeRegistryDB:
@@ -619,6 +642,166 @@ def test_execution_reality_bootstrap_summary_and_live_safety_wiring(tmp_path: Pa
     assert summary["capabilities_known"] is True
     assert summary["degraded_mode"] is True
     assert summary["overall_status"] == "WARN"
+
+
+def test_exchange_adapter_spot_test_order_uses_server_time_sync_and_recv_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="spot")
+    monkeypatch.setenv("BINANCE_API_KEY", "live-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "live-secret")
+    calls: list[tuple[str, str, dict[str, str] | None]] = []
+    expected_server_time = 1730000005000
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        calls.append((str(method).upper(), url, headers))
+        if url.endswith("/api/v3/time"):
+            return _HTTPResponse({"serverTime": expected_server_time})
+        if "/api/v3/order/test?" in url:
+            query = parse_qs(urlsplit(url).query)
+            assert query["recvWindow"] == ["5000"]
+            assert headers == {"X-MBX-APIKEY": "live-key"}
+            timestamp_ms = int(query["timestamp"][0])
+            assert abs(timestamp_ms - expected_server_time) < 2500
+            return _HTTPResponse({}, status_code=200)
+        raise AssertionError(f"Unexpected adapter URL: {url}")
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+
+    result = service.test_order_contract(
+        family="spot",
+        environment="live",
+        preview={
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "limit_price": 50000.0,
+            "time_in_force": "GTC",
+        },
+        client_order_id="cli-test-spot",
+    )
+    bootstrap = service.bootstrap_summary()
+
+    assert result["ok"] is True
+    assert result["supported"] is True
+    assert result["remote_source"]["ok"] is True
+    assert calls[0][1].endswith("/api/v3/time")
+    assert any("/api/v3/order/test?" in url for _method, url, _headers in calls)
+    assert bootstrap["exchange_adapter"]["recv_window_ms"] == 5000
+    assert bootstrap["exchange_adapter"]["server_time_sync_enabled"] is True
+    assert bootstrap["exchange_adapter"]["supported_contracts"]["spot"]["test_order"] is True
+    assert bootstrap["exchange_adapter"]["server_time_cache"]
+
+
+def test_exchange_adapter_invalid_timestamp_resyncs_and_retries_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="spot")
+    monkeypatch.setenv("BINANCE_API_KEY", "live-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "live-secret")
+    current_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    service._binance_adapter._server_time_cache[("spot", "live")] = {  # type: ignore[attr-defined]
+        "server_time_ms": current_ms - 5000,
+        "offset_ms": -5000,
+        "synced_at_ms": current_ms,
+        "within_threshold": False,
+        "threshold_ms": 1000,
+    }
+    calls: list[str] = []
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        calls.append(url)
+        if "/api/v3/order?" in url and len([item for item in calls if "/api/v3/order?" in item]) == 1:
+            return _HTTPResponse(
+                {"code": -1021, "msg": "Timestamp for this request is outside of the recvWindow."},
+                status_code=400,
+            )
+        if url.endswith("/api/v3/time"):
+            return _HTTPResponse({"serverTime": current_ms + 100})
+        if "/api/v3/order?" in url:
+            return _HTTPResponse(
+                {
+                    "symbol": "BTCUSDT",
+                    "orderId": 123456,
+                    "clientOrderId": "cli-retry-1",
+                    "status": "NEW",
+                    "executedQty": "0",
+                    "cummulativeQuoteQty": "0",
+                },
+                status_code=200,
+            )
+        raise AssertionError(f"Unexpected adapter URL: {url}")
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+
+    payload, meta = service._signed_request(
+        "POST",
+        service._exchange_contract_endpoint("spot", "live", "submit"),
+        family="spot",
+        environment="live",
+        params={
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "LIMIT",
+            "timeInForce": "GTC",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "newClientOrderId": "cli-retry-1",
+            "newOrderRespType": "ACK",
+        },
+    )
+
+    assert isinstance(payload, dict)
+    assert payload["orderId"] == 123456
+    assert meta["ok"] is True
+    assert meta["attempt"] == 2
+    assert any(url.endswith("/api/v3/time") for url in calls)
+    assert len([url for url in calls if "/api/v3/order?" in url]) == 2
+
+
+def test_exchange_adapter_error_mapping_covers_auth_rate_limit_and_missing_order() -> None:
+    auth = map_exchange_error(400, {"code": -2015, "msg": "Invalid API-key, IP, or permissions for action."})
+    rate_limit = map_exchange_error(429, {"code": -1003, "msg": "Too many requests."})
+    missing = map_exchange_error(400, {"code": -2013, "msg": "Order does not exist."})
+
+    assert auth["reason"] == "auth_rejected"
+    assert auth["error_category"] == "auth"
+    assert rate_limit["reason"] == "rate_limit"
+    assert rate_limit["retryable"] is True
+    assert missing["reason"] == "no_such_order"
+    assert missing["retryable"] is False
+
+
+def test_exchange_adapter_fetches_exchange_info_and_balances_for_margin_and_futures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    monkeypatch.setenv("BINANCE_API_KEY", "spot-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "spot-secret")
+    monkeypatch.setenv("BINANCE_USDM_API_KEY", "usdm-key")
+    monkeypatch.setenv("BINANCE_USDM_API_SECRET", "usdm-secret")
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        if url.endswith("/api/v3/exchangeInfo"):
+            return _HTTPResponse({"symbols": [{"symbol": "BTCUSDT"}]})
+        if url.endswith("/api/v3/time"):
+            return _HTTPResponse({"serverTime": int(datetime.now(timezone.utc).timestamp() * 1000)})
+        if "/sapi/v1/margin/account?" in url:
+            return _HTTPResponse({"borrowEnabled": True, "tradeEnabled": True, "userAssets": [{"asset": "USDT"}]})
+        if "/fapi/v2/account?" in url:
+            return _HTTPResponse({"canTrade": True, "assets": [{"asset": "USDT", "walletBalance": "100.0"}]})
+        if url.endswith("/fapi/v1/time"):
+            return _HTTPResponse({"serverTime": int(datetime.now(timezone.utc).timestamp() * 1000)})
+        raise AssertionError(f"Unexpected adapter URL: {url}")
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+
+    margin_info = service.fetch_exchange_info(family="margin", environment="live")
+    margin_balances = service.fetch_account_balances(family="margin", environment="live")
+    usdm_balances = service.fetch_account_balances(family="usdm_futures", environment="live")
+
+    assert margin_info["ok"] is True
+    assert margin_info["remote_source"]["contract_source"] == "spot_exchange_info_for_margin"
+    assert margin_info["symbol_count"] == 1
+    assert margin_balances["ok"] is True
+    assert margin_balances["balances_count"] == 1
+    assert usdm_balances["ok"] is True
+    assert usdm_balances["balances_count"] == 1
 
 
 def test_preflight_blocks_when_execution_policy_is_missing(tmp_path: Path) -> None:
