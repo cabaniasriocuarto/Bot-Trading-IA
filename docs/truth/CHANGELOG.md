@@ -2,6 +2,24 @@
 
 ## 2026-03-19
 
+### Reconciliacion administrativa LIVE 10/10 con Linear
+- Se revalido `RTLOPS-36` contra:
+  - repo real
+  - docs/truth reales
+  - tests reales
+  - Linear MCP real
+- Veredicto:
+  - `RTLOPS-36` sigue `Done` real
+  - no hace falta `RTLOPS-36B`
+- Se reconciliaron issues LIVE en Linear con labels nuevas:
+  - `LIVE-B1`
+  - `LIVE-B2`
+  - `LIVE-B3`
+  - `LIVE-B4`
+- Se reescribio/ordeno el backlog LIVE para que el siguiente issue tecnico exacto pase a ser:
+  - `RTLOPS-49` = `Exchange Adapter Live Hardening`
+- Sin cambios de runtime nuevos en esta regularizacion; solo alineacion operativa/truth.
+
 ### RTLOPS-36 - Validacion operativa `paper -> testnet -> canary` antes de live serio
 - Policy canonica nueva:
   - `config/policies/validation_gates.yaml`

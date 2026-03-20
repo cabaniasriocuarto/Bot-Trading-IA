@@ -2,6 +2,18 @@
 
 Fecha de actualizacion: 2026-03-19
 
+## Reconciliacion LIVE repo <-> docs/truth <-> Linear - 2026-03-19
+
+- No hubo cambio de runtime adicional en esta regularizacion.
+- `RTLOPS-36` fue revalidado contra repo, docs/truth, tests y Linear, y sostiene estado `Done` real.
+- El backlog LIVE quedo reconciliado en Linear con una vista por bloques usando labels:
+  - `LIVE-B1`
+  - `LIVE-B2`
+  - `LIVE-B3`
+  - `LIVE-B4`
+- El siguiente issue tecnico exacto para continuar LIVE es:
+  - `RTLOPS-49` = `Exchange Adapter Live Hardening`
+
 ## RTLOPS-36: Validacion operativa `paper -> testnet -> canary` antes de live serio - 2026-03-19
 
 - Trazabilidad del bloque:

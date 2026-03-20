@@ -227,8 +227,13 @@ Fecha: 2026-03-19
 ## Siguiente bloque logico real
 - [x] Ejecutar `RTLOPS-36` sobre la base ya cerrada hasta `3.5`.
 - [ ] Siguiente bloque logico real despues de RTLOPS-36:
-  - `RTLOPS-23` como seguimiento backend para persistencia/clasificacion operativa mas fina de errores, mismatch y estados de reconcile/live.
-  - `RTLOPS-24` queda como frente UI/operaciones posterior, no como siguiente inmediato.
+  - `RTLOPS-49` = `Exchange Adapter Live Hardening`.
+  - arranca el `LIVE-B1` para cerrar conectividad + contratos reales del exchange antes de seguir con `LIVE-B2`.
+- [ ] Orden operativo LIVE reconciliado:
+  - `LIVE-B1`: `RTLOPS-49`, `RTLOPS-44`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`
+  - `LIVE-B2`: `RTLOPS-48`, `RTLOPS-50`, `RTLOPS-23`, `RTLOPS-29` y `RTLOPS-22` ya cerrado como base de costos
+  - `LIVE-B3`: `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-54`, `RTLOPS-25`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-30`, `RTLOPS-37`, `RTLOPS-53`
+  - `LIVE-B4`: `RTLOPS-24`, `RTLOPS-31`, `RTLOPS-32`, `RTLOPS-33`, `RTLOPS-34`, `RTLOPS-35`, `RTLOPS-38`
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:
