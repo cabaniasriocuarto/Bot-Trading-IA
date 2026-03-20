@@ -698,6 +698,17 @@ class ExecutionMarketStreamStopBody(BaseModel):
     environment: Literal["live", "testnet"]
 
 
+class ExecutionUserStreamStartBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+    user_stream_mode: Literal["legacy_listenkey", "websocket_api_spot", "futures_listenkey"] | None = None
+
+
+class ExecutionUserStreamStopBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+
+
 class ValidationEvaluateBody(BaseModel):
     stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
     venue: str = "binance"
@@ -820,6 +831,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     blr_connectors = blr.get("connectors") if isinstance(blr.get("connectors"), dict) else {}
     blr_spot = blr_connectors.get("binance_spot") if isinstance(blr_connectors.get("binance_spot"), dict) else {}
     blr_um = blr_connectors.get("binance_um_futures") if isinstance(blr_connectors.get("binance_um_futures"), dict) else {}
+    blr_spot_user = blr_spot.get("user_stream") if isinstance(blr_spot.get("user_stream"), dict) else {}
+    blr_um_user = blr_um.get("user_stream") if isinstance(blr_um.get("user_stream"), dict) else {}
     blr_spot_ws = blr_spot.get("market_ws") if isinstance(blr_spot.get("market_ws"), dict) else {}
     blr_um_ws = blr_um.get("market_ws") if isinstance(blr_um.get("market_ws"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
@@ -941,8 +954,12 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "binance_live_connectors": sorted(list(blr_connectors.keys())),
         "binance_spot_default_transport": blr_spot_ws.get("default_transport"),
         "binance_spot_user_stream_mode": blr_spot.get("user_stream_mode"),
+        "binance_spot_user_stream_enabled": blr_spot_user.get("enabled"),
+        "binance_spot_user_stream_keepalive_sec": blr_spot_user.get("keepalive_interval_sec"),
         "binance_um_default_transport": blr_um_ws.get("default_transport"),
         "binance_um_user_stream_mode": blr_um.get("user_stream_mode"),
+        "binance_um_user_stream_enabled": blr_um_user.get("enabled"),
+        "binance_um_user_stream_keepalive_sec": blr_um_user.get("keepalive_interval_sec"),
     }
 
 
@@ -9619,6 +9636,39 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         try:
             return store.execution_reality.stop_market_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/user-streams/summary")
+    def execution_user_streams_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.user_streams_summary()
+
+    @app.post("/api/v1/execution/user-streams/start")
+    def execution_user_streams_start(
+        body: ExecutionUserStreamStartBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.start_user_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+                user_stream_mode=body.user_stream_mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/user-streams/stop")
+    def execution_user_streams_stop(
+        body: ExecutionUserStreamStopBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.stop_user_stream(
                 execution_connector=body.execution_connector,
                 environment=body.environment,
             )

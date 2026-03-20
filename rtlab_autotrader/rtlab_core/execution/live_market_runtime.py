@@ -37,6 +37,7 @@ PARSER_VERSION = "binance_live_runtime_v1"
 SUPPORTED_CONNECTORS = {"binance_spot", "binance_um_futures"}
 SUPPORTED_ENVIRONMENTS = {"live", "testnet"}
 SUPPORTED_TRANSPORTS = {"combined", "raw"}
+SUPPORTED_USER_STREAM_MODES = {"legacy_listenkey", "websocket_api_spot", "futures_listenkey"}
 
 FAIL_CLOSED_MINIMAL_BINANCE_LIVE_RUNTIME_POLICY: dict[str, Any] = {
     "binance_live_runtime": {
@@ -53,6 +54,27 @@ FAIL_CLOSED_MINIMAL_BINANCE_LIVE_RUNTIME_POLICY: dict[str, Any] = {
                 "user_stream_mode": "legacy_listenkey",
                 "order_test_supported": True,
                 "order_paths": {"paper": "dry_run", "testnet": "live_submit", "live": "live_submit"},
+                "user_stream": {
+                    "enabled": False,
+                    "supported_modes": ["legacy_listenkey", "websocket_api_spot"],
+                    "default_mode": "websocket_api_spot",
+                    "live_ws_base_url": "wss://ws-api.binance.com:443/ws-api/v3",
+                    "testnet_ws_base_url": "wss://ws-api.testnet.binance.vision/ws-api/v3",
+                    "ws_url_env_live": "BINANCE_SPOT_USER_WS_URL",
+                    "ws_url_env_testnet": "BINANCE_SPOT_TESTNET_USER_WS_URL",
+                    "keepalive_interval_sec": 0,
+                    "user_stream_backoff_seconds": [1, 2, 4],
+                    "user_stream_jitter_pct": 0.0,
+                    "user_stream_hard_recycle_hours": 1.0,
+                    "ping_expectation_seconds": 20,
+                    "pong_timeout_seconds": 60,
+                    "stale_warn_ms": 1,
+                    "stale_block_live_ms": 1,
+                    "max_consecutive_failures_before_degraded": 1,
+                    "max_subscriptions_per_connection": 1000,
+                    "max_lifetime_subscriptions_per_connection": 65535,
+                    "recv_window_ms": 1000,
+                },
                 "market_ws": {
                     "enabled": False,
                     "transport_modes_allowed": ["combined"],
@@ -90,6 +112,27 @@ FAIL_CLOSED_MINIMAL_BINANCE_LIVE_RUNTIME_POLICY: dict[str, Any] = {
                 "user_stream_mode": "futures_listenkey",
                 "order_test_supported": False,
                 "order_paths": {"paper": "dry_run", "testnet": "live_submit", "live": "live_submit"},
+                "user_stream": {
+                    "enabled": False,
+                    "supported_modes": ["futures_listenkey"],
+                    "default_mode": "futures_listenkey",
+                    "live_ws_base_url": "wss://fstream.binance.com",
+                    "testnet_ws_base_url": "wss://stream.binancefuture.com",
+                    "ws_url_env_live": "BINANCE_USDM_USER_WS_URL",
+                    "ws_url_env_testnet": "BINANCE_USDM_TESTNET_USER_WS_URL",
+                    "keepalive_interval_sec": 3000,
+                    "user_stream_backoff_seconds": [1, 2, 4],
+                    "user_stream_jitter_pct": 0.0,
+                    "user_stream_hard_recycle_hours": 1.0,
+                    "ping_expectation_seconds": 180,
+                    "pong_timeout_seconds": 600,
+                    "stale_warn_ms": 1,
+                    "stale_block_live_ms": 1,
+                    "max_consecutive_failures_before_degraded": 1,
+                    "max_subscriptions_per_connection": 1,
+                    "max_lifetime_subscriptions_per_connection": 1,
+                    "recv_window_ms": 1000,
+                },
                 "market_ws": {
                     "enabled": False,
                     "transport_modes_allowed": ["combined"],
@@ -254,6 +297,8 @@ def _validate_connector(connector_name: str, payload: dict[str, Any]) -> list[st
     _require_string(payload, "cost_model", errors=errors, path=path)
     _require_string(payload, "symbol_domain", errors=errors, path=path)
     _require_string(payload, "user_stream_mode", errors=errors, path=path)
+    if str(payload.get("user_stream_mode") or "").strip() and str(payload.get("user_stream_mode")).strip() not in SUPPORTED_USER_STREAM_MODES:
+        errors.append(f"{path}.user_stream_mode contiene valor invalido")
     _require_bool(payload, "order_test_supported", errors=errors, path=path)
     live_capabilities = _require_string_list(payload, "live_capabilities", errors=errors, path=path)
     if live_capabilities and any(item not in {"paper", "testnet", "live"} for item in live_capabilities):
@@ -263,6 +308,33 @@ def _validate_connector(connector_name: str, payload: dict[str, Any]) -> list[st
         order_path = _require_string(order_paths, key, errors=errors, path=f"{path}.order_paths")
         if order_path and order_path not in {"dry_run", "order_test", "live_submit"}:
             errors.append(f"{path}.order_paths.{key} debe ser dry_run, order_test o live_submit")
+    user_stream = _require_dict(payload, "user_stream", errors=errors, path=path)
+    _require_bool(user_stream, "enabled", errors=errors, path=f"{path}.user_stream")
+    supported_modes = _require_string_list(user_stream, "supported_modes", errors=errors, path=f"{path}.user_stream")
+    if supported_modes and any(item not in SUPPORTED_USER_STREAM_MODES for item in supported_modes):
+        errors.append(f"{path}.user_stream.supported_modes contiene valores invalidos")
+    default_mode = _require_string(user_stream, "default_mode", errors=errors, path=f"{path}.user_stream")
+    if default_mode and default_mode not in SUPPORTED_USER_STREAM_MODES:
+        errors.append(f"{path}.user_stream.default_mode contiene valor invalido")
+    for key in ("live_ws_base_url", "testnet_ws_base_url", "ws_url_env_live", "ws_url_env_testnet"):
+        _require_string(user_stream, key, errors=errors, path=f"{path}.user_stream")
+    for key in (
+        "keepalive_interval_sec",
+        "user_stream_hard_recycle_hours",
+        "ping_expectation_seconds",
+        "pong_timeout_seconds",
+        "stale_warn_ms",
+        "stale_block_live_ms",
+        "max_consecutive_failures_before_degraded",
+        "max_subscriptions_per_connection",
+        "max_lifetime_subscriptions_per_connection",
+        "recv_window_ms",
+        "user_stream_jitter_pct",
+    ):
+        _require_number(user_stream, key, errors=errors, path=f"{path}.user_stream")
+    user_stream_backoff = user_stream.get("user_stream_backoff_seconds")
+    if not isinstance(user_stream_backoff, list) or any(not isinstance(item, (int, float)) or float(item) <= 0 for item in user_stream_backoff):
+        errors.append(f"{path}.user_stream.user_stream_backoff_seconds debe ser lista de numeros positivos")
     market_ws = _require_dict(payload, "market_ws", errors=errors, path=path)
     _require_bool(market_ws, "enabled", errors=errors, path=f"{path}.market_ws")
     allowed_transports = _require_string_list(market_ws, "transport_modes_allowed", errors=errors, path=f"{path}.market_ws")
@@ -497,6 +569,9 @@ class BinanceMarketWebSocketRuntime:
                 "symbol_domain": payload.get("symbol_domain"),
                 "live_capabilities": list(payload.get("live_capabilities") or []),
                 "user_stream_mode": payload.get("user_stream_mode"),
+                "user_stream_enabled": bool(((payload.get("user_stream") if isinstance(payload.get("user_stream"), dict) else {}) or {}).get("enabled")),
+                "user_stream_default_mode": ((payload.get("user_stream") if isinstance(payload.get("user_stream"), dict) else {}) or {}).get("default_mode"),
+                "user_stream_supported_modes": list((((payload.get("user_stream") if isinstance(payload.get("user_stream"), dict) else {}) or {}).get("supported_modes")) or []),
                 "order_paths": copy.deepcopy(payload.get("order_paths") or {}),
                 "order_test_supported": bool(payload.get("order_test_supported")),
                 "market_ws_enabled": bool(market_ws.get("enabled")),

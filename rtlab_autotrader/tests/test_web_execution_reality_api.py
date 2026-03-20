@@ -727,6 +727,72 @@ def test_execution_market_stream_endpoints_start_summary_stop(tmp_path: Path, mo
     assert safety.json()["market_stream_runtime"]["policy_source"]["source_hash"]
 
 
+def test_execution_user_stream_endpoints_start_summary_stop(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality._binance_adapter.signed_websocket_params = lambda **kwargs: (  # type: ignore[attr-defined,method-assign]
+        {
+            "apiKey": "spot-key",
+            "timestamp": int(time.time() * 1000),
+            "recvWindow": 5000,
+            "signature": "deadbeef",
+        },
+        {"ok": True, "reason": "ok"},
+    )
+    fake_ws = _FakeWebSocket(
+        [
+            json.dumps({"id": "sub-1", "status": 200, "result": {"subscriptionId": 3}}),
+            json.dumps(
+                {
+                    "subscriptionId": 3,
+                    "event": {
+                        "e": "outboundAccountPosition",
+                        "E": int(time.time() * 1000),
+                        "u": int(time.time() * 1000),
+                        "B": [{"a": "USDT", "f": "100.0", "l": "0.0"}],
+                    },
+                }
+            ),
+        ]
+    )
+    module.store.execution_reality._user_stream_runtime._connect_factory = _FakeConnectFactory([fake_ws])  # type: ignore[attr-defined]
+
+    started = client.post(
+        "/api/v1/execution/user-streams/start",
+        headers=_auth_headers(token),
+        json={
+            "execution_connector": "binance_spot",
+            "environment": "live",
+            "user_stream_mode": "websocket_api_spot",
+        },
+    )
+    deadline = time.time() + 3.0
+    summary = None
+    while time.time() < deadline:
+        res = client.get("/api/v1/execution/user-streams/summary", headers=_auth_headers(token))
+        if res.status_code == 200 and (res.json().get("sessions") or []):
+            summary = res.json()
+            break
+        time.sleep(0.05)
+    stopped = client.post(
+        "/api/v1/execution/user-streams/stop",
+        headers=_auth_headers(token),
+        json={"execution_connector": "binance_spot", "environment": "live"},
+    )
+    safety = client.get("/api/v1/execution/live-safety/summary", headers=_auth_headers(token))
+
+    assert started.status_code == 200, started.text
+    assert summary is not None
+    assert summary["policy_loaded"] is True
+    assert summary["family_split"]["binance_spot"]["user_stream_default_mode"] == "websocket_api_spot"
+    assert summary["sessions"][0]["subscription_id"] == 3
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["reason"] == "stopped_by_operator"
+    assert safety.status_code == 200, safety.text
+    assert safety.json()["user_stream_runtime"]["policy_source"]["source_hash"]
+
+
 def test_execution_live_safety_summary_endpoint_reports_final_guardrails(tmp_path: Path, monkeypatch) -> None:
     module, client = _build_app(tmp_path, monkeypatch)
     _ensure_execution_prereqs(module)
