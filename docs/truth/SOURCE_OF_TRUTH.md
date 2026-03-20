@@ -2,6 +2,119 @@
 
 Fecha de actualizacion: 2026-03-20
 
+## RTLOPS-45: User Data Stream lifecycle live - 2026-03-20
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-45`
+  - rama incremental usada: `feature/user-data-stream-lifecycle-live-rtlops-45`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+    - `27a2367`
+    - `8f615bc`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+  - contratos privados del exchange desde documentacion oficial primaria de Binance:
+    - Spot User Data Stream
+    - Spot WebSocket API User Data Stream Requests
+    - Spot WebSocket API Request Security
+    - USD-M Futures User Data Streams:
+      - `Start User Data Stream`
+      - `Keepalive User Data Stream`
+      - `Close User Data Stream`
+      - `Event Order Update`
+      - `Event User Data Stream Expired`
+- Alcance real cerrado:
+  - nuevo runtime dedicado:
+    - `rtlab_autotrader/rtlab_core/execution/live_user_stream_runtime.py`
+  - `binance_live_runtime.yaml` extiende `user_stream` explicito por conector:
+    - `binance_spot`
+    - `binance_um_futures`
+  - Spot queda cableado por `websocket_api_spot` con:
+    - `userDataStream.subscribe.signature`
+    - parsing de wrapper `subscriptionId + event`
+    - soporte operativo de:
+      - `executionReport`
+      - `outboundAccountPosition`
+      - `balanceUpdate`
+      - `eventStreamTerminated`
+  - `binance_um_futures` queda cableado por `futures_listenkey` con:
+    - `POST /fapi/v1/listenKey`
+    - `PUT /fapi/v1/listenKey`
+    - `DELETE /fapi/v1/listenKey`
+    - parsing de:
+      - `ORDER_TRADE_UPDATE`
+      - `ACCOUNT_UPDATE`
+      - `MARGIN_CALL`
+      - `listenKeyExpired`
+  - capacidades operativas reales del runtime:
+    - reconnect automatico con backoff + jitter
+    - keepalive explicito para `futures_listenkey`
+    - stale watchdog
+    - `degraded_mode` y `block_live` visibles
+    - persistencia auditable de eventos privados en:
+      - `execution_user_stream_events`
+  - wiring backend nuevo:
+    - `bootstrap_summary()` expone:
+      - `user_streams`
+    - `live_safety_summary()` incorpora:
+      - `user_stream_runtime`
+      - `user_stream_runtime_blocked`
+      - `user_stream_runtime_degraded`
+    - API minima nueva:
+      - `GET /api/v1/execution/user-streams/summary`
+      - `POST /api/v1/execution/user-streams/start`
+      - `POST /api/v1/execution/user-streams/stop`
+    - `GET /api/v1/config/policies` ahora incluye:
+      - `binance_spot_user_stream_enabled`
+      - `binance_spot_user_stream_keepalive_sec`
+      - `binance_um_user_stream_enabled`
+      - `binance_um_user_stream_keepalive_sec`
+  - integracion real con execution:
+    - `ingest_user_stream_event(...)` persiste eventos privados y materializa updates de orden/fill sin crear un sistema paralelo
+    - eventos de cuenta no disparan falsos `orphan_order`
+- Hardening especifico del bloque:
+  - la firma WebSocket Spot ordena alfabeticamente los params antes de calcular HMAC, alineado con la documentacion oficial de Binance WebSocket API
+  - los endpoints `API-key only` de `listenKey` no fuerzan secret innecesario y reflejan `api_secret_present` como metadata
+  - `legacy_listenkey` para Spot queda visible como limitacion transicional explicita:
+    - `unsupported_mode = true`
+    - `degraded_mode = true`
+    - `block_live = true` en `live`
+- Validacion real del bloque:
+  - tests locales:
+    - `test_execution_reality.py` -> PASS
+    - `test_web_execution_reality_api.py` -> PASS
+    - `test_policy_paths.py` -> PASS
+    - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle` -> PASS
+  - cobertura nueva/minima relevante:
+    - suscripcion Spot por `websocket_api_spot` y persistencia de `executionReport`
+    - lifecycle `listenKey` de `binance_um_futures` con keepalive
+    - eventos de cuenta sin `orphan_order` falso
+    - bloqueo explicito del path `legacy_listenkey` para Spot
+    - firma WS ordenada segun contrato oficial
+    - endpoints `/api/v1/execution/user-streams/*`
+- Decisiones de ingenieria explicitas:
+  - Spot y `binance_um_futures` no se maquillan como el mismo private stream:
+    - Spot usa `websocket_api_spot`
+    - `binance_um_futures` usa `futures_listenkey`
+  - el path Spot legacy se mantiene solo como limitacion transicional visible, no como soporte productivo silencioso
+  - no se activo submit real ni se debilito `fail-closed`
+- Limites conscientes:
+  - no se cerro todavia la migracion completa del camino Spot legacy fuera del runtime minimo ya explicitado
+  - `coinm_futures` no queda operativo en este bloque
+  - la compatibilidad de `order_test` por familia sigue siendo deuda aparte y queda trazada en `RTLOPS-56`
+
 ## RTLOPS-44: Market WebSocket Runtime live - 2026-03-20
 
 - Trazabilidad del bloque:

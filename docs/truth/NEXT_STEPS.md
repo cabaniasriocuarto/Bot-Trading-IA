@@ -2,6 +2,45 @@
 
 Fecha: 2026-03-20
 
+## RTLOPS-45 - User Data Stream lifecycle live - 2026-03-20
+- [x] Extender `binance_live_runtime.yaml` con bloques `user_stream` explicitos por conector/familia.
+- [x] Implementar runtime privado dedicado en:
+  - `rtlab_autotrader/rtlab_core/execution/live_user_stream_runtime.py`
+- [x] Cablear Spot por `websocket_api_spot` con:
+  - `userDataStream.subscribe.signature`
+  - parsing de `executionReport`
+  - parsing de eventos de cuenta
+  - manejo de `eventStreamTerminated`
+- [x] Cablear `binance_um_futures` por `futures_listenkey` con:
+  - `POST /fapi/v1/listenKey`
+  - `PUT /fapi/v1/listenKey`
+  - `DELETE /fapi/v1/listenKey`
+  - parsing de `ORDER_TRADE_UPDATE`
+  - parsing de eventos de cuenta relevantes
+- [x] Persistir eventos privados en:
+  - `execution_user_stream_events`
+- [x] Integrar el runtime con:
+  - `bootstrap_summary()`
+  - `live_safety_summary()`
+  - endpoints `/api/v1/execution/user-streams/*`
+  - `GET /api/v1/config/policies`
+- [x] Endurecer request security del path Spot WebSocket API:
+  - firma HMAC con params ordenados alfabeticamente
+  - `recvWindow = 5000`
+  - sync de hora reutilizado
+- [x] Dejar explicita la limitacion transicional:
+  - `legacy_listenkey` para Spot no queda fingido como soporte productivo
+  - en `live` se refleja como `unsupported_mode + degraded_mode + block_live`
+- [x] Revalidar:
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - `test_policy_paths.py`
+  - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
+- [ ] Limites conscientes fuera de RTLOPS-45:
+  - `coinm_futures` no queda operativo en este bloque
+  - `RTLOPS-55` sigue abierto para el sweep completo de split canonico backend/frontend/storage y provenance
+  - la compatibilidad `order_test` por familia sigue como follow-up aparte en `RTLOPS-56` y no se reabre aqui
+
 ## RTLOPS-44 - Market WebSocket Runtime live - 2026-03-20
 - [x] Crear policy canonica nueva:
   - `config/policies/binance_live_runtime.yaml`
@@ -41,13 +80,24 @@ Fecha: 2026-03-20
   - `RTLOPS-55` sigue abierto para terminar el sweep completo de split canonico backend/frontend/storage sin heuristica ambigua
   - la URL/test contract de testnet USDⓈ-M sigue tratada como detalle operativo configurable, no como verdad universal congelada
 
-## Siguiente issue exacto
-- `RTLOPS-45` - Binance private user/account/order streams live
-- alcance inmediato esperado:
+## Contexto anterior de transicion (ya resuelto)
+- Desde RTLOPS-44, el siguiente issue fue `RTLOPS-45` y ya quedo cerrado.
+- alcance historico que ya quedo cubierto:
   - Spot private stream auditando camino legacy/transicional actual y evaluando migracion a WebSocket API donde corresponda
   - USDⓈ-M private stream con lifecycle de listenKey / keepalive y parsing robusto de ordenes/cuenta
   - persistencia de eventos privados sin fingir equivalencia entre Spot y Futures
   - integracion con `ExecutionRealityService`, `reconcile`, `fills` y `live_safety`
+
+## Siguiente issue exacto
+- `RTLOPS-46` - Exchange Filters Pre-Validator hardening
+- alcance inmediato esperado:
+  - endurecer `PRICE_FILTER`, `LOT_SIZE`, `MIN_NOTIONAL` y precision handling contra contratos oficiales del exchange
+  - dejar bloqueo fail-closed antes de cualquier submit live si la normalizacion no cierra
+  - preparar el terreno para que `RTLOPS-47` cierre el gate final de preflight live con:
+    - exchange adapter
+    - market streams
+    - user streams
+    - filtros oficiales
 
 ## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
 - [x] Endurecer signed REST live con:

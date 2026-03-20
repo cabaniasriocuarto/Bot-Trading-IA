@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import hmac
+import os
 import time
 from typing import Any, Callable
 from urllib.parse import urlencode
@@ -215,6 +216,27 @@ class BinanceLiveAdapter:
         self._retry_invalid_timestamp_once_resolver = retry_invalid_timestamp_once_resolver
         self._server_time_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
+    def credential_status(self, family: str, environment: str) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        api_key, api_secret, env_names = self._credential_resolver(normalized_family, normalized_environment)
+        if not api_key:
+            for key_name, secret_name in zip(env_names[::2], env_names[1::2]):
+                key_candidate = str(os.getenv(key_name, "")).strip()
+                secret_candidate = str(os.getenv(secret_name, "")).strip()
+                if key_candidate:
+                    api_key = key_candidate
+                    api_secret = api_secret or secret_candidate
+                    break
+        return {
+            "family": normalized_family,
+            "environment": normalized_environment,
+            "credentials_present": bool(api_key and api_secret),
+            "api_key_present": bool(api_key),
+            "api_secret_present": bool(api_secret),
+            "credential_envs_tried": env_names,
+        }
+
     def cache_status(self) -> list[dict[str, Any]]:
         now_ms = _now_ms()
         out: list[dict[str, Any]] = []
@@ -286,6 +308,95 @@ class BinanceLiveAdapter:
         mapped = map_exchange_error(int(response.status_code), payload)
         return None, {
             "ok": False,
+            "endpoint": endpoint_url,
+            "method": str(method or "").upper(),
+            "status_code": int(response.status_code),
+            "exchange_payload": copy.deepcopy(payload),
+            **mapped,
+        }
+
+    def api_key_request(
+        self,
+        method: str,
+        endpoint_url: str,
+        *,
+        family: str,
+        environment: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        api_key, api_secret, env_names = self._credential_resolver(normalized_family, normalized_environment)
+        if not api_key:
+            for key_name, secret_name in zip(env_names[::2], env_names[1::2]):
+                key_candidate = str(os.getenv(key_name, "")).strip()
+                secret_candidate = str(os.getenv(secret_name, "")).strip()
+                if key_candidate:
+                    api_key = key_candidate
+                    api_secret = api_secret or secret_candidate
+                    break
+        if not api_key or not endpoint_url:
+            return None, {
+                "ok": False,
+                "reason": "missing_api_key",
+                "error_category": "auth",
+                "retryable": False,
+                "credentials_present": False,
+                "api_key_present": bool(api_key),
+                "api_secret_present": bool(api_secret),
+                "credential_envs_tried": env_names,
+                "endpoint": endpoint_url,
+                "method": str(method or "").upper(),
+            }
+        filtered = {
+            str(key): value
+            for key, value in (params or {}).items()
+            if value is not None and str(value) != ""
+        }
+        try:
+            response = requests.request(
+                str(method or "GET").upper(),
+                endpoint_url,
+                params=filtered or None,
+                headers={"X-MBX-APIKEY": api_key},
+                timeout=float(self._request_timeout_resolver()),
+            )
+        except requests.RequestException as exc:
+            return None, {
+                "ok": False,
+                "reason": "request_exception",
+                "error_category": "endpoint",
+                "retryable": True,
+                "credentials_present": True,
+                "api_key_present": bool(api_key),
+                "api_secret_present": bool(api_secret),
+                "credential_envs_tried": env_names,
+                "endpoint": endpoint_url,
+                "method": str(method or "").upper(),
+                "error": str(exc),
+            }
+        payload = _response_payload(response)
+        if 200 <= int(response.status_code) < 300:
+            return payload, {
+                "ok": True,
+                "reason": "ok",
+                "error_category": None,
+                "retryable": False,
+                "credentials_present": True,
+                "api_key_present": bool(api_key),
+                "api_secret_present": bool(api_secret),
+                "credential_envs_tried": env_names,
+                "endpoint": endpoint_url,
+                "method": str(method or "").upper(),
+                "status_code": int(response.status_code),
+            }
+        mapped = map_exchange_error(int(response.status_code), payload)
+        return None, {
+            "ok": False,
+            "credentials_present": True,
+            "api_key_present": bool(api_key),
+            "api_secret_present": bool(api_secret),
+            "credential_envs_tried": env_names,
             "endpoint": endpoint_url,
             "method": str(method or "").upper(),
             "status_code": int(response.status_code),
@@ -559,3 +670,85 @@ class BinanceLiveAdapter:
                     warnings.append(str(sync_meta.get("warning")))
                 payload, meta = _execute(2)
         return payload, meta
+
+    def signed_websocket_params(
+        self,
+        *,
+        family: str,
+        environment: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        api_key, api_secret, env_names = self._credential_resolver(normalized_family, normalized_environment)
+        if not api_key or not api_secret:
+            return None, {
+                "ok": False,
+                "reason": "missing_credentials",
+                "error_category": "auth",
+                "retryable": False,
+                "credentials_present": False,
+                "credential_envs_tried": env_names,
+            }
+
+        filtered = {
+            str(key): value
+            for key, value in (params or {}).items()
+            if value is not None and str(value) != ""
+        }
+        recv_window_ms = _clamp_recv_window_ms(filtered.pop("recvWindow", self._recv_window_resolver()))
+        sync_required = bool(self._require_server_time_sync_resolver(normalized_environment))
+        sync_enabled = bool(self._server_time_sync_enabled_resolver())
+        sync_meta: dict[str, Any] = {
+            "ok": False,
+            "reason": "disabled",
+            "cached": False,
+        }
+        offset_ms = 0
+        warnings: list[str] = []
+        if sync_enabled and normalized_environment in {"live", "testnet"}:
+            sync_meta = self.sync_server_time(normalized_family, normalized_environment)
+            if sync_meta.get("ok") or sync_meta.get("cached"):
+                offset_ms = int(sync_meta.get("offset_ms") or 0)
+                if sync_meta.get("warning"):
+                    warnings.append(str(sync_meta.get("warning")))
+            elif sync_required:
+                return None, {
+                    "ok": False,
+                    "reason": "server_time_sync_failed",
+                    "error_category": "timing",
+                    "retryable": True,
+                    "credentials_present": True,
+                    "credential_envs_tried": env_names,
+                    "recv_window_ms": recv_window_ms,
+                    "server_time_sync": sync_meta,
+                    "warnings": warnings,
+                }
+
+        timestamp_ms = _now_ms() + int(offset_ms)
+        signed_params = {
+            "apiKey": api_key,
+            "timestamp": int(timestamp_ms),
+            "recvWindow": recv_window_ms,
+            **filtered,
+        }
+        ordered_items = sorted(signed_params.items(), key=lambda item: str(item[0]))
+        query = urlencode(ordered_items, doseq=True)
+        signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
+        return {
+            **signed_params,
+            "signature": signature,
+        }, {
+            "ok": True,
+            "reason": "ok",
+            "error_category": None,
+            "retryable": False,
+            "credentials_present": True,
+            "credential_envs_tried": env_names,
+            "recv_window_ms": recv_window_ms,
+            "timestamp_ms": int(timestamp_ms),
+            "server_time_offset_ms": int(offset_ms),
+            "server_time_sync": copy.deepcopy(sync_meta),
+            "warnings": list(warnings),
+            "signature_format": "hmac_sha256_hex",
+        }

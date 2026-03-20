@@ -2,6 +2,53 @@
 
 ## 2026-03-20
 
+### RTLOPS-45 - User Data Stream lifecycle live
+- Nuevo modulo:
+  - `rtlab_autotrader/rtlab_core/execution/live_user_stream_runtime.py`
+- `rtlab_core/execution/reality.py` ahora:
+  - integra `BinanceUserStreamRuntime`
+  - expone `user_streams_summary()`
+  - agrega:
+    - `start_user_stream(...)`
+    - `stop_user_stream(...)`
+    - `stop_all_user_streams()`
+    - `ingest_user_stream_event(...)`
+  - persiste eventos privados en `execution_user_stream_events`
+  - refleja el runtime privado en:
+    - `bootstrap_summary()`
+    - `live_safety_summary()`
+- `config/policies/binance_live_runtime.yaml` suma bloques `user_stream` por conector:
+  - `binance_spot`:
+    - `user_stream_mode = websocket_api_spot`
+    - `recv_window_ms = 5000`
+    - `stale_warn_ms = 15000`
+    - `stale_block_live_ms = 45000`
+  - `binance_um_futures`:
+    - `user_stream_mode = futures_listenkey`
+    - `keepalive_interval_sec = 3300`
+    - `stale_warn_ms = 15000`
+    - `stale_block_live_ms = 45000`
+- `rtlab_core/web/app.py` suma endpoints:
+  - `GET /api/v1/execution/user-streams/summary`
+  - `POST /api/v1/execution/user-streams/start`
+  - `POST /api/v1/execution/user-streams/stop`
+- Hardening fino del adapter:
+  - `signed_websocket_params(...)` ahora firma params ordenados alfabeticamente para cumplir el contrato oficial de Binance WebSocket API
+  - `api_key_request(...)` permite endpoints `API-key only` de `listenKey` sin exigir secret innecesario
+- Tests nuevos/minimos:
+  - Spot `websocket_api_spot` persiste `executionReport`
+  - `binance_um_futures` hace keepalive de `listenKey` y persiste `ORDER_TRADE_UPDATE`
+  - eventos de cuenta no crean `orphan_order`
+  - `legacy_listenkey` de Spot queda visible como bloqueo transicional en live
+  - firma WS sigue contrato HMAC ordenado
+  - endpoints API de user streams
+- Validacion local de RTLOPS-45:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/binance_adapter.py rtlab_autotrader/rtlab_core/execution/live_market_runtime.py rtlab_autotrader/rtlab_core/execution/live_user_stream_runtime.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+
 ### RTLOPS-44 - Market WebSocket Runtime live
 - Nueva policy canonica:
   - `config/policies/binance_live_runtime.yaml`

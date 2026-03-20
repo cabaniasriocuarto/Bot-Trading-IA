@@ -9,12 +9,32 @@ binance_live_runtime:
       cost_model: spot_costs
       symbol_domain: crypto
       live_capabilities: ["paper", "testnet", "live"]
-      user_stream_mode: legacy_listenkey
+      user_stream_mode: websocket_api_spot
       order_test_supported: true
       order_paths:
         paper: dry_run
         testnet: live_submit
         live: live_submit
+      user_stream:
+        enabled: true
+        supported_modes: ["websocket_api_spot", "legacy_listenkey"]
+        default_mode: websocket_api_spot
+        live_ws_base_url: "wss://ws-api.binance.com:443/ws-api/v3"
+        testnet_ws_base_url: "wss://ws-api.testnet.binance.vision/ws-api/v3"
+        ws_url_env_live: "BINANCE_SPOT_USER_WS_URL"
+        ws_url_env_testnet: "BINANCE_SPOT_TESTNET_USER_WS_URL"
+        keepalive_interval_sec: 0
+        user_stream_backoff_seconds: [1, 2, 4, 8, 16, 30]
+        user_stream_jitter_pct: 0.20
+        user_stream_hard_recycle_hours: 23.5
+        ping_expectation_seconds: 20
+        pong_timeout_seconds: 60
+        stale_warn_ms: 15000
+        stale_block_live_ms: 45000
+        max_consecutive_failures_before_degraded: 3
+        max_subscriptions_per_connection: 1000
+        max_lifetime_subscriptions_per_connection: 65535
+        recv_window_ms: 5000
       market_ws:
         enabled: true
         transport_modes_allowed: ["combined", "raw"]
@@ -53,6 +73,26 @@ binance_live_runtime:
         paper: dry_run
         testnet: live_submit
         live: live_submit
+      user_stream:
+        enabled: true
+        supported_modes: ["futures_listenkey"]
+        default_mode: futures_listenkey
+        live_ws_base_url: "wss://fstream.binance.com"
+        testnet_ws_base_url: "wss://stream.binancefuture.com"
+        ws_url_env_live: "BINANCE_USDM_USER_WS_URL"
+        ws_url_env_testnet: "BINANCE_USDM_TESTNET_USER_WS_URL"
+        keepalive_interval_sec: 3300
+        user_stream_backoff_seconds: [1, 2, 4, 8, 16, 30]
+        user_stream_jitter_pct: 0.20
+        user_stream_hard_recycle_hours: 23.5
+        ping_expectation_seconds: 180
+        pong_timeout_seconds: 600
+        stale_warn_ms: 15000
+        stale_block_live_ms: 45000
+        max_consecutive_failures_before_degraded: 3
+        max_subscriptions_per_connection: 1
+        max_lifetime_subscriptions_per_connection: 1
+        recv_window_ms: 5000
       market_ws:
         enabled: true
         transport_modes_allowed: ["combined", "raw"]

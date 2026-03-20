@@ -19,6 +19,7 @@ import yaml
 
 from rtlab_core.execution.binance_adapter import BinanceLiveAdapter
 from rtlab_core.execution.live_market_runtime import BinanceMarketWebSocketRuntime
+from rtlab_core.execution.live_user_stream_runtime import BinanceUserStreamRuntime
 from rtlab_core.policy_paths import describe_policy_root_resolution
 
 
@@ -271,6 +272,15 @@ def _hydrate_order_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     out["raw_last_status_json"] = _json_loads(out.get("raw_last_status_json"), {})
     if out.get("reduce_only") is not None:
         out["reduce_only"] = _bool(out.get("reduce_only"))
+    return out
+
+
+def _hydrate_user_stream_event_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["payload_json"] = _json_loads(out.get("payload_json"), {})
+    out["provenance_json"] = _json_loads(out.get("provenance_json"), {})
     return out
 
 
@@ -858,6 +868,28 @@ class ExecutionRealityDB:
                 CREATE INDEX IF NOT EXISTS idx_execution_reconcile_open
                   ON execution_reconcile_events(resolved, severity, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS execution_user_stream_events (
+                  user_stream_event_id TEXT PRIMARY KEY,
+                  created_at TEXT NOT NULL,
+                  event_time TEXT,
+                  family TEXT NOT NULL,
+                  environment TEXT NOT NULL,
+                  execution_connector TEXT,
+                  user_stream_mode TEXT,
+                  subscription_id TEXT,
+                  listen_key TEXT,
+                  event_name TEXT NOT NULL,
+                  symbol TEXT,
+                  client_order_id TEXT,
+                  venue_order_id TEXT,
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  provenance_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_execution_user_stream_events_created_at
+                  ON execution_user_stream_events(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_user_stream_events_lookup
+                  ON execution_user_stream_events(family, environment, event_name, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS kill_switch_events (
                   kill_switch_event_id TEXT PRIMARY KEY,
                   created_at TEXT NOT NULL,
@@ -896,6 +928,7 @@ class ExecutionRealityDB:
             "execution_orders",
             "execution_fills",
             "execution_reconcile_events",
+            "execution_user_stream_events",
             "kill_switch_events",
         )
         with self._connect() as conn:
@@ -1383,6 +1416,77 @@ class ExecutionRealityDB:
             )
             return int(cursor.rowcount or 0)
 
+    def insert_user_stream_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "user_stream_event_id": str(payload.get("user_stream_event_id") or uuid4()),
+            "created_at": str(payload.get("created_at") or utc_now_iso()),
+            "event_time": payload.get("event_time"),
+            "family": str(payload.get("family") or ""),
+            "environment": str(payload.get("environment") or ""),
+            "execution_connector": payload.get("execution_connector"),
+            "user_stream_mode": payload.get("user_stream_mode"),
+            "subscription_id": payload.get("subscription_id"),
+            "listen_key": payload.get("listen_key"),
+            "event_name": str(payload.get("event_name") or "unknown"),
+            "symbol": payload.get("symbol"),
+            "client_order_id": payload.get("client_order_id"),
+            "venue_order_id": payload.get("venue_order_id"),
+            "payload_json": _json_dumps(payload.get("payload_json") or {}),
+            "provenance_json": _json_dumps(payload.get("provenance_json") or {}),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_user_stream_events (
+                  user_stream_event_id, created_at, event_time, family, environment, execution_connector,
+                  user_stream_mode, subscription_id, listen_key, event_name, symbol, client_order_id,
+                  venue_order_id, payload_json, provenance_json
+                ) VALUES (
+                  :user_stream_event_id, :created_at, :event_time, :family, :environment, :execution_connector,
+                  :user_stream_mode, :subscription_id, :listen_key, :event_name, :symbol, :client_order_id,
+                  :venue_order_id, :payload_json, :provenance_json
+                )
+                """,
+                row,
+            )
+            stored = conn.execute(
+                "SELECT * FROM execution_user_stream_events WHERE user_stream_event_id = ?",
+                (row["user_stream_event_id"],),
+            ).fetchone()
+        return _hydrate_user_stream_event_row(_row_to_dict(stored) or row) or row
+
+    def list_user_stream_events(
+        self,
+        *,
+        family: str | None = None,
+        environment: str | None = None,
+        event_name: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if family:
+            clauses.append("family = ?")
+            params.append(str(family))
+        if environment:
+            clauses.append("environment = ?")
+            params.append(str(environment))
+        if event_name:
+            clauses.append("event_name = ?")
+            params.append(str(event_name))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_user_stream_events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC, user_stream_event_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, int(limit)]),
+            ).fetchall()
+        return [_hydrate_user_stream_event_row(_row_to_dict(row)) or {} for row in rows]
+
     def trip_kill_switch(
         self,
         *,
@@ -1528,6 +1632,18 @@ class ExecutionRealityService:
             market_snapshot_writer=self.set_market_snapshot,
             status_writer=self.mark_market_stream_status,
         )
+        self._user_stream_runtime = BinanceUserStreamRuntime(
+            repo_root=self.repo_root,
+            explicit_policy_root=self.explicit_policy_root,
+            status_writer=self.mark_user_stream_runtime_status,
+            event_ingestor=lambda family, environment, payload: self.ingest_user_stream_event(
+                family=family,
+                environment=environment,
+                payload=payload,
+            ),
+            api_key_requester=self._user_stream_api_key_request,
+            signed_ws_params_builder=self._user_stream_signed_ws_params,
+        )
 
     def safety_bundle(self) -> dict[str, Any]:
         return load_execution_safety_bundle(self.repo_root, explicit_root=self.explicit_policy_root)
@@ -1610,6 +1726,16 @@ class ExecutionRealityService:
         summary["live_degraded"] = any(_bool(row.get("degraded_mode")) for row in live_sessions)
         return summary
 
+    def user_streams_summary(self) -> dict[str, Any]:
+        summary = self._user_stream_runtime.summary()
+        sessions = summary.get("sessions") if isinstance(summary.get("sessions"), list) else []
+        live_sessions = [row for row in sessions if _normalize_environment(row.get("environment")) == "live"]
+        summary["running_sessions"] = len([row for row in sessions if _bool(row.get("running"))])
+        summary["live_sessions"] = len(live_sessions)
+        summary["live_blocked"] = any(_bool(row.get("block_live")) for row in live_sessions)
+        summary["live_degraded"] = any(_bool(row.get("degraded_mode")) for row in live_sessions)
+        return summary
+
     def start_market_stream(
         self,
         *,
@@ -1630,6 +1756,63 @@ class ExecutionRealityService:
 
     def stop_all_market_streams(self) -> list[dict[str, Any]]:
         return self._market_ws_runtime.stop_all()
+
+    def start_user_stream(
+        self,
+        *,
+        execution_connector: str,
+        environment: str,
+        user_stream_mode: str | None = None,
+    ) -> dict[str, Any]:
+        connector_cfg = self._market_ws_runtime.connector_config(execution_connector)
+        repo_family = str(connector_cfg.get("repo_family") or "")
+        control_endpoints = self._user_stream_control_endpoints(
+            family=repo_family,
+            environment=environment,
+            user_stream_mode=user_stream_mode or str(connector_cfg.get("user_stream_mode") or ""),
+        )
+        return self._user_stream_runtime.start(
+            execution_connector=execution_connector,
+            environment=environment,
+            user_stream_mode=user_stream_mode,
+            control_endpoints=control_endpoints,
+        )
+
+    def stop_user_stream(self, *, execution_connector: str, environment: str) -> dict[str, Any]:
+        return self._user_stream_runtime.stop(execution_connector=execution_connector, environment=environment)
+
+    def stop_all_user_streams(self) -> list[dict[str, Any]]:
+        return self._user_stream_runtime.stop_all()
+
+    def _user_stream_api_key_request(
+        self,
+        method: str,
+        endpoint_url: str,
+        *,
+        family: str,
+        environment: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
+        return self._binance_adapter.api_key_request(
+            method,
+            endpoint_url,
+            family=family,
+            environment=environment,
+            params=params,
+        )
+
+    def _user_stream_signed_ws_params(
+        self,
+        *,
+        family: str,
+        environment: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        return self._binance_adapter.signed_websocket_params(
+            family=family,
+            environment=environment,
+            params=params,
+        )
 
     def _exchange_adapter_policy(self) -> dict[str, Any]:
         payload = self.safety_policy().get("exchange_adapter")
@@ -1750,6 +1933,31 @@ class ExecutionRealityService:
                 raise ValueError(f"Unsupported test order operation for family: {family}")
             return f"{self._execution_api_root('spot', normalized_environment)}/api/v3/order/test"
         raise ValueError(f"Unsupported exchange contract operation: {family}:{operation}")
+
+    def _user_stream_endpoint(self, family: str, environment: str) -> str:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        if normalized_family == "spot":
+            return f"{self._execution_api_root('spot', normalized_environment)}/api/v3/userDataStream"
+        if normalized_family == "margin":
+            return f"{self._execution_api_root('spot', normalized_environment)}/sapi/v1/userDataStream"
+        if normalized_family == "usdm_futures":
+            return f"{self._execution_api_root('usdm_futures', normalized_environment)}/fapi/v1/listenKey"
+        if normalized_family == "coinm_futures":
+            return f"{self._execution_api_root('coinm_futures', normalized_environment)}/dapi/v1/listenKey"
+        return ""
+
+    def _user_stream_control_endpoints(self, *, family: str, environment: str, user_stream_mode: str | None = None) -> dict[str, str]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        mode = str(user_stream_mode or "").strip()
+        if mode == "futures_listenkey" and normalized_family in {"usdm_futures", "coinm_futures"}:
+            endpoint = self._user_stream_endpoint(normalized_family, normalized_environment)
+            return {"start": endpoint, "keepalive": endpoint, "close": endpoint}
+        if mode == "legacy_listenkey" and normalized_family in {"spot", "margin"}:
+            endpoint = self._user_stream_endpoint(normalized_family, normalized_environment)
+            return {"start": endpoint, "keepalive": endpoint, "close": endpoint}
+        return {}
 
     def _exchange_adapter_supported_contracts(self) -> dict[str, dict[str, bool]]:
         return {
@@ -2459,8 +2667,20 @@ class ExecutionRealityService:
             "reason": str(degraded_reason or ("ok" if available else "stream_unavailable")),
             "updated_at": utc_now_iso(),
         }
-        self._user_stream_status[(str(family), str(environment))] = payload
+        self._user_stream_status[(_normalize_family(family), _normalize_environment(environment))] = payload
         return payload
+
+    def mark_user_stream_runtime_status(
+        self,
+        *,
+        family: str,
+        environment: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        row = copy.deepcopy(payload if isinstance(payload, dict) else {})
+        row["updated_at"] = utc_now_iso()
+        self._user_stream_status[(_normalize_family(family), _normalize_environment(environment))] = row
+        return copy.deepcopy(row)
 
     def mark_market_stream_status(
         self,
@@ -2509,6 +2729,7 @@ class ExecutionRealityService:
             },
             "exchange_adapter": self.exchange_adapter_summary(),
             "market_streams": self.market_streams_summary(),
+            "user_streams": self.user_streams_summary(),
             "kill_switch": self.kill_switch_status(),
             "modes": safety.get("modes") if isinstance(safety.get("modes"), dict) else {},
             "families_enabled": sorted([name for name, enabled in families_enabled.items() if enabled]),
@@ -2818,12 +3039,15 @@ class ExecutionRealityService:
             return {
                 "available": False,
                 "degraded_mode": True,
+                "block_live": False,
                 "reason": "stream_status_unknown",
                 "updated_at": None,
             }
         return {
+            **cached,
             "available": _bool(cached.get("available")),
             "degraded_mode": _bool(cached.get("degraded_mode")),
+            "block_live": _bool(cached.get("block_live")),
             "reason": str(cached.get("reason") or ("ok" if _bool(cached.get("available")) else "stream_unavailable")),
             "updated_at": cached.get("updated_at"),
         }
@@ -3512,13 +3736,58 @@ class ExecutionRealityService:
         normalized_family = _normalize_family(family)
         normalized_environment = _normalize_environment(environment)
         self.mark_user_stream_status(family=normalized_family, environment=normalized_environment, available=True)
-        event_payload = copy.deepcopy(payload if isinstance(payload, dict) else {})
-        order_payload = event_payload
+        raw_payload = copy.deepcopy(payload if isinstance(payload, dict) else {})
+        runtime_meta = raw_payload.pop("_rtlab_user_stream", {}) if isinstance(raw_payload.get("_rtlab_user_stream"), dict) else {}
+        wrapper_payload = runtime_meta.get("raw_wrapper") if isinstance(runtime_meta.get("raw_wrapper"), dict) else raw_payload
+        event_payload = raw_payload.get("event") if isinstance(raw_payload.get("event"), dict) else raw_payload
+        if not isinstance(event_payload, dict):
+            event_payload = {}
         event_name = str(event_payload.get("e") or "").strip()
+        order_payload = event_payload
         if normalized_family in {"usdm_futures", "coinm_futures"}:
             order_payload = event_payload.get("o") if isinstance(event_payload.get("o"), dict) else {}
         venue_order_id = str(order_payload.get("orderId") or order_payload.get("i") or "").strip() or None
         client_order_id = str(order_payload.get("clientOrderId") or order_payload.get("c") or order_payload.get("origClientOrderId") or order_payload.get("C") or "").strip() or None
+        stored_event = self.db.insert_user_stream_event(
+            {
+                "created_at": str(runtime_meta.get("received_at") or utc_now_iso()),
+                "event_time": _ms_to_iso(event_payload.get("E")) or _ms_to_iso(event_payload.get("T")) or utc_now_iso(),
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "execution_connector": runtime_meta.get("execution_connector"),
+                "user_stream_mode": runtime_meta.get("user_stream_mode"),
+                "subscription_id": runtime_meta.get("subscription_id"),
+                "listen_key": runtime_meta.get("listen_key"),
+                "event_name": event_name or "unknown",
+                "symbol": _canonical_symbol(event_payload.get("s") or order_payload.get("s")),
+                "client_order_id": client_order_id,
+                "venue_order_id": venue_order_id,
+                "payload_json": wrapper_payload if isinstance(wrapper_payload, dict) else raw_payload,
+                "provenance_json": {
+                    "source": "user_stream_runtime",
+                    "received_at": runtime_meta.get("received_at"),
+                    "execution_connector": runtime_meta.get("execution_connector"),
+                    "user_stream_mode": runtime_meta.get("user_stream_mode"),
+                },
+            }
+        )
+        non_order_events = {
+            "outboundAccountPosition",
+            "balanceUpdate",
+            "externalLockUpdate",
+            "ACCOUNT_UPDATE",
+            "MARGIN_CALL",
+            "listenKeyExpired",
+            "eventStreamTerminated",
+        }
+        if event_name in non_order_events:
+            return {
+                "ok": True,
+                "event_name": event_name,
+                "user_stream_event_id": stored_event.get("user_stream_event_id"),
+                "account_event": True,
+                "degraded_mode": False,
+            }
         order = None
         if venue_order_id:
             order = self.db.order_by_venue_order_id(venue_order_id)
@@ -3540,7 +3809,12 @@ class ExecutionRealityService:
                 details=event_details,
                 resolved=False,
             )
-            return {"ok": False, "reason": "local_order_not_found", "event_name": event_name}
+            return {
+                "ok": False,
+                "reason": "local_order_not_found",
+                "event_name": event_name,
+                "user_stream_event_id": stored_event.get("user_stream_event_id"),
+            }
         intent = self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None
         updated_order = self.db.upsert_order(
             self._order_row_from_exchange(
@@ -3585,6 +3859,7 @@ class ExecutionRealityService:
         return {
             "ok": True,
             "event_name": event_name,
+            "user_stream_event_id": stored_event.get("user_stream_event_id"),
             "execution_order_id": final_order.get("execution_order_id"),
             "order": final_order,
             "fills": materialized["fills"],
@@ -4893,12 +5168,26 @@ class ExecutionRealityService:
         ]
         market_runtime_blocked = any(_bool(row.get("block_live")) for row in market_runtime_live_sessions if _bool(row.get("running")))
         market_runtime_degraded = any(_bool(row.get("degraded_mode")) for row in market_runtime_live_sessions if _bool(row.get("running")))
+        user_runtime = self.user_streams_summary()
+        user_runtime_sessions = user_runtime.get("sessions") if isinstance(user_runtime.get("sessions"), list) else []
+        user_runtime_live_sessions = [
+            row for row in user_runtime_sessions if _normalize_environment(row.get("environment")) == "live"
+        ]
+        user_runtime_blocked = any(_bool(row.get("block_live")) for row in user_runtime_live_sessions if _bool(row.get("running")))
+        user_runtime_degraded = any(_bool(row.get("degraded_mode")) for row in user_runtime_live_sessions if _bool(row.get("running")))
+        cached_live_user_status = [
+            copy.deepcopy(row)
+            for (family, environment), row in self._user_stream_status.items()
+            if _normalize_environment(environment) == "live"
+        ]
+        user_runtime_blocked = user_runtime_blocked or any(_bool(row.get("block_live")) for row in cached_live_user_status)
+        user_runtime_degraded = user_runtime_degraded or any(_bool(row.get("degraded_mode")) for row in cached_live_user_status)
         degraded_mode = any(
             _bool(row.get("degraded_mode"))
             for (family, environment), row in self._user_stream_status.items()
             if _normalize_environment(environment) in {"live", "testnet"}
         )
-        degraded_mode = degraded_mode or market_runtime_degraded
+        degraded_mode = degraded_mode or market_runtime_degraded or user_runtime_degraded
         kill_switch = self.kill_switch_status()
         open_orders_guard = self._open_order_safety_state()
         reject_storm_count = self._recent_rejected_order_count(window_sec=300.0)
@@ -4932,6 +5221,8 @@ class ExecutionRealityService:
             blockers.append("stale_orderbook_blocker")
         if market_runtime_blocked:
             blockers.append("market_ws_runtime_blocker")
+        if user_runtime_blocked:
+            blockers.append("user_stream_runtime_blocker")
         if reject_storm_threshold > 0 and reject_storm_count >= reject_storm_threshold:
             blockers.append("reject_storm_blocker")
         if consecutive_failed_submit_threshold > 0 and consecutive_failed_submit_count >= consecutive_failed_submit_threshold:
@@ -4952,6 +5243,8 @@ class ExecutionRealityService:
             warnings.append("degraded_mode")
         if market_runtime_degraded:
             warnings.append("market_ws_degraded")
+        if user_runtime_degraded:
+            warnings.append("user_stream_degraded")
         if str(margin_state.get("status") or "").upper() == "WARN":
             warnings.append("margin_level_warn")
         if any(item.get("supported") and item.get("enabled") and not item.get("ok") for item in futures_auto_cancel):
@@ -4989,6 +5282,9 @@ class ExecutionRealityService:
             "market_stream_runtime": market_runtime,
             "market_stream_runtime_blocked": market_runtime_blocked,
             "market_stream_runtime_degraded": market_runtime_degraded,
+            "user_stream_runtime": user_runtime,
+            "user_stream_runtime_blocked": user_runtime_blocked,
+            "user_stream_runtime_degraded": user_runtime_degraded,
             "futures_auto_cancel": futures_auto_cancel,
             "risk_reduce_only_priority_enabled": _bool(self._risk_reduce_only_priority_policy().get("enabled")),
             "safety_blockers": blockers,

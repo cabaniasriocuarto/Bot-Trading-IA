@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
+import hmac
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,6 +19,7 @@ from rtlab_core.execution.reality import (
     clear_execution_policy_cache,
     load_execution_router_bundle,
     load_execution_safety_bundle,
+    utc_now_iso,
 )
 
 
@@ -833,6 +837,234 @@ def test_market_ws_runtime_blocks_live_after_repeated_failures(tmp_path: Path) -
     assert "market_ws_runtime_blocker" in safety["safety_blockers"]
 
 
+def test_user_stream_runtime_spot_websocket_api_subscribes_and_persists_execution_report(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        acknowledged_at=None,
+        submitted_at=_iso_hours_ago(0.1),
+    )
+    service._binance_adapter.signed_websocket_params = lambda **kwargs: (  # type: ignore[method-assign]
+        {
+            "apiKey": "spot-key",
+            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "recvWindow": 5000,
+            "signature": "deadbeef",
+        },
+        {"ok": True, "reason": "ok"},
+    )
+    fake_ws = _FakeWebSocket(
+        [
+            json.dumps({"id": "sub-1", "status": 200, "result": {"subscriptionId": 7}}),
+            json.dumps(
+                {
+                    "subscriptionId": 7,
+                    "event": {
+                        "e": "executionReport",
+                        "E": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        "s": "BTCUSDT",
+                        "c": order["client_order_id"],
+                        "S": "BUY",
+                        "o": "LIMIT",
+                        "f": "GTC",
+                        "q": "0.01000000",
+                        "p": "50000.00",
+                        "x": "NEW",
+                        "X": "NEW",
+                        "i": 123456,
+                        "l": "0.00000000",
+                        "z": "0.00000000",
+                        "L": "0.00000000",
+                        "Z": "0.00000000",
+                        "T": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    },
+                }
+            ),
+        ]
+    )
+    service._user_stream_runtime._connect_factory = _FakeConnectFactory([fake_ws])  # type: ignore[attr-defined]
+
+    started = service.start_user_stream(execution_connector="binance_spot", environment="live")
+    deadline = time.time() + 3.0
+    summary = None
+    while time.time() < deadline:
+        summary = service.user_streams_summary()
+        sessions = summary.get("sessions") or []
+        events = service.db.list_user_stream_events(family="spot", environment="live")
+        if sessions and events:
+            break
+        time.sleep(0.05)
+    stopped = service.stop_user_stream(execution_connector="binance_spot", environment="live")
+
+    assert started["user_stream_mode"] == "websocket_api_spot"
+    assert fake_ws.sent
+    sent = json.loads(fake_ws.sent[0])
+    assert sent["method"] == "userDataStream.subscribe.signature"
+    assert sent["params"]["apiKey"] == "spot-key"
+    assert summary is not None
+    assert summary["sessions"][0]["subscription_id"] == 7
+    events = service.db.list_user_stream_events(family="spot", environment="live")
+    assert events
+    assert events[0]["event_name"] == "executionReport"
+    assert events[0]["execution_connector"] == "binance_spot"
+    assert stopped["reason"] == "stopped_by_operator"
+
+
+def test_user_stream_runtime_futures_listenkey_keeps_alive_and_persists_trade_update(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    _, order = _seed_order(
+        service,
+        family="usdm_futures",
+        environment="live",
+        order_status="NEW",
+        acknowledged_at=_iso_hours_ago(0.1),
+        submitted_at=_iso_hours_ago(0.1),
+    )
+    calls: list[tuple[str, str]] = []
+    base_cfg = service._user_stream_runtime.connector_config("binance_um_futures")  # type: ignore[attr-defined]
+    patched_cfg = copy.deepcopy(base_cfg)
+    patched_cfg["user_stream"]["keepalive_interval_sec"] = 0.05
+    service._user_stream_runtime.connector_config = lambda connector: copy.deepcopy(patched_cfg if connector == "binance_um_futures" else base_cfg)  # type: ignore[method-assign]
+
+    def _fake_api_key_request(method: str, endpoint_url: str, **kwargs):  # noqa: ANN001
+        calls.append((str(method).upper(), endpoint_url))
+        if method == "POST":
+            return {"listenKey": "listen-key-1"}, {"ok": True, "reason": "ok"}
+        return {}, {"ok": True, "reason": "ok"}
+
+    service._binance_adapter.api_key_request = _fake_api_key_request  # type: ignore[method-assign]
+    fake_ws = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "e": "ORDER_TRADE_UPDATE",
+                    "E": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    "o": {
+                        "s": "BTCUSDT",
+                        "c": order["client_order_id"],
+                        "i": 999001,
+                        "X": "NEW",
+                        "x": "NEW",
+                        "q": "0.01000000",
+                        "z": "0.00000000",
+                        "ap": "0",
+                        "l": "0.00000000",
+                        "L": "0.00000000",
+                        "T": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    },
+                }
+            )
+        ]
+    )
+    service._user_stream_runtime._connect_factory = _FakeConnectFactory([fake_ws])  # type: ignore[attr-defined]
+
+    service.start_user_stream(execution_connector="binance_um_futures", environment="live")
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        events = service.db.list_user_stream_events(family="usdm_futures", environment="live")
+        if events and any(method == "PUT" for method, _url in calls):
+            break
+        time.sleep(0.05)
+    stopped = service.stop_user_stream(execution_connector="binance_um_futures", environment="live")
+
+    assert any(method == "POST" for method, _url in calls)
+    assert any(method == "PUT" for method, _url in calls)
+    assert any(method == "DELETE" for method, _url in calls)
+    events = service.db.list_user_stream_events(family="usdm_futures", environment="live")
+    assert events
+    assert events[0]["event_name"] == "ORDER_TRADE_UPDATE"
+    assert events[0]["listen_key"] == "listen-key-1"
+    assert stopped["reason"] == "stopped_by_operator"
+
+
+def test_ingest_user_stream_account_event_persists_without_orphan(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "subscriptionId": 9,
+            "event": {
+                "e": "outboundAccountPosition",
+                "E": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "u": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "B": [{"a": "USDT", "f": "100.0", "l": "0.0"}],
+            },
+            "_rtlab_user_stream": {
+                "execution_connector": "binance_spot",
+                "user_stream_mode": "websocket_api_spot",
+                "subscription_id": 9,
+                "received_at": utc_now_iso(),
+            },
+        },
+    )
+
+    events = service.db.list_user_stream_events(family="spot", environment="live")
+    orphans = service.db.list_reconcile_events(reconcile_type="orphan_order")
+
+    assert result["ok"] is True
+    assert result["account_event"] is True
+    assert events
+    assert events[0]["event_name"] == "outboundAccountPosition"
+    assert not orphans
+
+
+def test_live_safety_summary_flags_user_stream_runtime_blocker(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.mark_user_stream_runtime_status(
+        family="spot",
+        environment="live",
+        payload={
+            "available": False,
+            "running": True,
+            "connected": False,
+            "degraded_mode": True,
+            "block_live": True,
+            "reason": "failure_threshold_reached",
+        },
+    )
+
+    summary = service.live_safety_summary(reconcile_summary={"unresolved_count": 0})
+
+    assert summary["user_stream_runtime_blocked"] is True
+    assert summary["user_stream_runtime_degraded"] is True
+    assert "user_stream_runtime_blocker" in summary["safety_blockers"]
+
+
+def test_user_stream_runtime_spot_legacy_listenkey_is_explicit_transitional_blocker(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    started = service.start_user_stream(
+        execution_connector="binance_spot",
+        environment="live",
+        user_stream_mode="legacy_listenkey",
+    )
+
+    deadline = time.time() + 3.0
+    session = None
+    while time.time() < deadline:
+        summary = service.user_streams_summary()
+        sessions = summary.get("sessions") or []
+        if sessions:
+            session = sessions[0]
+            if session.get("reason") == "legacy_listenkey_not_implemented":
+                break
+        time.sleep(0.05)
+    stopped = service.stop_user_stream(execution_connector="binance_spot", environment="live")
+
+    assert started["user_stream_mode"] == "legacy_listenkey"
+    assert session is not None
+    assert session["unsupported_mode"] is True
+    assert session["degraded_mode"] is True
+    assert session["block_live"] is True
+    assert session["reason"] == "legacy_listenkey_not_implemented"
+    assert stopped["reason"] == "stopped_by_operator"
+
+
 def test_exchange_adapter_spot_test_order_uses_server_time_sync_and_recv_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _build_service(tmp_path, family="spot")
     monkeypatch.setenv("BINANCE_API_KEY", "live-key")
@@ -879,6 +1111,75 @@ def test_exchange_adapter_spot_test_order_uses_server_time_sync_and_recv_window(
     assert bootstrap["exchange_adapter"]["server_time_sync_enabled"] is True
     assert bootstrap["exchange_adapter"]["supported_contracts"]["spot"]["test_order"] is True
     assert bootstrap["exchange_adapter"]["server_time_cache"]
+
+
+def test_exchange_adapter_signed_websocket_params_follow_sorted_hmac_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="spot")
+    monkeypatch.setenv("BINANCE_API_KEY", "ws-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "ws-secret")
+    fixed_now_ms = 1730000000000
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter._now_ms", lambda: fixed_now_ms)
+    service._binance_adapter.sync_server_time = lambda family, environment, force=False: {  # type: ignore[method-assign]
+        "ok": True,
+        "reason": "ok",
+        "cached": False,
+        "offset_ms": 0,
+    }
+
+    params, meta = service._user_stream_signed_ws_params(
+        family="spot",
+        environment="live",
+        params={"symbol": "BTCUSDT"},
+    )
+
+    expected_payload = "apiKey=ws-key&recvWindow=5000&symbol=BTCUSDT&timestamp=1730000000000"
+    expected_signature = hmac.new(
+        b"ws-secret",
+        expected_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    assert params is not None
+    assert meta["ok"] is True
+    assert params["apiKey"] == "ws-key"
+    assert params["recvWindow"] == 5000
+    assert params["timestamp"] == fixed_now_ms
+    assert params["signature"] == expected_signature
+
+
+def test_exchange_adapter_api_key_request_allows_api_key_only_listenkey_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    monkeypatch.setenv("BINANCE_USDM_API_KEY", "futures-key")
+    monkeypatch.delenv("BINANCE_USDM_API_SECRET", raising=False)
+    calls: list[tuple[str, str, dict[str, str] | None]] = []
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        calls.append((str(method).upper(), url, headers))
+        return _HTTPResponse({"listenKey": "listen-key-42"}, status_code=200)
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+
+    payload, meta = service._user_stream_api_key_request(
+        "POST",
+        service._user_stream_endpoint("usdm_futures", "live"),
+        family="usdm_futures",
+        environment="live",
+        params=None,
+    )
+
+    assert payload == {"listenKey": "listen-key-42"}
+    assert meta["ok"] is True
+    assert meta["credentials_present"] is True
+    assert meta["api_key_present"] is True
+    assert meta["api_secret_present"] is False
+    assert calls == [
+        (
+            "POST",
+            service._user_stream_endpoint("usdm_futures", "live"),
+            {"X-MBX-APIKEY": "futures-key"},
+        )
+    ]
 
 
 def test_exchange_adapter_invalid_timestamp_resyncs_and_retries_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
