@@ -1,6 +1,124 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-19
+Fecha de actualizacion: 2026-03-20
+
+## RTLOPS-44: Market WebSocket Runtime live - 2026-03-20
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-44`
+  - issue prerequisito transversal tocada de forma minima pero no cerrada: `RTLOPS-55`
+  - rama incremental usada: `feature/market-websocket-runtime-live-rtlops-44`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+    - `27a2367`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+    - microestructura local tipo Hasbrouck / O'Hara / Kyle / Lopez de Prado usada para justificar fail-closed, stale watchdog, separation by market family y runtime auditable
+  - contratos publicos del exchange desde documentacion oficial primaria de Binance:
+    - Spot WebSocket Streams
+    - Spot Testnet WebSocket Streams
+    - USDⓈ-M Futures Websocket Market Streams
+    - USDⓈ-M Mark Price Stream
+- Alcance real cerrado:
+  - nueva policy canonica:
+    - `config/policies/binance_live_runtime.yaml`
+    - `rtlab_autotrader/config/policies/binance_live_runtime.yaml` solo como compatibilidad de empaquetado/deploy
+  - nuevo runtime dedicado:
+    - `rtlab_autotrader/rtlab_core/execution/live_market_runtime.py`
+  - `ExecutionRealityService` ahora integra un supervisor WS publico por conector/familia:
+    - `binance_spot`
+    - `binance_um_futures`
+  - streams publicos minimos cableados:
+    - Spot:
+      - `bookTicker`
+      - `aggTrade`
+    - USDⓈ-M Futures:
+      - `bookTicker`
+      - `aggTrade`
+      - `markPrice@1s`
+  - capacidades operativas reales del supervisor:
+    - reconnect automatico
+    - resuscripcion explicita en modo `raw`
+    - manejo de `ping_interval` / `pong_timeout` alineado con cada familia
+    - watchdog de stale data
+    - reciclo preventivo antes del corte de 24h
+    - metricas:
+      - `connected`
+      - `last_message_at`
+      - `reconnect_count`
+      - `stale_ms`
+      - `symbols_subscribed`
+      - `stream_lag_estimate_ms`
+      - `last_disconnect_reason`
+    - `degraded_mode` y `block_live` explicitos cuando el runtime se degrada
+  - transporte configurable por family:
+    - `combined` por defecto
+    - `raw` soportado con `SUBSCRIBE`
+  - separation canonica minima visible:
+    - `vendor = binance`
+    - `market_family = spot | um_futures`
+    - `execution_connector = binance_spot | binance_um_futures`
+    - `account_scope = spot_wallet | futures_wallet`
+    - `cost_model = spot_costs | um_futures_costs`
+    - `user_stream_mode = legacy_listenkey | futures_listenkey`
+    - `order_path = dry_run | live_submit`
+  - wiring backend nuevo:
+    - `bootstrap_summary()` expone:
+      - `binance_live_runtime`
+      - `market_streams`
+    - `live_safety_summary()` incorpora:
+      - `market_stream_runtime`
+      - `market_stream_runtime_blocked`
+      - `market_stream_runtime_degraded`
+    - API minima nueva:
+      - `GET /api/v1/execution/market-streams/summary`
+      - `POST /api/v1/execution/market-streams/start`
+      - `POST /api/v1/execution/market-streams/stop`
+    - `GET /api/v1/config/policies` ahora incluye:
+      - `binance_live_runtime` en `files`
+      - resumen de conectores live Binance
+  - frontend minimo visible:
+    - `rtlab_dashboard/src/app/(app)/execution/page.tsx` muestra un card de runtime WS con:
+      - conector
+      - familia
+      - transport
+      - symbols
+      - reconnects
+      - stale ms
+      - lag ms
+      - estado `OK / WARN / BLOCK / IDLE`
+- Validacion real del bloque:
+  - tests locales:
+    - `test_execution_reality.py` -> PASS
+    - `test_web_execution_reality_api.py` -> PASS
+    - `test_policy_paths.py` -> PASS
+    - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle` -> PASS
+  - typecheck frontend:
+    - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+  - smoke publico real:
+    - Spot live: conexion publica + `bookTicker`/`aggTrade` recibidos -> PASS
+    - USDⓈ-M Futures live: conexion publica + `bookTicker`/`aggTrade`/`markPrice@1s` recibidos -> PASS
+- Decisiones de ingenieria explicitas:
+  - el runtime WS publico se mantuvo separado del private stream; no se finge cobertura de cuenta/ordenes privadas en este bloque
+  - `combined` queda como default porque reduce overhead de sockets y sigue dentro de los limites oficiales por conexion
+  - la base URL de testnet USDⓈ-M queda configurable por ENV y tratada como detalle operativo mutable; el contrato oficial estable auditado en esta corrida fue el de live market streams
+- Limites conscientes:
+  - no se implemento private user/account/order stream Spot ni Futures; eso queda para `RTLOPS-45`
+  - no se hizo todavia el sweep completo de contratos canónicos backend/frontend/storage pedido por `RTLOPS-55`; en este bloque solo aterrizo la capa minima necesaria para destrabar `RTLOPS-44`
+  - no se tocaron ordenes condicionales ni paths privados de USDⓈ-M
+  - no se activa submit real ni se debilita `fail-closed`
 
 ## RTLOPS-49: Exchange Adapter Live Hardening - 2026-03-19
 

@@ -35,6 +35,7 @@ def test_describe_policy_root_resolution_flags_divergent_duplicate_yaml(tmp_path
   assert "execution_safety.yaml" in EXPECTED_POLICY_FILENAMES
   assert "execution_router.yaml" in EXPECTED_POLICY_FILENAMES
   assert "validation_gates.yaml" in EXPECTED_POLICY_FILENAMES
+  assert "binance_live_runtime.yaml" in EXPECTED_POLICY_FILENAMES
 
   for name in EXPECTED_POLICY_FILENAMES:
     root_policies.joinpath(name).write_text("root: true\n", encoding="utf-8")
@@ -50,6 +51,7 @@ def test_describe_policy_root_resolution_flags_divergent_duplicate_yaml(tmp_path
   assert "instrument_registry.yaml" in divergent[0]["differing_files_vs_selected"]
   assert "universes.yaml" in divergent[0]["differing_files_vs_selected"]
   assert "validation_gates.yaml" in divergent[0]["differing_files_vs_selected"]
+  assert "binance_live_runtime.yaml" in divergent[0]["differing_files_vs_selected"]
 
 
 def test_describe_policy_root_resolution_flags_runtime_controls_divergence(tmp_path: Path) -> None:

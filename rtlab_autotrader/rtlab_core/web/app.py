@@ -36,6 +36,7 @@ from rtlab_core.domains import (
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution import ExecutionRealityService
+from rtlab_core.execution.live_market_runtime import load_binance_live_runtime_bundle
 from rtlab_core.execution.reality import load_execution_router_bundle, load_execution_safety_bundle
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
@@ -685,6 +686,18 @@ class ExecutionKillSwitchResetBody(BaseModel):
     reason: str = "manual_reset"
 
 
+class ExecutionMarketStreamStartBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+    symbols: list[str]
+    transport_mode: Literal["combined", "raw"] | None = None
+
+
+class ExecutionMarketStreamStopBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+
+
 class ValidationEvaluateBody(BaseModel):
     stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
     venue: str = "binance"
@@ -773,6 +786,7 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "execution_safety": root / "execution_safety.yaml",
         "execution_router": root / "execution_router.yaml",
         "validation_gates": root / "validation_gates.yaml",
+        "binance_live_runtime": root / "binance_live_runtime.yaml",
     }
 
 
@@ -789,6 +803,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
     execution_router = bundle.get("execution_router") if isinstance(bundle.get("execution_router"), dict) else {}
     validation_gates = bundle.get("validation_gates") if isinstance(bundle.get("validation_gates"), dict) else {}
+    binance_live_runtime = bundle.get("binance_live_runtime") if isinstance(bundle.get("binance_live_runtime"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
@@ -801,6 +816,12 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     exs = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
     exr = execution_router.get("execution_router") if isinstance(execution_router.get("execution_router"), dict) else {}
     vg = validation_gates.get("validation_gates") if isinstance(validation_gates.get("validation_gates"), dict) else {}
+    blr = binance_live_runtime.get("binance_live_runtime") if isinstance(binance_live_runtime.get("binance_live_runtime"), dict) else {}
+    blr_connectors = blr.get("connectors") if isinstance(blr.get("connectors"), dict) else {}
+    blr_spot = blr_connectors.get("binance_spot") if isinstance(blr_connectors.get("binance_spot"), dict) else {}
+    blr_um = blr_connectors.get("binance_um_futures") if isinstance(blr_connectors.get("binance_um_futures"), dict) else {}
+    blr_spot_ws = blr_spot.get("market_ws") if isinstance(blr_spot.get("market_ws"), dict) else {}
+    blr_um_ws = blr_um.get("market_ws") if isinstance(blr_um.get("market_ws"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
@@ -917,6 +938,11 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "validation_canary_min_orders": vg_canary.get("min_orders"),
         "validation_block_if_policy_missing": vg_blocks.get("block_if_policy_missing"),
         "validation_allow_manual_override": vg_blocks.get("allow_manual_override"),
+        "binance_live_connectors": sorted(list(blr_connectors.keys())),
+        "binance_spot_default_transport": blr_spot_ws.get("default_transport"),
+        "binance_spot_user_stream_mode": blr_spot.get("user_stream_mode"),
+        "binance_um_default_transport": blr_um_ws.get("default_transport"),
+        "binance_um_user_stream_mode": blr_um.get("user_stream_mode"),
     }
 
 
@@ -992,6 +1018,28 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
                 "canonical_root": validation_bundle.get("canonical_root"),
                 "canonical_role": validation_bundle.get("canonical_role"),
                 "divergent_candidates": validation_bundle.get("divergent_candidates") or [],
+            }
+            continue
+        if name == "binance_live_runtime":
+            runtime_bundle = load_binance_live_runtime_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if runtime_bundle.get("errors"):
+                warnings.extend(str(row) for row in (runtime_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = runtime_bundle.get("payload") if isinstance(runtime_bundle.get("payload"), dict) else {}
+            meta[name] = {
+                "path": str(runtime_bundle.get("path") or path),
+                "source_root": str(runtime_bundle.get("source_root") or root),
+                "exists": bool(runtime_bundle.get("exists", False)),
+                "valid": bool(runtime_bundle.get("valid", False)),
+                "source": str(runtime_bundle.get("source") or ""),
+                "source_hash": str(runtime_bundle.get("source_hash") or ""),
+                "policy_hash": str(runtime_bundle.get("policy_hash") or ""),
+                "errors": list(runtime_bundle.get("errors") or []),
+                "warnings": list(runtime_bundle.get("warnings") or []),
+                "fallback_used": bool(runtime_bundle.get("fallback_used", False)),
+                "selected_role": runtime_bundle.get("selected_role"),
+                "canonical_root": runtime_bundle.get("canonical_root"),
+                "canonical_role": runtime_bundle.get("canonical_role"),
+                "divergent_candidates": runtime_bundle.get("divergent_candidates") or [],
             }
             continue
         exists = path.exists()
@@ -9542,6 +9590,40 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/execution/live-safety/summary")
     def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.execution_reality.live_safety_summary()
+
+    @app.get("/api/v1/execution/market-streams/summary")
+    def execution_market_streams_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.market_streams_summary()
+
+    @app.post("/api/v1/execution/market-streams/start")
+    def execution_market_streams_start(
+        body: ExecutionMarketStreamStartBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.start_market_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+                symbols=body.symbols,
+                transport_mode=body.transport_mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/market-streams/stop")
+    def execution_market_streams_stop(
+        body: ExecutionMarketStreamStopBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.stop_market_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/v1/validation/summary")
     def validation_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

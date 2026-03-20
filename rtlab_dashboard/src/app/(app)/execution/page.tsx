@@ -15,6 +15,7 @@ import type {
   BotInstance,
   BotPolicyStateResponse,
   BotStatusResponse,
+  ExecutionMarketStreamsSummary,
   ExchangeDiagnoseResponse,
   ExecutionStats,
   HealthResponse,
@@ -68,6 +69,7 @@ export default function ExecutionPage() {
   const [gates, setGates] = useState<GatesResponse | null>(null);
   const [rollout, setRollout] = useState<RolloutStatusLite | null>(null);
   const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
+  const [marketStreams, setMarketStreams] = useState<ExecutionMarketStreamsSummary | null>(null);
   const [exchangeDiagError, setExchangeDiagError] = useState("");
   const [panelLoading, setPanelLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -105,7 +107,7 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload] = await Promise.all([
+    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -113,6 +115,7 @@ export default function ExecutionPage() {
       apiGet<RolloutStatusLite>("/api/v1/rollout/status"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
+      apiGet<ExecutionMarketStreamsSummary>("/api/v1/execution/market-streams/summary").catch(() => null as ExecutionMarketStreamsSummary | null),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
@@ -120,6 +123,7 @@ export default function ExecutionPage() {
     setGates(gatesPayload);
     setRollout(rolloutPayload);
     setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
+    setMarketStreams(marketStreamsPayload);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
     const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
@@ -1082,7 +1086,7 @@ export default function ExecutionPage() {
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-2">
+      <section className="grid gap-4 xl:grid-cols-3">
         <Card>
           <CardTitle>Estado de conectores</CardTitle>
           <CardDescription>
@@ -1134,6 +1138,61 @@ export default function ExecutionPage() {
                 </div>
               </div>
             ) : null}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardTitle>Runtime WebSocket de mercado</CardTitle>
+          <CardDescription>
+            Estado live/testnet de streams publicos Binance por familia. Este bloque no cubre user data privado.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Metric title="Policy cargada" value={marketStreams?.policy_loaded ? "si" : "no"} compact />
+              <Metric title="Sesiones activas" value={String(marketStreams?.running_sessions ?? 0)} compact />
+              <Metric title="Live degradado" value={marketStreams?.live_degraded ? "si" : "no"} compact />
+              <Metric title="Live bloqueado" value={marketStreams?.live_blocked ? "si" : "no"} compact />
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+              <p className="font-semibold text-slate-100">Separacion canonica</p>
+              <div className="mt-2 grid gap-2">
+                <p>binance_spot: spot / spot_wallet / spot_costs</p>
+                <p>binance_um_futures: um_futures / futures_wallet / um_futures_costs</p>
+              </div>
+            </div>
+            {marketStreams?.sessions?.length ? (
+              <div className="space-y-2">
+                {marketStreams.sessions.map((row) => (
+                  <div key={`${row.execution_connector}-${row.environment}`} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-100">{row.execution_connector}</span>
+                        <Badge variant={row.environment === "live" ? "danger" : "info"}>{row.environment}</Badge>
+                      </div>
+                      <Badge variant={row.block_live ? "danger" : row.degraded_mode ? "warn" : row.connected ? "success" : "neutral"}>
+                        {row.block_live ? "BLOCK" : row.degraded_mode ? "WARN" : row.connected ? "OK" : "IDLE"}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <p>familia: {row.market_family} / repo: {row.repo_family}</p>
+                      <p>transport: {row.transport_mode}</p>
+                      <p>simbolos: {row.symbols_subscribed?.join(", ") || "-"}</p>
+                      <p>reconnects: {row.reconnect_count}</p>
+                      <p>stale_ms: {row.stale_ms ?? "-"}</p>
+                      <p>lag_ms: {row.stream_lag_estimate_ms ?? "-"}</p>
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      razon: {row.reason || "-"}
+                      {row.last_disconnect_reason ? ` · ultimo disconnect: ${row.last_disconnect_reason}` : ""}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                Sin sesiones activas. El runtime exige arranque explicito y sigue fail-closed.
+              </div>
+            )}
           </CardContent>
         </Card>
 

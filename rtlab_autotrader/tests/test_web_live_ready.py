@@ -4605,6 +4605,13 @@ def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, 
   assert isinstance(runtime_controls_meta["source_hash"], str) and len(runtime_controls_meta["source_hash"]) == 64
   assert isinstance(runtime_controls_meta["policy_hash"], str) and len(runtime_controls_meta["policy_hash"]) == 64
   assert runtime_controls_meta["errors"] == []
+  binance_live_runtime_meta = body["files"]["binance_live_runtime"]
+  assert binance_live_runtime_meta["source"] == "config/policies/binance_live_runtime.yaml"
+  assert isinstance(binance_live_runtime_meta["source_hash"], str) and len(binance_live_runtime_meta["source_hash"]) == 64
+  assert isinstance(binance_live_runtime_meta["policy_hash"], str) and len(binance_live_runtime_meta["policy_hash"]) == 64
+  assert body["summary"]["binance_live_connectors"] == ["binance_spot", "binance_um_futures"]
+  assert body["summary"]["binance_spot_default_transport"] == "combined"
+  assert body["summary"]["binance_um_default_transport"] == "combined"
   assert "mode_taxonomy" in body and body["mode_taxonomy"]["global_runtime_modes"] == ["PAPER", "TESTNET", "LIVE"]
 
 

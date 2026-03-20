@@ -49,6 +49,38 @@ export interface ExchangeDiagnoseResponse {
   checks: Record<string, unknown>;
 }
 
+export interface ExecutionMarketStreamSession {
+  execution_connector: string;
+  market_family: string;
+  repo_family: string;
+  environment: "live" | "testnet";
+  connected: boolean;
+  running: boolean;
+  degraded_mode: boolean;
+  block_live: boolean;
+  reason: string;
+  transport_mode: "combined" | "raw" | string;
+  symbols_subscribed: string[];
+  stale_ms: number | null;
+  stream_lag_estimate_ms: number | null;
+  reconnect_count: number;
+  last_message_at?: string | null;
+  last_disconnect_reason?: string | null;
+}
+
+export interface ExecutionMarketStreamsSummary {
+  policy_loaded: boolean;
+  policy_hash: string;
+  policy_source: Record<string, unknown>;
+  runtime_guardrails: Record<string, unknown>;
+  family_split: Record<string, unknown>;
+  sessions: ExecutionMarketStreamSession[];
+  running_sessions: number;
+  live_sessions: number;
+  live_blocked: boolean;
+  live_degraded: boolean;
+}
+
 export interface StrategyManifest {
   id: string;
   name: string;

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -99,6 +101,56 @@ class _FakeResponse:
 
     def json(self) -> dict:
         return self._payload
+
+
+class _FakeWebSocket:
+    def __init__(self, messages: list[object]) -> None:
+        self._messages = list(messages)
+        self.sent: list[str] = []
+
+    async def __aenter__(self) -> "_FakeWebSocket":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+        return False
+
+    async def recv(self) -> object:
+        if self._messages:
+            return self._messages.pop(0)
+        await asyncio.sleep(3600)
+        return ""
+
+    async def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        return None
+
+
+class _FailingAsyncContextManager:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def __aenter__(self):  # noqa: ANN204
+        raise self._exc
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+        return False
+
+
+class _FakeConnectFactory:
+    def __init__(self, sessions: list[object]) -> None:
+        self._sessions = list(sessions)
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, url: str, **kwargs):  # noqa: ANN001, ANN204
+        self.calls.append({"url": url, "kwargs": kwargs})
+        if not self._sessions:
+            return _FailingAsyncContextManager(RuntimeError("no_fake_session"))
+        next_item = self._sessions.pop(0)
+        if isinstance(next_item, Exception):
+            return _FailingAsyncContextManager(next_item)
+        return next_item
 
 
 class FakeBinanceHTTP:
@@ -615,6 +667,64 @@ def test_execution_kill_switch_trip_status_reset_endpoints(tmp_path: Path, monke
     assert reset.json()["active"] is False
     assert reset.json()["cooldown_active"] is True
     assert reset.json()["last_event"]["cleared_reason"] == "operator_reset"
+
+
+def test_execution_market_stream_endpoints_start_summary_stop(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    fake_ws = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "stream": "btcusdt@bookTicker",
+                    "data": {
+                        "e": "bookTicker",
+                        "E": int(__import__("time").time() * 1000),
+                        "s": "BTCUSDT",
+                        "b": "50000.10",
+                        "a": "50000.20",
+                    },
+                }
+            )
+        ]
+    )
+    module.store.execution_reality._market_ws_runtime._connect_factory = _FakeConnectFactory([fake_ws])  # type: ignore[attr-defined]
+
+    started = client.post(
+        "/api/v1/execution/market-streams/start",
+        headers=_auth_headers(token),
+        json={
+            "execution_connector": "binance_spot",
+            "environment": "live",
+            "symbols": ["BTCUSDT"],
+            "transport_mode": "combined",
+        },
+    )
+    deadline = time.time() + 3.0
+    summary = None
+    while time.time() < deadline:
+        res = client.get("/api/v1/execution/market-streams/summary", headers=_auth_headers(token))
+        if res.status_code == 200 and (res.json().get("sessions") or []):
+            summary = res.json()
+            break
+        time.sleep(0.05)
+    stopped = client.post(
+        "/api/v1/execution/market-streams/stop",
+        headers=_auth_headers(token),
+        json={"execution_connector": "binance_spot", "environment": "live"},
+    )
+    safety = client.get("/api/v1/execution/live-safety/summary", headers=_auth_headers(token))
+
+    assert started.status_code == 200, started.text
+    assert summary is not None
+    assert summary["policy_loaded"] is True
+    assert summary["family_split"]["binance_spot"]["repo_family"] == "spot"
+    assert summary["sessions"][0]["execution_connector"] == "binance_spot"
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["reason"] == "stopped_by_operator"
+    assert safety.status_code == 200, safety.text
+    assert safety.json()["market_stream_runtime"]["policy_source"]["source_hash"]
 
 
 def test_execution_live_safety_summary_endpoint_reports_final_guardrails(tmp_path: Path, monkeypatch) -> None:

@@ -18,6 +18,7 @@ from uuid import uuid4
 import yaml
 
 from rtlab_core.execution.binance_adapter import BinanceLiveAdapter
+from rtlab_core.execution.live_market_runtime import BinanceMarketWebSocketRuntime
 from rtlab_core.policy_paths import describe_policy_root_resolution
 
 
@@ -1507,6 +1508,7 @@ class ExecutionRealityService:
         self.db = ExecutionRealityDB(self.user_data_dir / "execution" / "execution.sqlite3")
         self._quotes: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._user_stream_status: dict[tuple[str, str], dict[str, Any]] = {}
+        self._market_stream_status: dict[tuple[str, str], dict[str, Any]] = {}
         self._margin_levels: dict[str, dict[str, Any]] = {}
         self._futures_auto_cancel_status: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._binance_adapter = BinanceLiveAdapter(
@@ -1519,6 +1521,12 @@ class ExecutionRealityService:
             server_time_cache_sec_resolver=self._exchange_adapter_server_time_cache_sec,
             max_clock_skew_ms_resolver=self._exchange_adapter_max_clock_skew_ms,
             retry_invalid_timestamp_once_resolver=self._exchange_adapter_retry_invalid_timestamp_once,
+        )
+        self._market_ws_runtime = BinanceMarketWebSocketRuntime(
+            repo_root=self.repo_root,
+            explicit_policy_root=self.explicit_policy_root,
+            market_snapshot_writer=self.set_market_snapshot,
+            status_writer=self.mark_market_stream_status,
         )
 
     def safety_bundle(self) -> dict[str, Any]:
@@ -1582,6 +1590,46 @@ class ExecutionRealityService:
                 "execution_router": self.router_policy(),
             }
         )
+
+    def binance_live_runtime_source(self) -> dict[str, Any]:
+        return self._market_ws_runtime.policy_source()
+
+    def binance_live_runtime_hash(self) -> str:
+        return self._market_ws_runtime.policy_hash()
+
+    def family_split_summary(self) -> dict[str, Any]:
+        return self._market_ws_runtime.family_split_summary()
+
+    def market_streams_summary(self) -> dict[str, Any]:
+        summary = self._market_ws_runtime.summary()
+        sessions = summary.get("sessions") if isinstance(summary.get("sessions"), list) else []
+        live_sessions = [row for row in sessions if _normalize_environment(row.get("environment")) == "live"]
+        summary["running_sessions"] = len([row for row in sessions if _bool(row.get("running"))])
+        summary["live_sessions"] = len(live_sessions)
+        summary["live_blocked"] = any(_bool(row.get("block_live")) for row in live_sessions)
+        summary["live_degraded"] = any(_bool(row.get("degraded_mode")) for row in live_sessions)
+        return summary
+
+    def start_market_stream(
+        self,
+        *,
+        execution_connector: str,
+        environment: str,
+        symbols: list[str],
+        transport_mode: str | None = None,
+    ) -> dict[str, Any]:
+        return self._market_ws_runtime.start(
+            execution_connector=execution_connector,
+            environment=environment,
+            symbols=symbols,
+            transport_mode=transport_mode,
+        )
+
+    def stop_market_stream(self, *, execution_connector: str, environment: str) -> dict[str, Any]:
+        return self._market_ws_runtime.stop(execution_connector=execution_connector, environment=environment)
+
+    def stop_all_market_streams(self) -> list[dict[str, Any]]:
+        return self._market_ws_runtime.stop_all()
 
     def _exchange_adapter_policy(self) -> dict[str, Any]:
         payload = self.safety_policy().get("exchange_adapter")
@@ -2414,6 +2462,18 @@ class ExecutionRealityService:
         self._user_stream_status[(str(family), str(environment))] = payload
         return payload
 
+    def mark_market_stream_status(
+        self,
+        *,
+        family: str,
+        environment: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        row = copy.deepcopy(payload if isinstance(payload, dict) else {})
+        row["updated_at"] = utc_now_iso()
+        self._market_stream_status[(_normalize_family(family), _normalize_environment(environment))] = row
+        return copy.deepcopy(row)
+
     def set_margin_level(self, *, environment: str, level: float | None, source: str = "manual") -> dict[str, Any]:
         payload = {
             "level": level,
@@ -2441,7 +2501,14 @@ class ExecutionRealityService:
             "policy_loaded": self.policies_loaded(),
             "policy_hash": self.policy_hash(),
             "policy_source": policy_source,
+            "binance_live_runtime": {
+                "policy_loaded": self._market_ws_runtime.policies_loaded(),
+                "policy_hash": self.binance_live_runtime_hash(),
+                "policy_source": self.binance_live_runtime_source(),
+                "family_split": self.family_split_summary().get("connectors") or {},
+            },
             "exchange_adapter": self.exchange_adapter_summary(),
+            "market_streams": self.market_streams_summary(),
             "kill_switch": self.kill_switch_status(),
             "modes": safety.get("modes") if isinstance(safety.get("modes"), dict) else {},
             "families_enabled": sorted([name for name, enabled in families_enabled.items() if enabled]),
@@ -2456,6 +2523,7 @@ class ExecutionRealityService:
             "cache_sizes": {
                 "market_snapshots": len(self._quotes),
                 "user_stream_status": len(self._user_stream_status),
+                "market_stream_status": len(self._market_stream_status),
                 "margin_levels": len(self._margin_levels),
                 "futures_auto_cancel_status": len(self._futures_auto_cancel_status),
             },
@@ -4818,11 +4886,19 @@ class ExecutionRealityService:
             else False
         )
         margin_state = self._margin_guard_state(supported_families=supported_families)
+        market_runtime = self.market_streams_summary()
+        market_runtime_sessions = market_runtime.get("sessions") if isinstance(market_runtime.get("sessions"), list) else []
+        market_runtime_live_sessions = [
+            row for row in market_runtime_sessions if _normalize_environment(row.get("environment")) == "live"
+        ]
+        market_runtime_blocked = any(_bool(row.get("block_live")) for row in market_runtime_live_sessions if _bool(row.get("running")))
+        market_runtime_degraded = any(_bool(row.get("degraded_mode")) for row in market_runtime_live_sessions if _bool(row.get("running")))
         degraded_mode = any(
             _bool(row.get("degraded_mode"))
             for (family, environment), row in self._user_stream_status.items()
             if _normalize_environment(environment) in {"live", "testnet"}
         )
+        degraded_mode = degraded_mode or market_runtime_degraded
         kill_switch = self.kill_switch_status()
         open_orders_guard = self._open_order_safety_state()
         reject_storm_count = self._recent_rejected_order_count(window_sec=300.0)
@@ -4854,6 +4930,8 @@ class ExecutionRealityService:
             blockers.append("stale_quote_blocker")
         if market_data.get("orderbook_stale"):
             blockers.append("stale_orderbook_blocker")
+        if market_runtime_blocked:
+            blockers.append("market_ws_runtime_blocker")
         if reject_storm_threshold > 0 and reject_storm_count >= reject_storm_threshold:
             blockers.append("reject_storm_blocker")
         if consecutive_failed_submit_threshold > 0 and consecutive_failed_submit_count >= consecutive_failed_submit_threshold:
@@ -4872,6 +4950,8 @@ class ExecutionRealityService:
             blockers.append("margin_level_blocker")
         if degraded_mode:
             warnings.append("degraded_mode")
+        if market_runtime_degraded:
+            warnings.append("market_ws_degraded")
         if str(margin_state.get("status") or "").upper() == "WARN":
             warnings.append("margin_level_warn")
         if any(item.get("supported") and item.get("enabled") and not item.get("ok") for item in futures_auto_cancel):
@@ -4906,6 +4986,9 @@ class ExecutionRealityService:
             "repeated_reconcile_mismatch_threshold": repeated_reconcile_mismatch_threshold,
             "open_orders_guard": open_orders_guard,
             "market_data_guard": market_data,
+            "market_stream_runtime": market_runtime,
+            "market_stream_runtime_blocked": market_runtime_blocked,
+            "market_stream_runtime_degraded": market_runtime_degraded,
             "futures_auto_cancel": futures_auto_cancel,
             "risk_reduce_only_priority_enabled": _bool(self._risk_reduce_only_priority_policy().get("enabled")),
             "safety_blockers": blockers,

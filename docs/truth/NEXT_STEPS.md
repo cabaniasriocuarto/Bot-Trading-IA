@@ -1,6 +1,53 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-19
+Fecha: 2026-03-20
+
+## RTLOPS-44 - Market WebSocket Runtime live - 2026-03-20
+- [x] Crear policy canonica nueva:
+  - `config/policies/binance_live_runtime.yaml`
+  - copia nested solo como compatibilidad
+- [x] Implementar runtime WS publico por conector/familia:
+  - `binance_spot`
+  - `binance_um_futures`
+- [x] Cablear streams minimos:
+  - Spot:
+    - `bookTicker`
+    - `aggTrade`
+  - USDⓈ-M:
+    - `bookTicker`
+    - `aggTrade`
+    - `markPrice@1s`
+- [x] Soportar:
+  - reconnect con backoff + jitter
+  - resuscripcion en modo `raw`
+  - stale watchdog
+  - recycle 24h-aware
+  - resumen operativo auditable
+- [x] Integrar el runtime con:
+  - `bootstrap_summary()`
+  - `live_safety_summary()`
+  - `GET /api/v1/config/policies`
+  - endpoints `/api/v1/execution/market-streams/*`
+- [x] Exponer visibilidad minima en frontend sobre el runtime WS.
+- [x] Revalidar:
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - `test_policy_paths.py`
+  - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
+  - `npx.cmd tsc --noEmit`
+  - smoke publico Spot + USDⓈ-M live
+- [ ] Limites conscientes fuera de RTLOPS-44:
+  - el private user/account/order stream queda para `RTLOPS-45`
+  - `RTLOPS-55` sigue abierto para terminar el sweep completo de split canonico backend/frontend/storage sin heuristica ambigua
+  - la URL/test contract de testnet USDⓈ-M sigue tratada como detalle operativo configurable, no como verdad universal congelada
+
+## Siguiente issue exacto
+- `RTLOPS-45` - Binance private user/account/order streams live
+- alcance inmediato esperado:
+  - Spot private stream auditando camino legacy/transicional actual y evaluando migracion a WebSocket API donde corresponda
+  - USDⓈ-M private stream con lifecycle de listenKey / keepalive y parsing robusto de ordenes/cuenta
+  - persistencia de eventos privados sin fingir equivalencia entre Spot y Futures
+  - integracion con `ExecutionRealityService`, `reconcile`, `fills` y `live_safety`
 
 ## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
 - [x] Endurecer signed REST live con:

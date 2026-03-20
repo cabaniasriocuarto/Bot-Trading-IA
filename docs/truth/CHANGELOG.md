@@ -1,5 +1,50 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-20
+
+### RTLOPS-44 - Market WebSocket Runtime live
+- Nueva policy canonica:
+  - `config/policies/binance_live_runtime.yaml`
+  - compatibilidad nested en `rtlab_autotrader/config/policies/binance_live_runtime.yaml`
+- Nuevo modulo:
+  - `rtlab_autotrader/rtlab_core/execution/live_market_runtime.py`
+- `rtlab_core/execution/reality.py` ahora:
+  - integra `BinanceMarketWebSocketRuntime`
+  - expone `family_split_summary()`
+  - expone `market_streams_summary()`
+  - agrega:
+    - `start_market_stream(...)`
+    - `stop_market_stream(...)`
+    - `stop_all_market_streams()`
+    - `mark_market_stream_status(...)`
+  - refleja el runtime WS en:
+    - `bootstrap_summary()`
+    - `live_safety_summary()`
+- `rtlab_core/web/app.py` suma endpoints:
+  - `GET /api/v1/execution/market-streams/summary`
+  - `POST /api/v1/execution/market-streams/start`
+  - `POST /api/v1/execution/market-streams/stop`
+- `GET /api/v1/config/policies` ahora incluye:
+  - `binance_live_runtime` en `files`
+  - resumen de conectores Binance live y transporte default
+- Frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx` muestra un card operativo del runtime WS
+  - `rtlab_dashboard/src/lib/types.ts` agrega contratos de summary/sessions del runtime WS
+- Tests nuevos/minimos:
+  - runtime spot `combined` actualiza snapshots y summary
+  - runtime USDⓈ-M `raw` envia `SUBSCRIBE`
+  - repeated failures activan `market_ws_runtime_blocker`
+  - endpoints API de start/summary/stop
+  - policy paths y `/api/v1/config/policies` reflejan la nueva policy
+- Validacion local de RTLOPS-44:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/live_market_runtime.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py rtlab_autotrader/tests/test_policy_paths.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+  - smoke publico real Spot + USDⓈ-M live market streams -> PASS
+
 ## 2026-03-19
 
 ### RTLOPS-49 - Exchange Adapter Live Hardening

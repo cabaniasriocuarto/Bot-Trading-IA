@@ -21,6 +21,7 @@ EXPECTED_POLICY_FILENAMES: tuple[str, ...] = (
     "execution_safety.yaml",
     "execution_router.yaml",
     "validation_gates.yaml",
+    "binance_live_runtime.yaml",
 )
 
 
