@@ -656,6 +656,7 @@ class ExecutionPreflightBody(BaseModel):
     quantity: float | None = None
     quote_quantity: float | None = None
     price: float | None = None
+    stop_price: float | None = None
     time_in_force: str | None = None
     mode: str | None = None
     strategy_id: str | None = None
@@ -861,6 +862,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     rexp_limits = rexp.get("limits") if isinstance(rexp.get("limits"), dict) else {}
     exs_modes = exs.get("modes") if isinstance(exs.get("modes"), dict) else {}
     exs_preflight = exs.get("preflight") if isinstance(exs.get("preflight"), dict) else {}
+    exs_exchange_filters = exs.get("exchange_filters") if isinstance(exs.get("exchange_filters"), dict) else {}
     exs_sizing = exs.get("sizing") if isinstance(exs.get("sizing"), dict) else {}
     exs_kill = exs.get("kill_switch") if isinstance(exs.get("kill_switch"), dict) else {}
     exr_families = exr.get("families_enabled") if isinstance(exr.get("families_enabled"), dict) else {}
@@ -938,6 +940,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "reporting_export_max_rows": rexp_limits.get("max_rows_per_export"),
         "execution_allow_live": exs_modes.get("allow_live"),
         "execution_quote_stale_block_ms": exs_preflight.get("quote_stale_block_ms"),
+        "execution_exchange_filters_max_age_ms": exs_exchange_filters.get("max_age_ms"),
+        "execution_exchange_filters_missing_symbol_filters": exs_exchange_filters.get("missing_symbol_filters"),
         "execution_require_capability_snapshot": exs_preflight.get("require_capability_snapshot"),
         "execution_max_notional_per_order_usd": exs_sizing.get("max_notional_per_order_usd"),
         "execution_max_open_orders_total": exs_sizing.get("max_open_orders_total"),
@@ -9501,6 +9505,22 @@ def create_app() -> FastAPI:
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
         return store.execution_reality.preflight(body.model_dump())
+
+    @app.get("/api/v1/execution/filter-rules")
+    def execution_filter_rules(
+        family: str = Query(...),
+        symbol: str = Query(...),
+        environment: str = Query(default="live"),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.filter_rules(
+                family=family,
+                symbol=symbol,
+                environment=environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/v1/execution/orders")
     def execution_create_order(

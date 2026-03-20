@@ -34,6 +34,8 @@ def _default_filters() -> dict[str, Any]:
         "market_lot_size": {"min_qty": "0.0001", "max_qty": "1000", "step_size": "0.0001"},
         "min_notional": {"min_notional": "10.0"},
         "notional": {"min_notional": "10.0"},
+        "max_num_orders": {"limit": 25, "max_num_orders": 25},
+        "filter_types_present": ["LOT_SIZE", "MARKET_LOT_SIZE", "MIN_NOTIONAL", "NOTIONAL", "PRICE_FILTER"],
     }
 
 
@@ -334,6 +336,12 @@ def _instrument_row(
 ) -> dict[str, Any]:
     symbol = "BTCUSDT" if family != "coinm_futures" else "BTCUSD_PERP"
     quote_asset = "USDT" if family != "coinm_futures" else "USD"
+    catalog_source = {
+        "spot": "binance_spot_exchangeInfo",
+        "margin": "derived:spot_exchangeInfo_for_margin",
+        "usdm_futures": "binance_usdm_exchangeInfo",
+        "coinm_futures": "binance_coinm_exchangeInfo",
+    }.get(family, "binance_exchange_info")
     return {
         "instrument_id": f"binance:{family}:{symbol}",
         "venue": "binance",
@@ -348,7 +356,7 @@ def _instrument_row(
         "live_eligible": live_eligible,
         "paper_eligible": paper_eligible,
         "testnet_eligible": testnet_eligible,
-        "catalog_source": "binance_exchange_info",
+        "catalog_source": catalog_source,
         "first_seen_at": _iso_hours_ago(48),
         "last_seen_at": _iso_hours_ago(1),
         "last_snapshot_id": "SNAP-LIVE",
@@ -392,7 +400,7 @@ def _build_service(
         instrument_registry_service=_FakeRegistryService(
             family=family,
             instrument_row=row,
-            snapshot_fetched_at=snapshot_fetched_at or _iso_hours_ago(1),
+            snapshot_fetched_at=snapshot_fetched_at or utc_now_iso(),
             capability_snapshot=capability_snapshot or _capability_snapshot(),
         ),
         universe_service=_FakeUniverseService(matched=universe_matched),
@@ -1340,7 +1348,40 @@ def test_preflight_blocks_when_execution_policy_is_missing(tmp_path: Path) -> No
     assert "execution_policy_not_loaded" in result["blocking_reasons"]
 
 
-def test_preflight_accepts_live_order_and_normalizes_price_qty(tmp_path: Path) -> None:
+def test_preflight_accepts_live_order_with_aligned_exchange_filters(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.0012,
+            "price": 50000.12,
+            "market_snapshot": {
+                "bid": 50000.0,
+                "ask": 50000.2,
+                "quote_ts_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "orderbook_ts_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+            },
+        }
+    )
+
+    assert result["allowed"] is True
+    assert result["fail_closed"] is False
+    assert result["blocking_reasons"] == []
+    assert result["normalized_order_preview"]["quantity"] == 0.0012
+    assert result["normalized_order_preview"]["limit_price"] == 50000.12
+    assert result["filter_validation"]["status"] == "PASS"
+    assert result["filter_validation"]["filter_source"] == "spot_exchange_info"
+    assert result["snapshot_source"]["universe_membership"]["matched"] is True
+    assert result["estimated_costs"]["total_cost_estimated"] > 0
+
+
+def test_preflight_blocks_invalid_tick_and_step_alignment_but_exposes_normalized_preview(tmp_path: Path) -> None:
     service = _build_service(tmp_path, family="spot")
 
     result = service.preflight(
@@ -1362,13 +1403,102 @@ def test_preflight_accepts_live_order_and_normalizes_price_qty(tmp_path: Path) -
         }
     )
 
-    assert result["allowed"] is True
-    assert result["fail_closed"] is False
-    assert result["blocking_reasons"] == []
+    assert result["allowed"] is False
+    assert result["fail_closed"] is True
+    assert "invalid_step_alignment" in result["blocking_reasons"]
+    assert "invalid_tick_alignment" in result["blocking_reasons"]
     assert result["normalized_order_preview"]["quantity"] == 0.0012
     assert result["normalized_order_preview"]["limit_price"] == 50000.12
-    assert result["snapshot_source"]["universe_membership"]["matched"] is True
-    assert result["estimated_costs"]["total_cost_estimated"] > 0
+    assert result["filter_validation"]["status"] == "BLOCK"
+    assert result["filter_validation"]["changed_fields"] == ["limit_price", "quantity"]
+
+
+def test_preflight_accepts_usdm_filters_with_family_specific_source(tmp_path: Path) -> None:
+    instrument_row = _instrument_row(
+        family="usdm_futures",
+        filter_summary={
+            "price_filter": {"min_price": "0.1", "max_price": "1000000", "tick_size": "0.1"},
+            "lot_size": {"min_qty": "0.001", "max_qty": "1000", "step_size": "0.001"},
+            "market_lot_size": {"min_qty": "0.001", "max_qty": "1500", "step_size": "0.001"},
+            "min_notional": {"min_notional": "5.0"},
+            "max_num_orders": {"limit": 200, "max_num_orders": 200},
+            "filter_types_present": ["LOT_SIZE", "MARKET_LOT_SIZE", "MIN_NOTIONAL", "PRICE_FILTER"],
+        },
+    )
+    service = _build_service(tmp_path, family="usdm_futures", instrument_row=instrument_row)
+
+    result = service.preflight(
+        {
+            "family": "usdm_futures",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.005,
+            "price": 50000.1,
+            "market_snapshot": {
+                "bid": 50000.0,
+                "ask": 50000.2,
+                "mark_price": 50000.05,
+                "quote_ts_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "orderbook_ts_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+            },
+        }
+    )
+
+    assert result["allowed"] is True
+    assert result["filter_validation"]["status"] == "PASS"
+    assert result["filter_validation"]["market_family"] == "um_futures"
+    assert result["filter_validation"]["execution_connector"] == "binance_um_futures"
+    assert result["filter_validation"]["filter_source"] == "um_futures_exchange_info"
+
+
+def test_preflight_blocks_stale_exchange_filters_in_live(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot", snapshot_fetched_at=_iso_hours_ago(1))
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["allowed"] is False
+    assert result["fail_closed"] is True
+    assert "exchange_filters_stale" in result["blocking_reasons"]
+    assert result["snapshot_source"]["exchange_filters"]["status"] == "block"
+
+
+def test_preflight_blocks_filter_source_mismatch(tmp_path: Path) -> None:
+    instrument_row = _instrument_row(family="spot")
+    instrument_row["catalog_source"] = "binance_usdm_exchangeInfo"
+    service = _build_service(tmp_path, family="spot", instrument_row=instrument_row)
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["allowed"] is False
+    assert "filter_source_mismatch" in result["blocking_reasons"]
+    assert result["filter_validation"]["status"] == "BLOCK"
 
 
 def test_preflight_blocks_stale_market_data_in_live(tmp_path: Path) -> None:
@@ -1558,8 +1688,8 @@ def test_create_limit_order_paper_and_query_single_order_detail(tmp_path: Path) 
             "symbol": "BTCUSDT",
             "side": "BUY",
             "order_type": "LIMIT",
-            "quantity": 0.001234,
-            "price": 50000.129,
+            "quantity": 0.0012,
+            "price": 50000.12,
             "market_snapshot": _fresh_market_snapshot(),
         }
     )
@@ -1572,6 +1702,7 @@ def test_create_limit_order_paper_and_query_single_order_detail(tmp_path: Path) 
     assert detail["intent"]["execution_intent_id"] == result["execution_intent_id"]
     assert detail["fills"] == []
     assert detail["reconcile_events"] == []
+    assert detail["filter_validation"]["status"] == "PASS"
 
 
 def test_list_open_orders_and_cancel_single_paper(tmp_path: Path) -> None:

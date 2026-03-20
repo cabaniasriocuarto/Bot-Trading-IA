@@ -18,6 +18,10 @@ from uuid import uuid4
 import yaml
 
 from rtlab_core.execution.binance_adapter import BinanceLiveAdapter
+from rtlab_core.execution.filter_prevalidator import (
+    describe_filter_rules,
+    evaluate_prevalidator,
+)
 from rtlab_core.execution.live_market_runtime import BinanceMarketWebSocketRuntime
 from rtlab_core.execution.live_user_stream_runtime import BinanceUserStreamRuntime
 from rtlab_core.policy_paths import describe_policy_root_resolution
@@ -66,6 +70,16 @@ FAIL_CLOSED_MINIMAL_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
             "orderbook_stale_block_ms": 1,
             "reject_if_missing_basic_filters": True,
             "reject_if_missing_fee_source_in_live": True,
+        },
+        "exchange_filters": {
+            "max_age_ms": 1,
+            "missing_symbol_filters": "block",
+            "invalid_tick_alignment": "block",
+            "invalid_step_alignment": "block",
+            "invalid_min_notional": "block",
+            "unsupported_family_filter_combo": "block",
+            "missing_exchange_info": "block",
+            "filter_source_mismatch": "block",
         },
         "exchange_adapter": {
             "signed_rest_enabled": True,
@@ -2443,6 +2457,33 @@ class ExecutionRealityService:
             "block_after_hours": block_hours,
         }
 
+    def _exchange_filter_policy(self) -> dict[str, Any]:
+        payload = self.safety_policy().get("exchange_filters")
+        return payload if isinstance(payload, dict) else {}
+
+    def _exchange_filter_freshness(self, family: str, environment: str) -> dict[str, Any]:
+        latest = self._latest_snapshot(family, environment)
+        fetched_at = latest.get("fetched_at") if isinstance(latest, dict) else None
+        policy = self._exchange_filter_policy()
+        max_age_ms = max(0, int(_safe_float(policy.get("max_age_ms"), 300000.0)))
+        dt = _parse_ts(fetched_at)
+        if dt is None:
+            return {
+                "status": "missing",
+                "snapshot_id": (latest or {}).get("snapshot_id") if isinstance(latest, dict) else None,
+                "fetched_at": fetched_at,
+                "age_ms": None,
+                "max_age_ms": max_age_ms,
+            }
+        age_ms = max(0, int((_utc_now() - dt).total_seconds() * 1000))
+        return {
+            "status": "block" if max_age_ms > 0 and age_ms > max_age_ms else "fresh",
+            "snapshot_id": (latest or {}).get("snapshot_id") if isinstance(latest, dict) else None,
+            "fetched_at": fetched_at,
+            "age_ms": age_ms,
+            "max_age_ms": max_age_ms,
+        }
+
     def _latest_snapshot(self, family: str, environment: str) -> dict[str, Any] | None:
         if self.instrument_registry_service is None:
             return None
@@ -2507,6 +2548,7 @@ class ExecutionRealityService:
             snapshot = {
                 "bid": _first_number(payload.get("bid")),
                 "ask": _first_number(payload.get("ask")),
+                "mark_price": _first_number(payload.get("mark_price"), payload.get("markPrice")),
                 "quote_ts_ms": int(payload.get("quote_ts_ms") or int(time.time() * 1000)),
                 "orderbook_ts_ms": int(payload.get("orderbook_ts_ms") or int(time.time() * 1000)),
                 "source": str(payload.get("source") or "request"),
@@ -2517,8 +2559,38 @@ class ExecutionRealityService:
         key = (_normalize_family(family), _normalize_environment(environment), _canonical_symbol(symbol))
         cached = self._quotes.get(key)
         if isinstance(cached, dict):
-            return copy.deepcopy(cached)
-        return {"bid": None, "ask": None, "quote_ts_ms": None, "orderbook_ts_ms": None, "source": "missing", "updated_at": None}
+            snapshot = copy.deepcopy(cached)
+            if snapshot.get("mark_price") is None:
+                snapshot["mark_price"] = self._mark_price_snapshot(family=family, environment=environment, symbol=symbol)
+            return snapshot
+        return {
+            "bid": None,
+            "ask": None,
+            "mark_price": self._mark_price_snapshot(family=family, environment=environment, symbol=symbol),
+            "quote_ts_ms": None,
+            "orderbook_ts_ms": None,
+            "source": "missing",
+            "updated_at": None,
+        }
+
+    def _mark_price_snapshot(self, *, family: str, environment: str, symbol: str) -> float | None:
+        normalized_family = _normalize_family(family)
+        if normalized_family not in {"usdm_futures", "coinm_futures"}:
+            return None
+        runtime = self.market_streams_summary()
+        sessions = runtime.get("sessions") if isinstance(runtime.get("sessions"), list) else []
+        target_symbol = _canonical_symbol(symbol)
+        for row in sessions:
+            if _normalize_family(row.get("repo_family")) != normalized_family:
+                continue
+            if _normalize_environment(row.get("environment")) != _normalize_environment(environment):
+                continue
+            mark_prices = row.get("mark_prices") if isinstance(row.get("mark_prices"), dict) else {}
+            payload = mark_prices.get(target_symbol) if isinstance(mark_prices.get(target_symbol), dict) else {}
+            mark_price = _first_number((payload or {}).get("mark_price"))
+            if mark_price is not None:
+                return mark_price
+        return None
 
     def _normalize_order(self, instrument: dict[str, Any], request: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
         filters = instrument.get("filter_summary") if isinstance(instrument.get("filter_summary"), dict) else {}
@@ -2535,13 +2607,16 @@ class ExecutionRealityService:
         qty = _first_number(request.get("quantity"))
         quote_quantity = _first_number(request.get("quote_quantity"))
         limit_price = _first_number(request.get("price"))
+        stop_price = _first_number(request.get("stopPrice"), request.get("stop_price"))
         bid = _first_number(quote.get("bid"))
         ask = _first_number(quote.get("ask"))
+        mark_price = _first_number(quote.get("mark_price"))
         expected_price = limit_price
         if expected_price is None:
             expected_price = ask or bid if side == "BUY" else bid or ask
         normalized_qty = None if qty is None else _decimal_floor(qty, step_size)
         normalized_price = None if limit_price is None else _decimal_floor(limit_price, tick_size)
+        normalized_stop_price = None if stop_price is None else _decimal_floor(stop_price, tick_size)
         preview_price = normalized_price if normalized_price is not None else expected_price
         requested_notional = _safe_float(request.get("requested_notional"), 0.0)
         if requested_notional <= 0:
@@ -2557,16 +2632,73 @@ class ExecutionRealityService:
             "quantity": normalized_qty,
             "quote_quantity": quote_quantity,
             "limit_price": normalized_price,
+            "stop_price": normalized_stop_price,
             "limit_price_provided": limit_price is not None,
             "preview_price": preview_price,
             "requested_notional": requested_notional,
             "reduce_only": None if request.get("reduce_only") is None else _bool(request.get("reduce_only")),
             "step_size": step_size,
             "tick_size": tick_size,
+            "mark_price": mark_price,
             "price_filter": price_filter,
             "lot_size": lot_size,
             "market_lot_size": market_lot_size,
         }
+
+    def _prevalidate_exchange_filters(
+        self,
+        *,
+        family: str,
+        environment: str,
+        mode: str,
+        request: dict[str, Any],
+        instrument: dict[str, Any] | None,
+        latest_snapshot: dict[str, Any] | None,
+        quote: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        target_symbol = _canonical_symbol(request.get("symbol"))
+        open_symbol_orders_count = len(
+            [
+                row
+                for row in self.db.open_orders(family=normalized_family, symbol=target_symbol)
+                if _normalize_environment(row.get("environment")) == normalized_environment
+            ]
+        )
+        return evaluate_prevalidator(
+            family=normalized_family,
+            environment=normalized_environment,
+            mode=mode,
+            symbol=target_symbol,
+            side=request.get("side"),
+            order_type=request.get("order_type"),
+            request=request,
+            instrument=instrument,
+            filter_summary=(instrument or {}).get("filter_summary") if isinstance((instrument or {}).get("filter_summary"), dict) else {},
+            snapshot_fetched_at=(latest_snapshot or {}).get("fetched_at") if isinstance(latest_snapshot, dict) else None,
+            filter_policy=self._exchange_filter_policy(),
+            quote_reference=quote,
+            open_symbol_orders_count=open_symbol_orders_count,
+        )
+
+    def filter_rules(self, *, family: str, symbol: str, environment: str = "live") -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        target_symbol = _canonical_symbol(symbol)
+        instrument = self._instrument_row(normalized_family, target_symbol)
+        latest_snapshot = self._latest_snapshot(normalized_family, normalized_environment)
+        payload = describe_filter_rules(
+            family=normalized_family,
+            environment=normalized_environment,
+            symbol=target_symbol,
+            instrument=instrument,
+            snapshot_fetched_at=(latest_snapshot or {}).get("fetched_at") if isinstance(latest_snapshot, dict) else None,
+            filter_policy=self._exchange_filter_policy(),
+        )
+        payload["policy_source"] = self.policy_source()
+        payload["available"] = instrument is not None
+        return payload
 
     def _estimated_costs(self, *, family: str, request: dict[str, Any], preview: dict[str, Any], instrument: dict[str, Any]) -> dict[str, Any]:
         policy = self._cost_stack_policy()
@@ -4239,6 +4371,7 @@ class ExecutionRealityService:
                 "quantity": request.get("quantity"),
                 "quote_quantity": request.get("quote_quantity"),
                 "limit_price": request.get("price"),
+                "stop_price": request.get("stopPrice") if request.get("stopPrice") is not None else request.get("stop_price"),
                 "preview_price": request.get("price"),
                 "requested_notional": _safe_float(request.get("requested_notional"), 0.0),
                 "reduce_only": request.get("reduce_only"),
@@ -4248,6 +4381,27 @@ class ExecutionRealityService:
         else:
             preview = self._normalize_order(instrument, request, quote)
             costs = self._estimated_costs(family=family, request=request, preview=preview, instrument=instrument)
+        filter_validation = self._prevalidate_exchange_filters(
+            family=family,
+            environment=environment,
+            mode=mode,
+            request=request,
+            instrument=instrument,
+            latest_snapshot=latest_snapshot,
+            quote=quote,
+        ) if instrument is not None else None
+        if isinstance(filter_validation, dict):
+            if isinstance(filter_validation.get("normalized_values"), dict):
+                normalized_values = filter_validation.get("normalized_values") or {}
+                preview["quantity"] = normalized_values.get("quantity")
+                preview["quote_quantity"] = normalized_values.get("quote_quantity")
+                preview["limit_price"] = normalized_values.get("limit_price")
+                preview["stop_price"] = normalized_values.get("stop_price")
+                preview["requested_notional"] = normalized_values.get("requested_notional")
+            warnings.extend(filter_validation.get("warnings") or [])
+            blocking.extend(filter_validation.get("blocking_reasons") or [])
+            if mode == "live" and (filter_validation.get("block") or filter_validation.get("status") == "BLOCK"):
+                fail_closed = True
 
         preflight_cfg = self.safety_policy().get("preflight") if isinstance(self.safety_policy().get("preflight"), dict) else {}
         sizing_cfg = self.safety_policy().get("sizing") if isinstance(self.safety_policy().get("sizing"), dict) else {}
@@ -4277,42 +4431,7 @@ class ExecutionRealityService:
                 blocking.append("instrument_not_live_eligible")
             if environment == "testnet" and not _bool(instrument.get("testnet_eligible")):
                 blocking.append("instrument_not_testnet_eligible")
-
             filters = instrument.get("filter_summary") if isinstance(instrument.get("filter_summary"), dict) else {}
-            if _bool(preflight_cfg.get("reject_if_missing_basic_filters")):
-                if not isinstance(filters.get("price_filter"), dict) or not isinstance(filters.get("lot_size"), dict):
-                    blocking.append("missing_basic_filters")
-
-            price_filter = preview.get("price_filter") if isinstance(preview.get("price_filter"), dict) else {}
-            lot_size = preview.get("lot_size") if isinstance(preview.get("lot_size"), dict) else {}
-            market_lot_size = preview.get("market_lot_size") if isinstance(preview.get("market_lot_size"), dict) else {}
-            active_size_filter = market_lot_size if preview.get("order_type") == "MARKET" and market_lot_size else lot_size
-            min_qty = _first_number((active_size_filter or {}).get("min_qty"))
-            max_qty = _first_number((active_size_filter or {}).get("max_qty"))
-            qty = _first_number(preview.get("quantity"))
-            quote_qty = _first_number(preview.get("quote_quantity"))
-            if qty is None and quote_qty is None:
-                blocking.append("quantity_or_quote_quantity_required")
-            if preview.get("order_type") == "LIMIT" and qty is None:
-                blocking.append("quantity_required_for_limit")
-            if family in {"usdm_futures", "coinm_futures"} and qty is None:
-                blocking.append("quantity_required_for_futures")
-            if qty is not None and min_qty is not None and qty < min_qty:
-                blocking.append("quantity_below_min_qty")
-            if qty is not None and max_qty is not None and qty > max_qty:
-                blocking.append("quantity_above_max_qty")
-
-            limit_price = _first_number(preview.get("limit_price"))
-            if preview.get("order_type") == "LIMIT" and not _bool(preview.get("limit_price_provided")):
-                blocking.append("limit_price_required")
-            if limit_price is not None:
-                min_price = _first_number((price_filter or {}).get("min_price"))
-                max_price = _first_number((price_filter or {}).get("max_price"))
-                if min_price is not None and limit_price < min_price:
-                    blocking.append("price_below_min_price")
-                if max_price is not None and max_price > 0 and limit_price > max_price:
-                    blocking.append("price_above_max_price")
-
             notional_filters = filters.get("notional") if isinstance(filters.get("notional"), dict) else {}
             min_notional = _first_number(
                 (notional_filters or {}).get("min_notional"),
@@ -4434,15 +4553,17 @@ class ExecutionRealityService:
 
         return {
             "allowed": not blocking,
-            "warnings": warnings,
-            "blocking_reasons": blocking,
+            "warnings": list(dict.fromkeys(warnings)),
+            "blocking_reasons": list(dict.fromkeys(blocking)),
             "normalized_order_preview": preview,
+            "filter_validation": filter_validation,
             "estimated_costs": costs,
             "policy_source": self.policy_source(),
             "snapshot_source": {
                 "snapshot_id": (latest_snapshot or {}).get("snapshot_id"),
                 "fetched_at": (latest_snapshot or {}).get("fetched_at"),
                 "freshness": freshness,
+                "exchange_filters": self._exchange_filter_freshness(family, environment) if family else {},
                 "universe_membership": membership,
             },
             "capability_source": {
@@ -4659,6 +4780,12 @@ class ExecutionRealityService:
         preflight = self.preflight(request)
         normalized = preflight.get("normalized_order_preview") if isinstance(preflight.get("normalized_order_preview"), dict) else {}
         estimated_costs = preflight.get("estimated_costs") if isinstance(preflight.get("estimated_costs"), dict) else {}
+        stored_request = copy.deepcopy(request)
+        stored_request["_preflight_context"] = {
+            "filter_validation": copy.deepcopy(preflight.get("filter_validation")),
+            "normalized_order_preview": copy.deepcopy(normalized),
+            "snapshot_source": copy.deepcopy(preflight.get("snapshot_source")),
+        }
         family = _normalize_family(request.get("family"))
         environment = _normalize_environment(request.get("environment"))
         mode = _normalize_mode(request.get("mode"), environment)
@@ -4695,7 +4822,7 @@ class ExecutionRealityService:
                 "policy_hash": self.policy_hash(),
                 "snapshot_id": ((preflight.get("snapshot_source") or {}).get("snapshot_id") if isinstance(preflight.get("snapshot_source"), dict) else None),
                 "capability_snapshot_id": ((preflight.get("capability_source") or {}).get("capability_snapshot_id") if isinstance(preflight.get("capability_source"), dict) else None),
-                "raw_request_json": request,
+                "raw_request_json": stored_request,
             }
         )
 
@@ -4922,6 +5049,8 @@ class ExecutionRealityService:
         intent = reconcile_result["intent"]
         fills = reconcile_result["fills"]
         costs = self._aggregate_order_costs(order=order, intent=intent, fills=fills)
+        request_context = (intent or {}).get("raw_request_json") if isinstance((intent or {}).get("raw_request_json"), dict) else {}
+        preflight_context = request_context.get("_preflight_context") if isinstance(request_context.get("_preflight_context"), dict) else {}
         return {
             "order": order,
             "intent": intent,
@@ -4934,6 +5063,8 @@ class ExecutionRealityService:
             "gross_pnl": costs.get("gross_pnl"),
             "net_pnl": costs.get("net_pnl"),
             "degraded_mode": reconcile_result.get("degraded_mode"),
+            "filter_validation": copy.deepcopy(preflight_context.get("filter_validation")),
+            "normalized_order_preview": copy.deepcopy(preflight_context.get("normalized_order_preview")),
         }
 
     def cancel_order(self, execution_order_id: str) -> dict[str, Any]:
@@ -5160,6 +5291,8 @@ class ExecutionRealityService:
             if supported_families
             else False
         )
+        exchange_filter_details = [self._exchange_filter_freshness(family, "live") | {"family": family} for family in supported_families]
+        exchange_filters_fresh = bool(supported_families) and all(str(item.get("status") or "") == "fresh" for item in exchange_filter_details)
         margin_state = self._margin_guard_state(supported_families=supported_families)
         market_runtime = self.market_streams_summary()
         market_runtime_sessions = market_runtime.get("sessions") if isinstance(market_runtime.get("sessions"), list) else []
@@ -5235,6 +5368,8 @@ class ExecutionRealityService:
             blockers.append("cost_source_missing_blocker")
         if not snapshot_fresh:
             blockers.append("snapshot_freshness_blocker")
+        if not exchange_filters_fresh:
+            blockers.append("exchange_filters_blocker")
         if not capabilities_known:
             blockers.append("capability_snapshot_blocker")
         if str(margin_state.get("status") or "").upper() == "BLOCK":
@@ -5266,6 +5401,8 @@ class ExecutionRealityService:
             "fee_source_fresh": fee_fresh,
             "fee_source_details": fee_details,
             "snapshot_fresh": snapshot_fresh,
+            "exchange_filters_fresh": exchange_filters_fresh,
+            "exchange_filters_details": exchange_filter_details,
             "capabilities_known": capabilities_known,
             "margin_guard_status": margin_state.get("status"),
             "margin_guard": margin_state,
