@@ -39,8 +39,8 @@ Fecha: 2026-03-20
 - [ ] Limites conscientes fuera de RTLOPS-45:
   - `coinm_futures` no queda operativo en este bloque
   - `RTLOPS-55` sigue abierto para el sweep completo de split canonico backend/frontend/storage y provenance
-  - la compatibilidad `order_test` por familia sigue como follow-up aparte en `RTLOPS-56` y no se reabre aqui
-  - la compatibilidad de ordenes condicionales `usdm_futures` (`reduceOnly`, `closePosition`, hedge-mode y familia STOP/TAKE_PROFIT) queda trazada en `RTLOPS-57`
+  - la compatibilidad `order_test` por familia sigue como follow-up aparte y no se reabre aqui
+  - la compatibilidad de ordenes condicionales `usdm_futures` (`reduceOnly`, `closePosition`, hedge-mode y familia STOP/TAKE_PROFIT) queda para follow-up separado
 
 ## RTLOPS-44 - Market WebSocket Runtime live - 2026-03-20
 - [x] Crear policy canonica nueva:

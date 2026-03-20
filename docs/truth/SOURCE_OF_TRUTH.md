@@ -113,8 +113,8 @@ Fecha de actualizacion: 2026-03-20
 - Limites conscientes:
   - no se cerro todavia la migracion completa del camino Spot legacy fuera del runtime minimo ya explicitado
   - `coinm_futures` no queda operativo en este bloque
-  - la compatibilidad de `order_test` por familia sigue siendo deuda aparte y queda trazada en `RTLOPS-56`
-  - la compatibilidad de ordenes condicionales `usdm_futures` (`reduceOnly`, `closePosition`, hedge-mode y familia STOP/TAKE_PROFIT) sigue fuera del alcance formal actual y queda trazada en `RTLOPS-57`
+  - la compatibilidad de `order_test` por familia sigue siendo deuda aparte y requiere follow-up separado en Linear
+  - la compatibilidad de ordenes condicionales `usdm_futures` (`reduceOnly`, `closePosition`, hedge-mode y familia STOP/TAKE_PROFIT) sigue fuera del alcance formal actual y requiere follow-up separado en Linear
 
 ## RTLOPS-44: Market WebSocket Runtime live - 2026-03-20
 
