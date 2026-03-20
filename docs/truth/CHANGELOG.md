@@ -2,6 +2,49 @@
 
 ## 2026-03-20
 
+### RTLOPS-47 - Live preflight final
+- Nuevo modulo:
+  - `rtlab_autotrader/rtlab_core/execution/live_preflight.py`
+- `config/policies/execution_safety.yaml` y su copia nested suman `execution_safety.live_preflight` con:
+  - `freshness_hard_max_sec = 600`
+  - `attestation_max_age_days = 30`
+  - `drift_pass_max_ms = 1500`
+  - `drift_warn_max_ms = 4000`
+  - `recv_window_warn_ms = 5000`
+  - `recv_window_fail_ms = 60000`
+- `rtlab_core/web/app.py` ahora:
+  - instancia `LivePreflightDB`
+  - construye el artefacto canonico `build_live_preflight(...)`
+  - persiste corridas y attestations manuales
+  - expone:
+    - `GET /api/v1/exchange/live-preflight`
+    - `POST /api/v1/exchange/live-preflight/run`
+    - `POST /api/v1/exchange/live-preflight/attest`
+  - endurece:
+    - `POST /api/v1/bot/mode` para exigir preflight `PASS` y fresco antes de `LIVE`
+    - `POST /api/v1/bot/start` para revalidar el mismo gate en `LIVE`
+- Comportamiento operativo nuevo:
+  - el preflight final combina gates, diagnose, cuenta, filtros, preflight local, order/test, open orders y attestation manual
+  - Spot testnet se valida por `/api/*` y no depende de `/sapi/*`
+  - `withdraw disabled` e IP restriction no se marcan como PASS automatico falso; quedan atados a attestation manual persistida
+- Frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx` agrega el bloque `Preflight LIVE Final`
+  - muestra:
+    - overall status
+    - freshness / expiracion
+    - subchecks
+    - historial reciente
+    - attestation manual admin
+  - `rtlab_dashboard/src/lib/types.ts` agrega contratos tipados del artefacto
+- Validacion local de RTLOPS-47:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/live_preflight.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_preflight" --maxfail=1 -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+- Nota administrativa:
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-47` queda pendiente aunque el cierre tecnico del repo/docs/tests este completo
+
 ### RTLOPS-46 - Exchange Filters Pre-Validator hardening
 - Nuevo modulo:
   - `rtlab_autotrader/rtlab_core/execution/filter_prevalidator.py`

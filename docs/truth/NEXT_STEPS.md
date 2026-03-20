@@ -2,6 +2,62 @@
 
 Fecha: 2026-03-20
 
+## RTLOPS-47 - Live preflight + permissions + clock + filters + account scope - 2026-03-20
+- [x] Crear artefacto canonico nuevo:
+  - `rtlab_autotrader/rtlab_core/execution/live_preflight.py`
+- [x] Persistir en SQLite operativa:
+  - `live_preflight_runs`
+  - `live_preflight_attestations`
+- [x] Agregar policy explicita `execution_safety.live_preflight` con:
+  - `freshness_hard_max_sec = 600`
+  - `attestation_max_age_days = 30`
+  - `drift_pass_max_ms = 1500`
+  - `drift_warn_max_ms = 4000`
+  - `recv_window_warn_ms = 5000`
+  - `recv_window_fail_ms = 60000`
+- [x] Implementar builder canonico `build_live_preflight(...)` reutilizando:
+  - `diagnose_exchange(...)`
+  - `evaluate_gates(...)`
+  - `live_can_be_enabled(...)`
+  - `fetch_account_balances(...)`
+  - `fetch_exchange_info(...)`
+  - `filter_rules(...)`
+  - `preflight(...)`
+  - `test_order_contract(...)`
+- [x] Evaluar y persistir subchecks formales:
+  - `credentials_mode`
+  - `timing_security`
+  - `exchange_diagnose`
+  - `live_gates`
+  - `manual_attestation`
+  - `account_readiness`
+  - `symbol_filters`
+  - `execution_preflight`
+  - `order_test`
+  - `operational_state`
+- [x] Exponer endpoints minimos:
+  - `GET /api/v1/exchange/live-preflight`
+  - `POST /api/v1/exchange/live-preflight/run`
+  - `POST /api/v1/exchange/live-preflight/attest`
+- [x] Endurecer bloqueo live en backend:
+  - `POST /api/v1/bot/mode` exige ultimo preflight `PASS` y fresco
+  - `POST /api/v1/bot/start` revalida el mismo gate y falla cerrado
+- [x] Extender frontend minimo en Execution:
+  - bloque `Preflight LIVE Final`
+  - boton de corrida
+  - attestation manual admin
+  - subchecks e historial
+- [x] Revalidar:
+  - `py_compile` focalizado de backend nuevo
+  - `test_web_live_ready.py -k live_preflight`
+  - `test_policy_paths.py`
+  - `test_web_execution_reality_api.py`
+  - `npx.cmd tsc --noEmit`
+- [ ] Limites conscientes fuera de RTLOPS-47:
+  - el bloque queda enfocado a Spot live/testnet final; no cierra futures/margin preflight final
+  - `withdraw disabled` e IP restriction quedan bajo attestation manual persistida para no inventar PASS automatico no garantizado por la API
+  - si Linear MCP sigue caido, el cierre administrativo queda pendiente aunque repo/docs/tests ya esten cerrados
+
 ## RTLOPS-46 - Exchange Filters Pre-Validator hardening - 2026-03-20
 - [x] Agregar policy explicita `execution_safety.exchange_filters` con:
   - `max_age_ms = 300000`
@@ -125,15 +181,11 @@ Fecha: 2026-03-20
   - integracion con `ExecutionRealityService`, `reconcile`, `fills` y `live_safety`
 
 ## Siguiente issue exacto
-- `RTLOPS-47` - Live preflight + permissions + clock + filters + account scope
+- `RTLOPS-48` - Live Order State Machine formal
 - alcance inmediato esperado:
-  - consolidar el gate final de preflight live sobre:
-    - exchange adapter
-    - market streams
-    - user streams
-    - filtros oficiales
-    - account scope
-    - permisos y reloj
+  - formalizar transiciones explicitas de orden live desde `INTENT_CREATED` hasta terminales
+  - persistir la trayectoria completa de orden/eventos/fills sin depender de heuristicas implícitas
+  - apoyar reconcile, DESYNC y safety sobre una state machine auditable
 
 ## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
 - [x] Endurecer signed REST live con:

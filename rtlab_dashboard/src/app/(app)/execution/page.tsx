@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api";
 import type {
   BotDecisionLogResponse,
@@ -19,6 +20,8 @@ import type {
   ExchangeDiagnoseResponse,
   ExecutionStats,
   HealthResponse,
+  LivePreflightPayload,
+  LivePreflightRunResponse,
   LogEvent,
   SettingsResponse,
   Strategy,
@@ -70,6 +73,10 @@ export default function ExecutionPage() {
   const [rollout, setRollout] = useState<RolloutStatusLite | null>(null);
   const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
   const [marketStreams, setMarketStreams] = useState<ExecutionMarketStreamsSummary | null>(null);
+  const [livePreflight, setLivePreflight] = useState<LivePreflightPayload | null>(null);
+  const [livePreflightBusy, setLivePreflightBusy] = useState(false);
+  const [livePreflightAttestBusy, setLivePreflightAttestBusy] = useState(false);
+  const [livePreflightNote, setLivePreflightNote] = useState("");
   const [exchangeDiagError, setExchangeDiagError] = useState("");
   const [panelLoading, setPanelLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -107,7 +114,7 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload] = await Promise.all([
+    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload, livePreflightPayload] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -116,6 +123,7 @@ export default function ExecutionPage() {
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
       apiGet<ExecutionMarketStreamsSummary>("/api/v1/execution/market-streams/summary").catch(() => null as ExecutionMarketStreamsSummary | null),
+      apiGet<LivePreflightPayload>("/api/v1/exchange/live-preflight?mode=live").catch(() => null as LivePreflightPayload | null),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
@@ -124,6 +132,7 @@ export default function ExecutionPage() {
     setRollout(rolloutPayload);
     setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
     setMarketStreams(marketStreamsPayload);
+    setLivePreflight(livePreflightPayload);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
     const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
@@ -273,6 +282,40 @@ export default function ExecutionPage() {
     };
   });
 
+  const livePreflightLatest = livePreflight?.latest || null;
+  const livePreflightGate = livePreflight?.live_enablement_gate || null;
+  const livePreflightAttestationStatus = livePreflight?.attestation_status || null;
+  const livePreflightAttestation = livePreflight?.latest_attestation || null;
+  const livePreflightChecks = livePreflightLatest?.checks ? Object.entries(livePreflightLatest.checks) : [];
+  const livePreflightRecentRuns = livePreflight?.recent_runs?.slice(0, 5) || [];
+  const livePreflightStatus: "pass" | "fail" | "warn" | "pending" =
+    !livePreflightLatest
+      ? "pending"
+      : livePreflightGate?.ok
+        ? "pass"
+        : livePreflightLatest.overall_status === "WARN"
+          ? "warn"
+          : "fail";
+  const livePreflightHelp = !livePreflightLatest
+    ? "Todavia no hay una corrida persistida del preflight LIVE final."
+    : livePreflightGate?.ok
+      ? `Preflight PASS y fresco hasta ${formatDateTime(livePreflightLatest.expires_at)}.`
+      : livePreflightGate?.reason === "live_preflight_expired"
+        ? `El ultimo preflight vencio en ${formatDateTime(livePreflightLatest.expires_at)}.`
+        : livePreflightLatest.blocking_reasons?.length
+          ? `Bloqueos: ${livePreflightLatest.blocking_reasons.join(", ")}.`
+          : `Estado ${livePreflightLatest.overall_status}.`;
+  const manualPermsStatus: "pass" | "fail" | "warn" | "pending" | "manual" = !livePreflightAttestationStatus
+    ? "manual"
+    : livePreflightAttestationStatus.status === "PASS"
+      ? "pass"
+      : "fail";
+  const manualPermsHelp = livePreflightAttestationStatus
+    ? livePreflightAttestationStatus.status === "PASS"
+      ? `Attestation vigente hasta ${formatDateTime(livePreflightAttestationStatus.expires_at)} por ${livePreflightAttestation?.verified_by || "admin"}.`
+      : `Attestation manual requerida: ${livePreflightAttestationStatus.reason}.`
+    : "Chequeo manual en el panel del exchange. Requisito obligatorio antes de LIVE.";
+
   const liveReadyItems = [
     {
       key: "keys",
@@ -286,8 +329,8 @@ export default function ExecutionPage() {
     {
       key: "perms",
       label: "Permisos minimos (Read + Trade, sin Withdraw)",
-      status: "manual",
-      help: "Chequeo manual en el panel del exchange. Requisito obligatorio antes de LIVE.",
+      status: manualPermsStatus,
+      help: manualPermsHelp,
     },
     {
       key: "connector",
@@ -307,6 +350,12 @@ export default function ExecutionPage() {
         gates?.overall_status === "PASS"
           ? "Los gates LIVE estan en PASS."
           : "Revisa Settings > Rollout / Gates y corrige FAIL antes de pasar a LIVE.",
+    },
+    {
+      key: "preflight",
+      label: "Preflight LIVE final",
+      status: livePreflightStatus,
+      help: livePreflightHelp,
     },
     {
       key: "approve",
@@ -331,9 +380,10 @@ export default function ExecutionPage() {
     modeDraft === "LIVE" &&
     liveReadyItems.find((row) => row.key === "keys")?.status === "pass" &&
     liveReadyItems.find((row) => row.key === "connector")?.status === "pass" &&
-    liveReadyItems.find((row) => row.key === "gates")?.status === "pass";
+    liveReadyItems.find((row) => row.key === "gates")?.status === "pass" &&
+    liveReadyItems.find((row) => row.key === "preflight")?.status === "pass";
   const liveBlockingItems = liveReadyItems
-    .filter((row) => ["keys", "connector", "gates"].includes(String(row.key)))
+    .filter((row) => ["keys", "connector", "gates", "preflight"].includes(String(row.key)))
     .filter((row) => row.status !== "pass");
   const liveBotsBlocked = liveBlockingItems.length > 0;
   const liveBotsBlockedReason = liveBlockingItems.map((row) => row.label).join(", ");
@@ -553,6 +603,51 @@ export default function ExecutionPage() {
       setControlError(err instanceof Error ? err.message : "No se pudo cambiar el modo operativo.");
     } finally {
       setModeBusy(false);
+    }
+  };
+
+  const runLivePreflight = async () => {
+    if (role !== "admin") return;
+    setLivePreflightBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<LivePreflightRunResponse>("/api/v1/exchange/live-preflight/run", {
+        mode: "live",
+      });
+      setMessage(
+        payload.ok
+          ? "Preflight LIVE final en PASS."
+          : `Preflight LIVE final ${payload.run?.overall_status || "FAIL"}: ${payload.run?.blocking_reasons?.join(", ") || "revisar checks"}.`,
+      );
+      await refreshAll(true);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo ejecutar el preflight LIVE final.");
+    } finally {
+      setLivePreflightBusy(false);
+    }
+  };
+
+  const saveLivePreflightAttestation = async () => {
+    if (role !== "admin") return;
+    setLivePreflightAttestBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      await apiPost("/api/v1/exchange/live-preflight/attest", {
+        mode: "live",
+        manual_permissions_verified: true,
+        trade_enabled_verified: true,
+        withdraw_disabled_verified: true,
+        ip_restriction_verified: true,
+        note: livePreflightNote.trim(),
+      });
+      setMessage("Attestation manual LIVE guardada.");
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo guardar la attestation manual.");
+    } finally {
+      setLivePreflightAttestBusy(false);
     }
   };
 
@@ -1084,6 +1179,127 @@ export default function ExecutionPage() {
             )}
           </CardContent>
         </Card>
+
+        <Card>
+          <CardTitle>Preflight LIVE Final</CardTitle>
+          <CardDescription>
+            Artefacto canonico y persistido para habilitar LIVE en forma fail-closed. No reemplaza los gates: los aterriza con cuenta, filtros, orden de prueba y attestation manual.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={preflightBadgeVariant(livePreflightLatest?.overall_status)}>
+                {livePreflightLatest ? `Overall ${livePreflightLatest.overall_status}` : "Sin corrida"}
+              </Badge>
+              <Badge variant={livePreflightGate?.ok ? "success" : "danger"}>
+                {livePreflightGate?.ok ? "PASS fresco" : "Bloquea LIVE"}
+              </Badge>
+              <Badge variant={livePreflightAttestationStatus?.status === "PASS" ? "success" : "warn"}>
+                {livePreflightAttestationStatus?.status === "PASS" ? "Attestation vigente" : "Attestation requerida"}
+              </Badge>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Metric title="Ultima corrida" value={formatDateTime(livePreflightLatest?.evaluated_at)} compact />
+              <Metric title="Vence" value={formatDateTime(livePreflightLatest?.expires_at)} compact />
+              <Metric title="Freshness (s)" value={String(livePreflightLatest?.freshness_seconds ?? 0)} compact />
+              <Metric title="Bloqueos" value={String(livePreflightLatest?.blocking_reasons?.length ?? 0)} compact />
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+              <p className="font-semibold text-slate-100">Estado operativo</p>
+              <p className="mt-2">
+                {livePreflightHelp}
+              </p>
+              {livePreflightGate?.reason ? (
+                <p className="mt-2 text-slate-400">gate: {livePreflightGate.reason}</p>
+              ) : null}
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold text-slate-100">Attestation manual admin</p>
+                {livePreflightAttestation ? (
+                  <Badge variant="info">
+                    {livePreflightAttestation.verified_by} · {formatDateTime(livePreflightAttestation.verified_at)}
+                  </Badge>
+                ) : (
+                  <Badge variant="warn">pendiente</Badge>
+                )}
+              </div>
+              <p className="mt-2">
+                Verifiqué en panel del exchange: Read + Trade OK, Withdraw OFF, IP restriction OK.
+              </p>
+              <Textarea
+                value={livePreflightNote}
+                onChange={(e) => setLivePreflightNote(e.target.value)}
+                className="mt-3 min-h-[88px] text-xs"
+                placeholder="Nota operativa de attestation (opcional, pero recomendable)."
+                disabled={role !== "admin" || livePreflightAttestBusy}
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={role !== "admin" || livePreflightAttestBusy}
+                  onClick={() => {
+                    void saveLivePreflightAttestation();
+                  }}
+                >
+                  {livePreflightAttestBusy ? "Guardando..." : "Guardar attestation manual"}
+                </Button>
+                <Button
+                  disabled={role !== "admin" || livePreflightBusy}
+                  onClick={() => {
+                    void runLivePreflight();
+                  }}
+                >
+                  {livePreflightBusy ? "Ejecutando..." : "Ejecutar preflight"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Subchecks de la ultima corrida</p>
+              {livePreflightChecks.length ? (
+                livePreflightChecks.map(([key, row]) => (
+                  <div key={key} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-slate-100">{key}</p>
+                        <p className="mt-1 text-xs text-slate-400">{String(row.detail || "-")}</p>
+                      </div>
+                      <Badge variant={preflightBadgeVariant(String(row.status || "FAIL"))}>{String(row.status || "FAIL")}</Badge>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                  Sin corrida persistida todavia.
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Historial reciente</p>
+              {livePreflightRecentRuns.length ? (
+                livePreflightRecentRuns.map((row) => (
+                  <div key={row.preflight_id} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-100">{formatDateTime(row.evaluated_at)}</span>
+                        <Badge variant={preflightBadgeVariant(row.overall_status)}>{row.overall_status}</Badge>
+                      </div>
+                      <span className="text-slate-400">vence {formatDateTime(row.expires_at)}</span>
+                    </div>
+                    <p className="mt-2 text-slate-400">
+                      bloqueos: {row.blocking_reasons.length ? row.blocking_reasons.join(", ") : "ninguno"}
+                      {row.warnings.length ? ` · warnings: ${row.warnings.join(", ")}` : ""}
+                    </p>
+                  </div>
+                ))
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-3">
@@ -1528,6 +1744,20 @@ function modeLabel(mode: TradingMode | string): string {
   if (normalized === "TESTNET") return "Testnet";
   if (normalized === "LIVE") return "Live";
   return normalized;
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) return "-";
+  const dt = new Date(value);
+  return Number.isNaN(dt.getTime()) ? "-" : dt.toLocaleString();
+}
+
+function preflightBadgeVariant(status?: string): "success" | "danger" | "warn" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "PASS") return "success";
+  if (normalized === "WARN") return "warn";
+  if (normalized === "FAIL") return "danger";
+  return "neutral";
 }
 
 function isMissingRouteError(err: unknown) {

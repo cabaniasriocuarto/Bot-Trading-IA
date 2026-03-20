@@ -26,6 +26,13 @@ execution_safety:
     unsupported_family_filter_combo: block
     missing_exchange_info: block
     filter_source_mismatch: block
+  live_preflight:
+    freshness_hard_max_sec: 600
+    attestation_max_age_days: 30
+    drift_pass_max_ms: 1500
+    drift_warn_max_ms: 4000
+    recv_window_warn_ms: 5000
+    recv_window_fail_ms: 60000
   exchange_adapter:
     signed_rest_enabled: true
     server_time_sync_enabled: true

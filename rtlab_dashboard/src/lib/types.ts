@@ -81,6 +81,87 @@ export interface ExecutionMarketStreamsSummary {
   live_degraded: boolean;
 }
 
+export type LivePreflightStatus = "PASS" | "WARN" | "FAIL";
+
+export type LivePreflightCheck = {
+  status: LivePreflightStatus;
+  detail?: string;
+  [key: string]: unknown;
+};
+
+export interface LivePreflightRun {
+  preflight_id: string;
+  mode: "live" | "testnet";
+  exchange: string;
+  market_type: string;
+  symbol?: string | null;
+  side?: string | null;
+  quantity?: number | null;
+  quote_order_qty?: number | null;
+  evaluated_at: string;
+  expires_at?: string | null;
+  overall_status: LivePreflightStatus;
+  freshness_seconds: number;
+  blocking_reasons: string[];
+  warnings: string[];
+  checks: Record<string, LivePreflightCheck>;
+  source_versions: Record<string, unknown>;
+  diagnostics: Array<Record<string, unknown>>;
+  manual_attestations: Record<string, unknown>;
+  runtime_context: Record<string, unknown>;
+  exchange_context: Record<string, unknown>;
+}
+
+export interface LivePreflightAttestation {
+  attestation_id: string;
+  mode: "live" | "testnet";
+  exchange: string;
+  market_type: string;
+  created_at: string;
+  verified_by: string;
+  verified_at: string;
+  note?: string | null;
+  manual_permissions_verified: boolean;
+  trade_enabled_verified: boolean;
+  withdraw_disabled_verified: boolean;
+  ip_restriction_verified: boolean;
+}
+
+export interface LivePreflightAttestationStatus {
+  status: LivePreflightStatus;
+  reason: string;
+  age_days?: number | null;
+  expires_at?: string | null;
+  verified_at?: string | null;
+}
+
+export interface LivePreflightGate {
+  ok: boolean;
+  mode: "live" | "testnet";
+  reason: string;
+  latest?: LivePreflightRun | null;
+  fresh: boolean;
+}
+
+export interface LivePreflightPayload {
+  mode: "live" | "testnet";
+  policy: Record<string, unknown>;
+  latest: LivePreflightRun | null;
+  recent_runs: LivePreflightRun[];
+  latest_attestation: LivePreflightAttestation | null;
+  attestation_status: LivePreflightAttestationStatus | null;
+  live_enablement_gate: LivePreflightGate;
+}
+
+export interface LivePreflightRunResponse {
+  ok: boolean;
+  run: LivePreflightRun;
+  policy: Record<string, unknown>;
+  latest_attestation: LivePreflightAttestation | null;
+  attestation_status: LivePreflightAttestationStatus | null;
+  live_enablement_gate: LivePreflightGate;
+}
+
 export interface StrategyManifest {
   id: string;
   name: string;

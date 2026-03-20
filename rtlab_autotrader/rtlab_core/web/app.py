@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import copy
 import csv
 import hashlib
 import hmac
@@ -36,6 +37,7 @@ from rtlab_core.domains import (
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution import ExecutionRealityService
+from rtlab_core.execution.live_preflight import LivePreflightDB, attestation_status
 from rtlab_core.execution.live_market_runtime import load_binance_live_runtime_bundle
 from rtlab_core.execution.reality import load_execution_router_bundle, load_execution_safety_bundle
 from rtlab_core.execution.oms import OMS, Order
@@ -572,6 +574,23 @@ class BotStartBody(BaseModel):
     bot_id: str | None = None
 
 
+class LivePreflightRunBody(BaseModel):
+    mode: Literal["live", "testnet"] = "live"
+    symbol: str | None = None
+    side: Literal["BUY", "SELL"] = "BUY"
+    quantity: float | None = None
+    quote_order_qty: float | None = None
+
+
+class LivePreflightAttestBody(BaseModel):
+    mode: Literal["live", "testnet"] = "live"
+    manual_permissions_verified: bool = True
+    trade_enabled_verified: bool = True
+    withdraw_disabled_verified: bool = True
+    ip_restriction_verified: bool = True
+    note: str | None = None
+
+
 class ShadowStartBody(BaseModel):
     bot_id: str | None = None
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -863,6 +882,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     exs_modes = exs.get("modes") if isinstance(exs.get("modes"), dict) else {}
     exs_preflight = exs.get("preflight") if isinstance(exs.get("preflight"), dict) else {}
     exs_exchange_filters = exs.get("exchange_filters") if isinstance(exs.get("exchange_filters"), dict) else {}
+    exs_live_preflight = exs.get("live_preflight") if isinstance(exs.get("live_preflight"), dict) else {}
     exs_sizing = exs.get("sizing") if isinstance(exs.get("sizing"), dict) else {}
     exs_kill = exs.get("kill_switch") if isinstance(exs.get("kill_switch"), dict) else {}
     exr_families = exr.get("families_enabled") if isinstance(exr.get("families_enabled"), dict) else {}
@@ -942,6 +962,12 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_quote_stale_block_ms": exs_preflight.get("quote_stale_block_ms"),
         "execution_exchange_filters_max_age_ms": exs_exchange_filters.get("max_age_ms"),
         "execution_exchange_filters_missing_symbol_filters": exs_exchange_filters.get("missing_symbol_filters"),
+        "execution_live_preflight_freshness_hard_max_sec": exs_live_preflight.get("freshness_hard_max_sec"),
+        "execution_live_preflight_attestation_max_age_days": exs_live_preflight.get("attestation_max_age_days"),
+        "execution_live_preflight_drift_pass_max_ms": exs_live_preflight.get("drift_pass_max_ms"),
+        "execution_live_preflight_drift_warn_max_ms": exs_live_preflight.get("drift_warn_max_ms"),
+        "execution_live_preflight_recv_window_warn_ms": exs_live_preflight.get("recv_window_warn_ms"),
+        "execution_live_preflight_recv_window_fail_ms": exs_live_preflight.get("recv_window_fail_ms"),
         "execution_require_capability_snapshot": exs_preflight.get("require_capability_snapshot"),
         "execution_max_notional_per_order_usd": exs_sizing.get("max_notional_per_order_usd"),
         "execution_max_open_orders_total": exs_sizing.get("max_open_orders_total"),
@@ -2081,7 +2107,11 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
             params={},
             timeout_sec=timeout_sec,
         )
-        checks["account"] = {"ok": account_ok, "status_code": account_result["status_code"], "endpoint": account_result["url"]}
+        checks["account"] = {
+            "ok": account_ok,
+            "status_code": account_result["status_code"],
+            "endpoint": account_result.get("url") or f"{creds['base_url']}/api/v3/account",
+        }
         if not account_ok:
             category, detail = _classify_exchange_error(account_result["status_code"], account_result["payload"])
             checks["account"]["error_type"] = category
@@ -2110,7 +2140,12 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
                 params={"symbol": symbol, "side": "BUY", "type": "MARKET", "quoteOrderQty": quote_qty},
                 timeout_sec=timeout_sec,
             )
-            checks["order_test"] = {"ok": order_ok, "status_code": order_result["status_code"], "endpoint": order_result["url"], "symbol": symbol}
+            checks["order_test"] = {
+                "ok": order_ok,
+                "status_code": order_result["status_code"],
+                "endpoint": order_result.get("url") or f"{creds['base_url']}/api/v3/order/test",
+                "symbol": symbol,
+            }
             if not order_ok:
                 category, detail = _classify_exchange_error(order_result["status_code"], order_result["payload"])
                 checks["order_test"]["error_type"] = category
@@ -2261,6 +2296,7 @@ class ConsoleStore:
             instrument_registry_service=self.instrument_registry,
             universe_service=self.instrument_universes,
         )
+        self.live_preflight = LivePreflightDB(CONSOLE_DB_PATH)
         self.instrument_registry_startup_sync: dict[str, Any] = {
             "ok": True,
             "startup": True,
@@ -8989,6 +9025,570 @@ def live_can_be_enabled(gates_payload: dict[str, Any]) -> tuple[bool, str]:
     return True, "All live gates are PASS"
 
 
+def _live_preflight_policy() -> dict[str, Any]:
+    defaults = {
+        "freshness_hard_max_sec": 600,
+        "attestation_max_age_days": 30,
+        "drift_pass_max_ms": 1500,
+        "drift_warn_max_ms": 4000,
+        "recv_window_warn_ms": 5000,
+        "recv_window_fail_ms": 60000,
+    }
+    payload = store.execution_reality.safety_policy().get("live_preflight")
+    cfg = payload if isinstance(payload, dict) else {}
+    merged = {**defaults, **cfg}
+    merged["freshness_hard_max_sec"] = max(60, int(_as_int(merged.get("freshness_hard_max_sec"), 600)))
+    merged["attestation_max_age_days"] = max(1, int(_as_int(merged.get("attestation_max_age_days"), 30)))
+    merged["drift_pass_max_ms"] = max(0, int(_as_int(merged.get("drift_pass_max_ms"), 1500)))
+    merged["drift_warn_max_ms"] = max(merged["drift_pass_max_ms"], int(_as_int(merged.get("drift_warn_max_ms"), 4000)))
+    merged["recv_window_warn_ms"] = max(0, int(_as_int(merged.get("recv_window_warn_ms"), 5000)))
+    merged["recv_window_fail_ms"] = max(merged["recv_window_warn_ms"], int(_as_int(merged.get("recv_window_fail_ms"), 60000)))
+    return merged
+
+
+def _live_preflight_default_symbol(mode: str) -> str:
+    normalized_mode = str(mode or "live").strip().lower()
+    candidates = [
+        os.getenv("BINANCE_TESTNET_TEST_SYMBOL") if normalized_mode == "testnet" else os.getenv("BINANCE_LIVE_PREFLIGHT_SYMBOL"),
+        os.getenv("BINANCE_LIVE_PREFLIGHT_SYMBOL") if normalized_mode == "testnet" else os.getenv("BINANCE_TESTNET_TEST_SYMBOL"),
+        "BTCUSDT",
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip().upper()
+        if text:
+            return text
+    return "BTCUSDT"
+
+
+def _live_preflight_default_quote_qty(mode: str) -> float:
+    normalized_mode = str(mode or "live").strip().lower()
+    candidates = [
+        os.getenv("BINANCE_TESTNET_TEST_QUOTE_QTY") if normalized_mode == "testnet" else os.getenv("BINANCE_LIVE_PREFLIGHT_QUOTE_QTY"),
+        os.getenv("BINANCE_LIVE_PREFLIGHT_QUOTE_QTY") if normalized_mode == "testnet" else os.getenv("BINANCE_TESTNET_TEST_QUOTE_QTY"),
+        "15",
+    ]
+    for candidate in candidates:
+        try:
+            value = float(candidate)
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return 15.0
+
+
+def _live_preflight_candidate(mode: str, requested: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = requested if isinstance(requested, dict) else {}
+    normalized_mode = "testnet" if str(body.get("mode") or mode or "live").strip().lower() == "testnet" else "live"
+    symbol = str(body.get("symbol") or _live_preflight_default_symbol(normalized_mode)).strip().upper()
+    side = str(body.get("side") or "BUY").strip().upper()
+    quantity = body.get("quantity")
+    quote_order_qty = body.get("quote_order_qty")
+    if quantity is None and quote_order_qty is None:
+        quote_order_qty = _live_preflight_default_quote_qty(normalized_mode)
+    return {
+        "family": "spot",
+        "environment": normalized_mode,
+        "mode": normalized_mode,
+        "symbol": symbol,
+        "side": side if side in {"BUY", "SELL"} else "BUY",
+        "order_type": "MARKET",
+        "quantity": None if quantity is None else float(quantity),
+        "quote_quantity": None if quote_order_qty is None else float(quote_order_qty),
+    }
+
+
+def _live_preflight_runtime_quote(mode: str, symbol: str) -> dict[str, Any] | None:
+    quote = store.execution_reality._quote_snapshot("spot", mode, symbol)  # type: ignore[attr-defined]
+    if not isinstance(quote, dict):
+        return None
+    if quote.get("quote_ts_ms") is None:
+        return None
+    return {
+        "bid": quote.get("bid"),
+        "ask": quote.get("ask"),
+        "mark_price": quote.get("mark_price"),
+        "quote_ts_ms": quote.get("quote_ts_ms"),
+        "orderbook_ts_ms": quote.get("orderbook_ts_ms"),
+        "source": quote.get("source"),
+    }
+
+
+def _parse_utc_ts(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _live_preflight_gate(mode: str = "live") -> dict[str, Any]:
+    normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+    latest = store.live_preflight.latest_run(mode=normalized_mode)
+    if latest is None:
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": "live_preflight_missing",
+            "latest": None,
+            "fresh": False,
+        }
+    status = str(latest.get("overall_status") or "").upper()
+    if status != "PASS":
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": f"live_preflight_status_{status.lower() or 'fail'}",
+            "latest": latest,
+            "fresh": False,
+        }
+    expires_at = _parse_utc_ts(latest.get("expires_at"))
+    now_dt = datetime.now(timezone.utc)
+    if expires_at is None or expires_at <= now_dt:
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": "live_preflight_expired",
+            "latest": latest,
+            "fresh": False,
+        }
+    return {
+        "ok": True,
+        "mode": normalized_mode,
+        "reason": "live_preflight_pass",
+        "latest": latest,
+        "fresh": True,
+    }
+
+
+def latest_live_preflight_payload(mode: str = "live", *, limit: int = 10) -> dict[str, Any]:
+    normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+    policy = _live_preflight_policy()
+    latest_attestation = store.live_preflight.latest_attestation(mode=normalized_mode)
+    return {
+        "mode": normalized_mode,
+        "policy": copy.deepcopy(policy),
+        "latest": store.live_preflight.latest_run(mode=normalized_mode),
+        "recent_runs": store.live_preflight.list_runs(mode=normalized_mode, limit=max(1, int(limit))),
+        "latest_attestation": latest_attestation,
+        "attestation_status": attestation_status(
+            latest_attestation,
+            max_age_days=int(policy.get("attestation_max_age_days", 30)),
+        ),
+        "live_enablement_gate": _live_preflight_gate(normalized_mode),
+    }
+
+
+def build_live_preflight(
+    payload: dict[str, Any] | None = None,
+    *,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    requested = payload if isinstance(payload, dict) else {}
+    policy = _live_preflight_policy()
+    candidate = _live_preflight_candidate(str(requested.get("mode") or "live"), requested)
+    mode = str(candidate.get("mode") or "live")
+    symbol = str(candidate.get("symbol") or "")
+    evaluated_dt = datetime.now(timezone.utc)
+    evaluated_at = evaluated_dt.isoformat()
+    freshness_seconds = int(policy.get("freshness_hard_max_sec", 600))
+    expires_at = (evaluated_dt + timedelta(seconds=freshness_seconds)).isoformat()
+    settings = store.load_settings()
+    state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    runtime_snapshot = _runtime_contract_snapshot(state)
+    telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+    diagnostics: list[dict[str, Any]] = []
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    checks: dict[str, Any] = {}
+    source_versions = {
+        "execution_policy_hash": store.execution_reality.policy_hash(),
+        "binance_live_runtime_hash": store.execution_reality.binance_live_runtime_hash(),
+        "runtime_contract_version": RUNTIME_CONTRACT_VERSION,
+        "mode_taxonomy": list(GLOBAL_RUNTIME_MODES),
+    }
+
+    def _push_check(name: str, status: str, detail: str, **extra: Any) -> None:
+        checks[name] = {"status": status, "detail": detail, **extra}
+        if status == "FAIL":
+            blocking_reasons.append(name)
+        elif status == "WARN":
+            warnings.append(name)
+
+    creds = load_exchange_credentials(mode)
+    runtime_engine = _runtime_engine_from_state(state)
+    runtime_real_required = runtime_engine == RUNTIME_ENGINE_REAL
+    credentials_ok = bool(creds.get("has_keys")) and str(creds.get("exchange") or "").strip().lower() == "binance"
+    mode_ok = mode in {"live", "testnet"}
+    if credentials_ok and mode_ok and runtime_real_required:
+        _push_check(
+            "credentials_mode",
+            "PASS",
+            "Credenciales, exchange y runtime real disponibles para preflight final.",
+            exchange=creds.get("exchange"),
+            mode=mode,
+            runtime_engine=runtime_engine,
+            key_source=creds.get("key_source"),
+        )
+    else:
+        detail_parts = []
+        if not credentials_ok:
+            detail_parts.append("credenciales_binance_missing")
+        if not mode_ok:
+            detail_parts.append("mode_invalid")
+        if not runtime_real_required:
+            detail_parts.append("runtime_engine_not_real")
+        _push_check(
+            "credentials_mode",
+            "FAIL",
+            ", ".join(detail_parts) or "Preflight live requiere exchange/binance, modo live|testnet y runtime real.",
+            exchange=creds.get("exchange"),
+            mode=mode,
+            runtime_engine=runtime_engine,
+            key_source=creds.get("key_source"),
+            missing_env_vars=list(creds.get("missing_env_vars") or []),
+        )
+
+    timeout_sec = _exchange_timeout_seconds()
+    drift_ms: int | None = None
+    recv_window_ms = int(store.execution_reality._exchange_adapter_recv_window_ms())  # type: ignore[attr-defined]
+    time_status = "FAIL"
+    time_detail = "No se pudo validar server time."
+    time_url = f"{str(creds.get('base_url') or '').rstrip('/')}/api/v3/time"
+    if credentials_ok:
+        local_before = int(time.time() * 1000)
+        try:
+            response = requests.get(time_url, timeout=timeout_sec)
+            local_after = int(time.time() * 1000)
+            payload_json = _parse_json_response(response)
+            if response.ok and isinstance(payload_json, dict) and payload_json.get("serverTime") is not None:
+                server_time_ms = int(payload_json.get("serverTime"))
+                local_mid = int((local_before + local_after) / 2)
+                drift_ms = int(server_time_ms - local_mid)
+                abs_drift_ms = abs(drift_ms)
+                if abs_drift_ms <= int(policy.get("drift_pass_max_ms", 1500)):
+                    time_status = "PASS"
+                    time_detail = f"Drift {drift_ms} ms dentro del umbral PASS."
+                elif abs_drift_ms <= int(policy.get("drift_warn_max_ms", 4000)):
+                    time_status = "WARN"
+                    time_detail = f"Drift {drift_ms} ms en zona WARN."
+                else:
+                    time_status = "FAIL"
+                    time_detail = f"Drift {drift_ms} ms excede el umbral FAIL."
+            else:
+                time_detail = f"Server time no disponible ({response.status_code})."
+        except Exception as exc:
+            time_detail = f"Server time request failed: {exc}"
+    if recv_window_ms > int(policy.get("recv_window_fail_ms", 60000)):
+        time_status = "FAIL"
+        time_detail = f"{time_detail} recvWindow={recv_window_ms} supera el maximo permitido."
+    elif recv_window_ms > int(policy.get("recv_window_warn_ms", 5000)) and time_status == "PASS":
+        time_status = "WARN"
+        time_detail = f"{time_detail} recvWindow={recv_window_ms} supera la recomendacion operativa."
+    _push_check(
+        "timing_security",
+        time_status,
+        time_detail,
+        drift_ms=drift_ms,
+        recv_window_ms=recv_window_ms,
+        time_url=time_url,
+    )
+
+    diagnose_payload = diagnose_exchange(mode, force_refresh=True)
+    diagnostics.extend(
+        {"source": "diagnose_exchange", "message": str(item)}
+        for item in (diagnose_payload.get("diagnostics") or [])
+        if str(item).strip()
+    )
+    if bool(diagnose_payload.get("connector_ok")) and bool(diagnose_payload.get("order_ok")):
+        _push_check(
+            "exchange_diagnose",
+            "PASS",
+            "Diagnose exchange confirma conector y order/test.",
+            connector_ok=True,
+            order_ok=True,
+        )
+    else:
+        _push_check(
+            "exchange_diagnose",
+            "FAIL",
+            str(diagnose_payload.get("last_error") or diagnose_payload.get("order_reason") or diagnose_payload.get("connector_reason") or "Diagnose exchange failed."),
+            connector_ok=bool(diagnose_payload.get("connector_ok")),
+            order_ok=bool(diagnose_payload.get("order_ok")),
+        )
+
+    gates_payload = evaluate_gates(mode, runtime_state=state, force_exchange_check=True)
+    if mode == "live":
+        live_allowed, live_reason = live_can_be_enabled(gates_payload)
+        _push_check(
+            "live_gates",
+            "PASS" if live_allowed else "FAIL",
+            "Gates LIVE en PASS." if live_allowed else f"Gates LIVE bloquean: {live_reason}",
+            overall_status=gates_payload.get("overall_status"),
+            required_ids=[row.get("id") for row in (gates_payload.get("gates") or []) if isinstance(row, dict)],
+        )
+    else:
+        _push_check(
+            "live_gates",
+            "PASS" if str(gates_payload.get("overall_status") or "").upper() == "PASS" else "WARN",
+            f"Gates {mode.upper()} = {gates_payload.get('overall_status')}.",
+            overall_status=gates_payload.get("overall_status"),
+        )
+
+    latest_att = store.live_preflight.latest_attestation(mode=mode)
+    att_status = attestation_status(latest_att, max_age_days=int(policy.get("attestation_max_age_days", 30)))
+    _push_check(
+        "manual_attestation",
+        str(att_status.get("status") or "FAIL"),
+        str(att_status.get("reason") or "manual_attestation_missing"),
+        attestation=copy.deepcopy(latest_att),
+        verified_by=(latest_att or {}).get("verified_by"),
+        verified_at=att_status.get("verified_at"),
+        expires_at=att_status.get("expires_at"),
+        actor=actor,
+    )
+
+    account_payload = store.execution_reality.fetch_account_balances(
+        family="spot",
+        environment=mode,
+        omit_zero_balances=False,
+    )
+    account = account_payload.get("account") if isinstance(account_payload.get("account"), dict) else {}
+    permissions = [str(item).upper() for item in (account.get("permissions") or []) if str(item).strip()]
+    account_type = str(account.get("accountType") or "").upper()
+    can_trade = bool(account.get("canTrade"))
+    balances = account_payload.get("balances") if isinstance(account_payload.get("balances"), list) else []
+    balances_parseable = isinstance(balances, list)
+    non_zero_balances = [
+        row
+        for row in balances
+        if isinstance(row, dict)
+        and (abs(_as_float(row.get("free"), 0.0)) > 0.0 or abs(_as_float(row.get("locked"), 0.0)) > 0.0)
+    ]
+    account_status = "PASS"
+    account_messages: list[str] = []
+    if not bool(account_payload.get("ok")):
+        account_status = "FAIL"
+        account_messages.append(str(((account_payload.get("remote_source") or {}).get("reason")) or "account_request_failed"))
+    if not can_trade:
+        account_status = "FAIL"
+        account_messages.append("canTrade=false")
+    if not balances_parseable:
+        account_status = "FAIL"
+        account_messages.append("balances_unparseable")
+    if "SPOT" not in permissions:
+        account_status = "FAIL"
+        account_messages.append("SPOT permission missing")
+    if account_type and account_type != "SPOT":
+        account_status = "FAIL"
+        account_messages.append(f"accountType={account_type}")
+    elif not account_type and account_status == "PASS":
+        account_status = "WARN"
+        account_messages.append("accountType missing")
+    if non_zero_balances and account_status == "PASS":
+        account_messages.append(f"holdings relevantes detectados: {len(non_zero_balances)}")
+    _push_check(
+        "account_readiness",
+        account_status,
+        "; ".join(account_messages) if account_messages else "Cuenta SPOT lista para preflight final.",
+        can_trade=can_trade,
+        can_withdraw=account.get("canWithdraw"),
+        permissions=permissions,
+        account_type=account_type or None,
+        balances_count=len(balances),
+        non_zero_balances_count=len(non_zero_balances),
+        remote_source=copy.deepcopy(account_payload.get("remote_source") or {}),
+    )
+
+    exchange_info_payload = store.execution_reality.fetch_exchange_info(family="spot", environment=mode)
+    exchange_info = exchange_info_payload.get("exchange_info") if isinstance(exchange_info_payload.get("exchange_info"), dict) else {}
+    symbols = exchange_info.get("symbols") if isinstance(exchange_info.get("symbols"), list) else []
+    symbol_row = next((row for row in symbols if isinstance(row, dict) and str(row.get("symbol") or "").upper() == symbol), None)
+    filter_rules = store.execution_reality.filter_rules(family="spot", symbol=symbol, environment=mode)
+    filter_summary = filter_rules.get("filter_summary") if isinstance(filter_rules.get("filter_summary"), dict) else {}
+    required_filter_keys = ["price_filter", "lot_size"]
+    missing_filters = [key for key in required_filter_keys if not isinstance(filter_summary.get(key), dict)]
+    if not isinstance(filter_summary.get("min_notional"), dict) and not isinstance(filter_summary.get("notional"), dict):
+        missing_filters.append("min_notional_or_notional")
+    exchange_rules_status = "PASS"
+    exchange_rules_messages: list[str] = []
+    if not bool(exchange_info_payload.get("ok")):
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(str(((exchange_info_payload.get("remote_source") or {}).get("reason")) or "exchange_info_request_failed"))
+    if symbol_row is None:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append("symbol_missing_in_exchange_info")
+    elif str(symbol_row.get("status") or "").upper() != "TRADING":
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"symbol_status={symbol_row.get('status')}")
+    freshness_status = str(filter_rules.get("freshness_status") or "").lower()
+    if freshness_status in {"missing", "block"}:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"exchange_filters_{freshness_status}")
+    if missing_filters:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"missing_filters:{','.join(sorted(missing_filters))}")
+    if isinstance(filter_summary.get("market_lot_size"), dict):
+        pass
+    else:
+        exchange_rules_messages.append("market_lot_size_not_present")
+        if exchange_rules_status == "PASS":
+            exchange_rules_status = "WARN"
+    _push_check(
+        "symbol_filters",
+        exchange_rules_status,
+        "; ".join(exchange_rules_messages) if exchange_rules_messages else "Símbolo y filtros oficiales disponibles.",
+        symbol_status=(symbol_row or {}).get("status"),
+        filter_source=filter_rules.get("filter_source"),
+        freshness_status=filter_rules.get("freshness_status"),
+        snapshot_timestamp=filter_rules.get("snapshot_timestamp"),
+        remote_source=copy.deepcopy(exchange_info_payload.get("remote_source") or {}),
+        missing_filters=missing_filters,
+    )
+
+    market_snapshot = _live_preflight_runtime_quote(mode, symbol)
+    preflight_request = {**candidate}
+    if market_snapshot is not None:
+        preflight_request["market_snapshot"] = market_snapshot
+    preflight_payload = store.execution_reality.preflight(preflight_request)
+    preflight_status = "PASS" if bool(preflight_payload.get("allowed")) else "FAIL"
+    preflight_detail = "Preflight execution reality PASS."
+    if not bool(preflight_payload.get("allowed")):
+        preflight_detail = ", ".join(str(item) for item in (preflight_payload.get("blocking_reasons") or []) if str(item).strip()) or "execution_preflight_failed"
+    elif preflight_payload.get("warnings"):
+        preflight_status = "WARN"
+        preflight_detail = ", ".join(str(item) for item in (preflight_payload.get("warnings") or []) if str(item).strip()) or "execution_preflight_warn"
+    _push_check(
+        "execution_preflight",
+        preflight_status,
+        preflight_detail,
+        filter_validation=copy.deepcopy(preflight_payload.get("filter_validation") or {}),
+        snapshot_source=copy.deepcopy(preflight_payload.get("snapshot_source") or {}),
+        fail_closed=bool(preflight_payload.get("fail_closed")),
+    )
+
+    normalized_preview = preflight_payload.get("normalized_order_preview") if isinstance(preflight_payload.get("normalized_order_preview"), dict) else {}
+    order_test_payload: dict[str, Any]
+    if bool(preflight_payload.get("allowed")) and account_status != "FAIL" and exchange_rules_status != "FAIL":
+        order_test_payload = store.execution_reality.test_order_contract(
+            family="spot",
+            environment=mode,
+            preview=normalized_preview,
+            client_order_id=f"live-preflight-{int(time.time())}",
+        )
+        order_test_status = "PASS" if bool(order_test_payload.get("ok")) else "FAIL"
+        order_test_detail = "order/test OK." if bool(order_test_payload.get("ok")) else str(((order_test_payload.get("remote_source") or {}).get("reason")) or "order_test_failed")
+    else:
+        order_test_payload = {
+            "ok": False,
+            "supported": True,
+            "remote_source": {"reason": "skipped_due_to_precheck_failure"},
+        }
+        order_test_status = "FAIL"
+        order_test_detail = "order/test omitido por fallos previos de preflight."
+    _push_check(
+        "order_test",
+        order_test_status,
+        order_test_detail,
+        remote_source=copy.deepcopy(order_test_payload.get("remote_source") or {}),
+        supported=bool(order_test_payload.get("supported", True)),
+    )
+
+    open_orders_count = 0
+    open_orders_status = "PASS"
+    open_orders_messages: list[str] = []
+    if credentials_ok:
+        ok_open, open_meta = _binance_signed_request(
+            method="GET",
+            base_url=str(creds.get("base_url") or ""),
+            path="/api/v3/openOrders",
+            api_key=str(creds.get("api_key") or ""),
+            api_secret=str(creds.get("api_secret") or ""),
+            params={},
+            timeout_sec=timeout_sec,
+        )
+        if ok_open:
+            payload_rows = open_meta.get("payload") if isinstance(open_meta.get("payload"), list) else []
+            open_orders_count = len(payload_rows)
+            if open_orders_count > 0:
+                open_orders_status = "WARN"
+                open_orders_messages.append(f"open_orders_present={open_orders_count}")
+        else:
+            open_orders_status = "WARN"
+            open_orders_messages.append(str(open_meta.get("reason") or "open_orders_probe_failed"))
+    if non_zero_balances:
+        open_orders_status = "WARN" if open_orders_status == "PASS" else open_orders_status
+        open_orders_messages.append(f"non_zero_holdings={len(non_zero_balances)}")
+    _push_check(
+        "operational_state",
+        open_orders_status,
+        "; ".join(open_orders_messages) if open_orders_messages else "Sin órdenes abiertas remotas y holdings parseables.",
+        open_orders_count=open_orders_count,
+        non_zero_balances_count=len(non_zero_balances),
+    )
+
+    overall_status = "FAIL" if any(item.get("status") == "FAIL" for item in checks.values()) else "WARN" if any(item.get("status") == "WARN" for item in checks.values()) else "PASS"
+    stored = store.live_preflight.insert_run(
+        {
+            "mode": mode,
+            "exchange": "binance",
+            "market_type": "spot",
+            "symbol": symbol,
+            "side": candidate.get("side"),
+            "quantity": candidate.get("quantity"),
+            "quote_order_qty": candidate.get("quote_quantity"),
+            "evaluated_at": evaluated_at,
+            "expires_at": expires_at,
+            "overall_status": overall_status,
+            "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "checks": checks,
+            "source_versions": source_versions,
+            "diagnostics": diagnostics,
+            "manual_attestations": {
+                "latest": latest_att,
+                "status": att_status,
+            },
+            "freshness_seconds": freshness_seconds,
+            "runtime_context": {
+                "runtime_engine": runtime_engine,
+                "runtime_snapshot": runtime_snapshot,
+                "telemetry_guard": telemetry_guard,
+                "gates_overall": gates_payload.get("overall_status"),
+                "mode_before_run": state.get("mode"),
+            },
+            "exchange_context": {
+                "base_url": creds.get("base_url"),
+                "ws_url": creds.get("ws_url"),
+                "key_source": creds.get("key_source"),
+                "account_type": account_type or None,
+                "permissions": permissions,
+                "can_trade": can_trade,
+                "can_withdraw": account.get("canWithdraw"),
+                "symbol_status": (symbol_row or {}).get("status"),
+                "filter_source": filter_rules.get("filter_source"),
+                "exchange_info_remote_source": copy.deepcopy(exchange_info_payload.get("remote_source") or {}),
+                "account_remote_source": copy.deepcopy(account_payload.get("remote_source") or {}),
+                "order_test_remote_source": copy.deepcopy(order_test_payload.get("remote_source") or {}),
+                "open_orders_count": open_orders_count,
+            },
+        }
+    )
+    return {
+        "ok": overall_status == "PASS",
+        "run": stored,
+        "policy": copy.deepcopy(policy),
+        "latest_attestation": latest_att,
+        "attestation_status": att_status,
+        "live_enablement_gate": _live_preflight_gate(mode),
+    }
+
+
 def build_status_payload() -> dict[str, Any]:
     settings = store.load_settings()
     state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
@@ -13010,6 +13610,45 @@ def create_app() -> FastAPI:
         payload = diagnose_exchange(selected_mode, force_refresh=force)
         return payload
 
+    @app.get("/api/v1/exchange/live-preflight")
+    def exchange_live_preflight(
+        mode: str = Query(default="live"),
+        limit: int = Query(default=10, ge=1, le=50),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+        return latest_live_preflight_payload(normalized_mode, limit=limit)
+
+    @app.post("/api/v1/exchange/live-preflight/run")
+    def exchange_live_preflight_run(
+        body: LivePreflightRunBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return build_live_preflight(body.model_dump(), actor=user.get("username"))
+
+    @app.post("/api/v1/exchange/live-preflight/attest")
+    def exchange_live_preflight_attest(
+        body: LivePreflightAttestBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        mode = "testnet" if str(body.mode or "").strip().lower() == "testnet" else "live"
+        store.live_preflight.insert_attestation(
+            {
+                "mode": mode,
+                "exchange": "binance",
+                "market_type": "spot",
+                "created_at": utc_now_iso(),
+                "verified_by": user.get("username", "admin"),
+                "verified_at": utc_now_iso(),
+                "note": body.note,
+                "manual_permissions_verified": body.manual_permissions_verified,
+                "trade_enabled_verified": body.trade_enabled_verified,
+                "withdraw_disabled_verified": body.withdraw_disabled_verified,
+                "ip_restriction_verified": body.ip_restriction_verified,
+            }
+        )
+        return latest_live_preflight_payload(mode)
+
     @app.get("/api/v1/diagnostics/breaker-events")
     def diagnostics_breaker_events(
         window_hours: int = Query(default=BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS, ge=1, le=168),
@@ -13034,6 +13673,12 @@ def create_app() -> FastAPI:
             allowed, reason = live_can_be_enabled(gates_payload)
             if not allowed:
                 raise HTTPException(status_code=400, detail=f"LIVE blocked by gates: {reason}")
+            preflight_gate = _live_preflight_gate("live")
+            if not bool(preflight_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
+                )
         state = store.load_bot_state()
         state["mode"] = mode
         state["runtime_engine"] = _runtime_engine_from_state(state)
@@ -13054,6 +13699,13 @@ def create_app() -> FastAPI:
     def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
+        if str(state.get("mode") or "").strip().lower() == "live":
+            preflight_gate = _live_preflight_gate("live")
+            if not bool(preflight_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
+                )
         # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
         strategy_name: str | None = None
         active_bot_id = str(bot_id or "").strip() or None

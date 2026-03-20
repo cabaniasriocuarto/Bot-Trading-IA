@@ -2,6 +2,139 @@
 
 Fecha de actualizacion: 2026-03-20
 
+## RTLOPS-47: Live preflight final - 2026-03-20
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-47`
+  - rama incremental usada: `feature/live-preflight-final-rtlops-47`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+    - `27a2367`
+    - `8f615bc`
+    - `0c07d60`
+    - `4785d86`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+  - contratos oficiales del exchange desde documentacion oficial primaria de Binance:
+    - Spot Account Endpoints (`/api/v3/account`)
+    - Spot Exchange Information (`/api/v3/exchangeInfo`)
+    - Spot Filters
+    - Spot Trading Endpoints (`/api/v3/order/test`)
+    - Spot Request Security
+    - Spot Testnet FAQ / base `/api/*`
+- Alcance real cerrado:
+  - nuevo modulo dedicado:
+    - `rtlab_autotrader/rtlab_core/execution/live_preflight.py`
+  - storage persistido en la misma SQLite operativa de consola:
+    - `live_preflight_runs`
+    - `live_preflight_attestations`
+  - policy explicita nueva en `execution_safety.live_preflight`:
+    - `freshness_hard_max_sec = 600`
+    - `attestation_max_age_days = 30`
+    - `drift_pass_max_ms = 1500`
+    - `drift_warn_max_ms = 4000`
+    - `recv_window_warn_ms = 5000`
+    - `recv_window_fail_ms = 60000`
+  - `rtlab_core/web/app.py` suma el builder canonico:
+    - `build_live_preflight(...)`
+    - reusa y no reescribe:
+      - `diagnose_exchange(...)`
+      - `evaluate_gates(...)`
+      - `live_can_be_enabled(...)`
+      - `ExecutionRealityService.fetch_account_balances(...)`
+      - `ExecutionRealityService.fetch_exchange_info(...)`
+      - `ExecutionRealityService.filter_rules(...)`
+      - `ExecutionRealityService.preflight(...)`
+      - `ExecutionRealityService.test_order_contract(...)`
+  - subchecks canonicos del artefacto:
+    - `credentials_mode`
+    - `timing_security`
+    - `exchange_diagnose`
+    - `live_gates`
+    - `manual_attestation`
+    - `account_readiness`
+    - `symbol_filters`
+    - `execution_preflight`
+    - `order_test`
+    - `operational_state`
+  - API minima nueva:
+    - `GET /api/v1/exchange/live-preflight`
+    - `POST /api/v1/exchange/live-preflight/run`
+    - `POST /api/v1/exchange/live-preflight/attest`
+  - hard blocks nuevos:
+    - `POST /api/v1/bot/mode` cuando `mode = live` exige ultimo preflight final `PASS` y fresco
+    - `POST /api/v1/bot/start` en `live` vuelve a verificar el mismo gate y queda fail-closed
+  - frontend minimo:
+    - `rtlab_dashboard/src/app/(app)/execution/page.tsx` agrega card `Preflight LIVE Final`
+    - muestra:
+      - overall status
+      - freshness / expiracion
+      - subchecks
+      - historial reciente
+      - attestation manual admin
+- Comportamiento real del bloque:
+  - el preflight final ya no es solo una lectura indirecta de gates; queda materializado en un artefacto persistido, auditable y con expiracion
+  - `abs(drift_ms)` se interpreta con umbrales explicitos:
+    - `<= 1500` -> `PASS`
+    - `1500 < ... <= 4000` -> `WARN`
+    - `> 4000` -> `FAIL`
+  - `recvWindow` queda controlado de forma operativa:
+    - `> 5000` -> `WARN`
+    - `> 60000` -> `FAIL`
+  - la cuenta Spot debe cumplir:
+    - `canTrade = true`
+    - `permissions` incluye `SPOT`
+    - `accountType = SPOT` cuando el campo esta presente
+  - la verificacion de permisos sensibles no se maquilla como automatica:
+    - `withdraw disabled` e IP restriction no se infieren falsamente como PASS solo desde REST
+    - se exige `manual_attestation` persistida
+  - sin attestation valida el preflight final falla para `live`
+  - el chequeo de simbolo usa `/api/v3/exchangeInfo` y exige:
+    - simbolo presente
+    - `status = TRADING`
+    - filtros base resolubles
+    - cumplimiento local de la orden candidata
+  - Spot testnet queda tratado con base `/api/*`; este bloque no depende de `/sapi/*`
+- Validacion real del bloque:
+  - checks locales:
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/live_preflight.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_preflight" --maxfail=1 -q` -> PASS
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+    - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+  - cobertura nueva/minima relevante:
+    - PASS completo con account/filtros/order_test/attestation vigentes
+    - FAIL sin attestation manual
+    - FAIL con `canTrade = false`
+    - FAIL si `permissions` no incluye `SPOT`
+    - FAIL si el simbolo no aparece en `exchangeInfo`
+    - FAIL si el pre-validator local bloquea por filtros
+    - WARN por drift grande dentro del umbral intermedio
+    - bloqueo duro de `bot/mode -> live` y `bot/start` si el preflight final esta vencido
+    - attestation endpoint persistido
+    - GET del ultimo preflight con gate fresco
+- Decisiones de ingenieria explicitas:
+  - el bloque es Spot live/testnet final; no mezcla futures/margin para no inventar readiness fuera del contrato validado
+  - `manual_attestation` existe porque la API de Spot no garantiza por si sola una verificacion completa de `Withdraw OFF + IP restriction OK`
+  - el gate de live se apoya en el artefacto persistido para que el bloqueo no dependa solo de memoria runtime o de una comprobacion visual en frontend
+- Limites conscientes:
+  - este bloque no cierra futures/margin preflight final
+  - no implementa verificaciones automaticas falsas sobre permisos sensibles no confirmables por API
+  - la sincronizacion administrativa de Linear sigue pendiente mientras el MCP no complete handshake
+  - migrar `FastAPI on_event` a lifespan sigue siendo deuda transversal separada
+
 ## RTLOPS-46: Exchange Filters Pre-Validator hardening - 2026-03-20
 
 - Trazabilidad del bloque:

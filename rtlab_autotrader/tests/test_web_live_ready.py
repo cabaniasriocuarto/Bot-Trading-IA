@@ -5,7 +5,7 @@ import io
 import json
 import time
 import zipfile
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -526,6 +526,219 @@ def test_live_mode_blocked_when_runtime_engine_is_simulated(tmp_path: Path, monk
   enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
   assert enable_live.status_code == 400
   assert "runtime simulado" in str(enable_live.json().get("detail") or "").lower()
+
+
+def test_live_preflight_final_pass_with_attestation_and_account_filters_ok(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live", "symbol": "BTCUSDT", "quote_order_qty": 15.0})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is True
+  latest = body["run"]
+  assert latest["overall_status"] == "PASS"
+  assert latest["checks"]["manual_attestation"]["status"] == "PASS"
+  assert latest["checks"]["account_readiness"]["status"] == "PASS"
+  assert latest["checks"]["symbol_filters"]["status"] in {"PASS", "WARN"}
+  assert latest["checks"]["order_test"]["status"] == "PASS"
+
+
+def test_live_preflight_final_fails_without_manual_attestation(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live", "symbol": "BTCUSDT", "quote_order_qty": 15.0})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is False
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["manual_attestation"]["status"] == "FAIL"
+
+
+def test_live_preflight_final_fails_when_can_trade_false(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", can_trade=False)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["account_readiness"]["status"] == "FAIL"
+  assert "cantrade=false" in str(body["run"]["checks"]["account_readiness"]["detail"]).lower()
+
+
+def test_live_preflight_final_fails_when_permissions_missing_spot(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", permissions=("MARGIN",))
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["account_readiness"]["status"] == "FAIL"
+  assert "spot permission missing" in str(body["run"]["checks"]["account_readiness"]["detail"]).lower()
+
+
+def test_live_preflight_final_fails_when_exchange_info_symbol_missing(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", symbol_present=False)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["symbol_filters"]["status"] == "FAIL"
+  assert "symbol_missing_in_exchange_info" in str(body["run"]["checks"]["symbol_filters"]["detail"])
+
+
+def test_live_preflight_final_fails_when_local_filter_validation_blocks(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", preflight_allowed=False, preflight_blocking=["invalid_min_notional"])
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["execution_preflight"]["status"] == "FAIL"
+  assert "invalid_min_notional" in str(body["run"]["checks"]["execution_preflight"]["detail"])
+
+
+def test_live_preflight_final_warns_on_large_drift(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", drift_ms=2500)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["checks"]["timing_security"]["status"] == "WARN"
+  assert body["run"]["overall_status"] == "WARN"
+
+
+def test_live_preflight_attest_endpoint_persists_manual_verification(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post(
+    "/api/v1/exchange/live-preflight/attest",
+    headers=headers,
+    json={
+      "mode": "live",
+      "manual_permissions_verified": True,
+      "trade_enabled_verified": True,
+      "withdraw_disabled_verified": True,
+      "ip_restriction_verified": True,
+      "note": "Panel Binance revisado por QA",
+    },
+  )
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["latest_attestation"]["verified_by"] == "Wadmin"
+  assert body["latest_attestation"]["withdraw_disabled_verified"] is True
+  assert body["attestation_status"]["status"] == "PASS"
+
+
+def test_live_preflight_get_returns_latest_and_gate(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=30, freshness_sec=600)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/exchange/live-preflight?mode=live", headers=headers)
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["latest"]["overall_status"] == "PASS"
+  assert body["live_enablement_gate"]["ok"] is True
+  assert len(body["recent_runs"]) >= 1
+
+
+def test_live_mode_requires_fresh_final_preflight(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=700, freshness_sec=600)
+
+  enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
+  assert enable_live.status_code == 400
+  assert "final preflight" in str(enable_live.json().get("detail") or "").lower()
+
+
+def test_live_start_requires_fresh_final_preflight(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["mode"] = "live"
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=700, freshness_sec=600)
+
+  start_res = client.post("/api/v1/bot/start", headers=headers)
+  assert start_res.status_code == 400
+  assert "final preflight" in str(start_res.json().get("detail") or "").lower()
+
+
+def test_testnet_live_preflight_stays_on_api_not_sapi(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="testnet")
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="testnet", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "testnet"})
+  assert res.status_code == 200, res.text
+  assert res.json()["run"]["overall_status"] in {"PASS", "WARN"}
 
 
 def test_runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression(tmp_path: Path, monkeypatch) -> None:
@@ -2720,7 +2933,7 @@ def _mock_exchange_ok(module, monkeypatch) -> None:
 
   def fake_request(method, url, headers=None, timeout=0, **kwargs):
     if "/api/v3/account" in url:
-      return _DummyResponse(200, {"balances": []})
+      return _DummyResponse(200, {"balances": [], "canTrade": True, "canWithdraw": False, "accountType": "SPOT", "permissions": ["SPOT"]})
     if "/api/v3/order/test" in url:
       return _DummyResponse(200, {})
     if "/api/v3/openOrders" in url:
@@ -2730,6 +2943,269 @@ def _mock_exchange_ok(module, monkeypatch) -> None:
   monkeypatch.setattr(module.requests, "get", fake_get)
   monkeypatch.setattr(module.requests, "request", fake_request)
   monkeypatch.setattr(module.socket, "create_connection", lambda *args, **kwargs: _DummySocket())
+
+
+def _seed_live_preflight_attestation(module, *, mode: str = "live", days_ago: float = 0.0, complete: bool = True) -> dict:
+  verified_at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+  return module.store.live_preflight.insert_attestation(
+    {
+      "mode": mode,
+      "exchange": "binance",
+      "market_type": "spot",
+      "created_at": verified_at,
+      "verified_at": verified_at,
+      "verified_by": "qa-admin",
+      "note": "attestation de test",
+      "manual_permissions_verified": complete,
+      "trade_enabled_verified": complete,
+      "withdraw_disabled_verified": complete,
+      "ip_restriction_verified": complete,
+    }
+  )
+
+
+def _seed_live_preflight_run(module, *, mode: str = "live", status: str = "PASS", age_sec: int = 0, freshness_sec: int = 600) -> dict:
+  evaluated_at = (datetime.now(timezone.utc) - timedelta(seconds=age_sec)).isoformat()
+  expires_at = (datetime.now(timezone.utc) + timedelta(seconds=max(0, freshness_sec - age_sec))).isoformat()
+  if age_sec >= freshness_sec:
+    expires_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+  return module.store.live_preflight.insert_run(
+    {
+      "mode": mode,
+      "exchange": "binance",
+      "market_type": "spot",
+      "symbol": "BTCUSDT",
+      "side": "BUY",
+      "quote_order_qty": 15.0,
+      "evaluated_at": evaluated_at,
+      "expires_at": expires_at,
+      "overall_status": status,
+      "blocking_reasons": [] if status == "PASS" else ["test_failure"],
+      "warnings": [],
+      "checks": {"test": {"status": status, "detail": "seeded"}},
+      "source_versions": {"seeded": True},
+      "diagnostics": [],
+      "manual_attestations": {},
+      "freshness_seconds": freshness_sec,
+      "runtime_context": {},
+      "exchange_context": {},
+    }
+  )
+
+
+def _mock_live_preflight_dependencies(
+  module,
+  monkeypatch,
+  *,
+  mode: str = "live",
+  can_trade: bool = True,
+  permissions: tuple[str, ...] = ("SPOT",),
+  account_type: str | None = "SPOT",
+  symbol_present: bool = True,
+  symbol_status: str = "TRADING",
+  preflight_allowed: bool = True,
+  preflight_blocking: list[str] | None = None,
+  preflight_warnings: list[str] | None = None,
+  order_test_ok: bool = True,
+  drift_ms: int = 0,
+  open_orders: list[dict] | None = None,
+  non_zero_balance: bool = False,
+  recv_window_ms: int = 5000,
+) -> None:
+  if mode == "testnet":
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+    monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+    monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  else:
+    monkeypatch.setenv("BINANCE_API_KEY", "live-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "live-secret")
+    monkeypatch.setenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com")
+    monkeypatch.setenv("BINANCE_SPOT_WS_URL", "wss://stream.binance.com:9443/ws")
+
+  def fake_get(url, timeout=0, **kwargs):
+    if "/api/v3/time" in url:
+      return _DummyResponse(200, {"serverTime": int(time.time() * 1000) + int(drift_ms)})
+    return _DummyResponse(404, {"code": -1, "msg": "not found"})
+
+  def fake_request(method, url, headers=None, timeout=0, **kwargs):
+    if "/sapi/" in url:
+      raise AssertionError(f"RTLOPS-47 no debe depender de /sapi/* en spot/testnet: {url}")
+    if "/api/v3/account" in url:
+      payload = {
+        "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+        "canTrade": can_trade,
+        "canWithdraw": False,
+        "accountType": account_type,
+        "permissions": list(permissions),
+      }
+      return _DummyResponse(200, payload)
+    if "/api/v3/order/test" in url:
+      return _DummyResponse(200 if order_test_ok else 400, {} if order_test_ok else {"code": -1013, "msg": "invalid test order"})
+    if "/api/v3/openOrders" in url:
+      return _DummyResponse(200, open_orders or [])
+    return _DummyResponse(404, {"code": -1, "msg": "not found"})
+
+  monkeypatch.setattr(module.requests, "get", fake_get)
+  monkeypatch.setattr(module.requests, "request", fake_request)
+  monkeypatch.setattr(module.socket, "create_connection", lambda *args, **kwargs: _DummySocket())
+  monkeypatch.setattr(
+    module,
+    "evaluate_gates",
+    lambda mode, runtime_state=None, force_exchange_check=False: {
+      "mode": mode,
+      "overall_status": "PASS",
+      "gates": [
+        {"id": "G1_CONFIG_VALID", "status": "PASS", "reason": ""},
+        {"id": "G2_AUTH_READY", "status": "PASS", "reason": ""},
+        {"id": "G3_BACKEND_HEALTH", "status": "PASS", "reason": ""},
+        {"id": "G4_EXCHANGE_CONNECTOR_READY", "status": "PASS", "reason": ""},
+        {"id": "G5_STRATEGY_PRINCIPAL_SET", "status": "PASS", "reason": ""},
+        {"id": "G6_RISK_LIMITS_SET", "status": "PASS", "reason": ""},
+        {"id": "G7_ORDER_SIM_OR_PAPER_OK", "status": "PASS", "reason": ""},
+        {"id": "G9_RUNTIME_ENGINE_REAL", "status": "PASS", "reason": ""},
+        {"id": "G10_STORAGE_PERSISTENCE", "status": "PASS", "reason": ""},
+      ],
+    },
+  )
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda gates_payload: (True, "All live gates are PASS"))
+
+  def _fake_fetch_account_balances(*, family, environment, omit_zero_balances=True):
+    return {
+      "family": family,
+      "environment": environment,
+      "ok": True,
+      "balances_count": 1,
+      "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+      "account": {
+        "canTrade": can_trade,
+        "canWithdraw": False,
+        "accountType": account_type,
+        "permissions": list(permissions),
+        "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+      },
+      "remote_source": {"ok": True, "recv_window_ms": recv_window_ms, "reason": "ok"},
+    }
+
+  def _fake_fetch_exchange_info(*, family, environment):
+    symbols = []
+    if symbol_present:
+      symbols.append({"symbol": "BTCUSDT", "status": symbol_status})
+    return {
+      "family": family,
+      "environment": environment,
+      "ok": True,
+      "symbol_count": len(symbols),
+      "exchange_info": {"symbols": symbols},
+      "remote_source": {"ok": True, "reason": "ok"},
+    }
+
+  def _fake_filter_rules(*, family, symbol, environment="live"):
+    return {
+      "family": family,
+      "market_family": "spot",
+      "execution_connector": "binance_spot",
+      "account_scope": "spot_wallet",
+      "filter_source": "spot_exchange_info",
+      "symbol": symbol,
+      "environment": environment,
+      "catalog_source": "spot_exchange_info",
+      "snapshot_id": "snap-1",
+      "snapshot_timestamp": module.utc_now_iso(),
+      "snapshot_age_ms": 1000,
+      "freshness_status": "fresh",
+      "max_age_ms": 300000,
+      "filter_summary": {
+        "price_filter": {"min_price": 0.01, "max_price": 1000000.0, "tick_size": 0.01},
+        "lot_size": {"min_qty": 0.0001, "max_qty": 1000.0, "step_size": 0.0001},
+        "market_lot_size": {"min_qty": 0.0001, "max_qty": 1000.0, "step_size": 0.0001},
+        "min_notional": {"min_notional": 10.0, "apply_to_market": True},
+      },
+      "policy": {},
+      "warnings": [],
+      "available": symbol_present,
+    }
+
+  def _fake_preflight(request):
+    normalized = {
+      "symbol": "BTCUSDT",
+      "side": str(request.get("side") or "BUY").upper(),
+      "order_type": "MARKET",
+      "quantity": request.get("quantity"),
+      "quote_quantity": request.get("quote_quantity"),
+      "requested_notional": request.get("quote_quantity") or 15.0,
+    }
+    return {
+      "allowed": preflight_allowed,
+      "warnings": list(preflight_warnings or []),
+      "blocking_reasons": list(preflight_blocking or []),
+      "normalized_order_preview": normalized,
+      "filter_validation": {
+        "status": "PASS" if preflight_allowed else "BLOCK",
+        "blocking_reasons": list(preflight_blocking or []),
+        "warnings": list(preflight_warnings or []),
+        "normalized_values": normalized,
+      },
+      "estimated_costs": {"requested_notional": request.get("quote_quantity") or 15.0},
+      "snapshot_source": {"exchange_filters": {"status": "fresh"}, "freshness": {"status": "fresh"}},
+      "fail_closed": not preflight_allowed,
+    }
+
+  def _fake_test_order_contract(*, family, environment, preview, client_order_id):
+    return {
+      "family": family,
+      "environment": environment,
+      "ok": order_test_ok,
+      "supported": True,
+      "payload": {},
+      "remote_source": {"ok": order_test_ok, "reason": "ok" if order_test_ok else "exchange_rejected"},
+    }
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    assert "/sapi/" not in path
+    if path == "/api/v3/account":
+      return True, {
+        "status_code": 200,
+        "url": f"{str(base_url).rstrip('/')}/api/v3/account",
+        "payload": {
+          "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+          "canTrade": can_trade,
+          "canWithdraw": False,
+          "accountType": account_type,
+          "permissions": list(permissions),
+        },
+      }
+    if path == "/api/v3/order/test":
+      return (
+        True,
+        {
+          "status_code": 200,
+          "url": f"{str(base_url).rstrip('/')}/api/v3/order/test",
+          "payload": {},
+        },
+      ) if order_test_ok else (
+        False,
+        {
+          "status_code": 400,
+          "url": f"{str(base_url).rstrip('/')}/api/v3/order/test",
+          "payload": {"code": -1013, "msg": "invalid test order"},
+          "reason": "exchange_rejected",
+        },
+      )
+    if path == "/api/v3/openOrders":
+      return True, {
+        "status_code": 200,
+        "url": f"{str(base_url).rstrip('/')}/api/v3/openOrders",
+        "payload": open_orders or [],
+      }
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module.store.execution_reality, "fetch_account_balances", _fake_fetch_account_balances)
+  monkeypatch.setattr(module.store.execution_reality, "fetch_exchange_info", _fake_fetch_exchange_info)
+  monkeypatch.setattr(module.store.execution_reality, "filter_rules", _fake_filter_rules)
+  monkeypatch.setattr(module.store.execution_reality, "preflight", _fake_preflight)
+  monkeypatch.setattr(module.store.execution_reality, "test_order_contract", _fake_test_order_contract)
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
 
 
 def _mock_exchange_down(module, monkeypatch) -> None:
