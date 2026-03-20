@@ -35,6 +35,9 @@
 - Hardening fino del adapter:
   - `signed_websocket_params(...)` ahora firma params ordenados alfabeticamente para cumplir el contrato oficial de Binance WebSocket API
   - `api_key_request(...)` permite endpoints `API-key only` de `listenKey` sin exigir secret innecesario
+- Trazabilidad adicional de backlog:
+  - `RTLOPS-56` queda creada para la deuda de `order_test` por familia
+  - `RTLOPS-57` queda creada para la auditoria/extension futura de ordenes condicionales `usdm_futures`
 - Tests nuevos/minimos:
   - Spot `websocket_api_spot` persiste `executionReport`
   - `binance_um_futures` hace keepalive de `listenKey` y persiste `ORDER_TRADE_UPDATE`
