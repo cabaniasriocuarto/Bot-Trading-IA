@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,61 @@ class _HTTPResponse:
 
     def json(self) -> Any:
         return self._payload
+
+
+class _FakeWebSocket:
+    def __init__(self, messages: list[Any]) -> None:
+        self._messages = list(messages)
+        self.sent: list[str] = []
+        self.closed = False
+
+    async def __aenter__(self) -> "_FakeWebSocket":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+        self.closed = True
+        return False
+
+    async def recv(self) -> Any:
+        if self._messages:
+            item = self._messages.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        await asyncio.sleep(3600)
+        return ""
+
+    async def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed = True
+
+
+class _FailingAsyncContextManager:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def __aenter__(self) -> Any:
+        raise self._exc
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+        return False
+
+
+class _FakeConnectFactory:
+    def __init__(self, sessions: list[Any]) -> None:
+        self._sessions = list(sessions)
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, url: str, **kwargs) -> Any:  # noqa: ANN003
+        self.calls.append({"url": url, "kwargs": kwargs})
+        if not self._sessions:
+            return _FailingAsyncContextManager(RuntimeError("no_fake_session"))
+        next_item = self._sessions.pop(0)
+        if isinstance(next_item, Exception):
+            return _FailingAsyncContextManager(next_item)
+        return next_item
 
 
 class _FakeRegistryDB:
@@ -642,6 +699,138 @@ def test_execution_reality_bootstrap_summary_and_live_safety_wiring(tmp_path: Pa
     assert summary["capabilities_known"] is True
     assert summary["degraded_mode"] is True
     assert summary["overall_status"] == "WARN"
+    assert bootstrap["binance_live_runtime"]["policy_loaded"] is True
+    assert bootstrap["binance_live_runtime"]["policy_hash"]
+    assert bootstrap["binance_live_runtime"]["family_split"]["binance_spot"]["repo_family"] == "spot"
+    assert "market_streams" in bootstrap
+
+
+def test_market_ws_runtime_spot_combined_updates_quotes_and_summary(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    fake_ws = _FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "stream": "btcusdt@bookTicker",
+                    "data": {
+                        "e": "bookTicker",
+                        "E": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        "s": "BTCUSDT",
+                        "b": "50000.10",
+                        "a": "50000.20",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "stream": "btcusdt@aggTrade",
+                    "data": {
+                        "e": "aggTrade",
+                        "E": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        "s": "BTCUSDT",
+                        "p": "50000.15",
+                        "q": "0.0500",
+                    },
+                }
+            ),
+        ]
+    )
+    factory = _FakeConnectFactory([fake_ws])
+    service._market_ws_runtime._connect_factory = factory  # type: ignore[attr-defined]
+
+    started = service.start_market_stream(
+        execution_connector="binance_spot",
+        environment="live",
+        symbols=["BTCUSDT"],
+    )
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        snapshot = service._quote_snapshot("spot", "live", "BTCUSDT")
+        sessions = service.market_streams_summary()["sessions"]
+        if sessions and snapshot.get("bid") is not None:
+            break
+        time.sleep(0.05)
+    stopped = service.stop_market_stream(execution_connector="binance_spot", environment="live")
+    summary = service.market_streams_summary()
+    live_safety = service.live_safety_summary(reconcile_summary={"unresolved_count": 0})
+
+    assert started["execution_connector"] == "binance_spot"
+    assert any("btcusdt@bookTicker" in row["url"] for row in factory.calls)
+    assert service._quote_snapshot("spot", "live", "BTCUSDT")["bid"] == pytest.approx(50000.10)
+    assert summary["family_split"]["binance_spot"]["market_family"] == "spot"
+    assert live_safety["market_stream_runtime"]["policy_source"]["source_hash"]
+    assert live_safety["market_stream_runtime_blocked"] is False
+    assert stopped["reason"] == "stopped_by_operator"
+
+
+def test_market_ws_runtime_raw_transport_subscribes_for_um_futures(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    fake_ws = _FakeWebSocket(
+        [
+            json.dumps({"result": None, "id": 1}),
+            json.dumps(
+                {
+                    "e": "markPriceUpdate",
+                    "E": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    "s": "BTCUSDT",
+                    "p": "50010.5",
+                    "i": "50009.8",
+                    "r": "0.000100",
+                }
+            ),
+        ]
+    )
+    factory = _FakeConnectFactory([fake_ws])
+    service._market_ws_runtime._connect_factory = factory  # type: ignore[attr-defined]
+
+    service.start_market_stream(
+        execution_connector="binance_um_futures",
+        environment="testnet",
+        symbols=["BTCUSDT"],
+        transport_mode="raw",
+    )
+    deadline = time.time() + 3.0
+    while time.time() < deadline and not fake_ws.sent:
+        time.sleep(0.05)
+    stopped = service.stop_market_stream(execution_connector="binance_um_futures", environment="testnet")
+    summary = service.market_streams_summary()
+
+    assert fake_ws.sent
+    sent_payload = json.loads(fake_ws.sent[0])
+    assert sent_payload["method"] == "SUBSCRIBE"
+    assert "btcusdt@bookTicker" in sent_payload["params"]
+    assert summary["family_split"]["binance_um_futures"]["repo_family"] == "usdm_futures"
+    assert stopped["transport_mode"] == "raw"
+
+
+def test_market_ws_runtime_blocks_live_after_repeated_failures(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service._market_ws_runtime._connect_factory = _FakeConnectFactory([RuntimeError("connect_failed")])  # type: ignore[attr-defined]
+    service._market_ws_runtime._backoff_schedule = lambda _cfg: [0.05]  # type: ignore[attr-defined]
+
+    service.start_market_stream(
+        execution_connector="binance_spot",
+        environment="live",
+        symbols=["BTCUSDT"],
+    )
+    with service._market_ws_runtime._lock:  # type: ignore[attr-defined]
+        session = service._market_ws_runtime._sessions[("binance_spot", "live")]  # type: ignore[attr-defined]
+        session["summary"]["failure_threshold"] = 1
+
+    deadline = time.time() + 3.0
+    blocked = False
+    while time.time() < deadline:
+        payload = service.market_streams_summary()
+        blocked = bool(payload.get("live_blocked"))
+        if blocked:
+            break
+        time.sleep(0.05)
+    safety = service.live_safety_summary(reconcile_summary={"unresolved_count": 0})
+    service.stop_market_stream(execution_connector="binance_spot", environment="live")
+
+    assert blocked is True
+    assert safety["market_stream_runtime_blocked"] is True
+    assert "market_ws_runtime_blocker" in safety["safety_blockers"]
 
 
 def test_exchange_adapter_spot_test_order_uses_server_time_sync_and_recv_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

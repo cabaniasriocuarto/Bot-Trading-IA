@@ -49,151 +49,36 @@ export interface ExchangeDiagnoseResponse {
   checks: Record<string, unknown>;
 }
 
-export interface OperationalSafetyBreaker {
-  breaker_id: string;
-  breaker_code: string;
-  scope_type: string;
-  bot_id?: string | null;
-  symbol?: string | null;
-  state: "CLOSED" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
-  opened_at?: string | null;
-  cooldown_until?: string | null;
-  last_trigger_at?: string | null;
-  trigger_count_window: number;
-  trigger_reason: Record<string, unknown>;
-  blocking_bool: boolean;
-  created_at: string;
-  updated_at: string;
+export interface ExecutionMarketStreamSession {
+  execution_connector: string;
+  market_family: string;
+  repo_family: string;
+  environment: "live" | "testnet";
+  connected: boolean;
+  running: boolean;
+  degraded_mode: boolean;
+  block_live: boolean;
+  reason: string;
+  transport_mode: "combined" | "raw" | string;
+  symbols_subscribed: string[];
+  stale_ms: number | null;
+  stream_lag_estimate_ms: number | null;
+  reconnect_count: number;
+  last_message_at?: string | null;
+  last_disconnect_reason?: string | null;
 }
 
-export interface OperationalSafetyEvent {
-  safety_event_id: string;
-  event_time: string;
-  scope_type: string;
-  bot_id?: string | null;
-  symbol?: string | null;
-  trigger_code: string;
-  severity: "INFO" | "WARN" | "CRITICAL" | string;
-  evidence: Record<string, unknown>;
-  action_taken?: string | null;
-  blocking_bool: boolean;
-  created_at: string;
-}
-
-export interface OperationalSafetySummaryResponse {
-  evaluated_at: string;
-  policy_source: string;
-  scope: {
-    bot_id?: string | null;
-    symbol?: string | null;
-  };
-  global_state: "CLOSED" | "WARN" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
-  blocking_bool: boolean;
-  breakers_open_count: number;
-  breakers_blocking_count: number;
-  manual_lock_count: number;
-  breakers: OperationalSafetyBreaker[];
-  blocking_scopes: Array<{
-    breaker_code: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    state: string;
-  }>;
-  events: OperationalSafetyEvent[];
-  runtime_unknown_timeout_active: boolean;
-  runtime_unknown_timeout_since?: string | null;
-  recommended_actions?: string[];
-  applied_actions?: string[];
-}
-
-export interface OperationalSafetyLocksResponse {
-  manual_locks: OperationalSafetyBreaker[];
-  manual_actions: Array<{
-    manual_action_id: string;
-    action_type: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    requested_by: string;
-    requested_at: string;
-    applied_at?: string | null;
-    result: Record<string, unknown>;
-    audit_note?: string | null;
-  }>;
-}
-
-export interface LiveHealthReason {
-  reason_code: string;
-  priority: "P1" | "P2" | "P3" | string;
-  priority_rank: number;
-  severity: "INFO" | "WARN" | "CRITICAL" | string;
-  blocking_bool: boolean;
-  scope_type: string;
-  bot_id?: string | null;
-  symbol?: string | null;
-  evidence: Record<string, unknown>;
-  penalty: number;
-}
-
-export interface LiveHealthScopeSummary {
-  scope_key: string;
-  scope_type: string;
-  bot_id?: string | null;
-  symbol?: string | null;
-  state: "HEALTHY" | "DEGRADED" | "BLOCKED" | "MANUAL_REVIEW_REQUIRED" | string;
-  score: number;
-  severity: "INFO" | "WARN" | "CRITICAL" | string;
-  blocking_bool: boolean;
-  top_priority_reason_code: string;
-  reason_codes: string[];
-  hard_blockers: string[];
-  warnings: string[];
-  reason_items: LiveHealthReason[];
-  score_penalties: Array<{
-    reason_code: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    penalty: number;
-  }>;
-  freshness: Record<string, unknown>;
-  recommended_actions: string[];
-  component_status: Record<string, unknown>;
-  can_submit_order: boolean;
-  evaluated_at: string;
-}
-
-export interface LiveHealthSummaryResponse {
-  state: "HEALTHY" | "DEGRADED" | "BLOCKED" | "MANUAL_REVIEW_REQUIRED" | string;
-  score: number;
-  severity: "INFO" | "WARN" | "CRITICAL" | string;
-  global_state: string;
-  global_score: number;
-  global_severity: string;
-  blocking_bool: boolean;
-  top_priority_reason_code: string;
-  reason_codes: string[];
-  hard_blockers: string[];
-  warnings: string[];
-  reason_items: LiveHealthReason[];
-  score_penalties: Array<{
-    reason_code: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    penalty: number;
-  }>;
-  component_status: Record<string, unknown>;
-  scope_status: LiveHealthScopeSummary[];
-  freshness: Record<string, unknown>;
-  recommended_actions: string[];
-  can_enable_live_mode: boolean;
-  can_start_live: boolean;
-  can_submit_order_by_scope: Record<string, boolean>;
-  last_evaluated_at: string;
-  snapshot_id?: string;
-  persisted_at?: string;
+export interface ExecutionMarketStreamsSummary {
+  policy_loaded: boolean;
+  policy_hash: string;
+  policy_source: Record<string, unknown>;
+  runtime_guardrails: Record<string, unknown>;
+  family_split: Record<string, unknown>;
+  sessions: ExecutionMarketStreamSession[];
+  running_sessions: number;
+  live_sessions: number;
+  live_blocked: boolean;
+  live_degraded: boolean;
 }
 
 export interface StrategyManifest {
@@ -1356,4 +1241,122 @@ export interface RunValidatePromotionResponse {
     state?: Record<string, unknown>;
     next_step?: string;
   };
+}
+
+export interface ReportingPerformanceBlock {
+  gross_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  net_pnl: number;
+  trade_count: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  expectancy: number | null;
+  max_drawdown: number | null;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingPerformanceSummaryResponse {
+  today: ReportingPerformanceBlock;
+  week: ReportingPerformanceBlock;
+  month: ReportingPerformanceBlock;
+  ytd: ReportingPerformanceBlock;
+  all_time: ReportingPerformanceBlock;
+}
+
+export interface ReportingPerformanceSeriesPoint {
+  bucket: string;
+  gross_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  net_pnl: number;
+  trade_count: number;
+}
+
+export interface ReportingPerformanceSeriesResponse {
+  items: ReportingPerformanceSeriesPoint[];
+  count: number;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingCostsBreakdownResponse {
+  exchange_fee_estimated: number;
+  exchange_fee_realized: number;
+  spread_estimated: number;
+  spread_realized: number;
+  slippage_estimated: number;
+  slippage_realized: number;
+  funding_realized: number;
+  borrow_interest_realized: number;
+  rebates_or_discounts: number;
+  gross_pnl: number;
+  net_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  total_cost_pct_of_gross_pnl: number;
+  alert_status: string;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingTradeCostRow {
+  trade_cost_id: string;
+  trade_ref: string;
+  run_id?: string | null;
+  venue: string;
+  family: string;
+  environment: string;
+  symbol: string;
+  strategy_id?: string | null;
+  bot_id?: string | null;
+  executed_at: string;
+  exchange_fee_estimated: number;
+  exchange_fee_realized?: number | null;
+  fee_asset?: string | null;
+  spread_estimated: number;
+  spread_realized?: number | null;
+  slippage_estimated: number;
+  slippage_realized?: number | null;
+  funding_estimated: number;
+  funding_realized?: number | null;
+  borrow_interest_estimated: number;
+  borrow_interest_realized?: number | null;
+  rebates_or_discounts: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  gross_pnl: number;
+  net_pnl: number;
+  cost_source: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+}
+
+export interface ReportingTradesResponse {
+  items: ReportingTradeCostRow[];
+  count: number;
+  limit: number;
+  offset: number;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingExportManifest {
+  export_id: string;
+  export_type: "xlsx" | "pdf" | string;
+  report_scope: "summary" | "daily" | "monthly" | "trades" | "costs" | "full" | string;
+  generated_at: string;
+  generated_by: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  row_count: number;
+  artifact_path: string;
+  source_snapshot_ids: string[];
+  success: boolean;
+  error_message?: string | null;
+  provenance: Record<string, unknown>;
+}
+
+export interface ReportingExportsResponse {
+  items: ReportingExportManifest[];
+  policy_source: Record<string, unknown>;
 }
