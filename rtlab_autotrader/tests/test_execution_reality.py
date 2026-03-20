@@ -1,0 +1,1685 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+
+from rtlab_core.execution.binance_adapter import map_exchange_error
+from rtlab_core.execution.reality import (
+    ExecutionRealityService,
+    clear_execution_policy_cache,
+    load_execution_router_bundle,
+    load_execution_safety_bundle,
+)
+
+
+def _iso_hours_ago(hours: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def _default_filters() -> dict[str, Any]:
+    return {
+        "price_filter": {"min_price": "0.01", "max_price": "1000000", "tick_size": "0.01"},
+        "lot_size": {"min_qty": "0.0001", "max_qty": "1000", "step_size": "0.0001"},
+        "market_lot_size": {"min_qty": "0.0001", "max_qty": "1000", "step_size": "0.0001"},
+        "min_notional": {"min_notional": "10.0"},
+        "notional": {"min_notional": "10.0"},
+    }
+
+
+def _fresh_market_snapshot(*, bid: float = 50000.0, ask: float = 50001.0) -> dict[str, Any]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return {
+        "bid": bid,
+        "ask": ask,
+        "quote_ts_ms": now_ms,
+        "orderbook_ts_ms": now_ms,
+    }
+
+
+class _HTTPResponse:
+    def __init__(self, payload: Any, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload) if not isinstance(payload, str) else payload
+
+    @property
+    def content(self) -> bytes:
+        if self._payload is None:
+            return b""
+        if isinstance(self._payload, bytes):
+            return self._payload
+        if isinstance(self._payload, str):
+            return self._payload.encode("utf-8")
+        return json.dumps(self._payload).encode("utf-8")
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _FakeRegistryDB:
+    def __init__(
+        self,
+        *,
+        instrument_row: dict[str, Any],
+        snapshot_fetched_at: str | None,
+        capability_snapshot: dict[str, Any] | None,
+    ) -> None:
+        self._instrument_row = instrument_row
+        self._live_snapshot = (
+            {
+                "snapshot_id": "SNAP-LIVE",
+                "fetched_at": snapshot_fetched_at,
+                "success": True,
+                "symbol_count": 1,
+                "diff_severity": "OK",
+            }
+            if snapshot_fetched_at is not None
+            else None
+        )
+        self._testnet_snapshot = (
+            {
+                "snapshot_id": "SNAP-TESTNET",
+                "fetched_at": snapshot_fetched_at,
+                "success": True,
+                "symbol_count": 1,
+                "diff_severity": "OK",
+            }
+            if snapshot_fetched_at is not None
+            else None
+        )
+        self._capability_snapshot = capability_snapshot
+
+    def registry_rows(self, *, family: str | None = None, active_only: bool = False) -> list[dict[str, Any]]:
+        row = self._instrument_row
+        if family and str(row.get("family") or "") != str(family):
+            return []
+        return [dict(row)]
+
+    def latest_snapshot(self, family: str, environment: str, success_only: bool = True) -> dict[str, Any] | None:
+        if str(self._instrument_row.get("family") or "") != str(family):
+            return None
+        if environment == "testnet":
+            return dict(self._testnet_snapshot) if self._testnet_snapshot else None
+        return dict(self._live_snapshot) if self._live_snapshot else None
+
+    def latest_capability_snapshot(self, family: str, environment: str) -> dict[str, Any] | None:
+        if str(self._instrument_row.get("family") or "") != str(family):
+            return None
+        if self._capability_snapshot is None:
+            return None
+        payload = dict(self._capability_snapshot)
+        payload["environment"] = environment
+        return payload
+
+    def snapshot_items(self, snapshot_id: str) -> list[dict[str, Any]]:
+        valid_ids = {"SNAP-LIVE", "SNAP-TESTNET"}
+        if snapshot_id not in valid_ids:
+            return []
+        return [
+            {
+                "instrument_id": self._instrument_row["instrument_id"],
+                "symbol": self._instrument_row["symbol"],
+                "family": self._instrument_row["family"],
+                "status": self._instrument_row["status"],
+                "filter_summary": self._instrument_row["filter_summary"],
+                "permission_summary": self._instrument_row.get("permission_summary") or {},
+                "live_eligible": self._instrument_row["live_eligible"],
+                "testnet_eligible": self._instrument_row["testnet_eligible"],
+                "paper_eligible": self._instrument_row["paper_eligible"],
+            }
+        ]
+
+
+class _FakeRegistryService:
+    def __init__(
+        self,
+        *,
+        family: str,
+        instrument_row: dict[str, Any],
+        snapshot_fetched_at: str | None,
+        capability_snapshot: dict[str, Any] | None,
+    ) -> None:
+        self.family = family
+        self.db = _FakeRegistryDB(
+            instrument_row=instrument_row,
+            snapshot_fetched_at=snapshot_fetched_at,
+            capability_snapshot=capability_snapshot,
+        )
+
+    def policy(self) -> dict[str, Any]:
+        return {
+            "freshness": {
+                "warn_if_snapshot_older_than_hours": 24,
+                "block_if_snapshot_older_than_hours": 72,
+            }
+        }
+
+    def live_parity_matrix(self) -> dict[str, dict[str, Any]]:
+        supported = {"spot", "margin", "usdm_futures", "coinm_futures"}
+        matrix: dict[str, dict[str, Any]] = {}
+        for family_name in supported:
+            enabled = family_name == self.family
+            matrix[family_name] = {
+                "live": {
+                    "supported": enabled,
+                    "catalog_ready": enabled,
+                    "snapshot_fresh": enabled,
+                    "policy_loaded": True,
+                    "capabilities_known": enabled and self.db.latest_capability_snapshot(family_name, "live") is not None,
+                    "live_parity_base_ready": enabled and self.db.latest_capability_snapshot(family_name, "live") is not None,
+                }
+            }
+        return matrix
+
+
+class _FakeUniverseService:
+    def __init__(self, *, matched: bool) -> None:
+        self._matched = matched
+
+    def membership(self, *, family: str, symbol: str, venue: str = "binance") -> dict[str, Any]:
+        return {
+            "matched": self._matched,
+            "universes": ["core_test"] if self._matched else [],
+            "snapshot_source": {"snapshot_id": "SNAP-LIVE", "environment": "live"},
+            "policy_source": {"source": "config/policies/universes.yaml"},
+        }
+
+
+class _FakeReportingDB:
+    def __init__(self, *, family: str, available: bool, fetched_at: str | None) -> None:
+        self._family = family
+        self._available = available
+        self._fetched_at = fetched_at
+        self._trade_rows: list[dict[str, Any]] = []
+
+    def cost_source_snapshots(self) -> list[dict[str, Any]]:
+        if not self._available:
+            return []
+        return [
+            {
+                "family": self._family,
+                "environment": "live",
+                "source_kind": "binance_account_commission",
+                "fetched_at": self._fetched_at,
+                "success": True,
+            }
+        ]
+
+    def trade_rows(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self._trade_rows]
+
+
+class _FakeReportingBridge:
+    def __init__(self, *, family: str, available: bool, fresh: bool, fetched_at: str | None = None) -> None:
+        self.db = _FakeReportingDB(family=family, available=available, fetched_at=fetched_at or _iso_hours_ago(1))
+        self._fresh = fresh
+        self._policy_hash = "cost-stack-policy-hash"
+        self._source_hash = "cost-stack-source-hash"
+
+    def cost_stack(self) -> dict[str, Any]:
+        return {
+            "estimation": {
+                "spread_bps_default": 4.0,
+                "slippage_bps_default": 6.0,
+                "block_if_missing_real_cost_source_in_live": True,
+                "allow_fallback_estimation_in_paper": True,
+            },
+            "alerts": {"warn_if_fee_source_stale_hours_gt": 24},
+        }
+
+    def cost_stack_bundle(self) -> dict[str, Any]:
+        return {
+            "policy_hash": self._policy_hash,
+            "source_hash": self._source_hash,
+            "valid": True,
+            "source": "config/policies/cost_stack.yaml",
+        }
+
+    def policy_source(self) -> dict[str, Any]:
+        return {
+            "cost_stack": {
+                "hash": self._source_hash,
+                "policy_hash": self._policy_hash,
+                "source": "config/policies/cost_stack.yaml",
+                "valid": True,
+            }
+        }
+
+    def upsert_execution_trade_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        merged = {str(row.get("trade_cost_id") or ""): dict(row) for row in self.db._trade_rows if str(row.get("trade_cost_id") or "")}
+        for row in rows:
+            merged[str(row.get("trade_cost_id") or "")] = dict(row)
+        self.db._trade_rows = list(merged.values())
+        self.db._trade_rows.sort(key=lambda row: (str(row.get("executed_at") or ""), str(row.get("trade_cost_id") or "")))
+        return {"ok": True, "trade_rows_upserted": len(rows), "trade_rows_total": len(self.db._trade_rows)}
+
+    def _latest_cost_source_status(self, *, family: str) -> str:
+        return "fresh" if self._fresh else "stale"
+
+
+def _instrument_row(
+    *,
+    family: str = "spot",
+    status: str = "TRADING",
+    live_eligible: bool = True,
+    testnet_eligible: bool = True,
+    paper_eligible: bool = True,
+    filter_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    symbol = "BTCUSDT" if family != "coinm_futures" else "BTCUSD_PERP"
+    quote_asset = "USDT" if family != "coinm_futures" else "USD"
+    return {
+        "instrument_id": f"binance:{family}:{symbol}",
+        "venue": "binance",
+        "family": family,
+        "symbol": symbol,
+        "base_asset": "BTC",
+        "quote_asset": quote_asset,
+        "contract_type": "PERPETUAL" if "futures" in family else None,
+        "margin_asset": "USDT" if family == "usdm_futures" else ("BTC" if family == "coinm_futures" else None),
+        "status": status,
+        "is_active": True,
+        "live_eligible": live_eligible,
+        "paper_eligible": paper_eligible,
+        "testnet_eligible": testnet_eligible,
+        "catalog_source": "binance_exchange_info",
+        "first_seen_at": _iso_hours_ago(48),
+        "last_seen_at": _iso_hours_ago(1),
+        "last_snapshot_id": "SNAP-LIVE",
+        "raw_hash": "hash",
+        "archived_at": None,
+        "filter_summary": filter_summary or _default_filters(),
+        "permission_summary": {"permissions": ["SPOT", "MARGIN"]},
+    }
+
+
+def _capability_snapshot(*, can_trade: bool = True, can_margin: bool = True) -> dict[str, Any]:
+    return {
+        "capability_snapshot_id": "CAP-LIVE",
+        "capability_source": "binance_account",
+        "can_read_market_data": True,
+        "can_trade": can_trade,
+        "can_margin": can_margin,
+        "can_user_data": True,
+        "can_testnet": True,
+        "fetched_at": _iso_hours_ago(1),
+    }
+
+
+def _build_service(
+    tmp_path: Path,
+    *,
+    family: str = "spot",
+    snapshot_fetched_at: str | None = None,
+    capability_snapshot: dict[str, Any] | None = None,
+    universe_matched: bool = True,
+    fee_source_available: bool = True,
+    fee_source_fresh: bool = True,
+    instrument_row: dict[str, Any] | None = None,
+) -> ExecutionRealityService:
+    repo_root = Path(__file__).resolve().parents[2]
+    row = instrument_row or _instrument_row(family=family)
+    return ExecutionRealityService(
+        user_data_dir=tmp_path / "user_data",
+        repo_root=repo_root,
+        explicit_policy_root=repo_root / "config" / "policies",
+        instrument_registry_service=_FakeRegistryService(
+            family=family,
+            instrument_row=row,
+            snapshot_fetched_at=snapshot_fetched_at or _iso_hours_ago(1),
+            capability_snapshot=capability_snapshot or _capability_snapshot(),
+        ),
+        universe_service=_FakeUniverseService(matched=universe_matched),
+        reporting_bridge_service=_FakeReportingBridge(
+            family=family,
+            available=fee_source_available,
+            fresh=fee_source_fresh,
+        ),
+        runs_loader=lambda: [],
+    )
+
+
+def _seed_order(
+    service: ExecutionRealityService,
+    *,
+    family: str = "spot",
+    environment: str = "live",
+    mode: str | None = None,
+    symbol: str = "BTCUSDT",
+    side: str = "BUY",
+    order_type: str = "LIMIT",
+    quantity: float = 0.01,
+    price: float = 50000.0,
+    order_status: str = "NEW",
+    submitted_at: str | None = None,
+    acknowledged_at: str | None = None,
+    executed_qty: float | None = None,
+    cum_quote_qty: float | None = None,
+    estimated_fee: float = 0.25,
+    estimated_slippage_bps: float = 6.0,
+    estimated_total_cost: float = 0.75,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    intent = service.db.insert_intent(
+        {
+            "family": family,
+            "environment": environment,
+            "mode": mode or environment,
+            "strategy_id": "strat-1",
+            "bot_id": "bot-1",
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
+            "quantity": quantity,
+            "limit_price": price if order_type == "LIMIT" else None,
+            "requested_notional": quantity * price,
+            "estimated_fee": estimated_fee,
+            "estimated_slippage_bps": estimated_slippage_bps,
+            "estimated_total_cost": estimated_total_cost,
+            "preflight_status": "submitted",
+            "policy_hash": service.policy_hash(),
+            "submitted_at": submitted_at or _iso_hours_ago(1),
+            "raw_request_json": {
+                "market_snapshot": {"bid": price - 1.0, "ask": price + 1.0},
+                "price": price,
+            },
+        }
+    )
+    order = service.db.upsert_order(
+        {
+            "execution_intent_id": intent["execution_intent_id"],
+            "client_order_id": intent["client_order_id"],
+            "venue_order_id": "123456",
+            "symbol": symbol,
+            "family": family,
+            "environment": environment,
+            "order_status": order_status,
+            "submitted_at": submitted_at or _iso_hours_ago(1),
+            "acknowledged_at": acknowledged_at,
+            "price": price,
+            "orig_qty": quantity,
+            "executed_qty": executed_qty,
+            "cum_quote_qty": cum_quote_qty,
+            "raw_ack_json": {"side": side, "type": order_type, "symbol": symbol, "price": price, "origQty": quantity},
+            "raw_last_status_json": {"status": order_status, "symbol": symbol, "side": side},
+        }
+    )
+    return intent, order
+
+
+def _canonical_execution_policy_text(filename: str) -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    return (repo_root / "config" / "policies" / filename).read_text(encoding="utf-8")
+
+
+def _prepare_execution_policy_repo(
+    repo_root: Path,
+    *,
+    root_safety: str | None,
+    root_router: str | None,
+    nested_safety: str | None = None,
+    nested_router: str | None = None,
+) -> tuple[Path, Path]:
+    root_policies = repo_root / "config" / "policies"
+    nested_policies = repo_root / "rtlab_autotrader" / "config" / "policies"
+    root_policies.mkdir(parents=True, exist_ok=True)
+    nested_policies.mkdir(parents=True, exist_ok=True)
+
+    for name in ("instrument_registry.yaml", "universes.yaml", "cost_stack.yaml", "reporting_exports.yaml"):
+        root_policies.joinpath(name).write_text("placeholder: true\n", encoding="utf-8")
+        nested_policies.joinpath(name).write_text("placeholder: true\n", encoding="utf-8")
+
+    if root_safety is not None:
+        root_policies.joinpath("execution_safety.yaml").write_text(root_safety, encoding="utf-8")
+    if root_router is not None:
+        root_policies.joinpath("execution_router.yaml").write_text(root_router, encoding="utf-8")
+    if nested_safety is not None:
+        nested_policies.joinpath("execution_safety.yaml").write_text(nested_safety, encoding="utf-8")
+    if nested_router is not None:
+        nested_policies.joinpath("execution_router.yaml").write_text(nested_router, encoding="utf-8")
+    return root_policies, nested_policies
+
+
+def test_execution_reality_policies_load_from_canonical_yaml() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    explicit_root = repo_root / "config" / "policies"
+    clear_execution_policy_cache()
+
+    safety = load_execution_safety_bundle(repo_root, explicit_root=explicit_root)
+    router = load_execution_router_bundle(repo_root, explicit_root=explicit_root)
+
+    assert safety["valid"] is True
+    assert router["valid"] is True
+    assert safety["source"] == "config/policies/execution_safety.yaml"
+    assert router["source"] == "config/policies/execution_router.yaml"
+    assert safety["source_hash"]
+    assert router["source_hash"]
+    assert safety["policy_hash"]
+    assert router["policy_hash"]
+    assert safety["source_hash"] != safety["policy_hash"]
+    assert router["source_hash"] != router["policy_hash"]
+    assert safety["payload"]["execution_safety"]["preflight"]["quote_stale_block_ms"] == 3000
+    assert router["payload"]["execution_router"]["conditional_orders_phase1"] is False
+
+
+def test_execution_policy_bundle_missing_yaml_uses_minimal_fail_closed_payload(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=None,
+        root_router=_canonical_execution_policy_text("execution_router.yaml"),
+    )
+    clear_execution_policy_cache()
+
+    safety = load_execution_safety_bundle(repo_root, explicit_root=root_policies)
+
+    assert safety["valid"] is False
+    assert safety["exists"] is False
+    assert safety["source"] == "default_fail_closed_minimal"
+    assert safety["source_hash"] == ""
+    assert safety["policy_hash"]
+    assert safety["errors"]
+    assert safety["payload"]["execution_safety"]["modes"]["allow_live"] is False
+    assert safety["payload"]["execution_safety"]["sizing"]["max_notional_per_order_usd"] == 0.0
+
+
+def test_execution_router_bundle_missing_yaml_uses_minimal_fail_closed_payload(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=_canonical_execution_policy_text("execution_safety.yaml"),
+        root_router=None,
+    )
+    clear_execution_policy_cache()
+
+    router = load_execution_router_bundle(repo_root, explicit_root=root_policies)
+
+    assert router["valid"] is False
+    assert router["exists"] is False
+    assert router["source"] == "default_fail_closed_minimal"
+    assert router["source_hash"] == ""
+    assert router["policy_hash"]
+    assert router["errors"]
+    assert router["payload"]["execution_router"]["families_enabled"]["spot"] is False
+    assert router["payload"]["execution_router"]["first_iteration_supported_order_types"]["spot"] == []
+
+
+def test_execution_policy_bundle_tracks_root_nested_divergence(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_safety = _canonical_execution_policy_text("execution_safety.yaml")
+    nested_safety = root_safety.replace("quote_stale_block_ms: 3000", "quote_stale_block_ms: 9999")
+    root_router = _canonical_execution_policy_text("execution_router.yaml")
+    nested_router = root_router.replace('spot: ["MARKET", "LIMIT"]', 'spot: ["MARKET"]')
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=root_safety,
+        root_router=root_router,
+        nested_safety=nested_safety,
+        nested_router=nested_router,
+    )
+    clear_execution_policy_cache()
+
+    safety = load_execution_safety_bundle(repo_root, explicit_root=root_policies)
+    router = load_execution_router_bundle(repo_root, explicit_root=root_policies)
+
+    assert safety["valid"] is True
+    assert router["valid"] is True
+    assert safety["selected_role"] == "monorepo_root"
+    assert router["selected_role"] == "monorepo_root"
+    assert safety["fallback_used"] is False
+    assert router["fallback_used"] is False
+    assert any(
+        "execution_safety.yaml" in (row.get("differing_files_vs_selected") or [])
+        for row in (safety.get("divergent_candidates") or [])
+    )
+    assert any(
+        "execution_router.yaml" in (row.get("differing_files_vs_selected") or [])
+        for row in (router.get("divergent_candidates") or [])
+    )
+
+
+def test_execution_reality_db_creates_tables_and_persists_core_rows(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    service = ExecutionRealityService(
+        user_data_dir=tmp_path / "user_data",
+        repo_root=repo_root,
+        explicit_policy_root=repo_root / "config" / "policies",
+    )
+
+    intent = service.db.insert_intent(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "limit_price": 50000.0,
+            "preflight_status": "pending",
+            "policy_hash": service.policy_hash(),
+        }
+    )
+    order = service.db.upsert_order(
+        {
+            "execution_intent_id": intent["execution_intent_id"],
+            "client_order_id": intent["client_order_id"],
+            "symbol": "BTCUSDT",
+            "family": "spot",
+            "environment": "paper",
+            "order_status": "CREATED",
+        }
+    )
+    fill = service.db.insert_fill(
+        {
+            "execution_order_id": order["execution_order_id"],
+            "symbol": "BTCUSDT",
+            "family": "spot",
+            "price": 50000.0,
+            "qty": 0.01,
+            "commission": 0.25,
+        }
+    )
+    reconcile = service.db.insert_reconcile_event(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "reconcile_type": "ack_missing",
+            "severity": "WARN",
+            "execution_order_id": order["execution_order_id"],
+            "client_order_id": order["client_order_id"],
+            "details_json": {"reason": "base_test"},
+        }
+    )
+    service.db.trip_kill_switch(
+        trigger_type="manual_test",
+        severity="BLOCK",
+        family="spot",
+        symbol="BTCUSDT",
+        reason="base_trip",
+        auto_actions=[{"action": "cancel_all"}],
+    )
+
+    counts = service.db.counts()
+    assert "execution_intents" in service.db.table_names()
+    assert counts["execution_intents"] == 1
+    assert counts["execution_orders"] == 1
+    assert counts["execution_fills"] == 1
+    assert counts["execution_reconcile_events"] == 1
+    assert counts["kill_switch_events"] == 1
+    assert fill["commission"] == 0.25
+    assert reconcile["details_json"]["reason"] == "base_test"
+    assert service.db.kill_switch_status()["armed"] is True
+    assert service.db.reset_kill_switch()["armed"] is False
+
+
+def test_execution_reality_bootstrap_summary_and_live_safety_wiring(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50010.0)
+    service.mark_user_stream_status(family="spot", environment="live", available=False, degraded_reason="rest_fallback")
+    service.set_margin_level(environment="live", level=1.8)
+
+    bootstrap = service.bootstrap_summary()
+    summary = service.live_safety_summary()
+
+    assert bootstrap["policy_loaded"] is True
+    assert bootstrap["policy_hash"]
+    assert bootstrap["policy_hash"] == service.policy_hash()
+    assert bootstrap["policy_source"]["execution_safety"]["source_hash"]
+    assert bootstrap["policy_source"]["execution_safety"]["policy_hash"]
+    assert bootstrap["policy_source"]["execution_router"]["source_hash"]
+    assert bootstrap["policy_source"]["execution_router"]["policy_hash"]
+    assert bootstrap["dependencies"]["instrument_registry_service"] is True
+    assert bootstrap["cache_sizes"]["market_snapshots"] == 1
+    assert summary["execution_policy_loaded"] is True
+    assert summary["policy_hash"] == bootstrap["policy_hash"]
+    assert summary["policy_source"]["execution_safety"]["source_hash"] == bootstrap["policy_source"]["execution_safety"]["source_hash"]
+    assert summary["capabilities_known"] is True
+    assert summary["degraded_mode"] is True
+    assert summary["overall_status"] == "WARN"
+
+
+def test_exchange_adapter_spot_test_order_uses_server_time_sync_and_recv_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="spot")
+    monkeypatch.setenv("BINANCE_API_KEY", "live-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "live-secret")
+    calls: list[tuple[str, str, dict[str, str] | None]] = []
+    expected_server_time = 1730000005000
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        calls.append((str(method).upper(), url, headers))
+        if url.endswith("/api/v3/time"):
+            return _HTTPResponse({"serverTime": expected_server_time})
+        if "/api/v3/order/test?" in url:
+            query = parse_qs(urlsplit(url).query)
+            assert query["recvWindow"] == ["5000"]
+            assert headers == {"X-MBX-APIKEY": "live-key"}
+            timestamp_ms = int(query["timestamp"][0])
+            assert abs(timestamp_ms - expected_server_time) < 2500
+            return _HTTPResponse({}, status_code=200)
+        raise AssertionError(f"Unexpected adapter URL: {url}")
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+
+    result = service.test_order_contract(
+        family="spot",
+        environment="live",
+        preview={
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "limit_price": 50000.0,
+            "time_in_force": "GTC",
+        },
+        client_order_id="cli-test-spot",
+    )
+    bootstrap = service.bootstrap_summary()
+
+    assert result["ok"] is True
+    assert result["supported"] is True
+    assert result["remote_source"]["ok"] is True
+    assert calls[0][1].endswith("/api/v3/time")
+    assert any("/api/v3/order/test?" in url for _method, url, _headers in calls)
+    assert bootstrap["exchange_adapter"]["recv_window_ms"] == 5000
+    assert bootstrap["exchange_adapter"]["server_time_sync_enabled"] is True
+    assert bootstrap["exchange_adapter"]["supported_contracts"]["spot"]["test_order"] is True
+    assert bootstrap["exchange_adapter"]["server_time_cache"]
+
+
+def test_exchange_adapter_invalid_timestamp_resyncs_and_retries_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="spot")
+    monkeypatch.setenv("BINANCE_API_KEY", "live-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "live-secret")
+    current_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    service._binance_adapter._server_time_cache[("spot", "live")] = {  # type: ignore[attr-defined]
+        "server_time_ms": current_ms - 5000,
+        "offset_ms": -5000,
+        "synced_at_ms": current_ms,
+        "within_threshold": False,
+        "threshold_ms": 1000,
+    }
+    calls: list[str] = []
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        calls.append(url)
+        if "/api/v3/order?" in url and len([item for item in calls if "/api/v3/order?" in item]) == 1:
+            return _HTTPResponse(
+                {"code": -1021, "msg": "Timestamp for this request is outside of the recvWindow."},
+                status_code=400,
+            )
+        if url.endswith("/api/v3/time"):
+            return _HTTPResponse({"serverTime": current_ms + 100})
+        if "/api/v3/order?" in url:
+            return _HTTPResponse(
+                {
+                    "symbol": "BTCUSDT",
+                    "orderId": 123456,
+                    "clientOrderId": "cli-retry-1",
+                    "status": "NEW",
+                    "executedQty": "0",
+                    "cummulativeQuoteQty": "0",
+                },
+                status_code=200,
+            )
+        raise AssertionError(f"Unexpected adapter URL: {url}")
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+
+    payload, meta = service._signed_request(
+        "POST",
+        service._exchange_contract_endpoint("spot", "live", "submit"),
+        family="spot",
+        environment="live",
+        params={
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "LIMIT",
+            "timeInForce": "GTC",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "newClientOrderId": "cli-retry-1",
+            "newOrderRespType": "ACK",
+        },
+    )
+
+    assert isinstance(payload, dict)
+    assert payload["orderId"] == 123456
+    assert meta["ok"] is True
+    assert meta["attempt"] == 2
+    assert any(url.endswith("/api/v3/time") for url in calls)
+    assert len([url for url in calls if "/api/v3/order?" in url]) == 2
+
+
+def test_exchange_adapter_error_mapping_covers_auth_rate_limit_and_missing_order() -> None:
+    auth = map_exchange_error(400, {"code": -2015, "msg": "Invalid API-key, IP, or permissions for action."})
+    rate_limit = map_exchange_error(429, {"code": -1003, "msg": "Too many requests."})
+    missing = map_exchange_error(400, {"code": -2013, "msg": "Order does not exist."})
+
+    assert auth["reason"] == "auth_rejected"
+    assert auth["error_category"] == "auth"
+    assert rate_limit["reason"] == "rate_limit"
+    assert rate_limit["retryable"] is True
+    assert missing["reason"] == "no_such_order"
+    assert missing["retryable"] is False
+
+
+def test_exchange_adapter_fetches_exchange_info_and_balances_for_margin_and_futures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    monkeypatch.setenv("BINANCE_API_KEY", "spot-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "spot-secret")
+    monkeypatch.setenv("BINANCE_USDM_API_KEY", "usdm-key")
+    monkeypatch.setenv("BINANCE_USDM_API_SECRET", "usdm-secret")
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        if url.endswith("/api/v3/exchangeInfo"):
+            return _HTTPResponse({"symbols": [{"symbol": "BTCUSDT"}]})
+        if url.endswith("/api/v3/time"):
+            return _HTTPResponse({"serverTime": int(datetime.now(timezone.utc).timestamp() * 1000)})
+        if "/sapi/v1/margin/account?" in url:
+            return _HTTPResponse({"borrowEnabled": True, "tradeEnabled": True, "userAssets": [{"asset": "USDT"}]})
+        if "/fapi/v2/account?" in url:
+            return _HTTPResponse({"canTrade": True, "assets": [{"asset": "USDT", "walletBalance": "100.0"}]})
+        if url.endswith("/fapi/v1/time"):
+            return _HTTPResponse({"serverTime": int(datetime.now(timezone.utc).timestamp() * 1000)})
+        raise AssertionError(f"Unexpected adapter URL: {url}")
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+
+    margin_info = service.fetch_exchange_info(family="margin", environment="live")
+    margin_balances = service.fetch_account_balances(family="margin", environment="live")
+    usdm_balances = service.fetch_account_balances(family="usdm_futures", environment="live")
+
+    assert margin_info["ok"] is True
+    assert margin_info["remote_source"]["contract_source"] == "spot_exchange_info_for_margin"
+    assert margin_info["symbol_count"] == 1
+    assert margin_balances["ok"] is True
+    assert margin_balances["balances_count"] == 1
+    assert usdm_balances["ok"] is True
+    assert usdm_balances["balances_count"] == 1
+
+
+def test_preflight_blocks_when_execution_policy_is_missing(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    root_policies, _ = _prepare_execution_policy_repo(
+        repo_root,
+        root_safety=None,
+        root_router=_canonical_execution_policy_text("execution_router.yaml"),
+    )
+    clear_execution_policy_cache()
+
+    service = ExecutionRealityService(
+        user_data_dir=tmp_path / "user_data",
+        repo_root=repo_root,
+        explicit_policy_root=root_policies,
+        instrument_registry_service=_FakeRegistryService(
+            family="spot",
+            instrument_row=_instrument_row(family="spot"),
+            snapshot_fetched_at=_iso_hours_ago(1),
+            capability_snapshot=_capability_snapshot(),
+        ),
+        universe_service=_FakeUniverseService(matched=True),
+        reporting_bridge_service=_FakeReportingBridge(
+            family="spot",
+            available=True,
+            fresh=True,
+        ),
+        runs_loader=lambda: [],
+    )
+    service.set_market_snapshot(family="spot", environment="paper", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+        }
+    )
+
+    assert result["allowed"] is False
+    assert "execution_policy_not_loaded" in result["blocking_reasons"]
+
+
+def test_preflight_accepts_live_order_and_normalizes_price_qty(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.001234,
+            "price": 50000.129,
+            "market_snapshot": {
+                "bid": 50000.0,
+                "ask": 50000.2,
+                "quote_ts_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "orderbook_ts_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+            },
+        }
+    )
+
+    assert result["allowed"] is True
+    assert result["fail_closed"] is False
+    assert result["blocking_reasons"] == []
+    assert result["normalized_order_preview"]["quantity"] == 0.0012
+    assert result["normalized_order_preview"]["limit_price"] == 50000.12
+    assert result["snapshot_source"]["universe_membership"]["matched"] is True
+    assert result["estimated_costs"]["total_cost_estimated"] > 0
+
+
+def test_preflight_blocks_stale_market_data_in_live(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    old_ms = int((datetime.now(timezone.utc) - timedelta(seconds=10)).timestamp() * 1000)
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": {
+                "bid": 50000.0,
+                "ask": 50001.0,
+                "quote_ts_ms": old_ms,
+                "orderbook_ts_ms": old_ms,
+            },
+        }
+    )
+
+    assert result["allowed"] is False
+    assert result["fail_closed"] is True
+    assert "quote_stale" in result["blocking_reasons"]
+    assert "orderbook_stale" in result["blocking_reasons"]
+
+
+def test_preflight_blocks_missing_fee_source_in_live(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot", fee_source_available=False, fee_source_fresh=False)
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": {
+                "bid": 50000.0,
+                "ask": 50001.0,
+            },
+        }
+    )
+
+    assert result["allowed"] is False
+    assert result["fail_closed"] is True
+    assert "fee_source_missing_in_live" in result["blocking_reasons"]
+
+
+def test_preflight_blocks_max_notional_and_open_order_limit(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    for idx in range(6):
+        service.db.upsert_order(
+            {
+                "execution_intent_id": f"intent-{idx}",
+                "client_order_id": f"client-{idx}",
+                "symbol": "BTCUSDT",
+                "family": "spot",
+                "environment": "live",
+                "order_status": "NEW",
+            }
+        )
+
+    result = service.preflight(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.2,
+            "price": 50000.0,
+            "market_snapshot": {
+                "bid": 50000.0,
+                "ask": 50001.0,
+            },
+        }
+    )
+
+    assert result["allowed"] is False
+    assert "max_notional_per_order_exceeded" in result["blocking_reasons"]
+    assert "max_open_orders_per_symbol_reached" in result["blocking_reasons"]
+
+
+def test_preflight_blocks_margin_capability_and_margin_level(tmp_path: Path) -> None:
+    service = _build_service(
+        tmp_path,
+        family="margin",
+        capability_snapshot=_capability_snapshot(can_trade=True, can_margin=False),
+        instrument_row=_instrument_row(family="margin"),
+    )
+    service.set_margin_level(environment="live", level=1.2)
+
+    result = service.preflight(
+        {
+            "family": "margin",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": {
+                "bid": 50000.0,
+                "ask": 50001.0,
+            },
+        }
+    )
+
+    assert result["allowed"] is False
+    assert result["fail_closed"] is True
+    assert "margin_capability_missing" in result["blocking_reasons"]
+    assert "margin_level_blocked" in result["blocking_reasons"]
+
+
+def test_create_market_order_paper_persists_intent_before_submit_and_estimated_costs(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "NEW"
+    assert result["execution_intent_id"] is not None
+    assert result["execution_order_id"] is not None
+    assert result["estimated_costs"]["requested_notional"] > 0
+    assert result["estimated_costs"]["total_cost_estimated"] > 0
+    counts = service.db.counts()
+    assert counts["execution_intents"] == 1
+    assert counts["execution_orders"] == 1
+
+    intent = service.db.intent_by_id(str(result["execution_intent_id"]))
+    assert intent is not None
+    assert intent["submitted_at"] is not None
+    assert intent["preflight_status"] == "submitted"
+
+
+def test_create_limit_order_paper_requires_explicit_price(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert result["execution_order_id"] is None
+    assert "limit_price_required" in result["blocking_reasons"]
+    assert service.db.counts()["execution_intents"] == 1
+    assert service.db.counts()["execution_orders"] == 0
+
+
+def test_create_limit_order_paper_and_query_single_order_detail(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.001234,
+            "price": 50000.129,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    detail = service.order_detail(str(result["execution_order_id"]))
+
+    assert detail is not None
+    assert detail["order"]["order_status"] == "NEW"
+    assert detail["order"]["price"] == 50000.12
+    assert detail["intent"]["execution_intent_id"] == result["execution_intent_id"]
+    assert detail["fills"] == []
+    assert detail["reconcile_events"] == []
+
+
+def test_list_open_orders_and_cancel_single_paper(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    first = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+    service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "order_type": "LIMIT",
+            "quantity": 0.02,
+            "price": 51000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    listed = service.list_orders(family="spot", environment="paper", symbol="BTCUSDT", status="OPEN")
+    canceled = service.cancel_order(str(first["execution_order_id"]))
+    open_after = service.list_orders(family="spot", environment="paper", symbol="BTCUSDT", status="OPEN")
+
+    assert listed["count"] == 2
+    assert canceled["order_status"] == "CANCELED"
+    assert open_after["count"] == 1
+
+
+def test_cancel_all_paper_orders_for_symbol(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    for side in ("BUY", "SELL"):
+        service.create_order(
+            {
+                "family": "spot",
+                "environment": "paper",
+                "mode": "paper",
+                "symbol": "BTCUSDT",
+                "side": side,
+                "order_type": "LIMIT",
+                "quantity": 0.01,
+                "price": 50000.0 if side == "BUY" else 51000.0,
+                "market_snapshot": _fresh_market_snapshot(),
+            }
+        )
+
+    result = service.cancel_all(family="spot", environment="paper", symbol="BTCUSDT")
+
+    assert result["canceled_count"] == 2
+    assert len(service.db.open_orders(family="spot", symbol="BTCUSDT")) == 0
+
+
+def test_create_order_live_fail_closed_when_fee_source_missing(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot", fee_source_available=False, fee_source_fresh=False)
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert result["execution_order_id"] is None
+    assert result["fail_closed"] is True
+    assert "fee_source_missing_in_live" in result["blocking_reasons"]
+
+
+def test_reconcile_ack_missing_generates_event(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        acknowledged_at=None,
+        submitted_at=_iso_hours_ago(1),
+    )
+
+    service._signed_request = lambda *args, **kwargs: (None, {"ok": False, "reason": "missing_credentials"})  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    events = service.db.list_reconcile_events(reconcile_type="ack_missing")
+
+    assert summary["ack_missing"] == 1
+    assert events
+    assert events[0]["execution_order_id"] == order["execution_order_id"]
+    assert events[0]["severity"] == "BLOCK"
+    assert events[0]["resolved"] is False
+
+
+def test_reconcile_fill_missing_generates_event(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.0",
+                "updateTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    events = service.db.list_reconcile_events(reconcile_type="fill_missing")
+
+    assert summary["fill_missing"] == 1
+    assert events
+    assert events[0]["execution_order_id"] == order["execution_order_id"]
+    assert events[0]["resolved"] is False
+
+
+def test_reconcile_status_mismatch_generates_resolved_event(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        acknowledged_at=_iso_hours_ago(1),
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "CANCELED",
+                "executedQty": "0",
+                "cummulativeQuoteQty": "0",
+                "updateTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    events = service.db.list_reconcile_events(reconcile_type="status_mismatch")
+    updated = service.db.order_by_id(str(order["execution_order_id"]))
+
+    assert summary["status_mismatches"] == 0
+    assert updated is not None
+    assert updated["order_status"] == "CANCELED"
+    assert events
+    assert events[0]["resolved"] is True
+    assert events[0]["details_json"]["local_status_before"] == "NEW"
+    assert events[0]["details_json"]["remote_status"] == "CANCELED"
+
+
+def test_reconcile_spot_rest_fallback_materializes_fill_and_reporting_row(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+        estimated_total_cost=1.0,
+    )
+    service.mark_user_stream_status(family="spot", environment="live", available=False, degraded_reason="rest_fallback")
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.01",
+                "updateTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 77,
+                    "orderId": 123456,
+                    "price": "50001.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.01",
+                    "commission": "0.25",
+                    "commissionAsset": "USDT",
+                    "time": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    "isMaker": False,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    detail = service.order_detail(str(order["execution_order_id"]))
+    ledger_rows = service.reporting_bridge_service.db.trade_rows()  # type: ignore[union-attr]
+
+    assert summary["degraded_mode"] is True
+    assert detail is not None
+    assert detail["degraded_mode"] is True
+    assert len(detail["fills"]) == 1
+    assert detail["realized_costs"]["exchange_fee_realized"] == pytest.approx(0.25)
+    assert detail["estimated_costs"]["total_cost_estimated"] == pytest.approx(1.0)
+    assert detail["realized_costs"]["cost_classification"] == "mixed"
+    assert ledger_rows
+    assert ledger_rows[0]["trade_ref"] == detail["fills"][0]["execution_fill_id"]
+
+
+def test_reconcile_futures_rest_fallback_materializes_funding_and_net_pnl(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    _, order = _seed_order(
+        service,
+        family="usdm_futures",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+        estimated_total_cost=1.2,
+    )
+    service.mark_user_stream_status(family="usdm_futures", environment="live", available=False, degraded_reason="rest_fallback")
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if endpoint.endswith("/fapi/v1/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cumQuote": "500.10",
+                "avgPrice": "50010.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/userTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 88,
+                    "orderId": 123456,
+                    "price": "50010.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.10",
+                    "commission": "0.12",
+                    "commissionAsset": "USDT",
+                    "realizedPnl": "5.0",
+                    "time": now_ms,
+                    "maker": False,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/income"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "incomeType": "FUNDING_FEE",
+                    "income": "-0.50",
+                    "time": now_ms,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    service.reconcile_orders()
+    detail = service.order_detail(str(order["execution_order_id"]))
+
+    assert detail is not None
+    assert len(detail["fills"]) == 1
+    assert detail["realized_costs"]["funding_realized"] == pytest.approx(0.5)
+    assert detail["gross_pnl"] == pytest.approx(5.0)
+    assert detail["net_pnl"] == pytest.approx(5.0 - detail["realized_costs"]["total_cost_realized"])
+    assert detail["fills"][0]["net_pnl"] == pytest.approx(detail["net_pnl"])
+
+
+def test_paper_submit_reconcile_materializes_fill(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    service.reconcile_orders()
+    detail = service.order_detail(str(result["execution_order_id"]))
+    ledger_rows = service.reporting_bridge_service.db.trade_rows()  # type: ignore[union-attr]
+
+    assert detail is not None
+    assert detail["order"]["order_status"] == "FILLED"
+    assert len(detail["fills"]) == 1
+    assert detail["realized_costs"]["cost_classification"] == "mixed"
+    assert ledger_rows
+
+
+def test_kill_switch_trip_reset_blocks_submit_and_auto_cancels_open_orders(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    for side in ("BUY", "SELL"):
+        service.create_order(
+            {
+                "family": "spot",
+                "environment": "paper",
+                "mode": "paper",
+                "symbol": "BTCUSDT",
+                "side": side,
+                "order_type": "LIMIT",
+                "quantity": 0.01,
+                "price": 50000.0 if side == "BUY" else 50010.0,
+                "market_snapshot": _fresh_market_snapshot(),
+            }
+        )
+
+    trip = service.trip_kill_switch(
+        trigger_type="manual",
+        severity="BLOCK",
+        family="spot",
+        symbol="BTCUSDT",
+        reason="manual_operator_trip",
+    )
+
+    assert trip["active"] is True
+    assert trip["trip_recorded"] is True
+    assert trip["auto_actions"]
+    assert trip["auto_actions"][0]["canceled_count"] == 2
+    assert len(service.db.open_orders(family="spot", symbol="BTCUSDT")) == 0
+
+    blocked = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert blocked["order_status"] == "BLOCKED"
+    assert "kill_switch_active" in blocked["blocking_reasons"]
+
+    reset = service.reset_kill_switch(reason="operator_reset")
+
+    assert reset["active"] is False
+    assert reset["reset_applied"] is True
+    assert reset["cooldown_active"] is True
+    assert reset["last_event"]["cleared_reason"] == "operator_reset"
+
+
+def test_reject_storm_blocker_trips_kill_switch(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    for idx in range(8):
+        _seed_order(
+            service,
+            family="spot",
+            environment="live",
+            symbol="BTCUSDT",
+            order_status="REJECTED",
+            submitted_at=recent,
+            acknowledged_at=recent,
+            price=50000.0 + idx,
+        )
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert "reject_storm_block" in result["blocking_reasons"]
+    assert service.kill_switch_status()["active"] is True
+
+
+def test_consecutive_failed_submit_blocker_trips_kill_switch(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+    for _ in range(5):
+        service.db.insert_intent(
+            {
+                "family": "spot",
+                "environment": "live",
+                "mode": "live",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "quantity": 0.01,
+                "limit_price": 50000.0,
+                "requested_notional": 500.0,
+                "estimated_fee": 0.25,
+                "estimated_slippage_bps": 6.0,
+                "estimated_total_cost": 0.75,
+                "preflight_status": "submit_failed",
+                "policy_hash": service.policy_hash(),
+                "raw_request_json": {"market_snapshot": _fresh_market_snapshot()},
+            }
+        )
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert "consecutive_failed_submit_block" in result["blocking_reasons"]
+    assert service.kill_switch_status()["active"] is True
+
+
+def test_repeated_reconcile_mismatch_blocker_trips_kill_switch(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+    for idx in range(5):
+        service.db.insert_reconcile_event(
+            {
+                "family": "spot",
+                "environment": "live",
+                "reconcile_type": "status_mismatch",
+                "severity": "WARN",
+                "execution_order_id": None,
+                "client_order_id": f"cli-{idx}",
+                "details_json": {"reason": "synthetic_mismatch"},
+                "resolved": False,
+            }
+        )
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert result["order_status"] == "BLOCKED"
+    assert "repeated_reconcile_mismatch_block" in result["blocking_reasons"]
+    assert service.kill_switch_status()["active"] is True
+
+
+def test_futures_auto_cancel_heartbeat_refreshes_during_reconcile(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures")
+    _, order = _seed_order(
+        service,
+        family="usdm_futures",
+        environment="live",
+        symbol="BTCUSDT",
+        order_status="NEW",
+        submitted_at=_iso_hours_ago(1),
+        acknowledged_at=_iso_hours_ago(1),
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if endpoint.endswith("/fapi/v1/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "NEW",
+                "executedQty": "0.0",
+                "cumQuote": "0.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/userTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/income"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/fapi/v1/countdownCancelAll"):
+            return {"symbol": "BTCUSDT", "countdownTime": "120000"}, {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    summary = service.reconcile_orders()
+    safety = service.live_safety_summary()
+
+    assert summary["futures_auto_cancel"]
+    assert summary["futures_auto_cancel"][0]["ok"] is True
+    assert safety["futures_auto_cancel"]
+    assert safety["futures_auto_cancel"][0]["effective_countdown_ms"] == 120000
+
+
+def test_live_safety_summary_reports_final_blockers_and_overall_status(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="usdm_futures", fee_source_available=False, fee_source_fresh=False)
+    old_ms = int((datetime.now(timezone.utc) - timedelta(seconds=10)).timestamp() * 1000)
+    service.set_market_snapshot(
+        family="usdm_futures",
+        environment="live",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+        quote_ts_ms=old_ms,
+        orderbook_ts_ms=old_ms,
+    )
+    service.mark_user_stream_status(
+        family="usdm_futures",
+        environment="live",
+        available=False,
+        degraded_reason="rest_fallback",
+    )
+    service.set_margin_level(environment="live", level=1.0)
+    service.db.insert_reconcile_event(
+        {
+            "family": "usdm_futures",
+            "environment": "live",
+            "reconcile_type": "status_mismatch",
+            "severity": "WARN",
+            "client_order_id": "late-1",
+            "details_json": {"reason": "pending"},
+            "resolved": False,
+        }
+    )
+
+    summary = service.live_safety_summary()
+
+    assert summary["stale_market_data"] is True
+    assert summary["fee_source_fresh"] is False
+    assert summary["margin_guard_status"] == "BLOCK"
+    assert summary["degraded_mode"] is True
+    assert summary["overall_status"] == "BLOCK"
+    assert "cost_source_missing_blocker" in summary["safety_blockers"]
+    assert "stale_quote_blocker" in summary["safety_blockers"]
+    assert "stale_orderbook_blocker" in summary["safety_blockers"]
