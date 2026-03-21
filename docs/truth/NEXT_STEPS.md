@@ -1,6 +1,68 @@
-# NEXT STEPS (Prioridades Reales)
+﻿# NEXT STEPS (Prioridades Reales)
 
 Fecha: 2026-03-20
+
+## RTLOPS-48 - Live Order State Machine formal - 2026-03-20
+- [x] Crear modulo canonico nuevo:
+  - `rtlab_autotrader/rtlab_core/execution/live_order_state.py`
+- [x] Extender persistencia SQLite operativa:
+  - `execution_orders` con campos canonicos de estado live
+  - `live_order_events` como journal append-only
+  - `live_order_reconciliation_runs` para recovery y barridos
+- [x] Formalizar estados locales:
+  - `INTENT_CREATED`
+  - `PRECHECK_PASSED`
+  - `SUBMITTING`
+  - `UNKNOWN_PENDING_RECONCILIATION`
+  - `ACKED`
+  - `WORKING`
+  - `PARTIALLY_FILLED`
+  - `FILLED`
+  - `CANCEL_REQUESTED`
+  - `CANCELED`
+  - `REJECTED`
+  - `EXPIRED`
+  - `EXPIRED_STP`
+  - `RECOVERED_OPEN`
+  - `RECOVERED_TERMINAL`
+  - `MANUAL_REVIEW_REQUIRED`
+- [x] Implementar reglas de precedencia operativa:
+  - `executionReport` como fuente primaria posterior al submit
+  - `GET /api/v3/order` y `GET /api/v3/openOrders` como reconciliacion/recuperacion
+  - respuesta REST de create/cancel como evidencia inicial, no como verdad final
+- [x] Integrar la state machine con:
+  - `create_order(...)`
+  - `cancel_order(...)`
+  - `cancel_all(...)`
+  - `ingest_user_stream_event(...)`
+  - `reconcile_live_orders(...)`
+  - `recover_live_orders_on_startup(...)`
+  - `live_safety_summary()`
+- [x] Agregar hard blocks operativos con policy explicita:
+  - `unknown_reconciliation_soft_deadline_sec = 5`
+  - `unknown_reconciliation_hard_deadline_sec = 30`
+  - bloqueo de nuevos submits live del mismo `bot+symbol` cuando exista orden ambigua o cancel pendiente por encima del hard deadline
+- [x] Exponer endpoints minimos:
+  - `GET /api/v1/execution/live-orders`
+  - `GET /api/v1/execution/live-orders/unresolved`
+  - `GET /api/v1/execution/live-orders/{execution_order_id}`
+  - `GET /api/v1/execution/live-orders/timeline/{execution_order_id}`
+  - `POST /api/v1/execution/live-orders/reconcile`
+- [x] Extender frontend minimo en Execution:
+  - tabla `Ordenes Live`
+  - bloque fuerte de ambiguas/reconcile
+  - detalle con timeline y payload resumido
+- [x] Revalidar:
+  - `py_compile` focalizado
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - `test_policy_paths.py`
+  - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
+  - `npx.cmd tsc --noEmit`
+- [ ] Limites conscientes fuera de RTLOPS-48:
+  - `listStatus` / order lists quedan con soporte parcial seguro: se persiste raw y no se rompe el runtime, pero no se implementa toda la orquestacion OCO/OTO/OPO
+  - el bloque queda focalizado en Spot live; no abre Futures/Margin adicionales
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-48` queda pendiente aunque repo/docs/tests ya esten cerrados
 
 ## RTLOPS-47 - Live preflight + permissions + clock + filters + account scope - 2026-03-20
 - [x] Crear artefacto canonico nuevo:
@@ -144,7 +206,7 @@ Fecha: 2026-03-20
   - Spot:
     - `bookTicker`
     - `aggTrade`
-  - USDⓈ-M:
+  - USDâ“ˆ-M:
     - `bookTicker`
     - `aggTrade`
     - `markPrice@1s`
@@ -166,26 +228,26 @@ Fecha: 2026-03-20
   - `test_policy_paths.py`
   - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
   - `npx.cmd tsc --noEmit`
-  - smoke publico Spot + USDⓈ-M live
+  - smoke publico Spot + USDâ“ˆ-M live
 - [ ] Limites conscientes fuera de RTLOPS-44:
   - el private user/account/order stream queda para `RTLOPS-45`
   - `RTLOPS-55` sigue abierto para terminar el sweep completo de split canonico backend/frontend/storage sin heuristica ambigua
-  - la URL/test contract de testnet USDⓈ-M sigue tratada como detalle operativo configurable, no como verdad universal congelada
+  - la URL/test contract de testnet USDâ“ˆ-M sigue tratada como detalle operativo configurable, no como verdad universal congelada
 
 ## Contexto anterior de transicion (ya resuelto)
 - Desde RTLOPS-44, el siguiente issue fue `RTLOPS-45` y ya quedo cerrado.
 - alcance historico que ya quedo cubierto:
   - Spot private stream auditando camino legacy/transicional actual y evaluando migracion a WebSocket API donde corresponda
-  - USDⓈ-M private stream con lifecycle de listenKey / keepalive y parsing robusto de ordenes/cuenta
+  - USDâ“ˆ-M private stream con lifecycle de listenKey / keepalive y parsing robusto de ordenes/cuenta
   - persistencia de eventos privados sin fingir equivalencia entre Spot y Futures
   - integracion con `ExecutionRealityService`, `reconcile`, `fills` y `live_safety`
 
 ## Siguiente issue exacto
-- `RTLOPS-48` - Live Order State Machine formal
+- `RTLOPS-50` - Persistent Live Order / Fill / Event Storage parity
 - alcance inmediato esperado:
-  - formalizar transiciones explicitas de orden live desde `INTENT_CREATED` hasta terminales
-  - persistir la trayectoria completa de orden/eventos/fills sin depender de heuristicas implícitas
-  - apoyar reconcile, DESYNC y safety sobre una state machine auditable
+  - cerrar la paridad restante de persistencia live fuera del journal ya implementado en RTLOPS-48
+  - consolidar snapshots auditablemente persistidos de balances/holdings/posiciones relevantes para reconcile y operacion
+  - preparar la base antes de `RTLOPS-23` sin mezclar el bloque de state machine con storage transversal mas amplio
 
 ## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
 - [x] Endurecer signed REST live con:
@@ -426,7 +488,7 @@ Fecha: 2026-03-20
   - endpoints `/api/v1/execution/orders*`
 - [x] Parte 3.4:
   - reconcile basico real
-  - ingestión base de `executionReport` / `ORDER_TRADE_UPDATE`
+  - ingestiÃ³n base de `executionReport` / `ORDER_TRADE_UPDATE`
   - fallback REST controlado con `degraded_mode` explicito
   - fills -> reporting bridge / `trade_cost_ledger`
   - estimated vs realized por orden/fill
@@ -507,13 +569,13 @@ Fecha: 2026-03-20
 
 ## Siguiente bloque chico tras RTLRESE-7
 - [x] Clasificacion minima `trusted/legacy/quarantine` en `strategy_evidence`.
-- [x] Exclusión de `quarantine` de aprendizaje, guidance y rankings de Option B.
+- [x] ExclusiÃ³n de `quarantine` de aprendizaje, guidance y rankings de Option B.
 - [x] `legacy` conservado con `needs_validation` explicito y penalizacion de confianza.
 - [ ] Exponer `evidence_status/evidence_flags` en endpoints o UI solo donde haga falta auditoria operativa, sin volver a mezclar truth con evidence.
 - [ ] Extender esta misma frontera a rankings/catalogos fuera de Option B solo cuando exista un consumidor real y justificado.
 - [ ] Revisar si conviene un backfill chico para episodios legacy historicos que hoy no traen metadata suficiente para clasificacion fina.
 - [ ] Mantener RTLRESE-10 separado: no mezclar esta cuarentena de evidencia con cambios nuevos de producto, frontend o refactors masivos.
-## RTLRESE-10 · research funnel / trial ledger
+## RTLRESE-10 Â· research funnel / trial ledger
 - [x] Exponer `GET /api/v1/research/funnel`.
 - [x] Exponer `GET /api/v1/research/trial-ledger`.
 - [x] Mostrar `Research Funnel y Trial Ledger` en `Backtests`.
@@ -762,7 +824,7 @@ Fecha: 2026-03-20
 - [x] Workflow `security-ci` endurecido para instalar `gitleaks` desde release oficial versionado (`8.30.0`) con retries.
 - [x] Fallback agregado a install script versionado (`v8.30.0`) + check fail-closed de binario instalado.
 - [x] Export `PATH` en el mismo step de instalacion para validar `gitleaks version` en esa corrida.
-- [x] Baseline canónica versionada para CI:
+- [x] Baseline canÃ³nica versionada para CI:
   - `docs/security/gitleaks-baseline.json`
   - `scripts/security_scan.sh` actualizado para usarla por defecto.
 - [x] `setup-python` en Security CI alineado a `3.11`.
@@ -804,7 +866,7 @@ Fecha: 2026-03-20
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or runtime_stop_testnet_cancels_remote_open_orders_idempotently" -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS (`11 passed`).
 - Pendiente inmediato:
-  - completar wiring de ejecucion real por señales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
+  - completar wiring de ejecucion real por seÃ±ales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
 
 
 ## Actualizacion tecnica AP-8012 (2026-03-04)
@@ -854,7 +916,7 @@ Fecha: 2026-03-20
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS (`10 passed`).
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
 - Pendiente inmediato de runtime real:
-  - submit real idempotente (`newClientOrderId`) con pipeline de señales/ejecución, y reconciliacion de posiciones (no solo órdenes abiertas).
+  - submit real idempotente (`newClientOrderId`) con pipeline de seÃ±ales/ejecuciÃ³n, y reconciliacion de posiciones (no solo Ã³rdenes abiertas).
 
 ## Actualizacion tecnica AP-BOT-1006 (2026-03-04)
 - [x] Submit remoto idempotente agregado en runtime `testnet/live` con `newClientOrderId` y ventana configurable.
@@ -1243,3 +1305,4 @@ Fecha: 2026-03-20
 - [ ] Validar en deploy visible que la rama con `beast/status` corregido este realmente desplegada y deje de mostrar `Modo Bestia deshabilitado` falso.
 - [ ] Completar export consolidado de conocimiento por lote de bots (no solo export JSON por bot individual).
 - [ ] Seguir con simplificacion UX: agrupar acciones masivas/edicion de pool para reducir ruido por fila en `Strategies`.
+

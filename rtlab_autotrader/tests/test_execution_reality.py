@@ -49,6 +49,67 @@ def _fresh_market_snapshot(*, bid: float = 50000.0, ask: float = 50001.0) -> dic
     }
 
 
+def _spot_create_ack(
+    *,
+    client_order_id: str,
+    status: str = "NEW",
+    executed_qty: str = "0.00000000",
+    cum_quote_qty: str = "0.00000000",
+    order_id: int = 123456,
+    price: str = "50000.00",
+    orig_qty: str = "0.01000000",
+) -> dict[str, Any]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return {
+        "symbol": "BTCUSDT",
+        "orderId": order_id,
+        "clientOrderId": client_order_id,
+        "transactTime": now_ms,
+        "price": price,
+        "origQty": orig_qty,
+        "executedQty": executed_qty,
+        "cummulativeQuoteQty": cum_quote_qty,
+        "status": status,
+        "timeInForce": "GTC",
+        "type": "LIMIT",
+        "side": "BUY",
+    }
+
+
+def _spot_execution_report(
+    *,
+    client_order_id: str,
+    execution_type: str,
+    order_status: str,
+    last_fill_qty: str = "0.00000000",
+    cumulative_filled_qty: str = "0.00000000",
+    last_fill_price: str = "0.00000000",
+    execution_id: int = 7001,
+    order_id: int = 123456,
+) -> dict[str, Any]:
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return {
+        "e": "executionReport",
+        "E": now_ms,
+        "s": "BTCUSDT",
+        "c": client_order_id,
+        "S": "BUY",
+        "o": "LIMIT",
+        "f": "GTC",
+        "q": "0.01000000",
+        "p": "50000.00",
+        "x": execution_type,
+        "X": order_status,
+        "i": order_id,
+        "I": execution_id,
+        "l": last_fill_qty,
+        "z": cumulative_filled_qty,
+        "L": last_fill_price,
+        "Z": str(float(cumulative_filled_qty or "0") * float(last_fill_price or "0")),
+        "T": now_ms,
+    }
+
+
 class _HTTPResponse:
     def __init__(self, payload: Any, status_code: int = 200) -> None:
         self._payload = payload
@@ -1763,6 +1824,352 @@ def test_cancel_all_paper_orders_for_symbol(tmp_path: Path) -> None:
 
     assert result["canceled_count"] == 2
     assert len(service.db.open_orders(family="spot", symbol="BTCUSDT")) == 0
+
+
+def test_live_order_state_machine_rest_ack_then_execution_report_new_enters_working(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    def _signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        params = kwargs.get("params") or {}
+        if str(method).upper() == "POST":
+            return _spot_create_ack(client_order_id=str(params["newClientOrderId"])), {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unexpected_call"}
+
+    service._signed_request = _signed_request  # type: ignore[method-assign]
+
+    created = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "bot_id": "bot-live-1",
+            "strategy_id": "strat-live-1",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    order = service.db.order_by_id(str(created["execution_order_id"]))
+    assert order is not None
+    assert order["current_local_state"] == "ACKED"
+    assert order["requested_new_order_resp_type"] == "FULL"
+
+    ingested = service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "event": _spot_execution_report(
+                client_order_id=str(order["client_order_id"]),
+                execution_type="NEW",
+                order_status="NEW",
+            ),
+            "_rtlab_user_stream": {
+                "execution_connector": "binance_spot",
+                "user_stream_mode": "websocket_api_spot",
+                "received_at": utc_now_iso(),
+            },
+        },
+    )
+
+    updated = service.db.order_by_id(str(created["execution_order_id"]))
+    timeline = service.db.live_order_events_for_order(str(created["execution_order_id"]))
+
+    assert ingested["ok"] is True
+    assert updated is not None
+    assert updated["current_local_state"] == "WORKING"
+    assert [row["local_state_after"] for row in timeline[:4]] == [
+        "INTENT_CREATED",
+        "PRECHECK_PASSED",
+        "SUBMITTING",
+        "ACKED",
+    ]
+    assert timeline[-1]["local_state_after"] == "WORKING"
+
+
+def test_live_order_state_machine_trade_partial_and_final_fill(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        _spot_create_ack(client_order_id=str((kwargs.get("params") or {})["newClientOrderId"])),
+        {"ok": True, "reason": "ok"},
+    )
+    created = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "bot_id": "bot-live-2",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+    order = service.db.order_by_id(str(created["execution_order_id"]))
+    assert order is not None
+
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "event": _spot_execution_report(
+                client_order_id=str(order["client_order_id"]),
+                execution_type="TRADE",
+                order_status="PARTIALLY_FILLED",
+                last_fill_qty="0.00400000",
+                cumulative_filled_qty="0.00400000",
+                last_fill_price="50000.00",
+                execution_id=7002,
+            ),
+            "_rtlab_user_stream": {"received_at": utc_now_iso()},
+        },
+    )
+    partial = service.db.order_by_id(str(created["execution_order_id"]))
+    assert partial is not None
+    assert partial["current_local_state"] == "PARTIALLY_FILLED"
+
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "event": _spot_execution_report(
+                client_order_id=str(order["client_order_id"]),
+                execution_type="TRADE",
+                order_status="FILLED",
+                last_fill_qty="0.00600000",
+                cumulative_filled_qty="0.01000000",
+                last_fill_price="50000.00",
+                execution_id=7003,
+            ),
+            "_rtlab_user_stream": {"received_at": utc_now_iso()},
+        },
+    )
+    filled = service.db.order_by_id(str(created["execution_order_id"]))
+    fills = service.db.fills_for_order(str(created["execution_order_id"]))
+
+    assert filled is not None
+    assert filled["current_local_state"] == "FILLED"
+    assert filled["order_status"] == "FILLED"
+    assert len(fills) == 2
+    assert filled["commission_total"] >= 0.0
+
+
+def test_live_order_state_machine_cancel_flow_records_cancel_requested_then_canceled(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    def _signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        params = kwargs.get("params") or {}
+        if str(method).upper() == "POST":
+            return _spot_create_ack(client_order_id=str(params["newClientOrderId"])), {"ok": True, "reason": "ok"}
+        if str(method).upper() == "DELETE":
+            return {
+                "symbol": "BTCUSDT",
+                "origClientOrderId": params.get("origClientOrderId"),
+                "clientOrderId": params.get("origClientOrderId"),
+                "orderId": 123456,
+                "status": "CANCELED",
+                "transactTime": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }, {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unexpected_call"}
+
+    service._signed_request = _signed_request  # type: ignore[method-assign]
+    created = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "bot_id": "bot-live-3",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    canceled = service.cancel_order(str(created["execution_order_id"]))
+    timeline = service.db.live_order_events_for_order(str(created["execution_order_id"]))
+
+    assert canceled["current_local_state"] == "CANCELED"
+    assert any(row["local_state_after"] == "CANCEL_REQUESTED" for row in timeline)
+    assert timeline[-1]["local_state_after"] == "CANCELED"
+
+
+def test_live_order_state_machine_reject_expire_and_stp_paths(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, reject_order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+    _, expire_order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+    _, stp_order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={"event": _spot_execution_report(client_order_id=str(reject_order["client_order_id"]), execution_type="REJECTED", order_status="REJECTED", execution_id=7101)},
+    )
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={"event": _spot_execution_report(client_order_id=str(expire_order["client_order_id"]), execution_type="EXPIRED", order_status="EXPIRED", execution_id=7102)},
+    )
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={"event": _spot_execution_report(client_order_id=str(stp_order["client_order_id"]), execution_type="TRADE_PREVENTION", order_status="EXPIRED_IN_MATCH", execution_id=7103)},
+    )
+
+    assert service.db.order_by_id(str(reject_order["execution_order_id"]))["current_local_state"] == "REJECTED"  # type: ignore[index]
+    assert service.db.order_by_id(str(expire_order["execution_order_id"]))["current_local_state"] == "EXPIRED"  # type: ignore[index]
+    assert service.db.order_by_id(str(stp_order["execution_order_id"]))["current_local_state"] == "EXPIRED_STP"  # type: ignore[index]
+
+
+def test_live_order_state_machine_unknown_submit_reconciles_to_recovered_open(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    def _signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        params = kwargs.get("params") or {}
+        if str(method).upper() == "POST":
+            return None, {
+                "ok": False,
+                "reason": "exchange_unavailable",
+                "exchange_code": -1007,
+                "exchange_msg": "Timeout waiting for response from backend server. Send status unknown; execution status unknown.",
+            }
+        if str(method).upper() == "GET":
+            return _spot_create_ack(
+                client_order_id=str(params.get("origClientOrderId") or ""),
+                status="NEW",
+                order_id=888001,
+            ), {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unexpected_call"}
+
+    service._signed_request = _signed_request  # type: ignore[method-assign]
+    created = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "bot_id": "bot-live-4",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    order = service.db.order_by_id(str(created["execution_order_id"]))
+    assert order is not None
+    assert order["current_local_state"] in {"RECOVERED_OPEN", "WORKING"}
+
+
+def test_live_order_state_machine_dedups_identical_execution_reports(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+
+    payload = {
+        "event": _spot_execution_report(
+            client_order_id=str(order["client_order_id"]),
+            execution_type="TRADE",
+            order_status="PARTIALLY_FILLED",
+            last_fill_qty="0.00400000",
+            cumulative_filled_qty="0.00400000",
+            last_fill_price="50000.00",
+            execution_id=7201,
+        ),
+        "_rtlab_user_stream": {"received_at": utc_now_iso()},
+    }
+    first = service.ingest_user_stream_event(family="spot", environment="live", payload=copy.deepcopy(payload))
+    second = service.ingest_user_stream_event(family="spot", environment="live", payload=copy.deepcopy(payload))
+    timeline = service.db.live_order_events_for_order(str(order["execution_order_id"]))
+    fills = service.db.fills_for_order(str(order["execution_order_id"]))
+
+    assert first["duplicated_event"] is False
+    assert second["duplicated_event"] is True
+    assert len([row for row in timeline if row["source_type"] == "WS_EXECUTION_REPORT"]) == 1
+    assert len(fills) == 1
+
+
+def test_live_order_state_machine_startup_recovery_rehydrates_unknown_order(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    intent, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        submitted_at=_iso_hours_ago(1),
+        acknowledged_at=None,
+    )
+    service.db.update_order_fields(
+        str(order["execution_order_id"]),
+        {
+            "bot_id": intent["bot_id"],
+            "current_local_state": "UNKNOWN_PENDING_RECONCILIATION",
+            "unresolved_reason": "timeout_unknown",
+            "last_event_at": _iso_hours_ago(1),
+        },
+    )
+
+    service._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        _spot_create_ack(
+            client_order_id=str((kwargs.get("params") or {}).get("origClientOrderId") or order["client_order_id"]),
+            status="NEW",
+            order_id=999111,
+        ),
+        {"ok": True, "reason": "ok"},
+    )
+
+    recovery = service.recover_live_orders_on_startup()
+    updated = service.db.order_by_id(str(order["execution_order_id"]))
+
+    assert recovery["processed_orders"] >= 1
+    assert updated is not None
+    assert updated["current_local_state"] in {"RECOVERED_OPEN", "WORKING"}
+
+
+def test_live_order_state_machine_blocks_new_submit_when_same_bot_symbol_is_unknown(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    intent, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        submitted_at=_iso_hours_ago(1),
+        acknowledged_at=None,
+    )
+    service.db.update_order_fields(
+        str(order["execution_order_id"]),
+        {
+            "bot_id": intent["bot_id"],
+            "current_local_state": "UNKNOWN_PENDING_RECONCILIATION",
+            "unresolved_reason": "timeout_unknown",
+            "last_event_at": _iso_hours_ago(1),
+        },
+    )
+
+    blocked = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "bot_id": intent["bot_id"],
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    assert blocked["order_status"] == "BLOCKED"
+    assert "unresolved_live_order_same_bot_symbol" in blocked["blocking_reasons"]
 
 
 def test_create_order_live_fail_closed_when_fee_source_missing(tmp_path: Path) -> None:

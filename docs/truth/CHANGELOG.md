@@ -2,6 +2,57 @@
 
 ## 2026-03-20
 
+### RTLOPS-48 - Live order state machine formal
+- Nuevo modulo:
+  - `rtlab_autotrader/rtlab_core/execution/live_order_state.py`
+- `rtlab_core/execution/reality.py` ahora:
+  - formaliza estados locales canonicos de orden live
+  - extiende `execution_orders` con campos de identidad/estado/transicion auditable
+  - agrega `live_order_events` como journal append-only
+  - agrega `live_order_reconciliation_runs` para recovery/manual/periodic reconcile
+  - integra el journal con:
+    - `create_order(...)`
+    - `cancel_order(...)`
+    - `cancel_all(...)`
+    - `ingest_user_stream_event(...)`
+    - `reconcile_live_orders(...)`
+    - `recover_live_orders_on_startup(...)`
+  - aplica reglas nuevas:
+    - `executionReport` > reconcile/query > REST response inicial
+    - submit/cancel ambiguo -> `UNKNOWN_PENDING_RECONCILIATION`
+    - hard deadline -> `MANUAL_REVIEW_REQUIRED`
+    - bloqueo de nuevos submits del mismo `bot+symbol` mientras exista orden ambigua vencida
+  - endurece correlacion:
+    - prioridad por `clientOrderId` cuando el evento lo trae
+    - dedup WS por `executionId` y fallback robusto
+    - fills stream usan `tradeId` o `executionId` para no colisionar parciales/finales
+- `config/policies/execution_safety.yaml` y su copia nested suman en `execution_safety.reconciliation`:
+  - `unknown_reconciliation_soft_deadline_sec = 5`
+  - `unknown_reconciliation_hard_deadline_sec = 30`
+- `rtlab_core/web/app.py` suma endpoints:
+  - `GET /api/v1/execution/live-orders`
+  - `GET /api/v1/execution/live-orders/unresolved`
+  - `GET /api/v1/execution/live-orders/{execution_order_id}`
+  - `GET /api/v1/execution/live-orders/timeline/{execution_order_id}`
+  - `POST /api/v1/execution/live-orders/reconcile`
+- Frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx` agrega panel `Ordenes Live`
+  - muestra:
+    - tabla con estado local/exchange
+    - bloque fuerte de ambiguas
+    - reconcile manual
+    - detalle con timeline/payload resumido
+  - `rtlab_dashboard/src/lib/types.ts` agrega contratos tipados del journal live
+- Validacion local de RTLOPS-48:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/live_order_state.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+- Nota administrativa:
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-48` queda pendiente aunque el cierre tecnico del repo/docs/tests este completo
+
 ### RTLOPS-47 - Live preflight final
 - Nuevo modulo:
   - `rtlab_autotrader/rtlab_core/execution/live_preflight.py`

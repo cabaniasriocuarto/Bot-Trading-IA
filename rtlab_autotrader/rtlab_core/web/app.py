@@ -729,6 +729,15 @@ class ExecutionUserStreamStopBody(BaseModel):
     environment: Literal["live", "testnet"]
 
 
+class ExecutionLiveOrdersReconcileBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
 class ValidationEvaluateBody(BaseModel):
     stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
     venue: str = "binance"
@@ -9910,6 +9919,25 @@ def create_app() -> FastAPI:
                 payload={"error": str(exc)},
             )
 
+    @app.on_event("startup")
+    async def execution_live_orders_startup_recovery() -> None:
+        try:
+            store.execution_live_orders_startup_recovery = store.execution_reality.recover_live_orders_on_startup()
+        except Exception as exc:
+            store.execution_live_orders_startup_recovery = {
+                "ok": False,
+                "reason": "startup_recovery_failed",
+                "error": str(exc),
+            }
+            store.add_log(
+                event_type="execution_recovery",
+                severity="warn",
+                module="execution",
+                message="Live order startup recovery failed",
+                related_ids=[],
+                payload={"error": str(exc)},
+            )
+
     @app.middleware("http")
     async def api_rate_limit_middleware(request: Request, call_next):
         allowed, retry_after_sec, bucket = API_RATE_LIMITER.check(
@@ -10167,6 +10195,77 @@ def create_app() -> FastAPI:
         if payload is None:
             raise HTTPException(status_code=404, detail="execution_order_not_found")
         return payload
+
+    @app.get("/api/v1/execution/live-orders")
+    def execution_live_orders(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_live_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/live-orders/unresolved")
+    def execution_live_orders_unresolved(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.unresolved_live_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+        )
+
+    @app.get("/api/v1/execution/live-orders/{execution_order_id}")
+    def execution_live_order_detail(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.order_detail(execution_order_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return payload
+
+    @app.get("/api/v1/execution/live-orders/timeline/{execution_order_id}")
+    def execution_live_order_timeline(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        order = store.execution_reality.db.order_by_id(execution_order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return {
+            "execution_order_id": execution_order_id,
+            "timeline": store.execution_reality.live_order_timeline(execution_order_id),
+        }
+
+    @app.post("/api/v1/execution/live-orders/reconcile")
+    def execution_live_orders_reconcile(
+        body: ExecutionLiveOrdersReconcileBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconcile_live_orders(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
 
     @app.post("/api/v1/execution/orders/{execution_order_id}/cancel")
     def execution_cancel_order(

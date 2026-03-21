@@ -2,6 +2,126 @@
 
 Fecha de actualizacion: 2026-03-20
 
+## RTLOPS-48: Live order state machine formal - 2026-03-20
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-48`
+  - rama incremental usada: `feature/live-order-state-machine-formal-rtlops-48`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+    - `27a2367`
+    - `8f615bc`
+    - `0c07d60`
+    - `4785d86`
+    - `1335857`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+  - contratos oficiales del exchange desde documentacion oficial primaria de Binance:
+    - Spot User Data Stream (`executionReport`, `listStatus`)
+    - Spot Enums (`order status`, `execution type`)
+    - Spot Trading Endpoints (`GET /api/v3/order`, `GET /api/v3/openOrders`, `POST /api/v3/order`, `DELETE /api/v3/order`)
+    - Spot Request Security
+- Alcance real cerrado:
+  - nuevo modulo dedicado:
+    - `rtlab_autotrader/rtlab_core/execution/live_order_state.py`
+  - persistencia live endurecida:
+    - `execution_orders` ahora conserva identidad canonica, requested fields, `current_local_state`, `last_exchange_order_status`, `last_execution_type`, `reconciliation_status`, `unresolved_reason`, `raw_last_payload_json` y timestamps terminales
+    - `live_order_events` queda como journal append-only con `source_type`, `dedup_key`, estados before/after y payload raw
+    - `live_order_reconciliation_runs` persiste recovery/manual/periodic reconcile
+  - estados locales canonicos implementados:
+    - `INTENT_CREATED`
+    - `PRECHECK_PASSED`
+    - `SUBMITTING`
+    - `UNKNOWN_PENDING_RECONCILIATION`
+    - `ACKED`
+    - `WORKING`
+    - `PARTIALLY_FILLED`
+    - `FILLED`
+    - `CANCEL_REQUESTED`
+    - `CANCELED`
+    - `REJECTED`
+    - `EXPIRED`
+    - `EXPIRED_STP`
+    - `RECOVERED_OPEN`
+    - `RECOVERED_TERMINAL`
+    - `MANUAL_REVIEW_REQUIRED`
+  - integracion operativa cerrada en:
+    - `create_order(...)`
+    - `cancel_order(...)`
+    - `cancel_all(...)`
+    - `ingest_user_stream_event(...)`
+    - `reconcile_live_orders(...)`
+    - `recover_live_orders_on_startup(...)`
+    - `order_detail(...)`
+    - `live_safety_summary()`
+  - API minima nueva:
+    - `GET /api/v1/execution/live-orders`
+    - `GET /api/v1/execution/live-orders/unresolved`
+    - `GET /api/v1/execution/live-orders/{execution_order_id}`
+    - `GET /api/v1/execution/live-orders/timeline/{execution_order_id}`
+    - `POST /api/v1/execution/live-orders/reconcile`
+  - frontend minimo nuevo en Execution:
+    - tabla `Ordenes Live`
+    - bloque fuerte de ambiguas/reconcile
+    - detalle con timeline, payload resumido y banner de ordenes ambiguas
+- Comportamiento real del bloque:
+  - precedencia operativa explicita:
+    - `executionReport` es la fuente primaria de transicion posterior al submit
+    - `GET /api/v3/order` y `GET /api/v3/openOrders` son fuentes de reconciliacion/recuperacion
+    - la respuesta REST inicial de create/cancel es evidencia util, pero no reemplaza stream/reconcile
+  - timeouts/unknown:
+    - submit/cancel ambiguo se marca `UNKNOWN_PENDING_RECONCILIATION`
+    - `unknown_reconciliation_soft_deadline_sec = 5`
+    - `unknown_reconciliation_hard_deadline_sec = 30`
+    - por encima del hard deadline el estado escala a `MANUAL_REVIEW_REQUIRED` y bloquea nuevos submits live del mismo `bot+symbol`
+  - deduplicacion:
+    - WS por `(symbol, orderId, executionId)` cuando `executionId` existe
+    - fallback robusto por `clientOrderId + executionType + orderStatus + transactionTime + cumulativeFilledQty`
+    - fills stream usan `tradeId` o `executionId` como fallback para no colisionar fills parciales/finales
+  - correlacion:
+    - cuando el evento trae ambos IDs, el runtime prioriza `clientOrderId` local y usa `orderId` del exchange como respaldo
+  - recovery:
+    - al iniciar backend, las ordenes no terminales se reconcilian contra exchange y no quedan `working/open` fantasmas
+  - order lists:
+    - `listStatus` queda soportado parcialmente: se persiste raw sin romper el runtime, pero no se implementa en este bloque la orquestacion completa OCO/OTO/OPO
+- Validacion real del bloque:
+  - checks locales:
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/live_order_state.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+    - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+    - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+  - cobertura nueva/minima relevante:
+    - `REST create NEW + executionReport NEW -> WORKING`
+    - `TRADE parcial -> PARTIALLY_FILLED`
+    - `TRADE final -> FILLED`
+    - `cancel -> CANCEL_REQUESTED -> CANCELED`
+    - `REJECTED / EXPIRED / TRADE_PREVENTION`
+    - unknown submit con reconcile posterior a `RECOVERED_OPEN` o terminal
+    - dedup de `executionReport`
+    - startup recovery de ordenes no terminales
+    - bloqueo de nuevos submits cuando existe orden ambigua vencida en mismo `bot+symbol`
+- Decisiones de ingenieria explicitas:
+  - no se rehizo execution; se formalizo el runtime live existente con journal, precedencia y recovery
+  - Spot queda como familia objetivo de este cierre; no se abre Futures/Margin adicionales
+  - se prefirio `clientOrderId` como correlacion primaria de eventos cuando esta disponible porque sale del runtime local y reduce ambiguedad operativa
+- Limites conscientes:
+  - order lists / `PENDING_NEW` quedan con soporte parcial seguro, no con orquestacion completa
+  - la sincronizacion administrativa de Linear sigue pendiente mientras el MCP no complete handshake
+
 ## RTLOPS-47: Live preflight final - 2026-03-20
 
 - Trazabilidad del bloque:

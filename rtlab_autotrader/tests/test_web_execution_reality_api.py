@@ -293,6 +293,27 @@ def _paper_execution_payload(*, order_type: str = "LIMIT", price: float | None =
     return payload
 
 
+def _live_execution_payload(*, price: float = 50000.0, quantity: float = 0.01, bot_id: str = "bot-live-api") -> dict[str, object]:
+    return {
+        "family": "spot",
+        "environment": "live",
+        "mode": "live",
+        "bot_id": bot_id,
+        "strategy_id": "strat-live-api",
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "order_type": "LIMIT",
+        "quantity": quantity,
+        "price": price,
+        "market_snapshot": {
+            "bid": 50000.0,
+            "ask": 50001.0,
+            "quote_ts_ms": int(time.time() * 1000),
+            "orderbook_ts_ms": int(time.time() * 1000),
+        },
+    }
+
+
 def test_config_policies_exposes_execution_bootstrap_metadata(tmp_path: Path, monkeypatch) -> None:
     module, client = _build_app(tmp_path, monkeypatch)
     _ensure_execution_prereqs(module)
@@ -518,6 +539,8 @@ def test_execution_orders_list_and_detail_endpoints_return_created_order(tmp_pat
     assert detail.json()["intent"]["execution_intent_id"] == created["execution_intent_id"]
     assert detail.json()["filter_validation"]["status"] == "PASS"
     assert detail.json()["normalized_order_preview"]["quantity"] == 0.01
+    assert isinstance(detail.json()["timeline"], list)
+    assert detail.json()["current_local_state"] in {"ACKED", "WORKING", "FILLED"}
 
 
 def test_execution_orders_cancel_endpoint_cancels_single_order(tmp_path: Path, monkeypatch) -> None:
@@ -600,6 +623,129 @@ def test_execution_order_detail_endpoint_exposes_fills_and_realized_costs(tmp_pa
     assert payload["estimated_costs"]["total_cost_estimated"] > 0
     assert payload["realized_costs"]["cost_classification"] == "mixed"
     assert payload["degraded_mode"] is False
+
+
+def test_execution_live_orders_endpoints_expose_state_machine_and_timeline(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    module.store.execution_reality._capability_snapshot = lambda family, environment: {  # type: ignore[method-assign]
+        "capability_snapshot_id": "CAP-LIVE-OK",
+        "capability_source": "test_override",
+        "can_trade": True,
+    }
+    module.store.execution_reality._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        {
+            "symbol": "BTCUSDT",
+            "orderId": 991001,
+            "clientOrderId": str((kwargs.get("params") or {}).get("newClientOrderId") or ""),
+            "transactTime": int(time.time() * 1000),
+            "price": "50000.00",
+            "origQty": "0.01000000",
+            "executedQty": "0.00000000",
+            "cummulativeQuoteQty": "0.00000000",
+            "status": "NEW",
+            "timeInForce": "GTC",
+            "type": "LIMIT",
+            "side": "BUY",
+        },
+        {"ok": True, "reason": "ok"},
+    )
+
+    created = client.post("/api/v1/execution/orders", headers=_auth_headers(token), json=_live_execution_payload()).json()
+    listed = client.get("/api/v1/execution/live-orders?family=spot&environment=live", headers=_auth_headers(token))
+    detail = client.get(f"/api/v1/execution/live-orders/{created['execution_order_id']}", headers=_auth_headers(token))
+    timeline = client.get(
+        f"/api/v1/execution/live-orders/timeline/{created['execution_order_id']}",
+        headers=_auth_headers(token),
+    )
+
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["count"] == 1
+    assert listed.json()["items"][0]["current_local_state"] == "ACKED"
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["current_local_state"] in {"ACKED", "WORKING"}
+    assert timeline.status_code == 200, timeline.text
+    assert len(timeline.json()["timeline"]) >= 4
+
+
+def test_execution_live_orders_unresolved_and_reconcile_endpoints(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    service = module.store.execution_reality
+
+    intent = service.db.insert_intent(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "strategy_id": "strat-live-api",
+            "bot_id": "bot-live-api",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "limit_price": 50000.0,
+            "preflight_status": "submitted",
+            "submitted_at": "2026-03-20T00:00:00+00:00",
+            "policy_hash": service.policy_hash(),
+            "raw_request_json": {"market_snapshot": {"bid": 50000.0, "ask": 50001.0}},
+        }
+    )
+    order = service.db.upsert_order(
+        {
+            "execution_intent_id": intent["execution_intent_id"],
+            "bot_id": intent["bot_id"],
+            "strategy_id": intent["strategy_id"],
+            "client_order_id": intent["client_order_id"],
+            "symbol": "BTCUSDT",
+            "family": "spot",
+            "environment": "live",
+            "order_status": "NEW",
+            "current_local_state": "UNKNOWN_PENDING_RECONCILIATION",
+            "submitted_at": "2026-03-20T00:00:00+00:00",
+            "last_event_at": "2026-03-20T00:00:00+00:00",
+            "price": 50000.0,
+            "orig_qty": 0.01,
+            "unresolved_reason": "timeout_unknown",
+            "reconciliation_status": "UNRESOLVED",
+            "raw_ack_json": {"symbol": "BTCUSDT", "clientOrderId": intent["client_order_id"]},
+            "raw_last_status_json": {"status": "NEW", "symbol": "BTCUSDT"},
+        }
+    )
+    service._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        {
+            "symbol": "BTCUSDT",
+            "orderId": 991002,
+            "clientOrderId": str((kwargs.get("params") or {}).get("origClientOrderId") or order["client_order_id"]),
+            "transactTime": int(time.time() * 1000),
+            "price": "50000.00",
+            "origQty": "0.01000000",
+            "executedQty": "0.00000000",
+            "cummulativeQuoteQty": "0.00000000",
+            "status": "NEW",
+            "timeInForce": "GTC",
+            "type": "LIMIT",
+            "side": "BUY",
+        },
+        {"ok": True, "reason": "ok"},
+    )
+
+    unresolved = client.get("/api/v1/execution/live-orders/unresolved?environment=live", headers=_auth_headers(token))
+    reconcile = client.post(
+        "/api/v1/execution/live-orders/reconcile",
+        headers=_auth_headers(token),
+        json={"execution_order_id": order["execution_order_id"], "environment": "live", "trigger": "MANUAL"},
+    )
+    detail = client.get(f"/api/v1/execution/live-orders/{order['execution_order_id']}", headers=_auth_headers(token))
+
+    assert unresolved.status_code == 200, unresolved.text
+    assert unresolved.json()["count"] == 1
+    assert reconcile.status_code == 200, reconcile.text
+    assert reconcile.json()["reconciliation_run"]["trigger"] == "MANUAL"
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["current_local_state"] in {"RECOVERED_OPEN", "WORKING"}
 
 
 def test_execution_reconcile_summary_endpoint_reports_degraded_mode(tmp_path: Path, monkeypatch) -> None:
