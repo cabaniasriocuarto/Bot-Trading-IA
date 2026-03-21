@@ -22,6 +22,12 @@ from rtlab_core.execution.filter_prevalidator import (
     describe_filter_rules,
     evaluate_prevalidator,
 )
+from rtlab_core.execution.live_fill_state import (
+    build_live_fill_dedup_key,
+    build_live_fill_id,
+    fill_reconciliation_status,
+    normalize_fill_source_type,
+)
 from rtlab_core.execution.live_order_state import (
     AMBIGUOUS_LOCAL_ORDER_STATES,
     BLOCKING_LOCAL_ORDER_STATES,
@@ -51,6 +57,7 @@ POLICY_EXPECTED_FILES: tuple[str, ...] = (
 PARSER_VERSION = "execution_reality_base_v1"
 RECONCILE_TYPES = {
     "ack_missing",
+    "fill_discrepancy",
     "fill_missing",
     "status_mismatch",
     "orphan_order",
@@ -356,6 +363,7 @@ def _hydrate_fill_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     out["cost_source_json"] = _json_loads(out.get("cost_source_json"), {})
     out["provenance_json"] = _json_loads(out.get("provenance_json"), {})
     out["unresolved_components_json"] = _json_loads(out.get("unresolved_components_json"), [])
+    out["discrepancy_json"] = _json_loads(out.get("discrepancy_json"), {})
     if out.get("maker") is not None:
         out["maker"] = _bool(out.get("maker"))
     if out.get("provisional") is not None:
@@ -370,6 +378,22 @@ def _hydrate_reconcile_row(payload: dict[str, Any] | None) -> dict[str, Any] | N
     out["details_json"] = _json_loads(out.get("details_json"), {})
     out["resolved"] = _bool(out.get("resolved"))
     return out
+
+
+def _fill_source_lineage(existing: dict[str, Any] | None, incoming_source_type: str) -> list[str]:
+    source_types: list[str] = []
+    provenance = (existing or {}).get("provenance_json") if isinstance((existing or {}).get("provenance_json"), dict) else {}
+    for item in provenance.get("source_lineage") or []:
+        text = normalize_fill_source_type(item)
+        if text and text not in source_types:
+            source_types.append(text)
+    existing_source = normalize_fill_source_type((existing or {}).get("raw_source_type"))
+    if existing_source and existing_source not in source_types and existing_source != "UNKNOWN":
+        source_types.append(existing_source)
+    normalized_incoming = normalize_fill_source_type(incoming_source_type)
+    if normalized_incoming and normalized_incoming not in source_types and normalized_incoming != "UNKNOWN":
+        source_types.append(normalized_incoming)
+    return source_types
 
 
 def _resolve_repo_root_for_policy() -> Path | None:
@@ -924,10 +948,26 @@ class ExecutionRealityDB:
                 CREATE TABLE IF NOT EXISTS execution_fills (
                   execution_fill_id TEXT PRIMARY KEY,
                   execution_order_id TEXT NOT NULL,
+                  local_order_id TEXT,
+                  exchange TEXT NOT NULL DEFAULT 'binance',
+                  market_type TEXT,
+                  environment TEXT NOT NULL DEFAULT 'paper',
+                  side TEXT,
+                  client_order_id TEXT,
+                  exchange_order_id TEXT,
+                  trade_id TEXT,
+                  execution_id TEXT,
                   venue_trade_id TEXT,
                   fill_time TEXT NOT NULL,
+                  event_time_exchange TEXT,
+                  event_time_local TEXT,
                   symbol TEXT NOT NULL,
                   family TEXT NOT NULL,
+                  last_executed_qty REAL,
+                  last_executed_price REAL,
+                  last_quote_qty REAL,
+                  cumulative_filled_qty_after REAL,
+                  cumulative_quote_qty_after REAL,
                   price REAL NOT NULL,
                   qty REAL NOT NULL,
                   quote_qty REAL,
@@ -935,6 +975,14 @@ class ExecutionRealityDB:
                   commission_asset TEXT,
                   realized_pnl REAL,
                   maker INTEGER,
+                  self_trade_prevention_mode TEXT,
+                  prevented_match_id TEXT,
+                  raw_source_type TEXT NOT NULL DEFAULT 'UNKNOWN',
+                  dedup_key TEXT,
+                  reconciliation_status TEXT NOT NULL DEFAULT 'PENDING',
+                  discrepancy_json TEXT NOT NULL DEFAULT '{}',
+                  created_at TEXT,
+                  updated_at TEXT,
                   funding_component REAL,
                   borrow_interest_component REAL,
                   spread_realized REAL,
@@ -949,6 +997,9 @@ class ExecutionRealityDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_execution_fills_fill_time ON execution_fills(fill_time DESC);
                 CREATE INDEX IF NOT EXISTS idx_execution_fills_trade ON execution_fills(execution_order_id, venue_trade_id);
+                CREATE INDEX IF NOT EXISTS idx_execution_fills_symbol_status ON execution_fills(symbol, family, environment, fill_time DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_fills_trade_ids ON execution_fills(trade_id, execution_id);
+                CREATE INDEX IF NOT EXISTS idx_execution_fills_reconciliation_status ON execution_fills(reconciliation_status, fill_time DESC);
 
                 CREATE TABLE IF NOT EXISTS execution_reconcile_events (
                   reconcile_event_id TEXT PRIMARY KEY,
@@ -1054,6 +1105,30 @@ class ExecutionRealityDB:
             self._ensure_column(conn, "execution_fills", "provenance_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column(conn, "execution_fills", "provisional", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "execution_fills", "unresolved_components_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "execution_fills", "local_order_id", "TEXT")
+            self._ensure_column(conn, "execution_fills", "exchange", "TEXT NOT NULL DEFAULT 'binance'")
+            self._ensure_column(conn, "execution_fills", "market_type", "TEXT")
+            self._ensure_column(conn, "execution_fills", "environment", "TEXT NOT NULL DEFAULT 'paper'")
+            self._ensure_column(conn, "execution_fills", "side", "TEXT")
+            self._ensure_column(conn, "execution_fills", "client_order_id", "TEXT")
+            self._ensure_column(conn, "execution_fills", "exchange_order_id", "TEXT")
+            self._ensure_column(conn, "execution_fills", "trade_id", "TEXT")
+            self._ensure_column(conn, "execution_fills", "execution_id", "TEXT")
+            self._ensure_column(conn, "execution_fills", "event_time_exchange", "TEXT")
+            self._ensure_column(conn, "execution_fills", "event_time_local", "TEXT")
+            self._ensure_column(conn, "execution_fills", "last_executed_qty", "REAL")
+            self._ensure_column(conn, "execution_fills", "last_executed_price", "REAL")
+            self._ensure_column(conn, "execution_fills", "last_quote_qty", "REAL")
+            self._ensure_column(conn, "execution_fills", "cumulative_filled_qty_after", "REAL")
+            self._ensure_column(conn, "execution_fills", "cumulative_quote_qty_after", "REAL")
+            self._ensure_column(conn, "execution_fills", "self_trade_prevention_mode", "TEXT")
+            self._ensure_column(conn, "execution_fills", "prevented_match_id", "TEXT")
+            self._ensure_column(conn, "execution_fills", "raw_source_type", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
+            self._ensure_column(conn, "execution_fills", "dedup_key", "TEXT")
+            self._ensure_column(conn, "execution_fills", "reconciliation_status", "TEXT NOT NULL DEFAULT 'PENDING'")
+            self._ensure_column(conn, "execution_fills", "discrepancy_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(conn, "execution_fills", "created_at", "TEXT")
+            self._ensure_column(conn, "execution_fills", "updated_at", "TEXT")
             self._ensure_column(conn, "kill_switch_events", "cleared_reason", "TEXT")
             self._ensure_column(conn, "execution_orders", "exchange", "TEXT NOT NULL DEFAULT 'binance'")
             self._ensure_column(conn, "execution_orders", "market_type", "TEXT")
@@ -1597,56 +1672,160 @@ class ExecutionRealityDB:
             ).fetchone()
         return _hydrate_reconciliation_run_row(_row_to_dict(stored) or row) or row
 
+    def fill_by_id(self, execution_fill_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_fills WHERE execution_fill_id = ?",
+                (str(execution_fill_id),),
+            ).fetchone()
+        return _hydrate_fill_row(_row_to_dict(row))
+
+    def fill_by_dedup_key(self, dedup_key: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_fills WHERE dedup_key = ? ORDER BY updated_at DESC, execution_fill_id DESC LIMIT 1",
+                (str(dedup_key),),
+            ).fetchone()
+        return _hydrate_fill_row(_row_to_dict(row))
+
     def insert_fill(self, payload: dict[str, Any]) -> dict[str, Any]:
-        venue_trade_id = payload.get("venue_trade_id")
-        if not payload.get("execution_fill_id"):
-            dedupe_key = (
-                str(payload.get("execution_order_id") or ""),
-                str(venue_trade_id or ""),
-                str(payload.get("fill_time") or ""),
-                str(payload.get("price") or ""),
-                str(payload.get("qty") or ""),
+        incoming = copy.deepcopy(payload)
+        now_iso = utc_now_iso()
+        trade_id = incoming.get("trade_id", incoming.get("venue_trade_id"))
+        execution_id = incoming.get("execution_id")
+        exchange_order_id = incoming.get("exchange_order_id")
+        if exchange_order_id is None:
+            exchange_order_id = incoming.get("venue_order_id")
+        dedup_key_candidate = incoming.get("dedup_key")
+        if not str(dedup_key_candidate or "").strip():
+            dedup_key_candidate = build_live_fill_dedup_key(
+                symbol=incoming.get("symbol"),
+                exchange_order_id=exchange_order_id,
+                trade_id=trade_id,
+                execution_id=execution_id,
+                client_order_id=incoming.get("client_order_id"),
+                execution_type=incoming.get("execution_type"),
+                transaction_time=incoming.get("event_time_exchange") or incoming.get("fill_time"),
+                last_executed_qty=incoming.get("last_executed_qty") or incoming.get("qty"),
+                last_executed_price=incoming.get("last_executed_price") or incoming.get("price"),
+                cumulative_filled_qty_after=incoming.get("cumulative_filled_qty_after"),
             )
-            payload = copy.deepcopy(payload)
-            payload["execution_fill_id"] = f"FILL-{hashlib.sha256('|'.join(dedupe_key).encode('utf-8')).hexdigest()[:16].upper()}"
+        execution_fill_id_candidate = str(incoming.get("execution_fill_id") or build_live_fill_id(str(dedup_key_candidate)))
+        existing = self.fill_by_id(execution_fill_id_candidate) or self.fill_by_dedup_key(str(dedup_key_candidate))
+        dedup_key = str((existing or {}).get("dedup_key") or dedup_key_candidate)
+        execution_fill_id = str(incoming.get("execution_fill_id") or (existing or {}).get("execution_fill_id") or build_live_fill_id(dedup_key))
+        source_types = set(_fill_source_lineage(existing, str(incoming.get("raw_source_type") or "")))
+        discrepancy = copy.deepcopy(existing.get("discrepancy_json")) if isinstance((existing or {}).get("discrepancy_json"), dict) else {}
+        incoming_discrepancy = incoming.get("discrepancy_json")
+        if isinstance(incoming_discrepancy, dict):
+            discrepancy.update(copy.deepcopy(incoming_discrepancy))
+        provenance = copy.deepcopy(existing.get("provenance_json")) if isinstance((existing or {}).get("provenance_json"), dict) else {}
+        provenance.update(copy.deepcopy(incoming.get("provenance_json") or {}))
+        provenance["source_lineage"] = sorted(source_types)
+        provenance.setdefault("source_kind", "execution_reality_fill")
+        venue_trade_id = incoming.get("venue_trade_id") or incoming.get("trade_id") or (existing or {}).get("venue_trade_id")
+        trade_id = incoming.get("trade_id", venue_trade_id) or (existing or {}).get("trade_id")
+        execution_id = incoming.get("execution_id") or (existing or {}).get("execution_id")
+        fill_time = str(
+            incoming.get("fill_time")
+            or incoming.get("event_time_exchange")
+            or (existing or {}).get("fill_time")
+            or now_iso
+        )
+        event_time_exchange = str(
+            incoming.get("event_time_exchange")
+            or incoming.get("fill_time")
+            or (existing or {}).get("event_time_exchange")
+            or fill_time
+        )
+        last_executed_qty = _first_number(incoming.get("last_executed_qty"), incoming.get("qty"), (existing or {}).get("last_executed_qty"), (existing or {}).get("qty"))
+        last_executed_price = _first_number(incoming.get("last_executed_price"), incoming.get("price"), (existing or {}).get("last_executed_price"), (existing or {}).get("price"))
+        last_quote_qty = _first_number(incoming.get("last_quote_qty"), incoming.get("quote_qty"), (existing or {}).get("last_quote_qty"), (existing or {}).get("quote_qty"))
+        qty = _first_number(incoming.get("qty"), last_executed_qty, (existing or {}).get("qty"))
+        price = _first_number(incoming.get("price"), last_executed_price, (existing or {}).get("price"))
+        quote_qty = _first_number(incoming.get("quote_qty"), last_quote_qty, (existing or {}).get("quote_qty"))
+        if quote_qty is None and price is not None and qty is not None:
+            quote_qty = float(price) * float(qty)
+        reconciliation_status = (
+            "DISCREPANCY"
+            if discrepancy
+            else str(
+                incoming.get("reconciliation_status")
+                or fill_reconciliation_status(source_types=source_types, has_discrepancy=False)
+            )
+        )
         row = {
-            "execution_fill_id": str(payload.get("execution_fill_id") or uuid4()),
-            "execution_order_id": str(payload.get("execution_order_id") or ""),
-            "venue_trade_id": payload.get("venue_trade_id"),
-            "fill_time": str(payload.get("fill_time") or utc_now_iso()),
-            "symbol": str(payload.get("symbol") or ""),
-            "family": str(payload.get("family") or ""),
-            "price": payload.get("price"),
-            "qty": payload.get("qty"),
-            "quote_qty": payload.get("quote_qty"),
-            "commission": payload.get("commission", 0.0),
-            "commission_asset": payload.get("commission_asset"),
-            "realized_pnl": payload.get("realized_pnl"),
-            "maker": _db_bool(payload.get("maker")),
-            "funding_component": payload.get("funding_component"),
-            "borrow_interest_component": payload.get("borrow_interest_component"),
-            "spread_realized": payload.get("spread_realized"),
-            "slippage_realized": payload.get("slippage_realized"),
-            "gross_pnl": payload.get("gross_pnl"),
-            "net_pnl": payload.get("net_pnl"),
-            "cost_source_json": _json_dumps(payload.get("cost_source_json") or {}),
-            "provenance_json": _json_dumps(payload.get("provenance_json") or {}),
-            "provisional": _db_bool(payload.get("provisional", False)) or 0,
-            "unresolved_components_json": _json_dumps(payload.get("unresolved_components_json") or []),
-            "raw_fill_json": _json_dumps(payload.get("raw_fill_json") or {}),
+            "execution_fill_id": execution_fill_id,
+            "execution_order_id": str(incoming.get("execution_order_id") or (existing or {}).get("execution_order_id") or ""),
+            "local_order_id": str(incoming.get("local_order_id") or (existing or {}).get("local_order_id") or incoming.get("execution_order_id") or (existing or {}).get("execution_order_id") or ""),
+            "exchange": str(incoming.get("exchange") or (existing or {}).get("exchange") or "binance"),
+            "market_type": str(incoming.get("market_type") or (existing or {}).get("market_type") or incoming.get("family") or (existing or {}).get("family") or ""),
+            "environment": str(incoming.get("environment") or (existing or {}).get("environment") or "paper"),
+            "side": str(incoming.get("side") or (existing or {}).get("side") or "") or None,
+            "client_order_id": str(incoming.get("client_order_id") or (existing or {}).get("client_order_id") or "") or None,
+            "exchange_order_id": str(exchange_order_id or (existing or {}).get("exchange_order_id") or "") or None,
+            "trade_id": str(trade_id or "").strip() or None,
+            "execution_id": str(execution_id or "").strip() or None,
+            "venue_trade_id": str(venue_trade_id or "").strip() or None,
+            "fill_time": fill_time,
+            "event_time_exchange": event_time_exchange,
+            "event_time_local": str(incoming.get("event_time_local") or (existing or {}).get("event_time_local") or now_iso),
+            "symbol": str(incoming.get("symbol") or (existing or {}).get("symbol") or ""),
+            "family": str(incoming.get("family") or (existing or {}).get("family") or ""),
+            "last_executed_qty": last_executed_qty,
+            "last_executed_price": last_executed_price,
+            "last_quote_qty": last_quote_qty,
+            "cumulative_filled_qty_after": _first_number(incoming.get("cumulative_filled_qty_after"), (existing or {}).get("cumulative_filled_qty_after")),
+            "cumulative_quote_qty_after": _first_number(incoming.get("cumulative_quote_qty_after"), (existing or {}).get("cumulative_quote_qty_after")),
+            "price": price,
+            "qty": qty,
+            "quote_qty": quote_qty,
+            "commission": _first_number(incoming.get("commission"), (existing or {}).get("commission"), 0.0) or 0.0,
+            "commission_asset": str(incoming.get("commission_asset") or (existing or {}).get("commission_asset") or "") or None,
+            "realized_pnl": _first_number(incoming.get("realized_pnl"), (existing or {}).get("realized_pnl")),
+            "maker": _db_bool(incoming.get("maker") if incoming.get("maker") is not None else (existing or {}).get("maker")),
+            "self_trade_prevention_mode": str(incoming.get("self_trade_prevention_mode") or (existing or {}).get("self_trade_prevention_mode") or "") or None,
+            "prevented_match_id": str(incoming.get("prevented_match_id") or (existing or {}).get("prevented_match_id") or "") or None,
+            "raw_source_type": normalize_fill_source_type(incoming.get("raw_source_type") or (existing or {}).get("raw_source_type")),
+            "dedup_key": dedup_key,
+            "reconciliation_status": reconciliation_status,
+            "discrepancy_json": _json_dumps(discrepancy),
+            "created_at": str((existing or {}).get("created_at") or incoming.get("created_at") or now_iso),
+            "updated_at": str(incoming.get("updated_at") or now_iso),
+            "funding_component": _first_number(incoming.get("funding_component"), (existing or {}).get("funding_component")),
+            "borrow_interest_component": _first_number(incoming.get("borrow_interest_component"), (existing or {}).get("borrow_interest_component")),
+            "spread_realized": _first_number(incoming.get("spread_realized"), (existing or {}).get("spread_realized")),
+            "slippage_realized": _first_number(incoming.get("slippage_realized"), (existing or {}).get("slippage_realized")),
+            "gross_pnl": _first_number(incoming.get("gross_pnl"), (existing or {}).get("gross_pnl")),
+            "net_pnl": _first_number(incoming.get("net_pnl"), (existing or {}).get("net_pnl")),
+            "cost_source_json": _json_dumps(incoming.get("cost_source_json") or (existing or {}).get("cost_source_json") or {}),
+            "provenance_json": _json_dumps(provenance),
+            "provisional": _db_bool(incoming.get("provisional") if incoming.get("provisional") is not None else (existing or {}).get("provisional", False)) or 0,
+            "unresolved_components_json": _json_dumps(incoming.get("unresolved_components_json") or (existing or {}).get("unresolved_components_json") or []),
+            "raw_fill_json": _json_dumps(incoming.get("raw_fill_json") or (existing or {}).get("raw_fill_json") or {}),
         }
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO execution_fills (
-                  execution_fill_id, execution_order_id, venue_trade_id, fill_time, symbol, family,
+                  execution_fill_id, execution_order_id, local_order_id, exchange, market_type, environment,
+                  side, client_order_id, exchange_order_id, trade_id, execution_id, venue_trade_id,
+                  fill_time, event_time_exchange, event_time_local, symbol, family, last_executed_qty,
+                  last_executed_price, last_quote_qty, cumulative_filled_qty_after, cumulative_quote_qty_after,
                   price, qty, quote_qty, commission, commission_asset, realized_pnl, maker,
+                  self_trade_prevention_mode, prevented_match_id, raw_source_type, dedup_key,
+                  reconciliation_status, discrepancy_json, created_at, updated_at,
                   funding_component, borrow_interest_component, spread_realized, slippage_realized,
                   gross_pnl, net_pnl, cost_source_json, provenance_json, provisional,
                   unresolved_components_json, raw_fill_json
                 ) VALUES (
-                  :execution_fill_id, :execution_order_id, :venue_trade_id, :fill_time, :symbol, :family,
+                  :execution_fill_id, :execution_order_id, :local_order_id, :exchange, :market_type, :environment,
+                  :side, :client_order_id, :exchange_order_id, :trade_id, :execution_id, :venue_trade_id,
+                  :fill_time, :event_time_exchange, :event_time_local, :symbol, :family, :last_executed_qty,
+                  :last_executed_price, :last_quote_qty, :cumulative_filled_qty_after, :cumulative_quote_qty_after,
                   :price, :qty, :quote_qty, :commission, :commission_asset, :realized_pnl, :maker,
+                  :self_trade_prevention_mode, :prevented_match_id, :raw_source_type, :dedup_key,
+                  :reconciliation_status, :discrepancy_json, :created_at, :updated_at,
                   :funding_component, :borrow_interest_component, :spread_realized, :slippage_realized,
                   :gross_pnl, :net_pnl, :cost_source_json, :provenance_json, :provisional,
                   :unresolved_components_json, :raw_fill_json
@@ -1659,6 +1838,48 @@ class ExecutionRealityDB:
                 (row["execution_fill_id"],),
             ).fetchone()
         return _hydrate_fill_row(_row_to_dict(stored) or row) or row
+
+    def list_fills(
+        self,
+        *,
+        execution_order_id: str | None = None,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        reconciliation_status: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if execution_order_id:
+            clauses.append("execution_order_id = ?")
+            params.append(str(execution_order_id))
+        if family:
+            clauses.append("family = ?")
+            params.append(str(family))
+        if environment:
+            clauses.append("environment = ?")
+            params.append(str(environment))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(str(symbol))
+        if reconciliation_status:
+            clauses.append("reconciliation_status = ?")
+            params.append(str(reconciliation_status))
+        params.extend([max(1, int(limit)), max(0, int(offset))])
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_fills
+                WHERE {' AND '.join(clauses)}
+                ORDER BY event_time_exchange DESC, fill_time DESC, execution_fill_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [_hydrate_fill_row(_row_to_dict(row)) or {} for row in rows]
 
     def list_reconcile_events(
         self,
@@ -1732,7 +1953,7 @@ class ExecutionRealityDB:
                 SELECT *
                 FROM execution_fills
                 WHERE execution_order_id = ?
-                ORDER BY fill_time ASC, execution_fill_id ASC
+                ORDER BY event_time_exchange ASC, fill_time ASC, execution_fill_id ASC
                 """,
                 (str(execution_order_id),),
             ).fetchall()
@@ -3970,32 +4191,85 @@ class ExecutionRealityService:
             quote_qty = price * qty
         if price is None or qty is None or qty <= 0:
             return None
-        fill_time = (
+        event_time_exchange = (
             _ms_to_iso(row.get("time"))
             or _ms_to_iso(row.get("T"))
             or _ms_to_iso(row.get("transactTime"))
             or _ms_to_iso(row.get("updateTime"))
             or utc_now_iso()
         )
+        fill_time = (
+            event_time_exchange
+        )
         maker = row.get("maker")
         if maker is None:
             maker = row.get("m")
         if maker is None:
             maker = row.get("isMaker")
+        client_order_id = str(
+            row.get("clientOrderId")
+            or row.get("c")
+            or row.get("origClientOrderId")
+            or row.get("C")
+            or order.get("client_order_id")
+            or ""
+        ).strip() or None
+        exchange_order_id = str(
+            row.get("orderId")
+            or row.get("i")
+            or order.get("venue_order_id")
+            or ""
+        ).strip() or None
+        trade_id = str(
+            row.get("id")
+            or row.get("t")
+            or row.get("tradeId")
+            or ""
+        ).strip() or None
+        execution_id = str(
+            row.get("executionId")
+            or row.get("I")
+            or ""
+        ).strip() or None
+        last_qty = _first_number(row.get("l"), row.get("lastFilledQty"), row.get("qty"), row.get("q"), qty)
+        last_price = _first_number(row.get("L"), row.get("lastFilledPrice"), row.get("price"), row.get("p"), price)
+        last_quote_qty = _first_number(row.get("Y"), row.get("lastQuoteQty"), row.get("quoteQty"), quote_qty)
+        cumulative_filled_qty_after = _first_number(row.get("z"), row.get("executedQty"))
+        cumulative_quote_qty_after = _first_number(row.get("Z"), row.get("cummulativeQuoteQty"), row.get("cumQuote"), row.get("cumQuoteQty"))
+        source_type = normalize_fill_source_type(source_kind)
+        dedup_key = build_live_fill_dedup_key(
+            symbol=symbol,
+            exchange_order_id=exchange_order_id,
+            trade_id=trade_id,
+            execution_id=execution_id,
+            client_order_id=client_order_id,
+            execution_type=row.get("executionType") or row.get("x"),
+            transaction_time=event_time_exchange,
+            last_executed_qty=last_qty,
+            last_executed_price=last_price,
+            cumulative_filled_qty_after=cumulative_filled_qty_after,
+        )
         return {
-            "venue_trade_id": str(
-                row.get("id")
-                or row.get("t")
-                or row.get("tradeId")
-                or row.get("executionId")
-                or row.get("I")
-                or ""
-            ).strip()
-            or None,
-            "venue_order_id": str(row.get("orderId") or row.get("i") or order.get("venue_order_id") or "").strip() or None,
+            "exchange": "binance",
+            "market_type": _normalize_family(family),
+            "environment": _normalize_environment(order.get("environment")),
+            "side": str(order.get("side") or row.get("side") or row.get("S") or "").upper() or None,
+            "client_order_id": client_order_id,
+            "exchange_order_id": exchange_order_id,
+            "trade_id": trade_id,
+            "execution_id": execution_id,
+            "venue_trade_id": trade_id or execution_id,
+            "venue_order_id": exchange_order_id,
             "fill_time": fill_time,
+            "event_time_exchange": event_time_exchange,
+            "event_time_local": utc_now_iso(),
             "symbol": symbol,
             "family": _normalize_family(family),
+            "last_executed_qty": last_qty,
+            "last_executed_price": last_price,
+            "last_quote_qty": last_quote_qty,
+            "cumulative_filled_qty_after": cumulative_filled_qty_after,
+            "cumulative_quote_qty_after": cumulative_quote_qty_after,
             "price": price,
             "qty": qty,
             "quote_qty": quote_qty,
@@ -4003,7 +4277,12 @@ class ExecutionRealityService:
             "commission_asset": str(row.get("commissionAsset") or row.get("N") or row.get("feeAsset") or "").strip() or None,
             "realized_pnl": _first_number(row.get("realizedPnl"), row.get("rp")),
             "maker": None if maker is None else _bool(maker),
+            "self_trade_prevention_mode": str(row.get("selfTradePreventionMode") or row.get("V") or "").strip() or None,
+            "prevented_match_id": str(row.get("preventedMatchId") or row.get("v") or "").strip() or None,
             "raw_fill_json": copy.deepcopy(row),
+            "raw_source_type": source_type,
+            "dedup_key": dedup_key,
+            "execution_type": str(row.get("executionType") or row.get("x") or "").upper() or None,
             "source_kind": source_kind,
         }
 
@@ -4197,10 +4476,26 @@ class ExecutionRealityService:
         return {
             "execution_fill_id": trade.get("execution_fill_id"),
             "execution_order_id": str(order.get("execution_order_id")),
+            "local_order_id": str(order.get("execution_order_id")),
+            "exchange": "binance",
+            "market_type": order.get("market_type") or family,
+            "environment": order.get("environment"),
+            "side": side or order.get("side"),
+            "client_order_id": order.get("client_order_id"),
+            "exchange_order_id": trade.get("exchange_order_id") or order.get("venue_order_id"),
+            "trade_id": trade.get("trade_id") or trade.get("venue_trade_id"),
+            "execution_id": trade.get("execution_id"),
             "venue_trade_id": trade.get("venue_trade_id"),
             "fill_time": trade.get("fill_time"),
+            "event_time_exchange": trade.get("event_time_exchange") or trade.get("fill_time"),
+            "event_time_local": trade.get("event_time_local") or utc_now_iso(),
             "symbol": _canonical_symbol(trade.get("symbol") or order.get("symbol")),
             "family": family,
+            "last_executed_qty": trade.get("last_executed_qty") or qty,
+            "last_executed_price": trade.get("last_executed_price") or price,
+            "last_quote_qty": trade.get("last_quote_qty") or quote_qty,
+            "cumulative_filled_qty_after": trade.get("cumulative_filled_qty_after"),
+            "cumulative_quote_qty_after": trade.get("cumulative_quote_qty_after"),
             "price": price,
             "qty": qty,
             "quote_qty": quote_qty,
@@ -4208,6 +4503,12 @@ class ExecutionRealityService:
             "commission_asset": trade.get("commission_asset"),
             "realized_pnl": gross_pnl,
             "maker": trade.get("maker"),
+            "self_trade_prevention_mode": trade.get("self_trade_prevention_mode"),
+            "prevented_match_id": trade.get("prevented_match_id"),
+            "raw_source_type": trade.get("raw_source_type"),
+            "dedup_key": trade.get("dedup_key"),
+            "reconciliation_status": trade.get("reconciliation_status"),
+            "discrepancy_json": trade.get("discrepancy_json") or {},
             "funding_component": funding_component,
             "borrow_interest_component": borrow_interest_component,
             "spread_realized": spread_realized,
@@ -4231,9 +4532,12 @@ class ExecutionRealityService:
                 "client_order_id": order.get("client_order_id"),
                 "venue_order_id": order.get("venue_order_id"),
                 "venue_trade_id": trade.get("venue_trade_id"),
+                "trade_id": trade.get("trade_id") or trade.get("venue_trade_id"),
+                "execution_id": trade.get("execution_id"),
                 "source_kind": "execution_reality_fill",
                 "event_source": event_source,
                 "policy_hash": self.policy_hash(),
+                "source_lineage": [normalize_fill_source_type(trade.get("raw_source_type"))],
             },
             "provisional": provisional,
             "unresolved_components_json": unresolved_components,
@@ -4384,15 +4688,13 @@ class ExecutionRealityService:
             "net_pnl": net_pnl,
         }
 
-    def _sync_fills_to_reporting_bridge(
+    def _reporting_rows_from_live_fills(
         self,
         *,
         order: dict[str, Any],
         intent: dict[str, Any] | None,
         fills: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        if self.reporting_bridge_service is None or not hasattr(self.reporting_bridge_service, "upsert_execution_trade_rows"):
-            return None
+    ) -> list[dict[str, Any]]:
         strategy_id = (intent or {}).get("strategy_id")
         bot_id = (intent or {}).get("bot_id")
         execution_policy_hash = self.policy_hash()
@@ -4450,11 +4752,27 @@ class ExecutionRealityService:
                         **(_json_loads(fill.get("provenance_json"), {}) if isinstance(fill, dict) else {}),
                         "execution_order_id": order.get("execution_order_id"),
                         "execution_intent_id": (intent or {}).get("execution_intent_id"),
+                        "trade_id": fill.get("trade_id") or fill.get("venue_trade_id"),
+                        "execution_id": fill.get("execution_id"),
+                        "raw_source_type": fill.get("raw_source_type"),
+                        "reconciliation_status": fill.get("reconciliation_status"),
                         "source_kind": "execution_reality_fill",
                     },
                     "created_at": utc_now_iso(),
                 }
             )
+        return rows
+
+    def _sync_fills_to_reporting_bridge(
+        self,
+        *,
+        order: dict[str, Any],
+        intent: dict[str, Any] | None,
+        fills: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if self.reporting_bridge_service is None or not hasattr(self.reporting_bridge_service, "upsert_execution_trade_rows"):
+            return None
+        rows = self._reporting_rows_from_live_fills(order=order, intent=intent, fills=fills)
         return self.reporting_bridge_service.upsert_execution_trade_rows(rows)
 
     def _materialize_trade_rows(
@@ -4471,12 +4789,58 @@ class ExecutionRealityService:
         normalized_rows = [copy.deepcopy(row) for row in trade_rows if isinstance(row, dict)]
         if not normalized_rows:
             return {"fills": [], "order": order, "reporting_sync": None}
-        normalized_rows.sort(key=lambda row: (str(row.get("fill_time") or ""), str(row.get("venue_trade_id") or "")))
+        normalized_rows.sort(
+            key=lambda row: (
+                str(row.get("event_time_exchange") or row.get("fill_time") or ""),
+                str(row.get("trade_id") or row.get("venue_trade_id") or row.get("execution_id") or ""),
+            )
+        )
+        running_qty = 0.0
+        running_quote = 0.0
         temp_fill_keys: list[str] = []
         for idx, row in enumerate(normalized_rows):
+            qty_value = _safe_float(row.get("qty"), 0.0)
+            quote_value = _first_number(row.get("quote_qty"), row.get("last_quote_qty"))
+            if quote_value is None and _first_number(row.get("price")) is not None:
+                quote_value = _safe_float(row.get("price"), 0.0) * qty_value
+            if row.get("cumulative_filled_qty_after") is None:
+                running_qty += qty_value
+                row["cumulative_filled_qty_after"] = running_qty
+            else:
+                running_qty = max(running_qty, _safe_float(row.get("cumulative_filled_qty_after"), running_qty))
+            if row.get("cumulative_quote_qty_after") is None:
+                running_quote += _safe_float(quote_value, 0.0)
+                row["cumulative_quote_qty_after"] = running_quote
+            else:
+                running_quote = max(running_quote, _safe_float(row.get("cumulative_quote_qty_after"), running_quote))
+            row["last_executed_qty"] = _first_number(row.get("last_executed_qty"), row.get("qty"))
+            row["last_executed_price"] = _first_number(row.get("last_executed_price"), row.get("price"))
+            row["last_quote_qty"] = _first_number(row.get("last_quote_qty"), row.get("quote_qty"), quote_value)
+            row["raw_source_type"] = normalize_fill_source_type(row.get("raw_source_type") or row.get("source_kind"))
+            row["dedup_key"] = str(
+                row.get("dedup_key")
+                or build_live_fill_dedup_key(
+                    symbol=row.get("symbol") or order.get("symbol"),
+                    exchange_order_id=row.get("exchange_order_id") or row.get("venue_order_id") or order.get("venue_order_id"),
+                    trade_id=row.get("trade_id") or row.get("venue_trade_id"),
+                    execution_id=row.get("execution_id"),
+                    client_order_id=row.get("client_order_id") or order.get("client_order_id"),
+                    execution_type=row.get("execution_type"),
+                    transaction_time=row.get("event_time_exchange") or row.get("fill_time"),
+                    last_executed_qty=row.get("last_executed_qty"),
+                    last_executed_price=row.get("last_executed_price"),
+                    cumulative_filled_qty_after=row.get("cumulative_filled_qty_after"),
+                )
+            )
             if not row.get("execution_fill_id"):
-                fill_seed = f"{order.get('execution_order_id')}:{row.get('venue_trade_id') or idx}"
-                row["execution_fill_id"] = f"FILL-{hashlib.sha256(fill_seed.encode('utf-8')).hexdigest()[:16].upper()}"
+                row["execution_fill_id"] = build_live_fill_id(str(row.get("dedup_key") or f"{order.get('execution_order_id')}:{idx}"))
+            row["reconciliation_status"] = row.get(
+                "reconciliation_status",
+                fill_reconciliation_status(
+                    source_types={normalize_fill_source_type(row.get("raw_source_type"))},
+                    has_discrepancy=bool(row.get("discrepancy_json")),
+                ),
+            )
             temp_fill_keys.append(str(row["execution_fill_id"]))
         funding_map = self._distributed_component_map(
             normalized_rows,
@@ -4553,6 +4917,205 @@ class ExecutionRealityService:
             }
         )
 
+    def _fill_reconciliation_window(self) -> dict[str, float]:
+        policy = self._reconciliation_policy()
+        return {
+            "recent_limit": float(policy.get("my_trades_recent_limit") or 100),
+            "window_hours": float(policy.get("my_trades_window_hours") or 24),
+        }
+
+    def _compare_fill_to_trade(self, fill: dict[str, Any], trade: dict[str, Any]) -> dict[str, Any]:
+        discrepancies: dict[str, Any] = {}
+        for key in ("commission", "commission_asset", "maker", "trade_id", "execution_id"):
+            fill_value = fill.get(key)
+            trade_value = trade.get(key)
+            if key == "commission":
+                fill_num = _first_number(fill_value)
+                trade_num = _first_number(trade_value)
+                if fill_num is not None and trade_num is not None and abs(fill_num - trade_num) > 1e-12:
+                    discrepancies[key] = {"local": fill_num, "remote": trade_num}
+            elif str(fill_value or "") != str(trade_value or "") and str(trade_value or "").strip():
+                discrepancies[key] = {"local": fill_value, "remote": trade_value}
+        return discrepancies
+
+    def _reconcile_fill_rows_against_remote(
+        self,
+        *,
+        order: dict[str, Any],
+        remote_rows: list[dict[str, Any]],
+        remote_meta: dict[str, Any] | None,
+        trigger: str,
+    ) -> list[dict[str, Any]]:
+        execution_order_id = str(order.get("execution_order_id") or "")
+        client_order_id = str(order.get("client_order_id") or "")
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        existing_fills = self.db.fills_for_order(execution_order_id)
+        existing_by_key = {str(fill.get("dedup_key") or ""): fill for fill in existing_fills if str(fill.get("dedup_key") or "").strip()}
+        remote_by_key = {str(row.get("dedup_key") or ""): row for row in remote_rows if str(row.get("dedup_key") or "").strip()}
+        created: list[dict[str, Any]] = []
+
+        for remote_key, remote_row in remote_by_key.items():
+            local_fill = existing_by_key.get(remote_key)
+            if local_fill is None:
+                continue
+            delta = self._compare_fill_to_trade(local_fill, remote_row)
+            if delta:
+                created.append(
+                    self._record_reconcile_event(
+                        reconcile_type="fill_discrepancy",
+                        severity="WARN",
+                        family=family,
+                        environment=environment,
+                        execution_order_id=execution_order_id,
+                        client_order_id=client_order_id,
+                        details={
+                            "discrepancy_type": "ws_vs_mytrades_value_mismatch",
+                            "execution_fill_id": local_fill.get("execution_fill_id"),
+                            "dedup_key": remote_key,
+                            "trigger": trigger,
+                            "delta": delta,
+                            "remote_source": remote_meta or {},
+                        },
+                        resolved=False,
+                    )
+                )
+                self.db.insert_fill(
+                    {
+                        "execution_fill_id": local_fill.get("execution_fill_id"),
+                        "execution_order_id": execution_order_id,
+                        "discrepancy_json": {
+                            **(local_fill.get("discrepancy_json") if isinstance(local_fill.get("discrepancy_json"), dict) else {}),
+                            "ws_vs_mytrades_value_mismatch": delta,
+                        },
+                        "raw_source_type": "REST_MYTRADES",
+                        "reconciliation_status": "DISCREPANCY",
+                        "trade_id": remote_row.get("trade_id"),
+                        "execution_id": remote_row.get("execution_id"),
+                        "commission": remote_row.get("commission"),
+                        "commission_asset": remote_row.get("commission_asset"),
+                        "maker": remote_row.get("maker"),
+                        "raw_fill_json": remote_row.get("raw_fill_json") or {},
+                        "event_time_exchange": remote_row.get("event_time_exchange"),
+                        "event_time_local": utc_now_iso(),
+                    }
+                )
+            else:
+                self.db.insert_fill(
+                    {
+                        "execution_fill_id": local_fill.get("execution_fill_id"),
+                        "execution_order_id": execution_order_id,
+                        "trade_id": remote_row.get("trade_id"),
+                        "execution_id": remote_row.get("execution_id"),
+                        "commission": remote_row.get("commission"),
+                        "commission_asset": remote_row.get("commission_asset"),
+                        "maker": remote_row.get("maker"),
+                        "raw_source_type": "REST_MYTRADES",
+                        "reconciliation_status": "RECONCILED",
+                        "raw_fill_json": remote_row.get("raw_fill_json") or {},
+                        "event_time_exchange": remote_row.get("event_time_exchange"),
+                        "event_time_local": utc_now_iso(),
+                    }
+                )
+
+        missing_remote = [
+            fill
+            for key, fill in existing_by_key.items()
+            if key and key not in remote_by_key and normalize_fill_source_type(fill.get("raw_source_type")) == "WS_EXECUTION_REPORT"
+        ]
+        for fill in missing_remote:
+            created.append(
+                self._record_reconcile_event(
+                    reconcile_type="fill_discrepancy",
+                    severity="WARN",
+                    family=family,
+                    environment=environment,
+                    execution_order_id=execution_order_id,
+                    client_order_id=client_order_id,
+                    details={
+                        "discrepancy_type": "ws_fill_missing_in_mytrades",
+                        "execution_fill_id": fill.get("execution_fill_id"),
+                        "dedup_key": fill.get("dedup_key"),
+                        "trigger": trigger,
+                        "remote_source": remote_meta or {},
+                    },
+                    resolved=False,
+                )
+            )
+            self.db.insert_fill(
+                {
+                    "execution_fill_id": fill.get("execution_fill_id"),
+                    "execution_order_id": execution_order_id,
+                    "discrepancy_json": {
+                        **(fill.get("discrepancy_json") if isinstance(fill.get("discrepancy_json"), dict) else {}),
+                        "ws_fill_missing_in_mytrades": True,
+                    },
+                    "reconciliation_status": "DISCREPANCY",
+                    "updated_at": utc_now_iso(),
+                }
+            )
+
+        if remote_rows and not missing_remote and not created:
+            self.db.resolve_reconcile_events(
+                reconcile_type="fill_discrepancy",
+                execution_order_id=execution_order_id,
+            )
+            for fill in self.db.fills_for_order(execution_order_id):
+                if str(fill.get("reconciliation_status") or "").upper() == "DISCREPANCY":
+                    continue
+                if normalize_fill_source_type(fill.get("raw_source_type")) in {"WS_EXECUTION_REPORT", "REST_MYTRADES"}:
+                    self.db.insert_fill(
+                        {
+                            "execution_fill_id": fill.get("execution_fill_id"),
+                            "execution_order_id": execution_order_id,
+                            "reconciliation_status": "RECONCILED",
+                            "updated_at": utc_now_iso(),
+                        }
+                    )
+        return created
+
+    def _fetch_remote_trade_rows_for_symbol(
+        self,
+        *,
+        family: str,
+        environment: str,
+        symbol: str,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        params: dict[str, Any] = {
+            "symbol": _canonical_symbol(symbol),
+            "limit": max(1, int(limit)),
+        }
+        operation = "my_trades" if normalized_family in {"spot", "margin"} else "user_trades"
+        payload, meta = self._signed_request(
+            "GET",
+            self._execution_endpoint(normalized_family, normalized_environment, operation),
+            family=normalized_family,
+            environment=normalized_environment,
+            params=params,
+        )
+        rows = payload if isinstance(payload, list) else []
+        normalized: list[dict[str, Any]] = []
+        order_hint = {
+            "symbol": _canonical_symbol(symbol),
+            "environment": normalized_environment,
+            "family": normalized_family,
+        }
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            normalized_row = self._normalize_trade_payload(
+                family=normalized_family,
+                order=order_hint,
+                row=row,
+                source_kind=f"{operation}_rest",
+            )
+            if normalized_row is not None:
+                normalized.append(normalized_row)
+        return normalized, meta
+
     def _materialize_paper_fill(self, order: dict[str, Any], intent: dict[str, Any] | None) -> dict[str, Any]:
         if _normalize_environment(order.get("environment")) != "paper":
             return {"fills": [], "order": order, "reporting_sync": None}
@@ -4585,6 +5148,8 @@ class ExecutionRealityService:
             "execution_fill_id": f"PFILL-{hashlib.sha256(fill_seed.encode('utf-8')).hexdigest()[:16].upper()}",
             "venue_trade_id": None,
             "fill_time": fill_time,
+            "event_time_exchange": fill_time,
+            "event_time_local": fill_time,
             "symbol": order.get("symbol"),
             "family": order.get("family"),
             "price": fill_price,
@@ -4594,6 +5159,7 @@ class ExecutionRealityService:
             "commission_asset": None,
             "realized_pnl": None,
             "maker": False,
+            "raw_source_type": "PAPER_LOCAL_FILL",
             "raw_fill_json": {"source": "paper_local_fill", "fill_price": fill_price},
         }
         return self._materialize_trade_rows(
@@ -4603,6 +5169,42 @@ class ExecutionRealityService:
             event_source="paper_local_fill",
             degraded_mode=False,
         )
+
+    def _trade_rows_from_create_response(
+        self,
+        *,
+        family: str,
+        order: dict[str, Any],
+        ack_payload: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if _normalize_family(family) not in {"spot", "margin"}:
+            return []
+        fills = ack_payload.get("fills") if isinstance(ack_payload.get("fills"), list) else []
+        if not fills:
+            return []
+        rows: list[dict[str, Any]] = []
+        for item in fills:
+            if not isinstance(item, dict):
+                continue
+            normalized = self._normalize_trade_payload(
+                family=family,
+                order=order,
+                row={
+                    **copy.deepcopy(item),
+                    "symbol": ack_payload.get("symbol") or order.get("symbol"),
+                    "orderId": ack_payload.get("orderId") or order.get("venue_order_id"),
+                    "clientOrderId": ack_payload.get("clientOrderId") or order.get("client_order_id"),
+                    "transactTime": ack_payload.get("transactTime"),
+                    "executionType": "TRADE",
+                    "x": "TRADE",
+                    "status": ack_payload.get("status"),
+                    "X": ack_payload.get("status"),
+                },
+                source_kind="REST_CREATE_FULL",
+            )
+            if normalized is not None and _safe_float(normalized.get("qty"), 0.0) > 0:
+                rows.append(normalized)
+        return rows
 
     def ingest_user_stream_event(self, *, family: str, environment: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized_family = _normalize_family(family)
@@ -4847,6 +5449,14 @@ class ExecutionRealityService:
             trade_rows, trade_meta = self._fetch_remote_trade_rows(updated_order)
             income_rows, _ = self._fetch_remote_income_rows(updated_order)
             interest_rows, _ = self._fetch_margin_interest_rows(updated_order)
+            touched_events.extend(
+                self._reconcile_fill_rows_against_remote(
+                    order=updated_order,
+                    remote_rows=trade_rows,
+                    remote_meta=trade_meta,
+                    trigger="RECONCILE_ORDER",
+                )
+            )
             if trade_rows:
                 known_fill_ids = {str(fill.get("execution_fill_id") or "") for fill in fills_before}
                 materialized = self._materialize_trade_rows(
@@ -5914,6 +6524,19 @@ class ExecutionRealityService:
             payload=ack_payload,
             notes="rest_submit_acknowledged",
         )
+        create_full_materialized = self._materialize_trade_rows(
+            order=order,
+            intent=intent,
+            trade_rows=self._trade_rows_from_create_response(
+                family=family,
+                order=order,
+                ack_payload=ack_payload,
+            ),
+            event_source="rest_create_full",
+            degraded_mode=False,
+        )
+        if create_full_materialized["fills"]:
+            order = create_full_materialized["order"]
         heartbeat_meta = None
         if family in {"usdm_futures", "coinm_futures"} and environment in {"live", "testnet"}:
             heartbeat_meta = self._arm_futures_auto_cancel_heartbeat(
@@ -6020,6 +6643,25 @@ class ExecutionRealityService:
         )
         return payload
 
+    def _live_fill_summary_row(self, fill: dict[str, Any]) -> dict[str, Any]:
+        payload = copy.deepcopy(fill)
+        price = _safe_float(payload.get("price"), 0.0)
+        qty = _safe_float(payload.get("qty"), 0.0)
+        quote_qty = _first_number(payload.get("quote_qty"), payload.get("last_quote_qty"))
+        if quote_qty is None and price > 0 and qty > 0:
+            quote_qty = price * qty
+        payload.update(
+            {
+                "fill_id": payload.get("execution_fill_id"),
+                "local_order_id": payload.get("local_order_id") or payload.get("execution_order_id"),
+                "maker_bool": payload.get("maker"),
+                "fill_notional": quote_qty,
+                "reconciled": str(payload.get("reconciliation_status") or "").upper() == "RECONCILED",
+                "discrepancies": copy.deepcopy(payload.get("discrepancy_json") or {}),
+            }
+        )
+        return payload
+
     def list_live_orders(
         self,
         *,
@@ -6050,6 +6692,104 @@ class ExecutionRealityService:
                 "limit": int(limit),
                 "offset": int(offset),
             },
+        }
+
+    def list_live_fills(
+        self,
+        *,
+        execution_order_id: str | None = None,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        reconciliation_status: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        rows = self.db.list_fills(
+            execution_order_id=execution_order_id,
+            family=_normalize_family(family) if family else None,
+            environment=_normalize_environment(environment) if environment else None,
+            symbol=_canonical_symbol(symbol) if symbol else None,
+            reconciliation_status=str(reconciliation_status or "").upper() or None,
+            limit=limit,
+            offset=offset,
+        )
+        items = [self._live_fill_summary_row(row) for row in rows]
+        return {
+            "items": items,
+            "count": len(items),
+            "filters": {
+                "execution_order_id": execution_order_id,
+                "family": _normalize_family(family) if family else None,
+                "environment": _normalize_environment(environment) if environment else None,
+                "symbol": _canonical_symbol(symbol) if symbol else None,
+                "reconciliation_status": str(reconciliation_status or "").upper() or None,
+                "limit": int(limit),
+                "offset": int(offset),
+            },
+        }
+
+    def live_fill_detail(self, execution_fill_id: str) -> dict[str, Any] | None:
+        fill = self.db.fill_by_id(execution_fill_id)
+        if fill is None:
+            return None
+        execution_order_id = str(fill.get("execution_order_id") or "")
+        order = self.db.order_by_id(execution_order_id) if execution_order_id else None
+        discrepancy_events = [
+            row
+            for row in self.db.reconcile_events_for_order(execution_order_id)
+            if str(row.get("reconcile_type") or "") == "fill_discrepancy"
+            and (
+                str((row.get("details_json") or {}).get("execution_fill_id") or "") == str(fill.get("execution_fill_id") or "")
+                or not str((row.get("details_json") or {}).get("execution_fill_id") or "").strip()
+            )
+        ]
+        return {
+            "fill": self._live_fill_summary_row(fill),
+            "order": self._live_order_summary_row(order) if isinstance(order, dict) else None,
+            "timeline": self.db.live_order_events_for_order(execution_order_id) if execution_order_id else [],
+            "discrepancy_events": discrepancy_events,
+        }
+
+    def live_fill_discrepancies(
+        self,
+        *,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        execution_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        candidate_rows = self.db.list_fills(
+            execution_order_id=execution_order_id,
+            family=_normalize_family(family) if family else None,
+            environment=_normalize_environment(environment) if environment else None,
+            symbol=_canonical_symbol(symbol) if symbol else None,
+            limit=500,
+            offset=0,
+        )
+        items = [
+            self._live_fill_summary_row(row)
+            for row in candidate_rows
+            if str(row.get("reconciliation_status") or "").upper() == "DISCREPANCY"
+            or bool(row.get("discrepancy_json"))
+        ]
+        execution_order_ids = {str(row.get("execution_order_id") or "") for row in items if str(row.get("execution_order_id") or "").strip()}
+        events = [
+            row
+            for row in self.db.list_reconcile_events(resolved=False, reconcile_type="fill_discrepancy")
+            if (
+                not execution_order_ids
+                or str(row.get("execution_order_id") or "") in execution_order_ids
+                or (
+                    not str(row.get("execution_order_id") or "").strip()
+                    and (not symbol or _canonical_symbol(((row.get("details_json") or {}).get("trade") or {}).get("symbol")) == _canonical_symbol(symbol))
+                )
+            )
+        ]
+        return {
+            "count": len(items),
+            "items": items,
+            "events": events,
         }
 
     def live_order_timeline(self, execution_order_id: str) -> list[dict[str, Any]]:
@@ -6092,6 +6832,112 @@ class ExecutionRealityService:
             "items": items,
             "soft_deadline_sec": deadlines["soft_deadline_sec"],
             "hard_deadline_sec": deadlines["hard_deadline_sec"],
+        }
+
+    def reconcile_live_fills(
+        self,
+        *,
+        execution_order_id: str | None = None,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        trigger: str = "MANUAL",
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family) if family else None
+        normalized_environment = _normalize_environment(environment) if environment else None
+        rows = self.db.list_orders(
+            family=normalized_family,
+            environment=normalized_environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=500,
+            offset=0,
+        )
+        if execution_order_id:
+            rows = [row for row in rows if str(row.get("execution_order_id") or "") == str(execution_order_id)]
+        else:
+            window = self._fill_reconciliation_window()
+            cutoff = _utc_now() - timedelta(hours=float(window["window_hours"]))
+            rows = [
+                row
+                for row in rows
+                if (
+                    not is_terminal_local_state(row.get("current_local_state"))
+                    or (_parse_ts(row.get("last_event_at")) or _parse_ts(row.get("submitted_at")) or _utc_now()) >= cutoff
+                )
+            ]
+
+        processed = [self._reconcile_single_order(row) for row in rows]
+        unlinked_trades: list[dict[str, Any]] = []
+        symbol_target = _canonical_symbol(symbol) if symbol else None
+        if normalized_family == "spot" and normalized_environment in {"live", "testnet"} and symbol_target:
+            remote_rows, remote_meta = self._fetch_remote_trade_rows_for_symbol(
+                family=normalized_family,
+                environment=normalized_environment,
+                symbol=symbol_target,
+                limit=int(self._fill_reconciliation_window()["recent_limit"]),
+            )
+            known_order_ids = {
+                str(row.get("venue_order_id") or "")
+                for row in self.db.list_orders(
+                    family=normalized_family,
+                    environment=normalized_environment,
+                    symbol=symbol_target,
+                    limit=500,
+                    offset=0,
+                )
+                if str(row.get("venue_order_id") or "").strip()
+            }
+            for trade in remote_rows:
+                exchange_order_id = str(trade.get("exchange_order_id") or "").strip()
+                if exchange_order_id and exchange_order_id in known_order_ids:
+                    continue
+                self._record_reconcile_event(
+                    reconcile_type="fill_discrepancy",
+                    severity="WARN",
+                    family=normalized_family,
+                    environment=normalized_environment,
+                    execution_order_id=None,
+                    client_order_id=str(trade.get("client_order_id") or ""),
+                    details={
+                        "discrepancy_type": "mytrades_unlinked_local_order",
+                        "trade": trade,
+                        "trigger": trigger,
+                        "remote_source": remote_meta or {},
+                    },
+                    resolved=False,
+                )
+                unlinked_trades.append(trade)
+
+        discrepancies = self.live_fill_discrepancies(
+            family=normalized_family,
+            environment=normalized_environment,
+            symbol=symbol_target,
+            execution_order_id=execution_order_id,
+        )
+        return {
+            "processed_orders": len(rows),
+            "items": [
+                {
+                    "execution_order_id": item["order"].get("execution_order_id"),
+                    "current_local_state": item["order"].get("current_local_state"),
+                    "fills_count": len(item.get("fills") or []),
+                    "degraded_mode": item.get("degraded_mode"),
+                    "remote_source": item.get("remote_source"),
+                }
+                for item in processed
+            ],
+            "unlinked_mytrades": unlinked_trades,
+            "discrepancies": discrepancies,
+            "filters": {
+                "execution_order_id": execution_order_id,
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "symbol": symbol_target,
+                "bot_id": bot_id,
+                "trigger": trigger,
+            },
         }
 
     def reconcile_live_orders(
@@ -6159,11 +7005,36 @@ class ExecutionRealityService:
 
     def recover_live_orders_on_startup(self) -> dict[str, Any]:
         rows = self.db.list_orders(limit=1000, offset=0)
+        recent_window = self._fill_reconciliation_window()
+        now = _utc_now()
+
+        def _recent_terminal_missing_fills(row: dict[str, Any]) -> bool:
+            if not is_terminal_local_state(row.get("current_local_state")):
+                return False
+            if _safe_float(row.get("executed_qty"), 0.0) <= 0.0 and str(row.get("order_status") or "").upper() not in {"FILLED", "PARTIALLY_FILLED"}:
+                return False
+            if self.db.fills_for_order(str(row.get("execution_order_id") or "")):
+                return False
+            reference_dt = (
+                _parse_ts(row.get("terminal_at"))
+                or _parse_ts(row.get("last_event_at"))
+                or _parse_ts(row.get("transact_time_last"))
+                or _parse_ts(row.get("acknowledged_at"))
+                or _parse_ts(row.get("submitted_at"))
+            )
+            if reference_dt is None:
+                return True
+            age_hours = max(0.0, (now - reference_dt).total_seconds() / 3600.0)
+            return age_hours <= float(recent_window.get("window_hours") or 24.0)
+
         targets = [
             row
             for row in rows
             if _normalize_environment(row.get("environment")) in {"live", "testnet"}
-            and not is_terminal_local_state(row.get("current_local_state"))
+            and (
+                not is_terminal_local_state(row.get("current_local_state"))
+                or _recent_terminal_missing_fills(row)
+            )
         ]
         if not targets:
             return {
@@ -6218,6 +7089,11 @@ class ExecutionRealityService:
             "order": order,
             "intent": intent,
             "fills": fills,
+            "fill_discrepancies": [
+                row
+                for row in self.db.reconcile_events_for_order(str(order.get("execution_order_id")))
+                if str(row.get("reconcile_type") or "") == "fill_discrepancy"
+            ],
             "reconcile_events": self.db.reconcile_events_for_order(str(order.get("execution_order_id"))),
             "timeline": self.db.live_order_events_for_order(str(order.get("execution_order_id"))),
             "remote_status": order.get("raw_last_status_json") if isinstance(order, dict) else None,

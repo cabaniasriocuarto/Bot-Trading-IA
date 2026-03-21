@@ -14,6 +14,9 @@ import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api
 import type {
   BotDecisionLogResponse,
   BotInstance,
+  ExecutionLiveFillDiscrepanciesResponse,
+  ExecutionLiveFillsReconcileResponse,
+  ExecutionLiveFillsResponse,
   BotPolicyStateResponse,
   BotStatusResponse,
   ExecutionLiveOrderDetailResponse,
@@ -80,11 +83,14 @@ export default function ExecutionPage() {
   const [livePreflight, setLivePreflight] = useState<LivePreflightPayload | null>(null);
   const [liveOrders, setLiveOrders] = useState<ExecutionLiveOrdersResponse | null>(null);
   const [liveOrdersUnresolved, setLiveOrdersUnresolved] = useState<ExecutionLiveOrdersUnresolvedResponse | null>(null);
+  const [liveFills, setLiveFills] = useState<ExecutionLiveFillsResponse | null>(null);
+  const [liveFillDiscrepancies, setLiveFillDiscrepancies] = useState<ExecutionLiveFillDiscrepanciesResponse | null>(null);
   const [selectedLiveOrderId, setSelectedLiveOrderId] = useState("");
   const [selectedLiveOrderDetail, setSelectedLiveOrderDetail] = useState<ExecutionLiveOrderDetailResponse | null>(null);
   const [livePreflightBusy, setLivePreflightBusy] = useState(false);
   const [livePreflightAttestBusy, setLivePreflightAttestBusy] = useState(false);
   const [liveOrdersBusy, setLiveOrdersBusy] = useState(false);
+  const [liveFillsBusy, setLiveFillsBusy] = useState(false);
   const [livePreflightNote, setLivePreflightNote] = useState("");
   const [exchangeDiagError, setExchangeDiagError] = useState("");
   const [panelLoading, setPanelLoading] = useState(true);
@@ -123,7 +129,7 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload, livePreflightPayload, liveOrdersPayload, liveOrdersUnresolvedPayload] = await Promise.all([
+    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload, livePreflightPayload, liveOrdersPayload, liveOrdersUnresolvedPayload, liveFillsPayload, liveFillDiscrepanciesPayload] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -135,6 +141,8 @@ export default function ExecutionPage() {
       apiGet<LivePreflightPayload>("/api/v1/exchange/live-preflight?mode=live").catch(() => null as LivePreflightPayload | null),
       apiGet<ExecutionLiveOrdersResponse>("/api/v1/execution/live-orders?environment=live&limit=25").catch(() => null as ExecutionLiveOrdersResponse | null),
       apiGet<ExecutionLiveOrdersUnresolvedResponse>("/api/v1/execution/live-orders/unresolved?environment=live").catch(() => null as ExecutionLiveOrdersUnresolvedResponse | null),
+      apiGet<ExecutionLiveFillsResponse>("/api/v1/execution/live-fills?environment=live&limit=25").catch(() => null as ExecutionLiveFillsResponse | null),
+      apiGet<ExecutionLiveFillDiscrepanciesResponse>("/api/v1/execution/live-fills/discrepancies?environment=live").catch(() => null as ExecutionLiveFillDiscrepanciesResponse | null),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
@@ -146,6 +154,8 @@ export default function ExecutionPage() {
     setLivePreflight(livePreflightPayload);
     setLiveOrders(liveOrdersPayload);
     setLiveOrdersUnresolved(liveOrdersUnresolvedPayload);
+    setLiveFills(liveFillsPayload);
+    setLiveFillDiscrepancies(liveFillDiscrepanciesPayload);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
     const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
@@ -361,6 +371,8 @@ export default function ExecutionPage() {
   const liveOrdersUnresolvedCount = liveOrdersUnresolved?.count ?? 0;
   const liveOrdersSoftDeadlineSec = liveOrdersUnresolved?.soft_deadline_sec ?? 5;
   const liveOrdersHardDeadlineSec = liveOrdersUnresolved?.hard_deadline_sec ?? 30;
+  const liveFillsRows = liveFills?.items || [];
+  const liveFillDiscrepancyCount = liveFillDiscrepancies?.count ?? 0;
   const selectedLiveOrder = selectedLiveOrderDetail?.order || liveOrdersRows.find((row) => row.execution_order_id === selectedLiveOrderId) || null;
   const selectedLiveOrderTimeline = selectedLiveOrderDetail?.timeline || [];
 
@@ -721,6 +733,32 @@ export default function ExecutionPage() {
       setControlError(err instanceof Error ? err.message : "No se pudo reconciliar el journal live.");
     } finally {
       setLiveOrdersBusy(false);
+    }
+  };
+
+  const runLiveFillsReconcile = async (executionOrderId?: string) => {
+    if (role !== "admin") return;
+    setLiveFillsBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<ExecutionLiveFillsReconcileResponse>("/api/v1/execution/live-fills/reconcile", {
+        execution_order_id: executionOrderId || undefined,
+        environment: "live",
+        symbol: selectedLiveOrder?.symbol || undefined,
+        trigger: executionOrderId ? "MANUAL" : "RECOVERY",
+      });
+      const discrepancies = payload?.discrepancies?.count ?? 0;
+      setMessage(
+        executionOrderId
+          ? `Reconciliacion de fills ejecutada para ${executionOrderId}. Discrepancias abiertas: ${discrepancies}.`
+          : `Reconciliacion de fills ejecutada. Discrepancias abiertas: ${discrepancies}.`,
+      );
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo reconciliar fills live.");
+    } finally {
+      setLiveFillsBusy(false);
     }
   };
 
@@ -1380,9 +1418,11 @@ export default function ExecutionPage() {
             Maquina de estados canonica para Spot live. Journal append-only, recovery por startup y reconciliacion manual/REST cuando el stream deja estados ambiguos.
           </CardDescription>
           <CardContent className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
               <Metric title="Ordenes visibles" value={String(liveOrders?.count ?? 0)} compact />
+              <Metric title="Fills visibles" value={String(liveFills?.count ?? 0)} compact />
               <Metric title="Ambiguas" value={String(liveOrdersUnresolvedCount)} compact />
+              <Metric title="Discrepancias fills" value={String(liveFillDiscrepancyCount)} compact />
               <Metric title="Soft deadline (s)" value={String(liveOrdersSoftDeadlineSec)} compact />
               <Metric title="Hard deadline (s)" value={String(liveOrdersHardDeadlineSec)} compact />
             </div>
@@ -1412,6 +1452,28 @@ export default function ExecutionPage() {
                 Sin ordenes ambiguas por encima del hard deadline. El runtime sigue reconciliando por startup, timeout unknown y comando manual.
               </div>
             )}
+
+            {liveFillDiscrepancyCount > 0 ? (
+              <div className="rounded-lg border border-rose-700/60 bg-rose-950/30 p-3 text-xs text-rose-100">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">Discrepancias de fills</p>
+                    <p className="mt-1 text-rose-200">
+                      Hay {liveFillDiscrepancyCount} fill(s) con mismatch WS vs myTrades, o trades remotos no linkeados a orden local. No se borra evidencia: se reconcilia y queda trazabilidad.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={role !== "admin" || liveFillsBusy}
+                    onClick={() => {
+                      void runLiveFillsReconcile();
+                    }}
+                  >
+                    {liveFillsBusy ? "Reconciliando fills..." : "Reconciliar fills"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
 
             {liveOrdersRows.length ? (
               <div className="rounded-lg border border-slate-800">
@@ -1481,6 +1543,54 @@ export default function ExecutionPage() {
               </div>
             )}
 
+            {liveFillsRows.length ? (
+              <div className="rounded-lg border border-slate-800">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Hora</TH>
+                      <TH>Simbolo</TH>
+                      <TH>Lado</TH>
+                      <TH>Qty</TH>
+                      <TH>Precio</TH>
+                      <TH>Quote</TH>
+                      <TH>Comision</TH>
+                      <TH>Asset fee</TH>
+                      <TH>Maker</TH>
+                      <TH>Order IDs</TH>
+                      <TH>Source</TH>
+                      <TH>Reconcile</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {liveFillsRows.map((row) => (
+                      <TR key={row.execution_fill_id}>
+                        <TD>{formatDateTime(row.event_time_exchange || row.fill_time)}</TD>
+                        <TD>{row.symbol}</TD>
+                        <TD>{row.side || "-"}</TD>
+                        <TD>{row.qty != null ? fmtNum(row.qty) : "-"}</TD>
+                        <TD>{row.price != null ? fmtNum(row.price) : "-"}</TD>
+                        <TD>{row.quote_qty != null ? fmtNum(row.quote_qty) : row.fill_notional != null ? fmtNum(row.fill_notional) : "-"}</TD>
+                        <TD>{row.commission != null ? fmtNum(row.commission) : "-"}</TD>
+                        <TD>{row.commission_asset || "-"}</TD>
+                        <TD>{row.maker_bool == null ? "-" : row.maker_bool ? "maker" : "taker"}</TD>
+                        <TD className="max-w-[200px] truncate" title={`${row.client_order_id || "-"} | ${row.exchange_order_id || "-"}`}>
+                          {(row.client_order_id || "-") + " / " + (row.exchange_order_id || "-")}
+                        </TD>
+                        <TD>{row.raw_source_type || "-"}</TD>
+                        <TD>
+                          <div className="flex flex-col gap-1">
+                            <Badge variant={reconcileStatusVariant(row.reconciliation_status)}>{row.reconciliation_status || "PENDING"}</Badge>
+                            {row.discrepancies && Object.keys(row.discrepancies).length ? <span className="text-[11px] text-rose-300">mismatch</span> : null}
+                          </div>
+                        </TD>
+                      </TR>
+                    ))}
+                  </TBody>
+                </Table>
+              </div>
+            ) : null}
+
             <div className="grid gap-3 xl:grid-cols-[1.1fr_0.9fr]">
               <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1523,6 +1633,50 @@ export default function ExecutionPage() {
                       {selectedLiveOrderDetail?.unresolved_reason ? (
                         <p className="mt-2 text-amber-300">unresolved_reason: {selectedLiveOrderDetail.unresolved_reason}</p>
                       ) : null}
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold text-slate-100">Fills asociados</p>
+                        <Button
+                          variant="outline"
+                          disabled={role !== "admin" || liveFillsBusy}
+                          onClick={() => {
+                            void runLiveFillsReconcile(selectedLiveOrder.execution_order_id);
+                          }}
+                        >
+                          {liveFillsBusy ? "Reconciliando fills..." : "Reconciliar fills orden"}
+                        </Button>
+                      </div>
+                      {selectedLiveOrderDetail?.fills?.length ? (
+                        <div className="space-y-2">
+                          {selectedLiveOrderDetail.fills.map((fill) => (
+                            <div key={fill.execution_fill_id} className="rounded border border-slate-800 bg-slate-950/50 p-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge variant="info">{fill.raw_source_type || "-"}</Badge>
+                                  <Badge variant={reconcileStatusVariant(fill.reconciliation_status)}>{fill.reconciliation_status || "PENDING"}</Badge>
+                                </div>
+                                <span className="text-slate-400">{formatDateTime(fill.event_time_exchange || fill.fill_time)}</span>
+                              </div>
+                              <p className="mt-2 text-slate-300">
+                                qty {fill.qty != null ? fmtNum(fill.qty) : "-"} · price {fill.price != null ? fmtNum(fill.price) : "-"} · quote {fill.quote_qty != null ? fmtNum(fill.quote_qty) : "-"}
+                              </p>
+                              <p className="mt-1 text-slate-400">
+                                fee {fill.commission != null ? fmtNum(fill.commission) : "-"} {fill.commission_asset || ""}
+                                {fill.trade_id ? ` · tradeId ${fill.trade_id}` : ""}
+                                {fill.execution_id ? ` · execId ${fill.execution_id}` : ""}
+                              </p>
+                              {fill.discrepancies && Object.keys(fill.discrepancies).length ? (
+                                <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-rose-300">
+                                  {truncateJson(fill.discrepancies)}
+                                </pre>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-400">Sin fills persistidos asociados todavia.</p>
+                      )}
                     </div>
                     <div className="space-y-2">
                       {selectedLiveOrderTimeline.length ? (
@@ -2054,9 +2208,9 @@ function exchangeOrderStatusVariant(status?: string | null): "success" | "danger
 
 function reconcileStatusVariant(status?: string | null): "success" | "danger" | "warn" | "neutral" {
   const normalized = String(status || "").toUpperCase();
-  if (normalized === "RESOLVED") return "success";
-  if (normalized === "UNRESOLVED") return "danger";
-  if (normalized === "PENDING") return "warn";
+  if (["RESOLVED", "RECONCILED"].includes(normalized)) return "success";
+  if (["UNRESOLVED", "DISCREPANCY"].includes(normalized)) return "danger";
+  if (["PENDING", "WS_ONLY", "REST_BACKFILL", "REST_CREATE_ONLY"].includes(normalized)) return "warn";
   return "neutral";
 }
 

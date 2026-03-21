@@ -2,6 +2,84 @@
 
 Fecha de actualizacion: 2026-03-20
 
+## RTLOPS-50: Persistent live order / fill / event storage parity - 2026-03-20
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-50`
+  - rama incremental usada: `feature/persistent-live-order-fill-event-storage-parity-rtlops-50`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+    - `27a2367`
+    - `8f615bc`
+    - `0c07d60`
+    - `4785d86`
+    - `1335857`
+    - `a320f7d`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+  - contratos oficiales del exchange desde documentacion oficial primaria de Binance:
+    - Spot User Data Stream (`executionReport`: `l`, `L`, `Y`, `z`, `Z`, `n`, `N`, `t`, `I`, `m`, `W`)
+    - Spot Account Endpoints (`GET /api/v3/myTrades`)
+    - Spot Trading Endpoints (`POST /api/v3/order`, `GET /api/v3/order`, `GET /api/v3/openOrders`)
+    - Spot Commission FAQ
+- Alcance real cerrado:
+  - nuevo modulo dedicado:
+    - `rtlab_autotrader/rtlab_core/execution/live_fill_state.py`
+  - la tabla canonica `execution_fills` queda endurecida como storage live de fills con:
+    - identidad canonica por `execution_fill_id`
+    - `trade_id`, `execution_id`, `exchange_order_id`, `client_order_id`
+    - `commission`, `commission_asset`, `maker`
+    - `last_executed_qty`, `last_executed_price`, `last_quote_qty`
+    - `cumulative_filled_qty_after`, `cumulative_quote_qty_after`
+    - `raw_source_type`, `dedup_key`, `reconciliation_status`, `discrepancy_json`
+    - `created_at`, `updated_at`
+  - dedup fuerte implementado con prioridad:
+    - `(symbol, exchange_order_id, trade_id)` si `trade_id` existe
+    - fallback `(symbol, exchange_order_id, execution_id)`
+    - fallback robusto `(symbol, client_order_id, execution_type, transaction_time, last_executed_qty, last_executed_price, cumulative_filled_qty_after)`
+  - los `executionReport` con `x=TRADE` ya materializan fills persistidos sin depender de memoria transitoria
+  - los `FULL` REST create de Spot materializan fills iniciales cuando Binance ya los devuelve
+  - `GET /api/v3/myTrades` ya se usa para:
+    - backfill de fills faltantes
+    - enrich de comision/asset/linkage
+    - deteccion de discrepancias `WS vs myTrades`
+  - precedencia operativa documentada y aplicada:
+    - `executionReport` como fuente primaria de baja latencia
+    - `myTrades` como fuente de reconciliacion/recuperacion
+    - `REST create FULL` como evidencia inicial util, no como verdad final unica
+  - discrepancias persistidas sin destruir evidencia:
+    - fills `WS` faltantes en `myTrades`
+    - `myTrades` sin linkage local
+    - mismatch de `commission`, `commission_asset`, `maker`, `trade_id`, `execution_id`
+  - startup recovery ya puede reconstruir fills recientes faltantes de ordenes live terminales usando `myTrades`
+  - reporting bridge deja de depender de recomputo fragil:
+    - ahora consume fills persistidos con `trade_id`, `execution_id`, `raw_source_type` y `reconciliation_status`
+  - API minima nueva:
+    - `GET /api/v1/execution/live-fills`
+    - `GET /api/v1/execution/live-fills/{execution_fill_id}`
+    - `GET /api/v1/execution/live-fills/by-order/{execution_order_id}`
+    - `POST /api/v1/execution/live-fills/reconcile`
+    - `GET /api/v1/execution/live-fills/discrepancies`
+- Limites conscientes:
+  - el bloque queda focalizado en Spot live; no abre Futures/Margin adicionales
+  - no se inventa conversion exacta de comisiones nativas a quote cuando Binance solo expone el asset nativo
+  - `execution_fills` preserva una sola fila canonica por fill; la evidencia historica cruda sigue respaldada por `live_order_events` y `discrepancy_json`
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-50` queda pendiente aunque repo/docs/tests ya esten cerrados
+- El siguiente issue tecnico exacto para continuar LIVE es:
+  - `RTLOPS-23` - Reconciliation Engine
+
 ## RTLOPS-48: Live order state machine formal - 2026-03-20
 
 - Trazabilidad del bloque:

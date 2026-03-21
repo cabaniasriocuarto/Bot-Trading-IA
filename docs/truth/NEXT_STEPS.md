@@ -2,6 +2,52 @@
 
 Fecha: 2026-03-20
 
+## RTLOPS-50 - Persistent Live Order / Fill / Event Storage parity - 2026-03-20
+- [x] Crear modulo canonico nuevo:
+  - `rtlab_autotrader/rtlab_core/execution/live_fill_state.py`
+- [x] Endurecer persistencia SQLite operativa:
+  - `execution_fills` como storage canonico de fills live
+  - linkage por `execution_fill_id`, `trade_id`, `execution_id`, `exchange_order_id`, `client_order_id`
+  - persistencia de `commission`, `commission_asset`, `maker`, `raw_source_type`, `dedup_key`, `reconciliation_status`, `discrepancy_json`
+- [x] Materializar fills desde:
+  - `executionReport` Spot con `x=TRADE`
+  - `REST create FULL`
+  - `GET /api/v3/myTrades` para recovery/reconcile
+- [x] Aplicar dedup fuerte:
+  - `(symbol, exchange_order_id, trade_id)` si existe
+  - fallback `(symbol, exchange_order_id, execution_id)`
+  - fallback robusto por `client_order_id + execution_type + timestamp + qty + price + cumulative_qty`
+- [x] Implementar reconciliacion formal `WS vs myTrades`:
+  - backfill de fills faltantes
+  - enrich de comision/asset/linkage
+  - persistencia de discrepancias sin destruir evidencia
+- [x] Extender startup recovery:
+  - ordenes no terminales
+  - ordenes live terminales recientes con fills faltantes
+- [x] Conectar reporting bridge a fills persistidos reales
+- [x] Exponer endpoints minimos:
+  - `GET /api/v1/execution/live-fills`
+  - `GET /api/v1/execution/live-fills/{execution_fill_id}`
+  - `GET /api/v1/execution/live-fills/by-order/{execution_order_id}`
+  - `POST /api/v1/execution/live-fills/reconcile`
+  - `GET /api/v1/execution/live-fills/discrepancies`
+- [x] Extender frontend minimo en Execution:
+  - bloque `Fills Live`
+  - fills asociados por orden
+  - warning de discrepancias con reconcile manual
+- [x] Revalidar:
+  - `py_compile` focalizado
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - `test_policy_paths.py`
+  - `test_reporting_bridge.py`
+  - `test_web_live_ready.py -k config_policies_endpoint_exposes_numeric_policy_bundle`
+  - `npx.cmd tsc --noEmit`
+- [ ] Limites conscientes fuera de RTLOPS-50:
+  - el bloque queda focalizado en Spot live; no abre Futures/Margin adicionales
+  - no se inventa conversion exacta de comisiones nativas a quote cuando Binance solo expone el asset nativo
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-50` queda pendiente aunque repo/docs/tests ya esten cerrados
+
 ## RTLOPS-48 - Live Order State Machine formal - 2026-03-20
 - [x] Crear modulo canonico nuevo:
   - `rtlab_autotrader/rtlab_core/execution/live_order_state.py`
@@ -243,11 +289,11 @@ Fecha: 2026-03-20
   - integracion con `ExecutionRealityService`, `reconcile`, `fills` y `live_safety`
 
 ## Siguiente issue exacto
-- `RTLOPS-50` - Persistent Live Order / Fill / Event Storage parity
+- `RTLOPS-23` - Reconciliation Engine
 - alcance inmediato esperado:
-  - cerrar la paridad restante de persistencia live fuera del journal ya implementado en RTLOPS-48
-  - consolidar snapshots auditablemente persistidos de balances/holdings/posiciones relevantes para reconcile y operacion
-  - preparar la base antes de `RTLOPS-23` sin mezclar el bloque de state machine con storage transversal mas amplio
+  - consolidar el reconcile engine sobre la base ya endurecida en RTLOPS-48 y RTLOPS-50
+  - resolver drift entre open orders, fills persistidos, snapshots remotos y estado local
+  - cerrar la capa de desync/manual review antes de seguir con bloques mas altos de operacion
 
 ## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
 - [x] Endurecer signed REST live con:

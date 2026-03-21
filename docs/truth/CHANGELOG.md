@@ -2,6 +2,45 @@
 
 ## 2026-03-20
 
+### RTLOPS-50 - Persistent live order / fill / event storage parity
+- Nuevo modulo:
+  - `rtlab_autotrader/rtlab_core/execution/live_fill_state.py`
+- `rtlab_core/execution/reality.py` ahora:
+  - endurece `execution_fills` como storage canonico de fills live con `trade_id`, `execution_id`, `commission`, `commission_asset`, `maker`, `raw_source_type`, `dedup_key`, `reconciliation_status` y `discrepancy_json`
+  - materializa fills reales desde:
+    - `executionReport` Spot con `x=TRADE`
+    - `REST create FULL`
+    - `GET /api/v3/myTrades` para recovery/reconcile
+  - aplica dedup fuerte con prioridad:
+    - `(symbol, exchange_order_id, trade_id)`
+    - `(symbol, exchange_order_id, execution_id)`
+    - fallback robusto por `client_order_id + execution_type + timestamp + qty + price + cumulative_qty`
+  - agrega reconciliacion formal `WS vs myTrades`:
+    - backfill de fills faltantes
+    - enrich de linkage/comision/asset
+    - discrepancias persistidas sin destruir evidencia previa
+  - extiende startup recovery para reconstruir fills recientes faltantes de ordenes live terminales
+  - conecta reporting bridge a fills persistidos para evitar recomputo fragil desde estado final de orden
+- `rtlab_core/web/app.py` suma endpoints:
+  - `GET /api/v1/execution/live-fills`
+  - `GET /api/v1/execution/live-fills/{execution_fill_id}`
+  - `GET /api/v1/execution/live-fills/by-order/{execution_order_id}`
+  - `POST /api/v1/execution/live-fills/reconcile`
+  - `GET /api/v1/execution/live-fills/discrepancies`
+- Frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx` agrega bloque `Fills Live`, fills por orden y warning de discrepancias con reconcile manual
+  - `rtlab_dashboard/src/lib/types.ts` suma contratos tipados de fills/discrepancias/reconcile
+- Validacion local de RTLOPS-50:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/live_fill_state.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_reporting_bridge.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+- Nota administrativa:
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-50` queda pendiente aunque el cierre tecnico del repo/docs/tests este completo
+
 ### RTLOPS-48 - Live order state machine formal
 - Nuevo modulo:
   - `rtlab_autotrader/rtlab_core/execution/live_order_state.py`
