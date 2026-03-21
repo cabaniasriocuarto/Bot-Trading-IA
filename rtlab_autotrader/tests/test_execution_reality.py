@@ -2724,6 +2724,232 @@ def test_live_fill_reporting_rows_preserve_trade_linkage_and_fee_asset(tmp_path:
     assert ledger_rows[0]["provenance"]["raw_source_type"] == "WS_EXECUTION_REPORT"
 
 
+def test_reconciliation_engine_resolves_local_open_against_remote_terminal(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+    service.db.update_order_fields(
+        str(order["execution_order_id"]),
+        {
+            "current_local_state": "WORKING",
+            "last_event_at": _iso_hours_ago(0.1),
+        },
+    )
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    def _signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 99101,
+                    "orderId": 123456,
+                    "price": "50000.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.0",
+                    "commission": "0.25",
+                    "commissionAsset": "USDT",
+                    "time": now_ms,
+                    "isMaker": False,
+                }
+            ], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _signed_request  # type: ignore[method-assign]
+
+    payload = service.run_reconciliation_engine(
+        execution_order_id=str(order["execution_order_id"]),
+        family="spot",
+        environment="live",
+        trigger="MANUAL",
+    )
+    updated = service.db.order_by_id(str(order["execution_order_id"]))
+    fills = service.db.fills_for_order(str(order["execution_order_id"]))
+
+    assert payload["generated_cases"] == 1
+    assert payload["items"][0]["final_status"] == "RESOLVED"
+    assert updated is not None
+    assert updated["current_local_state"] in {"FILLED", "RECOVERED_TERMINAL"}
+    assert len(fills) == 1
+
+
+def test_reconciliation_engine_marks_manual_review_when_query_and_open_orders_conflict(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+    service.db.update_order_fields(
+        str(order["execution_order_id"]),
+        {
+            "current_local_state": "WORKING",
+            "last_event_at": _iso_hours_ago(0.1),
+        },
+    )
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    def _signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "orderId": 123456,
+                    "clientOrderId": order["client_order_id"],
+                    "status": "NEW",
+                    "origQty": "0.01",
+                    "executedQty": "0.00",
+                    "price": "50000.0",
+                    "updateTime": now_ms,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _signed_request  # type: ignore[method-assign]
+
+    payload = service.run_reconciliation_engine(
+        execution_order_id=str(order["execution_order_id"]),
+        family="spot",
+        environment="live",
+        trigger="MANUAL",
+    )
+    summary = service.reconciliation_summary(environment="live", family="spot", execution_order_id=str(order["execution_order_id"]))
+
+    assert payload["items"][0]["final_status"] == "MANUAL_REVIEW_REQUIRED"
+    assert payload["blocking_cases"][0]["final_status"] == "MANUAL_REVIEW_REQUIRED"
+    assert summary["blocking_cases_count"] == 1
+
+
+def test_reconciliation_engine_marks_unknown_timeout_as_desync_blocking(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        submitted_at=_iso_hours_ago(1),
+        acknowledged_at=None,
+    )
+    service.db.update_order_fields(
+        str(order["execution_order_id"]),
+        {
+            "current_local_state": "UNKNOWN_PENDING_RECONCILIATION",
+            "unresolved_reason": "timeout_unknown",
+            "last_event_at": _iso_hours_ago(1),
+        },
+    )
+
+    service._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        [] if endpoint.endswith("/api/v3/openOrders") else None,
+        {"ok": True, "reason": "ok"} if endpoint.endswith("/api/v3/openOrders") else {"ok": False, "reason": "unknown"},
+    )
+
+    payload = service.run_reconciliation_engine(
+        execution_order_id=str(order["execution_order_id"]),
+        family="spot",
+        environment="live",
+        trigger="UNKNOWN_TIMEOUT",
+    )
+    gate = service.live_reconciliation_gate(family="spot", environment="live", run_required=False)
+
+    assert payload["items"][0]["final_status"] == "DESYNC"
+    assert payload["blocking_cases"][0]["blocking_bool"] is True
+    assert gate["ok"] is False
+    assert gate["reason"] == "reconciliation_blocking_cases_open"
+
+
+def test_reconciliation_engine_startup_detects_remote_open_without_local_order(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    def _signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "orderId": 777001,
+                    "clientOrderId": "remote-open-only",
+                    "status": "NEW",
+                    "origQty": "0.01",
+                    "executedQty": "0.00",
+                    "price": "50000.0",
+                    "updateTime": now_ms,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "not_found"}
+
+    service._signed_request = _signed_request  # type: ignore[method-assign]
+
+    recovery = service.recover_live_orders_on_startup()
+    open_cases = service.open_reconciliation_cases(environment="live", family="spot")
+
+    assert recovery["generated_cases"] >= 1
+    assert any(case["final_status"] == "DESYNC" for case in recovery["items"])
+    assert any(
+        any(str(discrepancy.get("code") or "") == "ORDER_MISSING_LOCALLY_BUT_REMOTE_OPEN" for discrepancy in (case.get("discrepancies") or []))
+        for case in open_cases["items"]
+    )
+
+
+def test_reconciliation_engine_manual_run_is_append_only_for_traceability(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="NEW",
+        submitted_at=_iso_hours_ago(1),
+        acknowledged_at=None,
+    )
+    service.db.update_order_fields(
+        str(order["execution_order_id"]),
+        {
+            "current_local_state": "UNKNOWN_PENDING_RECONCILIATION",
+            "unresolved_reason": "timeout_unknown",
+            "last_event_at": _iso_hours_ago(1),
+        },
+    )
+    service._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        [] if endpoint.endswith("/api/v3/openOrders") else None,
+        {"ok": True, "reason": "ok"} if endpoint.endswith("/api/v3/openOrders") else {"ok": False, "reason": "unknown"},
+    )
+
+    first = service.run_reconciliation_engine(execution_order_id=str(order["execution_order_id"]), family="spot", environment="live", trigger="MANUAL")
+    second = service.run_reconciliation_engine(execution_order_id=str(order["execution_order_id"]), family="spot", environment="live", trigger="MANUAL")
+    rows = service.db.list_reconciliation_cases(
+        execution_order_id=str(order["execution_order_id"]),
+        environment="live",
+        family="spot",
+        limit=10,
+        offset=0,
+    )
+
+    assert first["generated_cases"] == 1
+    assert second["generated_cases"] == 1
+    assert len(rows) >= 2
+
+
 def test_paper_submit_reconcile_materializes_fill(tmp_path: Path) -> None:
     service = _build_service(tmp_path, family="spot")
     result = service.create_order(

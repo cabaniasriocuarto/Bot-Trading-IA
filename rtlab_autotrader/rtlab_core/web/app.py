@@ -747,6 +747,15 @@ class ExecutionLiveFillsReconcileBody(BaseModel):
     trigger: str = "MANUAL"
 
 
+class ExecutionReconciliationRunBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
 class ValidationEvaluateBody(BaseModel):
     stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
     venue: str = "binance"
@@ -9184,6 +9193,15 @@ def _live_preflight_gate(mode: str = "live") -> dict[str, Any]:
     }
 
 
+def _live_reconciliation_gate(*, bot_id: str | None = None) -> dict[str, Any]:
+    return store.execution_reality.live_reconciliation_gate(
+        environment="live",
+        bot_id=str(bot_id or "").strip() or None,
+        trigger="PRESTART_LIVE",
+        run_required=True,
+    )
+
+
 def latest_live_preflight_payload(mode: str = "live", *, limit: int = 10) -> dict[str, Any]:
     normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
     policy = _live_preflight_policy()
@@ -10274,6 +10292,146 @@ def create_app() -> FastAPI:
             symbol=body.symbol,
             bot_id=body.bot_id,
             trigger=body.trigger,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/summary")
+    def execution_reconciliation_summary(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconciliation_summary(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            execution_order_id=execution_order_id,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases")
+    def execution_reconciliation_cases(
+        final_status: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        blocking_only: bool = Query(default=False),
+        active_only: bool = Query(default=False),
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_reconciliation_cases_payload(
+            final_status=final_status,
+            severity=severity,
+            blocking_only=blocking_only,
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            active_only=active_only,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases/open")
+    def execution_reconciliation_cases_open(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.open_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            limit=limit,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases/{reconciliation_case_id}")
+    def execution_reconciliation_case_detail(
+        reconciliation_case_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.reconciliation_case_detail(reconciliation_case_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="reconciliation_case_not_found")
+        return payload
+
+    @app.post("/api/v1/execution/reconciliation/run")
+    def execution_reconciliation_run(
+        body: ExecutionReconciliationRunBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.post("/api/v1/execution/reconciliation/run/by-order/{execution_order_id}")
+    def execution_reconciliation_run_by_order(
+        execution_order_id: str,
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        trigger: str = Query(default="MANUAL"),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            bot_id=bot_id,
+            trigger=trigger,
+        )
+
+    @app.post("/api/v1/execution/reconciliation/run/by-symbol/{symbol}")
+    def execution_reconciliation_run_by_symbol(
+        symbol: str,
+        environment: str | None = Query(default="live"),
+        family: str | None = Query(default="spot"),
+        bot_id: str | None = Query(default=None),
+        trigger: str = Query(default="MANUAL"),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            trigger=trigger,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/desync")
+    def execution_reconciliation_desync(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.desync_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=limit,
         )
 
     @app.get("/api/v1/execution/live-fills")
@@ -13861,6 +14019,12 @@ def create_app() -> FastAPI:
                     status_code=400,
                     detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
                 )
+            reconcile_gate = _live_reconciliation_gate()
+            if not bool(reconcile_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by reconciliation: {reconcile_gate.get('reason')}",
+                )
         state = store.load_bot_state()
         state["mode"] = mode
         state["runtime_engine"] = _runtime_engine_from_state(state)
@@ -13887,6 +14051,12 @@ def create_app() -> FastAPI:
                 raise HTTPException(
                     status_code=400,
                     detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
+                )
+            reconcile_gate = _live_reconciliation_gate(bot_id=bot_id)
+            if not bool(reconcile_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by reconciliation: {reconcile_gate.get('reason')}",
                 )
         # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
         strategy_name: str | None = None

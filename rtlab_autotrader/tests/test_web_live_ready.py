@@ -726,6 +726,43 @@ def test_live_start_requires_fresh_final_preflight(tmp_path: Path, monkeypatch) 
   assert "final preflight" in str(start_res.json().get("detail") or "").lower()
 
 
+def test_live_mode_requires_clean_reconciliation_gate(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=30, freshness_sec=600)
+  _seed_reconciliation_case(module, final_status="DESYNC", blocking=True)
+
+  enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
+
+  assert enable_live.status_code == 400
+  assert "reconciliation" in str(enable_live.json().get("detail") or "").lower()
+
+
+def test_live_start_requires_clean_reconciliation_gate(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["mode"] = "live"
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=30, freshness_sec=600)
+  _seed_reconciliation_case(module, final_status="MANUAL_REVIEW_REQUIRED", blocking=True)
+
+  start_res = client.post("/api/v1/bot/start", headers=headers)
+
+  assert start_res.status_code == 400
+  assert "reconciliation" in str(start_res.json().get("detail") or "").lower()
+
+
 def test_testnet_live_preflight_stays_on_api_not_sapi(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
   _mock_live_preflight_dependencies(module, monkeypatch, mode="testnet")
@@ -2989,6 +3026,31 @@ def _seed_live_preflight_run(module, *, mode: str = "live", status: str = "PASS"
       "freshness_seconds": freshness_sec,
       "runtime_context": {},
       "exchange_context": {},
+    }
+  )
+
+
+def _seed_reconciliation_case(module, *, final_status: str = "DESYNC", blocking: bool = True) -> dict:
+  now = datetime.now(timezone.utc).isoformat()
+  return module.store.execution_reality.db.insert_reconciliation_case(
+    {
+      "trigger_type": "PRESTART_LIVE",
+      "exchange": "binance",
+      "market_type": "spot",
+      "environment": "live",
+      "bot_id": "bot-live",
+      "symbol": "BTCUSDT",
+      "execution_order_id": None,
+      "execution_fill_scope": "symbol",
+      "started_at": now,
+      "finished_at": now,
+      "final_status": final_status,
+      "severity": "CRITICAL",
+      "local_summary_json": {"local": "test"},
+      "remote_summary_json": {"remote": "test"},
+      "discrepancy_summary_json": {"count": 1, "items": [{"code": "STREAM_GAP_WITH_PENDING_OPEN_ORDERS"}]},
+      "resolution_summary_json": {"actions": []},
+      "blocking_bool": blocking,
     }
   )
 

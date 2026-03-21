@@ -31,6 +31,7 @@ from rtlab_core.execution.live_fill_state import (
 from rtlab_core.execution.live_order_state import (
     AMBIGUOUS_LOCAL_ORDER_STATES,
     BLOCKING_LOCAL_ORDER_STATES,
+    OPENISH_EXCHANGE_ORDER_STATUSES,
     TERMINAL_LOCAL_ORDER_STATES,
     blocks_new_submits,
     execution_report_dedup_key,
@@ -41,6 +42,22 @@ from rtlab_core.execution.live_order_state import (
 )
 from rtlab_core.execution.live_market_runtime import BinanceMarketWebSocketRuntime
 from rtlab_core.execution.live_user_stream_runtime import BinanceUserStreamRuntime
+from rtlab_core.execution.reconciliation_engine import (
+    RECONCILIATION_CASE_SEVERITIES,
+    RECONCILIATION_CASE_STATUSES,
+    RECONCILIATION_DISCREPANCY_CODES,
+    RECONCILIATION_SNAPSHOT_TYPES,
+    RECONCILIATION_TRIGGER_TYPES,
+    discrepancy_payload,
+    normalize_reconciliation_case_event_source,
+    normalize_reconciliation_case_severity,
+    normalize_reconciliation_case_status,
+    normalize_reconciliation_discrepancy_code,
+    normalize_reconciliation_snapshot_type,
+    normalize_reconciliation_trigger,
+    reconciliation_case_blocks_live,
+    reconciliation_severity_rank,
+)
 from rtlab_core.policy_paths import describe_policy_root_resolution
 
 
@@ -377,6 +394,40 @@ def _hydrate_reconcile_row(payload: dict[str, Any] | None) -> dict[str, Any] | N
     out = copy.deepcopy(payload)
     out["details_json"] = _json_loads(out.get("details_json"), {})
     out["resolved"] = _bool(out.get("resolved"))
+    return out
+
+
+def _hydrate_reconciliation_case_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["local_summary_json"] = _json_loads(out.get("local_summary_json"), {})
+    out["remote_summary_json"] = _json_loads(out.get("remote_summary_json"), {})
+    out["discrepancy_summary_json"] = _json_loads(out.get("discrepancy_summary_json"), {})
+    out["resolution_summary_json"] = _json_loads(out.get("resolution_summary_json"), {})
+    out["final_status"] = normalize_reconciliation_case_status(out.get("final_status"))
+    out["severity"] = normalize_reconciliation_case_severity(out.get("severity"))
+    out["blocking_bool"] = _bool(out.get("blocking_bool"))
+    return out
+
+
+def _hydrate_reconciliation_case_event_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["payload_json"] = _json_loads(out.get("payload_json"), {})
+    out["decision_json"] = _json_loads(out.get("decision_json"), {})
+    out["source_type"] = normalize_reconciliation_case_event_source(out.get("source_type"))
+    out["applied_bool"] = _bool(out.get("applied_bool"))
+    return out
+
+
+def _hydrate_reconciliation_snapshot_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["payload_json"] = _json_loads(out.get("payload_json"), {})
+    out["snapshot_type"] = normalize_reconciliation_snapshot_type(out.get("snapshot_type"))
     return out
 
 
@@ -1082,6 +1133,63 @@ class ExecutionRealityDB:
                 CREATE INDEX IF NOT EXISTS idx_live_order_reconciliation_runs_started_at
                   ON live_order_reconciliation_runs(started_at DESC);
 
+                CREATE TABLE IF NOT EXISTS reconciliation_cases (
+                  reconciliation_case_id TEXT PRIMARY KEY,
+                  trigger_type TEXT NOT NULL,
+                  exchange TEXT NOT NULL DEFAULT 'binance',
+                  market_type TEXT,
+                  environment TEXT NOT NULL DEFAULT 'live',
+                  bot_id TEXT,
+                  symbol TEXT,
+                  execution_order_id TEXT,
+                  execution_fill_scope TEXT,
+                  started_at TEXT NOT NULL,
+                  finished_at TEXT,
+                  final_status TEXT NOT NULL,
+                  severity TEXT NOT NULL,
+                  local_summary_json TEXT NOT NULL DEFAULT '{}',
+                  remote_summary_json TEXT NOT NULL DEFAULT '{}',
+                  discrepancy_summary_json TEXT NOT NULL DEFAULT '{}',
+                  resolution_summary_json TEXT NOT NULL DEFAULT '{}',
+                  blocking_bool INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_cases_started_at
+                  ON reconciliation_cases(started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_cases_status
+                  ON reconciliation_cases(final_status, severity, blocking_bool, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_cases_scope
+                  ON reconciliation_cases(environment, market_type, symbol, execution_order_id, started_at DESC);
+
+                CREATE TABLE IF NOT EXISTS reconciliation_case_events (
+                  case_event_id TEXT PRIMARY KEY,
+                  reconciliation_case_id TEXT NOT NULL,
+                  event_time TEXT NOT NULL,
+                  source_type TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  decision_json TEXT NOT NULL DEFAULT '{}',
+                  applied_bool INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_case_events_case_time
+                  ON reconciliation_case_events(reconciliation_case_id, event_time ASC, case_event_id ASC);
+
+                CREATE TABLE IF NOT EXISTS reconciliation_snapshots (
+                  snapshot_id TEXT PRIMARY KEY,
+                  reconciliation_case_id TEXT NOT NULL,
+                  snapshot_type TEXT NOT NULL,
+                  symbol TEXT,
+                  execution_order_id TEXT,
+                  captured_at TEXT NOT NULL,
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  source_freshness_ms REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_snapshots_case
+                  ON reconciliation_snapshots(reconciliation_case_id, captured_at ASC, snapshot_id ASC);
+                CREATE INDEX IF NOT EXISTS idx_reconciliation_snapshots_scope
+                  ON reconciliation_snapshots(snapshot_type, symbol, execution_order_id, captured_at DESC);
+
                 CREATE TABLE IF NOT EXISTS kill_switch_events (
                   kill_switch_event_id TEXT PRIMARY KEY,
                   created_at TEXT NOT NULL,
@@ -1164,6 +1272,13 @@ class ExecutionRealityDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_execution_orders_local_state ON execution_orders(current_local_state, family, environment, symbol)"
             )
+            self._ensure_column(conn, "reconciliation_cases", "exchange", "TEXT NOT NULL DEFAULT 'binance'")
+            self._ensure_column(conn, "reconciliation_cases", "market_type", "TEXT")
+            self._ensure_column(conn, "reconciliation_cases", "environment", "TEXT NOT NULL DEFAULT 'live'")
+            self._ensure_column(conn, "reconciliation_cases", "execution_fill_scope", "TEXT")
+            self._ensure_column(conn, "reconciliation_cases", "created_at", "TEXT")
+            self._ensure_column(conn, "reconciliation_cases", "updated_at", "TEXT")
+            self._ensure_column(conn, "reconciliation_cases", "blocking_bool", "INTEGER NOT NULL DEFAULT 0")
 
     def table_names(self) -> list[str]:
         with self._connect() as conn:
@@ -1181,6 +1296,9 @@ class ExecutionRealityDB:
             "execution_user_stream_events",
             "live_order_events",
             "live_order_reconciliation_runs",
+            "reconciliation_cases",
+            "reconciliation_case_events",
+            "reconciliation_snapshots",
             "kill_switch_events",
         )
         with self._connect() as conn:
@@ -1671,6 +1789,196 @@ class ExecutionRealityDB:
                 (row["reconciliation_run_id"],),
             ).fetchone()
         return _hydrate_reconciliation_run_row(_row_to_dict(stored) or row) or row
+
+    def insert_reconciliation_case(self, payload: dict[str, Any]) -> dict[str, Any]:
+        now_iso = utc_now_iso()
+        row = {
+            "reconciliation_case_id": str(payload.get("reconciliation_case_id") or uuid4()),
+            "trigger_type": normalize_reconciliation_trigger(payload.get("trigger_type")),
+            "exchange": str(payload.get("exchange") or "binance"),
+            "market_type": str(payload.get("market_type") or "spot"),
+            "environment": str(payload.get("environment") or "live"),
+            "bot_id": payload.get("bot_id"),
+            "symbol": _canonical_symbol(payload.get("symbol")),
+            "execution_order_id": payload.get("execution_order_id"),
+            "execution_fill_scope": payload.get("execution_fill_scope"),
+            "started_at": str(payload.get("started_at") or now_iso),
+            "finished_at": str(payload.get("finished_at") or now_iso),
+            "final_status": normalize_reconciliation_case_status(payload.get("final_status")),
+            "severity": normalize_reconciliation_case_severity(payload.get("severity")),
+            "local_summary_json": _json_dumps(payload.get("local_summary_json") or {}),
+            "remote_summary_json": _json_dumps(payload.get("remote_summary_json") or {}),
+            "discrepancy_summary_json": _json_dumps(payload.get("discrepancy_summary_json") or {}),
+            "resolution_summary_json": _json_dumps(payload.get("resolution_summary_json") or {}),
+            "blocking_bool": _db_bool(payload.get("blocking_bool", False)) or 0,
+            "created_at": str(payload.get("created_at") or now_iso),
+            "updated_at": str(payload.get("updated_at") or now_iso),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO reconciliation_cases (
+                  reconciliation_case_id, trigger_type, exchange, market_type, environment, bot_id, symbol,
+                  execution_order_id, execution_fill_scope, started_at, finished_at, final_status, severity,
+                  local_summary_json, remote_summary_json, discrepancy_summary_json, resolution_summary_json,
+                  blocking_bool, created_at, updated_at
+                ) VALUES (
+                  :reconciliation_case_id, :trigger_type, :exchange, :market_type, :environment, :bot_id, :symbol,
+                  :execution_order_id, :execution_fill_scope, :started_at, :finished_at, :final_status, :severity,
+                  :local_summary_json, :remote_summary_json, :discrepancy_summary_json, :resolution_summary_json,
+                  :blocking_bool, :created_at, :updated_at
+                )
+                """,
+                row,
+            )
+            stored = conn.execute(
+                "SELECT * FROM reconciliation_cases WHERE reconciliation_case_id = ?",
+                (row["reconciliation_case_id"],),
+            ).fetchone()
+        return _hydrate_reconciliation_case_row(_row_to_dict(stored) or row) or row
+
+    def reconciliation_case_by_id(self, reconciliation_case_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM reconciliation_cases WHERE reconciliation_case_id = ?",
+                (str(reconciliation_case_id),),
+            ).fetchone()
+        return _hydrate_reconciliation_case_row(_row_to_dict(row))
+
+    def list_reconciliation_cases(
+        self,
+        *,
+        final_status: str | None = None,
+        severity: str | None = None,
+        blocking_only: bool = False,
+        environment: str | None = None,
+        family: str | None = None,
+        symbol: str | None = None,
+        execution_order_id: str | None = None,
+        bot_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if final_status:
+            clauses.append("final_status = ?")
+            params.append(normalize_reconciliation_case_status(final_status))
+        if severity:
+            clauses.append("severity = ?")
+            params.append(normalize_reconciliation_case_severity(severity))
+        if blocking_only:
+            clauses.append("blocking_bool = 1")
+        if environment:
+            clauses.append("environment = ?")
+            params.append(_normalize_environment(environment))
+        if family:
+            clauses.append("market_type = ?")
+            params.append(_normalize_family(family))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(_canonical_symbol(symbol))
+        if execution_order_id:
+            clauses.append("execution_order_id = ?")
+            params.append(str(execution_order_id))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(str(bot_id))
+        params.extend([max(1, int(limit)), max(0, int(offset))])
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM reconciliation_cases
+                WHERE {' AND '.join(clauses)}
+                ORDER BY started_at DESC, reconciliation_case_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [_hydrate_reconciliation_case_row(_row_to_dict(row)) or {} for row in rows]
+
+    def insert_reconciliation_case_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "case_event_id": str(payload.get("case_event_id") or uuid4()),
+            "reconciliation_case_id": str(payload.get("reconciliation_case_id") or ""),
+            "event_time": str(payload.get("event_time") or utc_now_iso()),
+            "source_type": normalize_reconciliation_case_event_source(payload.get("source_type")),
+            "message": str(payload.get("message") or ""),
+            "payload_json": _json_dumps(payload.get("payload_json") or {}),
+            "decision_json": _json_dumps(payload.get("decision_json") or {}),
+            "applied_bool": _db_bool(payload.get("applied_bool", True)) or 0,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO reconciliation_case_events (
+                  case_event_id, reconciliation_case_id, event_time, source_type, message, payload_json, decision_json, applied_bool
+                ) VALUES (
+                  :case_event_id, :reconciliation_case_id, :event_time, :source_type, :message, :payload_json, :decision_json, :applied_bool
+                )
+                """,
+                row,
+            )
+            stored = conn.execute(
+                "SELECT * FROM reconciliation_case_events WHERE case_event_id = ?",
+                (row["case_event_id"],),
+            ).fetchone()
+        return _hydrate_reconciliation_case_event_row(_row_to_dict(stored) or row) or row
+
+    def reconciliation_case_events(self, reconciliation_case_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM reconciliation_case_events
+                WHERE reconciliation_case_id = ?
+                ORDER BY event_time ASC, case_event_id ASC
+                """,
+                (str(reconciliation_case_id),),
+            ).fetchall()
+        return [_hydrate_reconciliation_case_event_row(_row_to_dict(row)) or {} for row in rows]
+
+    def insert_reconciliation_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "snapshot_id": str(payload.get("snapshot_id") or uuid4()),
+            "reconciliation_case_id": str(payload.get("reconciliation_case_id") or ""),
+            "snapshot_type": normalize_reconciliation_snapshot_type(payload.get("snapshot_type")),
+            "symbol": _canonical_symbol(payload.get("symbol")),
+            "execution_order_id": payload.get("execution_order_id"),
+            "captured_at": str(payload.get("captured_at") or utc_now_iso()),
+            "payload_json": _json_dumps(payload.get("payload_json") or {}),
+            "source_freshness_ms": _first_number(payload.get("source_freshness_ms")),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO reconciliation_snapshots (
+                  snapshot_id, reconciliation_case_id, snapshot_type, symbol, execution_order_id, captured_at, payload_json, source_freshness_ms
+                ) VALUES (
+                  :snapshot_id, :reconciliation_case_id, :snapshot_type, :symbol, :execution_order_id, :captured_at, :payload_json, :source_freshness_ms
+                )
+                """,
+                row,
+            )
+            stored = conn.execute(
+                "SELECT * FROM reconciliation_snapshots WHERE snapshot_id = ?",
+                (row["snapshot_id"],),
+            ).fetchone()
+        return _hydrate_reconciliation_snapshot_row(_row_to_dict(stored) or row) or row
+
+    def reconciliation_snapshots(self, reconciliation_case_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM reconciliation_snapshots
+                WHERE reconciliation_case_id = ?
+                ORDER BY captured_at ASC, snapshot_id ASC
+                """,
+                (str(reconciliation_case_id),),
+            ).fetchall()
+        return [_hydrate_reconciliation_snapshot_row(_row_to_dict(row)) or {} for row in rows]
 
     def fill_by_id(self, execution_fill_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -4060,6 +4368,32 @@ class ExecutionRealityService:
             "hard_deadline_sec": deadlines["hard_deadline_sec"],
         }
 
+    def _block_new_submit_for_reconciliation_cases(
+        self,
+        *,
+        family: str,
+        environment: str,
+        bot_id: str | None,
+        symbol: str,
+    ) -> dict[str, Any]:
+        if _normalize_environment(environment) != "live":
+            return {"blocking_reasons": [], "warnings": [], "items": []}
+        items = self._active_reconciliation_cases(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            blocking_only=True,
+            limit=100,
+        )
+        blocking = ["reconciliation_case_blocker_same_bot_symbol"] if items else []
+        warnings = ["reconciliation_case_open_same_bot_symbol"] if items else []
+        return {
+            "blocking_reasons": blocking,
+            "warnings": warnings,
+            "items": [self._reconciliation_case_summary_row(row) for row in items],
+        }
+
     def _mark_order_unknown_pending_reconciliation(
         self,
         order: dict[str, Any],
@@ -4093,6 +4427,31 @@ class ExecutionRealityService:
     def _reconciliation_policy(self) -> dict[str, Any]:
         payload = self.safety_policy().get("reconciliation")
         return payload if isinstance(payload, dict) else {}
+
+    def _reconciliation_engine_policy(self) -> dict[str, Any]:
+        policy = self._reconciliation_policy()
+        deadlines = self._reconciliation_deadlines()
+        return {
+            "periodic_enabled": _bool(policy.get("reconciliation_periodic_enabled", True)),
+            "periodic_interval_sec": float(policy.get("reconciliation_periodic_interval_sec") or 30.0),
+            "startup_enabled": _bool(policy.get("reconciliation_startup_enabled", True)),
+            "before_live_start_required": _bool(policy.get("reconciliation_before_live_start_required", True)),
+            "max_snapshot_age_ms": float(policy.get("reconciliation_max_snapshot_age_ms") or 15000.0),
+            "max_stream_gap_ms": float(policy.get("reconciliation_max_stream_gap_ms") or 10000.0),
+            "unknown_hard_deadline_sec": float(
+                policy.get("reconciliation_unknown_hard_deadline_sec")
+                or deadlines["hard_deadline_sec"]
+            ),
+            "manual_review_blocks_live": _bool(policy.get("reconciliation_manual_review_blocks_live", True)),
+            "desync_blocks_live": _bool(policy.get("reconciliation_desync_blocks_live", True)),
+            "open_remote_without_local_blocks_live": _bool(
+                policy.get("reconciliation_open_remote_without_local_blocks_live", True)
+            ),
+            "remote_query_retry_count": max(1, int(_safe_float(policy.get("reconciliation_remote_query_retry_count"), 3))),
+            "remote_query_backoff_ms": max(0, int(_safe_float(policy.get("reconciliation_remote_query_backoff_ms"), 500))),
+            "recent_trades_limit": max(1, int(_safe_float(policy.get("reconciliation_recent_trades_limit"), 100))),
+            "recent_open_orders_scope": str(policy.get("reconciliation_recent_open_orders_scope") or "symbol_first"),
+        }
 
     def _stream_state(self, family: str, environment: str) -> dict[str, Any]:
         normalized_family = _normalize_family(family)
@@ -5370,6 +5729,9 @@ class ExecutionRealityService:
         updated_order = copy.deepcopy(order)
         remote_meta: dict[str, Any] | None = None
         touched_events: list[dict[str, Any]] = []
+        remote_order_snapshot: dict[str, Any] | None = None
+        remote_trade_rows: list[dict[str, Any]] = []
+        remote_trade_meta: dict[str, Any] | None = None
 
         if environment == "paper":
             materialized = self._materialize_paper_fill(updated_order, intent)
@@ -5382,6 +5744,10 @@ class ExecutionRealityService:
                 "fills": fills,
                 "degraded_mode": False,
                 "remote_source": {"ok": True, "reason": "paper_local"},
+                "remote_order_snapshot": None,
+                "remote_trade_rows": [],
+                "remote_trade_source": {"ok": True, "reason": "paper_local"},
+                "stream_state": stream_state,
                 "events": touched_events,
             }
 
@@ -5389,6 +5755,7 @@ class ExecutionRealityService:
         remote_order, remote_meta = self._query_remote_order_snapshot(updated_order)
         if remote_order is not None:
             updated_order = remote_order
+            remote_order_snapshot = copy.deepcopy(remote_order)
             remote_status = str(remote_order.get("order_status") or "").upper()
             if remote_status != previous_status:
                 touched_events.append(
@@ -5447,6 +5814,8 @@ class ExecutionRealityService:
         fills_before = self.db.fills_for_order(str(updated_order.get("execution_order_id")))
         if should_fetch_trades:
             trade_rows, trade_meta = self._fetch_remote_trade_rows(updated_order)
+            remote_trade_rows = [copy.deepcopy(row) for row in trade_rows]
+            remote_trade_meta = copy.deepcopy(trade_meta)
             income_rows, _ = self._fetch_remote_income_rows(updated_order)
             interest_rows, _ = self._fetch_margin_interest_rows(updated_order)
             touched_events.extend(
@@ -5594,6 +5963,10 @@ class ExecutionRealityService:
             "fills": fills,
             "degraded_mode": bool(stream_state["degraded_mode"]),
             "remote_source": remote_meta,
+            "remote_order_snapshot": remote_order_snapshot,
+            "remote_trade_rows": remote_trade_rows,
+            "remote_trade_source": remote_trade_meta,
+            "stream_state": stream_state,
             "events": touched_events,
         }
 
@@ -6232,6 +6605,12 @@ class ExecutionRealityService:
             bot_id=str(request.get("bot_id") or "").strip() or None,
             symbol=normalized.get("symbol") or request.get("symbol") or "",
         )
+        reconciliation_gate = self._block_new_submit_for_reconciliation_cases(
+            family=family,
+            environment=environment,
+            bot_id=str(request.get("bot_id") or "").strip() or None,
+            symbol=normalized.get("symbol") or request.get("symbol") or "",
+        )
 
         intent = self.db.insert_intent(
             {
@@ -6267,13 +6646,16 @@ class ExecutionRealityService:
             not _bool(preflight.get("allowed"))
             or bool(safety_gate.get("blocking_reasons"))
             or bool(order_gate.get("blocking_reasons"))
+            or bool(reconciliation_gate.get("blocking_reasons"))
         ):
             blocking_reasons = list(preflight.get("blocking_reasons") or [])
             blocking_reasons.extend(safety_gate.get("blocking_reasons") or [])
             blocking_reasons.extend(order_gate.get("blocking_reasons") or [])
+            blocking_reasons.extend(reconciliation_gate.get("blocking_reasons") or [])
             warnings = list(preflight.get("warnings") or [])
             warnings.extend(safety_gate.get("warnings") or [])
             warnings.extend(order_gate.get("warnings") or [])
+            warnings.extend(reconciliation_gate.get("warnings") or [])
             self.db.update_intent_submission(
                 str(intent.get("execution_intent_id")),
                 preflight_status="blocked",
@@ -6294,6 +6676,7 @@ class ExecutionRealityService:
                 "preflight": preflight,
                 "live_safety_gate": safety_gate,
                 "live_order_gate": order_gate,
+                "reconciliation_gate": reconciliation_gate,
             }
 
         params, local_blocking = self._build_submit_params(
@@ -6322,11 +6705,13 @@ class ExecutionRealityService:
                     *(preflight.get("warnings") or []),
                     *(safety_gate.get("warnings") or []),
                     *(order_gate.get("warnings") or []),
+                    *(reconciliation_gate.get("warnings") or []),
                 ],
                 "blocking_reasons": list(local_blocking),
                 "preflight": preflight,
                 "live_safety_gate": safety_gate,
                 "live_order_gate": order_gate,
+                "reconciliation_gate": reconciliation_gate,
             }
 
         order = self.db.upsert_order(
@@ -6426,8 +6811,10 @@ class ExecutionRealityService:
                     *(preflight.get("warnings") or []),
                     *(safety_gate.get("warnings") or []),
                     *(order_gate.get("warnings") or []),
+                    *(reconciliation_gate.get("warnings") or []),
                 ],
                 "blocking_reasons": [],
+                "reconciliation_gate": reconciliation_gate,
             }
 
         endpoint = self._execution_endpoint(family, environment, "submit")
@@ -6466,10 +6853,12 @@ class ExecutionRealityService:
                     "warnings": [
                         *(preflight.get("warnings") or []),
                         *(order_gate.get("warnings") or []),
+                        *(reconciliation_gate.get("warnings") or []),
                     ],
                     "blocking_reasons": [str(meta.get("reason") or "unknown_submit_result")],
                     "submit_meta": meta,
                     "remote_source": reconcile_result.get("remote_source"),
+                    "reconciliation_gate": reconciliation_gate,
                 }
             order, _reject_event, _ = self._apply_order_event(
                 order=order,
@@ -6499,9 +6888,13 @@ class ExecutionRealityService:
                 "current_local_state": order.get("current_local_state"),
                 "estimated_costs": estimated_costs,
                 "fail_closed": mode == "live",
-                "warnings": preflight.get("warnings") or [],
+                "warnings": [
+                    *(preflight.get("warnings") or []),
+                    *(reconciliation_gate.get("warnings") or []),
+                ],
                 "blocking_reasons": [str(meta.get("reason") or "submit_failed")],
                 "submit_meta": meta,
+                "reconciliation_gate": reconciliation_gate,
             }
 
         order = self.db.upsert_order(
@@ -6559,9 +6952,11 @@ class ExecutionRealityService:
                 *(preflight.get("warnings") or []),
                 *(safety_gate.get("warnings") or []),
                 *(order_gate.get("warnings") or []),
+                *(reconciliation_gate.get("warnings") or []),
             ],
             "blocking_reasons": [],
             "submit_meta": {**meta, "futures_auto_cancel": heartbeat_meta},
+            "reconciliation_gate": reconciliation_gate,
         }
 
     def list_orders(
@@ -6834,6 +7229,1102 @@ class ExecutionRealityService:
             "hard_deadline_sec": deadlines["hard_deadline_sec"],
         }
 
+    def _recent_terminal_missing_fills(self, row: dict[str, Any]) -> bool:
+        if not is_terminal_local_state(row.get("current_local_state")):
+            return False
+        if _safe_float(row.get("executed_qty"), 0.0) <= 0.0 and str(row.get("order_status") or "").upper() not in {"FILLED", "PARTIALLY_FILLED"}:
+            return False
+        if self.db.fills_for_order(str(row.get("execution_order_id") or "")):
+            return False
+        reference_dt = (
+            _parse_ts(row.get("terminal_at"))
+            or _parse_ts(row.get("last_event_at"))
+            or _parse_ts(row.get("transact_time_last"))
+            or _parse_ts(row.get("acknowledged_at"))
+            or _parse_ts(row.get("submitted_at"))
+        )
+        if reference_dt is None:
+            return True
+        age_hours = max(0.0, (_utc_now() - reference_dt).total_seconds() / 3600.0)
+        return age_hours <= float(self._fill_reconciliation_window().get("window_hours") or 24.0)
+
+    def _reconciliation_case_scope_key(
+        self,
+        *,
+        case: dict[str, Any] | None = None,
+        execution_order_id: str | None = None,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        execution_fill_scope: str | None = None,
+    ) -> str:
+        payload = case if isinstance(case, dict) else {}
+        order_id = str(execution_order_id or payload.get("execution_order_id") or "").strip()
+        if order_id:
+            return f"order:{order_id}"
+        return ":".join(
+            [
+                "scope",
+                str(payload.get("exchange") or "binance"),
+                _normalize_family(family or payload.get("market_type")),
+                _normalize_environment(environment or payload.get("environment")),
+                _canonical_symbol(symbol or payload.get("symbol")) or "*",
+                str(bot_id or payload.get("bot_id") or "*"),
+                str(execution_fill_scope or payload.get("execution_fill_scope") or "scope"),
+            ]
+        )
+
+    def _active_reconciliation_cases(
+        self,
+        *,
+        final_status: str | None = None,
+        severity: str | None = None,
+        blocking_only: bool = False,
+        environment: str | None = None,
+        family: str | None = None,
+        symbol: str | None = None,
+        execution_order_id: str | None = None,
+        bot_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        latest_by_scope: dict[str, dict[str, Any]] = {}
+        rows = self.db.list_reconciliation_cases(
+            final_status=None,
+            severity=severity,
+            blocking_only=False,
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            limit=max(50, int(limit)),
+            offset=0,
+        )
+        for row in rows:
+            key = self._reconciliation_case_scope_key(case=row)
+            if key not in latest_by_scope:
+                latest_by_scope[key] = row
+        items = [
+            row
+            for row in latest_by_scope.values()
+            if normalize_reconciliation_case_status(row.get("final_status")) not in {"CLEAN", "RESOLVED"}
+        ]
+        if final_status:
+            normalized_status = normalize_reconciliation_case_status(final_status)
+            items = [row for row in items if normalize_reconciliation_case_status(row.get("final_status")) == normalized_status]
+        if blocking_only:
+            items = [row for row in items if reconciliation_case_blocks_live(row.get("final_status"), row.get("blocking_bool"))]
+        items.sort(
+            key=lambda row: (str(row.get("started_at") or ""), str(row.get("reconciliation_case_id") or "")),
+            reverse=True,
+        )
+        return items[: max(1, int(limit))]
+
+    def _reconciliation_case_summary_row(self, case: dict[str, Any]) -> dict[str, Any]:
+        payload = copy.deepcopy(case)
+        discrepancies = payload.get("discrepancy_summary_json")
+        items = discrepancies.get("items") if isinstance(discrepancies, dict) and isinstance(discrepancies.get("items"), list) else []
+        payload.update(
+            {
+                "trigger": payload.get("trigger_type"),
+                "scope": {
+                    "exchange": payload.get("exchange"),
+                    "market_type": payload.get("market_type"),
+                    "environment": payload.get("environment"),
+                    "symbol": payload.get("symbol"),
+                    "bot_id": payload.get("bot_id"),
+                    "execution_order_id": payload.get("execution_order_id"),
+                    "execution_fill_scope": payload.get("execution_fill_scope"),
+                },
+                "discrepancies": copy.deepcopy(items),
+                "discrepancy_count": len(items),
+                "blocking_bool": reconciliation_case_blocks_live(payload.get("final_status"), payload.get("blocking_bool")),
+            }
+        )
+        return payload
+
+    def _insert_reconciliation_case_bundle(
+        self,
+        *,
+        case_payload: dict[str, Any],
+        events: list[dict[str, Any]],
+        snapshots: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        stored_case = self.db.insert_reconciliation_case(case_payload)
+        case_id = str(stored_case.get("reconciliation_case_id") or "")
+        for row in events:
+            self.db.insert_reconciliation_case_event(
+                {
+                    "reconciliation_case_id": case_id,
+                    **row,
+                }
+            )
+        for row in snapshots:
+            self.db.insert_reconciliation_snapshot(
+                {
+                    "reconciliation_case_id": case_id,
+                    **row,
+                }
+            )
+        detail = self.reconciliation_case_detail(case_id)
+        return detail["case"] if isinstance(detail, dict) and isinstance(detail.get("case"), dict) else self._reconciliation_case_summary_row(stored_case)
+
+    def _stream_gap_ms(self, stream_state: dict[str, Any] | None) -> float | None:
+        payload = stream_state if isinstance(stream_state, dict) else {}
+        if _first_number(payload.get("stale_ms")) is not None:
+            return _first_number(payload.get("stale_ms"))
+        updated_at = _parse_ts(payload.get("updated_at"))
+        if updated_at is None:
+            return None
+        return max(0.0, (_utc_now() - updated_at).total_seconds() * 1000.0)
+
+    def _reconciliation_retry_call(self, fn, *args, **kwargs):  # noqa: ANN001, ANN202
+        policy = self._reconciliation_engine_policy()
+        attempts = max(1, int(policy.get("remote_query_retry_count") or 1))
+        backoff_ms = max(0, int(policy.get("remote_query_backoff_ms") or 0))
+        last_result = None
+        last_exc: Exception | None = None
+        for idx in range(attempts):
+            try:
+                last_result = fn(*args, **kwargs)
+                meta = last_result[1] if isinstance(last_result, tuple) and len(last_result) > 1 and isinstance(last_result[1], dict) else {}
+                if meta.get("ok") or idx + 1 >= attempts:
+                    if isinstance(last_result, tuple) and len(last_result) > 1 and isinstance(last_result[1], dict):
+                        last_result[1]["attempts"] = idx + 1
+                    return last_result
+            except Exception as exc:  # pragma: no cover - defensive
+                last_exc = exc
+                if idx + 1 >= attempts:
+                    raise
+            if backoff_ms > 0:
+                time.sleep(backoff_ms / 1000.0)
+        if last_exc is not None:  # pragma: no cover - defensive
+            raise last_exc
+        return last_result
+
+    def _find_open_snapshot_match(
+        self,
+        *,
+        order: dict[str, Any],
+        open_orders: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        execution_order_id = str(order.get("execution_order_id") or "")
+        venue_order_id = str(order.get("venue_order_id") or "")
+        client_order_id = str(order.get("client_order_id") or "")
+        for item in open_orders:
+            if execution_order_id and str(item.get("execution_order_id") or "") == execution_order_id:
+                return item
+            if venue_order_id and str(item.get("venue_order_id") or "") == venue_order_id:
+                return item
+            if client_order_id and str(item.get("client_order_id") or "") == client_order_id:
+                return item
+        return None
+
+    def _build_reconciliation_case_for_order(
+        self,
+        order: dict[str, Any],
+        *,
+        trigger_type: str,
+    ) -> dict[str, Any]:
+        started_at = utc_now_iso()
+        normalized_trigger = normalize_reconciliation_trigger(trigger_type)
+        family = _normalize_family(order.get("family"))
+        environment = _normalize_environment(order.get("environment"))
+        original_order = copy.deepcopy(order)
+        original_state = normalize_local_state(original_order.get("current_local_state"))
+        local_fills_before = self.db.fills_for_order(str(original_order.get("execution_order_id") or ""))
+        original_fill_map = {str(fill.get("dedup_key") or ""): fill for fill in local_fills_before if str(fill.get("dedup_key") or "").strip()}
+        result = self._reconcile_single_order(copy.deepcopy(order))
+        resolved_order = copy.deepcopy(result.get("order") or original_order)
+        resolved_state = normalize_local_state(resolved_order.get("current_local_state"))
+        stream_state = copy.deepcopy(result.get("stream_state") or self._stream_state(family, environment))
+        stream_gap_ms = self._stream_gap_ms(stream_state)
+
+        remote_order_snapshot = copy.deepcopy(result.get("remote_order_snapshot")) if isinstance(result.get("remote_order_snapshot"), dict) else None
+        remote_query_meta = copy.deepcopy(result.get("remote_source") or {})
+        if remote_order_snapshot is None and not is_terminal_local_state(original_state):
+            remote_order_snapshot, remote_query_meta = self._reconciliation_retry_call(self._query_remote_order_snapshot, resolved_order)
+
+        open_orders_snapshot, open_orders_meta = self._reconciliation_retry_call(
+            self._remote_open_orders_snapshot,
+            family=family,
+            environment=environment,
+            symbol=resolved_order.get("symbol"),
+        )
+
+        remote_trade_rows = copy.deepcopy(result.get("remote_trade_rows") or [])
+        remote_trade_meta = copy.deepcopy(result.get("remote_trade_source") or {})
+        if not remote_trade_rows and family == "spot" and environment in {"live", "testnet"}:
+            remote_trade_rows, remote_trade_meta = self._reconciliation_retry_call(
+                self._fetch_remote_trade_rows_for_symbol,
+                family=family,
+                environment=environment,
+                symbol=resolved_order.get("symbol"),
+                limit=int(self._reconciliation_engine_policy().get("recent_trades_limit") or 100),
+            )
+
+        local_fills_after = self.db.fills_for_order(str(resolved_order.get("execution_order_id") or ""))
+        local_fill_map = {str(fill.get("dedup_key") or ""): fill for fill in local_fills_after if str(fill.get("dedup_key") or "").strip()}
+
+        discrepancies: list[dict[str, Any]] = []
+        resolution_actions: list[str] = []
+        severity = "INFO"
+        final_status = "CLEAN"
+
+        remote_open_match = self._find_open_snapshot_match(order=resolved_order, open_orders=open_orders_snapshot)
+        remote_open_status = str((remote_open_match or {}).get("order_status") or "").upper()
+        remote_query_status = str((remote_order_snapshot or {}).get("order_status") or "").upper()
+        remote_is_open = remote_query_status in OPENISH_EXCHANGE_ORDER_STATUSES or remote_open_status in OPENISH_EXCHANGE_ORDER_STATUSES
+        remote_is_terminal = remote_query_status in TERMINAL_ORDER_STATUSES
+        local_was_open = not is_terminal_local_state(original_state)
+        local_is_open = not is_terminal_local_state(resolved_state)
+
+        if local_was_open and remote_is_terminal:
+            discrepancies.append(
+                discrepancy_payload(
+                    code="ORDER_REMOTE_TERMINAL_BUT_LOCAL_OPEN",
+                    severity="WARN",
+                    entity_scope="order",
+                    local_value={"local_state_before": original_state},
+                    remote_value={"remote_status": remote_query_status},
+                    auto_resolvable_bool=True,
+                    proposed_action="adopt_remote_terminal_state",
+                    final_action=f"resolved_to_{resolved_state.lower()}",
+                )
+            )
+            resolution_actions.append("remote_terminal_state_adopted")
+            final_status = "RESOLVED"
+            severity = "WARN"
+
+        if is_terminal_local_state(original_state) and remote_is_open:
+            auto_resolvable = remote_query_status in OPENISH_EXCHANGE_ORDER_STATUSES and remote_open_match is not None and local_is_open
+            discrepancies.append(
+                discrepancy_payload(
+                    code="ORDER_LOCAL_TERMINAL_BUT_REMOTE_OPEN",
+                    severity="CRITICAL" if not auto_resolvable else "WARN",
+                    entity_scope="order",
+                    local_value={"local_state_before": original_state},
+                    remote_value={"query_status": remote_query_status, "open_snapshot_status": remote_open_status},
+                    auto_resolvable_bool=auto_resolvable,
+                    proposed_action="recover_open_order_from_exchange",
+                    final_action=f"resolved_to_{resolved_state.lower()}" if auto_resolvable else "manual_review_required",
+                )
+            )
+            if auto_resolvable:
+                resolution_actions.append("remote_open_order_recovered")
+                final_status = "RESOLVED"
+                severity = "WARN"
+            else:
+                final_status = "DESYNC"
+                severity = "CRITICAL"
+
+        if local_is_open and remote_query_status == "" and remote_open_match is None:
+            discrepancies.append(
+                discrepancy_payload(
+                    code="ORDER_LOCAL_OPEN_BUT_REMOTE_MISSING",
+                    severity="CRITICAL",
+                    entity_scope="order",
+                    local_value={"local_state_after": resolved_state},
+                    remote_value={"query_meta": remote_query_meta, "open_orders_meta": open_orders_meta},
+                    auto_resolvable_bool=False,
+                    proposed_action="query_again_or_manual_review",
+                    final_action="desync_pending_resolution",
+                )
+            )
+            final_status = "DESYNC"
+            severity = "CRITICAL"
+
+        remote_trade_map = {str(row.get("dedup_key") or ""): row for row in remote_trade_rows if str(row.get("dedup_key") or "").strip()}
+        missing_remote_fills = [fill for key, fill in original_fill_map.items() if key and key not in remote_trade_map]
+        missing_local_fills = [row for key, row in remote_trade_map.items() if key and key not in local_fill_map]
+        if missing_local_fills:
+            discrepancies.append(
+                discrepancy_payload(
+                    code="FILLS_REMOTE_NOT_IN_LOCAL",
+                    severity="WARN",
+                    entity_scope="fills",
+                    local_value={"count_before": len(local_fills_before)},
+                    remote_value={"missing_rows": len(missing_local_fills)},
+                    auto_resolvable_bool=True,
+                    proposed_action="persist_missing_remote_fills",
+                    final_action="persisted_remote_fills" if len(local_fills_after) >= len(local_fills_before) + len(missing_local_fills) else "manual_review_required",
+                )
+            )
+            if len(local_fills_after) >= len(local_fills_before) + len(missing_local_fills):
+                resolution_actions.append("remote_fills_backfilled")
+                if final_status == "CLEAN":
+                    final_status = "RESOLVED"
+                    severity = "WARN"
+            else:
+                final_status = "MANUAL_REVIEW_REQUIRED"
+                severity = "CRITICAL"
+        if missing_remote_fills:
+            discrepancies.append(
+                discrepancy_payload(
+                    code="FILLS_LOCAL_NOT_CONFIRMED_REMOTE",
+                    severity="WARN",
+                    entity_scope="fills",
+                    local_value={"missing_rows": len(missing_remote_fills)},
+                    remote_value={"remote_rows": len(remote_trade_rows)},
+                    auto_resolvable_bool=False,
+                    proposed_action="retain_local_evidence_until_trade_list_catches_up",
+                    final_action="manual_review_required",
+                )
+            )
+            if final_status not in {"DESYNC", "MANUAL_REVIEW_REQUIRED"}:
+                final_status = "MANUAL_REVIEW_REQUIRED"
+                severity = "WARN"
+
+        if remote_trade_rows and local_fills_after:
+            local_qty = sum(_safe_float(fill.get("last_executed_qty"), 0.0) for fill in local_fills_after)
+            remote_qty = sum(_safe_float(row.get("last_executed_qty"), 0.0) for row in remote_trade_rows)
+            if abs(local_qty - remote_qty) > 1e-12:
+                discrepancies.append(
+                    discrepancy_payload(
+                        code="CUM_QTY_MISMATCH",
+                        severity="WARN",
+                        entity_scope="fills",
+                        local_value={"qty": round(local_qty, 12)},
+                        remote_value={"qty": round(remote_qty, 12)},
+                        auto_resolvable_bool=False,
+                        proposed_action="review_trade_linkage",
+                        final_action="manual_review_required",
+                    )
+                )
+                if final_status not in {"DESYNC", "MANUAL_REVIEW_REQUIRED"}:
+                    final_status = "MANUAL_REVIEW_REQUIRED"
+                    severity = "WARN"
+            local_quote = sum(_safe_float(fill.get("last_quote_qty"), 0.0) for fill in local_fills_after)
+            remote_quote = sum(_safe_float(row.get("last_quote_qty"), 0.0) for row in remote_trade_rows)
+            if abs(local_quote - remote_quote) > 1e-9:
+                discrepancies.append(
+                    discrepancy_payload(
+                        code="CUM_QUOTE_MISMATCH",
+                        severity="WARN",
+                        entity_scope="fills",
+                        local_value={"quote": round(local_quote, 12)},
+                        remote_value={"quote": round(remote_quote, 12)},
+                        auto_resolvable_bool=False,
+                        proposed_action="review_trade_quote_consistency",
+                        final_action="manual_review_required",
+                    )
+                )
+                if final_status not in {"DESYNC", "MANUAL_REVIEW_REQUIRED"}:
+                    final_status = "MANUAL_REVIEW_REQUIRED"
+                    severity = "WARN"
+            for fill in local_fills_after:
+                remote_row = remote_trade_map.get(str(fill.get("dedup_key") or ""))
+                if remote_row is None:
+                    continue
+                if str(fill.get("client_order_id") or "") != str(remote_row.get("client_order_id") or fill.get("client_order_id") or ""):
+                    discrepancies.append(
+                        discrepancy_payload(
+                            code="CLIENT_ORDER_LINK_MISMATCH",
+                            severity="WARN",
+                            entity_scope="fill",
+                            local_value={"client_order_id": fill.get("client_order_id")},
+                            remote_value={"client_order_id": remote_row.get("client_order_id")},
+                            auto_resolvable_bool=False,
+                            proposed_action="review_order_linkage",
+                            final_action="manual_review_required",
+                        )
+                    )
+                local_commission = _first_number(fill.get("commission"))
+                remote_commission = _first_number(remote_row.get("commission"))
+                if local_commission is not None and remote_commission is not None and abs(local_commission - remote_commission) > 1e-12:
+                    discrepancies.append(
+                        discrepancy_payload(
+                            code="COMMISSION_MISMATCH",
+                            severity="WARN",
+                            entity_scope="fill",
+                            local_value={"commission": local_commission, "asset": fill.get("commission_asset")},
+                            remote_value={"commission": remote_commission, "asset": remote_row.get("commission_asset")},
+                            auto_resolvable_bool=False,
+                            proposed_action="prefer_trade_ledger_commission_values",
+                            final_action="manual_review_required",
+                        )
+                    )
+
+        order_age_sec = max(
+            0.0,
+            (
+                _utc_now()
+                - (
+                    _parse_ts(resolved_order.get("last_event_at"))
+                    or _parse_ts(resolved_order.get("submitted_at"))
+                    or _utc_now()
+                )
+            ).total_seconds(),
+        )
+        if original_state == "UNKNOWN_PENDING_RECONCILIATION" and (
+            resolved_state in {"UNKNOWN_PENDING_RECONCILIATION", "MANUAL_REVIEW_REQUIRED"}
+            and order_age_sec > float(self._reconciliation_engine_policy().get("unknown_hard_deadline_sec") or 30.0)
+        ):
+            discrepancies.append(
+                discrepancy_payload(
+                    code="UNKNOWN_TIMEOUT_UNRESOLVED",
+                    severity="CRITICAL",
+                    entity_scope="order",
+                    local_value={"state": resolved_state, "age_sec": round(order_age_sec, 4)},
+                    remote_value={"query_meta": remote_query_meta, "open_orders_meta": open_orders_meta},
+                    auto_resolvable_bool=False,
+                    proposed_action="block_symbol_until_manual_reconcile",
+                    final_action="desync_block_live",
+                )
+            )
+            final_status = "DESYNC"
+            severity = "CRITICAL"
+
+        if resolved_state == "EXPIRED_STP" or remote_query_status == "EXPIRED_IN_MATCH":
+            discrepancies.append(
+                discrepancy_payload(
+                    code="STP_PREVENTED_MATCH_NEEDS_RECLASSIFICATION",
+                    severity="WARN",
+                    entity_scope="order",
+                    local_value={"local_state_after": resolved_state},
+                    remote_value={"remote_status": remote_query_status},
+                    auto_resolvable_bool=True,
+                    proposed_action="classify_as_expired_stp",
+                    final_action="classified_expired_stp",
+                )
+            )
+            if final_status == "CLEAN":
+                final_status = "RESOLVED"
+                severity = "WARN"
+
+        if stream_gap_ms is not None and stream_gap_ms > float(self._reconciliation_engine_policy().get("max_snapshot_age_ms") or 15000.0):
+            discrepancies.append(
+                discrepancy_payload(
+                    code="SNAPSHOT_STALENESS_TOO_HIGH",
+                    severity="WARN",
+                    entity_scope="stream",
+                    local_value={"stream_gap_ms": round(stream_gap_ms, 3)},
+                    remote_value={"max_snapshot_age_ms": self._reconciliation_engine_policy().get("max_snapshot_age_ms")},
+                    auto_resolvable_bool=False,
+                    proposed_action="refresh_stream_or_reconcile_again",
+                    final_action="warning_recorded",
+                )
+            )
+            if final_status == "CLEAN":
+                final_status = "RESOLVED"
+                severity = "WARN"
+
+        has_open_orders = bool(remote_open_match) or local_is_open
+        if stream_gap_ms is not None and stream_gap_ms > float(self._reconciliation_engine_policy().get("max_stream_gap_ms") or 10000.0) and has_open_orders:
+            discrepancies.append(
+                discrepancy_payload(
+                    code="STREAM_GAP_WITH_PENDING_OPEN_ORDERS",
+                    severity="CRITICAL" if environment == "live" else "WARN",
+                    entity_scope="stream",
+                    local_value={"stream_state": stream_state},
+                    remote_value={"open_order_present": has_open_orders},
+                    auto_resolvable_bool=False,
+                    proposed_action="require_manual_reconcile_before_next_submit",
+                    final_action="desync_block_live" if environment == "live" else "warning_recorded",
+                )
+            )
+            if environment == "live":
+                final_status = "DESYNC"
+                severity = "CRITICAL"
+            elif final_status == "CLEAN":
+                final_status = "RESOLVED"
+                severity = "WARN"
+
+        if remote_query_status and remote_open_match is not None:
+            open_snapshot_status = str(remote_open_match.get("order_status") or "").upper()
+            query_open = remote_query_status in OPENISH_EXCHANGE_ORDER_STATUSES
+            snapshot_open = open_snapshot_status in OPENISH_EXCHANGE_ORDER_STATUSES
+            if query_open != snapshot_open:
+                discrepancies.append(
+                    discrepancy_payload(
+                        code="ORDER_REMOTE_TERMINAL_BUT_LOCAL_OPEN" if query_open else "ORDER_LOCAL_OPEN_BUT_REMOTE_MISSING",
+                        severity="CRITICAL",
+                        entity_scope="order",
+                        local_value={"query_status": remote_query_status},
+                        remote_value={"open_snapshot_status": open_snapshot_status},
+                        auto_resolvable_bool=False,
+                        proposed_action="manual_review_query_vs_snapshot_conflict",
+                        final_action="manual_review_required",
+                    )
+                )
+                final_status = "MANUAL_REVIEW_REQUIRED"
+                severity = "CRITICAL"
+
+        blocking = False
+        if final_status == "DESYNC":
+            blocking = _bool(self._reconciliation_engine_policy().get("desync_blocks_live", True))
+        elif final_status == "MANUAL_REVIEW_REQUIRED":
+            blocking = _bool(self._reconciliation_engine_policy().get("manual_review_blocks_live", True))
+
+        case_payload = {
+            "trigger_type": normalized_trigger,
+            "exchange": "binance",
+            "market_type": family,
+            "environment": environment,
+            "bot_id": resolved_order.get("bot_id"),
+            "symbol": resolved_order.get("symbol"),
+            "execution_order_id": resolved_order.get("execution_order_id"),
+            "execution_fill_scope": "order",
+            "started_at": started_at,
+            "finished_at": utc_now_iso(),
+            "final_status": final_status,
+            "severity": severity,
+            "local_summary_json": {
+                "local_state_before": original_state,
+                "local_state_after": resolved_state,
+                "order_status_before": original_order.get("order_status"),
+                "order_status_after": resolved_order.get("order_status"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "client_order_id": resolved_order.get("client_order_id"),
+                "local_fill_count_before": len(local_fills_before),
+                "local_fill_count_after": len(local_fills_after),
+            },
+            "remote_summary_json": {
+                "query_order_source": copy.deepcopy(remote_query_meta or {}),
+                "open_orders_source": copy.deepcopy(open_orders_meta or {}),
+                "trade_list_source": copy.deepcopy(remote_trade_meta or {}),
+                "remote_order_status": remote_query_status or None,
+                "open_orders_count": len(open_orders_snapshot),
+                "remote_trade_count": len(remote_trade_rows),
+                "stream_state": copy.deepcopy(stream_state),
+                "stream_gap_ms": stream_gap_ms,
+                "evidence_precedence": [
+                    "user_stream_recent",
+                    "query_order",
+                    "open_orders",
+                    "my_trades",
+                    "rest_create_cancel_history",
+                    "local_prior_state",
+                ],
+            },
+            "discrepancy_summary_json": {
+                "count": len(discrepancies),
+                "items": discrepancies,
+            },
+            "resolution_summary_json": {
+                "actions": resolution_actions,
+                "final_local_state": resolved_state,
+                "final_exchange_status": resolved_order.get("order_status"),
+            },
+            "blocking_bool": blocking,
+        }
+        events = [
+            {
+                "event_time": started_at,
+                "source_type": "LOCAL_STATE",
+                "message": "local_order_loaded",
+                "payload_json": {"order": original_order},
+                "decision_json": {"local_state": original_state},
+                "applied_bool": True,
+            },
+            {
+                "event_time": utc_now_iso(),
+                "source_type": "REST_QUERY_ORDER",
+                "message": "query_order_evidence",
+                "payload_json": copy.deepcopy(remote_query_meta or {}),
+                "decision_json": {"remote_status": remote_query_status or None},
+                "applied_bool": bool(remote_query_meta.get("ok")) if isinstance(remote_query_meta, dict) else False,
+            },
+            {
+                "event_time": utc_now_iso(),
+                "source_type": "REST_OPEN_ORDERS",
+                "message": "open_orders_snapshot_evidence",
+                "payload_json": copy.deepcopy(open_orders_meta or {}),
+                "decision_json": {"matched_order": bool(remote_open_match), "snapshot_count": len(open_orders_snapshot)},
+                "applied_bool": bool(open_orders_meta.get("ok")) if isinstance(open_orders_meta, dict) else False,
+            },
+            {
+                "event_time": utc_now_iso(),
+                "source_type": "REST_MYTRADES",
+                "message": "mytrades_evidence",
+                "payload_json": copy.deepcopy(remote_trade_meta or {}),
+                "decision_json": {"trade_count": len(remote_trade_rows)},
+                "applied_bool": bool(remote_trade_meta.get("ok")) if isinstance(remote_trade_meta, dict) else False,
+            },
+            {
+                "event_time": utc_now_iso(),
+                "source_type": "POLICY",
+                "message": "reconciliation_policy_context",
+                "payload_json": self._reconciliation_engine_policy(),
+                "decision_json": {"final_status": final_status, "blocking_bool": blocking},
+                "applied_bool": True,
+            },
+        ]
+        snapshots = [
+            {
+                "snapshot_type": "LOCAL_ORDER",
+                "symbol": resolved_order.get("symbol"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "captured_at": started_at,
+                "payload_json": original_order,
+                "source_freshness_ms": 0.0,
+            },
+            {
+                "snapshot_type": "REMOTE_ORDER",
+                "symbol": resolved_order.get("symbol"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "captured_at": utc_now_iso(),
+                "payload_json": remote_order_snapshot or {},
+                "source_freshness_ms": 0.0 if remote_order_snapshot else None,
+            },
+            {
+                "snapshot_type": "OPEN_ORDERS",
+                "symbol": resolved_order.get("symbol"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "captured_at": utc_now_iso(),
+                "payload_json": {"items": open_orders_snapshot, "meta": open_orders_meta},
+                "source_freshness_ms": 0.0,
+            },
+            {
+                "snapshot_type": "TRADE_LIST",
+                "symbol": resolved_order.get("symbol"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "captured_at": utc_now_iso(),
+                "payload_json": {"items": remote_trade_rows, "meta": remote_trade_meta},
+                "source_freshness_ms": 0.0 if remote_trade_rows else None,
+            },
+            {
+                "snapshot_type": "LOCAL_FILLS",
+                "symbol": resolved_order.get("symbol"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "captured_at": utc_now_iso(),
+                "payload_json": {"items": local_fills_after},
+                "source_freshness_ms": 0.0,
+            },
+            {
+                "snapshot_type": "POLICY_CONTEXT",
+                "symbol": resolved_order.get("symbol"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "captured_at": utc_now_iso(),
+                "payload_json": self._reconciliation_engine_policy(),
+                "source_freshness_ms": 0.0,
+            },
+            {
+                "snapshot_type": "STREAM_HEALTH",
+                "symbol": resolved_order.get("symbol"),
+                "execution_order_id": resolved_order.get("execution_order_id"),
+                "captured_at": utc_now_iso(),
+                "payload_json": stream_state,
+                "source_freshness_ms": stream_gap_ms,
+            },
+        ]
+        return self._insert_reconciliation_case_bundle(
+            case_payload=case_payload,
+            events=events,
+            snapshots=snapshots,
+        )
+
+    def _build_remote_open_cases(
+        self,
+        *,
+        family: str,
+        environment: str,
+        symbol: str | None,
+        bot_id: str | None,
+        trigger_type: str,
+    ) -> list[dict[str, Any]]:
+        if environment not in {"live", "testnet"}:
+            return []
+        items, meta = self._reconciliation_retry_call(
+            self._remote_open_orders_snapshot,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+        )
+        created: list[dict[str, Any]] = []
+        for item in items:
+            if item.get("execution_order_id"):
+                continue
+            blocking = environment == "live" and _bool(self._reconciliation_engine_policy().get("open_remote_without_local_blocks_live", True))
+            discrepancy = discrepancy_payload(
+                code="ORDER_MISSING_LOCALLY_BUT_REMOTE_OPEN",
+                severity="CRITICAL" if blocking else "WARN",
+                entity_scope="symbol",
+                local_value={"local_order": None},
+                remote_value={"remote_order": item},
+                auto_resolvable_bool=False,
+                proposed_action="manual_import_or_remote_cancel",
+                final_action="desync_block_live" if blocking else "manual_review_required",
+            )
+            created.append(
+                self._insert_reconciliation_case_bundle(
+                    case_payload={
+                        "trigger_type": normalize_reconciliation_trigger(trigger_type),
+                        "exchange": "binance",
+                        "market_type": family,
+                        "environment": environment,
+                        "bot_id": bot_id,
+                        "symbol": item.get("symbol"),
+                        "execution_order_id": None,
+                        "execution_fill_scope": "symbol_remote_open",
+                        "started_at": utc_now_iso(),
+                        "finished_at": utc_now_iso(),
+                        "final_status": "DESYNC" if blocking else "MANUAL_REVIEW_REQUIRED",
+                        "severity": "CRITICAL" if blocking else "WARN",
+                        "local_summary_json": {"local_order_present": False},
+                        "remote_summary_json": {"remote_open_order": item, "open_orders_source": meta},
+                        "discrepancy_summary_json": {"count": 1, "items": [discrepancy]},
+                        "resolution_summary_json": {"actions": [], "final_local_state": None, "final_exchange_status": item.get("order_status")},
+                        "blocking_bool": blocking,
+                    },
+                    events=[
+                        {
+                            "event_time": utc_now_iso(),
+                            "source_type": "REST_OPEN_ORDERS",
+                            "message": "remote_open_order_without_local_match",
+                            "payload_json": {"remote_order": item, "meta": meta},
+                            "decision_json": {"blocking_bool": blocking},
+                            "applied_bool": True,
+                        }
+                    ],
+                    snapshots=[
+                        {
+                            "snapshot_type": "OPEN_ORDERS",
+                            "symbol": item.get("symbol"),
+                            "execution_order_id": None,
+                            "captured_at": utc_now_iso(),
+                            "payload_json": {"remote_order": item, "meta": meta},
+                            "source_freshness_ms": 0.0,
+                        }
+                    ],
+                )
+            )
+        return created
+
+    def list_reconciliation_cases_payload(
+        self,
+        *,
+        final_status: str | None = None,
+        severity: str | None = None,
+        blocking_only: bool = False,
+        environment: str | None = None,
+        family: str | None = None,
+        symbol: str | None = None,
+        execution_order_id: str | None = None,
+        bot_id: str | None = None,
+        active_only: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        rows = (
+            self._active_reconciliation_cases(
+                final_status=final_status,
+                severity=severity,
+                blocking_only=blocking_only,
+                environment=environment,
+                family=family,
+                symbol=symbol,
+                execution_order_id=execution_order_id,
+                bot_id=bot_id,
+                limit=limit,
+            )
+            if active_only
+            else self.db.list_reconciliation_cases(
+                final_status=final_status,
+                severity=severity,
+                blocking_only=blocking_only,
+                environment=environment,
+                family=family,
+                symbol=symbol,
+                execution_order_id=execution_order_id,
+                bot_id=bot_id,
+                limit=limit,
+                offset=offset,
+            )
+        )
+        items = [self._reconciliation_case_summary_row(row) for row in rows]
+        return {
+            "items": items,
+            "count": len(items),
+            "filters": {
+                "final_status": normalize_reconciliation_case_status(final_status) if final_status else None,
+                "severity": normalize_reconciliation_case_severity(severity) if severity else None,
+                "blocking_only": bool(blocking_only),
+                "environment": _normalize_environment(environment) if environment else None,
+                "family": _normalize_family(family) if family else None,
+                "symbol": _canonical_symbol(symbol) if symbol else None,
+                "execution_order_id": execution_order_id,
+                "bot_id": bot_id,
+                "active_only": bool(active_only),
+                "limit": int(limit),
+                "offset": int(offset),
+            },
+        }
+
+    def reconciliation_case_detail(self, reconciliation_case_id: str) -> dict[str, Any] | None:
+        case = self.db.reconciliation_case_by_id(reconciliation_case_id)
+        if case is None:
+            return None
+        return {
+            "case": self._reconciliation_case_summary_row(case),
+            "events": self.db.reconciliation_case_events(reconciliation_case_id),
+            "snapshots": self.db.reconciliation_snapshots(reconciliation_case_id),
+        }
+
+    def open_reconciliation_cases(
+        self,
+        *,
+        environment: str | None = None,
+        family: str | None = None,
+        symbol: str | None = None,
+        execution_order_id: str | None = None,
+        bot_id: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        return self.list_reconciliation_cases_payload(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            active_only=True,
+            limit=limit,
+        )
+
+    def desync_reconciliation_cases(
+        self,
+        *,
+        environment: str | None = None,
+        family: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        return self.list_reconciliation_cases_payload(
+            final_status="DESYNC",
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            active_only=True,
+            limit=limit,
+        )
+
+    def reconciliation_summary(
+        self,
+        *,
+        environment: str | None = None,
+        family: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        execution_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        active = self._active_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            limit=500,
+        )
+        desync = [row for row in active if normalize_reconciliation_case_status(row.get("final_status")) == "DESYNC"]
+        manual = [row for row in active if normalize_reconciliation_case_status(row.get("final_status")) == "MANUAL_REVIEW_REQUIRED"]
+        blocking = [row for row in active if reconciliation_case_blocks_live(row.get("final_status"), row.get("blocking_bool"))]
+        latest = self.db.list_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            limit=1,
+            offset=0,
+        )
+        return {
+            "overall_status": "BLOCK" if blocking else "WARN" if active else "OK",
+            "open_cases_count": len(active),
+            "desync_count": len(desync),
+            "manual_review_count": len(manual),
+            "blocking_cases_count": len(blocking),
+            "last_run": self._reconciliation_case_summary_row(latest[0]) if latest else None,
+            "open_cases": [self._reconciliation_case_summary_row(row) for row in active[:20]],
+            "desync_cases": [self._reconciliation_case_summary_row(row) for row in desync[:20]],
+            "policy": self._reconciliation_engine_policy(),
+            "filters": {
+                "environment": _normalize_environment(environment) if environment else None,
+                "family": _normalize_family(family) if family else None,
+                "symbol": _canonical_symbol(symbol) if symbol else None,
+                "bot_id": bot_id,
+                "execution_order_id": execution_order_id,
+            },
+        }
+
+    def run_reconciliation_engine(
+        self,
+        *,
+        execution_order_id: str | None = None,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        trigger: str = "MANUAL",
+    ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family) if family else None
+        normalized_environment = _normalize_environment(environment) if environment else None
+        normalized_symbol = _canonical_symbol(symbol) if symbol else None
+        normalized_trigger = normalize_reconciliation_trigger(trigger)
+        started_at = utc_now_iso()
+
+        rows = self.db.list_orders(
+            family=normalized_family,
+            environment=normalized_environment,
+            symbol=normalized_symbol,
+            bot_id=bot_id,
+            limit=1000,
+            offset=0,
+        )
+        if execution_order_id:
+            rows = [row for row in rows if str(row.get("execution_order_id") or "") == str(execution_order_id)]
+        elif normalized_trigger in {"STARTUP", "PRESTART_LIVE"}:
+            rows = [
+                row
+                for row in rows
+                if _normalize_environment(row.get("environment")) in {"live", "testnet"}
+                and (
+                    not is_terminal_local_state(row.get("current_local_state"))
+                    or self._recent_terminal_missing_fills(row)
+                )
+            ]
+        else:
+            rows = [
+                row
+                for row in rows
+                if (
+                    not is_terminal_local_state(row.get("current_local_state"))
+                    or self._recent_terminal_missing_fills(row)
+                    or normalize_local_state(row.get("current_local_state")) in AMBIGUOUS_LOCAL_ORDER_STATES
+                )
+            ]
+
+        cases: list[dict[str, Any]] = []
+        for row in rows:
+            cases.append(self._build_reconciliation_case_for_order(row, trigger_type=normalized_trigger))
+
+        scope_pairs: set[tuple[str, str, str | None]] = set()
+        if execution_order_id:
+            order = self.db.order_by_id(execution_order_id)
+            if order is not None:
+                scope_pairs.add((_normalize_family(order.get("family")), _normalize_environment(order.get("environment")), _canonical_symbol(order.get("symbol"))))
+        elif normalized_environment:
+            if normalized_family:
+                scope_pairs.add((normalized_family, normalized_environment, normalized_symbol))
+            elif normalized_environment in {"live", "testnet"}:
+                scope_pairs.add(("spot", normalized_environment, normalized_symbol))
+        else:
+            for row in rows:
+                scope_pairs.add((_normalize_family(row.get("family")), _normalize_environment(row.get("environment")), None))
+
+        if not scope_pairs and normalized_trigger in {"STARTUP", "PRESTART_LIVE"}:
+            default_environment = normalized_environment or "live"
+            if default_environment in {"live", "testnet"}:
+                scope_pairs.add((normalized_family or "spot", default_environment, normalized_symbol))
+
+        for scope_family, scope_environment, scope_symbol in sorted(scope_pairs):
+            if scope_environment not in {"live", "testnet"}:
+                continue
+            cases.extend(
+                self._build_remote_open_cases(
+                    family=scope_family,
+                    environment=scope_environment,
+                    symbol=scope_symbol,
+                    bot_id=bot_id,
+                    trigger_type=normalized_trigger,
+                )
+            )
+
+        run = self.db.insert_live_order_reconciliation_run(
+            {
+                "started_at": started_at,
+                "finished_at": utc_now_iso(),
+                "trigger": normalized_trigger,
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "symbol": normalized_symbol,
+                "bot_id": bot_id,
+                "result_summary_json": {
+                    "processed_orders": len(rows),
+                    "generated_cases": len(cases),
+                    "execution_order_id": execution_order_id,
+                },
+            }
+        )
+        active_cases = self._active_reconciliation_cases(
+            environment=normalized_environment,
+            family=normalized_family,
+            symbol=normalized_symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            limit=200,
+        )
+        blocking_cases = [row for row in active_cases if reconciliation_case_blocks_live(row.get("final_status"), row.get("blocking_bool"))]
+        return {
+            "reconciliation_run": run,
+            "processed_orders": len(rows),
+            "generated_cases": len(cases),
+            "items": [self._reconciliation_case_summary_row(row) for row in cases],
+            "open_cases": [self._reconciliation_case_summary_row(row) for row in active_cases],
+            "blocking_cases": [self._reconciliation_case_summary_row(row) for row in blocking_cases],
+            "summary": self.reconciliation_summary(
+                environment=normalized_environment,
+                family=normalized_family,
+                symbol=normalized_symbol,
+                bot_id=bot_id,
+                execution_order_id=execution_order_id,
+            ),
+            "filters": {
+                "execution_order_id": execution_order_id,
+                "family": normalized_family,
+                "environment": normalized_environment,
+                "symbol": normalized_symbol,
+                "bot_id": bot_id,
+                "trigger": normalized_trigger,
+            },
+        }
+
+    def live_reconciliation_gate(
+        self,
+        *,
+        family: str | None = None,
+        environment: str = "live",
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        trigger: str = "PRESTART_LIVE",
+        run_required: bool = True,
+    ) -> dict[str, Any]:
+        normalized_environment = _normalize_environment(environment)
+        if normalized_environment != "live":
+            return {"ok": True, "reason": "reconciliation_not_required_non_live", "summary": self.reconciliation_summary(environment=normalized_environment)}
+        policy = self._reconciliation_engine_policy()
+        run_payload = None
+        if run_required and _bool(policy.get("before_live_start_required", True)):
+            run_payload = self.run_reconciliation_engine(
+                family=family,
+                environment=normalized_environment,
+                symbol=symbol,
+                bot_id=bot_id,
+                trigger=trigger,
+            )
+        blocking_cases = self._active_reconciliation_cases(
+            environment=normalized_environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            blocking_only=True,
+            limit=200,
+        )
+        return {
+            "ok": len(blocking_cases) == 0,
+            "reason": "reconciliation_clean" if not blocking_cases else "reconciliation_blocking_cases_open",
+            "run": run_payload,
+            "summary": self.reconciliation_summary(
+                environment=normalized_environment,
+                family=family,
+                symbol=symbol,
+                bot_id=bot_id,
+            ),
+            "blocking_cases": [self._reconciliation_case_summary_row(row) for row in blocking_cases],
+        }
+
     def reconcile_live_fills(
         self,
         *,
@@ -6950,6 +8441,14 @@ class ExecutionRealityService:
         bot_id: str | None = None,
         trigger: str = "MANUAL",
     ) -> dict[str, Any]:
+        engine_payload = self.run_reconciliation_engine(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            trigger=trigger,
+        )
         rows = self.db.list_orders(
             family=_normalize_family(family) if family else None,
             environment=_normalize_environment(environment) if environment else None,
@@ -6962,33 +8461,10 @@ class ExecutionRealityService:
             rows = [row for row in rows if str(row.get("execution_order_id") or "") == str(execution_order_id)]
         else:
             rows = [row for row in rows if not is_terminal_local_state(row.get("current_local_state"))]
-        started_at = utc_now_iso()
         results = [self._reconcile_single_order(row) for row in rows]
-        finished_at = utc_now_iso()
-        unresolved = self.unresolved_live_orders(
-            family=family,
-            environment=environment,
-            symbol=symbol,
-            bot_id=bot_id,
-        )
-        run = self.db.insert_live_order_reconciliation_run(
-            {
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "trigger": trigger,
-                "family": _normalize_family(family) if family else None,
-                "environment": _normalize_environment(environment) if environment else None,
-                "symbol": _canonical_symbol(symbol) if symbol else None,
-                "bot_id": bot_id,
-                "result_summary_json": {
-                    "processed_orders": len(rows),
-                    "unresolved_count": unresolved.get("count"),
-                    "execution_order_id": execution_order_id,
-                },
-            }
-        )
+        unresolved = self.unresolved_live_orders(family=family, environment=environment, symbol=symbol, bot_id=bot_id)
         return {
-            "reconciliation_run": run,
+            "reconciliation_run": engine_payload["reconciliation_run"],
             "processed_orders": len(rows),
             "items": [
                 {
@@ -7001,78 +8477,13 @@ class ExecutionRealityService:
                 for item in results
             ],
             "unresolved": unresolved,
+            "reconciliation_cases": engine_payload.get("items") or [],
+            "blocking_cases": engine_payload.get("blocking_cases") or [],
+            "summary": engine_payload.get("summary") or {},
         }
 
     def recover_live_orders_on_startup(self) -> dict[str, Any]:
-        rows = self.db.list_orders(limit=1000, offset=0)
-        recent_window = self._fill_reconciliation_window()
-        now = _utc_now()
-
-        def _recent_terminal_missing_fills(row: dict[str, Any]) -> bool:
-            if not is_terminal_local_state(row.get("current_local_state")):
-                return False
-            if _safe_float(row.get("executed_qty"), 0.0) <= 0.0 and str(row.get("order_status") or "").upper() not in {"FILLED", "PARTIALLY_FILLED"}:
-                return False
-            if self.db.fills_for_order(str(row.get("execution_order_id") or "")):
-                return False
-            reference_dt = (
-                _parse_ts(row.get("terminal_at"))
-                or _parse_ts(row.get("last_event_at"))
-                or _parse_ts(row.get("transact_time_last"))
-                or _parse_ts(row.get("acknowledged_at"))
-                or _parse_ts(row.get("submitted_at"))
-            )
-            if reference_dt is None:
-                return True
-            age_hours = max(0.0, (now - reference_dt).total_seconds() / 3600.0)
-            return age_hours <= float(recent_window.get("window_hours") or 24.0)
-
-        targets = [
-            row
-            for row in rows
-            if _normalize_environment(row.get("environment")) in {"live", "testnet"}
-            and (
-                not is_terminal_local_state(row.get("current_local_state"))
-                or _recent_terminal_missing_fills(row)
-            )
-        ]
-        if not targets:
-            return {
-                "reconciliation_run": self.db.insert_live_order_reconciliation_run(
-                    {
-                        "started_at": utc_now_iso(),
-                        "finished_at": utc_now_iso(),
-                        "trigger": "STARTUP",
-                        "result_summary_json": {"processed_orders": 0, "unresolved_count": 0},
-                    }
-                ),
-                "processed_orders": 0,
-                "items": [],
-                "unresolved": {"count": 0, "items": []},
-            }
-        started_at = utc_now_iso()
-        results = [self._reconcile_single_order(row) for row in targets]
-        run = self.db.insert_live_order_reconciliation_run(
-            {
-                "started_at": started_at,
-                "finished_at": utc_now_iso(),
-                "trigger": "STARTUP",
-                "result_summary_json": {"processed_orders": len(targets)},
-            }
-        )
-        return {
-            "reconciliation_run": run,
-            "processed_orders": len(targets),
-            "items": [
-                {
-                    "execution_order_id": item["order"].get("execution_order_id"),
-                    "current_local_state": item["order"].get("current_local_state"),
-                    "order_status": item["order"].get("order_status"),
-                }
-                for item in results
-            ],
-            "unresolved": self.unresolved_live_orders(),
-        }
+        return self.run_reconciliation_engine(trigger="STARTUP")
 
     def order_detail(self, execution_order_id: str) -> dict[str, Any] | None:
         order = self.db.order_by_id(execution_order_id)
@@ -7108,6 +8519,7 @@ class ExecutionRealityService:
             "last_execution_type": order.get("last_execution_type") or order.get("execution_type_last"),
             "terminal": is_terminal_local_state(order.get("current_local_state")),
             "unresolved_reason": order.get("unresolved_reason"),
+            "reconciliation_cases": self.open_reconciliation_cases(execution_order_id=str(order.get("execution_order_id")), limit=25)["items"],
             "filter_validation": copy.deepcopy(preflight_context.get("filter_validation")),
             "normalized_order_preview": copy.deepcopy(preflight_context.get("normalized_order_preview")),
         }
@@ -7441,6 +8853,7 @@ class ExecutionRealityService:
             int(_safe_float(ks_cfg.get("repeated_reconcile_mismatch_block_count"), 0.0)),
         )
         unresolved_live_orders = self.unresolved_live_orders(environment="live")
+        reconciliation_engine = self.reconciliation_summary(environment="live")
         futures_auto_cancel = [
             copy.deepcopy(item)
             for item in sorted(
@@ -7472,6 +8885,8 @@ class ExecutionRealityService:
             blockers.append("repeated_reconcile_mismatch_blocker")
         if int(unresolved_live_orders.get("count") or 0) > 0:
             blockers.append("unresolved_live_orders_blocker")
+        if int(reconciliation_engine.get("blocking_cases_count") or 0) > 0:
+            blockers.append("reconciliation_desync_blocker")
         if open_orders_guard.get("breached"):
             blockers.append("open_orders_limit_blocker")
         if not fee_fresh:
@@ -7525,6 +8940,7 @@ class ExecutionRealityService:
             "repeated_reconcile_mismatch_count": repeated_reconcile_mismatch_count,
             "repeated_reconcile_mismatch_threshold": repeated_reconcile_mismatch_threshold,
             "unresolved_live_orders": unresolved_live_orders,
+            "reconciliation_engine": reconciliation_engine,
             "open_orders_guard": open_orders_guard,
             "market_data_guard": market_data,
             "market_stream_runtime": market_runtime,
