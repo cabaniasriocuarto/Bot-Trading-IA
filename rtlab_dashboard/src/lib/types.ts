@@ -81,6 +81,86 @@ export interface ExecutionMarketStreamsSummary {
   live_degraded: boolean;
 }
 
+export interface ExecutionLiveOrder {
+  execution_order_id: string;
+  local_order_id: string;
+  exchange_order_id?: string | null;
+  symbol: string;
+  side?: string | null;
+  order_type?: string | null;
+  requested_qty?: number | null;
+  requested_quote_order_qty?: number | null;
+  client_order_id: string;
+  current_local_state: string;
+  last_exchange_order_status?: string | null;
+  last_execution_type?: string | null;
+  executed_qty?: number | null;
+  cum_quote_qty?: number | null;
+  avg_fill_price?: number | null;
+  filled_pct?: number | null;
+  reconciliation_status?: string | null;
+  unresolved_reason?: string | null;
+  terminal: boolean;
+  submitted_at?: string | null;
+  last_event_at?: string | null;
+  timeline_size?: number | null;
+}
+
+export interface ExecutionLiveOrderEvent {
+  event_id: string;
+  execution_order_id: string;
+  source_type: string;
+  source_seq: number;
+  local_state_before?: string | null;
+  local_state_after: string;
+  exchange_order_status?: string | null;
+  execution_type?: string | null;
+  event_time_exchange?: string | null;
+  event_time_local: string;
+  delta_filled_qty?: number | null;
+  cumulative_filled_qty?: number | null;
+  cumulative_quote_qty?: number | null;
+  price?: number | null;
+  reject_reason?: string | null;
+  expiry_reason?: string | null;
+  notes?: string | null;
+  applied_bool: boolean;
+  raw_payload_json: Record<string, unknown>;
+}
+
+export interface ExecutionLiveOrdersResponse {
+  items: ExecutionLiveOrder[];
+  count: number;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionLiveOrdersUnresolvedResponse {
+  count: number;
+  items: ExecutionLiveOrder[];
+  soft_deadline_sec: number;
+  hard_deadline_sec: number;
+}
+
+export interface ExecutionLiveOrderDetailResponse {
+  order: ExecutionLiveOrder;
+  current_local_state: string;
+  last_exchange_order_status?: string | null;
+  last_execution_type?: string | null;
+  terminal: boolean;
+  unresolved_reason?: string | null;
+  timeline: ExecutionLiveOrderEvent[];
+  fills: Array<Record<string, unknown>>;
+  reconcile_events: Array<Record<string, unknown>>;
+  remote_source?: Record<string, unknown> | null;
+}
+
+export interface ExecutionLiveOrdersReconcileResponse {
+  reconciliation_run: Record<string, unknown>;
+  processed_orders: number;
+  items: Array<Record<string, unknown>>;
+  unresolved: ExecutionLiveOrdersUnresolvedResponse;
+}
+
 export type LivePreflightStatus = "PASS" | "WARN" | "FAIL";
 
 export type LivePreflightCheck = {

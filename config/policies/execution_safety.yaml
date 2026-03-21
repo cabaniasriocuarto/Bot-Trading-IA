@@ -63,6 +63,8 @@ execution_safety:
     fill_reconcile_timeout_sec: 20
     orphan_order_warn_sec: 30
     orphan_order_block_sec: 120
+    unknown_reconciliation_soft_deadline_sec: 5
+    unknown_reconciliation_hard_deadline_sec: 30
   kill_switch:
     enabled: true
     auto_cancel_all_on_trip: true

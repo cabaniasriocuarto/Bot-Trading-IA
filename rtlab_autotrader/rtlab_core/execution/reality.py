@@ -22,6 +22,17 @@ from rtlab_core.execution.filter_prevalidator import (
     describe_filter_rules,
     evaluate_prevalidator,
 )
+from rtlab_core.execution.live_order_state import (
+    AMBIGUOUS_LOCAL_ORDER_STATES,
+    BLOCKING_LOCAL_ORDER_STATES,
+    TERMINAL_LOCAL_ORDER_STATES,
+    blocks_new_submits,
+    execution_report_dedup_key,
+    is_ambiguous_local_state,
+    is_terminal_local_state,
+    map_exchange_event_to_local_state,
+    normalize_local_state,
+)
 from rtlab_core.execution.live_market_runtime import BinanceMarketWebSocketRuntime
 from rtlab_core.execution.live_user_stream_runtime import BinanceUserStreamRuntime
 from rtlab_core.policy_paths import describe_policy_root_resolution
@@ -47,7 +58,7 @@ RECONCILE_TYPES = {
     "position_mismatch",
 }
 RECONCILE_SEVERITIES = {"INFO", "WARN", "BLOCK"}
-TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
+TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH"}
 
 FAIL_CLOSED_MINIMAL_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
     "execution_safety": {
@@ -114,6 +125,8 @@ FAIL_CLOSED_MINIMAL_EXECUTION_SAFETY_POLICY: dict[str, Any] = {
             "fill_reconcile_timeout_sec": 1,
             "orphan_order_warn_sec": 1,
             "orphan_order_block_sec": 1,
+            "unknown_reconciliation_soft_deadline_sec": 1,
+            "unknown_reconciliation_hard_deadline_sec": 1,
         },
         "kill_switch": {
             "enabled": True,
@@ -284,8 +297,27 @@ def _hydrate_order_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     out = copy.deepcopy(payload)
     out["raw_ack_json"] = _json_loads(out.get("raw_ack_json"), {})
     out["raw_last_status_json"] = _json_loads(out.get("raw_last_status_json"), {})
+    out["raw_last_payload_json"] = _json_loads(out.get("raw_last_payload_json"), {})
     if out.get("reduce_only") is not None:
         out["reduce_only"] = _bool(out.get("reduce_only"))
+    out["current_local_state"] = normalize_local_state(
+        out.get("current_local_state")
+        or (
+            "FILLED"
+            if str(out.get("order_status") or "").upper() == "FILLED"
+            else "CANCELED"
+            if str(out.get("order_status") or "").upper() == "CANCELED"
+            else "REJECTED"
+            if str(out.get("order_status") or "").upper() == "REJECTED"
+            else "EXPIRED_STP"
+            if str(out.get("order_status") or "").upper() == "EXPIRED_IN_MATCH"
+            else "EXPIRED"
+            if str(out.get("order_status") or "").upper() == "EXPIRED"
+            else "WORKING"
+        )
+    )
+    if out.get("terminal_at") and not is_terminal_local_state(out.get("current_local_state")):
+        out["terminal_at"] = None
     return out
 
 
@@ -295,6 +327,24 @@ def _hydrate_user_stream_event_row(payload: dict[str, Any] | None) -> dict[str, 
     out = copy.deepcopy(payload)
     out["payload_json"] = _json_loads(out.get("payload_json"), {})
     out["provenance_json"] = _json_loads(out.get("provenance_json"), {})
+    return out
+
+
+def _hydrate_live_order_event_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["raw_payload_json"] = _json_loads(out.get("raw_payload_json"), {})
+    if out.get("applied_bool") is not None:
+        out["applied_bool"] = _bool(out.get("applied_bool"))
+    return out
+
+
+def _hydrate_reconciliation_run_row(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    out = copy.deepcopy(payload)
+    out["result_summary_json"] = _json_loads(out.get("result_summary_json"), {})
     return out
 
 
@@ -399,6 +449,8 @@ def _validate_execution_safety_policy(candidate: Any) -> list[str]:
         "fill_reconcile_timeout_sec",
         "orphan_order_warn_sec",
         "orphan_order_block_sec",
+        "unknown_reconciliation_soft_deadline_sec",
+        "unknown_reconciliation_hard_deadline_sec",
     ):
         _require_number(reconciliation, key, errors=errors, path="execution.execution_safety.reconciliation")
 
@@ -811,14 +863,34 @@ class ExecutionRealityDB:
                 CREATE TABLE IF NOT EXISTS execution_orders (
                   execution_order_id TEXT PRIMARY KEY,
                   execution_intent_id TEXT NOT NULL,
+                  exchange TEXT NOT NULL DEFAULT 'binance',
+                  market_type TEXT,
+                  strategy_id TEXT,
+                  bot_id TEXT,
+                  signal_id TEXT,
                   venue_order_id TEXT,
                   client_order_id TEXT NOT NULL,
                   symbol TEXT NOT NULL,
                   family TEXT NOT NULL,
                   environment TEXT NOT NULL,
+                  requested_qty REAL,
+                  requested_quote_order_qty REAL,
+                  requested_price REAL,
+                  requested_stop_price REAL,
+                  requested_trailing_delta REAL,
+                  requested_stp_mode TEXT,
+                  requested_new_order_resp_type TEXT,
+                  order_list_id TEXT,
+                  parent_local_order_id TEXT,
+                  current_local_state TEXT,
+                  last_exchange_order_status TEXT,
+                  last_execution_type TEXT,
+                  last_reject_reason TEXT,
+                  last_expiry_reason TEXT,
                   order_status TEXT NOT NULL,
                   execution_type_last TEXT,
                   submitted_at TEXT NOT NULL,
+                  first_submitted_at TEXT,
                   acknowledged_at TEXT,
                   canceled_at TEXT,
                   expired_at TEXT,
@@ -829,13 +901,25 @@ class ExecutionRealityDB:
                   executed_qty REAL,
                   cum_quote_qty REAL,
                   avg_fill_price REAL,
+                  last_fill_qty REAL,
+                  last_fill_price REAL,
+                  commission_total REAL,
+                  commission_asset_last TEXT,
+                  working_time TEXT,
+                  transact_time_last TEXT,
+                  last_event_at TEXT,
+                  terminal_at TEXT,
+                  reconciliation_status TEXT,
+                  unresolved_reason TEXT,
                   reject_code TEXT,
                   reject_reason TEXT,
                   raw_ack_json TEXT NOT NULL DEFAULT '{}',
-                  raw_last_status_json TEXT NOT NULL DEFAULT '{}'
+                  raw_last_status_json TEXT NOT NULL DEFAULT '{}',
+                  raw_last_payload_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_execution_orders_submitted_at ON execution_orders(submitted_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_execution_orders_status ON execution_orders(order_status, family, environment);
+                CREATE INDEX IF NOT EXISTS idx_execution_orders_local_state ON execution_orders(current_local_state, family, environment, symbol);
 
                 CREATE TABLE IF NOT EXISTS execution_fills (
                   execution_fill_id TEXT PRIMARY KEY,
@@ -904,6 +988,49 @@ class ExecutionRealityDB:
                 CREATE INDEX IF NOT EXISTS idx_execution_user_stream_events_lookup
                   ON execution_user_stream_events(family, environment, event_name, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS live_order_events (
+                  event_id TEXT PRIMARY KEY,
+                  execution_order_id TEXT NOT NULL,
+                  source_type TEXT NOT NULL,
+                  source_seq INTEGER NOT NULL,
+                  exchange_execution_id TEXT,
+                  exchange_order_id TEXT,
+                  client_order_id TEXT,
+                  event_time_exchange TEXT,
+                  event_time_local TEXT NOT NULL,
+                  local_state_before TEXT,
+                  local_state_after TEXT NOT NULL,
+                  exchange_order_status TEXT,
+                  execution_type TEXT,
+                  reject_reason TEXT,
+                  expiry_reason TEXT,
+                  delta_filled_qty REAL,
+                  cumulative_filled_qty REAL,
+                  cumulative_quote_qty REAL,
+                  price REAL,
+                  raw_payload_json TEXT NOT NULL DEFAULT '{}',
+                  dedup_key TEXT NOT NULL,
+                  applied_bool INTEGER NOT NULL DEFAULT 1,
+                  notes TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_live_order_events_order_time
+                  ON live_order_events(execution_order_id, event_time_local ASC, source_seq ASC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_live_order_events_dedup ON live_order_events(dedup_key);
+
+                CREATE TABLE IF NOT EXISTS live_order_reconciliation_runs (
+                  reconciliation_run_id TEXT PRIMARY KEY,
+                  started_at TEXT NOT NULL,
+                  finished_at TEXT,
+                  trigger TEXT NOT NULL,
+                  family TEXT,
+                  environment TEXT,
+                  symbol TEXT,
+                  bot_id TEXT,
+                  result_summary_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_live_order_reconciliation_runs_started_at
+                  ON live_order_reconciliation_runs(started_at DESC);
+
                 CREATE TABLE IF NOT EXISTS kill_switch_events (
                   kill_switch_event_id TEXT PRIMARY KEY,
                   created_at TEXT NOT NULL,
@@ -928,6 +1055,40 @@ class ExecutionRealityDB:
             self._ensure_column(conn, "execution_fills", "provisional", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "execution_fills", "unresolved_components_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column(conn, "kill_switch_events", "cleared_reason", "TEXT")
+            self._ensure_column(conn, "execution_orders", "exchange", "TEXT NOT NULL DEFAULT 'binance'")
+            self._ensure_column(conn, "execution_orders", "market_type", "TEXT")
+            self._ensure_column(conn, "execution_orders", "strategy_id", "TEXT")
+            self._ensure_column(conn, "execution_orders", "bot_id", "TEXT")
+            self._ensure_column(conn, "execution_orders", "signal_id", "TEXT")
+            self._ensure_column(conn, "execution_orders", "requested_qty", "REAL")
+            self._ensure_column(conn, "execution_orders", "requested_quote_order_qty", "REAL")
+            self._ensure_column(conn, "execution_orders", "requested_price", "REAL")
+            self._ensure_column(conn, "execution_orders", "requested_stop_price", "REAL")
+            self._ensure_column(conn, "execution_orders", "requested_trailing_delta", "REAL")
+            self._ensure_column(conn, "execution_orders", "requested_stp_mode", "TEXT")
+            self._ensure_column(conn, "execution_orders", "requested_new_order_resp_type", "TEXT")
+            self._ensure_column(conn, "execution_orders", "order_list_id", "TEXT")
+            self._ensure_column(conn, "execution_orders", "parent_local_order_id", "TEXT")
+            self._ensure_column(conn, "execution_orders", "current_local_state", "TEXT")
+            self._ensure_column(conn, "execution_orders", "last_exchange_order_status", "TEXT")
+            self._ensure_column(conn, "execution_orders", "last_execution_type", "TEXT")
+            self._ensure_column(conn, "execution_orders", "last_reject_reason", "TEXT")
+            self._ensure_column(conn, "execution_orders", "last_expiry_reason", "TEXT")
+            self._ensure_column(conn, "execution_orders", "first_submitted_at", "TEXT")
+            self._ensure_column(conn, "execution_orders", "last_fill_qty", "REAL")
+            self._ensure_column(conn, "execution_orders", "last_fill_price", "REAL")
+            self._ensure_column(conn, "execution_orders", "commission_total", "REAL")
+            self._ensure_column(conn, "execution_orders", "commission_asset_last", "TEXT")
+            self._ensure_column(conn, "execution_orders", "working_time", "TEXT")
+            self._ensure_column(conn, "execution_orders", "transact_time_last", "TEXT")
+            self._ensure_column(conn, "execution_orders", "last_event_at", "TEXT")
+            self._ensure_column(conn, "execution_orders", "terminal_at", "TEXT")
+            self._ensure_column(conn, "execution_orders", "reconciliation_status", "TEXT")
+            self._ensure_column(conn, "execution_orders", "unresolved_reason", "TEXT")
+            self._ensure_column(conn, "execution_orders", "raw_last_payload_json", "TEXT NOT NULL DEFAULT '{}'")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_execution_orders_local_state ON execution_orders(current_local_state, family, environment, symbol)"
+            )
 
     def table_names(self) -> list[str]:
         with self._connect() as conn:
@@ -943,6 +1104,8 @@ class ExecutionRealityDB:
             "execution_fills",
             "execution_reconcile_events",
             "execution_user_stream_events",
+            "live_order_events",
+            "live_order_reconciliation_runs",
             "kill_switch_events",
         )
         with self._connect() as conn:
@@ -1190,14 +1353,51 @@ class ExecutionRealityDB:
         row = {
             "execution_order_id": str(payload.get("execution_order_id") or uuid4()),
             "execution_intent_id": str(payload.get("execution_intent_id") or ""),
+            "exchange": str(payload.get("exchange") or "binance"),
+            "market_type": payload.get("market_type"),
+            "strategy_id": payload.get("strategy_id"),
+            "bot_id": payload.get("bot_id"),
+            "signal_id": payload.get("signal_id"),
             "venue_order_id": payload.get("venue_order_id"),
             "client_order_id": str(payload.get("client_order_id") or uuid4().hex[:24]),
             "symbol": str(payload.get("symbol") or ""),
             "family": str(payload.get("family") or ""),
             "environment": str(payload.get("environment") or ""),
+            "requested_qty": payload.get("requested_qty"),
+            "requested_quote_order_qty": payload.get("requested_quote_order_qty"),
+            "requested_price": payload.get("requested_price"),
+            "requested_stop_price": payload.get("requested_stop_price"),
+            "requested_trailing_delta": payload.get("requested_trailing_delta"),
+            "requested_stp_mode": payload.get("requested_stp_mode"),
+            "requested_new_order_resp_type": payload.get("requested_new_order_resp_type"),
+            "order_list_id": payload.get("order_list_id"),
+            "parent_local_order_id": payload.get("parent_local_order_id"),
+            "current_local_state": normalize_local_state(
+                payload.get("current_local_state")
+                or (
+                    "FILLED"
+                    if str(payload.get("order_status") or "").upper() == "FILLED"
+                    else "CANCELED"
+                    if str(payload.get("order_status") or "").upper() == "CANCELED"
+                    else "REJECTED"
+                    if str(payload.get("order_status") or "").upper() == "REJECTED"
+                    else "EXPIRED_STP"
+                    if str(payload.get("order_status") or "").upper() == "EXPIRED_IN_MATCH"
+                    else "EXPIRED"
+                    if str(payload.get("order_status") or "").upper() == "EXPIRED"
+                    else "WORKING"
+                    if str(payload.get("order_status") or "").upper() in {"NEW", "PARTIALLY_FILLED"}
+                    else "INTENT_CREATED"
+                )
+            ),
+            "last_exchange_order_status": payload.get("last_exchange_order_status"),
+            "last_execution_type": payload.get("last_execution_type"),
+            "last_reject_reason": payload.get("last_reject_reason"),
+            "last_expiry_reason": payload.get("last_expiry_reason"),
             "order_status": str(payload.get("order_status") or "CREATED"),
             "execution_type_last": payload.get("execution_type_last"),
             "submitted_at": str(payload.get("submitted_at") or utc_now_iso()),
+            "first_submitted_at": payload.get("first_submitted_at") or payload.get("submitted_at") or utc_now_iso(),
             "acknowledged_at": payload.get("acknowledged_at"),
             "canceled_at": payload.get("canceled_at"),
             "expired_at": payload.get("expired_at"),
@@ -1208,24 +1408,47 @@ class ExecutionRealityDB:
             "executed_qty": payload.get("executed_qty"),
             "cum_quote_qty": payload.get("cum_quote_qty"),
             "avg_fill_price": payload.get("avg_fill_price"),
+            "last_fill_qty": payload.get("last_fill_qty"),
+            "last_fill_price": payload.get("last_fill_price"),
+            "commission_total": payload.get("commission_total"),
+            "commission_asset_last": payload.get("commission_asset_last"),
+            "working_time": payload.get("working_time"),
+            "transact_time_last": payload.get("transact_time_last"),
+            "last_event_at": payload.get("last_event_at") or payload.get("acknowledged_at") or payload.get("submitted_at") or utc_now_iso(),
+            "terminal_at": payload.get("terminal_at"),
+            "reconciliation_status": payload.get("reconciliation_status") or "PENDING",
+            "unresolved_reason": payload.get("unresolved_reason"),
             "reject_code": payload.get("reject_code"),
             "reject_reason": payload.get("reject_reason"),
             "raw_ack_json": _json_dumps(payload.get("raw_ack_json") or {}),
             "raw_last_status_json": _json_dumps(payload.get("raw_last_status_json") or {}),
+            "raw_last_payload_json": _json_dumps(payload.get("raw_last_payload_json") or {}),
         }
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO execution_orders (
-                  execution_order_id, execution_intent_id, venue_order_id, client_order_id, symbol, family,
-                  environment, order_status, execution_type_last, submitted_at, acknowledged_at, canceled_at,
+                  execution_order_id, execution_intent_id, exchange, market_type, strategy_id, bot_id, signal_id,
+                  venue_order_id, client_order_id, symbol, family, environment, requested_qty, requested_quote_order_qty,
+                  requested_price, requested_stop_price, requested_trailing_delta, requested_stp_mode,
+                  requested_new_order_resp_type, order_list_id, parent_local_order_id, current_local_state,
+                  last_exchange_order_status, last_execution_type, last_reject_reason, last_expiry_reason,
+                  order_status, execution_type_last, submitted_at, first_submitted_at, acknowledged_at, canceled_at,
                   expired_at, reduce_only, tif, price, orig_qty, executed_qty, cum_quote_qty, avg_fill_price,
-                  reject_code, reject_reason, raw_ack_json, raw_last_status_json
+                  last_fill_qty, last_fill_price, commission_total, commission_asset_last, working_time,
+                  transact_time_last, last_event_at, terminal_at, reconciliation_status, unresolved_reason,
+                  reject_code, reject_reason, raw_ack_json, raw_last_status_json, raw_last_payload_json
                 ) VALUES (
-                  :execution_order_id, :execution_intent_id, :venue_order_id, :client_order_id, :symbol, :family,
-                  :environment, :order_status, :execution_type_last, :submitted_at, :acknowledged_at, :canceled_at,
+                  :execution_order_id, :execution_intent_id, :exchange, :market_type, :strategy_id, :bot_id, :signal_id,
+                  :venue_order_id, :client_order_id, :symbol, :family, :environment, :requested_qty, :requested_quote_order_qty,
+                  :requested_price, :requested_stop_price, :requested_trailing_delta, :requested_stp_mode,
+                  :requested_new_order_resp_type, :order_list_id, :parent_local_order_id, :current_local_state,
+                  :last_exchange_order_status, :last_execution_type, :last_reject_reason, :last_expiry_reason,
+                  :order_status, :execution_type_last, :submitted_at, :first_submitted_at, :acknowledged_at, :canceled_at,
                   :expired_at, :reduce_only, :tif, :price, :orig_qty, :executed_qty, :cum_quote_qty, :avg_fill_price,
-                  :reject_code, :reject_reason, :raw_ack_json, :raw_last_status_json
+                  :last_fill_qty, :last_fill_price, :commission_total, :commission_asset_last, :working_time,
+                  :transact_time_last, :last_event_at, :terminal_at, :reconciliation_status, :unresolved_reason,
+                  :reject_code, :reject_reason, :raw_ack_json, :raw_last_status_json, :raw_last_payload_json
                 )
                 """,
                 row,
@@ -1235,6 +1458,144 @@ class ExecutionRealityDB:
                 (row["execution_order_id"],),
             ).fetchone()
         return _hydrate_order_row(_row_to_dict(stored) or row) or row
+
+    def update_order_fields(self, execution_order_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        if not updates:
+            return self.order_by_id(execution_order_id)
+        with self._connect() as column_conn:
+            columns = self._table_columns(column_conn, "execution_orders")
+        assignments: list[str] = []
+        params: list[Any] = []
+        for key, value in updates.items():
+            if key not in columns:
+                continue
+            assignments.append(f"{key} = ?")
+            if key in {"raw_ack_json", "raw_last_status_json", "raw_last_payload_json"}:
+                params.append(_json_dumps(value or {}))
+            elif key == "reduce_only":
+                params.append(_db_bool(value))
+            else:
+                params.append(value)
+        if not assignments:
+            return self.order_by_id(execution_order_id)
+        params.append(str(execution_order_id))
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE execution_orders SET {', '.join(assignments)} WHERE execution_order_id = ?",
+                tuple(params),
+            )
+            stored = conn.execute(
+                "SELECT * FROM execution_orders WHERE execution_order_id = ?",
+                (str(execution_order_id),),
+            ).fetchone()
+        return _hydrate_order_row(_row_to_dict(stored))
+
+    def insert_live_order_event(self, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        existing = None
+        dedup_key = str(payload.get("dedup_key") or "").strip()
+        if dedup_key:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM live_order_events WHERE dedup_key = ?",
+                    (dedup_key,),
+                ).fetchone()
+            existing = _hydrate_live_order_event_row(_row_to_dict(row))
+        if existing is not None:
+            return existing, True
+        order_id = str(payload.get("execution_order_id") or "")
+        with self._connect() as conn:
+            seq_row = conn.execute(
+                "SELECT COALESCE(MAX(source_seq), 0) AS max_seq FROM live_order_events WHERE execution_order_id = ?",
+                (order_id,),
+            ).fetchone()
+            row = {
+                "event_id": str(payload.get("event_id") or uuid4()),
+                "execution_order_id": order_id,
+                "source_type": str(payload.get("source_type") or "MANUAL"),
+                "source_seq": int(payload.get("source_seq") or ((seq_row["max_seq"] if seq_row else 0) + 1)),
+                "exchange_execution_id": payload.get("exchange_execution_id"),
+                "exchange_order_id": payload.get("exchange_order_id"),
+                "client_order_id": payload.get("client_order_id"),
+                "event_time_exchange": payload.get("event_time_exchange"),
+                "event_time_local": str(payload.get("event_time_local") or utc_now_iso()),
+                "local_state_before": payload.get("local_state_before"),
+                "local_state_after": normalize_local_state(payload.get("local_state_after") or "MANUAL_REVIEW_REQUIRED"),
+                "exchange_order_status": payload.get("exchange_order_status"),
+                "execution_type": payload.get("execution_type"),
+                "reject_reason": payload.get("reject_reason"),
+                "expiry_reason": payload.get("expiry_reason"),
+                "delta_filled_qty": payload.get("delta_filled_qty"),
+                "cumulative_filled_qty": payload.get("cumulative_filled_qty"),
+                "cumulative_quote_qty": payload.get("cumulative_quote_qty"),
+                "price": payload.get("price"),
+                "raw_payload_json": _json_dumps(payload.get("raw_payload_json") or {}),
+                "dedup_key": dedup_key or str(uuid4()),
+                "applied_bool": _db_bool(payload.get("applied_bool", True)) or 0,
+                "notes": payload.get("notes"),
+            }
+            conn.execute(
+                """
+                INSERT INTO live_order_events (
+                  event_id, execution_order_id, source_type, source_seq, exchange_execution_id, exchange_order_id,
+                  client_order_id, event_time_exchange, event_time_local, local_state_before, local_state_after,
+                  exchange_order_status, execution_type, reject_reason, expiry_reason, delta_filled_qty,
+                  cumulative_filled_qty, cumulative_quote_qty, price, raw_payload_json, dedup_key, applied_bool, notes
+                ) VALUES (
+                  :event_id, :execution_order_id, :source_type, :source_seq, :exchange_execution_id, :exchange_order_id,
+                  :client_order_id, :event_time_exchange, :event_time_local, :local_state_before, :local_state_after,
+                  :exchange_order_status, :execution_type, :reject_reason, :expiry_reason, :delta_filled_qty,
+                  :cumulative_filled_qty, :cumulative_quote_qty, :price, :raw_payload_json, :dedup_key, :applied_bool, :notes
+                )
+                """,
+                row,
+            )
+            stored = conn.execute(
+                "SELECT * FROM live_order_events WHERE event_id = ?",
+                (row["event_id"],),
+            ).fetchone()
+        return _hydrate_live_order_event_row(_row_to_dict(stored) or row) or row, False
+
+    def live_order_events_for_order(self, execution_order_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM live_order_events
+                WHERE execution_order_id = ?
+                ORDER BY event_time_local ASC, source_seq ASC, event_id ASC
+                """,
+                (str(execution_order_id),),
+            ).fetchall()
+        return [_hydrate_live_order_event_row(_row_to_dict(row)) or {} for row in rows]
+
+    def insert_live_order_reconciliation_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "reconciliation_run_id": str(payload.get("reconciliation_run_id") or uuid4()),
+            "started_at": str(payload.get("started_at") or utc_now_iso()),
+            "finished_at": payload.get("finished_at"),
+            "trigger": str(payload.get("trigger") or "MANUAL"),
+            "family": payload.get("family"),
+            "environment": payload.get("environment"),
+            "symbol": payload.get("symbol"),
+            "bot_id": payload.get("bot_id"),
+            "result_summary_json": _json_dumps(payload.get("result_summary_json") or {}),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_order_reconciliation_runs (
+                  reconciliation_run_id, started_at, finished_at, trigger, family, environment, symbol, bot_id, result_summary_json
+                ) VALUES (
+                  :reconciliation_run_id, :started_at, :finished_at, :trigger, :family, :environment, :symbol, :bot_id, :result_summary_json
+                )
+                """,
+                row,
+            )
+            stored = conn.execute(
+                "SELECT * FROM live_order_reconciliation_runs WHERE reconciliation_run_id = ?",
+                (row["reconciliation_run_id"],),
+            ).fetchone()
+        return _hydrate_reconciliation_run_row(_row_to_dict(stored) or row) or row
 
     def insert_fill(self, payload: dict[str, Any]) -> dict[str, Any]:
         venue_trade_id = payload.get("venue_trade_id")
@@ -3028,7 +3389,7 @@ class ExecutionRealityService:
             "side": str(preview.get("side") or "").upper(),
             "type": order_type,
             "newClientOrderId": str(client_order_id),
-            "newOrderRespType": "ACK",
+            "newOrderRespType": "FULL" if family == "spot" else "ACK",
         }
         local_blocking: list[str] = []
         if order_type == "LIMIT":
@@ -3068,6 +3429,7 @@ class ExecutionRealityService:
         preview: dict[str, Any],
         ack_payload: dict[str, Any] | None,
         submitted_at: str,
+        intent: dict[str, Any] | None = None,
         acknowledged_at: str | None = None,
         existing: dict[str, Any] | None = None,
         canceled: bool = False,
@@ -3102,9 +3464,26 @@ class ExecutionRealityService:
             if canceled or order_status == "CANCELED"
             else current.get("canceled_at")
         )
+        last_execution_type = str(payload.get("executionType") or payload.get("x") or current.get("last_execution_type") or current.get("execution_type_last") or order_status)
+        resolved_local_state = normalize_local_state(
+            current.get("current_local_state")
+            or map_exchange_event_to_local_state(
+                current_local_state=current.get("current_local_state"),
+                source_type="REST_CREATE_RESPONSE",
+                exchange_order_status=order_status,
+                execution_type=last_execution_type,
+                cumulative_filled_qty=executed_qty,
+                orig_qty=_first_number(payload.get("origQty"), payload.get("q"), preview.get("quantity"), current.get("orig_qty")),
+            )
+        )
         return {
             "execution_order_id": str(current.get("execution_order_id") or execution_order_id),
             "execution_intent_id": execution_intent_id,
+            "exchange": str(current.get("exchange") or "binance"),
+            "market_type": str(current.get("market_type") or family),
+            "strategy_id": (intent or {}).get("strategy_id") if isinstance(intent, dict) else current.get("strategy_id"),
+            "bot_id": (intent or {}).get("bot_id") if isinstance(intent, dict) else current.get("bot_id"),
+            "signal_id": (intent or {}).get("signal_id") if isinstance(intent, dict) else current.get("signal_id"),
             "venue_order_id": str(payload.get("orderId") or payload.get("i") or current.get("venue_order_id") or "") or None,
             "client_order_id": str(
                 payload.get("clientOrderId")
@@ -3117,12 +3496,27 @@ class ExecutionRealityService:
             "symbol": _canonical_symbol(payload.get("symbol") or preview.get("symbol") or current.get("symbol")),
             "family": family,
             "environment": environment,
+            "requested_qty": _first_number(preview.get("quantity"), current.get("requested_qty"), (intent or {}).get("quantity")),
+            "requested_quote_order_qty": _first_number(preview.get("quote_quantity"), current.get("requested_quote_order_qty"), (intent or {}).get("quote_quantity")),
+            "requested_price": _first_number(preview.get("limit_price"), current.get("requested_price"), (intent or {}).get("limit_price")),
+            "requested_stop_price": _first_number(preview.get("stop_price"), current.get("requested_stop_price"), (intent or {}).get("stop_price")),
+            "requested_trailing_delta": _first_number(preview.get("trailing_delta"), current.get("requested_trailing_delta")),
+            "requested_stp_mode": preview.get("stp_mode") or current.get("requested_stp_mode"),
+            "requested_new_order_resp_type": payload.get("newOrderRespType") or current.get("requested_new_order_resp_type") or "FULL",
+            "order_list_id": payload.get("orderListId") or payload.get("g") or current.get("order_list_id"),
+            "parent_local_order_id": current.get("parent_local_order_id"),
+            "current_local_state": resolved_local_state,
+            "last_exchange_order_status": order_status,
+            "last_execution_type": last_execution_type,
+            "last_reject_reason": payload.get("msg") or payload.get("r") or current.get("last_reject_reason"),
+            "last_expiry_reason": current.get("last_expiry_reason"),
             "order_status": order_status,
-            "execution_type_last": str(payload.get("executionType") or payload.get("x") or current.get("execution_type_last") or order_status),
+            "execution_type_last": last_execution_type,
             "submitted_at": str(current.get("submitted_at") or submitted_at),
+            "first_submitted_at": str(current.get("first_submitted_at") or current.get("submitted_at") or submitted_at),
             "acknowledged_at": ack_time,
             "canceled_at": canceled_at,
-            "expired_at": current.get("expired_at"),
+            "expired_at": ack_time if order_status in {"EXPIRED", "EXPIRED_IN_MATCH"} else current.get("expired_at"),
             "reduce_only": current.get("reduce_only") if current.get("reduce_only") is not None else preview.get("reduce_only"),
             "tif": str(payload.get("timeInForce") or payload.get("f") or preview.get("time_in_force") or current.get("tif") or "") or None,
             "price": _first_number(payload.get("price"), payload.get("p"), preview.get("limit_price"), current.get("price")),
@@ -3130,10 +3524,21 @@ class ExecutionRealityService:
             "executed_qty": executed_qty,
             "cum_quote_qty": cum_quote_qty,
             "avg_fill_price": avg_fill_price,
+            "last_fill_qty": current.get("last_fill_qty"),
+            "last_fill_price": current.get("last_fill_price"),
+            "commission_total": _first_number(current.get("commission_total"), 0.0) or 0.0,
+            "commission_asset_last": current.get("commission_asset_last"),
+            "working_time": _ms_to_iso(payload.get("workingTime") or payload.get("W")) or current.get("working_time"),
+            "transact_time_last": _ms_to_iso(payload.get("transactTime") or payload.get("T") or payload.get("updateTime") or payload.get("O")) or current.get("transact_time_last") or ack_time,
+            "last_event_at": _ms_to_iso(payload.get("E") or payload.get("T") or payload.get("transactTime") or payload.get("updateTime")) or ack_time,
+            "terminal_at": ack_time if is_terminal_local_state(resolved_local_state) else current.get("terminal_at"),
+            "reconciliation_status": current.get("reconciliation_status") or "PENDING",
+            "unresolved_reason": current.get("unresolved_reason"),
             "reject_code": payload.get("code") or payload.get("r") or current.get("reject_code"),
             "reject_reason": payload.get("msg") or payload.get("r") or current.get("reject_reason"),
             "raw_ack_json": payload if payload else current.get("raw_ack_json") or {},
             "raw_last_status_json": raw_last,
+            "raw_last_payload_json": payload if payload else current.get("raw_last_payload_json") or raw_last,
         }
 
     def _paper_ack_payload(self, preview: dict[str, Any], client_order_id: str, submitted_at: str) -> dict[str, Any]:
@@ -3151,6 +3556,318 @@ class ExecutionRealityService:
             "transactTime": int(_parse_ts(submitted_at).timestamp() * 1000) if _parse_ts(submitted_at) else int(time.time() * 1000),
             "source": "paper_local",
         }
+
+    def _reconciliation_deadlines(self) -> dict[str, float]:
+        policy = self._reconciliation_policy()
+        return {
+            "soft_deadline_sec": float(policy.get("unknown_reconciliation_soft_deadline_sec") or 5.0),
+            "hard_deadline_sec": float(policy.get("unknown_reconciliation_hard_deadline_sec") or 30.0),
+            "ack_timeout_sec": float(policy.get("order_ack_timeout_sec") or 8.0),
+            "fill_timeout_sec": float(policy.get("fill_reconcile_timeout_sec") or 20.0),
+        }
+
+    def _event_time_iso(self, payload: dict[str, Any] | None) -> str | None:
+        source = payload if isinstance(payload, dict) else {}
+        return (
+            _ms_to_iso(source.get("E"))
+            or _ms_to_iso(source.get("T"))
+            or _ms_to_iso(source.get("transactTime"))
+            or _ms_to_iso(source.get("updateTime"))
+            or _ms_to_iso(source.get("O"))
+            or _ms_to_iso(source.get("workingTime"))
+        )
+
+    def _event_execution_id(self, payload: dict[str, Any] | None) -> str | None:
+        source = payload if isinstance(payload, dict) else {}
+        return str(source.get("executionId") or source.get("I") or "").strip() or None
+
+    def _order_event_dedup_key(
+        self,
+        *,
+        order: dict[str, Any],
+        source_type: str,
+        payload: dict[str, Any] | None = None,
+        forced_state: str | None = None,
+    ) -> str:
+        source = str(source_type or "").strip().upper()
+        raw = payload if isinstance(payload, dict) else {}
+        if source == "WS_EXECUTION_REPORT":
+            return execution_report_dedup_key(
+                symbol=raw.get("s") or order.get("symbol"),
+                exchange_order_id=raw.get("i") or raw.get("orderId") or order.get("venue_order_id"),
+                exchange_execution_id=self._event_execution_id(raw),
+                client_order_id=raw.get("c") or raw.get("clientOrderId") or order.get("client_order_id"),
+                execution_type=raw.get("x") or raw.get("executionType"),
+                exchange_order_status=raw.get("X") or raw.get("status"),
+                transaction_time=raw.get("T") or raw.get("transactTime") or raw.get("E"),
+                cumulative_filled_qty=raw.get("z") or raw.get("executedQty") or order.get("executed_qty"),
+            )
+        if source == "WS_LIST_STATUS":
+            return ":".join(
+                [
+                    "ws_list_status",
+                    str(raw.get("s") or order.get("symbol") or "").strip().upper() or "UNKNOWN",
+                    str(raw.get("g") or raw.get("orderListId") or order.get("order_list_id") or "").strip() or "0",
+                    str(raw.get("l") or raw.get("listStatusType") or "").strip().upper() or "UNKNOWN",
+                    str(raw.get("E") or raw.get("transactionTime") or "").strip() or "0",
+                ]
+            )
+        if source == "REST_CREATE_RESPONSE":
+            return ":".join(
+                [
+                    "rest_create",
+                    str(order.get("execution_order_id") or ""),
+                    str(raw.get("orderId") or raw.get("i") or "").strip() or "0",
+                    str(raw.get("transactTime") or raw.get("updateTime") or "").strip() or "0",
+                    str(raw.get("status") or raw.get("X") or "").strip().upper() or "UNKNOWN",
+                ]
+            )
+        if source == "REST_CANCEL_RESPONSE":
+            return ":".join(
+                [
+                    "rest_cancel",
+                    str(order.get("execution_order_id") or ""),
+                    str(raw.get("orderId") or raw.get("i") or order.get("venue_order_id") or "").strip() or "0",
+                    str(raw.get("transactTime") or raw.get("updateTime") or "").strip() or "0",
+                    str(raw.get("status") or raw.get("X") or "").strip().upper() or "UNKNOWN",
+                ]
+            )
+        if source in {"REST_QUERY_ORDER", "REST_OPEN_ORDERS_SNAPSHOT", "RECOVERY"}:
+            return ":".join(
+                [
+                    source.lower(),
+                    str(order.get("execution_order_id") or ""),
+                    str(raw.get("orderId") or raw.get("i") or order.get("venue_order_id") or "").strip() or "0",
+                    str(raw.get("updateTime") or raw.get("time") or raw.get("transactTime") or raw.get("E") or "").strip() or "0",
+                    str(raw.get("status") or raw.get("X") or "").strip().upper() or "UNKNOWN",
+                    str(raw.get("executedQty") or raw.get("z") or order.get("executed_qty") or 0),
+                ]
+            )
+        if source == "LOCAL_INTENT":
+            return ":".join(
+                [
+                    "local_intent",
+                    str(order.get("execution_order_id") or ""),
+                    str(forced_state or order.get("current_local_state") or "INTENT_CREATED"),
+                    str(order.get("submitted_at") or order.get("first_submitted_at") or utc_now_iso()),
+                ]
+            )
+        return ":".join(
+            [
+                "manual",
+                str(order.get("execution_order_id") or ""),
+                str(source or "UNKNOWN"),
+                str(forced_state or raw.get("status") or raw.get("X") or utc_now_iso()),
+            ]
+        )
+
+    def _apply_order_event(
+        self,
+        *,
+        order: dict[str, Any],
+        source_type: str,
+        payload: dict[str, Any] | None = None,
+        forced_local_state: str | None = None,
+        notes: str | None = None,
+        unresolved_reason: str | None = None,
+        reconciliation_status: str | None = None,
+        event_time_local: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        raw = copy.deepcopy(payload if isinstance(payload, dict) else {})
+        before = copy.deepcopy(order)
+        before_state = normalize_local_state(before.get("current_local_state") or "INTENT_CREATED")
+        exchange_status = str(
+            raw.get("status")
+            or raw.get("X")
+            or before.get("last_exchange_order_status")
+            or before.get("order_status")
+            or ""
+        ).upper() or None
+        execution_type = str(
+            raw.get("executionType")
+            or raw.get("x")
+            or before.get("last_execution_type")
+            or before.get("execution_type_last")
+            or ""
+        ).upper() or None
+        cumulative_filled_qty = (
+            _first_number(raw.get("executedQty"), raw.get("z"), before.get("executed_qty"))
+            or 0.0
+        )
+        cumulative_quote_qty = (
+            _first_number(raw.get("cummulativeQuoteQty"), raw.get("cumQuote"), raw.get("Z"), raw.get("cumQuoteQty"), before.get("cum_quote_qty"))
+            or 0.0
+        )
+        orig_qty = _first_number(raw.get("origQty"), raw.get("q"), before.get("orig_qty")) or 0.0
+        last_fill_price = _first_number(raw.get("lastExecutedPrice"), raw.get("L"), raw.get("price"), raw.get("p"))
+        next_state = normalize_local_state(
+            forced_local_state
+            or map_exchange_event_to_local_state(
+                current_local_state=before_state,
+                source_type=source_type,
+                exchange_order_status=exchange_status,
+                execution_type=execution_type,
+                cumulative_filled_qty=cumulative_filled_qty,
+                orig_qty=orig_qty,
+            )
+        )
+        event_exchange_time = self._event_time_iso(raw)
+        local_event_time = str(event_time_local or event_exchange_time or utc_now_iso())
+        delta_filled_qty = max(0.0, cumulative_filled_qty - _safe_float(before.get("executed_qty"), 0.0))
+        dedup_key = self._order_event_dedup_key(
+            order=before,
+            source_type=source_type,
+            payload=raw,
+            forced_state=forced_local_state,
+        )
+        event_row, duplicated = self.db.insert_live_order_event(
+            {
+                "execution_order_id": before.get("execution_order_id"),
+                "source_type": source_type,
+                "exchange_execution_id": self._event_execution_id(raw),
+                "exchange_order_id": raw.get("orderId") or raw.get("i") or before.get("venue_order_id"),
+                "client_order_id": raw.get("clientOrderId") or raw.get("c") or raw.get("origClientOrderId") or before.get("client_order_id"),
+                "event_time_exchange": event_exchange_time,
+                "event_time_local": local_event_time,
+                "local_state_before": before_state,
+                "local_state_after": next_state,
+                "exchange_order_status": exchange_status,
+                "execution_type": execution_type,
+                "reject_reason": raw.get("msg") or raw.get("r") or before.get("last_reject_reason"),
+                "expiry_reason": raw.get("expiryReason") or before.get("last_expiry_reason"),
+                "delta_filled_qty": delta_filled_qty,
+                "cumulative_filled_qty": cumulative_filled_qty,
+                "cumulative_quote_qty": cumulative_quote_qty,
+                "price": last_fill_price or _first_number(raw.get("price"), raw.get("p"), before.get("price")),
+                "raw_payload_json": raw,
+                "dedup_key": dedup_key,
+                "applied_bool": True,
+                "notes": notes,
+            }
+        )
+        if duplicated:
+            return before, event_row, True
+        avg_fill_price = _first_number(raw.get("avgPrice"), raw.get("ap"), before.get("avg_fill_price"))
+        if avg_fill_price is None and cumulative_filled_qty > 0.0 and cumulative_quote_qty > 0.0:
+            avg_fill_price = cumulative_quote_qty / cumulative_filled_qty
+        updates = {
+            "venue_order_id": raw.get("orderId") or raw.get("i") or before.get("venue_order_id"),
+            "client_order_id": raw.get("clientOrderId") or raw.get("c") or raw.get("origClientOrderId") or before.get("client_order_id"),
+            "order_list_id": raw.get("orderListId") or raw.get("g") or before.get("order_list_id"),
+            "current_local_state": next_state,
+            "last_exchange_order_status": exchange_status or before.get("last_exchange_order_status") or before.get("order_status"),
+            "last_execution_type": execution_type or before.get("last_execution_type") or before.get("execution_type_last"),
+            "order_status": exchange_status or before.get("order_status"),
+            "execution_type_last": execution_type or before.get("execution_type_last"),
+            "executed_qty": cumulative_filled_qty,
+            "cum_quote_qty": cumulative_quote_qty,
+            "avg_fill_price": avg_fill_price,
+            "last_fill_qty": delta_filled_qty if delta_filled_qty > 0.0 else before.get("last_fill_qty"),
+            "last_fill_price": last_fill_price or before.get("last_fill_price"),
+            "last_reject_reason": raw.get("msg") or raw.get("r") or before.get("last_reject_reason"),
+            "last_expiry_reason": raw.get("expiryReason") or before.get("last_expiry_reason"),
+            "working_time": self._event_time_iso({"workingTime": raw.get("workingTime") or raw.get("W")}) or before.get("working_time"),
+            "transact_time_last": event_exchange_time or before.get("transact_time_last"),
+            "last_event_at": local_event_time,
+            "acknowledged_at": before.get("acknowledged_at") or local_event_time,
+            "expired_at": local_event_time if next_state in {"EXPIRED", "EXPIRED_STP"} else before.get("expired_at"),
+            "canceled_at": local_event_time if next_state == "CANCELED" else before.get("canceled_at"),
+            "terminal_at": local_event_time if is_terminal_local_state(next_state) else None,
+            "reconciliation_status": reconciliation_status
+            or ("UNRESOLVED" if next_state in AMBIGUOUS_LOCAL_ORDER_STATES else "RESOLVED"),
+            "unresolved_reason": unresolved_reason if next_state in AMBIGUOUS_LOCAL_ORDER_STATES else None,
+            "raw_last_status_json": {
+                "status": exchange_status or before.get("order_status"),
+                "executionType": execution_type,
+                "symbol": before.get("symbol"),
+            },
+            "raw_last_payload_json": raw or before.get("raw_last_payload_json"),
+        }
+        updated = self.db.update_order_fields(str(before.get("execution_order_id")), updates) or before
+        return updated, event_row, False
+
+    def _block_new_submit_for_unresolved_orders(
+        self,
+        *,
+        family: str,
+        environment: str,
+        bot_id: str | None,
+        symbol: str,
+    ) -> dict[str, Any]:
+        if _normalize_environment(environment) != "live":
+            return {"blocking_reasons": [], "warnings": [], "items": []}
+        deadlines = self._reconciliation_deadlines()
+        items: list[dict[str, Any]] = []
+        for row in self.db.list_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=200,
+            offset=0,
+        ):
+            state = normalize_local_state(row.get("current_local_state"))
+            if state not in BLOCKING_LOCAL_ORDER_STATES:
+                continue
+            last_event = _parse_ts(row.get("last_event_at")) or _parse_ts(row.get("submitted_at")) or _utc_now()
+            age_sec = max(0.0, (_utc_now() - last_event).total_seconds())
+            items.append(
+                {
+                    "execution_order_id": row.get("execution_order_id"),
+                    "current_local_state": state,
+                    "symbol": row.get("symbol"),
+                    "bot_id": row.get("bot_id"),
+                    "age_sec": round(age_sec, 4),
+                    "unresolved_reason": row.get("unresolved_reason"),
+                }
+            )
+        blocking = [
+            "unresolved_live_order_same_bot_symbol"
+            for item in items
+            if item["age_sec"] >= deadlines["hard_deadline_sec"] or item["current_local_state"] in {"UNKNOWN_PENDING_RECONCILIATION", "MANUAL_REVIEW_REQUIRED"}
+        ]
+        warnings = [
+            "live_order_reconciliation_pending_same_bot_symbol"
+            for item in items
+            if item["age_sec"] >= deadlines["soft_deadline_sec"]
+        ]
+        return {
+            "blocking_reasons": list(dict.fromkeys(blocking)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "items": items,
+            "soft_deadline_sec": deadlines["soft_deadline_sec"],
+            "hard_deadline_sec": deadlines["hard_deadline_sec"],
+        }
+
+    def _mark_order_unknown_pending_reconciliation(
+        self,
+        order: dict[str, Any],
+        *,
+        source_type: str,
+        reason: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        updated, _event_row, _duplicated = self._apply_order_event(
+            order=order,
+            source_type=source_type,
+            payload=payload,
+            forced_local_state="UNKNOWN_PENDING_RECONCILIATION",
+            notes="unknown_result_requires_reconciliation",
+            unresolved_reason=reason,
+            reconciliation_status="UNRESOLVED",
+        )
+        return updated
+
+    def _is_unknown_exchange_result(self, meta: dict[str, Any] | None) -> bool:
+        payload = meta if isinstance(meta, dict) else {}
+        reason = str(payload.get("reason") or "").strip().lower()
+        exchange_code = payload.get("exchange_code")
+        try:
+            exchange_code_int = int(exchange_code) if exchange_code is not None else None
+        except Exception:
+            exchange_code_int = None
+        exchange_msg = str(payload.get("exchange_msg") or payload.get("error") or "").lower()
+        return reason in {"exchange_unavailable", "request_exception"} or exchange_code_int in {-1006, -1007} or "status unknown" in exchange_msg
 
     def _reconciliation_policy(self) -> dict[str, Any]:
         payload = self.safety_policy().get("reconciliation")
@@ -3266,7 +3983,15 @@ class ExecutionRealityService:
         if maker is None:
             maker = row.get("isMaker")
         return {
-            "venue_trade_id": str(row.get("id") or row.get("t") or row.get("tradeId") or "").strip() or None,
+            "venue_trade_id": str(
+                row.get("id")
+                or row.get("t")
+                or row.get("tradeId")
+                or row.get("executionId")
+                or row.get("I")
+                or ""
+            ).strip()
+            or None,
             "venue_order_id": str(row.get("orderId") or row.get("i") or order.get("venue_order_id") or "").strip() or None,
             "fill_time": fill_time,
             "symbol": symbol,
@@ -3529,11 +4254,16 @@ class ExecutionRealityService:
         avg_fill_price = (cum_quote_qty / executed_qty) if executed_qty > 0 else None
         orig_qty = _safe_float(order.get("orig_qty"), 0.0)
         status = str(order.get("order_status") or "NEW").upper()
+        local_state = normalize_local_state(order.get("current_local_state") or "WORKING")
         if executed_qty > 0:
             if orig_qty > 0 and executed_qty + 1e-12 >= orig_qty:
                 status = "FILLED"
+                local_state = "FILLED"
             elif status not in TERMINAL_ORDER_STATUSES:
                 status = "PARTIALLY_FILLED"
+                local_state = "PARTIALLY_FILLED"
+        last_fill = fills[-1]
+        commission_total = sum(_safe_float(fill.get("commission"), 0.0) for fill in fills)
         payload = copy.deepcopy(order)
         payload.update(
             {
@@ -3542,7 +4272,17 @@ class ExecutionRealityService:
                 "avg_fill_price": avg_fill_price,
                 "order_status": status,
                 "execution_type_last": "TRADE" if executed_qty > 0 else order.get("execution_type_last"),
+                "current_local_state": local_state,
+                "last_exchange_order_status": status,
+                "last_execution_type": "TRADE" if executed_qty > 0 else order.get("last_execution_type"),
                 "acknowledged_at": order.get("acknowledged_at") or fills[0].get("fill_time") or order.get("submitted_at"),
+                "last_fill_qty": last_fill.get("qty"),
+                "last_fill_price": last_fill.get("price"),
+                "commission_total": commission_total,
+                "commission_asset_last": last_fill.get("commission_asset"),
+                "last_event_at": last_fill.get("fill_time") or order.get("last_event_at"),
+                "terminal_at": (last_fill.get("fill_time") or order.get("last_event_at")) if local_state == "FILLED" else order.get("terminal_at"),
+                "raw_last_payload_json": order.get("raw_last_payload_json") or order.get("raw_last_status_json"),
             }
         )
         return self.db.upsert_order(payload)
@@ -3920,11 +4660,20 @@ class ExecutionRealityService:
                 "account_event": True,
                 "degraded_mode": False,
             }
+        if event_name == "listStatus":
+            return {
+                "ok": True,
+                "event_name": event_name,
+                "user_stream_event_id": stored_event.get("user_stream_event_id"),
+                "partial_support": True,
+                "notes": ["raw_list_status_persisted"],
+                "degraded_mode": False,
+            }
         order = None
-        if venue_order_id:
-            order = self.db.order_by_venue_order_id(venue_order_id)
-        if order is None and client_order_id:
+        if client_order_id:
             order = self.db.order_by_client_order_id(client_order_id)
+        if order is None and venue_order_id:
+            order = self.db.order_by_venue_order_id(venue_order_id)
         if order is None:
             event_details = {
                 "event_name": event_name or "unknown",
@@ -3958,11 +4707,19 @@ class ExecutionRealityService:
                 preview=order,
                 ack_payload=order_payload,
                 submitted_at=str(order.get("submitted_at") or utc_now_iso()),
+                intent=intent,
                 existing=order,
             )
         )
+        source_type = "WS_EXECUTION_REPORT" if event_name in {"executionReport", "ORDER_TRADE_UPDATE"} else "MANUAL"
+        updated_order, live_event, duplicated = self._apply_order_event(
+            order=updated_order,
+            source_type=source_type,
+            payload=order_payload if isinstance(order_payload, dict) else event_payload,
+            notes=f"user_stream_{event_name}",
+        )
         trade_rows: list[dict[str, Any]] = []
-        if normalized_family in {"spot", "margin"} and event_name == "executionReport":
+        if not duplicated and normalized_family in {"spot", "margin"} and event_name == "executionReport":
             normalized_trade = self._normalize_trade_payload(
                 family=normalized_family,
                 order=updated_order,
@@ -3971,7 +4728,7 @@ class ExecutionRealityService:
             )
             if normalized_trade is not None and _safe_float(normalized_trade.get("qty"), 0.0) > 0 and str(event_payload.get("x") or "").upper() == "TRADE":
                 trade_rows.append(normalized_trade)
-        elif normalized_family in {"usdm_futures", "coinm_futures"} and event_name == "ORDER_TRADE_UPDATE":
+        elif not duplicated and normalized_family in {"usdm_futures", "coinm_futures"} and event_name == "ORDER_TRADE_UPDATE":
             normalized_trade = self._normalize_trade_payload(
                 family=normalized_family,
                 order=updated_order,
@@ -3992,6 +4749,8 @@ class ExecutionRealityService:
             "ok": True,
             "event_name": event_name,
             "user_stream_event_id": stored_event.get("user_stream_event_id"),
+            "live_order_event_id": live_event.get("event_id"),
+            "duplicated_event": duplicated,
             "execution_order_id": final_order.get("execution_order_id"),
             "order": final_order,
             "fills": materialized["fills"],
@@ -4003,6 +4762,7 @@ class ExecutionRealityService:
         environment = _normalize_environment(order.get("environment"))
         intent = self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None
         recon_cfg = self._reconciliation_policy()
+        deadlines = self._reconciliation_deadlines()
         stream_state = self._stream_state(family, environment)
         now = _utc_now()
         updated_order = copy.deepcopy(order)
@@ -4050,6 +4810,17 @@ class ExecutionRealityService:
         submitted_dt = _parse_ts(updated_order.get("submitted_at")) or now
         ack_dt = _parse_ts(updated_order.get("acknowledged_at"))
         ack_age_sec = max(0.0, (now - submitted_dt).total_seconds())
+        if ack_dt is None and ack_age_sec >= deadlines["soft_deadline_sec"] and normalize_local_state(updated_order.get("current_local_state")) == "SUBMITTING":
+            updated_order = self._mark_order_unknown_pending_reconciliation(
+                updated_order,
+                source_type="RECOVERY",
+                reason="ack_missing_timeout",
+                payload={
+                    "status": updated_order.get("order_status"),
+                    "clientOrderId": updated_order.get("client_order_id"),
+                    "ack_age_sec": round(ack_age_sec, 4),
+                },
+            )
         if ack_dt is None and ack_age_sec >= ack_timeout_sec:
             severity = "BLOCK" if ack_age_sec >= float(recon_cfg.get("orphan_order_block_sec") or ack_timeout_sec) else "WARN"
             touched_events.append(
@@ -4138,6 +4909,37 @@ class ExecutionRealityService:
             self.db.resolve_reconcile_events(
                 reconcile_type="fill_missing",
                 execution_order_id=str(updated_order.get("execution_order_id")),
+            )
+
+        if normalize_local_state(updated_order.get("current_local_state")) == "UNKNOWN_PENDING_RECONCILIATION" and ack_age_sec >= deadlines["hard_deadline_sec"]:
+            updated_order, live_event, _ = self._apply_order_event(
+                order=updated_order,
+                source_type="RECOVERY",
+                payload={
+                    "status": updated_order.get("last_exchange_order_status") or updated_order.get("order_status"),
+                    "clientOrderId": updated_order.get("client_order_id"),
+                    "ack_age_sec": round(ack_age_sec, 4),
+                },
+                forced_local_state="MANUAL_REVIEW_REQUIRED",
+                notes="unknown_pending_exceeded_hard_deadline",
+                unresolved_reason="reconciliation_hard_deadline_exceeded",
+                reconciliation_status="UNRESOLVED",
+            )
+            touched_events.append(
+                self._record_reconcile_event(
+                    reconcile_type="status_mismatch",
+                    severity="BLOCK",
+                    family=family,
+                    environment=environment,
+                    execution_order_id=str(updated_order.get("execution_order_id")),
+                    client_order_id=str(updated_order.get("client_order_id") or ""),
+                    details={
+                        "reason": "manual_review_required_after_hard_deadline",
+                        "current_local_state": updated_order.get("current_local_state"),
+                        "live_order_event_id": live_event.get("event_id"),
+                    },
+                    resolved=False,
+                )
             )
 
         costs = self._aggregate_order_costs(order=updated_order, intent=intent, fills=fills)
@@ -4257,6 +5059,12 @@ class ExecutionRealityService:
                     existing=order,
                 )
             )
+            updated, _event_row, _ = self._apply_order_event(
+                order=updated,
+                source_type="REST_QUERY_ORDER",
+                payload=payload,
+                notes="rest_query_order_reconciliation",
+            )
             return updated, meta
         return None, meta
 
@@ -4299,6 +5107,12 @@ class ExecutionRealityService:
                         existing=local,
                     )
                 )
+                updated, _event_row, _ = self._apply_order_event(
+                    order=updated,
+                    source_type="REST_OPEN_ORDERS_SNAPSHOT",
+                    payload=row,
+                    notes="open_orders_snapshot_recovery",
+                )
                 items.append(updated)
             else:
                 items.append(
@@ -4311,9 +5125,13 @@ class ExecutionRealityService:
                             "symbol": _canonical_symbol(row.get("symbol")),
                             "family": family,
                             "environment": environment,
+                            "current_local_state": "RECOVERED_OPEN",
+                            "last_exchange_order_status": str(row.get("status") or "NEW").upper(),
+                            "last_execution_type": str(row.get("executionType") or row.get("status") or "NEW").upper(),
                             "order_status": str(row.get("status") or "NEW").upper(),
                             "execution_type_last": str(row.get("executionType") or row.get("status") or "NEW").upper(),
                             "submitted_at": _ms_to_iso(row.get("time")) or utc_now_iso(),
+                            "first_submitted_at": _ms_to_iso(row.get("time")) or utc_now_iso(),
                             "acknowledged_at": _ms_to_iso(row.get("updateTime")) or _ms_to_iso(row.get("time")) or utc_now_iso(),
                             "canceled_at": None,
                             "expired_at": None,
@@ -4324,10 +5142,13 @@ class ExecutionRealityService:
                             "executed_qty": _first_number(row.get("executedQty")) or 0.0,
                             "cum_quote_qty": _first_number(row.get("cummulativeQuoteQty"), row.get("cumQuote")) or 0.0,
                             "avg_fill_price": _first_number(row.get("avgPrice")),
+                            "reconciliation_status": "UNRESOLVED",
+                            "unresolved_reason": "remote_open_order_without_local_snapshot",
                             "reject_code": None,
                             "reject_reason": None,
                             "raw_ack_json": {},
                             "raw_last_status_json": row,
+                            "raw_last_payload_json": row,
                         }
                     )
                     or {}
@@ -4795,6 +5616,12 @@ class ExecutionRealityService:
             environment=environment,
             symbol=normalized.get("symbol") or request.get("symbol") or "",
         )
+        order_gate = self._block_new_submit_for_unresolved_orders(
+            family=family,
+            environment=environment,
+            bot_id=str(request.get("bot_id") or "").strip() or None,
+            symbol=normalized.get("symbol") or request.get("symbol") or "",
+        )
 
         intent = self.db.insert_intent(
             {
@@ -4826,11 +5653,17 @@ class ExecutionRealityService:
             }
         )
 
-        if not _bool(preflight.get("allowed")) or bool(safety_gate.get("blocking_reasons")):
+        if (
+            not _bool(preflight.get("allowed"))
+            or bool(safety_gate.get("blocking_reasons"))
+            or bool(order_gate.get("blocking_reasons"))
+        ):
             blocking_reasons = list(preflight.get("blocking_reasons") or [])
             blocking_reasons.extend(safety_gate.get("blocking_reasons") or [])
+            blocking_reasons.extend(order_gate.get("blocking_reasons") or [])
             warnings = list(preflight.get("warnings") or [])
             warnings.extend(safety_gate.get("warnings") or [])
+            warnings.extend(order_gate.get("warnings") or [])
             self.db.update_intent_submission(
                 str(intent.get("execution_intent_id")),
                 preflight_status="blocked",
@@ -4850,39 +5683,7 @@ class ExecutionRealityService:
                 "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
                 "preflight": preflight,
                 "live_safety_gate": safety_gate,
-            }
-
-        if environment == "paper":
-            order = self.db.upsert_order(
-                self._order_row_from_exchange(
-                    execution_order_id=str(uuid4()),
-                    execution_intent_id=str(intent.get("execution_intent_id")),
-                    client_order_id=str(intent.get("client_order_id")),
-                    family=family,
-                    environment=environment,
-                    preview=normalized,
-                    ack_payload=self._paper_ack_payload(normalized, str(intent.get("client_order_id")), submitted_at),
-                    submitted_at=submitted_at,
-                    acknowledged_at=submitted_at,
-                )
-            )
-            self.db.update_intent_submission(
-                str(intent.get("execution_intent_id")),
-                submitted_at=submitted_at,
-                preflight_status="submitted",
-            )
-            return {
-                "execution_intent_id": intent.get("execution_intent_id"),
-                "execution_order_id": order.get("execution_order_id"),
-                "client_order_id": order.get("client_order_id"),
-                "family": family,
-                "environment": environment,
-                "mode": mode,
-                "order_status": order.get("order_status"),
-                "estimated_costs": estimated_costs,
-                "fail_closed": False,
-                "warnings": [*(preflight.get("warnings") or []), *(safety_gate.get("warnings") or [])],
-                "blocking_reasons": [],
+                "live_order_gate": order_gate,
             }
 
         params, local_blocking = self._build_submit_params(
@@ -4907,10 +5708,116 @@ class ExecutionRealityService:
                 "order_status": "BLOCKED",
                 "estimated_costs": estimated_costs,
                 "fail_closed": mode == "live",
-                "warnings": [*(preflight.get("warnings") or []), *(safety_gate.get("warnings") or [])],
+                "warnings": [
+                    *(preflight.get("warnings") or []),
+                    *(safety_gate.get("warnings") or []),
+                    *(order_gate.get("warnings") or []),
+                ],
                 "blocking_reasons": list(local_blocking),
                 "preflight": preflight,
                 "live_safety_gate": safety_gate,
+                "live_order_gate": order_gate,
+            }
+
+        order = self.db.upsert_order(
+            {
+                "execution_intent_id": str(intent.get("execution_intent_id")),
+                "exchange": "binance",
+                "market_type": family,
+                "strategy_id": intent.get("strategy_id"),
+                "bot_id": intent.get("bot_id"),
+                "signal_id": intent.get("signal_id"),
+                "client_order_id": str(intent.get("client_order_id")),
+                "symbol": normalized.get("symbol") or _canonical_symbol(request.get("symbol")),
+                "family": family,
+                "environment": environment,
+                "requested_qty": normalized.get("quantity"),
+                "requested_quote_order_qty": normalized.get("quote_quantity"),
+                "requested_price": normalized.get("limit_price"),
+                "requested_stop_price": normalized.get("stop_price"),
+                "requested_trailing_delta": normalized.get("trailing_delta"),
+                "requested_stp_mode": normalized.get("stp_mode"),
+                "requested_new_order_resp_type": params.get("newOrderRespType"),
+                "current_local_state": "INTENT_CREATED",
+                "order_status": "CREATED",
+                "submitted_at": submitted_at,
+                "first_submitted_at": submitted_at,
+                "price": normalized.get("limit_price"),
+                "orig_qty": normalized.get("quantity"),
+                "reduce_only": normalized.get("reduce_only"),
+                "tif": normalized.get("time_in_force"),
+                "raw_ack_json": {},
+                "raw_last_status_json": {"status": "CREATED"},
+                "raw_last_payload_json": {"source": "local_intent", "request": stored_request},
+                "reconciliation_status": "PENDING",
+            }
+        )
+        order, _intent_event, _ = self._apply_order_event(
+            order=order,
+            source_type="LOCAL_INTENT",
+            forced_local_state="INTENT_CREATED",
+            notes="intent_persisted_before_submit",
+            event_time_local=submitted_at,
+        )
+        order, _precheck_event, _ = self._apply_order_event(
+            order=order,
+            source_type="LOCAL_INTENT",
+            forced_local_state="PRECHECK_PASSED",
+            notes="precheck_passed_before_submit",
+            event_time_local=submitted_at,
+        )
+        order, _submitting_event, _ = self._apply_order_event(
+            order=order,
+            source_type="LOCAL_INTENT",
+            forced_local_state="SUBMITTING",
+            notes="submit_initiated",
+            event_time_local=submitted_at,
+        )
+        self.db.update_intent_submission(
+            str(intent.get("execution_intent_id")),
+            submitted_at=submitted_at,
+            preflight_status="submitted",
+        )
+
+        if environment == "paper":
+            order = self.db.upsert_order(
+                self._order_row_from_exchange(
+                    execution_order_id=str(order.get("execution_order_id")),
+                    execution_intent_id=str(intent.get("execution_intent_id")),
+                    client_order_id=str(intent.get("client_order_id")),
+                    family=family,
+                    environment=environment,
+                    preview=normalized,
+                    ack_payload=self._paper_ack_payload(normalized, str(intent.get("client_order_id")), submitted_at),
+                    submitted_at=submitted_at,
+                    intent=intent,
+                    acknowledged_at=submitted_at,
+                    existing=order,
+                )
+            )
+            order, _ack_event, _ = self._apply_order_event(
+                order=order,
+                source_type="REST_CREATE_RESPONSE",
+                payload=order.get("raw_ack_json") if isinstance(order.get("raw_ack_json"), dict) else {},
+                notes="paper_local_ack",
+            )
+            return {
+                "execution_intent_id": intent.get("execution_intent_id"),
+                "execution_order_id": order.get("execution_order_id"),
+                "client_order_id": order.get("client_order_id"),
+                "family": family,
+                "environment": environment,
+                "mode": mode,
+                "order_status": order.get("order_status"),
+                "current_local_state": order.get("current_local_state"),
+                "estimated_costs": estimated_costs,
+                "fail_closed": False,
+                "warnings": [
+                    *(preflight.get("warnings") or []),
+                    *(safety_gate.get("warnings") or []),
+                    *(order_gate.get("warnings") or []),
+                ],
+                "blocking_reasons": [],
             }
 
         endpoint = self._execution_endpoint(family, environment, "submit")
@@ -4922,6 +5829,50 @@ class ExecutionRealityService:
             params=params,
         )
         if not isinstance(ack_payload, dict):
+            if self._is_unknown_exchange_result(meta):
+                order = self._mark_order_unknown_pending_reconciliation(
+                    order,
+                    source_type="REST_CREATE_RESPONSE",
+                    reason=str(meta.get("reason") or "unknown_submit_result"),
+                    payload={
+                        "status": order.get("order_status"),
+                        "clientOrderId": order.get("client_order_id"),
+                        "meta": meta,
+                    },
+                )
+                reconcile_result = self._reconcile_single_order(order)
+                order = reconcile_result["order"]
+                return {
+                    "execution_intent_id": intent.get("execution_intent_id"),
+                    "execution_order_id": order.get("execution_order_id"),
+                    "client_order_id": order.get("client_order_id"),
+                    "family": family,
+                    "environment": environment,
+                    "mode": mode,
+                    "order_status": order.get("order_status"),
+                    "current_local_state": order.get("current_local_state"),
+                    "estimated_costs": estimated_costs,
+                    "fail_closed": mode == "live",
+                    "warnings": [
+                        *(preflight.get("warnings") or []),
+                        *(order_gate.get("warnings") or []),
+                    ],
+                    "blocking_reasons": [str(meta.get("reason") or "unknown_submit_result")],
+                    "submit_meta": meta,
+                    "remote_source": reconcile_result.get("remote_source"),
+                }
+            order, _reject_event, _ = self._apply_order_event(
+                order=order,
+                source_type="REST_CREATE_RESPONSE",
+                payload={
+                    "status": "REJECTED",
+                    "executionType": "REJECTED",
+                    "clientOrderId": order.get("client_order_id"),
+                    "msg": str(meta.get("reason") or "submit_failed"),
+                    "meta": meta,
+                },
+                notes="rest_submit_failed",
+            )
             self.db.update_intent_submission(
                 str(intent.get("execution_intent_id")),
                 preflight_status="submit_failed",
@@ -4929,12 +5880,13 @@ class ExecutionRealityService:
             )
             return {
                 "execution_intent_id": intent.get("execution_intent_id"),
-                "execution_order_id": None,
-                "client_order_id": intent.get("client_order_id"),
+                "execution_order_id": order.get("execution_order_id"),
+                "client_order_id": order.get("client_order_id"),
                 "family": family,
                 "environment": environment,
                 "mode": mode,
-                "order_status": "SUBMIT_FAILED",
+                "order_status": order.get("order_status"),
+                "current_local_state": order.get("current_local_state"),
                 "estimated_costs": estimated_costs,
                 "fail_closed": mode == "live",
                 "warnings": preflight.get("warnings") or [],
@@ -4944,7 +5896,7 @@ class ExecutionRealityService:
 
         order = self.db.upsert_order(
             self._order_row_from_exchange(
-                execution_order_id=str(uuid4()),
+                execution_order_id=str(order.get("execution_order_id")),
                 execution_intent_id=str(intent.get("execution_intent_id")),
                 client_order_id=str(intent.get("client_order_id")),
                 family=family,
@@ -4952,12 +5904,15 @@ class ExecutionRealityService:
                 preview=normalized,
                 ack_payload=ack_payload,
                 submitted_at=submitted_at,
+                intent=intent,
+                existing=order,
             )
         )
-        self.db.update_intent_submission(
-            str(intent.get("execution_intent_id")),
-            submitted_at=submitted_at,
-            preflight_status="submitted",
+        order, _ack_event, _ = self._apply_order_event(
+            order=order,
+            source_type="REST_CREATE_RESPONSE",
+            payload=ack_payload,
+            notes="rest_submit_acknowledged",
         )
         heartbeat_meta = None
         if family in {"usdm_futures", "coinm_futures"} and environment in {"live", "testnet"}:
@@ -4974,9 +5929,14 @@ class ExecutionRealityService:
             "environment": environment,
             "mode": mode,
             "order_status": order.get("order_status"),
+            "current_local_state": order.get("current_local_state"),
             "estimated_costs": estimated_costs,
             "fail_closed": False,
-            "warnings": [*(preflight.get("warnings") or []), *(safety_gate.get("warnings") or [])],
+            "warnings": [
+                *(preflight.get("warnings") or []),
+                *(safety_gate.get("warnings") or []),
+                *(order_gate.get("warnings") or []),
+            ],
             "blocking_reasons": [],
             "submit_meta": {**meta, "futures_auto_cancel": heartbeat_meta},
         }
@@ -5040,6 +6000,209 @@ class ExecutionRealityService:
             "remote_source": remote_meta,
         }
 
+    def _live_order_summary_row(self, order: dict[str, Any]) -> dict[str, Any]:
+        payload = copy.deepcopy(order)
+        current_local_state = normalize_local_state(payload.get("current_local_state"))
+        requested_qty = _first_number(payload.get("requested_qty"), payload.get("orig_qty"))
+        executed_qty = _safe_float(payload.get("executed_qty"), 0.0)
+        filled_pct = ((executed_qty / requested_qty) * 100.0) if requested_qty and requested_qty > 0 else None
+        payload.update(
+            {
+                "local_order_id": payload.get("execution_order_id"),
+                "exchange_order_id": payload.get("venue_order_id"),
+                "current_local_state": current_local_state,
+                "last_exchange_order_status": payload.get("last_exchange_order_status") or payload.get("order_status"),
+                "last_execution_type": payload.get("last_execution_type") or payload.get("execution_type_last"),
+                "terminal": is_terminal_local_state(current_local_state),
+                "filled_pct": round(filled_pct, 8) if filled_pct is not None else None,
+                "timeline_size": len(self.db.live_order_events_for_order(str(payload.get("execution_order_id")))),
+            }
+        )
+        return payload
+
+    def list_live_orders(
+        self,
+        *,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        items = self.db.list_orders(
+            family=_normalize_family(family) if family else None,
+            environment=_normalize_environment(environment) if environment else None,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=limit,
+            offset=offset,
+        )
+        rows = [self._live_order_summary_row(item) for item in items]
+        return {
+            "items": rows,
+            "count": len(rows),
+            "filters": {
+                "family": _normalize_family(family) if family else None,
+                "environment": _normalize_environment(environment) if environment else None,
+                "symbol": _canonical_symbol(symbol) if symbol else None,
+                "bot_id": bot_id,
+                "limit": int(limit),
+                "offset": int(offset),
+            },
+        }
+
+    def live_order_timeline(self, execution_order_id: str) -> list[dict[str, Any]]:
+        return self.db.live_order_events_for_order(execution_order_id)
+
+    def unresolved_live_orders(
+        self,
+        *,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+    ) -> dict[str, Any]:
+        deadlines = self._reconciliation_deadlines()
+        rows = self.db.list_orders(
+            family=_normalize_family(family) if family else None,
+            environment=_normalize_environment(environment) if environment else None,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=1000,
+            offset=0,
+        )
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            state = normalize_local_state(row.get("current_local_state"))
+            last_event = _parse_ts(row.get("last_event_at")) or _parse_ts(row.get("submitted_at")) or _utc_now()
+            age_sec = max(0.0, (_utc_now() - last_event).total_seconds())
+            unresolved = (
+                is_ambiguous_local_state(state)
+                or str(row.get("reconciliation_status") or "").upper() == "UNRESOLVED"
+                or (blocks_new_submits(state) and age_sec >= deadlines["hard_deadline_sec"])
+            )
+            if not unresolved:
+                continue
+            payload = self._live_order_summary_row(row)
+            payload["age_sec"] = round(age_sec, 4)
+            items.append(payload)
+        return {
+            "count": len(items),
+            "items": items,
+            "soft_deadline_sec": deadlines["soft_deadline_sec"],
+            "hard_deadline_sec": deadlines["hard_deadline_sec"],
+        }
+
+    def reconcile_live_orders(
+        self,
+        *,
+        execution_order_id: str | None = None,
+        family: str | None = None,
+        environment: str | None = None,
+        symbol: str | None = None,
+        bot_id: str | None = None,
+        trigger: str = "MANUAL",
+    ) -> dict[str, Any]:
+        rows = self.db.list_orders(
+            family=_normalize_family(family) if family else None,
+            environment=_normalize_environment(environment) if environment else None,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=1000,
+            offset=0,
+        )
+        if execution_order_id:
+            rows = [row for row in rows if str(row.get("execution_order_id") or "") == str(execution_order_id)]
+        else:
+            rows = [row for row in rows if not is_terminal_local_state(row.get("current_local_state"))]
+        started_at = utc_now_iso()
+        results = [self._reconcile_single_order(row) for row in rows]
+        finished_at = utc_now_iso()
+        unresolved = self.unresolved_live_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+        )
+        run = self.db.insert_live_order_reconciliation_run(
+            {
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "trigger": trigger,
+                "family": _normalize_family(family) if family else None,
+                "environment": _normalize_environment(environment) if environment else None,
+                "symbol": _canonical_symbol(symbol) if symbol else None,
+                "bot_id": bot_id,
+                "result_summary_json": {
+                    "processed_orders": len(rows),
+                    "unresolved_count": unresolved.get("count"),
+                    "execution_order_id": execution_order_id,
+                },
+            }
+        )
+        return {
+            "reconciliation_run": run,
+            "processed_orders": len(rows),
+            "items": [
+                {
+                    "execution_order_id": item["order"].get("execution_order_id"),
+                    "current_local_state": item["order"].get("current_local_state"),
+                    "order_status": item["order"].get("order_status"),
+                    "degraded_mode": item.get("degraded_mode"),
+                    "remote_source": item.get("remote_source"),
+                }
+                for item in results
+            ],
+            "unresolved": unresolved,
+        }
+
+    def recover_live_orders_on_startup(self) -> dict[str, Any]:
+        rows = self.db.list_orders(limit=1000, offset=0)
+        targets = [
+            row
+            for row in rows
+            if _normalize_environment(row.get("environment")) in {"live", "testnet"}
+            and not is_terminal_local_state(row.get("current_local_state"))
+        ]
+        if not targets:
+            return {
+                "reconciliation_run": self.db.insert_live_order_reconciliation_run(
+                    {
+                        "started_at": utc_now_iso(),
+                        "finished_at": utc_now_iso(),
+                        "trigger": "STARTUP",
+                        "result_summary_json": {"processed_orders": 0, "unresolved_count": 0},
+                    }
+                ),
+                "processed_orders": 0,
+                "items": [],
+                "unresolved": {"count": 0, "items": []},
+            }
+        started_at = utc_now_iso()
+        results = [self._reconcile_single_order(row) for row in targets]
+        run = self.db.insert_live_order_reconciliation_run(
+            {
+                "started_at": started_at,
+                "finished_at": utc_now_iso(),
+                "trigger": "STARTUP",
+                "result_summary_json": {"processed_orders": len(targets)},
+            }
+        )
+        return {
+            "reconciliation_run": run,
+            "processed_orders": len(targets),
+            "items": [
+                {
+                    "execution_order_id": item["order"].get("execution_order_id"),
+                    "current_local_state": item["order"].get("current_local_state"),
+                    "order_status": item["order"].get("order_status"),
+                }
+                for item in results
+            ],
+            "unresolved": self.unresolved_live_orders(),
+        }
+
     def order_detail(self, execution_order_id: str) -> dict[str, Any] | None:
         order = self.db.order_by_id(execution_order_id)
         if order is None:
@@ -5056,6 +6219,7 @@ class ExecutionRealityService:
             "intent": intent,
             "fills": fills,
             "reconcile_events": self.db.reconcile_events_for_order(str(order.get("execution_order_id"))),
+            "timeline": self.db.live_order_events_for_order(str(order.get("execution_order_id"))),
             "remote_status": order.get("raw_last_status_json") if isinstance(order, dict) else None,
             "remote_source": reconcile_result.get("remote_source"),
             "estimated_costs": costs.get("estimated_costs"),
@@ -5063,6 +6227,11 @@ class ExecutionRealityService:
             "gross_pnl": costs.get("gross_pnl"),
             "net_pnl": costs.get("net_pnl"),
             "degraded_mode": reconcile_result.get("degraded_mode"),
+            "current_local_state": order.get("current_local_state"),
+            "last_exchange_order_status": order.get("last_exchange_order_status") or order.get("order_status"),
+            "last_execution_type": order.get("last_execution_type") or order.get("execution_type_last"),
+            "terminal": is_terminal_local_state(order.get("current_local_state")),
+            "unresolved_reason": order.get("unresolved_reason"),
             "filter_validation": copy.deepcopy(preflight_context.get("filter_validation")),
             "normalized_order_preview": copy.deepcopy(preflight_context.get("normalized_order_preview")),
         }
@@ -5080,6 +6249,12 @@ class ExecutionRealityService:
             }
         family = _normalize_family(order.get("family"))
         environment = _normalize_environment(order.get("environment"))
+        order, _cancel_request_event, _ = self._apply_order_event(
+            order=order,
+            source_type="LOCAL_INTENT",
+            forced_local_state="CANCEL_REQUESTED",
+            notes="cancel_requested_by_operator",
+        )
         if environment == "paper":
             updated = self.db.upsert_order(
                 self._order_row_from_exchange(
@@ -5091,9 +6266,16 @@ class ExecutionRealityService:
                     preview=order,
                     ack_payload={"status": "CANCELED", "symbol": order.get("symbol"), "clientOrderId": order.get("client_order_id"), "source": "paper_local_cancel"},
                     submitted_at=str(order.get("submitted_at") or utc_now_iso()),
+                    intent=self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None,
                     existing=order,
                     canceled=True,
                 )
+            )
+            updated, _event_row, _ = self._apply_order_event(
+                order=updated,
+                source_type="REST_CANCEL_RESPONSE",
+                payload=updated.get("raw_last_payload_json") if isinstance(updated.get("raw_last_payload_json"), dict) else {"status": "CANCELED"},
+                notes="paper_cancel_applied",
             )
             heartbeat_meta = None
             if family in {"usdm_futures", "coinm_futures"} and environment in {"live", "testnet"}:
@@ -5130,6 +6312,27 @@ class ExecutionRealityService:
             params=params,
         )
         if not isinstance(payload, dict):
+            if self._is_unknown_exchange_result(meta):
+                updated = self._mark_order_unknown_pending_reconciliation(
+                    order,
+                    source_type="REST_CANCEL_RESPONSE",
+                    reason=str(meta.get("reason") or "unknown_cancel_result"),
+                    payload={
+                        "status": order.get("order_status"),
+                        "clientOrderId": order.get("client_order_id"),
+                        "meta": meta,
+                    },
+                )
+                reconcile_result = self._reconcile_single_order(updated)
+                resolved_order = reconcile_result["order"]
+                return {
+                    "execution_order_id": resolved_order.get("execution_order_id"),
+                    "order_status": resolved_order.get("order_status"),
+                    "current_local_state": resolved_order.get("current_local_state"),
+                    "canceled_count": 0,
+                    "order": resolved_order,
+                    "remote_source": reconcile_result.get("remote_source"),
+                }
             raise RuntimeError(str(meta.get("error") or meta.get("reason") or "cancel_failed"))
         updated = self.db.upsert_order(
             self._order_row_from_exchange(
@@ -5141,9 +6344,16 @@ class ExecutionRealityService:
                 preview=order,
                 ack_payload=payload,
                 submitted_at=str(order.get("submitted_at") or utc_now_iso()),
+                intent=self.db.intent_by_id(str(order.get("execution_intent_id") or "")) if order.get("execution_intent_id") else None,
                 existing=order,
                 canceled=True,
             )
+        )
+        updated, _cancel_event, _ = self._apply_order_event(
+            order=updated,
+            source_type="REST_CANCEL_RESPONSE",
+            payload=payload,
+            notes="rest_cancel_acknowledged",
         )
         heartbeat_meta = None
         if family in {"usdm_futures", "coinm_futures"} and environment in {"live", "testnet"}:
@@ -5162,6 +6372,7 @@ class ExecutionRealityService:
         return {
             "execution_order_id": updated.get("execution_order_id"),
             "order_status": updated.get("order_status"),
+            "current_local_state": updated.get("current_local_state"),
             "canceled_count": 1,
             "order": updated,
             "remote_source": {**meta, "futures_auto_cancel": heartbeat_meta},
@@ -5216,6 +6427,12 @@ class ExecutionRealityService:
                     canceled=True,
                 )
             )
+            updated, _event_row, _ = self._apply_order_event(
+                order=updated,
+                source_type="REST_CANCEL_RESPONSE",
+                payload={"status": "CANCELED", "clientOrderId": row.get("client_order_id"), "raw_cancel_all_payload": payload},
+                notes="cancel_all_acknowledged",
+            )
             canceled.append(updated)
         heartbeat_meta = None
         if normalized_family in {"usdm_futures", "coinm_futures"} and normalized_environment in {"live", "testnet"}:
@@ -5235,6 +6452,7 @@ class ExecutionRealityService:
         }
 
     def reconcile_orders(self) -> dict[str, Any]:
+        started_at = utc_now_iso()
         orders = self.db.list_orders(limit=1000, offset=0)
         pairs = {
             (_normalize_family(order.get("family")), _normalize_environment(order.get("environment")))
@@ -5253,7 +6471,7 @@ class ExecutionRealityService:
         for row in unresolved:
             grouped[str(row.get("reconcile_type") or "")] += 1
         heartbeat_actions = self._refresh_futures_auto_cancel_heartbeats()
-        return {
+        summary = {
             "ack_missing": grouped.get("ack_missing", 0),
             "fill_missing": grouped.get("fill_missing", 0),
             "orphan_orders": grouped.get("orphan_order", 0),
@@ -5271,6 +6489,19 @@ class ExecutionRealityService:
                 for family, environment in sorted(pairs)
             ],
         }
+        summary["reconciliation_run"] = self.db.insert_live_order_reconciliation_run(
+            {
+                "started_at": started_at,
+                "finished_at": utc_now_iso(),
+                "trigger": "PERIODIC",
+                "result_summary_json": {
+                    "processed_orders": len(orders),
+                    "unresolved_count": len(unresolved),
+                    "pairs_checked": len(pairs),
+                },
+            }
+        )
+        return summary
 
     def live_safety_summary(self, reconcile_summary: dict[str, Any] | None = None) -> dict[str, Any]:
         if reconcile_summary is None:
@@ -5333,6 +6564,7 @@ class ExecutionRealityService:
             0,
             int(_safe_float(ks_cfg.get("repeated_reconcile_mismatch_block_count"), 0.0)),
         )
+        unresolved_live_orders = self.unresolved_live_orders(environment="live")
         futures_auto_cancel = [
             copy.deepcopy(item)
             for item in sorted(
@@ -5362,6 +6594,8 @@ class ExecutionRealityService:
             blockers.append("consecutive_failed_submit_blocker")
         if repeated_reconcile_mismatch_threshold > 0 and repeated_reconcile_mismatch_count >= repeated_reconcile_mismatch_threshold:
             blockers.append("repeated_reconcile_mismatch_blocker")
+        if int(unresolved_live_orders.get("count") or 0) > 0:
+            blockers.append("unresolved_live_orders_blocker")
         if open_orders_guard.get("breached"):
             blockers.append("open_orders_limit_blocker")
         if not fee_fresh:
@@ -5414,6 +6648,7 @@ class ExecutionRealityService:
             "consecutive_failed_submit_threshold": consecutive_failed_submit_threshold,
             "repeated_reconcile_mismatch_count": repeated_reconcile_mismatch_count,
             "repeated_reconcile_mismatch_threshold": repeated_reconcile_mismatch_threshold,
+            "unresolved_live_orders": unresolved_live_orders,
             "open_orders_guard": open_orders_guard,
             "market_data_guard": market_data,
             "market_stream_runtime": market_runtime,

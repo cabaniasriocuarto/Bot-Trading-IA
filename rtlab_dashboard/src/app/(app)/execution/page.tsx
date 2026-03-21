@@ -16,6 +16,10 @@ import type {
   BotInstance,
   BotPolicyStateResponse,
   BotStatusResponse,
+  ExecutionLiveOrderDetailResponse,
+  ExecutionLiveOrdersReconcileResponse,
+  ExecutionLiveOrdersResponse,
+  ExecutionLiveOrdersUnresolvedResponse,
   ExecutionMarketStreamsSummary,
   ExchangeDiagnoseResponse,
   ExecutionStats,
@@ -74,8 +78,13 @@ export default function ExecutionPage() {
   const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
   const [marketStreams, setMarketStreams] = useState<ExecutionMarketStreamsSummary | null>(null);
   const [livePreflight, setLivePreflight] = useState<LivePreflightPayload | null>(null);
+  const [liveOrders, setLiveOrders] = useState<ExecutionLiveOrdersResponse | null>(null);
+  const [liveOrdersUnresolved, setLiveOrdersUnresolved] = useState<ExecutionLiveOrdersUnresolvedResponse | null>(null);
+  const [selectedLiveOrderId, setSelectedLiveOrderId] = useState("");
+  const [selectedLiveOrderDetail, setSelectedLiveOrderDetail] = useState<ExecutionLiveOrderDetailResponse | null>(null);
   const [livePreflightBusy, setLivePreflightBusy] = useState(false);
   const [livePreflightAttestBusy, setLivePreflightAttestBusy] = useState(false);
+  const [liveOrdersBusy, setLiveOrdersBusy] = useState(false);
   const [livePreflightNote, setLivePreflightNote] = useState("");
   const [exchangeDiagError, setExchangeDiagError] = useState("");
   const [panelLoading, setPanelLoading] = useState(true);
@@ -114,7 +123,7 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload, livePreflightPayload] = await Promise.all([
+    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload, livePreflightPayload, liveOrdersPayload, liveOrdersUnresolvedPayload] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -124,6 +133,8 @@ export default function ExecutionPage() {
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
       apiGet<ExecutionMarketStreamsSummary>("/api/v1/execution/market-streams/summary").catch(() => null as ExecutionMarketStreamsSummary | null),
       apiGet<LivePreflightPayload>("/api/v1/exchange/live-preflight?mode=live").catch(() => null as LivePreflightPayload | null),
+      apiGet<ExecutionLiveOrdersResponse>("/api/v1/execution/live-orders?environment=live&limit=25").catch(() => null as ExecutionLiveOrdersResponse | null),
+      apiGet<ExecutionLiveOrdersUnresolvedResponse>("/api/v1/execution/live-orders/unresolved?environment=live").catch(() => null as ExecutionLiveOrdersUnresolvedResponse | null),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
@@ -133,6 +144,8 @@ export default function ExecutionPage() {
     setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
     setMarketStreams(marketStreamsPayload);
     setLivePreflight(livePreflightPayload);
+    setLiveOrders(liveOrdersPayload);
+    setLiveOrdersUnresolved(liveOrdersUnresolvedPayload);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
     const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
@@ -223,6 +236,35 @@ export default function ExecutionPage() {
       if (timer) clearTimeout(timer);
     };
   }, [isPageVisible, loadExecutionMetrics, loadTradingPanel]);
+
+  useEffect(() => {
+    const firstId = liveOrders?.items?.[0]?.execution_order_id || "";
+    if (!selectedLiveOrderId && firstId) {
+      setSelectedLiveOrderId(firstId);
+    } else if (selectedLiveOrderId && !(liveOrders?.items || []).some((row) => row.execution_order_id === selectedLiveOrderId)) {
+      setSelectedLiveOrderId(firstId);
+    }
+  }, [liveOrders, selectedLiveOrderId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadLiveOrderDetail = async () => {
+      if (!selectedLiveOrderId) {
+        setSelectedLiveOrderDetail(null);
+        return;
+      }
+      try {
+        const payload = await apiGet<ExecutionLiveOrderDetailResponse>(`/api/v1/execution/live-orders/${encodeURIComponent(selectedLiveOrderId)}`);
+        if (!cancelled) setSelectedLiveOrderDetail(payload);
+      } catch {
+        if (!cancelled) setSelectedLiveOrderDetail(null);
+      }
+    };
+    void loadLiveOrderDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLiveOrderId, liveOrders]);
 
   const latencySeries = useMemo(
     () =>
@@ -315,6 +357,12 @@ export default function ExecutionPage() {
       ? `Attestation vigente hasta ${formatDateTime(livePreflightAttestationStatus.expires_at)} por ${livePreflightAttestation?.verified_by || "admin"}.`
       : `Attestation manual requerida: ${livePreflightAttestationStatus.reason}.`
     : "Chequeo manual en el panel del exchange. Requisito obligatorio antes de LIVE.";
+  const liveOrdersRows = liveOrders?.items || [];
+  const liveOrdersUnresolvedCount = liveOrdersUnresolved?.count ?? 0;
+  const liveOrdersSoftDeadlineSec = liveOrdersUnresolved?.soft_deadline_sec ?? 5;
+  const liveOrdersHardDeadlineSec = liveOrdersUnresolved?.hard_deadline_sec ?? 30;
+  const selectedLiveOrder = selectedLiveOrderDetail?.order || liveOrdersRows.find((row) => row.execution_order_id === selectedLiveOrderId) || null;
+  const selectedLiveOrderTimeline = selectedLiveOrderDetail?.timeline || [];
 
   const liveReadyItems = [
     {
@@ -648,6 +696,31 @@ export default function ExecutionPage() {
       setControlError(err instanceof Error ? err.message : "No se pudo guardar la attestation manual.");
     } finally {
       setLivePreflightAttestBusy(false);
+    }
+  };
+
+  const runLiveOrdersReconcile = async (executionOrderId?: string) => {
+    if (role !== "admin") return;
+    setLiveOrdersBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<ExecutionLiveOrdersReconcileResponse>("/api/v1/execution/live-orders/reconcile", {
+        execution_order_id: executionOrderId || undefined,
+        environment: "live",
+        trigger: executionOrderId ? "MANUAL" : "STREAM_GAP",
+      });
+      const unresolved = payload?.unresolved?.count ?? 0;
+      setMessage(
+        executionOrderId
+          ? `Reconciliacion manual ejecutada para ${executionOrderId}. Ordenes ambiguas restantes: ${unresolved}.`
+          : `Reconciliacion manual ejecutada. Ordenes ambiguas restantes: ${unresolved}.`,
+      );
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo reconciliar el journal live.");
+    } finally {
+      setLiveOrdersBusy(false);
     }
   };
 
@@ -1300,6 +1373,208 @@ export default function ExecutionPage() {
             </div>
           </CardContent>
         </Card>
+
+        <Card>
+          <CardTitle>Ordenes Live</CardTitle>
+          <CardDescription>
+            Maquina de estados canonica para Spot live. Journal append-only, recovery por startup y reconciliacion manual/REST cuando el stream deja estados ambiguos.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <Metric title="Ordenes visibles" value={String(liveOrders?.count ?? 0)} compact />
+              <Metric title="Ambiguas" value={String(liveOrdersUnresolvedCount)} compact />
+              <Metric title="Soft deadline (s)" value={String(liveOrdersSoftDeadlineSec)} compact />
+              <Metric title="Hard deadline (s)" value={String(liveOrdersHardDeadlineSec)} compact />
+            </div>
+
+            {liveOrdersUnresolvedCount > 0 ? (
+              <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-3 text-xs text-amber-100">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">Ordenes ambiguas / requieren reconciliacion</p>
+                    <p className="mt-1 text-amber-200">
+                      Hay {liveOrdersUnresolvedCount} orden(es) en UNKNOWN_PENDING_RECONCILIATION o MANUAL_REVIEW_REQUIRED. LIVE debe operar fail-closed hasta resolverlas.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={role !== "admin" || liveOrdersBusy}
+                    onClick={() => {
+                      void runLiveOrdersReconcile();
+                    }}
+                  >
+                    {liveOrdersBusy ? "Reconciliando..." : "Reconciliar ahora"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+                Sin ordenes ambiguas por encima del hard deadline. El runtime sigue reconciliando por startup, timeout unknown y comando manual.
+              </div>
+            )}
+
+            {liveOrdersRows.length ? (
+              <div className="rounded-lg border border-slate-800">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Hora</TH>
+                      <TH>Simbolo</TH>
+                      <TH>Lado</TH>
+                      <TH>Tipo</TH>
+                      <TH>Qty / QuoteQty</TH>
+                      <TH>clientOrderId</TH>
+                      <TH>exchangeOrderId</TH>
+                      <TH>Estado local</TH>
+                      <TH>Estado exchange</TH>
+                      <TH>Filled %</TH>
+                      <TH>Avg fill</TH>
+                      <TH>Health</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {liveOrdersRows.map((row) => {
+                      const selected = row.execution_order_id === selectedLiveOrderId;
+                      return (
+                        <TR
+                          key={row.execution_order_id}
+                          className={selected ? "bg-slate-900/70" : undefined}
+                          onClick={() => {
+                            setSelectedLiveOrderId(row.execution_order_id);
+                          }}
+                        >
+                          <TD>{formatDateTime(row.last_event_at || row.submitted_at)}</TD>
+                          <TD>{row.symbol}</TD>
+                          <TD>{row.side || "-"}</TD>
+                          <TD>{row.order_type || "-"}</TD>
+                          <TD>
+                            {row.requested_qty != null ? fmtNum(row.requested_qty) : "-"}
+                            {row.requested_quote_order_qty != null ? ` / ${fmtNum(row.requested_quote_order_qty)}` : ""}
+                          </TD>
+                          <TD className="max-w-[180px] truncate" title={row.client_order_id || "-"}>
+                            {row.client_order_id || "-"}
+                          </TD>
+                          <TD>{row.exchange_order_id || "-"}</TD>
+                          <TD>
+                            <Badge variant={localOrderStateVariant(row.current_local_state)}>{row.current_local_state}</Badge>
+                          </TD>
+                          <TD>
+                            <Badge variant={exchangeOrderStatusVariant(row.last_exchange_order_status)}>{row.last_exchange_order_status || "-"}</Badge>
+                          </TD>
+                          <TD>{row.filled_pct != null ? `${row.filled_pct.toFixed(2)}%` : "-"}</TD>
+                          <TD>{row.avg_fill_price != null ? fmtNum(row.avg_fill_price) : "-"}</TD>
+                          <TD>
+                            <div className="flex flex-col gap-1">
+                              <Badge variant={reconcileStatusVariant(row.reconciliation_status)}>{row.reconciliation_status || "PENDING"}</Badge>
+                              {row.unresolved_reason ? <span className="text-[11px] text-amber-300">{row.unresolved_reason}</span> : null}
+                            </div>
+                          </TD>
+                        </TR>
+                      );
+                    })}
+                  </TBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                Sin ordenes live persistidas todavia. Este panel se llena con submit REST, executionReport, reconciliacion y recovery.
+              </div>
+            )}
+
+            <div className="grid gap-3 xl:grid-cols-[1.1fr_0.9fr]">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-100">Detalle de orden</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Timeline auditable con precedencia WS &gt; reconcile/query &gt; REST response inicial.
+                    </p>
+                  </div>
+                  {selectedLiveOrder ? (
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || liveOrdersBusy}
+                      onClick={() => {
+                        void runLiveOrdersReconcile(selectedLiveOrder.execution_order_id);
+                      }}
+                    >
+                      {liveOrdersBusy ? "Reconciliando..." : "Reconciliar orden"}
+                    </Button>
+                  ) : null}
+                </div>
+
+                {selectedLiveOrder ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <Metric title="Estado local" value={selectedLiveOrder.current_local_state || "-"} compact />
+                      <Metric title="Estado exchange" value={selectedLiveOrder.last_exchange_order_status || "-"} compact />
+                      <Metric title="Execution type" value={selectedLiveOrder.last_execution_type || "-"} compact />
+                      <Metric title="Terminal" value={selectedLiveOrder.terminal ? "si" : "no"} compact />
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <p>clientOrderId: {selectedLiveOrder.client_order_id || "-"}</p>
+                        <p>exchangeOrderId: {selectedLiveOrder.exchange_order_id || "-"}</p>
+                        <p>qty: {selectedLiveOrder.requested_qty != null ? fmtNum(selectedLiveOrder.requested_qty) : "-"}</p>
+                        <p>quoteQty: {selectedLiveOrder.requested_quote_order_qty != null ? fmtNum(selectedLiveOrder.requested_quote_order_qty) : "-"}</p>
+                        <p>filled: {selectedLiveOrder.executed_qty != null ? fmtNum(selectedLiveOrder.executed_qty) : "-"}</p>
+                        <p>avg fill: {selectedLiveOrder.avg_fill_price != null ? fmtNum(selectedLiveOrder.avg_fill_price) : "-"}</p>
+                      </div>
+                      {selectedLiveOrderDetail?.unresolved_reason ? (
+                        <p className="mt-2 text-amber-300">unresolved_reason: {selectedLiveOrderDetail.unresolved_reason}</p>
+                      ) : null}
+                    </div>
+                    <div className="space-y-2">
+                      {selectedLiveOrderTimeline.length ? (
+                        selectedLiveOrderTimeline.map((event) => (
+                          <div key={event.event_id} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="info">{event.source_type}</Badge>
+                                <Badge variant={localOrderStateVariant(event.local_state_after)}>{event.local_state_after}</Badge>
+                                {event.execution_type ? <Badge variant={exchangeOrderStatusVariant(event.execution_type)}>{event.execution_type}</Badge> : null}
+                              </div>
+                              <span className="text-slate-400">{formatDateTime(event.event_time_exchange || event.event_time_local)}</span>
+                            </div>
+                            <p className="mt-2 text-slate-400">
+                              {event.local_state_before ? `${event.local_state_before} -> ${event.local_state_after}` : event.local_state_after}
+                              {event.exchange_order_status ? ` · X=${event.exchange_order_status}` : ""}
+                              {event.reject_reason ? ` · reject=${event.reject_reason}` : ""}
+                              {event.expiry_reason ? ` · expiry=${event.expiry_reason}` : ""}
+                            </p>
+                            {event.raw_payload_json && Object.keys(event.raw_payload_json).length ? (
+                              <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">
+                                {truncateJson(event.raw_payload_json)}
+                              </pre>
+                            ) : null}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                          Sin timeline cargado para esta orden.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                    Selecciona una orden para ver journal, payloads y reconciliacion.
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <p className="text-sm font-semibold text-slate-100">Reglas operativas RTLOPS-48</p>
+                <div className="mt-3 space-y-2 text-xs text-slate-300">
+                  <p>Estados canónicos: INTENT_CREATED, PRECHECK_PASSED, SUBMITTING, UNKNOWN_PENDING_RECONCILIATION, ACKED, WORKING, PARTIALLY_FILLED, FILLED, CANCEL_REQUESTED, CANCELED, REJECTED, EXPIRED, EXPIRED_STP, RECOVERED_OPEN, RECOVERED_TERMINAL, MANUAL_REVIEW_REQUIRED.</p>
+                  <p>Autoridad: executionReport en tiempo real &gt; query/openOrders de reconciliación &gt; respuesta REST inicial.</p>
+                  <p>Fail-closed: UNKNOWN_PENDING_RECONCILIATION o MANUAL_REVIEW_REQUIRED por encima de {liveOrdersHardDeadlineSec}s bloquea nuevos submits live del mismo bot+símbolo.</p>
+                  <p>Dedup: WS por executionId cuando existe; si no, fallback robusto por clientOrderId + executionType + status + transactionTime + cumulativeFilledQty.</p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-3">
@@ -1758,6 +2033,40 @@ function preflightBadgeVariant(status?: string): "success" | "danger" | "warn" |
   if (normalized === "WARN") return "warn";
   if (normalized === "FAIL") return "danger";
   return "neutral";
+}
+
+function localOrderStateVariant(state?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(state || "").toUpperCase();
+  if (["FILLED", "RECOVERED_TERMINAL"].includes(normalized)) return "success";
+  if (["REJECTED", "EXPIRED", "EXPIRED_STP", "MANUAL_REVIEW_REQUIRED"].includes(normalized)) return "danger";
+  if (["UNKNOWN_PENDING_RECONCILIATION", "CANCEL_REQUESTED", "PARTIALLY_FILLED"].includes(normalized)) return "warn";
+  if (["ACKED", "WORKING", "RECOVERED_OPEN", "PRECHECK_PASSED", "SUBMITTING"].includes(normalized)) return "info";
+  return "neutral";
+}
+
+function exchangeOrderStatusVariant(status?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (["NEW", "PARTIALLY_FILLED", "FILLED"].includes(normalized)) return normalized === "FILLED" ? "success" : normalized === "PARTIALLY_FILLED" ? "warn" : "info";
+  if (["CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "TRADE_PREVENTION"].includes(normalized)) return "danger";
+  if (["TRADE", "REPLACED"].includes(normalized)) return "warn";
+  return "neutral";
+}
+
+function reconcileStatusVariant(status?: string | null): "success" | "danger" | "warn" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "RESOLVED") return "success";
+  if (normalized === "UNRESOLVED") return "danger";
+  if (normalized === "PENDING") return "warn";
+  return "neutral";
+}
+
+function truncateJson(value: unknown): string {
+  try {
+    const rendered = JSON.stringify(value, null, 2);
+    return rendered.length > 1200 ? `${rendered.slice(0, 1200)}\n...` : rendered;
+  } catch {
+    return String(value ?? "");
+  }
 }
 
 function isMissingRouteError(err: unknown) {
