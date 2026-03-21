@@ -128,6 +128,39 @@ export interface ExecutionLiveOrderEvent {
   raw_payload_json: Record<string, unknown>;
 }
 
+export interface ExecutionLiveFill {
+  execution_fill_id: string;
+  fill_id: string;
+  execution_order_id: string;
+  local_order_id?: string | null;
+  exchange?: string | null;
+  market_type?: string | null;
+  environment?: string | null;
+  symbol: string;
+  family: string;
+  side?: string | null;
+  client_order_id?: string | null;
+  exchange_order_id?: string | null;
+  trade_id?: string | null;
+  execution_id?: string | null;
+  fill_time: string;
+  event_time_exchange?: string | null;
+  event_time_local?: string | null;
+  qty?: number | null;
+  price?: number | null;
+  quote_qty?: number | null;
+  commission?: number | null;
+  commission_asset?: string | null;
+  maker?: boolean | null;
+  maker_bool?: boolean | null;
+  raw_source_type?: string | null;
+  reconciliation_status?: string | null;
+  reconciled?: boolean;
+  discrepancies?: Record<string, unknown>;
+  fill_notional?: number | null;
+  raw_fill_json?: Record<string, unknown>;
+}
+
 export interface ExecutionLiveOrdersResponse {
   items: ExecutionLiveOrder[];
   count: number;
@@ -149,7 +182,8 @@ export interface ExecutionLiveOrderDetailResponse {
   terminal: boolean;
   unresolved_reason?: string | null;
   timeline: ExecutionLiveOrderEvent[];
-  fills: Array<Record<string, unknown>>;
+  fills: ExecutionLiveFill[];
+  fill_discrepancies?: Array<Record<string, unknown>>;
   reconcile_events: Array<Record<string, unknown>>;
   remote_source?: Record<string, unknown> | null;
 }
@@ -159,6 +193,39 @@ export interface ExecutionLiveOrdersReconcileResponse {
   processed_orders: number;
   items: Array<Record<string, unknown>>;
   unresolved: ExecutionLiveOrdersUnresolvedResponse;
+}
+
+export interface ExecutionLiveFillsResponse {
+  items: ExecutionLiveFill[];
+  count: number;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionLiveFillDetailResponse {
+  fill: ExecutionLiveFill;
+  order?: ExecutionLiveOrder | null;
+  timeline: ExecutionLiveOrderEvent[];
+  discrepancy_events: Array<Record<string, unknown>>;
+}
+
+export interface ExecutionLiveFillsByOrderResponse {
+  execution_order_id: string;
+  order?: ExecutionLiveOrder | null;
+  fills: ExecutionLiveFill[];
+}
+
+export interface ExecutionLiveFillDiscrepanciesResponse {
+  count: number;
+  items: ExecutionLiveFill[];
+  events: Array<Record<string, unknown>>;
+}
+
+export interface ExecutionLiveFillsReconcileResponse {
+  processed_orders: number;
+  items: Array<Record<string, unknown>>;
+  unlinked_mytrades: Array<Record<string, unknown>>;
+  discrepancies: ExecutionLiveFillDiscrepanciesResponse;
+  filters: Record<string, unknown>;
 }
 
 export type LivePreflightStatus = "PASS" | "WARN" | "FAIL";

@@ -748,6 +748,135 @@ def test_execution_live_orders_unresolved_and_reconcile_endpoints(tmp_path: Path
     assert detail.json()["current_local_state"] in {"RECOVERED_OPEN", "WORKING"}
 
 
+def test_execution_live_fills_endpoints_expose_storage_reconcile_and_discrepancies(tmp_path: Path, monkeypatch) -> None:
+    module, client = _build_app(tmp_path, monkeypatch)
+    _ensure_execution_prereqs(module)
+    token = _login(client, "Wadmin", "moroco123")
+    service = module.store.execution_reality
+
+    service.set_market_snapshot(
+        family="spot",
+        environment="live",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+    )
+    service._capability_snapshot = lambda family, environment: {  # type: ignore[method-assign]
+        "capability_snapshot_id": "CAP-LIVE-FILLS",
+        "capability_source": "test_override",
+        "can_trade": True,
+    }
+    service._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        {
+            "symbol": "BTCUSDT",
+            "orderId": 998001,
+            "clientOrderId": str((kwargs.get("params") or {}).get("newClientOrderId") or ""),
+            "transactTime": int(time.time() * 1000),
+            "price": "50000.00",
+            "origQty": "0.01000000",
+            "executedQty": "0.00000000",
+            "cummulativeQuoteQty": "0.00000000",
+            "status": "NEW",
+            "timeInForce": "GTC",
+            "type": "LIMIT",
+            "side": "BUY",
+        },
+        {"ok": True, "reason": "ok"},
+    )
+
+    created = service.create_order(_live_execution_payload())
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "event": {
+                "e": "executionReport",
+                "E": int(time.time() * 1000),
+                "s": "BTCUSDT",
+                "c": created["client_order_id"],
+                "S": "BUY",
+                "o": "LIMIT",
+                "f": "GTC",
+                "q": "0.01000000",
+                "p": "50000.00",
+                "x": "TRADE",
+                "X": "FILLED",
+                "i": 998001,
+                "I": 8801,
+                "t": 9901,
+                "l": "0.01000000",
+                "z": "0.01000000",
+                "L": "50000.00",
+                "Y": "500.00000000",
+                "Z": "500.00000000",
+                "n": "0.25",
+                "N": "USDT",
+                "m": False,
+                "T": int(time.time() * 1000),
+            }
+        },
+    )
+
+    fills = client.get("/api/v1/execution/live-fills?environment=live", headers=_auth_headers(token))
+    assert fills.status_code == 200, fills.text
+    fill_id = fills.json()["items"][0]["execution_fill_id"]
+
+    detail = client.get(f"/api/v1/execution/live-fills/{fill_id}", headers=_auth_headers(token))
+    by_order = client.get(f"/api/v1/execution/live-fills/by-order/{created['execution_order_id']}", headers=_auth_headers(token))
+
+    def _fake_reconcile_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(time.time() * 1000)
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 998001,
+                "clientOrderId": created["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 9901,
+                    "orderId": 998001,
+                    "price": "50000.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.0",
+                    "commission": "0.30",
+                    "commissionAsset": "BNB",
+                    "time": now_ms,
+                    "isMaker": True,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_reconcile_request  # type: ignore[method-assign]
+
+    reconcile = client.post(
+        "/api/v1/execution/live-fills/reconcile",
+        headers=_auth_headers(token),
+        json={"execution_order_id": created["execution_order_id"], "environment": "live", "trigger": "MANUAL"},
+    )
+    discrepancies = client.get(
+        f"/api/v1/execution/live-fills/discrepancies?environment=live&execution_order_id={created['execution_order_id']}",
+        headers=_auth_headers(token),
+    )
+
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["fill"]["trade_id"] == "9901"
+    assert by_order.status_code == 200, by_order.text
+    assert len(by_order.json()["fills"]) == 1
+    assert reconcile.status_code == 200, reconcile.text
+    assert reconcile.json()["discrepancies"]["count"] == 1
+    assert discrepancies.status_code == 200, discrepancies.text
+    assert discrepancies.json()["count"] == 1
+
+
 def test_execution_reconcile_summary_endpoint_reports_degraded_mode(tmp_path: Path, monkeypatch) -> None:
     module, client = _build_app(tmp_path, monkeypatch)
     _ensure_execution_prereqs(module)

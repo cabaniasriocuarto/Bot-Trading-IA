@@ -738,6 +738,15 @@ class ExecutionLiveOrdersReconcileBody(BaseModel):
     trigger: str = "MANUAL"
 
 
+class ExecutionLiveFillsReconcileBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
 class ValidationEvaluateBody(BaseModel):
     stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
     venue: str = "binance"
@@ -10259,6 +10268,80 @@ def create_app() -> FastAPI:
         _: dict[str, str] = Depends(require_admin),
     ) -> dict[str, Any]:
         return store.execution_reality.reconcile_live_orders(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.get("/api/v1/execution/live-fills")
+    def execution_live_fills(
+        execution_order_id: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        reconciliation_status: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_live_fills(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            reconciliation_status=reconciliation_status,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/live-fills/discrepancies")
+    def execution_live_fills_discrepancies(
+        execution_order_id: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.live_fill_discrepancies(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/execution/live-fills/by-order/{execution_order_id}")
+    def execution_live_fills_by_order(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        order = store.execution_reality.db.order_by_id(execution_order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return {
+            "execution_order_id": execution_order_id,
+            "order": store.execution_reality._live_order_summary_row(order),
+            "fills": store.execution_reality.list_live_fills(execution_order_id=execution_order_id, limit=500, offset=0)["items"],
+        }
+
+    @app.get("/api/v1/execution/live-fills/{execution_fill_id}")
+    def execution_live_fill_detail(
+        execution_fill_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.live_fill_detail(execution_fill_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_fill_not_found")
+        return payload
+
+    @app.post("/api/v1/execution/live-fills/reconcile")
+    def execution_live_fills_reconcile(
+        body: ExecutionLiveFillsReconcileBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconcile_live_fills(
             execution_order_id=body.execution_order_id,
             family=body.family,
             environment=body.environment,

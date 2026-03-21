@@ -58,9 +58,10 @@ def _spot_create_ack(
     order_id: int = 123456,
     price: str = "50000.00",
     orig_qty: str = "0.01000000",
+    fills: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    return {
+    payload = {
         "symbol": "BTCUSDT",
         "orderId": order_id,
         "clientOrderId": client_order_id,
@@ -74,6 +75,9 @@ def _spot_create_ack(
         "type": "LIMIT",
         "side": "BUY",
     }
+    if fills is not None:
+        payload["fills"] = fills
+    return payload
 
 
 def _spot_execution_report(
@@ -86,9 +90,13 @@ def _spot_execution_report(
     last_fill_price: str = "0.00000000",
     execution_id: int = 7001,
     order_id: int = 123456,
+    trade_id: int = 7701,
+    commission: str = "0.00000000",
+    commission_asset: str | None = None,
+    maker: bool | None = None,
 ) -> dict[str, Any]:
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    return {
+    payload = {
         "e": "executionReport",
         "E": now_ms,
         "s": "BTCUSDT",
@@ -102,12 +110,20 @@ def _spot_execution_report(
         "X": order_status,
         "i": order_id,
         "I": execution_id,
+        "t": trade_id,
         "l": last_fill_qty,
         "z": cumulative_filled_qty,
         "L": last_fill_price,
         "Z": str(float(cumulative_filled_qty or "0") * float(last_fill_price or "0")),
+        "Y": str(float(last_fill_qty or "0") * float(last_fill_price or "0")),
+        "n": commission,
         "T": now_ms,
     }
+    if commission_asset is not None:
+        payload["N"] = commission_asset
+    if maker is not None:
+        payload["m"] = maker
+    return payload
 
 
 class _HTTPResponse:
@@ -1925,6 +1941,7 @@ def test_live_order_state_machine_trade_partial_and_final_fill(tmp_path: Path) -
                 cumulative_filled_qty="0.00400000",
                 last_fill_price="50000.00",
                 execution_id=7002,
+                trade_id=7702,
             ),
             "_rtlab_user_stream": {"received_at": utc_now_iso()},
         },
@@ -1945,6 +1962,7 @@ def test_live_order_state_machine_trade_partial_and_final_fill(tmp_path: Path) -
                 cumulative_filled_qty="0.01000000",
                 last_fill_price="50000.00",
                 execution_id=7003,
+                trade_id=7703,
             ),
             "_rtlab_user_stream": {"received_at": utc_now_iso()},
         },
@@ -2428,6 +2446,282 @@ def test_reconcile_futures_rest_fallback_materializes_funding_and_net_pnl(tmp_pa
     assert detail["gross_pnl"] == pytest.approx(5.0)
     assert detail["net_pnl"] == pytest.approx(5.0 - detail["realized_costs"]["total_cost_realized"])
     assert detail["fills"][0]["net_pnl"] == pytest.approx(detail["net_pnl"])
+
+
+def test_live_fill_from_execution_report_persists_commission_trade_and_execution_ids(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "event": _spot_execution_report(
+                client_order_id=str(order["client_order_id"]),
+                execution_type="TRADE",
+                order_status="PARTIALLY_FILLED",
+                last_fill_qty="0.00400000",
+                cumulative_filled_qty="0.00400000",
+                last_fill_price="50000.00",
+                execution_id=8101,
+                trade_id=9101,
+                commission="0.12",
+                commission_asset="BNB",
+                maker=True,
+            )
+        },
+    )
+
+    fills = service.db.fills_for_order(str(order["execution_order_id"]))
+
+    assert len(fills) == 1
+    assert fills[0]["trade_id"] == "9101"
+    assert fills[0]["execution_id"] == "8101"
+    assert fills[0]["commission"] == pytest.approx(0.12)
+    assert fills[0]["commission_asset"] == "BNB"
+    assert fills[0]["maker"] is True
+    assert fills[0]["raw_source_type"] == "WS_EXECUTION_REPORT"
+    assert fills[0]["reconciliation_status"] == "WS_ONLY"
+    assert fills[0]["last_executed_qty"] == pytest.approx(0.004)
+
+
+def test_live_fill_rest_create_full_materializes_fill_without_stream(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service._signed_request = lambda method, endpoint, **kwargs: (  # type: ignore[method-assign]
+        _spot_create_ack(
+            client_order_id=str((kwargs.get("params") or {})["newClientOrderId"]),
+            status="FILLED",
+            executed_qty="0.01000000",
+            cum_quote_qty="500.00",
+            fills=[
+                {
+                    "price": "50000.00",
+                    "qty": "0.01000000",
+                    "commission": "0.25",
+                    "commissionAsset": "USDT",
+                    "tradeId": 9201,
+                }
+            ],
+        ),
+        {"ok": True, "reason": "ok"},
+    )
+
+    created = service.create_order(
+        {
+            "family": "spot",
+            "environment": "live",
+            "mode": "live",
+            "bot_id": "bot-live-fill-create",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": 0.01,
+            "price": 50000.0,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    fills = service.db.fills_for_order(str(created["execution_order_id"]))
+    assert len(fills) == 1
+    assert fills[0]["raw_source_type"] == "REST_CREATE_FULL"
+    assert fills[0]["trade_id"] == "9201"
+    assert fills[0]["commission_asset"] == "USDT"
+
+
+def test_live_fill_reconcile_marks_discrepancy_without_destroying_ws_evidence(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+    )
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "event": _spot_execution_report(
+                client_order_id=str(order["client_order_id"]),
+                execution_type="TRADE",
+                order_status="FILLED",
+                last_fill_qty="0.01000000",
+                cumulative_filled_qty="0.01000000",
+                last_fill_price="50000.00",
+                execution_id=8201,
+                trade_id=9301,
+                commission="0.25",
+                commission_asset="BNB",
+                maker=True,
+            )
+        },
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 9301,
+                    "orderId": 123456,
+                    "price": "50000.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.0",
+                    "commission": "0.30",
+                    "commissionAsset": "USDT",
+                    "time": now_ms,
+                    "isMaker": False,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    payload = service.reconcile_live_fills(execution_order_id=str(order["execution_order_id"]), family="spot", environment="live", trigger="MANUAL")
+    fills = service.db.fills_for_order(str(order["execution_order_id"]))
+    discrepancy_events = service.db.list_reconcile_events(reconcile_type="fill_discrepancy", resolved=False)
+
+    assert payload["discrepancies"]["count"] == 1
+    assert fills[0]["reconciliation_status"] == "DISCREPANCY"
+    assert fills[0]["trade_id"] == "9301"
+    assert fills[0]["commission_asset"] == "USDT"
+    assert fills[0]["discrepancy_json"]["ws_vs_mytrades_value_mismatch"]["commission"]["local"] == pytest.approx(0.25)
+    assert discrepancy_events
+    assert discrepancy_events[0]["details_json"]["discrepancy_type"] == "ws_vs_mytrades_value_mismatch"
+
+
+def test_live_fill_startup_recovery_backfills_recent_missing_fills(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(
+        service,
+        family="spot",
+        environment="live",
+        order_status="FILLED",
+        acknowledged_at=_iso_hours_ago(1),
+        executed_qty=0.01,
+        cum_quote_qty=500.0,
+    )
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if endpoint.endswith("/api/v3/order"):
+            return {
+                "symbol": "BTCUSDT",
+                "orderId": 123456,
+                "clientOrderId": order["client_order_id"],
+                "status": "FILLED",
+                "executedQty": "0.01",
+                "cummulativeQuoteQty": "500.0",
+                "updateTime": now_ms,
+            }, {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 9401,
+                    "orderId": 123456,
+                    "price": "50000.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.0",
+                    "commission": "0.20",
+                    "commissionAsset": "USDT",
+                    "time": now_ms,
+                    "isMaker": False,
+                }
+            ], {"ok": True, "reason": "ok"}
+        if endpoint.endswith("/api/v3/openOrders"):
+            return [], {"ok": True, "reason": "ok"}
+        return None, {"ok": False, "reason": "unsupported"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    recovery = service.recover_live_orders_on_startup()
+    fills = service.db.fills_for_order(str(order["execution_order_id"]))
+
+    assert recovery["processed_orders"] >= 1
+    assert len(fills) == 1
+    assert fills[0]["trade_id"] == "9401"
+    assert fills[0]["reconciliation_status"] == "REST_BACKFILL"
+
+
+def test_live_fill_symbol_reconcile_records_unlinked_mytrades(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+
+    def _fake_signed_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if endpoint.endswith("/api/v3/myTrades"):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 9501,
+                    "orderId": 777777,
+                    "price": "50010.0",
+                    "qty": "0.01",
+                    "quoteQty": "500.10",
+                    "commission": "0.10",
+                    "commissionAsset": "USDT",
+                    "time": now_ms,
+                    "isMaker": True,
+                }
+            ], {"ok": True, "reason": "ok"}
+        return [], {"ok": True, "reason": "ok"}
+
+    service._signed_request = _fake_signed_request  # type: ignore[method-assign]
+
+    payload = service.reconcile_live_fills(family="spot", environment="live", symbol="BTCUSDT", trigger="MANUAL")
+    discrepancy_events = service.db.list_reconcile_events(reconcile_type="fill_discrepancy", resolved=False)
+
+    assert payload["unlinked_mytrades"]
+    assert discrepancy_events
+    assert discrepancy_events[0]["details_json"]["discrepancy_type"] == "mytrades_unlinked_local_order"
+
+
+def test_live_fill_reporting_rows_preserve_trade_linkage_and_fee_asset(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    _, order = _seed_order(service, family="spot", environment="live", order_status="NEW", acknowledged_at=_iso_hours_ago(0.1))
+
+    service.ingest_user_stream_event(
+        family="spot",
+        environment="live",
+        payload={
+            "event": _spot_execution_report(
+                client_order_id=str(order["client_order_id"]),
+                execution_type="TRADE",
+                order_status="FILLED",
+                last_fill_qty="0.01000000",
+                cumulative_filled_qty="0.01000000",
+                last_fill_price="50000.00",
+                execution_id=8301,
+                trade_id=9601,
+                commission="0.15",
+                commission_asset="USDT",
+                maker=False,
+            )
+        },
+    )
+
+    ledger_rows = service.reporting_bridge_service.db.trade_rows()  # type: ignore[union-attr]
+
+    assert ledger_rows
+    assert ledger_rows[0]["fee_asset"] == "USDT"
+    assert ledger_rows[0]["provenance"]["trade_id"] == "9601"
+    assert ledger_rows[0]["provenance"]["execution_id"] == "8301"
+    assert ledger_rows[0]["provenance"]["raw_source_type"] == "WS_EXECUTION_REPORT"
 
 
 def test_paper_submit_reconcile_materializes_fill(tmp_path: Path) -> None:
