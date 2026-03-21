@@ -2,6 +2,111 @@
 
 Fecha de actualizacion: 2026-03-20
 
+## RTLOPS-23: Reconciliation Engine - 2026-03-20
+
+- Trazabilidad del bloque:
+  - issue operativa: `RTLOPS-23`
+  - rama incremental usada: `feature/reconciliation-engine-rtlops-23`
+  - base preservada:
+    - `4a6bccf`
+    - `7d4dc97`
+    - `9854b30`
+    - `e02c91d`
+    - `aea470a`
+    - `9b7ab07`
+    - `25b0ab6`
+    - `e92b599`
+    - `ae0e9d3`
+    - `05b15c1`
+    - `27a2367`
+    - `8f615bc`
+    - `0c07d60`
+    - `4785d86`
+    - `1335857`
+    - `a320f7d`
+    - `3f1f36b`
+- Fuente del bloque:
+  - arquitectura/policies desde repo + `docs/truth` + bibliografia local:
+    - `docs/reference/BIBLIO_ACCESS_POLICY.md`
+    - `docs/research/BRAIN_OF_BOTS.md`
+    - `docs/research/EXPERIENCE_LEARNING.md`
+  - contratos oficiales del exchange desde documentacion oficial primaria de Binance:
+    - Spot User Data Stream (`executionReport`)
+    - Spot Trading Endpoints (`GET /api/v3/order`, `GET /api/v3/openOrders`)
+    - Spot Account Endpoints (`GET /api/v3/myTrades`)
+    - Request Security y timeout backend `-1007`
+- Alcance real cerrado:
+  - nuevo modulo dedicado:
+    - `rtlab_autotrader/rtlab_core/execution/reconciliation_engine.py`
+  - el runtime Spot live ahora persiste un reconciliation engine canonico con:
+    - `reconciliation_cases`
+    - `reconciliation_case_events`
+    - `reconciliation_snapshots`
+  - estados canonicos de case:
+    - `CLEAN`
+    - `RESOLVED`
+    - `DESYNC`
+    - `MANUAL_REVIEW_REQUIRED`
+    - `FAILED`
+  - severidades canonicas:
+    - `INFO`
+    - `WARN`
+    - `CRITICAL`
+  - jerarquia de evidencia aplicada y documentada:
+    - `executionReport` reciente y sano como fuente principal
+    - `GET /api/v3/order` para estado puntual de orden
+    - `GET /api/v3/openOrders` para snapshot de abiertas
+    - `GET /api/v3/myTrades` para fills/comision/linkage
+    - respuesta REST inicial create/cancel como evidencia historica, no como autoridad final posterior
+    - estado local previo como evidencia secundaria
+  - discrepancias soportadas de forma explicita:
+    - `ORDER_MISSING_LOCALLY_BUT_REMOTE_OPEN`
+    - `ORDER_LOCAL_OPEN_BUT_REMOTE_MISSING`
+    - `ORDER_LOCAL_TERMINAL_BUT_REMOTE_OPEN`
+    - `ORDER_REMOTE_TERMINAL_BUT_LOCAL_OPEN`
+    - `FILLS_REMOTE_NOT_IN_LOCAL`
+    - `FILLS_LOCAL_NOT_CONFIRMED_REMOTE`
+    - `COMMISSION_MISMATCH`
+    - `CUM_QTY_MISMATCH`
+    - `CUM_QUOTE_MISMATCH`
+    - `CLIENT_ORDER_LINK_MISMATCH`
+    - `STREAM_GAP_WITH_PENDING_OPEN_ORDERS`
+    - `UNKNOWN_TIMEOUT_UNRESOLVED`
+    - `STP_PREVENTED_MATCH_NEEDS_RECLASSIFICATION`
+    - `DUPLICATE_LOCAL_EVENT_COLLISION`
+    - `SNAPSHOT_STALENESS_TOO_HIGH`
+  - resolucion automatica conservadora:
+    - local open + query terminal => corrige estado local y journal
+    - fills faltantes + `myTrades` => persistencia y enrich sin borrar evidencia previa
+    - unknown timeout con evidencia convergente => recovery seguro a `RECOVERED_OPEN` o terminal
+    - conflicto irreducible entre evidencias => `DESYNC` o `MANUAL_REVIEW_REQUIRED`
+  - startup y pre-start live ahora corren reconcile formal y ya no operan “como si nada” si aparece drift remoto
+  - bloqueos nuevos en runtime:
+    - nuevos submits live se bloquean si existe case bloqueante del mismo `bot+symbol`
+    - `/api/v1/bot/mode` hacia `live` exige reconciliation gate limpio
+    - `/api/v1/bot/start` en `live` vuelve a validar reconciliation gate y falla cerrado
+  - API minima nueva:
+    - `GET /api/v1/execution/reconciliation/summary`
+    - `GET /api/v1/execution/reconciliation/cases`
+    - `GET /api/v1/execution/reconciliation/cases/open`
+    - `GET /api/v1/execution/reconciliation/cases/{reconciliation_case_id}`
+    - `POST /api/v1/execution/reconciliation/run`
+    - `POST /api/v1/execution/reconciliation/run/by-order/{execution_order_id}`
+    - `POST /api/v1/execution/reconciliation/run/by-symbol/{symbol}`
+    - `GET /api/v1/execution/reconciliation/desync`
+  - frontend minimo extendido:
+    - bloque `Reconciliation`
+    - tabla de cases abiertos
+    - detalle con discrepancias, events y snapshots
+    - banner fuerte si hay `DESYNC` bloqueante
+- Limites conscientes:
+  - el bloque sigue focalizado en Spot live; no abre Futures/Margin
+  - `listStatus` y order lists quedan soportados solo como persistencia raw segura; no se formaliza una orquestacion completa OCO/OTO/OPO
+  - la resolucion automatica sigue siendo conservadora: si la evidencia no alcanza, el sistema prefiere `DESYNC`/`MANUAL_REVIEW_REQUIRED`
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-23` queda pendiente aunque repo/docs/tests ya esten cerrados
+- El siguiente issue tecnico exacto para continuar LIVE es:
+  - `RTLOPS-29`
+
 ## RTLOPS-50: Persistent live order / fill / event storage parity - 2026-03-20
 
 - Trazabilidad del bloque:

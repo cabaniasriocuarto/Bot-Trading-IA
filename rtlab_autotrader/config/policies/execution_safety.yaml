@@ -65,6 +65,20 @@ execution_safety:
     orphan_order_block_sec: 120
     unknown_reconciliation_soft_deadline_sec: 5
     unknown_reconciliation_hard_deadline_sec: 30
+    reconciliation_periodic_enabled: true
+    reconciliation_periodic_interval_sec: 30
+    reconciliation_startup_enabled: true
+    reconciliation_before_live_start_required: true
+    reconciliation_max_snapshot_age_ms: 15000
+    reconciliation_max_stream_gap_ms: 10000
+    reconciliation_unknown_hard_deadline_sec: 30
+    reconciliation_manual_review_blocks_live: true
+    reconciliation_desync_blocks_live: true
+    reconciliation_open_remote_without_local_blocks_live: true
+    reconciliation_remote_query_retry_count: 3
+    reconciliation_remote_query_backoff_ms: 500
+    reconciliation_recent_trades_limit: 100
+    reconciliation_recent_open_orders_scope: symbol_first
   kill_switch:
     enabled: true
     auto_cancel_all_on_trip: true

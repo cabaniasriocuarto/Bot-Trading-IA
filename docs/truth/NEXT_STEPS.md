@@ -2,6 +2,63 @@
 
 Fecha: 2026-03-20
 
+## RTLOPS-23 - Reconciliation Engine - 2026-03-20
+- [x] Crear modulo canonico nuevo:
+  - `rtlab_autotrader/rtlab_core/execution/reconciliation_engine.py`
+- [x] Persistir reconciliation engine operativo:
+  - `reconciliation_cases`
+  - `reconciliation_case_events`
+  - `reconciliation_snapshots`
+- [x] Formalizar estados de case:
+  - `CLEAN`
+  - `RESOLVED`
+  - `DESYNC`
+  - `MANUAL_REVIEW_REQUIRED`
+  - `FAILED`
+- [x] Formalizar jerarquia de evidencia:
+  - `executionReport`
+  - `GET /api/v3/order`
+  - `GET /api/v3/openOrders`
+  - `GET /api/v3/myTrades`
+  - REST inicial create/cancel
+  - estado local previo
+- [x] Detectar discrepancias canonicas:
+  - orden remota faltante/local faltante
+  - terminal vs open conflictivo
+  - fills remotos faltantes/locales no confirmados
+  - mismatch de comision, qty, quote y linkage
+  - stream gap con ordenes abiertas
+  - unknown timeout no resuelto
+  - snapshot stale
+- [x] Resolver automaticamente solo con evidencia suficiente
+- [x] Endurecer startup reconcile y pre-start live reconcile
+- [x] Agregar hard blocks live por `DESYNC` / `MANUAL_REVIEW_REQUIRED`
+- [x] Exponer endpoints minimos:
+  - `GET /api/v1/execution/reconciliation/summary`
+  - `GET /api/v1/execution/reconciliation/cases`
+  - `GET /api/v1/execution/reconciliation/cases/open`
+  - `GET /api/v1/execution/reconciliation/cases/{reconciliation_case_id}`
+  - `POST /api/v1/execution/reconciliation/run`
+  - `POST /api/v1/execution/reconciliation/run/by-order/{execution_order_id}`
+  - `POST /api/v1/execution/reconciliation/run/by-symbol/{symbol}`
+  - `GET /api/v1/execution/reconciliation/desync`
+- [x] Extender frontend minimo:
+  - bloque `Reconciliation`
+  - tabla de cases abiertos
+  - detalle con discrepancias, snapshots y events
+  - banner fuerte si hay `DESYNC` bloqueante
+- [x] Revalidar:
+  - `py_compile` focalizado
+  - `test_execution_reality.py`
+  - `test_web_execution_reality_api.py`
+  - subset relevante de `test_web_live_ready.py`
+  - `test_policy_paths.py`
+  - `npx.cmd tsc --noEmit`
+- [ ] Limites conscientes fuera de RTLOPS-23:
+  - el bloque sigue focalizado en Spot live
+  - order lists complejas solo quedan persistidas raw sin orquestacion completa
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-23` queda pendiente aunque repo/docs/tests ya esten cerrados
+
 ## RTLOPS-50 - Persistent Live Order / Fill / Event Storage parity - 2026-03-20
 - [x] Crear modulo canonico nuevo:
   - `rtlab_autotrader/rtlab_core/execution/live_fill_state.py`
@@ -289,11 +346,11 @@ Fecha: 2026-03-20
   - integracion con `ExecutionRealityService`, `reconcile`, `fills` y `live_safety`
 
 ## Siguiente issue exacto
-- `RTLOPS-23` - Reconciliation Engine
+- `RTLOPS-29`
 - alcance inmediato esperado:
-  - consolidar el reconcile engine sobre la base ya endurecida en RTLOPS-48 y RTLOPS-50
-  - resolver drift entre open orders, fills persistidos, snapshots remotos y estado local
-  - cerrar la capa de desync/manual review antes de seguir con bloques mas altos de operacion
+  - cerrar el bloque siguiente de seguridad/operacion sobre la base ya endurecida por RTLOPS-47, RTLOPS-48, RTLOPS-50 y RTLOPS-23
+  - aprovechar reconciliation cases y hard blocks ya disponibles como insumo directo del runtime live
+  - no seguir subiendo el stack live sin consolidar el guardrail operativo siguiente
 
 ## RTLOPS-49 - Exchange Adapter Live Hardening - 2026-03-19
 - [x] Endurecer signed REST live con:

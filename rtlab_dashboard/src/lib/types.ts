@@ -228,6 +228,85 @@ export interface ExecutionLiveFillsReconcileResponse {
   filters: Record<string, unknown>;
 }
 
+export interface ExecutionReconciliationCase {
+  reconciliation_case_id: string;
+  trigger_type: string;
+  trigger?: string;
+  exchange: string;
+  market_type: string;
+  environment: string;
+  bot_id?: string | null;
+  symbol?: string | null;
+  execution_order_id?: string | null;
+  execution_fill_scope?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  final_status: "CLEAN" | "RESOLVED" | "DESYNC" | "MANUAL_REVIEW_REQUIRED" | "FAILED" | string;
+  severity: "INFO" | "WARN" | "CRITICAL" | string;
+  blocking_bool: boolean;
+  discrepancy_count?: number;
+  discrepancies?: Array<Record<string, unknown>>;
+  local_summary_json?: Record<string, unknown>;
+  remote_summary_json?: Record<string, unknown>;
+  discrepancy_summary_json?: Record<string, unknown>;
+  resolution_summary_json?: Record<string, unknown>;
+  scope?: Record<string, unknown>;
+}
+
+export interface ExecutionReconciliationCasesResponse {
+  items: ExecutionReconciliationCase[];
+  count: number;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionReconciliationCaseDetailResponse {
+  case: ExecutionReconciliationCase;
+  events: Array<{
+    case_event_id: string;
+    reconciliation_case_id: string;
+    event_time: string;
+    source_type: string;
+    message: string;
+    payload_json?: Record<string, unknown>;
+    decision_json?: Record<string, unknown>;
+    applied_bool: boolean;
+  }>;
+  snapshots: Array<{
+    snapshot_id: string;
+    reconciliation_case_id: string;
+    snapshot_type: string;
+    symbol?: string | null;
+    execution_order_id?: string | null;
+    captured_at: string;
+    payload_json?: Record<string, unknown>;
+    source_freshness_ms?: number | null;
+  }>;
+}
+
+export interface ExecutionReconciliationSummary {
+  overall_status: "OK" | "WARN" | "BLOCK" | string;
+  open_cases_count: number;
+  desync_count: number;
+  manual_review_count: number;
+  blocking_cases_count: number;
+  last_run?: ExecutionReconciliationCase | null;
+  open_cases: ExecutionReconciliationCase[];
+  desync_cases: ExecutionReconciliationCase[];
+  policy: Record<string, unknown>;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionReconciliationRunResponse {
+  reconciliation_run: Record<string, unknown>;
+  processed_orders: number;
+  generated_cases: number;
+  items: ExecutionReconciliationCase[];
+  open_cases: ExecutionReconciliationCase[];
+  blocking_cases: ExecutionReconciliationCase[];
+  summary: ExecutionReconciliationSummary;
+  filters: Record<string, unknown>;
+}
+
 export type LivePreflightStatus = "PASS" | "WARN" | "FAIL";
 
 export type LivePreflightCheck = {

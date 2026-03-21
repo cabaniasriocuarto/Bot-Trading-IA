@@ -2,6 +2,51 @@
 
 ## 2026-03-20
 
+### RTLOPS-23 - Reconciliation Engine
+- Nuevo modulo:
+  - `rtlab_autotrader/rtlab_core/execution/reconciliation_engine.py`
+- `rtlab_core/execution/reality.py` ahora:
+  - centraliza el reconciliation engine persistente para Spot live
+  - agrega y usa `reconciliation_cases`, `reconciliation_case_events` y `reconciliation_snapshots`
+  - formaliza estados `CLEAN / RESOLVED / DESYNC / MANUAL_REVIEW_REQUIRED / FAILED`
+  - compara evidencia local vs remota con jerarquia explicita `WS > query order > openOrders > myTrades > REST inicial > estado local previo`
+  - detecta discrepancias materiales de orden, fills, linkage, comision, stream gap y staleness de snapshot
+  - resuelve automaticamente solo cuando la evidencia alcanza; si no, deja `DESYNC` o `MANUAL_REVIEW_REQUIRED`
+  - endurece `recover_live_orders_on_startup()` y `reconcile_live_orders()` para reutilizar el engine canonico
+  - agrega hard blocks live cuando existen cases bloqueantes abiertos
+- `config/policies/execution_safety.yaml` y su copia nested suman policy numerica de reconciliation:
+  - `reconciliation_periodic_interval_sec = 30`
+  - `reconciliation_max_snapshot_age_ms = 15000`
+  - `reconciliation_max_stream_gap_ms = 10000`
+  - `reconciliation_unknown_hard_deadline_sec = 30`
+  - `reconciliation_remote_query_retry_count = 3`
+  - `reconciliation_remote_query_backoff_ms = 500`
+- `rtlab_core/web/app.py` suma endpoints:
+  - `GET /api/v1/execution/reconciliation/summary`
+  - `GET /api/v1/execution/reconciliation/cases`
+  - `GET /api/v1/execution/reconciliation/cases/open`
+  - `GET /api/v1/execution/reconciliation/cases/{reconciliation_case_id}`
+  - `POST /api/v1/execution/reconciliation/run`
+  - `POST /api/v1/execution/reconciliation/run/by-order/{execution_order_id}`
+  - `POST /api/v1/execution/reconciliation/run/by-symbol/{symbol}`
+  - `GET /api/v1/execution/reconciliation/desync`
+- Hard blocks operativos nuevos:
+  - `/api/v1/bot/mode` bloquea `live` si el reconciliation gate no esta limpio
+  - `/api/v1/bot/start` en `live` revalida reconciliation y falla cerrado
+- Frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx` agrega bloque `Reconciliation`, tabla de cases, detalle y reconcile manual
+  - `rtlab_dashboard/src/lib/types.ts` suma contratos tipados de summary/cases/detail/run
+- Validacion local de RTLOPS-23:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/reconciliation_engine.py rtlab_autotrader/rtlab_core/execution/reality.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_execution_reality.py rtlab_autotrader/tests/test_web_execution_reality_api.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_execution_reality.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_execution_reality_api.py -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_requires_fresh_final_preflight or live_start_requires_fresh_final_preflight or live_mode_requires_clean_reconciliation_gate or live_start_requires_clean_reconciliation_gate or config_policies_endpoint_exposes_numeric_policy_bundle" -q` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+- Nota administrativa:
+  - `test_web_live_ready.py -q` completo excedio el timeout razonable del wrapper de esta sesion; el subset relevante del bloque paso completo
+  - si Linear MCP sigue caido, el cierre administrativo de `RTLOPS-23` queda pendiente aunque el cierre tecnico del repo/docs/tests este completo
+
 ### RTLOPS-50 - Persistent live order / fill / event storage parity
 - Nuevo modulo:
   - `rtlab_autotrader/rtlab_core/execution/live_fill_state.py`

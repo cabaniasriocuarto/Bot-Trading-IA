@@ -17,6 +17,10 @@ import type {
   ExecutionLiveFillDiscrepanciesResponse,
   ExecutionLiveFillsReconcileResponse,
   ExecutionLiveFillsResponse,
+  ExecutionReconciliationCaseDetailResponse,
+  ExecutionReconciliationCasesResponse,
+  ExecutionReconciliationRunResponse,
+  ExecutionReconciliationSummary,
   BotPolicyStateResponse,
   BotStatusResponse,
   ExecutionLiveOrderDetailResponse,
@@ -85,12 +89,17 @@ export default function ExecutionPage() {
   const [liveOrdersUnresolved, setLiveOrdersUnresolved] = useState<ExecutionLiveOrdersUnresolvedResponse | null>(null);
   const [liveFills, setLiveFills] = useState<ExecutionLiveFillsResponse | null>(null);
   const [liveFillDiscrepancies, setLiveFillDiscrepancies] = useState<ExecutionLiveFillDiscrepanciesResponse | null>(null);
+  const [reconciliationSummary, setReconciliationSummary] = useState<ExecutionReconciliationSummary | null>(null);
+  const [reconciliationCases, setReconciliationCases] = useState<ExecutionReconciliationCasesResponse | null>(null);
   const [selectedLiveOrderId, setSelectedLiveOrderId] = useState("");
   const [selectedLiveOrderDetail, setSelectedLiveOrderDetail] = useState<ExecutionLiveOrderDetailResponse | null>(null);
+  const [selectedReconciliationCaseId, setSelectedReconciliationCaseId] = useState("");
+  const [selectedReconciliationCaseDetail, setSelectedReconciliationCaseDetail] = useState<ExecutionReconciliationCaseDetailResponse | null>(null);
   const [livePreflightBusy, setLivePreflightBusy] = useState(false);
   const [livePreflightAttestBusy, setLivePreflightAttestBusy] = useState(false);
   const [liveOrdersBusy, setLiveOrdersBusy] = useState(false);
   const [liveFillsBusy, setLiveFillsBusy] = useState(false);
+  const [reconciliationBusy, setReconciliationBusy] = useState(false);
   const [livePreflightNote, setLivePreflightNote] = useState("");
   const [exchangeDiagError, setExchangeDiagError] = useState("");
   const [panelLoading, setPanelLoading] = useState(true);
@@ -129,7 +138,23 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, marketStreamsPayload, livePreflightPayload, liveOrdersPayload, liveOrdersUnresolvedPayload, liveFillsPayload, liveFillDiscrepanciesPayload] = await Promise.all([
+    const [
+      status,
+      currentSettings,
+      healthPayload,
+      gatesPayload,
+      rolloutPayload,
+      botsPayload,
+      strategiesPayload,
+      marketStreamsPayload,
+      livePreflightPayload,
+      liveOrdersPayload,
+      liveOrdersUnresolvedPayload,
+      liveFillsPayload,
+      liveFillDiscrepanciesPayload,
+      reconciliationSummaryPayload,
+      reconciliationCasesPayload,
+    ] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -143,6 +168,8 @@ export default function ExecutionPage() {
       apiGet<ExecutionLiveOrdersUnresolvedResponse>("/api/v1/execution/live-orders/unresolved?environment=live").catch(() => null as ExecutionLiveOrdersUnresolvedResponse | null),
       apiGet<ExecutionLiveFillsResponse>("/api/v1/execution/live-fills?environment=live&limit=25").catch(() => null as ExecutionLiveFillsResponse | null),
       apiGet<ExecutionLiveFillDiscrepanciesResponse>("/api/v1/execution/live-fills/discrepancies?environment=live").catch(() => null as ExecutionLiveFillDiscrepanciesResponse | null),
+      apiGet<ExecutionReconciliationSummary>("/api/v1/execution/reconciliation/summary?environment=live").catch(() => null as ExecutionReconciliationSummary | null),
+      apiGet<ExecutionReconciliationCasesResponse>("/api/v1/execution/reconciliation/cases/open?environment=live&limit=25").catch(() => null as ExecutionReconciliationCasesResponse | null),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
@@ -156,6 +183,8 @@ export default function ExecutionPage() {
     setLiveOrdersUnresolved(liveOrdersUnresolvedPayload);
     setLiveFills(liveFillsPayload);
     setLiveFillDiscrepancies(liveFillDiscrepanciesPayload);
+    setReconciliationSummary(reconciliationSummaryPayload);
+    setReconciliationCases(reconciliationCasesPayload);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
     const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
@@ -276,6 +305,40 @@ export default function ExecutionPage() {
     };
   }, [selectedLiveOrderId, liveOrders]);
 
+  useEffect(() => {
+    const firstId = reconciliationCases?.items?.[0]?.reconciliation_case_id || "";
+    if (!selectedReconciliationCaseId && firstId) {
+      setSelectedReconciliationCaseId(firstId);
+    } else if (
+      selectedReconciliationCaseId &&
+      !(reconciliationCases?.items || []).some((row) => row.reconciliation_case_id === selectedReconciliationCaseId)
+    ) {
+      setSelectedReconciliationCaseId(firstId);
+    }
+  }, [reconciliationCases, selectedReconciliationCaseId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadReconciliationCaseDetail = async () => {
+      if (!selectedReconciliationCaseId) {
+        setSelectedReconciliationCaseDetail(null);
+        return;
+      }
+      try {
+        const payload = await apiGet<ExecutionReconciliationCaseDetailResponse>(
+          `/api/v1/execution/reconciliation/cases/${encodeURIComponent(selectedReconciliationCaseId)}`,
+        );
+        if (!cancelled) setSelectedReconciliationCaseDetail(payload);
+      } catch {
+        if (!cancelled) setSelectedReconciliationCaseDetail(null);
+      }
+    };
+    void loadReconciliationCaseDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedReconciliationCaseId, reconciliationCases]);
+
   const latencySeries = useMemo(
     () =>
       (stats?.series || []).map((row, idx) => ({
@@ -375,6 +438,17 @@ export default function ExecutionPage() {
   const liveFillDiscrepancyCount = liveFillDiscrepancies?.count ?? 0;
   const selectedLiveOrder = selectedLiveOrderDetail?.order || liveOrdersRows.find((row) => row.execution_order_id === selectedLiveOrderId) || null;
   const selectedLiveOrderTimeline = selectedLiveOrderDetail?.timeline || [];
+  const reconciliationCasesRows = reconciliationCases?.items || [];
+  const reconciliationOpenCount = reconciliationSummary?.open_cases_count ?? reconciliationCasesRows.length;
+  const reconciliationDesyncCount = reconciliationSummary?.desync_count ?? 0;
+  const reconciliationManualCount = reconciliationSummary?.manual_review_count ?? 0;
+  const reconciliationBlockingCount = reconciliationSummary?.blocking_cases_count ?? 0;
+  const selectedReconciliationCase =
+    selectedReconciliationCaseDetail?.case ||
+    reconciliationCasesRows.find((row) => row.reconciliation_case_id === selectedReconciliationCaseId) ||
+    null;
+  const selectedReconciliationEvents = selectedReconciliationCaseDetail?.events || [];
+  const selectedReconciliationSnapshots = selectedReconciliationCaseDetail?.snapshots || [];
 
   const liveReadyItems = [
     {
@@ -759,6 +833,33 @@ export default function ExecutionPage() {
       setControlError(err instanceof Error ? err.message : "No se pudo reconciliar fills live.");
     } finally {
       setLiveFillsBusy(false);
+    }
+  };
+
+  const runReconciliationEngine = async (params?: { executionOrderId?: string; symbol?: string; trigger?: string }) => {
+    if (role !== "admin") return;
+    setReconciliationBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<ExecutionReconciliationRunResponse>("/api/v1/execution/reconciliation/run", {
+        environment: "live",
+        family: "spot",
+        execution_order_id: params?.executionOrderId,
+        symbol: params?.symbol,
+        trigger: params?.trigger || (params?.executionOrderId ? "MANUAL" : "PRESTART_LIVE"),
+      });
+      const blocking = payload?.summary?.blocking_cases_count ?? 0;
+      setMessage(
+        params?.executionOrderId
+          ? `Reconciliation ejecutada para ${params.executionOrderId}. Casos bloqueantes abiertos: ${blocking}.`
+          : `Reconciliation ejecutada. Casos bloqueantes abiertos: ${blocking}.`,
+      );
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo ejecutar el reconciliation engine.");
+    } finally {
+      setReconciliationBusy(false);
     }
   };
 
@@ -1408,6 +1509,231 @@ export default function ExecutionPage() {
                   </div>
                 ))
               ) : null}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardTitle>Reconciliation</CardTitle>
+          <CardDescription>
+            Engine persistente para conciliar journal local, openOrders, query order, myTrades y salud del stream antes de operar LIVE.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <Metric title="Estado global" value={reconciliationSummary?.overall_status || "OK"} compact />
+              <Metric title="Casos abiertos" value={String(reconciliationOpenCount)} compact />
+              <Metric title="DESYNC" value={String(reconciliationDesyncCount)} compact />
+              <Metric title="Manual review" value={String(reconciliationManualCount)} compact />
+              <Metric title="Bloqueantes" value={String(reconciliationBlockingCount)} compact />
+              <Metric title="Ultimo run" value={formatDateTime(reconciliationSummary?.last_run?.started_at)} compact />
+            </div>
+
+            {reconciliationBlockingCount > 0 ? (
+              <div className="rounded-lg border border-rose-700/60 bg-rose-950/30 p-3 text-xs text-rose-100">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">DESYNC bloqueante</p>
+                    <p className="mt-1 text-rose-200">
+                      Hay {reconciliationBlockingCount} caso(s) bloqueantes. LIVE debe fallar cerrado hasta que el engine los deje en CLEAN o RESOLVED.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={role !== "admin" || reconciliationBusy}
+                    onClick={() => {
+                      void runReconciliationEngine({ trigger: "MANUAL" });
+                    }}
+                  >
+                    {reconciliationBusy ? "Reconciliando..." : "Reconciliar ahora"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+                No hay casos bloqueantes abiertos. El resumen igualmente sigue visible para startup reconcile, pre-start live y auditoria manual.
+              </div>
+            )}
+
+            {reconciliationCasesRows.length ? (
+              <div className="rounded-lg border border-slate-800">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Scope</TH>
+                      <TH>Simbolo</TH>
+                      <TH>Orden</TH>
+                      <TH>Trigger</TH>
+                      <TH>Status</TH>
+                      <TH>Severity</TH>
+                      <TH>Bloquea</TH>
+                      <TH>Resumen</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {reconciliationCasesRows.map((row) => {
+                      const selected = row.reconciliation_case_id === selectedReconciliationCaseId;
+                      const discrepancy = row.discrepancies?.[0] as Record<string, unknown> | undefined;
+                      return (
+                        <TR
+                          key={row.reconciliation_case_id}
+                          className={selected ? "bg-slate-900/70" : undefined}
+                          onClick={() => {
+                            setSelectedReconciliationCaseId(row.reconciliation_case_id);
+                          }}
+                        >
+                          <TD>{row.execution_order_id ? "order" : row.symbol ? "symbol" : "global"}</TD>
+                          <TD>{row.symbol || "-"}</TD>
+                          <TD className="max-w-[180px] truncate" title={row.execution_order_id || "-"}>
+                            {row.execution_order_id || "-"}
+                          </TD>
+                          <TD>{row.trigger || row.trigger_type}</TD>
+                          <TD>
+                            <Badge variant={reconciliationCaseStatusVariant(row.final_status)}>{row.final_status}</Badge>
+                          </TD>
+                          <TD>
+                            <Badge variant={reconciliationCaseSeverityVariant(row.severity)}>{row.severity}</Badge>
+                          </TD>
+                          <TD>{row.blocking_bool ? <Badge variant="danger">si</Badge> : <Badge variant="neutral">no</Badge>}</TD>
+                          <TD className="max-w-[280px] truncate" title={String(discrepancy?.code || "")}>
+                            {String(discrepancy?.code || row.discrepancy_count || "sin discrepancias")}
+                          </TD>
+                        </TR>
+                      );
+                    })}
+                  </TBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                Sin casos abiertos actualmente. Los runs manuales, de startup o pre-start live persistiran evidencia cuando corresponda.
+              </div>
+            )}
+
+            <div className="grid gap-3 xl:grid-cols-[1.15fr_0.85fr]">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-100">Detalle del case</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Evidencia local/remota, discrepancias detectadas y resolucion aplicada o pendiente.
+                    </p>
+                  </div>
+                  {selectedReconciliationCase ? (
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || reconciliationBusy}
+                      onClick={() => {
+                        void runReconciliationEngine({
+                          executionOrderId: selectedReconciliationCase.execution_order_id || undefined,
+                          symbol: selectedReconciliationCase.symbol || undefined,
+                          trigger: "MANUAL",
+                        });
+                      }}
+                    >
+                      {reconciliationBusy ? "Reconciliando..." : "Reconciliar scope"}
+                    </Button>
+                  ) : null}
+                </div>
+
+                {selectedReconciliationCase ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <Metric title="Status" value={selectedReconciliationCase.final_status} compact />
+                      <Metric title="Severity" value={selectedReconciliationCase.severity} compact />
+                      <Metric title="Discrepancias" value={String(selectedReconciliationCase.discrepancy_count ?? 0)} compact />
+                      <Metric title="Bloquea" value={selectedReconciliationCase.blocking_bool ? "si" : "no"} compact />
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                      <p>trigger: {selectedReconciliationCase.trigger || selectedReconciliationCase.trigger_type}</p>
+                      <p>symbol: {selectedReconciliationCase.symbol || "-"}</p>
+                      <p>execution_order_id: {selectedReconciliationCase.execution_order_id || "-"}</p>
+                      <p>started_at: {formatDateTime(selectedReconciliationCase.started_at)}</p>
+                      <p>finished_at: {formatDateTime(selectedReconciliationCase.finished_at)}</p>
+                    </div>
+                    <div className="space-y-2">
+                      {selectedReconciliationCase.discrepancies?.length ? (
+                        selectedReconciliationCase.discrepancies.map((row, idx) => (
+                          <div key={`${selectedReconciliationCase.reconciliation_case_id}-disc-${idx}`} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant={reconciliationCaseSeverityVariant(String(row.severity || selectedReconciliationCase.severity))}>
+                                {String(row.code || "DISCREPANCY")}
+                              </Badge>
+                              <span className="text-slate-400">{String(row.entity_scope || "scope")}</span>
+                            </div>
+                            <p className="mt-2 text-slate-400">
+                              proposed_action: {String(row.proposed_action || "-")} · final_action: {String(row.final_action || "-")}
+                            </p>
+                            <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">{truncateJson(row)}</pre>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                          Sin discrepancias detalladas para este case.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                    Selecciona un case para ver snapshots, discrepancias y resolucion.
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                  <p className="text-sm font-semibold text-slate-100">Eventos del case</p>
+                  <div className="mt-3 space-y-2">
+                    {selectedReconciliationEvents.length ? (
+                      selectedReconciliationEvents.map((event) => (
+                        <div key={event.case_event_id} className="rounded border border-slate-800 bg-slate-900/50 p-2 text-xs text-slate-300">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="info">{event.source_type}</Badge>
+                              <span className="font-semibold text-slate-100">{event.message}</span>
+                            </div>
+                            <span className="text-slate-400">{formatDateTime(event.event_time)}</span>
+                          </div>
+                          {event.decision_json && Object.keys(event.decision_json).length ? (
+                            <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">{truncateJson(event.decision_json)}</pre>
+                          ) : null}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                        Sin eventos cargados para este case.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                  <p className="text-sm font-semibold text-slate-100">Snapshots</p>
+                  <div className="mt-3 space-y-2">
+                    {selectedReconciliationSnapshots.length ? (
+                      selectedReconciliationSnapshots.map((snapshot) => (
+                        <div key={snapshot.snapshot_id} className="rounded border border-slate-800 bg-slate-900/50 p-2 text-xs text-slate-300">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="neutral">{snapshot.snapshot_type}</Badge>
+                              <span>{snapshot.symbol || "-"}</span>
+                            </div>
+                            <span className="text-slate-400">
+                              {formatDateTime(snapshot.captured_at)}
+                              {snapshot.source_freshness_ms != null ? ` · ${snapshot.source_freshness_ms} ms` : ""}
+                            </span>
+                          </div>
+                          <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">{truncateJson(snapshot.payload_json)}</pre>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                        Sin snapshots cargados para este case.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -2211,6 +2537,24 @@ function reconcileStatusVariant(status?: string | null): "success" | "danger" | 
   if (["RESOLVED", "RECONCILED"].includes(normalized)) return "success";
   if (["UNRESOLVED", "DISCREPANCY"].includes(normalized)) return "danger";
   if (["PENDING", "WS_ONLY", "REST_BACKFILL", "REST_CREATE_ONLY"].includes(normalized)) return "warn";
+  return "neutral";
+}
+
+function reconciliationCaseStatusVariant(status?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "CLEAN") return "success";
+  if (normalized === "RESOLVED") return "info";
+  if (normalized === "DESYNC") return "danger";
+  if (normalized === "MANUAL_REVIEW_REQUIRED") return "warn";
+  if (normalized === "FAILED") return "danger";
+  return "neutral";
+}
+
+function reconciliationCaseSeverityVariant(severity?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(severity || "").toUpperCase();
+  if (normalized === "INFO") return "info";
+  if (normalized === "WARN") return "warn";
+  if (normalized === "CRITICAL") return "danger";
   return "neutral";
 }
 

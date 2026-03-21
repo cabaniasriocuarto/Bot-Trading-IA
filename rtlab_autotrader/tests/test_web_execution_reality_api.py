@@ -877,6 +877,144 @@ def test_execution_live_fills_endpoints_expose_storage_reconcile_and_discrepanci
     assert discrepancies.json()["count"] == 1
 
 
+def test_execution_reconciliation_endpoints_expose_summary_cases_detail_and_desync(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  _ensure_execution_prereqs(module)
+  token = _login(client, "Wadmin", "moroco123")
+  service = module.store.execution_reality
+  now_ms = int(time.time() * 1000)
+
+  def _fake_reconcile_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+    if endpoint.endswith("/api/v3/openOrders"):
+      return [
+        {
+          "symbol": "BTCUSDT",
+          "orderId": 771001,
+          "clientOrderId": "remote-open-only",
+          "status": "NEW",
+          "origQty": "0.01",
+          "executedQty": "0.00",
+          "price": "50000.0",
+          "updateTime": now_ms,
+        }
+      ], {"ok": True, "reason": "ok"}
+    if endpoint.endswith("/api/v3/myTrades"):
+      return [], {"ok": True, "reason": "ok"}
+    return None, {"ok": False, "reason": "not_found"}
+
+  service._signed_request = _fake_reconcile_request  # type: ignore[method-assign]
+
+  run = client.post(
+    "/api/v1/execution/reconciliation/run",
+    headers=_auth_headers(token),
+    json={"environment": "live", "family": "spot", "trigger": "STARTUP"},
+  )
+  assert run.status_code == 200, run.text
+  run_body = run.json()
+  assert run_body["generated_cases"] >= 1
+  case_id = str(run_body["items"][0]["reconciliation_case_id"])
+
+  summary = client.get("/api/v1/execution/reconciliation/summary?environment=live&family=spot", headers=_auth_headers(token))
+  listed = client.get("/api/v1/execution/reconciliation/cases/open?environment=live&family=spot", headers=_auth_headers(token))
+  detail = client.get(f"/api/v1/execution/reconciliation/cases/{case_id}", headers=_auth_headers(token))
+  desync = client.get("/api/v1/execution/reconciliation/desync?environment=live&family=spot", headers=_auth_headers(token))
+
+  assert summary.status_code == 200, summary.text
+  assert summary.json()["blocking_cases_count"] >= 1
+  assert listed.status_code == 200, listed.text
+  assert listed.json()["count"] >= 1
+  assert detail.status_code == 200, detail.text
+  assert len(detail.json()["snapshots"]) >= 1
+  assert desync.status_code == 200, desync.text
+  assert desync.json()["count"] >= 1
+
+
+def test_execution_reconciliation_run_by_order_resolves_unknown_case(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  _ensure_execution_prereqs(module)
+  token = _login(client, "Wadmin", "moroco123")
+  service = module.store.execution_reality
+
+  intent = service.db.insert_intent(
+    {
+      "family": "spot",
+      "environment": "live",
+      "mode": "live",
+      "strategy_id": "strat-live-api",
+      "bot_id": "bot-live-api",
+      "symbol": "BTCUSDT",
+      "side": "BUY",
+      "order_type": "LIMIT",
+      "quantity": 0.01,
+      "limit_price": 50000.0,
+      "preflight_status": "submitted",
+      "submitted_at": "2026-03-20T00:00:00+00:00",
+      "policy_hash": service.policy_hash(),
+      "raw_request_json": {"market_snapshot": {"bid": 50000.0, "ask": 50001.0}},
+    }
+  )
+  order = service.db.upsert_order(
+    {
+      "execution_intent_id": intent["execution_intent_id"],
+      "bot_id": intent["bot_id"],
+      "strategy_id": intent["strategy_id"],
+      "client_order_id": intent["client_order_id"],
+      "symbol": "BTCUSDT",
+      "family": "spot",
+      "environment": "live",
+      "order_status": "NEW",
+      "current_local_state": "UNKNOWN_PENDING_RECONCILIATION",
+      "submitted_at": "2026-03-20T00:00:00+00:00",
+      "last_event_at": "2026-03-20T00:00:00+00:00",
+      "price": 50000.0,
+      "orig_qty": 0.01,
+      "unresolved_reason": "timeout_unknown",
+    }
+  )
+  now_ms = int(time.time() * 1000)
+
+  def _fake_reconcile_request(method: str, endpoint: str, **kwargs):  # noqa: ANN001
+    if endpoint.endswith("/api/v3/order"):
+      return {
+        "symbol": "BTCUSDT",
+        "orderId": 991002,
+        "clientOrderId": intent["client_order_id"],
+        "status": "NEW",
+        "executedQty": "0.00000000",
+        "cummulativeQuoteQty": "0.00000000",
+        "updateTime": now_ms,
+      }, {"ok": True, "reason": "ok"}
+    if endpoint.endswith("/api/v3/openOrders"):
+      return [
+        {
+          "symbol": "BTCUSDT",
+          "orderId": 991002,
+          "clientOrderId": intent["client_order_id"],
+          "status": "NEW",
+          "origQty": "0.01",
+          "executedQty": "0.00",
+          "price": "50000.0",
+          "updateTime": now_ms,
+        }
+      ], {"ok": True, "reason": "ok"}
+    if endpoint.endswith("/api/v3/myTrades"):
+      return [], {"ok": True, "reason": "ok"}
+    return None, {"ok": False, "reason": "unsupported"}
+
+  service._signed_request = _fake_reconcile_request  # type: ignore[method-assign]
+
+  run = client.post(
+    f"/api/v1/execution/reconciliation/run/by-order/{order['execution_order_id']}?environment=live&family=spot&trigger=MANUAL",
+    headers=_auth_headers(token),
+  )
+  detail = client.get(f"/api/v1/execution/live-orders/{order['execution_order_id']}", headers=_auth_headers(token))
+
+  assert run.status_code == 200, run.text
+  assert run.json()["items"][0]["final_status"] in {"CLEAN", "RESOLVED"}
+  assert detail.status_code == 200, detail.text
+  assert detail.json()["current_local_state"] in {"RECOVERED_OPEN", "WORKING"}
+
+
 def test_execution_reconcile_summary_endpoint_reports_degraded_mode(tmp_path: Path, monkeypatch) -> None:
     module, client = _build_app(tmp_path, monkeypatch)
     _ensure_execution_prereqs(module)
