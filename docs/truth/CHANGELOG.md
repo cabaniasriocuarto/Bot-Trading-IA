@@ -1,5 +1,57 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-23
+
+### RTLOPS-29 - operational safety guardrails live Spot
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/operational_safety.py` con taxonomia canonica de:
+    - triggers
+    - estados de breaker
+    - severidades
+    - acciones
+    - matching por scope
+  - `RuntimeBridge` y `ConsoleStore` ahora persisten y exponen:
+    - `safety_guardrail_events`
+    - `safety_breakers`
+    - `safety_manual_actions`
+  - guardrails integrados a:
+    - `/api/v1/bot/mode` en `live`
+    - `/api/v1/bot/start` en `live`
+    - submit runtime live
+    - `build_status_payload()`
+    - summary de riesgo/runtime
+  - `DELETE /api/v3/openOrders` por simbolo queda cableado como `emergency cancel` oficial Spot.
+- Policy:
+  - nueva `execution_safety.operational_safety` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - thresholds numericos cerrados:
+    - stream gap warn/critical
+    - unknown timeout hard deadline
+    - rate-limit thresholds
+    - reject/cancel fail windows
+    - open order pressure
+    - cooldown
+    - manual lock persistence
+- API/UI:
+  - endpoints nuevos de `operational safety` para summary, breakers, eventos, locks y acciones manuales;
+  - `Execution` agrega bloque operativo con:
+    - summary global
+    - tabla de breakers
+    - tabla de eventos
+    - panel de acciones (`freeze`, `unfreeze`, `emergency cancel`, `reconcile manual`)
+    - banner critico cuando hay bloqueo global o manual locks activos
+- Validacion local real:
+  - `py_compile rtlab_autotrader/rtlab_core/execution/operational_safety.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/domains/policy_state/repository.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "operational_safety or emergency_cancel_symbol or manual_lock_persists_after_reload or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk"` -> PASS
+  - `pytest rtlab_autotrader/tests/test_policy_paths.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle"` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+- Nota administrativa:
+  - la validacion de `pytest` requirio `--basetemp` explicito por restricciones de permisos del entorno sobre `%TEMP%`;
+  - no existe `test_web_execution_reality_api.py` en esta base real, por eso la regresion web se hizo sobre la suite efectiva del repo (`test_web_feature_set_fail_closed.py` + `test_web_live_ready.py`).
+
 ## 2026-03-18
 
 ### RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - micro-hardening final frontend de authority/runtime

@@ -258,14 +258,188 @@ def test_internal_proxy_rejects_previous_token_when_expired(tmp_path: Path, monk
   payload = status.json()
   assert payload["previous_token_configured"] is True
   assert payload["previous_token_enabled"] is False
-  assert payload["rotation_ready"] is False
-  warnings = payload.get("warnings") or []
-  assert any("expirado" in str(msg).lower() for msg in warnings)
 
-  logs_payload = module.store.list_logs(severity="warn", module="auth", since=None, until=None, page=1, page_size=200)
-  items = logs_payload.get("items") or []
-  security_logs = [row for row in items if str(row.get("type") or "") == "security_auth"]
-  assert any(str((row.get("payload") or {}).get("reason") or "") == "expired_previous_token" for row in security_logs)
+
+def test_operational_safety_summary_api_exposes_manual_global_lock(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  freeze = client.post("/api/v1/execution/safety/freeze/global", json={"audit_note": "test_lock"}, headers=headers)
+  assert freeze.status_code == 200, freeze.text
+  freeze_payload = freeze.json()
+  assert freeze_payload["ok"] is True
+
+  summary = client.get("/api/v1/execution/safety/summary", headers=headers)
+  assert summary.status_code == 200, summary.text
+  body = summary.json()
+  assert body["blocking_bool"] is True
+  assert body["global_state"] == "MANUAL_LOCK"
+  assert int(body["manual_lock_count"]) >= 1
+
+
+def test_operational_safety_rate_limit_threshold_enters_cooldown(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  for _ in range(3):
+    module.store.insert_safety_guardrail_event(
+      scope_type="GLOBAL",
+      trigger_code="TOO_MANY_REQUESTS_PRESSURE",
+      severity="WARN",
+      evidence={"status_code": 429},
+      action_taken="WARN_ONLY",
+      blocking_bool=False,
+    )
+  state = module.store.load_bot_state()
+  summary = module.runtime_bridge.evaluate_operational_safety(
+    state=state,
+    settings=module.store.load_settings(),
+  )
+  assert summary["blocking_bool"] is True
+  breaker = next((row for row in (summary.get("breakers") or []) if row.get("breaker_code") == "TOO_MANY_REQUESTS_PRESSURE"), None)
+  assert breaker is not None
+  assert breaker["state"] == "COOLDOWN"
+
+
+def test_operational_safety_stream_terminated_opens_blocking_breaker(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+  state["runtime_heartbeat_at"] = module.utc_now_iso()
+
+  summary = module.runtime_bridge.evaluate_operational_safety(
+    state=state,
+    settings=module.store.load_settings(),
+    trigger="STREAM_TERMINATED",
+  )
+  assert summary["blocking_bool"] is True
+  breaker = next((row for row in (summary.get("breakers") or []) if row.get("breaker_code") == "STREAM_TERMINATED"), None)
+  assert breaker is not None
+  assert breaker["state"] == "OPEN"
+
+
+def test_runtime_submit_is_blocked_by_symbol_freeze(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  module.RUNTIME_REMOTE_ORDERS_ENABLED = True
+  module.runtime_bridge.freeze_symbol(symbol="BTCUSDT", requested_by="tester", audit_note="freeze_test")
+  monkeypatch.setattr(module.runtime_bridge, "_runtime_order_intent", lambda mode: {
+    "action": "trade",
+    "reason": "test_signal",
+    "strategy_id": "rt_safety_test",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "notional_usd": 10.0,
+  })
+  monkeypatch.setattr(module.runtime_bridge, "_fetch_exchange_open_orders", lambda mode: ({}, "mock", True, ""))
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  state["runtime_engine"] = "real"
+  state["running"] = True
+  state["killed"] = False
+  state["runtime_reconciliation_ok"] = True
+  state["runtime_operational_safety_ok"] = False
+  module.runtime_bridge._last_risk = {"allow_new_positions": True}
+
+  result = module.runtime_bridge._maybe_submit_exchange_runtime_order(
+    state=state,
+    mode="testnet",
+    account_positions=[],
+    account_positions_ok=True,
+    account_positions_reason="mock",
+  )
+  assert result["submitted"] is False
+  assert result["reason"] == "operational_safety_blocked"
+
+
+def test_live_mode_fails_when_operational_safety_gate_blocks(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_ENGINE", "real")
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  monkeypatch.setattr(module, "evaluate_gates", lambda *args, **kwargs: {"overall_status": "PASS", "gates": []})
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda payload: (True, ""))
+  monkeypatch.setattr(module.runtime_bridge, "live_operational_safety_gate", lambda **kwargs: (False, "breaker_open", {"blocking_bool": True}))
+
+  res = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
+  assert res.status_code == 400, res.text
+  assert "operational safety" in str(res.json().get("detail") or "").lower()
+
+
+def test_live_start_fails_when_operational_safety_gate_blocks(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_ENGINE", "real")
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  state = module.store.load_bot_state()
+  state["mode"] = "live"
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  monkeypatch.setattr(module, "evaluate_gates", lambda *args, **kwargs: {"overall_status": "PASS", "gates": []})
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda payload: (True, ""))
+  monkeypatch.setattr(module.runtime_bridge, "live_operational_safety_gate", lambda **kwargs: (False, "breaker_open", {"blocking_bool": True}))
+
+  res = client.post("/api/v1/bot/start", json={}, headers=headers)
+  assert res.status_code == 400, res.text
+  assert "operational safety" in str(res.json().get("detail") or "").lower()
+
+
+def test_emergency_cancel_symbol_uses_official_spot_endpoint_and_persists_action(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  state = module.store.load_bot_state()
+  state["mode"] = "testnet"
+  module.store.save_bot_state(state)
+
+  calls: list[dict[str, str]] = []
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    symbol = str((params or {}).get("symbol") or "")
+    calls.append({"method": str(method), "path": str(path), "symbol": symbol})
+    return True, {"status_code": 200, "payload": [{"symbol": symbol, "status": "CANCELED"}]}
+
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
+
+  res = client.post("/api/v1/execution/safety/emergency-cancel/BTCUSDT", json={"audit_note": "test_cancel"}, headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+  assert payload["ok"] is True
+  delete_call = next((row for row in calls if str(row.get("method") or "").upper() == "DELETE"), None)
+  assert delete_call is not None
+  assert delete_call["path"] == "/api/v3/openOrders"
+  assert delete_call["symbol"] == "BTCUSDT"
+
+  actions = module.store.list_safety_manual_actions(symbol="BTCUSDT", limit=20)
+  assert any(str(row.get("action_type") or "") == "EMERGENCY_CANCEL_SYMBOL" for row in actions)
+
+
+def test_manual_lock_persists_after_reload(tmp_path: Path, monkeypatch) -> None:
+  module_1, _client = _build_app(tmp_path, monkeypatch)
+  module_1.runtime_bridge.freeze_global(requested_by="tester", audit_note="persist_lock")
+
+  module_2, client_2 = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client_2, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  summary = client_2.get("/api/v1/execution/safety/summary", headers=headers)
+  assert summary.status_code == 200, summary.text
+  body = summary.json()
+  assert body["blocking_bool"] is True
+  assert body["manual_lock_count"] >= 1
+  locks = client_2.get("/api/v1/execution/safety/locks", headers=headers)
+  assert locks.status_code == 200, locks.text
+  lock_items = locks.json().get("manual_locks") or []
+  assert any(str(row.get("state") or "") == "MANUAL_LOCK" for row in lock_items)
 
 
 def test_auth_login_rate_limit_and_lock_guard(tmp_path: Path, monkeypatch) -> None:

@@ -1,32 +1,46 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-18
+Fecha: 2026-03-23
 
-## Cierre del bloque RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - 2026-03-18
-- [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.
-- [x] Dejar `rtlab_autotrader/config/policies/` solo como compatibilidad/fallback y no como autoridad equivalente.
-- [x] Exponer por API la metadata de autoridad (`authority`) y la taxonomia canonica (`mode_taxonomy`).
-- [x] Cerrar el micro-hardening final del frontend de authority/runtime:
-  - `lint` deja de escanear `rtlab_dashboard/.pytest_cache` por ignores explicitos en flat config.
-  - `auth-backend.test.ts` usa un helper de env de test valido con `NODE_ENV=test` y `BACKEND_API_URL=https://api.example.com`.
-  - validacion local final ejecutada:
-    - `npm.cmd run lint`
-    - `npm.cmd run build`
-    - `npx.cmd tsc --noEmit`
-- [x] Documentar jerarquia de autoridad tecnica en:
-  - `docs/truth/SOURCE_OF_TRUTH.md`
-  - `docs/plan/AUTHORITY_HIERARCHY.md`
-- [x] Normalizar semanticamente la taxonomia visible:
-  - runtime global `PAPER / TESTNET / LIVE`
-  - bots `shadow / paper / testnet / live`
-  - evidence `backtest / shadow / paper / testnet`
-  - `MOCK` como alias legado local, no como runtime real
+## Programa LIVE Spot actual
+- [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
+- [x] `RTLOPS-49` exchange adapter live hardening
+- [x] `RTLOPS-44` market websocket runtime live
+- [x] `RTLOPS-45` private user/account/order streams live
+- [x] `RTLOPS-46` exchange filters pre-validator hardening
+- [x] `RTLOPS-47` live preflight final
+- [x] `RTLOPS-48` state machine formal de orden live
+- [x] `RTLOPS-50` persistencia canonica de fills/eventos live
+- [x] `RTLOPS-23` reconciliation engine formal
+- [x] `RTLOPS-29` operational safety guardrails
 
-## Siguiente bloque recomendado
-- [ ] Cerrar M2 de `Nucleo Arquitectonico y Policies` en pasos chicos:
-  - centralizar thresholds numericos explicitos en YAML;
-  - auditar y acotar `execution_modes`, `observability`, `drift`, `health_scoring` y `alert_thresholds` para que no queden como backlog demasiado amplio.
-- [ ] Solo despues de ese cierre, abrir el bloque `Binance Catalog + Universes + Live Parity`.
+## Siguiente issue exacto
+- [ ] `RTLOPS-30` `Health summary live + score explicable + degraded visibility`
+  - consolidar un health summary unico por streams, execution, reconciliation, preflight y guardrails;
+  - hacer visible `degraded mode`, bloqueos y severidad en backend/API/frontend sin ocultar riesgos;
+  - reutilizar el estado ya cerrado en:
+    - `RTLOPS-47`
+    - `RTLOPS-48`
+    - `RTLOPS-50`
+    - `RTLOPS-23`
+    - `RTLOPS-29`
+
+## Pendiente administrativo chico
+- [ ] Si Linear MCP sigue estable, sincronizar o backfillear cierres administrativos que pudieron quedar pendientes durante la caida previa del MCP:
+  - `RTLOPS-45`
+  - `RTLOPS-46`
+  - `RTLOPS-47`
+  - `RTLOPS-48`
+  - `RTLOPS-50`
+  - `RTLOPS-23`
+  - `RTLOPS-29`
+
+## Regla operativa vigente
+- [x] Mantener `LIVE` fail-closed:
+  - preflight final fresco y `PASS`
+  - reconciliation sin casos bloqueantes
+  - operational safety sin breakers bloqueantes ni manual locks
+  - runtime real y exchange listos antes de permitir `mode/start live`
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

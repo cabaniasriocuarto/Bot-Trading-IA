@@ -49,6 +49,80 @@ export interface ExchangeDiagnoseResponse {
   checks: Record<string, unknown>;
 }
 
+export interface OperationalSafetyBreaker {
+  breaker_id: string;
+  breaker_code: string;
+  scope_type: string;
+  bot_id?: string | null;
+  symbol?: string | null;
+  state: "CLOSED" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
+  opened_at?: string | null;
+  cooldown_until?: string | null;
+  last_trigger_at?: string | null;
+  trigger_count_window: number;
+  trigger_reason: Record<string, unknown>;
+  blocking_bool: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationalSafetyEvent {
+  safety_event_id: string;
+  event_time: string;
+  scope_type: string;
+  bot_id?: string | null;
+  symbol?: string | null;
+  trigger_code: string;
+  severity: "INFO" | "WARN" | "CRITICAL" | string;
+  evidence: Record<string, unknown>;
+  action_taken?: string | null;
+  blocking_bool: boolean;
+  created_at: string;
+}
+
+export interface OperationalSafetySummaryResponse {
+  evaluated_at: string;
+  policy_source: string;
+  scope: {
+    bot_id?: string | null;
+    symbol?: string | null;
+  };
+  global_state: "CLOSED" | "WARN" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
+  blocking_bool: boolean;
+  breakers_open_count: number;
+  breakers_blocking_count: number;
+  manual_lock_count: number;
+  breakers: OperationalSafetyBreaker[];
+  blocking_scopes: Array<{
+    breaker_code: string;
+    scope_type: string;
+    bot_id?: string | null;
+    symbol?: string | null;
+    state: string;
+  }>;
+  events: OperationalSafetyEvent[];
+  runtime_unknown_timeout_active: boolean;
+  runtime_unknown_timeout_since?: string | null;
+  recommended_actions?: string[];
+  applied_actions?: string[];
+}
+
+export interface OperationalSafetyLocksResponse {
+  manual_locks: OperationalSafetyBreaker[];
+  manual_actions: Array<{
+    manual_action_id: string;
+    action_type: string;
+    scope_type: string;
+    bot_id?: string | null;
+    symbol?: string | null;
+    requested_by: string;
+    requested_at: string;
+    applied_at?: string | null;
+    result: Record<string, unknown>;
+    audit_note?: string | null;
+  }>;
+}
+
 export interface StrategyManifest {
   id: string;
   name: string;

@@ -1,0 +1,21 @@
+execution_safety:
+  operational_safety:
+    guardrail_stream_gap_warn_ms: 5000
+    guardrail_stream_gap_critical_ms: 10000
+    guardrail_unknown_timeout_hard_sec: 30
+    guardrail_http_429_window_sec: 60
+    guardrail_http_429_threshold: 3
+    guardrail_http_418_blocks_live: true
+    guardrail_cancel_fail_window_sec: 300
+    guardrail_cancel_fail_threshold: 3
+    guardrail_reject_window_sec: 300
+    guardrail_reject_threshold: 5
+    guardrail_stp_expired_window_sec: 300
+    guardrail_stp_expired_threshold: 5
+    guardrail_open_orders_warn_count: 10
+    guardrail_open_orders_block_count: 20
+    guardrail_cooldown_sec: 120
+    guardrail_manual_lock_persists_until_clear: true
+    guardrail_prestart_requires_all_breakers_closed: true
+    guardrail_emergency_cancel_enabled: true
+    guardrail_emergency_cancel_scope: symbol_first

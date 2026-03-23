@@ -20,6 +20,7 @@ from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Literal
 from urllib.parse import urlencode, urlparse
+from uuid import uuid4
 
 import requests
 import yaml
@@ -36,6 +37,16 @@ from rtlab_core.domains import (
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution.oms import OMS, Order
+from rtlab_core.execution.operational_safety import (
+    normalize_safety_breaker_action,
+    normalize_safety_breaker_state,
+    normalize_safety_event_severity,
+    normalize_safety_manual_action_type,
+    normalize_safety_scope_type,
+    normalize_safety_trigger_code,
+    safety_breaker_blocks_live,
+    safety_scope_matches,
+)
 from rtlab_core.execution.reconciliation import reconcile_orders
 from rtlab_core.learning import LearningService
 from rtlab_core.learning.experience_store import ExperienceStore
@@ -297,6 +308,53 @@ CREATE TABLE IF NOT EXISTS breaker_events (
 );
 CREATE INDEX IF NOT EXISTS idx_breaker_events_bot_mode_ts ON breaker_events(bot_id, mode, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_breaker_events_ts ON breaker_events(ts DESC);
+CREATE TABLE IF NOT EXISTS safety_guardrail_events (
+    safety_event_id TEXT PRIMARY KEY,
+    event_time TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    trigger_code TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    action_taken TEXT,
+    blocking_bool INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_time ON safety_guardrail_events(event_time DESC);
+CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_scope ON safety_guardrail_events(scope_type, bot_id, symbol, event_time DESC);
+CREATE TABLE IF NOT EXISTS safety_breakers (
+    breaker_id TEXT PRIMARY KEY,
+    breaker_code TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    state TEXT NOT NULL,
+    opened_at TEXT,
+    cooldown_until TEXT,
+    last_trigger_at TEXT,
+    trigger_count_window INTEGER NOT NULL DEFAULT 0,
+    trigger_reason_json TEXT NOT NULL,
+    blocking_bool INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_breakers_unique_scope
+  ON safety_breakers(breaker_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''));
+CREATE INDEX IF NOT EXISTS idx_safety_breakers_state ON safety_breakers(state, scope_type, updated_at DESC);
+CREATE TABLE IF NOT EXISTS safety_manual_actions (
+    manual_action_id TEXT PRIMARY KEY,
+    action_type TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    requested_by TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    applied_at TEXT,
+    result_json TEXT NOT NULL,
+    audit_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_safety_manual_actions_requested_at ON safety_manual_actions(requested_at DESC);
 CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC);
 """
 
@@ -313,6 +371,28 @@ class StrategyPrimaryBody(BaseModel):
 class BotModeBody(BaseModel):
     mode: Literal["paper", "testnet", "live"]
     confirm: str | None = None
+
+
+class SafetyEvaluateBody(BaseModel):
+    bot_id: str | None = None
+    symbol: str | None = None
+    trigger: str | None = None
+
+
+class SafetyFreezeBody(BaseModel):
+    bot_id: str | None = None
+    audit_note: str | None = None
+
+
+class SafetyUnfreezeBody(BaseModel):
+    scope_type: Literal["GLOBAL", "BOT", "BOT_SYMBOL", "SYMBOL"]
+    bot_id: str | None = None
+    symbol: str | None = None
+    audit_note: str | None = None
+
+
+class SafetyAckBody(BaseModel):
+    audit_note: str | None = None
 
 
 class StrategyEnableBody(BaseModel):
@@ -613,6 +693,7 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "gates": root / "gates.yaml",
         "microstructure": root / "microstructure.yaml",
         "risk_policy": root / "risk_policy.yaml",
+        "execution_safety": root / "execution_safety.yaml",
         "beast_mode": root / "beast_mode.yaml",
         "fees": root / "fees.yaml",
         "fundamentals_credit_filter": root / "fundamentals_credit_filter.yaml",
@@ -623,12 +704,15 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     gates = bundle.get("gates") if isinstance(bundle.get("gates"), dict) else {}
     micro = bundle.get("microstructure") if isinstance(bundle.get("microstructure"), dict) else {}
     risk = bundle.get("risk_policy") if isinstance(bundle.get("risk_policy"), dict) else {}
+    execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
     beast = bundle.get("beast_mode") if isinstance(bundle.get("beast_mode"), dict) else {}
     fees = bundle.get("fees") if isinstance(bundle.get("fees"), dict) else {}
     fundamentals = bundle.get("fundamentals_credit_filter") if isinstance(bundle.get("fundamentals_credit_filter"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
+    es = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
+    ops = es.get("operational_safety") if isinstance(es.get("operational_safety"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
     fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
@@ -646,6 +730,13 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "vpin_soft_kill_cdf": thresholds.get("soft_kill_cdf"),
         "vpin_hard_kill_cdf": thresholds.get("hard_kill_cdf"),
         "risk_kill_scope": r.get("scope") if isinstance(r.get("scope"), list) else [],
+        "execution_guardrail_stream_gap_warn_ms": ops.get("guardrail_stream_gap_warn_ms"),
+        "execution_guardrail_stream_gap_critical_ms": ops.get("guardrail_stream_gap_critical_ms"),
+        "execution_guardrail_unknown_timeout_hard_sec": ops.get("guardrail_unknown_timeout_hard_sec"),
+        "execution_guardrail_http_429_threshold": ops.get("guardrail_http_429_threshold"),
+        "execution_guardrail_open_orders_warn_count": ops.get("guardrail_open_orders_warn_count"),
+        "execution_guardrail_open_orders_block_count": ops.get("guardrail_open_orders_block_count"),
+        "execution_guardrail_cooldown_sec": ops.get("guardrail_cooldown_sec"),
         "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
         "beast_requires_postgres": b.get("requires_postgres"),
         "fees_ttl_hours": f.get("fee_snapshot_ttl_hours"),
@@ -691,6 +782,44 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
         "files": meta,
         "policies": payloads,
         "summary": _policy_summary(payloads),
+    }
+
+
+DEFAULT_OPERATIONAL_SAFETY_POLICY: dict[str, Any] = {
+    "guardrail_stream_gap_warn_ms": 5000,
+    "guardrail_stream_gap_critical_ms": 10000,
+    "guardrail_unknown_timeout_hard_sec": 30,
+    "guardrail_http_429_window_sec": 60,
+    "guardrail_http_429_threshold": 3,
+    "guardrail_http_418_blocks_live": True,
+    "guardrail_cancel_fail_window_sec": 300,
+    "guardrail_cancel_fail_threshold": 3,
+    "guardrail_reject_window_sec": 300,
+    "guardrail_reject_threshold": 5,
+    "guardrail_stp_expired_window_sec": 300,
+    "guardrail_stp_expired_threshold": 5,
+    "guardrail_open_orders_warn_count": 10,
+    "guardrail_open_orders_block_count": 20,
+    "guardrail_cooldown_sec": 120,
+    "guardrail_manual_lock_persists_until_clear": True,
+    "guardrail_prestart_requires_all_breakers_closed": True,
+    "guardrail_emergency_cancel_enabled": True,
+    "guardrail_emergency_cancel_scope": "symbol_first",
+}
+
+
+def load_execution_safety_policy() -> dict[str, Any]:
+    bundle = load_numeric_policies_bundle()
+    policies = bundle.get("policies") if isinstance(bundle.get("policies"), dict) else {}
+    payload = policies.get("execution_safety") if isinstance(policies.get("execution_safety"), dict) else {}
+    root = payload.get("execution_safety") if isinstance(payload.get("execution_safety"), dict) else {}
+    ops = root.get("operational_safety") if isinstance(root.get("operational_safety"), dict) else {}
+    return {
+        "source": "config/policies/execution_safety.yaml" if ops else "default_fail_closed_operational_safety",
+        "operational_safety": {
+            **DEFAULT_OPERATIONAL_SAFETY_POLICY,
+            **ops,
+        },
     }
 
 
@@ -1495,8 +1624,12 @@ def _classify_exchange_error(status_code: int, payload: Any) -> tuple[str, str]:
         lower = msg.lower()
         if code in {-2015, -2014, -1022}:
             return "auth", f"Keys invalidas/permisos/IP restriction ({code}): {msg}"
+        if code in {-1007}:
+            return "unknown_timeout", f"Exchange timeout unknown ({code}): {msg or 'Execution status unknown; reconcile required'}"
         if code in {-1003} or status_code == 429:
             return "rate_limit", f"Rate limit ({code}): {msg or 'Too many requests'}"
+        if status_code == 418:
+            return "rate_limit_ban", f"IP ban risk / auto-ban ({status_code}): {msg or '418 auto-ban response'}"
         if "sapi" in lower:
             return "sapi_unsupported", f"sapi unsupported: {msg}"
         if code in {-2010, -2011, -1013, -1100, -1102}:
@@ -1506,6 +1639,32 @@ def _classify_exchange_error(status_code: int, payload: Any) -> tuple[str, str]:
     if status_code >= 500:
         return "endpoint", f"Endpoint no disponible (HTTP {status_code})"
     return "endpoint", f"Error de endpoint/auth (HTTP {status_code})"
+
+
+def _record_exchange_guardrail_event(
+    *,
+    trigger_code: str,
+    severity: str,
+    evidence: dict[str, Any] | None = None,
+    action_taken: str | None = None,
+    blocking_bool: bool = False,
+    symbol: str | None = None,
+) -> None:
+    try:
+        safety_store = globals().get("store")
+        if safety_store is None or not hasattr(safety_store, "insert_safety_guardrail_event"):
+            return
+        safety_store.insert_safety_guardrail_event(
+            scope_type="SYMBOL" if str(symbol or "").strip() else "GLOBAL",
+            trigger_code=trigger_code,
+            severity=severity,
+            evidence=evidence or {},
+            action_taken=action_taken,
+            blocking_bool=blocking_bool,
+            symbol=str(symbol or "").strip().upper() or None,
+        )
+    except Exception:
+        return
 
 
 def _probe_ws_endpoint(ws_url: str, timeout_sec: float) -> tuple[bool, str]:
@@ -1544,6 +1703,49 @@ def _binance_signed_request(
         timeout=timeout_sec,
     )
     payload = _parse_json_response(response)
+    symbol = str(params.get("symbol") or "").strip().upper() or None
+    status_code = int(_as_int(response.status_code, 0))
+    payload_code = int(_as_int((payload.get("code") if isinstance(payload, dict) else 0), 0))
+    if payload_code == -1003 or status_code == 429:
+        _record_exchange_guardrail_event(
+            trigger_code="TOO_MANY_REQUESTS_PRESSURE",
+            severity="WARN",
+            evidence={
+                "status_code": status_code,
+                "payload": payload if isinstance(payload, dict) else {"raw": str(payload)},
+                "path": path,
+                "symbol": symbol,
+            },
+            action_taken="WARN_ONLY",
+            blocking_bool=False,
+            symbol=symbol,
+        )
+        runtime = globals().get("runtime_bridge")
+        if runtime is not None and hasattr(runtime, "_stats"):
+            try:
+                runtime._stats["rate_limit_hits"] = int(runtime._stats.get("rate_limit_hits", 0)) + 1
+            except Exception:
+                pass
+    if status_code == 418:
+        _record_exchange_guardrail_event(
+            trigger_code="HTTP_418_BAN_RISK",
+            severity="CRITICAL",
+            evidence={
+                "status_code": status_code,
+                "payload": payload if isinstance(payload, dict) else {"raw": str(payload)},
+                "path": path,
+                "symbol": symbol,
+            },
+            action_taken="FREEZE_GLOBAL",
+            blocking_bool=True,
+            symbol=symbol,
+        )
+        runtime = globals().get("runtime_bridge")
+        if runtime is not None and hasattr(runtime, "_stats"):
+            try:
+                runtime._stats["rate_limit_hits"] = int(runtime._stats.get("rate_limit_hits", 0)) + 1
+            except Exception:
+                pass
     return response.ok, {
         "status_code": response.status_code,
         "payload": payload,
@@ -1850,6 +2052,8 @@ class ConsoleStore:
 
     def _init_console_db(self) -> None:
         self.decision_log.initialize()
+        with self._connect() as conn:
+            self._ensure_console_db_migrations(conn)
 
     def _ensure_console_db_migrations(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
@@ -1866,6 +2070,69 @@ class ConsoleStore:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS safety_guardrail_events (
+                safety_event_id TEXT PRIMARY KEY,
+                event_time TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                trigger_code TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                action_taken TEXT,
+                blocking_bool INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_time ON safety_guardrail_events(event_time DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_scope ON safety_guardrail_events(scope_type, bot_id, symbol, event_time DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS safety_breakers (
+                breaker_id TEXT PRIMARY KEY,
+                breaker_code TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                state TEXT NOT NULL,
+                opened_at TEXT,
+                cooldown_until TEXT,
+                last_trigger_at TEXT,
+                trigger_count_window INTEGER NOT NULL DEFAULT 0,
+                trigger_reason_json TEXT NOT NULL,
+                blocking_bool INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_breakers_unique_scope
+            ON safety_breakers(breaker_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''))
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_breakers_state ON safety_breakers(state, scope_type, updated_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS safety_manual_actions (
+                manual_action_id TEXT PRIMARY KEY,
+                action_type TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                requested_by TEXT NOT NULL,
+                requested_at TEXT NOT NULL,
+                applied_at TEXT,
+                result_json TEXT NOT NULL,
+                audit_note TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_manual_actions_requested_at ON safety_manual_actions(requested_at DESC)")
         self._backfill_logs_has_bot_ref(conn)
         self._backfill_log_bot_refs(conn)
 
@@ -2049,6 +2316,372 @@ class ConsoleStore:
 
     def breaker_events_integrity(self, *, window_hours: int | None = None, strict: bool = True) -> dict[str, Any]:
         return self.decision_log.breaker_events_integrity(window_hours=window_hours, strict=strict)
+
+    @staticmethod
+    def _normalize_safety_symbol(value: str | None) -> str | None:
+        symbol = str(value or "").strip().upper()
+        return symbol or None
+
+    @staticmethod
+    def _normalize_safety_bot_id(value: str | None) -> str | None:
+        bot_id = str(value or "").strip()
+        return bot_id or None
+
+    def insert_safety_guardrail_event(
+        self,
+        *,
+        scope_type: str,
+        trigger_code: str,
+        severity: str,
+        evidence: dict[str, Any] | None = None,
+        action_taken: str | None = None,
+        blocking_bool: bool = False,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        event_time: str | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "safety_event_id": str(uuid4()),
+            "event_time": str(event_time or utc_now_iso()),
+            "scope_type": normalize_safety_scope_type(scope_type),
+            "bot_id": self._normalize_safety_bot_id(bot_id),
+            "symbol": self._normalize_safety_symbol(symbol),
+            "trigger_code": normalize_safety_trigger_code(trigger_code),
+            "severity": normalize_safety_event_severity(severity),
+            "evidence_json": json.dumps(evidence or {}, ensure_ascii=True, sort_keys=True),
+            "action_taken": normalize_safety_breaker_action(action_taken) if action_taken else None,
+            "blocking_bool": 1 if bool(blocking_bool) else 0,
+            "created_at": utc_now_iso(),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO safety_guardrail_events (
+                    safety_event_id, event_time, scope_type, bot_id, symbol, trigger_code,
+                    severity, evidence_json, action_taken, blocking_bool, created_at
+                ) VALUES (
+                    :safety_event_id, :event_time, :scope_type, :bot_id, :symbol, :trigger_code,
+                    :severity, :evidence_json, :action_taken, :blocking_bool, :created_at
+                )
+                """,
+                row,
+            )
+        return {
+            "safety_event_id": row["safety_event_id"],
+            "event_time": row["event_time"],
+            "scope_type": row["scope_type"],
+            "bot_id": row["bot_id"],
+            "symbol": row["symbol"],
+            "trigger_code": row["trigger_code"],
+            "severity": row["severity"],
+            "evidence": evidence or {},
+            "action_taken": row["action_taken"],
+            "blocking_bool": bool(row["blocking_bool"]),
+            "created_at": row["created_at"],
+        }
+
+    def list_safety_guardrail_events(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_safety_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM safety_guardrail_events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY event_time DESC, safety_event_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            evidence = {}
+            try:
+                evidence = json.loads(str(row["evidence_json"] or "{}"))
+            except Exception:
+                evidence = {}
+            items.append(
+                {
+                    "safety_event_id": str(row["safety_event_id"]),
+                    "event_time": str(row["event_time"] or ""),
+                    "scope_type": str(row["scope_type"] or ""),
+                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
+                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
+                    "trigger_code": str(row["trigger_code"] or ""),
+                    "severity": str(row["severity"] or ""),
+                    "evidence": evidence if isinstance(evidence, dict) else {},
+                    "action_taken": str(row["action_taken"] or "") if row["action_taken"] is not None else None,
+                    "blocking_bool": bool(row["blocking_bool"]),
+                    "created_at": str(row["created_at"] or ""),
+                }
+            )
+        return items
+
+    def upsert_safety_breaker(
+        self,
+        *,
+        breaker_code: str,
+        scope_type: str,
+        state: str,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        blocking_bool: bool = False,
+        trigger_count_window: int = 0,
+        opened_at: str | None = None,
+        cooldown_until: str | None = None,
+        last_trigger_at: str | None = None,
+        trigger_reason: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        breaker_code_n = normalize_safety_trigger_code(breaker_code)
+        scope_type_n = normalize_safety_scope_type(scope_type)
+        state_n = normalize_safety_breaker_state(state)
+        bot_id_n = self._normalize_safety_bot_id(bot_id)
+        symbol_n = self._normalize_safety_symbol(symbol)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT breaker_id, created_at
+                FROM safety_breakers
+                WHERE breaker_code = ?
+                  AND scope_type = ?
+                  AND COALESCE(bot_id, '') = COALESCE(?, '')
+                  AND COALESCE(symbol, '') = COALESCE(?, '')
+                """,
+                (breaker_code_n, scope_type_n, bot_id_n, symbol_n),
+            ).fetchone()
+            breaker_id = str(row["breaker_id"]) if row is not None else str(uuid4())
+            created_at = str(row["created_at"]) if row is not None else utc_now_iso()
+            payload = {
+                "breaker_id": breaker_id,
+                "breaker_code": breaker_code_n,
+                "scope_type": scope_type_n,
+                "bot_id": bot_id_n,
+                "symbol": symbol_n,
+                "state": state_n,
+                "opened_at": opened_at,
+                "cooldown_until": cooldown_until,
+                "last_trigger_at": last_trigger_at or utc_now_iso(),
+                "trigger_count_window": max(0, int(trigger_count_window)),
+                "trigger_reason_json": json.dumps(trigger_reason or {}, ensure_ascii=True, sort_keys=True),
+                "blocking_bool": 1 if bool(blocking_bool) else 0,
+                "created_at": created_at,
+                "updated_at": utc_now_iso(),
+            }
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO safety_breakers (
+                        breaker_id, breaker_code, scope_type, bot_id, symbol, state, opened_at,
+                        cooldown_until, last_trigger_at, trigger_count_window, trigger_reason_json,
+                        blocking_bool, created_at, updated_at
+                    ) VALUES (
+                        :breaker_id, :breaker_code, :scope_type, :bot_id, :symbol, :state, :opened_at,
+                        :cooldown_until, :last_trigger_at, :trigger_count_window, :trigger_reason_json,
+                        :blocking_bool, :created_at, :updated_at
+                    )
+                    """,
+                    payload,
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE safety_breakers
+                    SET state = :state,
+                        opened_at = :opened_at,
+                        cooldown_until = :cooldown_until,
+                        last_trigger_at = :last_trigger_at,
+                        trigger_count_window = :trigger_count_window,
+                        trigger_reason_json = :trigger_reason_json,
+                        blocking_bool = :blocking_bool,
+                        updated_at = :updated_at
+                    WHERE breaker_id = :breaker_id
+                    """,
+                    payload,
+                )
+        return self.list_safety_breakers(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n, breaker_code=breaker_code_n, limit=1)[0]
+
+    def list_safety_breakers(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        breaker_code: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_safety_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        if breaker_code:
+            clauses.append("breaker_code = ?")
+            params.append(normalize_safety_trigger_code(breaker_code))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM safety_breakers
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC, breaker_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            trigger_reason = {}
+            try:
+                trigger_reason = json.loads(str(row["trigger_reason_json"] or "{}"))
+            except Exception:
+                trigger_reason = {}
+            items.append(
+                {
+                    "breaker_id": str(row["breaker_id"]),
+                    "breaker_code": str(row["breaker_code"] or ""),
+                    "scope_type": str(row["scope_type"] or ""),
+                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
+                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
+                    "state": str(row["state"] or ""),
+                    "opened_at": str(row["opened_at"] or "") if row["opened_at"] is not None else None,
+                    "cooldown_until": str(row["cooldown_until"] or "") if row["cooldown_until"] is not None else None,
+                    "last_trigger_at": str(row["last_trigger_at"] or "") if row["last_trigger_at"] is not None else None,
+                    "trigger_count_window": int(row["trigger_count_window"] or 0),
+                    "trigger_reason": trigger_reason if isinstance(trigger_reason, dict) else {},
+                    "blocking_bool": bool(row["blocking_bool"]),
+                    "created_at": str(row["created_at"] or ""),
+                    "updated_at": str(row["updated_at"] or ""),
+                }
+            )
+        return items
+
+    def insert_safety_manual_action(
+        self,
+        *,
+        action_type: str,
+        scope_type: str,
+        requested_by: str,
+        result: dict[str, Any] | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        audit_note: str | None = None,
+        requested_at: str | None = None,
+        applied_at: str | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "manual_action_id": str(uuid4()),
+            "action_type": normalize_safety_manual_action_type(action_type),
+            "scope_type": normalize_safety_scope_type(scope_type),
+            "bot_id": self._normalize_safety_bot_id(bot_id),
+            "symbol": self._normalize_safety_symbol(symbol),
+            "requested_by": str(requested_by or "admin"),
+            "requested_at": str(requested_at or utc_now_iso()),
+            "applied_at": str(applied_at or utc_now_iso()),
+            "result_json": json.dumps(result or {}, ensure_ascii=True, sort_keys=True),
+            "audit_note": str(audit_note or "") or None,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO safety_manual_actions (
+                    manual_action_id, action_type, scope_type, bot_id, symbol,
+                    requested_by, requested_at, applied_at, result_json, audit_note
+                ) VALUES (
+                    :manual_action_id, :action_type, :scope_type, :bot_id, :symbol,
+                    :requested_by, :requested_at, :applied_at, :result_json, :audit_note
+                )
+                """,
+                row,
+            )
+        return {
+            "manual_action_id": row["manual_action_id"],
+            "action_type": row["action_type"],
+            "scope_type": row["scope_type"],
+            "bot_id": row["bot_id"],
+            "symbol": row["symbol"],
+            "requested_by": row["requested_by"],
+            "requested_at": row["requested_at"],
+            "applied_at": row["applied_at"],
+            "result": result or {},
+            "audit_note": row["audit_note"],
+        }
+
+    def list_safety_manual_actions(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_safety_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM safety_manual_actions
+                WHERE {' AND '.join(clauses)}
+                ORDER BY requested_at DESC, manual_action_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            result = {}
+            try:
+                result = json.loads(str(row["result_json"] or "{}"))
+            except Exception:
+                result = {}
+            items.append(
+                {
+                    "manual_action_id": str(row["manual_action_id"]),
+                    "action_type": str(row["action_type"] or ""),
+                    "scope_type": str(row["scope_type"] or ""),
+                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
+                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
+                    "requested_by": str(row["requested_by"] or ""),
+                    "requested_at": str(row["requested_at"] or ""),
+                    "applied_at": str(row["applied_at"] or "") if row["applied_at"] is not None else None,
+                    "result": result if isinstance(result, dict) else {},
+                    "audit_note": str(row["audit_note"] or "") if row["audit_note"] is not None else None,
+                }
+            )
+        return items
+
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
@@ -6207,6 +6840,854 @@ class RuntimeBridge:
         return canceled
 
     @staticmethod
+    def _runtime_bot_scope(state: dict[str, Any] | None) -> str | None:
+        bot_id = str((state or {}).get("active_bot_id") or (state or {}).get("bot_id") or "").strip()
+        return bot_id or None
+
+    @staticmethod
+    def _safety_scope_from_context(*, bot_id: str | None = None, symbol: str | None = None) -> tuple[str, str | None, str | None]:
+        bot_id_n = str(bot_id or "").strip() or None
+        symbol_n = str(symbol or "").strip().upper() or None
+        if bot_id_n and symbol_n:
+            return "BOT_SYMBOL", bot_id_n, symbol_n
+        if bot_id_n:
+            return "BOT", bot_id_n, None
+        if symbol_n:
+            return "SYMBOL", None, symbol_n
+        return "GLOBAL", None, None
+
+    def _operational_safety_policy(self) -> dict[str, Any]:
+        payload = load_execution_safety_policy()
+        root = payload.get("operational_safety") if isinstance(payload.get("operational_safety"), dict) else {}
+        return {**DEFAULT_OPERATIONAL_SAFETY_POLICY, **root}
+
+    def _list_relevant_safety_breakers(
+        self,
+        *,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> list[dict[str, Any]]:
+        now_dt = utc_now()
+        rows = store.list_safety_breakers(limit=500)
+        active: list[dict[str, Any]] = []
+        for row in rows:
+            if not safety_scope_matches(
+                row_scope_type=row.get("scope_type"),
+                row_bot_id=row.get("bot_id"),
+                row_symbol=row.get("symbol"),
+                bot_id=bot_id,
+                symbol=symbol,
+            ):
+                continue
+            state_n = normalize_safety_breaker_state(row.get("state"))
+            if state_n == "COOLDOWN":
+                cooldown_until_dt = _parse_iso_datetime_utc(str(row.get("cooldown_until") or ""))
+                if isinstance(cooldown_until_dt, datetime) and cooldown_until_dt <= now_dt:
+                    row = store.upsert_safety_breaker(
+                        breaker_code=str(row.get("breaker_code") or "SAFETY_POLICY_VIOLATION"),
+                        scope_type=str(row.get("scope_type") or "GLOBAL"),
+                        state="CLOSED",
+                        bot_id=str(row.get("bot_id") or "") or None,
+                        symbol=str(row.get("symbol") or "") or None,
+                        blocking_bool=False,
+                        trigger_count_window=int(row.get("trigger_count_window") or 0),
+                        opened_at=str(row.get("opened_at") or "") or None,
+                        cooldown_until=None,
+                        last_trigger_at=utc_now_iso(),
+                        trigger_reason={
+                            **(row.get("trigger_reason") if isinstance(row.get("trigger_reason"), dict) else {}),
+                            "resolved_at": utc_now_iso(),
+                            "resolution_reason": "cooldown_expired",
+                        },
+                    )
+                    state_n = "CLOSED"
+            if state_n != "CLOSED":
+                active.append(row)
+        return active
+
+    def _count_recent_safety_events(
+        self,
+        *,
+        trigger_code: str,
+        window_sec: int,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        now_dt = utc_now()
+        rows = store.list_safety_guardrail_events(limit=500)
+        matched: list[dict[str, Any]] = []
+        for row in rows:
+            if normalize_safety_trigger_code(row.get("trigger_code")) != normalize_safety_trigger_code(trigger_code):
+                continue
+            if not safety_scope_matches(
+                row_scope_type=row.get("scope_type"),
+                row_bot_id=row.get("bot_id"),
+                row_symbol=row.get("symbol"),
+                bot_id=bot_id,
+                symbol=symbol,
+            ):
+                continue
+            event_dt = _parse_iso_datetime_utc(str(row.get("event_time") or ""))
+            if not isinstance(event_dt, datetime):
+                continue
+            if (now_dt - event_dt).total_seconds() > max(1, int(window_sec)):
+                continue
+            matched.append(row)
+        return len(matched), matched
+
+    def _upsert_operational_breaker(
+        self,
+        *,
+        breaker_code: str,
+        severity: str,
+        action_taken: str,
+        blocking_bool: bool,
+        scope_type: str,
+        bot_id: str | None,
+        symbol: str | None,
+        state: str,
+        evidence: dict[str, Any],
+        trigger_count_window: int = 1,
+        cooldown_until: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        existing_rows = store.list_safety_breakers(
+            scope_type=scope_type,
+            bot_id=bot_id,
+            symbol=symbol,
+            breaker_code=breaker_code,
+            limit=1,
+        )
+        existing = existing_rows[0] if existing_rows else None
+        normalized_state = normalize_safety_breaker_state(state)
+        changed = (
+            existing is None
+            or normalize_safety_breaker_state(existing.get("state")) != normalized_state
+            or bool(existing.get("blocking_bool")) != bool(blocking_bool)
+            or str(existing.get("cooldown_until") or "") != str(cooldown_until or "")
+            or int(existing.get("trigger_count_window") or 0) != int(trigger_count_window)
+        )
+        opened_at = str(existing.get("opened_at") or "") if isinstance(existing, dict) else ""
+        if normalized_state in {"OPEN", "COOLDOWN", "MANUAL_LOCK"} and not opened_at:
+            opened_at = utc_now_iso()
+        breaker = store.upsert_safety_breaker(
+            breaker_code=breaker_code,
+            scope_type=scope_type,
+            state=normalized_state,
+            bot_id=bot_id,
+            symbol=symbol,
+            blocking_bool=blocking_bool,
+            trigger_count_window=trigger_count_window,
+            opened_at=opened_at or None,
+            cooldown_until=cooldown_until,
+            last_trigger_at=utc_now_iso(),
+            trigger_reason={
+                "severity": normalize_safety_event_severity(severity),
+                "action_taken": normalize_safety_breaker_action(action_taken),
+                **(evidence if isinstance(evidence, dict) else {}),
+            },
+        )
+        if changed and normalized_state != "CLOSED":
+            store.insert_safety_guardrail_event(
+                scope_type=scope_type,
+                bot_id=bot_id,
+                symbol=symbol,
+                trigger_code=breaker_code,
+                severity=severity,
+                evidence=evidence,
+                action_taken=action_taken,
+                blocking_bool=blocking_bool,
+            )
+        return breaker, changed
+
+    def _close_operational_breaker(self, breaker: dict[str, Any], *, resolution_reason: str) -> dict[str, Any]:
+        return store.upsert_safety_breaker(
+            breaker_code=str(breaker.get("breaker_code") or "SAFETY_POLICY_VIOLATION"),
+            scope_type=str(breaker.get("scope_type") or "GLOBAL"),
+            state="CLOSED",
+            bot_id=str(breaker.get("bot_id") or "") or None,
+            symbol=str(breaker.get("symbol") or "") or None,
+            blocking_bool=False,
+            trigger_count_window=int(breaker.get("trigger_count_window") or 0),
+            opened_at=str(breaker.get("opened_at") or "") or None,
+            cooldown_until=None,
+            last_trigger_at=utc_now_iso(),
+            trigger_reason={
+                **(breaker.get("trigger_reason") if isinstance(breaker.get("trigger_reason"), dict) else {}),
+                "resolved_at": utc_now_iso(),
+                "resolution_reason": resolution_reason,
+            },
+        )
+
+    @staticmethod
+    def _safety_global_state_from_breakers(rows: list[dict[str, Any]]) -> str:
+        if any(normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK" for row in rows):
+            return "MANUAL_LOCK"
+        if any(
+            normalize_safety_breaker_state(row.get("state")) == "OPEN" and safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
+            for row in rows
+        ):
+            return "OPEN"
+        if any(
+            normalize_safety_breaker_state(row.get("state")) == "COOLDOWN" and safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
+            for row in rows
+        ):
+            return "COOLDOWN"
+        if rows:
+            return "WARN"
+        return "CLOSED"
+
+    def operational_safety_summary(
+        self,
+        *,
+        state: dict[str, Any] | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            state_n = dict(state or {})
+            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
+            symbol_n = str(symbol or "").strip().upper() or None
+            breakers = self._list_relevant_safety_breakers(bot_id=bot_id_n, symbol=symbol_n)
+            blocking_breakers = [
+                row for row in breakers if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
+            ]
+            manual_locks = [
+                row for row in breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
+            ]
+            recent_events = store.list_safety_guardrail_events(limit=50)
+            relevant_events = [
+                row
+                for row in recent_events
+                if safety_scope_matches(
+                    row_scope_type=row.get("scope_type"),
+                    row_bot_id=row.get("bot_id"),
+                    row_symbol=row.get("symbol"),
+                    bot_id=bot_id_n,
+                    symbol=symbol_n,
+                )
+            ]
+            return {
+                "evaluated_at": utc_now_iso(),
+                "policy_source": str(load_execution_safety_policy().get("source") or "default_fail_closed_operational_safety"),
+                "scope": {"bot_id": bot_id_n, "symbol": symbol_n},
+                "global_state": RuntimeBridge._safety_global_state_from_breakers(breakers),
+                "blocking_bool": bool(blocking_breakers),
+                "breakers_open_count": len(breakers),
+                "breakers_blocking_count": len(blocking_breakers),
+                "manual_lock_count": len(manual_locks),
+                "breakers": breakers,
+                "blocking_scopes": [
+                    {
+                        "breaker_code": str(row.get("breaker_code") or ""),
+                        "scope_type": str(row.get("scope_type") or ""),
+                        "bot_id": row.get("bot_id"),
+                        "symbol": row.get("symbol"),
+                        "state": str(row.get("state") or ""),
+                    }
+                    for row in blocking_breakers
+                ],
+                "events": relevant_events[:20],
+                "runtime_unknown_timeout_active": bool(state_n.get("runtime_unknown_timeout_active", False)),
+                "runtime_unknown_timeout_since": str(state_n.get("runtime_unknown_timeout_since") or ""),
+            }
+
+    def evaluate_operational_safety(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        trigger: str | None = None,
+        force_reconcile: bool = False,
+        prestart_required: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            ops = self._operational_safety_policy()
+            state_n = dict(state or {})
+            mode_n = str(state_n.get("mode") or self._active_mode or "paper").strip().lower()
+            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
+            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
+            running = bool(state_n.get("running")) and not bool(state_n.get("killed"))
+            now_dt = utc_now()
+            now_iso = now_dt.isoformat()
+            if force_reconcile and mode_n in {"testnet", "live"}:
+                try:
+                    self._reconcile(mode=mode_n)
+                except Exception:
+                    pass
+
+            issues: list[dict[str, Any]] = []
+            manual_trigger = normalize_safety_trigger_code(trigger) if str(trigger or "").strip() else ""
+            heartbeat_age_sec = _runtime_ts_age_sec(str(state_n.get("runtime_heartbeat_at") or ""), now=now_dt)
+            heartbeat_age_ms = int((heartbeat_age_sec or 0) * 1000)
+            exchange_reason = str(state_n.get("runtime_exchange_reason") or "")
+            reconcile = dict(self._last_reconcile) if isinstance(self._last_reconcile, dict) else {}
+            remote_open_orders_count = int(reconcile.get("remote_open_orders_count") or 0)
+            missing_local = reconcile.get("missing_local") if isinstance(reconcile.get("missing_local"), list) else []
+
+            if running and mode_n in {"testnet", "live"}:
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                if manual_trigger == "STREAM_TERMINATED" or "eventstreamterminated" in exchange_reason.lower():
+                    issues.append(
+                        {
+                            "trigger_code": "STREAM_TERMINATED",
+                            "severity": "CRITICAL",
+                            "scope_type": scope_type,
+                            "bot_id": issue_bot_id,
+                            "symbol": issue_symbol,
+                            "blocking_bool": True,
+                            "action_taken": "FORCE_RECONCILE",
+                            "state": "OPEN",
+                            "evidence": {"exchange_reason": exchange_reason, "mode": mode_n},
+                        }
+                    )
+                elif heartbeat_age_ms >= int(ops.get("guardrail_stream_gap_critical_ms", 10000)):
+                    issues.append(
+                        {
+                            "trigger_code": "STREAM_HEALTH_DEGRADED",
+                            "severity": "CRITICAL",
+                            "scope_type": scope_type,
+                            "bot_id": issue_bot_id,
+                            "symbol": issue_symbol,
+                            "blocking_bool": True,
+                            "action_taken": "FORCE_RECONCILE",
+                            "state": "OPEN",
+                            "evidence": {"heartbeat_age_ms": heartbeat_age_ms, "mode": mode_n},
+                        }
+                    )
+                elif heartbeat_age_ms >= int(ops.get("guardrail_stream_gap_warn_ms", 5000)):
+                    issues.append(
+                        {
+                            "trigger_code": "STREAM_HEALTH_DEGRADED",
+                            "severity": "WARN",
+                            "scope_type": scope_type,
+                            "bot_id": issue_bot_id,
+                            "symbol": issue_symbol,
+                            "blocking_bool": False,
+                            "action_taken": "WARN_ONLY",
+                            "state": "OPEN",
+                            "evidence": {"heartbeat_age_ms": heartbeat_age_ms, "mode": mode_n},
+                        }
+                    )
+
+            if int(reconcile.get("desync_count") or 0) > 0:
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "RECONCILIATION_DESYNC_BLOCKING",
+                        "severity": "CRITICAL",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": True,
+                        "action_taken": "BLOCK_NEW_SUBMITS",
+                        "state": "OPEN",
+                        "evidence": {
+                            "desync_count": int(reconcile.get("desync_count") or 0),
+                            "missing_local": missing_local,
+                            "missing_exchange": reconcile.get("missing_exchange"),
+                            "qty_mismatches": reconcile.get("qty_mismatches"),
+                        },
+                    }
+                )
+
+            if missing_local:
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "REMOTE_OPEN_ORDER_WITHOUT_LOCAL_REPRESENTATION",
+                        "severity": "CRITICAL",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": True,
+                        "action_taken": "FORCE_RECONCILE",
+                        "state": "OPEN",
+                        "evidence": {"missing_local": missing_local, "source": reconcile.get("source")},
+                    }
+                )
+
+            if bool(state_n.get("runtime_unknown_timeout_active", False)):
+                unknown_age_sec = _runtime_ts_age_sec(str(state_n.get("runtime_unknown_timeout_since") or ""), now=now_dt) or 0
+                if unknown_age_sec >= int(ops.get("guardrail_unknown_timeout_hard_sec", 30)):
+                    scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                    issues.append(
+                        {
+                            "trigger_code": "UNKNOWN_TIMEOUT_STUCK",
+                            "severity": "CRITICAL",
+                            "scope_type": scope_type,
+                            "bot_id": issue_bot_id,
+                            "symbol": issue_symbol,
+                            "blocking_bool": True,
+                            "action_taken": "BLOCK_NEW_SUBMITS",
+                            "state": "OPEN",
+                            "evidence": {
+                                "unknown_timeout_since": str(state_n.get("runtime_unknown_timeout_since") or ""),
+                                "unknown_timeout_age_sec": int(unknown_age_sec),
+                            },
+                        }
+                    )
+
+            rate_limit_count, rate_limit_events = self._count_recent_safety_events(
+                trigger_code="TOO_MANY_REQUESTS_PRESSURE",
+                window_sec=int(ops.get("guardrail_http_429_window_sec", 60)),
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+            )
+            if rate_limit_count >= int(ops.get("guardrail_http_429_threshold", 3)):
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "TOO_MANY_REQUESTS_PRESSURE",
+                        "severity": "WARN",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": True,
+                        "action_taken": "BLOCK_NEW_SUBMITS",
+                        "state": "COOLDOWN",
+                        "cooldown_until": (now_dt + timedelta(seconds=int(ops.get("guardrail_cooldown_sec", 120)))).isoformat(),
+                        "trigger_count_window": int(rate_limit_count),
+                        "evidence": {
+                            "window_sec": int(ops.get("guardrail_http_429_window_sec", 60)),
+                            "rate_limit_hits": int(rate_limit_count),
+                            "events": rate_limit_events[:5],
+                        },
+                    }
+                )
+
+            ban_count, ban_events = self._count_recent_safety_events(
+                trigger_code="HTTP_418_BAN_RISK",
+                window_sec=int(ops.get("guardrail_http_429_window_sec", 60)),
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+            )
+            if ban_count > 0 and bool(ops.get("guardrail_http_418_blocks_live", True)):
+                issues.append(
+                    {
+                        "trigger_code": "HTTP_418_BAN_RISK",
+                        "severity": "CRITICAL",
+                        "scope_type": "GLOBAL",
+                        "bot_id": None,
+                        "symbol": None,
+                        "blocking_bool": True,
+                        "action_taken": "FREEZE_GLOBAL",
+                        "state": "OPEN",
+                        "trigger_count_window": int(ban_count),
+                        "evidence": {"recent_ban_events": ban_events[:5]},
+                    }
+                )
+
+            if remote_open_orders_count >= int(ops.get("guardrail_open_orders_block_count", 20)):
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "TOO_MANY_OPEN_ORDERS",
+                        "severity": "CRITICAL",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": True,
+                        "action_taken": "BLOCK_NEW_SUBMITS",
+                        "state": "OPEN",
+                        "evidence": {"open_orders_count": remote_open_orders_count},
+                    }
+                )
+            elif remote_open_orders_count >= int(ops.get("guardrail_open_orders_warn_count", 10)):
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "TOO_MANY_OPEN_ORDERS",
+                        "severity": "WARN",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": False,
+                        "action_taken": "WARN_ONLY",
+                        "state": "OPEN",
+                        "evidence": {"open_orders_count": remote_open_orders_count},
+                    }
+                )
+
+            reject_count, reject_events = self._count_recent_safety_events(
+                trigger_code="EXCESSIVE_REJECTS",
+                window_sec=int(ops.get("guardrail_reject_window_sec", 300)),
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+            )
+            if reject_count >= int(ops.get("guardrail_reject_threshold", 5)):
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "EXCESSIVE_REJECTS",
+                        "severity": "CRITICAL",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": True,
+                        "action_taken": "BLOCK_NEW_SUBMITS",
+                        "state": "OPEN",
+                        "trigger_count_window": int(reject_count),
+                        "evidence": {"recent_reject_events": reject_events[:5]},
+                    }
+                )
+
+            cancel_fail_count, cancel_fail_events = self._count_recent_safety_events(
+                trigger_code="EXCESSIVE_CANCEL_FAILS",
+                window_sec=int(ops.get("guardrail_cancel_fail_window_sec", 300)),
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+            )
+            if cancel_fail_count >= int(ops.get("guardrail_cancel_fail_threshold", 3)):
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "EXCESSIVE_CANCEL_FAILS",
+                        "severity": "CRITICAL",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": True,
+                        "action_taken": "BLOCK_NEW_SUBMITS",
+                        "state": "OPEN",
+                        "trigger_count_window": int(cancel_fail_count),
+                        "evidence": {"recent_cancel_fail_events": cancel_fail_events[:5]},
+                    }
+                )
+
+            stp_count, stp_events = self._count_recent_safety_events(
+                trigger_code="STP_EXPIRED_CLUSTER",
+                window_sec=int(ops.get("guardrail_stp_expired_window_sec", 300)),
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+            )
+            if stp_count >= int(ops.get("guardrail_stp_expired_threshold", 5)):
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": "STP_EXPIRED_CLUSTER",
+                        "severity": "WARN",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": False,
+                        "action_taken": "REQUIRE_MANUAL_ACK",
+                        "state": "OPEN",
+                        "trigger_count_window": int(stp_count),
+                        "evidence": {"recent_stp_events": stp_events[:5]},
+                    }
+                )
+
+            if prestart_required and mode_n == "live":
+                gates_payload = evaluate_gates("live", force_exchange_check=True, runtime_state=state_n)
+                can_live, reason = live_can_be_enabled(gates_payload)
+                if not can_live:
+                    issues.append(
+                        {
+                            "trigger_code": "PRESTART_GUARDRAIL_FAIL",
+                            "severity": "CRITICAL",
+                            "scope_type": "GLOBAL",
+                            "bot_id": None,
+                            "symbol": None,
+                            "blocking_bool": True,
+                            "action_taken": "BLOCK_NEW_SUBMITS",
+                            "state": "OPEN",
+                            "evidence": {
+                                "mode": mode_n,
+                                "reason": str(reason or "live_gates_fail"),
+                                "gates_overall_status": str(gates_payload.get("overall_status") or ""),
+                            },
+                        }
+                    )
+
+            if manual_trigger in {"STREAM_TERMINATED", "RECONCILIATION_MANUAL_REVIEW_BLOCKING", "SAFETY_POLICY_VIOLATION"}:
+                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+                issues.append(
+                    {
+                        "trigger_code": manual_trigger,
+                        "severity": "CRITICAL",
+                        "scope_type": scope_type,
+                        "bot_id": issue_bot_id,
+                        "symbol": issue_symbol,
+                        "blocking_bool": True,
+                        "action_taken": "REQUIRE_MANUAL_ACK" if manual_trigger != "STREAM_TERMINATED" else "FORCE_RECONCILE",
+                        "state": "OPEN",
+                        "evidence": {"manual_trigger": manual_trigger, "requested_at": now_iso},
+                    }
+                )
+
+            current_breakers = store.list_safety_breakers(limit=500)
+            active_keys: set[tuple[str, str, str, str]] = set()
+            applied_actions: list[str] = []
+            for issue in issues:
+                key = (
+                    normalize_safety_trigger_code(issue.get("trigger_code")),
+                    normalize_safety_scope_type(issue.get("scope_type")),
+                    str(issue.get("bot_id") or ""),
+                    str(issue.get("symbol") or ""),
+                )
+                active_keys.add(key)
+                breaker, changed = self._upsert_operational_breaker(
+                    breaker_code=str(issue.get("trigger_code") or "SAFETY_POLICY_VIOLATION"),
+                    severity=str(issue.get("severity") or "WARN"),
+                    action_taken=str(issue.get("action_taken") or "WARN_ONLY"),
+                    blocking_bool=bool(issue.get("blocking_bool", False)),
+                    scope_type=str(issue.get("scope_type") or "GLOBAL"),
+                    bot_id=str(issue.get("bot_id") or "") or None,
+                    symbol=str(issue.get("symbol") or "") or None,
+                    state=str(issue.get("state") or "OPEN"),
+                    evidence=issue.get("evidence") if isinstance(issue.get("evidence"), dict) else {},
+                    trigger_count_window=int(issue.get("trigger_count_window") or 1),
+                    cooldown_until=str(issue.get("cooldown_until") or "") or None,
+                )
+                if changed:
+                    applied_actions.append(f"{breaker.get('breaker_code')}:{breaker.get('scope_type')}:{breaker.get('state')}")
+
+            for breaker in current_breakers:
+                key = (
+                    normalize_safety_trigger_code(breaker.get("breaker_code")),
+                    normalize_safety_scope_type(breaker.get("scope_type")),
+                    str(breaker.get("bot_id") or ""),
+                    str(breaker.get("symbol") or ""),
+                )
+                state_n_breaker = normalize_safety_breaker_state(breaker.get("state"))
+                if state_n_breaker == "MANUAL_LOCK":
+                    continue
+                if key in active_keys:
+                    continue
+                if state_n_breaker == "COOLDOWN":
+                    cooldown_until_dt = _parse_iso_datetime_utc(str(breaker.get("cooldown_until") or ""))
+                    if isinstance(cooldown_until_dt, datetime) and cooldown_until_dt > now_dt:
+                        continue
+                if state_n_breaker != "CLOSED":
+                    self._close_operational_breaker(breaker, resolution_reason="condition_cleared")
+
+            summary = self.operational_safety_summary(state=state_n, bot_id=bot_id_n, symbol=symbol_n)
+            summary["recommended_actions"] = sorted(
+                {str(issue.get("action_taken") or "WARN_ONLY") for issue in issues if str(issue.get("action_taken") or "").strip()}
+            )
+            summary["applied_actions"] = applied_actions
+            summary["issues_detected"] = issues
+            return summary
+
+    def live_operational_safety_gate(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        prestart_required: bool = False,
+        force_reconcile: bool = False,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        summary = self.evaluate_operational_safety(
+            state=state,
+            settings=settings,
+            bot_id=bot_id,
+            symbol=symbol,
+            force_reconcile=force_reconcile,
+            prestart_required=prestart_required,
+        )
+        if bool(summary.get("blocking_bool", False)):
+            blockers = summary.get("blocking_scopes") if isinstance(summary.get("blocking_scopes"), list) else []
+            reason = "Operational safety blocked"
+            if blockers:
+                labels = [f"{row.get('breaker_code')}:{row.get('scope_type')}:{row.get('state')}" for row in blockers]
+                reason = f"{reason}: {', '.join(labels[:5])}"
+            return False, reason, summary
+        return True, "", summary
+
+    def freeze_symbol(self, *, symbol: str, requested_by: str, audit_note: str | None = None) -> dict[str, Any]:
+        symbol_n = str(symbol or "").strip().upper()
+        breaker = store.upsert_safety_breaker(
+            breaker_code="SAFETY_POLICY_VIOLATION",
+            scope_type="SYMBOL",
+            state="MANUAL_LOCK",
+            symbol=symbol_n,
+            blocking_bool=True,
+            trigger_count_window=1,
+            opened_at=utc_now_iso(),
+            last_trigger_at=utc_now_iso(),
+            trigger_reason={"manual_action": "FREEZE_SYMBOL", "requested_by": requested_by, "audit_note": audit_note or ""},
+        )
+        action = store.insert_safety_manual_action(
+            action_type="FREEZE_SYMBOL",
+            scope_type="SYMBOL",
+            symbol=symbol_n,
+            requested_by=requested_by,
+            result={"ok": True, "breaker": breaker},
+            audit_note=audit_note,
+        )
+        return {"ok": True, "breaker": breaker, "manual_action": action}
+
+    def freeze_bot(self, *, bot_id: str, requested_by: str, audit_note: str | None = None) -> dict[str, Any]:
+        bot_id_n = str(bot_id or "").strip()
+        breaker = store.upsert_safety_breaker(
+            breaker_code="SAFETY_POLICY_VIOLATION",
+            scope_type="BOT",
+            state="MANUAL_LOCK",
+            bot_id=bot_id_n,
+            blocking_bool=True,
+            trigger_count_window=1,
+            opened_at=utc_now_iso(),
+            last_trigger_at=utc_now_iso(),
+            trigger_reason={"manual_action": "FREEZE_BOT", "requested_by": requested_by, "audit_note": audit_note or ""},
+        )
+        action = store.insert_safety_manual_action(
+            action_type="FREEZE_BOT",
+            scope_type="BOT",
+            bot_id=bot_id_n,
+            requested_by=requested_by,
+            result={"ok": True, "breaker": breaker},
+            audit_note=audit_note,
+        )
+        return {"ok": True, "breaker": breaker, "manual_action": action}
+
+    def freeze_global(self, *, requested_by: str, audit_note: str | None = None) -> dict[str, Any]:
+        breaker = store.upsert_safety_breaker(
+            breaker_code="SAFETY_POLICY_VIOLATION",
+            scope_type="GLOBAL",
+            state="MANUAL_LOCK",
+            blocking_bool=True,
+            trigger_count_window=1,
+            opened_at=utc_now_iso(),
+            last_trigger_at=utc_now_iso(),
+            trigger_reason={"manual_action": "FREEZE_GLOBAL", "requested_by": requested_by, "audit_note": audit_note or ""},
+        )
+        action = store.insert_safety_manual_action(
+            action_type="FREEZE_GLOBAL",
+            scope_type="GLOBAL",
+            requested_by=requested_by,
+            result={"ok": True, "breaker": breaker},
+            audit_note=audit_note,
+        )
+        return {"ok": True, "breaker": breaker, "manual_action": action}
+
+    def unfreeze_operational_safety(
+        self,
+        *,
+        scope_type: str,
+        requested_by: str,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        scope_type_n = normalize_safety_scope_type(scope_type)
+        rows = store.list_safety_breakers(limit=500)
+        cleared: list[dict[str, Any]] = []
+        for row in rows:
+            if normalize_safety_breaker_state(row.get("state")) != "MANUAL_LOCK":
+                continue
+            if normalize_safety_scope_type(row.get("scope_type")) != scope_type_n:
+                continue
+            if scope_type_n in {"BOT", "BOT_SYMBOL"} and str(row.get("bot_id") or "") != str(bot_id or ""):
+                continue
+            if scope_type_n in {"SYMBOL", "BOT_SYMBOL"} and str(row.get("symbol") or "").upper() != str(symbol or "").upper():
+                continue
+            cleared.append(self._close_operational_breaker(row, resolution_reason="manual_unfreeze"))
+        action = store.insert_safety_manual_action(
+            action_type="UNFREEZE",
+            scope_type=scope_type_n,
+            bot_id=str(bot_id or "").strip() or None,
+            symbol=str(symbol or "").strip().upper() or None,
+            requested_by=requested_by,
+            result={"ok": True, "cleared_breakers": cleared},
+            audit_note=audit_note,
+        )
+        return {"ok": True, "cleared_breakers": cleared, "manual_action": action}
+
+    def ack_operational_safety_event(
+        self,
+        *,
+        safety_event_id: str,
+        requested_by: str,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        rows = store.list_safety_guardrail_events(limit=500)
+        event = next((row for row in rows if str(row.get("safety_event_id") or "") == str(safety_event_id or "")), None)
+        action = store.insert_safety_manual_action(
+            action_type="ACK_ALERT",
+            scope_type=str(event.get("scope_type") or "GLOBAL") if isinstance(event, dict) else "GLOBAL",
+            bot_id=(str(event.get("bot_id") or "").strip() or None) if isinstance(event, dict) else None,
+            symbol=(str(event.get("symbol") or "").strip().upper() or None) if isinstance(event, dict) else None,
+            requested_by=requested_by,
+            result={"ok": bool(event), "safety_event_id": safety_event_id, "event": event or {}},
+            audit_note=audit_note,
+        )
+        return {"ok": bool(event), "event": event or {}, "manual_action": action}
+
+    def emergency_cancel_symbol(
+        self,
+        *,
+        symbol: str,
+        requested_by: str,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        policy = self._operational_safety_policy()
+        symbol_n = str(symbol or "").strip().upper()
+        mode_n = str(store.load_bot_state().get("mode") or self._active_mode or "paper").strip().lower()
+        if not bool(policy.get("guardrail_emergency_cancel_enabled", True)):
+            result = {"ok": False, "reason": "emergency_cancel_disabled"}
+        elif mode_n not in {"testnet", "live"}:
+            result = {"ok": False, "reason": "mode_not_exchange", "mode": mode_n}
+        else:
+            creds = load_exchange_credentials(mode_n)
+            if not bool(creds.get("has_keys", False)):
+                result = {"ok": False, "reason": "missing_keys", "mode": mode_n}
+            else:
+                request_ok, result_payload = _binance_signed_request(
+                    method="DELETE",
+                    base_url=str(creds.get("base_url") or ""),
+                    path="/api/v3/openOrders",
+                    api_key=str(creds.get("api_key") or ""),
+                    api_secret=str(creds.get("api_secret") or ""),
+                    params={"symbol": symbol_n},
+                    timeout_sec=_exchange_timeout_seconds(),
+                )
+                payload = result_payload.get("payload")
+                if not request_ok:
+                    status_code = int(_as_int(result_payload.get("status_code"), 0))
+                    error_type, detail = _classify_exchange_error(status_code, payload)
+                    store.insert_safety_guardrail_event(
+                        scope_type="SYMBOL",
+                        symbol=symbol_n,
+                        trigger_code="EXCESSIVE_CANCEL_FAILS",
+                        severity="WARN",
+                        evidence={
+                            "mode": mode_n,
+                            "status_code": status_code,
+                            "error_type": error_type,
+                            "detail": detail,
+                            "payload": payload if isinstance(payload, dict) else {"raw": str(payload)},
+                        },
+                        action_taken="EMERGENCY_CANCEL_SYMBOL",
+                        blocking_bool=False,
+                    )
+                    result = {"ok": False, "reason": detail, "error_type": error_type, "payload": payload}
+                else:
+                    result = {
+                        "ok": True,
+                        "mode": mode_n,
+                        "symbol": symbol_n,
+                        "canceled_count": len(payload) if isinstance(payload, list) else 0,
+                        "payload": payload,
+                    }
+                    try:
+                        self._reconcile(mode=mode_n)
+                    except Exception:
+                        pass
+        action = store.insert_safety_manual_action(
+            action_type="EMERGENCY_CANCEL_SYMBOL",
+            scope_type="SYMBOL",
+            symbol=symbol_n,
+            requested_by=requested_by,
+            result=result,
+            audit_note=audit_note,
+        )
+        return {"ok": bool(result.get("ok", False)), "result": result, "manual_action": action}
+
+    @staticmethod
     def _exchange_side_to_runtime(value: Any) -> Side:
         side_text = str(value or "").strip().upper()
         if side_text == "SELL":
@@ -6792,6 +8273,24 @@ class RuntimeBridge:
                 "signal_side": signal_side,
             }
 
+        safety_summary = self.operational_safety_summary(
+            state=state,
+            bot_id=self._runtime_bot_scope(state),
+            symbol=signal_symbol or None,
+        )
+        if bool(safety_summary.get("blocking_bool", False)):
+            return {
+                "submitted": False,
+                "reason": "operational_safety_blocked",
+                "error": "Operational safety breaker open",
+                "safety_summary": safety_summary,
+                "signal_action": signal_action,
+                "signal_reason": signal_reason,
+                "signal_strategy_id": signal_strategy_id,
+                "signal_symbol": signal_symbol,
+                "signal_side": signal_side,
+            }
+
         last_submit_at_raw = str(state.get("runtime_last_remote_submit_at") or "").strip()
         if last_submit_at_raw:
             try:
@@ -6917,10 +8416,28 @@ class RuntimeBridge:
         )
         if not submitted:
             self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            error_type = str(payload.get("error_type") or "")
+            if error_type not in {"unknown_timeout", "rate_limit", "rate_limit_ban"}:
+                store.insert_safety_guardrail_event(
+                    scope_type="SYMBOL",
+                    symbol=symbol,
+                    trigger_code="EXCESSIVE_REJECTS",
+                    severity="WARN",
+                    evidence={
+                        "mode": mode_n,
+                        "client_order_id": client_order_id,
+                        "error": str(payload.get("error") or ""),
+                        "error_type": error_type,
+                        "status_code": int(_as_int(payload.get("status_code"), 0)),
+                    },
+                    action_taken="WARN_ONLY",
+                    blocking_bool=False,
+                )
             return {
                 "submitted": False,
                 "reason": "submit_failed",
                 "error": str(payload.get("error") or ""),
+                "error_type": error_type,
                 "client_order_id": client_order_id,
                 "signal_action": signal_action,
                 "signal_reason": signal_reason,
@@ -7026,8 +8543,37 @@ class RuntimeBridge:
                     canceled_remote += 1
                     continue
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                store.insert_safety_guardrail_event(
+                    scope_type="SYMBOL",
+                    symbol=symbol,
+                    trigger_code="EXCESSIVE_CANCEL_FAILS",
+                    severity="WARN",
+                    evidence={
+                        "mode": mode_n,
+                        "status_code": int(_as_int(result.get("status_code"), 0)),
+                        "payload": payload_raw if isinstance(payload_raw, dict) else {"raw": str(payload_raw)},
+                        "client_order_id": client_order_id,
+                        "exchange_order_id": exchange_order_id,
+                    },
+                    action_taken="WARN_ONLY",
+                    blocking_bool=False,
+                )
             except Exception:
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                store.insert_safety_guardrail_event(
+                    scope_type="SYMBOL",
+                    symbol=symbol,
+                    trigger_code="EXCESSIVE_CANCEL_FAILS",
+                    severity="WARN",
+                    evidence={
+                        "mode": mode_n,
+                        "client_order_id": client_order_id,
+                        "exchange_order_id": exchange_order_id,
+                        "error": "cancel_exception",
+                    },
+                    action_taken="WARN_ONLY",
+                    blocking_bool=False,
+                )
         self._last_reconcile["cancel_source"] = source
         self._last_reconcile["cancel_source_reason"] = source_reason
         return canceled_remote
@@ -7121,6 +8667,8 @@ class RuntimeBridge:
             "missing_local": list(report.missing_local),
             "missing_exchange": list(report.missing_exchange),
             "qty_mismatches": list(report.qty_mismatches),
+            "remote_open_orders_count": int(len(exchange_orders)),
+            "local_open_orders_count": int(len(self._oms.open_orders())),
             "source": source,
             "source_ok": bool(source_ok),
             "source_reason": source_reason,
@@ -7193,6 +8741,11 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_operational_safety_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_operational_safety_status", "INACTIVE") or changed
+                changed = self._set_state_value(state, "runtime_last_safety_eval_at", now_iso) or changed
+                changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
+                changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
                 changed = self._set_state_value(state, "runtime_exchange_connector_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_order_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_reason", "") or changed
@@ -7231,6 +8784,11 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_operational_safety_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_operational_safety_status", "EXCHANGE_NOT_READY") or changed
+                changed = self._set_state_value(state, "runtime_last_safety_eval_at", now_iso) or changed
+                changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
+                changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
@@ -7356,6 +8914,20 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+            if bool(state.get("runtime_unknown_timeout_active", False)) and reconciliation_ok:
+                if int(reconcile.get("remote_open_orders_count") or 0) == 0 and int(reconcile.get("local_open_orders_count") or 0) == 0:
+                    changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
+                    changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
+            safety_summary = self.evaluate_operational_safety(
+                state=state,
+                settings=settings,
+                bot_id=self._runtime_bot_scope(state),
+                force_reconcile=False,
+                prestart_required=False,
+            )
+            changed = self._set_state_value(state, "runtime_operational_safety_ok", not bool(safety_summary.get("blocking_bool", False))) or changed
+            changed = self._set_state_value(state, "runtime_operational_safety_status", str(safety_summary.get("global_state") or "CLOSED")) or changed
+            changed = self._set_state_value(state, "runtime_last_safety_eval_at", str(safety_summary.get("evaluated_at") or now_iso)) or changed
             if active_mode in {"testnet", "live"} and not bool(decision.kill) and bool(state.get("running")) and not bool(state.get("killed")):
                 submit_result = self._maybe_submit_exchange_seed_order(
                     state=state,
@@ -7366,6 +8938,7 @@ class RuntimeBridge:
                 )
                 submit_reason = str(submit_result.get("reason") or "")
                 submit_error = str(submit_result.get("error") or "")
+                submit_error_type = str(submit_result.get("error_type") or "")
                 submit_client_order_id = str(submit_result.get("client_order_id") or "")
                 signal_action = str(submit_result.get("signal_action") or "")
                 signal_reason = str(submit_result.get("signal_reason") or "")
@@ -7387,8 +8960,14 @@ class RuntimeBridge:
                 if bool(submit_result.get("submitted", False)):
                     changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
                     changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
+                    changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
+                    changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
                 else:
                     changed = self._set_state_value(state, "runtime_last_remote_submit_error", submit_error) or changed
+                    if submit_error_type == "unknown_timeout":
+                        changed = self._set_state_value(state, "runtime_unknown_timeout_active", True) or changed
+                        if not str(state.get("runtime_unknown_timeout_since") or "").strip():
+                            changed = self._set_state_value(state, "runtime_unknown_timeout_since", now_iso) or changed
             self._append_execution_point(settings=settings, mode=active_mode)
             return changed
 
@@ -7467,6 +9046,7 @@ class RuntimeBridge:
                 "forecast_band": forecast_band,
                 "gate_checklist": gate_checklist,
                 "reconciliation": dict(self._last_reconcile),
+                "operational_safety": self.operational_safety_summary(state=state),
             }
 
     def execution_metrics_snapshot(self) -> dict[str, Any]:
@@ -8118,6 +9698,8 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
     loop_alive = bool(snapshot.get("runtime_loop_alive", False))
     executor_connected = bool(snapshot.get("runtime_executor_connected", False))
     reconciliation_ok = bool(snapshot.get("runtime_reconciliation_ok", False))
+    operational_safety_ok = bool(snapshot.get("runtime_operational_safety_ok", False))
+    operational_safety_status = str(snapshot.get("runtime_operational_safety_status") or "")
     exchange_connector_ok = bool(snapshot.get("runtime_exchange_connector_ok", False))
     exchange_order_ok = bool(snapshot.get("runtime_exchange_order_ok", False))
     exchange_mode = str(snapshot.get("runtime_exchange_mode") or "").strip().lower()
@@ -8151,6 +9733,7 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
         "runtime_loop_alive": loop_alive,
         "executor_connected": executor_connected,
         "reconciliation_ok": reconciliation_ok,
+        "operational_safety_ok": operational_safety_ok,
         "runtime_exchange_connector_ok": exchange_connector_ok,
         "runtime_exchange_order_ok": exchange_order_ok,
         "runtime_exchange_mode": exchange_mode,
@@ -8160,6 +9743,8 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
         "exchange_check_max_age_sec": int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC),
         "runtime_heartbeat_at": str(snapshot.get("runtime_heartbeat_at") or ""),
         "runtime_last_reconcile_at": str(snapshot.get("runtime_last_reconcile_at") or ""),
+        "runtime_operational_safety_status": operational_safety_status,
+        "runtime_last_safety_eval_at": str(snapshot.get("runtime_last_safety_eval_at") or ""),
         "heartbeat_age_sec": heartbeat_age_sec,
         "heartbeat_max_age_sec": int(RUNTIME_HEARTBEAT_MAX_AGE_SEC),
         "reconciliation_age_sec": reconcile_age_sec,
@@ -8213,6 +9798,11 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_loop_alive", False)
     runtime_state.setdefault("runtime_executor_connected", False)
     runtime_state.setdefault("runtime_reconciliation_ok", False)
+    runtime_state.setdefault("runtime_operational_safety_ok", False)
+    runtime_state.setdefault("runtime_operational_safety_status", "")
+    runtime_state.setdefault("runtime_last_safety_eval_at", "")
+    runtime_state.setdefault("runtime_unknown_timeout_active", False)
+    runtime_state.setdefault("runtime_unknown_timeout_since", "")
     runtime_state.setdefault("runtime_exchange_connector_ok", False)
     runtime_state.setdefault("runtime_exchange_order_ok", False)
     runtime_state.setdefault("runtime_exchange_mode", "")
@@ -8554,6 +10144,7 @@ def build_status_payload() -> dict[str, Any]:
     state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
     runtime_snapshot = _runtime_contract_snapshot(state)
     telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+    operational_safety = runtime_bridge.operational_safety_summary(state=state)
     runtime_engine = str(runtime_snapshot.get("runtime_engine") or _runtime_engine_from_state(state))
     runtime_real = runtime_engine == RUNTIME_ENGINE_REAL
     runtime_mode = "real" if runtime_real else "simulado"
@@ -8603,6 +10194,7 @@ def build_status_payload() -> dict[str, Any]:
             "rate_limits_5m": int(execution_snapshot.get("rate_limit_hits", 0)),
             "errors_24h": int(execution_snapshot.get("api_errors", 0)),
         },
+        "operational_safety": operational_safety,
         "gates_overall": gates["overall_status"],
         "positions": runtime_positions,
     }
@@ -12004,6 +13596,159 @@ def create_app() -> FastAPI:
     def execution_metrics(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return build_execution_metrics_payload()
 
+    @app.get("/api/v1/execution/safety/summary")
+    def execution_safety_summary(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        return runtime_bridge.operational_safety_summary(state=state, bot_id=bot_id, symbol=symbol)
+
+    @app.get("/api/v1/execution/safety/breakers")
+    def execution_safety_breakers(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {
+            "items": runtime_bridge._list_relevant_safety_breakers(
+                bot_id=str(bot_id or "").strip() or None,
+                symbol=str(symbol or "").strip().upper() or None,
+            )
+        }
+
+    @app.get("/api/v1/execution/safety/events")
+    def execution_safety_events(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = Query(default=100, ge=1, le=250),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        rows = store.list_safety_guardrail_events(limit=limit)
+        filtered = [
+            row
+            for row in rows
+            if safety_scope_matches(
+                row_scope_type=row.get("scope_type"),
+                row_bot_id=row.get("bot_id"),
+                row_symbol=row.get("symbol"),
+                bot_id=str(bot_id or "").strip() or None,
+                symbol=str(symbol or "").strip().upper() or None,
+            )
+        ]
+        return {"items": filtered}
+
+    @app.get("/api/v1/execution/safety/locks")
+    def execution_safety_locks(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        scope_bot = str(bot_id or "").strip() or None
+        scope_symbol = str(symbol or "").strip().upper() or None
+        breakers = [
+            row
+            for row in runtime_bridge._list_relevant_safety_breakers(bot_id=scope_bot, symbol=scope_symbol)
+            if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
+        ]
+        actions = store.list_safety_manual_actions(bot_id=scope_bot, symbol=scope_symbol, limit=100)
+        return {"manual_locks": breakers, "manual_actions": actions}
+
+    @app.post("/api/v1/execution/safety/evaluate")
+    def execution_safety_evaluate(body: SafetyEvaluateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        payload = runtime_bridge.evaluate_operational_safety(
+            state=state,
+            settings=settings,
+            bot_id=str(body.bot_id or "").strip() or None,
+            symbol=str(body.symbol or "").strip().upper() or None,
+            trigger=str(body.trigger or "").strip() or None,
+            force_reconcile=True,
+            prestart_required=str(state.get("mode") or "").strip().lower() == "live",
+        )
+        store.insert_safety_manual_action(
+            action_type="ACK_ALERT",
+            scope_type="GLOBAL",
+            requested_by=str(user.get("username") or "admin"),
+            result={"ok": True, "action": "evaluate", "summary": payload},
+            audit_note="manual_operational_safety_evaluate",
+        )
+        return payload
+
+    @app.post("/api/v1/execution/safety/freeze/symbol/{symbol}")
+    def execution_safety_freeze_symbol(
+        symbol: str,
+        body: SafetyFreezeBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return runtime_bridge.freeze_symbol(
+            symbol=symbol,
+            requested_by=str(user.get("username") or "admin"),
+            audit_note=body.audit_note if body else None,
+        )
+
+    @app.post("/api/v1/execution/safety/freeze/bot/{bot_id}")
+    def execution_safety_freeze_bot(
+        bot_id: str,
+        body: SafetyFreezeBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return runtime_bridge.freeze_bot(
+            bot_id=bot_id,
+            requested_by=str(user.get("username") or "admin"),
+            audit_note=body.audit_note if body else None,
+        )
+
+    @app.post("/api/v1/execution/safety/freeze/global")
+    def execution_safety_freeze_global(
+        body: SafetyFreezeBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return runtime_bridge.freeze_global(
+            requested_by=str(user.get("username") or "admin"),
+            audit_note=body.audit_note if body else None,
+        )
+
+    @app.post("/api/v1/execution/safety/unfreeze")
+    def execution_safety_unfreeze(
+        body: SafetyUnfreezeBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return runtime_bridge.unfreeze_operational_safety(
+            scope_type=body.scope_type,
+            bot_id=str(body.bot_id or "").strip() or None,
+            symbol=str(body.symbol or "").strip().upper() or None,
+            requested_by=str(user.get("username") or "admin"),
+            audit_note=body.audit_note,
+        )
+
+    @app.post("/api/v1/execution/safety/emergency-cancel/{symbol}")
+    def execution_safety_emergency_cancel(
+        symbol: str,
+        body: SafetyFreezeBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return runtime_bridge.emergency_cancel_symbol(
+            symbol=symbol,
+            requested_by=str(user.get("username") or "admin"),
+            audit_note=body.audit_note if body else None,
+        )
+
+    @app.post("/api/v1/execution/safety/ack/{safety_event_id}")
+    def execution_safety_ack(
+        safety_event_id: str,
+        body: SafetyAckBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return runtime_bridge.ack_operational_safety_event(
+            safety_event_id=safety_event_id,
+            requested_by=str(user.get("username") or "admin"),
+            audit_note=body.audit_note if body else None,
+        )
+
     @app.get("/api/v1/settings")
     def settings(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         current = store.load_settings()
@@ -12123,7 +13868,8 @@ def create_app() -> FastAPI:
     def bot_mode(body: BotModeBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         mode = body.mode
         if mode == "live":
-            runtime_engine = _runtime_engine_from_state(store.load_bot_state())
+            current_state = store.load_bot_state()
+            runtime_engine = _runtime_engine_from_state(current_state)
             if runtime_engine != RUNTIME_ENGINE_REAL:
                 raise HTTPException(
                     status_code=400,
@@ -12135,6 +13881,18 @@ def create_app() -> FastAPI:
             allowed, reason = live_can_be_enabled(gates_payload)
             if not allowed:
                 raise HTTPException(status_code=400, detail=f"LIVE blocked by gates: {reason}")
+            preview_state = dict(current_state)
+            preview_state["mode"] = "live"
+            preview_state["runtime_engine"] = runtime_engine
+            safety_ok, safety_reason, _summary = runtime_bridge.live_operational_safety_gate(
+                state=preview_state,
+                settings=store.load_settings(),
+                bot_id=str(preview_state.get("active_bot_id") or "") or None,
+                prestart_required=True,
+                force_reconcile=True,
+            )
+            if not safety_ok:
+                raise HTTPException(status_code=400, detail=f"LIVE blocked by operational safety: {safety_reason}")
         state = store.load_bot_state()
         state["mode"] = mode
         state["runtime_engine"] = _runtime_engine_from_state(state)
@@ -12155,6 +13913,7 @@ def create_app() -> FastAPI:
     def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
+        settings = store.load_settings()
         # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
         strategy_name: str | None = None
         active_bot_id = str(bot_id or "").strip() or None
@@ -12165,6 +13924,20 @@ def create_app() -> FastAPI:
                 pool = bot_row.get("pool_strategy_ids") or []
                 if pool:
                     strategy_name = str(pool[0])
+        if str(state.get("mode") or "").strip().lower() == "live":
+            gates_payload = evaluate_gates("live")
+            allowed, reason = live_can_be_enabled(gates_payload)
+            if not allowed:
+                raise HTTPException(status_code=400, detail=f"LIVE blocked by gates: {reason}")
+            safety_ok, safety_reason, _summary = runtime_bridge.live_operational_safety_gate(
+                state=state,
+                settings=settings,
+                bot_id=active_bot_id,
+                prestart_required=True,
+                force_reconcile=True,
+            )
+            if not safety_ok:
+                raise HTTPException(status_code=400, detail=f"LIVE blocked by operational safety: {safety_reason}")
         if not strategy_name:
             principal = store.registry.get_principal(state["mode"])
             if not principal:
@@ -12177,7 +13950,7 @@ def create_app() -> FastAPI:
         state["killed"] = False
         state["bot_status"] = "RUNNING"
         store.save_bot_state(state)
-        state = _sync_runtime_state(state, settings=store.load_settings(), event="start", persist=True)
+        state = _sync_runtime_state(state, settings=settings, event="start", persist=True)
         store.add_log(
             event_type="status",
             severity="info",

@@ -1,6 +1,139 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-18
+Fecha de actualizacion: 2026-03-23
+
+## Programa LIVE Spot actual - 2026-03-23
+
+- Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-36` validacion `paper -> testnet -> canary`
+  - `RTLOPS-49` exchange adapter live hardening
+  - `RTLOPS-44` market websocket runtime live
+  - `RTLOPS-45` private user/account/order streams live
+  - `RTLOPS-46` exchange filters pre-validator hardening
+  - `RTLOPS-47` live preflight final
+  - `RTLOPS-48` state machine formal de orden live
+  - `RTLOPS-50` persistencia canonica de fills/eventos live
+  - `RTLOPS-23` reconciliation engine formal
+  - `RTLOPS-29` operational safety guardrails
+- Arquitectura real del repo para esta linea:
+  - backend concentrado en `rtlab_autotrader/rtlab_core/web/app.py` con `ConsoleStore` + `RuntimeBridge`;
+  - policies numericas canonicas en `config/policies/`;
+  - `rtlab_autotrader/config/policies/` queda como compatibilidad/fallback y no como autoridad equivalente;
+  - la verdad operativa live Spot se apoya en:
+    - adapter REST endurecido,
+    - market/public websocket,
+    - private streams,
+    - preflight final,
+    - state machine de orden,
+    - storage canonico de fills,
+    - reconciliation engine,
+    - guardrails operativos/breakers.
+- Siguiente issue tecnico exacto despues de este estado:
+  - `RTLOPS-30` `Health summary live + score explicable + degraded visibility`.
+
+## RTLOPS-29 - operational safety guardrails live Spot - 2026-03-23
+
+- Objetivo real cerrado:
+  - convertir senales de riesgo operativo en decisiones ejecutables y auditables:
+    - `WARN_ONLY`
+    - `BLOCK_NEW_SUBMITS`
+    - `FREEZE_SYMBOL`
+    - `FREEZE_BOT`
+    - `FREEZE_GLOBAL`
+    - `FORCE_RECONCILE`
+    - `EMERGENCY_CANCEL_SYMBOL`
+    - `REQUIRE_MANUAL_ACK`
+- Implementacion real:
+  - nuevo modulo:
+    - `rtlab_autotrader/rtlab_core/execution/operational_safety.py`
+  - persistencia auditable en SQLite:
+    - `safety_guardrail_events`
+    - `safety_breakers`
+    - `safety_manual_actions`
+  - policy numerica explicitada en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - integracion backend-first en:
+    - `RuntimeBridge`
+    - `build_status_payload()`
+    - `/api/v1/bot/mode`
+    - `/api/v1/bot/start`
+    - submit runtime antes de enviar ordenes live
+  - endpoints operativos nuevos:
+    - `GET /api/v1/execution/safety/summary`
+    - `GET /api/v1/execution/safety/breakers`
+    - `GET /api/v1/execution/safety/events`
+    - `GET /api/v1/execution/safety/locks`
+    - `POST /api/v1/execution/safety/evaluate`
+    - `POST /api/v1/execution/safety/freeze/symbol/{symbol}`
+    - `POST /api/v1/execution/safety/freeze/bot/{bot_id}`
+    - `POST /api/v1/execution/safety/freeze/global`
+    - `POST /api/v1/execution/safety/unfreeze`
+    - `POST /api/v1/execution/safety/emergency-cancel/{symbol}`
+    - `POST /api/v1/execution/safety/ack/{safety_event_id}`
+- Guardrails soportados en esta version:
+  - `STREAM_HEALTH_DEGRADED`
+  - `STREAM_TERMINATED`
+  - `RECONCILIATION_DESYNC_BLOCKING`
+  - `RECONCILIATION_MANUAL_REVIEW_BLOCKING`
+  - `UNKNOWN_TIMEOUT_STUCK`
+  - `TOO_MANY_REQUESTS_PRESSURE`
+  - `HTTP_418_BAN_RISK`
+  - `TOO_MANY_OPEN_ORDERS`
+  - `REMOTE_OPEN_ORDER_WITHOUT_LOCAL_REPRESENTATION`
+  - `EXCESSIVE_CANCEL_FAILS`
+  - `EXCESSIVE_REJECTS`
+  - `STP_EXPIRED_CLUSTER`
+  - `PRESTART_GUARDRAIL_FAIL`
+  - `PREFLIGHT_EXPIRED_OR_FAIL`
+  - `SAFETY_POLICY_VIOLATION`
+- Politica numerica cerrada en YAML:
+  - `guardrail_stream_gap_warn_ms = 5000`
+  - `guardrail_stream_gap_critical_ms = 10000`
+  - `guardrail_unknown_timeout_hard_sec = 30`
+  - `guardrail_http_429_window_sec = 60`
+  - `guardrail_http_429_threshold = 3`
+  - `guardrail_http_418_blocks_live = true`
+  - `guardrail_cancel_fail_window_sec = 300`
+  - `guardrail_cancel_fail_threshold = 3`
+  - `guardrail_reject_window_sec = 300`
+  - `guardrail_reject_threshold = 5`
+  - `guardrail_stp_expired_window_sec = 300`
+  - `guardrail_stp_expired_threshold = 5`
+  - `guardrail_open_orders_warn_count = 10`
+  - `guardrail_open_orders_block_count = 20`
+  - `guardrail_cooldown_sec = 120`
+  - `guardrail_manual_lock_persists_until_clear = true`
+  - `guardrail_prestart_requires_all_breakers_closed = true`
+  - `guardrail_emergency_cancel_enabled = true`
+  - `guardrail_emergency_cancel_scope = symbol_first`
+- Reglas operativas cerradas:
+  - un breaker bloqueante abierto impide `mode=live`;
+  - `bot/start` en live reevalua safety y falla cerrado;
+  - submit live queda bloqueado si el scope esta freezeado o tiene breaker bloqueante;
+  - `MANUAL_LOCK` no se levanta automaticamente;
+  - `eventStreamTerminated` abre breaker y fuerza reconcile;
+  - `DELETE /api/v3/openOrders` se usa solo a nivel simbolo para emergency cancel, sin inventar cancel global Spot inexistente.
+- Fuente proyecto:
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+  - `knowledge/` y bibliografia local del proyecto ya normalizada para execution/fail-closed
+- Fuente oficial exchange:
+  - Binance Spot REST `DELETE /api/v3/openOrders`
+  - Binance Spot request security
+  - Binance Spot error handling (`-1007`, `-1003`, `429`, `418`)
+  - Binance Spot User Data Stream (`eventStreamTerminated`)
+- Fuente externa equivalente:
+  - no fue necesaria para cerrar este bloque
+- Decision de ingenieria:
+  - integrar guardrails sobre la arquitectura real existente (`app.py` + `RuntimeBridge`) en vez de crear un subsistema paralelo;
+  - usar `symbol_first` para emergency cancel porque Spot no expone un cancel global unico equivalente;
+  - persistir breakers/manual actions para que sobrevivan restart y puedan bloquear live de forma auditable.
+- Riesgo / limite conocido:
+  - el bloque sigue focalizado en Spot;
+  - no se agrego soporte Futures/Margin;
+  - `Linear MCP` estuvo inestable en bloques previos y puede requerir sincronizacion administrativa retroactiva de issues ya cerradas en repo.
 
 ## RTLOPS-2 / RTLOPS-1 / RTLOPS-7: autoridad de policies + taxonomia de modos + jerarquia documental - 2026-03-18
 

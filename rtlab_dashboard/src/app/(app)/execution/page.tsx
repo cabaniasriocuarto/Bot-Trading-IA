@@ -19,6 +19,10 @@ import type {
   ExecutionStats,
   HealthResponse,
   LogEvent,
+  OperationalSafetyBreaker,
+  OperationalSafetyEvent,
+  OperationalSafetyLocksResponse,
+  OperationalSafetySummaryResponse,
   SettingsResponse,
   Strategy,
   TradingMode,
@@ -69,6 +73,10 @@ export default function ExecutionPage() {
   const [rollout, setRollout] = useState<RolloutStatusLite | null>(null);
   const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
   const [exchangeDiagError, setExchangeDiagError] = useState("");
+  const [safetySummary, setSafetySummary] = useState<OperationalSafetySummaryResponse | null>(null);
+  const [safetyBreakers, setSafetyBreakers] = useState<OperationalSafetyBreaker[]>([]);
+  const [safetyEvents, setSafetyEvents] = useState<OperationalSafetyEvent[]>([]);
+  const [safetyLocks, setSafetyLocks] = useState<OperationalSafetyLocksResponse | null>(null);
   const [panelLoading, setPanelLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -105,7 +113,7 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload] = await Promise.all([
+    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, safetySummaryPayload, safetyBreakersPayload, safetyEventsPayload, safetyLocksPayload] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -113,6 +121,10 @@ export default function ExecutionPage() {
       apiGet<RolloutStatusLite>("/api/v1/rollout/status"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
+      apiGet<OperationalSafetySummaryResponse>("/api/v1/execution/safety/summary").catch(() => null as OperationalSafetySummaryResponse | null),
+      apiGet<{ items: OperationalSafetyBreaker[] }>("/api/v1/execution/safety/breakers").catch(() => ({ items: [] as OperationalSafetyBreaker[] })),
+      apiGet<{ items: OperationalSafetyEvent[] }>("/api/v1/execution/safety/events?limit=20").catch(() => ({ items: [] as OperationalSafetyEvent[] })),
+      apiGet<OperationalSafetyLocksResponse>("/api/v1/execution/safety/locks").catch(() => ({ manual_locks: [], manual_actions: [] } as OperationalSafetyLocksResponse)),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
@@ -120,6 +132,10 @@ export default function ExecutionPage() {
     setGates(gatesPayload);
     setRollout(rolloutPayload);
     setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
+    setSafetySummary(safetySummaryPayload);
+    setSafetyBreakers(Array.isArray(safetyBreakersPayload?.items) ? safetyBreakersPayload.items : []);
+    setSafetyEvents(Array.isArray(safetyEventsPayload?.items) ? safetyEventsPayload.items : []);
+    setSafetyLocks(safetyLocksPayload);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
     const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
@@ -155,6 +171,75 @@ export default function ExecutionPage() {
       setRefreshing(false);
     }
   }, [loadExecutionMetrics, loadTradingPanel]);
+
+  const runSafetyAction = useCallback(
+    async (actionKey: string, runner: () => Promise<unknown>) => {
+      setActionLoading(actionKey);
+      setControlError("");
+      setMessage("");
+      try {
+        await runner();
+        await loadTradingPanel(false);
+        setMessage("Operational Safety actualizado.");
+      } catch (err) {
+        setControlError(err instanceof Error ? err.message : "No se pudo ejecutar la accion de safety.");
+      } finally {
+        setActionLoading(null);
+      }
+    },
+    [loadTradingPanel],
+  );
+
+  const runSafetyEvaluate = useCallback(() => {
+    return runSafetyAction("safety-evaluate", async () => {
+      await apiPost("/api/v1/execution/safety/evaluate", {});
+    });
+  }, [runSafetyAction]);
+
+  const freezeGlobal = useCallback(() => {
+    return runSafetyAction("safety-freeze-global", async () => {
+      await apiPost("/api/v1/execution/safety/freeze/global", { audit_note: "freeze_global_from_execution_page" });
+    });
+  }, [runSafetyAction]);
+
+  const freezeBot = useCallback(() => {
+    const botId = selectedExecutionBotId || window.prompt("Bot ID a freeze", "") || "";
+    if (!botId.trim()) return Promise.resolve();
+    return runSafetyAction("safety-freeze-bot", async () => {
+      await apiPost(`/api/v1/execution/safety/freeze/bot/${encodeURIComponent(botId.trim())}`, {
+        audit_note: "freeze_bot_from_execution_page",
+      });
+    });
+  }, [runSafetyAction, selectedExecutionBotId]);
+
+  const freezeSymbol = useCallback(() => {
+    const symbol = window.prompt("Symbol a freeze (ej: BTCUSDT)", "") || "";
+    if (!symbol.trim()) return Promise.resolve();
+    return runSafetyAction("safety-freeze-symbol", async () => {
+      await apiPost(`/api/v1/execution/safety/freeze/symbol/${encodeURIComponent(symbol.trim().toUpperCase())}`, {
+        audit_note: "freeze_symbol_from_execution_page",
+      });
+    });
+  }, [runSafetyAction]);
+
+  const unfreezeGlobal = useCallback(() => {
+    return runSafetyAction("safety-unfreeze-global", async () => {
+      await apiPost("/api/v1/execution/safety/unfreeze", {
+        scope_type: "GLOBAL",
+        audit_note: "unfreeze_global_from_execution_page",
+      });
+    });
+  }, [runSafetyAction]);
+
+  const emergencyCancelSymbol = useCallback(() => {
+    const symbol = window.prompt("Symbol para emergency cancel (ej: BTCUSDT)", "") || "";
+    if (!symbol.trim()) return Promise.resolve();
+    return runSafetyAction("safety-emergency-cancel", async () => {
+      await apiPost(`/api/v1/execution/safety/emergency-cancel/${encodeURIComponent(symbol.trim().toUpperCase())}`, {
+        audit_note: "emergency_cancel_from_execution_page",
+      });
+    });
+  }, [runSafetyAction]);
 
   useEffect(() => {
     const load = async () => {
@@ -1375,6 +1460,149 @@ export default function ExecutionPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <Card>
+        <CardTitle>Operational Safety</CardTitle>
+        <CardDescription>
+          Guardrails live, breakers persistidos, freezes manuales y acciones de emergencia. Esta capa bloquea submit/start/mode live cuando la base operativa no es confiable.
+        </CardDescription>
+        <CardContent className="space-y-4">
+          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <Metric label="Estado global" value={String(safetySummary?.global_state || "CLOSED")} compact />
+            <Metric label="Breakers abiertos" value={String(safetySummary?.breakers_open_count ?? 0)} compact />
+            <Metric label="Breakers bloqueantes" value={String(safetySummary?.breakers_blocking_count ?? 0)} compact />
+            <Metric label="Manual locks" value={String(safetySummary?.manual_lock_count ?? 0)} compact />
+          </section>
+
+          {safetySummary?.blocking_bool ? (
+            <div className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-100">
+              Hay blockers operativos activos. `LIVE` y nuevos submits quedan fail-closed hasta reconcile/unfreeze/manual review.
+            </div>
+          ) : null}
+
+          <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+            <ActionButton
+              label={actionLoading === "safety-evaluate" ? "Evaluando..." : "Reconcile manual"}
+              help="Corre una evaluacion operativa y fuerza reconcile inmediato."
+              onClick={() => void runSafetyEvaluate()}
+              disabled={actionLoading !== null}
+            />
+            <ActionButton
+              label={actionLoading === "safety-freeze-symbol" ? "Freezing..." : "Freeze symbol"}
+              help="Abre manual lock por simbolo."
+              onClick={() => void freezeSymbol()}
+              disabled={actionLoading !== null}
+              variant="outline"
+            />
+            <ActionButton
+              label={actionLoading === "safety-freeze-bot" ? "Freezing..." : "Freeze bot"}
+              help="Abre manual lock por bot."
+              onClick={() => void freezeBot()}
+              disabled={actionLoading !== null}
+              variant="outline"
+            />
+            <ActionButton
+              label={actionLoading === "safety-freeze-global" ? "Freezing..." : "Freeze global"}
+              help="Abre manual lock global."
+              onClick={() => void freezeGlobal()}
+              disabled={actionLoading !== null}
+              variant="danger"
+            />
+            <ActionButton
+              label={actionLoading === "safety-unfreeze-global" ? "Limpiando..." : "Unfreeze global"}
+              help="Limpia manual lock global. No borra evidencia historica."
+              onClick={() => void unfreezeGlobal()}
+              disabled={actionLoading !== null}
+              variant="secondary"
+            />
+            <ActionButton
+              label={actionLoading === "safety-emergency-cancel" ? "Cancelando..." : "Emergency cancel"}
+              help="Cancela todas las ordenes abiertas del simbolo via endpoint oficial Spot."
+              onClick={() => void emergencyCancelSymbol()}
+              disabled={actionLoading !== null}
+              variant="danger"
+            />
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <p className="text-sm font-semibold text-slate-100">Breakers</p>
+              <div className="mt-3 max-h-72 overflow-auto">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Scope</TH>
+                      <TH>Codigo</TH>
+                      <TH>Estado</TH>
+                      <TH>Bloquea</TH>
+                      <TH>Cooldown</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {safetyBreakers.length ? (
+                      safetyBreakers.map((row) => (
+                        <TR key={row.breaker_id}>
+                          <TD>{row.scope_type}{row.symbol ? `:${row.symbol}` : row.bot_id ? `:${row.bot_id}` : ""}</TD>
+                          <TD>{row.breaker_code}</TD>
+                          <TD>{row.state}</TD>
+                          <TD>{row.blocking_bool ? "SI" : "NO"}</TD>
+                          <TD>{row.cooldown_until || "--"}</TD>
+                        </TR>
+                      ))
+                    ) : (
+                      <TR>
+                        <TD colSpan={5} className="text-slate-400">
+                          No hay breakers activos persistidos.
+                        </TD>
+                      </TR>
+                    )}
+                  </TBody>
+                </Table>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <p className="text-sm font-semibold text-slate-100">Eventos Safety</p>
+              <div className="mt-3 max-h-72 overflow-auto">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Hora</TH>
+                      <TH>Trigger</TH>
+                      <TH>Severity</TH>
+                      <TH>Scope</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {safetyEvents.length ? (
+                      safetyEvents.map((row) => (
+                        <TR key={row.safety_event_id}>
+                          <TD>{new Date(row.event_time).toLocaleString()}</TD>
+                          <TD>{row.trigger_code}</TD>
+                          <TD>{row.severity}</TD>
+                          <TD>{row.scope_type}{row.symbol ? `:${row.symbol}` : row.bot_id ? `:${row.bot_id}` : ""}</TD>
+                        </TR>
+                      ))
+                    ) : (
+                      <TR>
+                        <TD colSpan={4} className="text-slate-400">
+                          Sin eventos recientes.
+                        </TD>
+                      </TR>
+                    )}
+                  </TBody>
+                </Table>
+              </div>
+            </div>
+          </div>
+
+          {safetyLocks?.manual_locks?.length ? (
+            <div className="rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-100">
+              Manual locks activos: {safetyLocks.manual_locks.map((row) => `${row.scope_type}${row.symbol ? `:${row.symbol}` : row.bot_id ? `:${row.bot_id}` : ""}`).join(", ")}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardTitle>Ejecucion (Diagnostico)</CardTitle>
