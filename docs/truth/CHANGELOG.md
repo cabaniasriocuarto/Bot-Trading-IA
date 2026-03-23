@@ -2,6 +2,27 @@
 
 ## 2026-03-23
 
+### Alineacion administrativa Linear + mapa de proyectos
+- Linear:
+  - `RTLOPS-23`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48` y `RTLOPS-50` quedaron sincronizadas como `Done` con comentario minimo y evidencia real de repo/docs/tests;
+  - `RTLOPS-29` ya estaba sincronizada en `Done` y se dejo sin ruido extra;
+  - `RTLOPS-30` quedo confirmada como siguiente issue exacta en `Monitoring + Drift + Kill Switches + Health`, con descripcion reescrita en clave backend-first;
+  - proyectos renombrados para reflejar mejor el dominio real:
+    - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`
+    - `Strategy Truth + Evidence + Brain + OPE`
+  - proyectos creados por gap real:
+    - `Cost Stack + Reporting + Export`
+    - `Release / Canary / Rollback / Auditoria Final`
+  - issues reubicadas por dominio:
+    - `RTLOPS-22`, `RTLOPS-43` -> `Cost Stack + Reporting + Export`
+    - `RTLOPS-36`, `RTLOPS-37`, `RTLOPS-38`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` -> `Release / Canary / Rollback / Auditoria Final`
+  - backlog nuevo creado solo donde faltaba contenedor explicito:
+    - `RTLOPS-58` Margin live parity
+    - `RTLOPS-59` COIN-M Futures live parity
+    - `RTLOPS-60` Wallet / transfers / capabilities matrix
+    - `RTLOPS-61` Cost source snapshots live por familia
+    - `RTLOPS-62` Estimated vs realized cost parity + reporting/export integration
+
 ### RTLOPS-29 - operational safety guardrails live Spot
 - Backend:
   - nuevo modulo `rtlab_autotrader/rtlab_core/execution/operational_safety.py` con taxonomia canonica de:

@@ -25,14 +25,32 @@ Fecha: 2026-03-23
     - `RTLOPS-23`
     - `RTLOPS-29`
 
-## Pendiente administrativo chico
-- [ ] Si Linear MCP sigue estable, sincronizar o backfillear cierres administrativos que pudieron quedar pendientes durante la caida previa del MCP:
+## Estado administrativo Linear
+- [x] Sync administrativo real completado para los cierres recientes:
+  - `RTLOPS-23`
   - `RTLOPS-45`
   - `RTLOPS-46`
   - `RTLOPS-47`
   - `RTLOPS-48`
+  - `RTLOPS-49`
   - `RTLOPS-50`
-  - `RTLOPS-23`
+  - `RTLOPS-29`
+- [x] Mapa de proyectos alineado con dominios reales:
+  - `Nucleo Arquitectonico y Policies`
+  - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`
+  - `Strategy Truth + Evidence + Brain + OPE`
+  - `Binance Catalog + Universes + Live Parity`
+  - `Execution Reality + Live Safety`
+  - `Cost Stack + Reporting + Export`
+  - `Monitoring + Drift + Kill Switches + Health`
+  - `Frontend Console 10/10 + Playwright QA`
+  - `Release / Canary / Rollback / Auditoria Final`
+- [x] Nuevas issues de backlog creadas solo donde habia gap real:
+  - `RTLOPS-58` Margin live parity
+  - `RTLOPS-59` COIN-M Futures live parity
+  - `RTLOPS-60` Wallet / transfers / capabilities matrix
+  - `RTLOPS-61` Cost source snapshots live por familia
+  - `RTLOPS-62` Estimated vs realized cost parity + reporting/export integration
 
 ## Regla operativa vigente
 - [x] Mantener `LIVE` fail-closed:
