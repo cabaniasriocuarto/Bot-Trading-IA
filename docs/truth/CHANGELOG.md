@@ -50,7 +50,8 @@
   - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
 - Nota administrativa:
   - la validacion de `pytest` requirio `--basetemp` explicito por restricciones de permisos del entorno sobre `%TEMP%`;
-  - no existe `test_web_execution_reality_api.py` en esta base real, por eso la regresion web se hizo sobre la suite efectiva del repo (`test_web_feature_set_fail_closed.py` + `test_web_live_ready.py`).
+  - no existe `test_web_execution_reality_api.py` en esta base real, por eso la regresion web se hizo sobre la suite efectiva del repo (`test_web_feature_set_fail_closed.py` + `test_web_live_ready.py`);
+  - `RTLOPS-29` quedo sincronizada en Linear como `Done` con comentario de evidencia tecnica.
 
 ## 2026-03-18
 

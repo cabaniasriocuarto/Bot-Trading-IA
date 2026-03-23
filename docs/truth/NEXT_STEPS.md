@@ -33,7 +33,6 @@ Fecha: 2026-03-23
   - `RTLOPS-48`
   - `RTLOPS-50`
   - `RTLOPS-23`
-  - `RTLOPS-29`
 
 ## Regla operativa vigente
 - [x] Mantener `LIVE` fail-closed:
