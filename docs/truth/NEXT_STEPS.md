@@ -31,6 +31,7 @@ Fecha: 2026-03-23
   - `RTLOPS-49`
   - `RTLOPS-50`
   - `RTLOPS-29`
+  - `RTLOPS-30`
 - [x] Mapa de proyectos alineado con dominios reales:
   - `Nucleo Arquitectonico y Policies`
   - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`

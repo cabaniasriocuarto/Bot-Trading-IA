@@ -56,6 +56,7 @@
 - Nota operativa:
   - el summary global puede quedar `DEGRADED` mientras un scope puntual queda `BLOCKED`; eso es intencional y evita exagerar un freeze scoped a bloqueo global;
   - los blockers duros siguen prevaleciendo sobre cualquier score bonito.
+  - `RTLOPS-30` quedo sincronizada en Linear como `Done` con comentario de evidencia tecnica.
 
 ### Alineacion administrativa Linear + mapa de proyectos
 - Linear:

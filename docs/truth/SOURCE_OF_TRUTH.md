@@ -32,7 +32,7 @@ Fecha de actualizacion: 2026-03-23
 - Siguiente issue tecnico exacto despues de este estado:
   - `RTLOPS-26` `Metricas operativas live de execution, streams, fills y risk`.
 - Estado administrativo real de Linear al 2026-03-23:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50` y `RTLOPS-29`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29` y `RTLOPS-30`;
   - mapa de proyectos alineado con dominios reales del repo;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
 
