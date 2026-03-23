@@ -2,11 +2,66 @@
 
 ## 2026-03-23
 
+### RTLOPS-30 - health summary live + score explicable + degraded visibility
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/health_summary.py` con taxonomia canonica de:
+    - estados `HEALTHY/DEGRADED/BLOCKED/MANUAL_REVIEW_REQUIRED`
+    - severidades `INFO/WARN/CRITICAL`
+    - reason codes priorizados
+    - score explicable con penalizaciones auditables
+    - finalizacion global y por scope
+  - `RuntimeBridge.build_live_health_summary(...)` consolida:
+    - gates/readiness actuales
+    - `_last_reconcile`
+    - `operational_safety_summary(...)`
+    - runtime snapshot / heartbeat / freshness
+  - nuevo storage auditable:
+    - `health_summary_snapshots`
+    - `health_scope_snapshots`
+    - `health_reason_events`
+  - nuevos endpoints:
+    - `GET /api/v1/execution/health/summary`
+    - `GET /api/v1/execution/health/scopes`
+    - `GET /api/v1/execution/health/history`
+    - `POST /api/v1/execution/health/evaluate`
+  - `build_status_payload()` ahora expone `live_health_summary`;
+  - `/api/v1/bot/mode` y `/api/v1/bot/start` usan el summary como superficie unificada de explicacion sin duplicar la verdad de safety/reconciliation.
+- Policy:
+  - nueva seccion `execution_safety.live_health_summary` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - thresholds cerrados:
+    - `preflight_stale_sec = 300`
+    - `preflight_expired_sec = 600`
+    - `recent_emergency_action_window_sec = 300`
+- UI:
+  - `Execution` agrega bloque sobrio `Health Summary` con:
+    - state
+    - score
+    - severity
+    - blockers
+    - top reasons
+    - recommended actions
+    - degraded visibility
+    - tabla por scope
+    - detalle expandible del score/penalties
+  - la UI no calcula salud; solo renderiza el contrato backend.
+- Validacion local real:
+  - `py_compile rtlab_autotrader/rtlab_core/execution/health_summary.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_health_summary or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or manual_lock_persists_after_reload or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-health -q` -> PASS (`18 passed`)
+  - `pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or manual_lock_persists_after_reload or config_policies_endpoint_exposes_numeric_policy_bundle" --basetemp .\\rtlab_autotrader\\.tmp\\pytest-health-compat -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+- Nota operativa:
+  - el summary global puede quedar `DEGRADED` mientras un scope puntual queda `BLOCKED`; eso es intencional y evita exagerar un freeze scoped a bloqueo global;
+  - los blockers duros siguen prevaleciendo sobre cualquier score bonito.
+
 ### Alineacion administrativa Linear + mapa de proyectos
 - Linear:
   - `RTLOPS-23`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48` y `RTLOPS-50` quedaron sincronizadas como `Done` con comentario minimo y evidencia real de repo/docs/tests;
   - `RTLOPS-29` ya estaba sincronizada en `Done` y se dejo sin ruido extra;
-  - `RTLOPS-30` quedo confirmada como siguiente issue exacta en `Monitoring + Drift + Kill Switches + Health`, con descripcion reescrita en clave backend-first;
+  - `RTLOPS-30` quedo ubicada correctamente en `Monitoring + Drift + Kill Switches + Health`, con descripcion reescrita en clave backend-first;
   - proyectos renombrados para reflejar mejor el dominio real:
     - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`
     - `Strategy Truth + Evidence + Brain + OPE`

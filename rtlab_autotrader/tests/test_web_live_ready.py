@@ -5559,3 +5559,289 @@ def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
   assert len(detail_payload["best_runs_cache"]) == 2
   assert detail_payload["best_runs_cache"][0]["run_id"] == "BT-000123"
 
+
+def _mark_live_health_ready(module) -> dict[str, str]:
+  now_iso = module.utc_now_iso()
+  state = module.store.load_bot_state()
+  state.update(
+    {
+      "mode": "live",
+      "runtime_engine": "real",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_operational_safety_ok": True,
+      "runtime_operational_safety_status": "CLOSED",
+      "runtime_exchange_connector_ok": True,
+      "runtime_exchange_order_ok": True,
+      "runtime_exchange_mode": "live",
+      "runtime_exchange_verified_at": now_iso,
+      "runtime_heartbeat_at": now_iso,
+      "runtime_last_reconcile_at": now_iso,
+      "runtime_last_safety_eval_at": now_iso,
+      "runtime_unknown_timeout_active": False,
+      "runtime_unknown_timeout_since": "",
+    }
+  )
+  module.store.save_bot_state(state)
+  module.runtime_bridge._last_reconcile = {
+    "desync_count": 0,
+    "missing_local": [],
+    "missing_exchange": [],
+    "qty_mismatches": [],
+    "remote_open_orders_count": 0,
+    "local_open_orders_count": 0,
+    "source": "mock",
+    "source_ok": True,
+    "source_reason": "",
+  }
+  return state
+
+
+def _patch_live_gates_green(module, monkeypatch) -> None:
+  monkeypatch.setattr(module, "evaluate_gates", lambda *args, **kwargs: {"overall_status": "PASS", "gates": []})
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda payload: (True, ""))
+
+
+def test_live_health_summary_is_healthy_when_sources_are_clean(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "HEALTHY"
+  assert summary["score"] >= 90
+  assert summary["blocking_bool"] is False
+  assert summary["top_priority_reason_code"] == ""
+
+
+def test_live_health_summary_marks_preflight_stale_as_degraded(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  state = module.store.load_bot_state()
+  state["runtime_last_safety_eval_at"] = (module.utc_now() - timedelta(seconds=350)).isoformat()
+  module.store.save_bot_state(state)
+
+  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
+  assert summary["state"] == "DEGRADED"
+  assert "PREFLIGHT_STALE" in summary["reason_codes"]
+  assert summary["score"] == 90
+
+
+def test_live_health_summary_blocks_when_preflight_is_expired(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  state = module.store.load_bot_state()
+  state["runtime_last_safety_eval_at"] = (module.utc_now() - timedelta(seconds=700)).isoformat()
+  module.store.save_bot_state(state)
+
+  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
+  assert summary["state"] == "BLOCKED"
+  assert "PREFLIGHT_EXPIRED" in summary["hard_blockers"]
+
+
+def test_live_health_summary_blocks_when_reconciliation_is_desync(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.runtime_bridge._last_reconcile["desync_count"] = 1
+  module.runtime_bridge._last_reconcile["missing_local"] = ["BTCUSDT:123"]
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "BLOCKED"
+  assert "RECONCILIATION_DESYNC" in summary["hard_blockers"]
+
+
+def test_live_health_summary_marks_manual_review_consistently(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.store.upsert_safety_breaker(
+    breaker_code="RECONCILIATION_MANUAL_REVIEW_BLOCKING",
+    scope_type="GLOBAL",
+    state="OPEN",
+    blocking_bool=True,
+    trigger_reason={"reason": "manual_review_required"},
+  )
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "MANUAL_REVIEW_REQUIRED"
+  assert "RECONCILIATION_MANUAL_REVIEW" in summary["reason_codes"]
+
+
+def test_live_health_summary_blocks_when_global_manual_lock_is_active(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.runtime_bridge.freeze_global(requested_by="tester", audit_note="freeze_for_health_test")
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "BLOCKED"
+  assert "MANUAL_LOCK_ACTIVE" in summary["hard_blockers"]
+  assert "FREEZE_GLOBAL_ACTIVE" in summary["hard_blockers"]
+
+
+def test_live_health_summary_blocks_when_generic_breaker_is_open(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.store.upsert_safety_breaker(
+    breaker_code="SAFETY_POLICY_VIOLATION",
+    scope_type="GLOBAL",
+    state="OPEN",
+    blocking_bool=True,
+    trigger_reason={"reason": "policy_violation"},
+  )
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "BLOCKED"
+  assert "BREAKER_OPEN" in summary["hard_blockers"]
+
+
+def test_live_health_summary_blocks_when_stream_is_terminated(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  state = module.store.load_bot_state()
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+
+  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
+  assert summary["state"] == "BLOCKED"
+  assert "STREAM_TERMINATED" in summary["hard_blockers"]
+
+
+def test_live_health_summary_marks_stream_degraded_without_blocking(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  state = module.store.load_bot_state()
+  state["runtime_heartbeat_at"] = (module.utc_now() - timedelta(seconds=6)).isoformat()
+  module.store.save_bot_state(state)
+
+  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
+  assert summary["state"] == "DEGRADED"
+  assert "STREAM_HEALTH_DEGRADED" in summary["reason_codes"]
+
+
+def test_live_health_summary_blocks_on_unknown_timeout_stuck(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  state = module.store.load_bot_state()
+  state["runtime_unknown_timeout_active"] = True
+  state["runtime_unknown_timeout_since"] = (module.utc_now() - timedelta(seconds=31)).isoformat()
+  module.store.save_bot_state(state)
+
+  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
+  assert summary["state"] == "BLOCKED"
+  assert "UNKNOWN_TIMEOUT_STUCK" in summary["hard_blockers"]
+
+
+def test_live_health_summary_marks_rate_limit_pressure_as_degraded(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.store.upsert_safety_breaker(
+    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
+    scope_type="SYMBOL",
+    symbol="BTCUSDT",
+    state="COOLDOWN",
+    blocking_bool=True,
+    trigger_count_window=3,
+    trigger_reason={"rate_limit_hits": 3},
+  )
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "DEGRADED"
+  assert "RATE_LIMIT_PRESSURE" in summary["reason_codes"]
+
+
+def test_live_health_summary_marks_open_order_pressure_as_degraded(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.runtime_bridge._last_reconcile["remote_open_orders_count"] = 12
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "DEGRADED"
+  assert "OPEN_ORDER_PRESSURE" in summary["reason_codes"]
+
+
+def test_live_health_summary_scope_can_differ_from_global(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.runtime_bridge.freeze_symbol(symbol="BTCUSDT", requested_by="tester", audit_note="freeze_scope_test")
+
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  by_scope = {row["scope_key"]: row for row in summary["scope_status"]}
+  assert summary["state"] == "DEGRADED"
+  assert by_scope["SYMBOL:BTCUSDT"]["state"] == "BLOCKED"
+  assert "FREEZE_SYMBOL_ACTIVE" in summary["reason_codes"]
+
+
+def test_execution_health_summary_and_evaluate_endpoints_return_and_persist_contract(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_ENGINE", "real")
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  summary_res = client.get("/api/v1/execution/health/summary", headers=headers)
+  assert summary_res.status_code == 200, summary_res.text
+  summary = summary_res.json()
+  assert summary["state"] == "HEALTHY"
+  assert "reason_codes" in summary
+  assert "component_status" in summary
+  assert "scope_status" in summary
+
+  evaluate_res = client.post("/api/v1/execution/health/evaluate", json={}, headers=headers)
+  assert evaluate_res.status_code == 200, evaluate_res.text
+  evaluated = evaluate_res.json()
+  assert isinstance(evaluated.get("snapshot_id"), str)
+
+  history_res = client.get("/api/v1/execution/health/history", headers=headers)
+  assert history_res.status_code == 200, history_res.text
+  history = history_res.json()["items"]
+  assert history
+  assert history[0]["snapshot_id"] == evaluated["snapshot_id"]
+
+  scopes_res = client.get("/api/v1/execution/health/scopes", headers=headers)
+  assert scopes_res.status_code == 200, scopes_res.text
+  scopes_payload = scopes_res.json()
+  assert isinstance(scopes_payload.get("items"), list)
+

@@ -18,6 +18,8 @@ import type {
   ExchangeDiagnoseResponse,
   ExecutionStats,
   HealthResponse,
+  LiveHealthScopeSummary,
+  LiveHealthSummaryResponse,
   LogEvent,
   OperationalSafetyBreaker,
   OperationalSafetyEvent,
@@ -73,6 +75,8 @@ export default function ExecutionPage() {
   const [rollout, setRollout] = useState<RolloutStatusLite | null>(null);
   const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
   const [exchangeDiagError, setExchangeDiagError] = useState("");
+  const [liveHealthSummary, setLiveHealthSummary] = useState<LiveHealthSummaryResponse | null>(null);
+  const [liveHealthScopes, setLiveHealthScopes] = useState<LiveHealthScopeSummary[]>([]);
   const [safetySummary, setSafetySummary] = useState<OperationalSafetySummaryResponse | null>(null);
   const [safetyBreakers, setSafetyBreakers] = useState<OperationalSafetyBreaker[]>([]);
   const [safetyEvents, setSafetyEvents] = useState<OperationalSafetyEvent[]>([]);
@@ -113,7 +117,21 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload, safetySummaryPayload, safetyBreakersPayload, safetyEventsPayload, safetyLocksPayload] = await Promise.all([
+    const [
+      status,
+      currentSettings,
+      healthPayload,
+      gatesPayload,
+      rolloutPayload,
+      botsPayload,
+      strategiesPayload,
+      liveHealthSummaryPayload,
+      liveHealthScopesPayload,
+      safetySummaryPayload,
+      safetyBreakersPayload,
+      safetyEventsPayload,
+      safetyLocksPayload,
+    ] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -121,6 +139,8 @@ export default function ExecutionPage() {
       apiGet<RolloutStatusLite>("/api/v1/rollout/status"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
+      apiGet<LiveHealthSummaryResponse>("/api/v1/execution/health/summary").catch(() => null as LiveHealthSummaryResponse | null),
+      apiGet<{ items: LiveHealthScopeSummary[] }>("/api/v1/execution/health/scopes").catch(() => ({ items: [] as LiveHealthScopeSummary[] })),
       apiGet<OperationalSafetySummaryResponse>("/api/v1/execution/safety/summary").catch(() => null as OperationalSafetySummaryResponse | null),
       apiGet<{ items: OperationalSafetyBreaker[] }>("/api/v1/execution/safety/breakers").catch(() => ({ items: [] as OperationalSafetyBreaker[] })),
       apiGet<{ items: OperationalSafetyEvent[] }>("/api/v1/execution/safety/events?limit=20").catch(() => ({ items: [] as OperationalSafetyEvent[] })),
@@ -132,6 +152,8 @@ export default function ExecutionPage() {
     setGates(gatesPayload);
     setRollout(rolloutPayload);
     setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
+    setLiveHealthSummary(liveHealthSummaryPayload);
+    setLiveHealthScopes(Array.isArray(liveHealthScopesPayload?.items) ? liveHealthScopesPayload.items : []);
     setSafetySummary(safetySummaryPayload);
     setSafetyBreakers(Array.isArray(safetyBreakersPayload?.items) ? safetyBreakersPayload.items : []);
     setSafetyEvents(Array.isArray(safetyEventsPayload?.items) ? safetyEventsPayload.items : []);
@@ -193,6 +215,12 @@ export default function ExecutionPage() {
   const runSafetyEvaluate = useCallback(() => {
     return runSafetyAction("safety-evaluate", async () => {
       await apiPost("/api/v1/execution/safety/evaluate", {});
+    });
+  }, [runSafetyAction]);
+
+  const runHealthEvaluate = useCallback(() => {
+    return runSafetyAction("health-evaluate", async () => {
+      await apiPost("/api/v1/execution/health/evaluate", {});
     });
   }, [runSafetyAction]);
 
@@ -418,6 +446,16 @@ export default function ExecutionPage() {
     .filter((row) => row.status !== "pass");
   const liveBotsBlocked = liveBlockingItems.length > 0;
   const liveBotsBlockedReason = liveBlockingItems.map((row) => row.label).join(", ");
+  const healthState = String(liveHealthSummary?.state || "DEGRADED");
+  const healthVariant =
+    healthState === "HEALTHY" ? "success" : healthState === "DEGRADED" ? "warn" : "danger";
+  const degradedComponents = Object.entries((liveHealthSummary?.component_status || {}) as Record<string, unknown>)
+    .filter(([, value]) => {
+      if (!value || typeof value !== "object") return false;
+      const status = String((value as Record<string, unknown>).status || "");
+      return ["FAIL", "DESYNC", "OPEN", "COOLDOWN", "WARN"].includes(status);
+    })
+    .map(([key]) => key);
 
   const primaryByMode = useMemo(() => {
     const findPrimary = (mode: "paper" | "testnet" | "live") =>
@@ -1460,6 +1498,152 @@ export default function ExecutionPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <Card>
+        <CardTitle className="flex items-center justify-between gap-3">
+          <span>Health Summary</span>
+          <Badge variant={healthVariant as "neutral" | "success" | "warn" | "danger"}>{healthState}</Badge>
+        </CardTitle>
+        <CardDescription>
+          Superficie canónica de lectura para LIVE. Consolida preflight, reconciliation, operational safety y runtime en un solo contrato backend-first.
+        </CardDescription>
+        <CardContent className="space-y-4">
+          {(healthState === "BLOCKED" || healthState === "MANUAL_REVIEW_REQUIRED") ? (
+            <div className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-100">
+              {healthState === "BLOCKED" ? "El sistema está bloqueado para LIVE." : "El sistema requiere manual review antes de seguir operando."}
+              {liveHealthSummary?.top_priority_reason_code ? ` Top reason: ${liveHealthSummary.top_priority_reason_code}.` : ""}
+            </div>
+          ) : null}
+
+          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+            <Metric label="Estado global" value={healthState} compact />
+            <Metric label="Score" value={String(liveHealthSummary?.score ?? "--")} compact />
+            <Metric label="Severidad" value={String(liveHealthSummary?.severity || "--")} compact />
+            <Metric label="Hard blockers" value={String(liveHealthSummary?.hard_blockers.length ?? 0)} compact />
+            <Metric label="Top reason" value={String(liveHealthSummary?.top_priority_reason_code || "--")} compact />
+            <Metric label="Ultima evaluacion" value={liveHealthSummary?.last_evaluated_at ? new Date(liveHealthSummary.last_evaluated_at).toLocaleTimeString() : "--"} compact />
+          </section>
+
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            <ActionButton
+              label={actionLoading === "health-evaluate" ? "Evaluando..." : "Health evaluate"}
+              help="Recalcula y persiste el summary canónico de salud live."
+              onClick={() => void runHealthEvaluate()}
+              disabled={actionLoading !== null}
+            />
+            <ActionButton
+              label={actionLoading === "safety-evaluate" ? "Evaluando..." : "Safety evaluate"}
+              help="Reevalúa guardrails/breakers y refresca la base de health."
+              onClick={() => void runSafetyEvaluate()}
+              disabled={actionLoading !== null}
+              variant="secondary"
+            />
+            <Metric label="Enable live" value={liveHealthSummary?.can_enable_live_mode ? "SI" : "NO"} compact />
+            <Metric label="Start live" value={liveHealthSummary?.can_start_live ? "SI" : "NO"} compact />
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <p className="text-sm font-semibold text-slate-100">Top reasons / acciones</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(liveHealthSummary?.reason_codes || []).slice(0, 6).map((code) => (
+                  <Badge key={`health-reason-${code}`} variant={liveHealthSummary?.hard_blockers.includes(code) ? "danger" : "warn"}>
+                    {code}
+                  </Badge>
+                ))}
+                {!liveHealthSummary?.reason_codes?.length ? <span className="text-xs text-slate-500">Sin reasons activos.</span> : null}
+              </div>
+              <p className="mt-3 text-xs text-slate-400">
+                Recommended actions: {(liveHealthSummary?.recommended_actions || []).length ? liveHealthSummary?.recommended_actions.join(", ") : "none"}
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <p className="text-sm font-semibold text-slate-100">Degraded visibility</p>
+              <div className="mt-3 space-y-2 text-xs text-slate-300">
+                <p>Componentes degradados: {degradedComponents.length ? degradedComponents.join(", ") : "ninguno"}</p>
+                <p>Freshness preflight: {String((liveHealthSummary?.freshness || {})["preflight_age_sec"] ?? "--")}s</p>
+                <p>Freshness heartbeat: {String((liveHealthSummary?.freshness || {})["heartbeat_age_sec"] ?? "--")}s</p>
+                <p>Freshness reconcile: {String((liveHealthSummary?.freshness || {})["reconciliation_age_sec"] ?? "--")}s</p>
+                <p>Scopes afectados: {liveHealthScopes.filter((row) => row.state !== "HEALTHY").length}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+            <p className="mb-3 text-sm font-semibold text-slate-100">Health por scope</p>
+            <div className="max-h-72 overflow-auto">
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>Scope</TH>
+                    <TH>State</TH>
+                    <TH>Score</TH>
+                    <TH>Severidad</TH>
+                    <TH>Top reason</TH>
+                    <TH>Blockers</TH>
+                    <TH>Freshness</TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {liveHealthScopes.length ? (
+                    liveHealthScopes.map((row) => (
+                      <TR key={row.scope_key}>
+                        <TD>{row.scope_key}</TD>
+                        <TD>
+                          <Badge variant={row.state === "HEALTHY" ? "success" : row.state === "DEGRADED" ? "warn" : "danger"}>
+                            {row.state}
+                          </Badge>
+                        </TD>
+                        <TD>{row.score}</TD>
+                        <TD>{row.severity}</TD>
+                        <TD>{row.top_priority_reason_code || "--"}</TD>
+                        <TD>{row.hard_blockers.length}</TD>
+                        <TD>{String((row.freshness || {})["preflight_age_sec"] ?? "--")}s</TD>
+                      </TR>
+                    ))
+                  ) : (
+                    <TR>
+                      <TD colSpan={7} className="text-slate-400">
+                        Sin scopes evaluados.
+                      </TD>
+                    </TR>
+                  )}
+                </TBody>
+              </Table>
+            </div>
+          </div>
+
+          <details className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-100">Detalle explicable</summary>
+            <div className="mt-3 grid gap-4 xl:grid-cols-2">
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Penalties</p>
+                {(liveHealthSummary?.score_penalties || []).length ? (
+                  liveHealthSummary?.score_penalties.map((row, idx) => (
+                    <div key={`score-penalty-${idx}`} className="rounded border border-slate-800 p-2 text-xs text-slate-300">
+                      {row.reason_code} · -{row.penalty}
+                      {row.symbol ? ` · ${row.symbol}` : ""}
+                      {row.bot_id ? ` · ${row.bot_id}` : ""}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-slate-500">Sin penalizaciones activas.</p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Component status</p>
+                {Object.entries((liveHealthSummary?.component_status || {}) as Record<string, unknown>).map(([key, value]) => (
+                  <div key={`component-status-${key}`} className="rounded border border-slate-800 p-2 text-xs text-slate-300">
+                    <p className="font-semibold text-slate-100">{key}</p>
+                    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-[11px] text-slate-400">{JSON.stringify(value, null, 2)}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </details>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardTitle>Operational Safety</CardTitle>

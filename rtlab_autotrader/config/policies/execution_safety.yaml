@@ -19,3 +19,7 @@ execution_safety:
     guardrail_prestart_requires_all_breakers_closed: true
     guardrail_emergency_cancel_enabled: true
     guardrail_emergency_cancel_scope: symbol_first
+  live_health_summary:
+    preflight_stale_sec: 300
+    preflight_expired_sec: 600
+    recent_emergency_action_window_sec: 300

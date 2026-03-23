@@ -15,6 +15,7 @@ Fecha de actualizacion: 2026-03-23
   - `RTLOPS-50` persistencia canonica de fills/eventos live
   - `RTLOPS-23` reconciliation engine formal
   - `RTLOPS-29` operational safety guardrails
+  - `RTLOPS-30` health summary live + score explicable + degraded visibility
 - Arquitectura real del repo para esta linea:
   - backend concentrado en `rtlab_autotrader/rtlab_core/web/app.py` con `ConsoleStore` + `RuntimeBridge`;
   - policies numericas canonicas en `config/policies/`;
@@ -29,11 +30,116 @@ Fecha de actualizacion: 2026-03-23
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-30` `Health summary live + score explicable + degraded visibility`.
+  - `RTLOPS-26` `Metricas operativas live de execution, streams, fills y risk`.
 - Estado administrativo real de Linear al 2026-03-23:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50` y `RTLOPS-29`;
   - mapa de proyectos alineado con dominios reales del repo;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
+
+## RTLOPS-30 - health summary live unico y explicable - 2026-03-23
+
+- Objetivo real cerrado:
+  - agregar una capa canonica de lectura/orquestacion sobre los modulos ya existentes, sin duplicar la logica de:
+    - preflight/readiness,
+    - reconciliation,
+    - operational safety,
+    - runtime/stream health.
+- Implementacion real:
+  - nuevo modulo:
+    - `rtlab_autotrader/rtlab_core/execution/health_summary.py`
+  - persistencia auditable en SQLite:
+    - `health_summary_snapshots`
+    - `health_scope_snapshots`
+    - `health_reason_events`
+  - integracion backend-first en:
+    - `RuntimeBridge.build_live_health_summary(...)`
+    - `build_status_payload()`
+    - `/api/v1/bot/mode`
+    - `/api/v1/bot/start`
+  - endpoints nuevos:
+    - `GET /api/v1/execution/health/summary`
+    - `GET /api/v1/execution/health/scopes`
+    - `GET /api/v1/execution/health/history`
+    - `POST /api/v1/execution/health/evaluate`
+  - UI minima en `Execution`:
+    - bloque `Health Summary`
+    - bloque `Degraded visibility`
+    - tabla por scope
+    - detalle expandible del score
+- Contrato canonico expuesto:
+  - `state`
+  - `score`
+  - `severity`
+  - `blocking_bool`
+  - `top_priority_reason_code`
+  - `reason_codes`
+  - `hard_blockers`
+  - `warnings`
+  - `component_status`
+  - `scope_status`
+  - `freshness`
+  - `recommended_actions`
+  - `can_enable_live_mode`
+  - `can_start_live`
+  - `can_submit_order_by_scope`
+  - `last_evaluated_at`
+- Estados canonicos:
+  - `HEALTHY`
+  - `DEGRADED`
+  - `BLOCKED`
+  - `MANUAL_REVIEW_REQUIRED`
+- Reason codes minimos soportados:
+  - `PREFLIGHT_FAIL`
+  - `PREFLIGHT_EXPIRED`
+  - `PREFLIGHT_STALE`
+  - `RECONCILIATION_DESYNC`
+  - `RECONCILIATION_MANUAL_REVIEW`
+  - `BREAKER_OPEN`
+  - `MANUAL_LOCK_ACTIVE`
+  - `STREAM_HEALTH_DEGRADED`
+  - `STREAM_TERMINATED`
+  - `UNKNOWN_TIMEOUT_STUCK`
+  - `RATE_LIMIT_PRESSURE`
+  - `HTTP_418_BAN_RISK`
+  - `OPEN_ORDER_PRESSURE`
+  - `SNAPSHOT_STALE`
+  - `EMERGENCY_ACTION_ACTIVE`
+  - `FREEZE_SYMBOL_ACTIVE`
+  - `FREEZE_BOT_ACTIVE`
+  - `FREEZE_GLOBAL_ACTIVE`
+  - `SAFETY_POLICY_VIOLATION`
+- Regla de diseno cerrada:
+  - `health_summary` es la verdad de lectura consolidada;
+  - no reemplaza la autoridad de los modulos fuente;
+  - si un scope esta bloqueado pero no existe freeze/bloqueo global, el summary global puede quedar `DEGRADED` y el scope `BLOCKED`.
+- Score explicable:
+  - base `100`;
+  - penalizaciones explicitas por `PREFLIGHT_STALE`, `STREAM_HEALTH_DEGRADED`, `RATE_LIMIT_PRESSURE`, `HTTP_418_BAN_RISK`, `OPEN_ORDER_PRESSURE`, `RECONCILIATION_*`, `EMERGENCY_ACTION_ACTIVE`, `SNAPSHOT_STALE` y `FREEZE_SYMBOL/BOT_ACTIVE`;
+  - el score nunca pisa blockers duros.
+- Fuente proyecto:
+  - `rtlab_autotrader/rtlab_core/execution/health_summary.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+  - `rtlab_dashboard/src/lib/types.ts`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Fuente oficial exchange:
+  - Binance Spot User Data Stream (`eventStreamTerminated`, `executionReport`)
+  - Binance Spot REST (`/api/v3/order`, `/api/v3/openOrders`, `/api/v3/account`)
+  - manejo oficial de `-1007`, `429` y riesgo `418`
+- Decision de ingenieria:
+  - reutilizar los outputs canonicos reales que ya existen en repo (`evaluate_gates/live_can_be_enabled`, `_last_reconcile`, `operational_safety_summary`, runtime snapshot) y orquestarlos en una sola superficie;
+  - no crear un segundo safety engine ni mover toda la logica de bloqueo a la UI.
+- Riesgo / limite conocido:
+  - el score es explicable pero no pretende sustituir release gating final;
+  - `health_summary` hoy consume los outputs canonicos reales del repo actual, que siguen concentrados mayormente en `app.py`.
+- Validacion local cerrada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/health_summary.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_health_summary or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or manual_lock_persists_after_reload or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-health -q` -> PASS (`18 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py -q` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or manual_lock_persists_after_reload or config_policies_endpoint_exposes_numeric_policy_bundle" --basetemp .\\rtlab_autotrader\\.tmp\\pytest-health-compat -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
 
 ## RTLOPS-29 - operational safety guardrails live Spot - 2026-03-23
 

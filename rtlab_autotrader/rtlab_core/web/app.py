@@ -37,6 +37,16 @@ from rtlab_core.domains import (
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution.oms import OMS, Order
+from rtlab_core.execution.health_summary import (
+    build_health_reason,
+    finalize_health_scope,
+    finalize_live_health_summary,
+    health_severity_rank,
+    health_scope_matches,
+    health_scope_key,
+    normalize_health_reason_code,
+    normalize_health_scope_type,
+)
 from rtlab_core.execution.operational_safety import (
     normalize_safety_breaker_action,
     normalize_safety_breaker_state,
@@ -355,6 +365,63 @@ CREATE TABLE IF NOT EXISTS safety_manual_actions (
     audit_note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_safety_manual_actions_requested_at ON safety_manual_actions(requested_at DESC);
+CREATE TABLE IF NOT EXISTS health_summary_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    evaluated_at TEXT NOT NULL,
+    state TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    blocking_bool INTEGER NOT NULL DEFAULT 0,
+    top_priority_reason_code TEXT,
+    blockers_json TEXT NOT NULL,
+    reasons_json TEXT NOT NULL,
+    component_status_json TEXT NOT NULL,
+    freshness_json TEXT NOT NULL,
+    raw_summary_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_eval ON health_summary_snapshots(evaluated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_scope ON health_summary_snapshots(scope_type, bot_id, symbol, evaluated_at DESC);
+CREATE TABLE IF NOT EXISTS health_scope_snapshots (
+    scope_snapshot_id TEXT PRIMARY KEY,
+    snapshot_id TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    evaluated_at TEXT NOT NULL,
+    state TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    blocking_bool INTEGER NOT NULL DEFAULT 0,
+    top_priority_reason_code TEXT,
+    blockers_json TEXT NOT NULL,
+    reasons_json TEXT NOT NULL,
+    freshness_json TEXT NOT NULL,
+    raw_scope_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_snapshot ON health_scope_snapshots(snapshot_id, evaluated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_scope ON health_scope_snapshots(scope_type, bot_id, symbol, evaluated_at DESC);
+CREATE TABLE IF NOT EXISTS health_reason_events (
+    event_id TEXT PRIMARY KEY,
+    reason_code TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    severity TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    active_bool INTEGER NOT NULL DEFAULT 1,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_health_reason_events_unique_scope
+  ON health_reason_events(reason_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''));
+CREATE INDEX IF NOT EXISTS idx_health_reason_events_active ON health_reason_events(active_bool, scope_type, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC);
 """
 
@@ -377,6 +444,11 @@ class SafetyEvaluateBody(BaseModel):
     bot_id: str | None = None
     symbol: str | None = None
     trigger: str | None = None
+
+
+class HealthEvaluateBody(BaseModel):
+    bot_id: str | None = None
+    symbol: str | None = None
 
 
 class SafetyFreezeBody(BaseModel):
@@ -807,6 +879,12 @@ DEFAULT_OPERATIONAL_SAFETY_POLICY: dict[str, Any] = {
     "guardrail_emergency_cancel_scope": "symbol_first",
 }
 
+DEFAULT_LIVE_HEALTH_POLICY: dict[str, Any] = {
+    "preflight_stale_sec": 300,
+    "preflight_expired_sec": 600,
+    "recent_emergency_action_window_sec": 300,
+}
+
 
 def load_execution_safety_policy() -> dict[str, Any]:
     bundle = load_numeric_policies_bundle()
@@ -814,11 +892,16 @@ def load_execution_safety_policy() -> dict[str, Any]:
     payload = policies.get("execution_safety") if isinstance(policies.get("execution_safety"), dict) else {}
     root = payload.get("execution_safety") if isinstance(payload.get("execution_safety"), dict) else {}
     ops = root.get("operational_safety") if isinstance(root.get("operational_safety"), dict) else {}
+    live_health = root.get("live_health_summary") if isinstance(root.get("live_health_summary"), dict) else {}
     return {
         "source": "config/policies/execution_safety.yaml" if ops else "default_fail_closed_operational_safety",
         "operational_safety": {
             **DEFAULT_OPERATIONAL_SAFETY_POLICY,
             **ops,
+        },
+        "live_health_summary": {
+            **DEFAULT_LIVE_HEALTH_POLICY,
+            **live_health,
         },
     }
 
@@ -2133,6 +2216,79 @@ class ConsoleStore:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_manual_actions_requested_at ON safety_manual_actions(requested_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS health_summary_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                evaluated_at TEXT NOT NULL,
+                state TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                severity TEXT NOT NULL,
+                blocking_bool INTEGER NOT NULL DEFAULT 0,
+                top_priority_reason_code TEXT,
+                blockers_json TEXT NOT NULL,
+                reasons_json TEXT NOT NULL,
+                component_status_json TEXT NOT NULL,
+                freshness_json TEXT NOT NULL,
+                raw_summary_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_eval ON health_summary_snapshots(evaluated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_scope ON health_summary_snapshots(scope_type, bot_id, symbol, evaluated_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS health_scope_snapshots (
+                scope_snapshot_id TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                evaluated_at TEXT NOT NULL,
+                state TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                severity TEXT NOT NULL,
+                blocking_bool INTEGER NOT NULL DEFAULT 0,
+                top_priority_reason_code TEXT,
+                blockers_json TEXT NOT NULL,
+                reasons_json TEXT NOT NULL,
+                freshness_json TEXT NOT NULL,
+                raw_scope_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_snapshot ON health_scope_snapshots(snapshot_id, evaluated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_scope ON health_scope_snapshots(scope_type, bot_id, symbol, evaluated_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS health_reason_events (
+                event_id TEXT PRIMARY KEY,
+                reason_code TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                severity TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                active_bool INTEGER NOT NULL DEFAULT 1,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_health_reason_events_unique_scope
+            ON health_reason_events(reason_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''))
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_reason_events_active ON health_reason_events(active_bool, scope_type, updated_at DESC)")
         self._backfill_logs_has_bot_ref(conn)
         self._backfill_log_bot_refs(conn)
 
@@ -2680,6 +2836,249 @@ class ConsoleStore:
                     "audit_note": str(row["audit_note"] or "") if row["audit_note"] is not None else None,
                 }
             )
+        return items
+
+    def _sync_health_reason_events(self, conn: sqlite3.Connection, reason_items: list[dict[str, Any]], *, now_iso: str) -> None:
+        active_keys = {
+            (
+                normalize_health_reason_code(row.get("reason_code")),
+                normalize_health_scope_type(row.get("scope_type")),
+                self._normalize_safety_bot_id(row.get("bot_id")),
+                self._normalize_safety_symbol(row.get("symbol")),
+            )
+            for row in reason_items
+            if isinstance(row, dict)
+        }
+        conn.execute("UPDATE health_reason_events SET active_bool = 0, updated_at = ?", (now_iso,))
+        for row in reason_items:
+            if not isinstance(row, dict):
+                continue
+            reason_code = normalize_health_reason_code(row.get("reason_code"))
+            scope_type = normalize_health_scope_type(row.get("scope_type"))
+            bot_id = self._normalize_safety_bot_id(row.get("bot_id"))
+            symbol = self._normalize_safety_symbol(row.get("symbol"))
+            severity = str(row.get("severity") or "WARN")
+            evidence_json = json.dumps(row.get("evidence") if isinstance(row.get("evidence"), dict) else {}, ensure_ascii=True, sort_keys=True)
+            existing = conn.execute(
+                """
+                SELECT event_id, first_seen_at
+                FROM health_reason_events
+                WHERE reason_code = ?
+                  AND scope_type = ?
+                  AND COALESCE(bot_id, '') = COALESCE(?, '')
+                  AND COALESCE(symbol, '') = COALESCE(?, '')
+                """,
+                (reason_code, scope_type, bot_id, symbol),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO health_reason_events (
+                        event_id, reason_code, scope_type, bot_id, symbol, severity,
+                        first_seen_at, last_seen_at, active_bool, evidence_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    """,
+                    (str(uuid4()), reason_code, scope_type, bot_id, symbol, severity, now_iso, now_iso, evidence_json, now_iso, now_iso),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE health_reason_events
+                    SET severity = ?,
+                        last_seen_at = ?,
+                        active_bool = 1,
+                        evidence_json = ?,
+                        updated_at = ?
+                    WHERE event_id = ?
+                    """,
+                    (severity, now_iso, evidence_json, now_iso, str(existing["event_id"])),
+                )
+
+    def insert_health_summary_snapshot(self, summary: dict[str, Any]) -> dict[str, Any]:
+        snapshot_id = str(uuid4())
+        now_iso = utc_now_iso()
+        scope_type = normalize_health_scope_type("GLOBAL")
+        raw_summary_json = json.dumps(summary if isinstance(summary, dict) else {}, ensure_ascii=True, sort_keys=True)
+        reason_items = list(summary.get("reason_items")) if isinstance(summary.get("reason_items"), list) else []
+        blockers_json = json.dumps(summary.get("hard_blockers") if isinstance(summary.get("hard_blockers"), list) else [], ensure_ascii=True, sort_keys=True)
+        reasons_json = json.dumps(summary.get("reason_codes") if isinstance(summary.get("reason_codes"), list) else [], ensure_ascii=True, sort_keys=True)
+        component_status_json = json.dumps(summary.get("component_status") if isinstance(summary.get("component_status"), dict) else {}, ensure_ascii=True, sort_keys=True)
+        freshness_json = json.dumps(summary.get("freshness") if isinstance(summary.get("freshness"), dict) else {}, ensure_ascii=True, sort_keys=True)
+        evaluated_at = str(summary.get("last_evaluated_at") or now_iso)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO health_summary_snapshots (
+                    snapshot_id, scope_type, bot_id, symbol, evaluated_at, state, score, severity,
+                    blocking_bool, top_priority_reason_code, blockers_json, reasons_json,
+                    component_status_json, freshness_json, raw_summary_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    scope_type,
+                    None,
+                    None,
+                    evaluated_at,
+                    str(summary.get("state") or "DEGRADED"),
+                    int(summary.get("score") or 0),
+                    str(summary.get("severity") or "WARN"),
+                    1 if bool(summary.get("blocking_bool", False)) else 0,
+                    str(summary.get("top_priority_reason_code") or ""),
+                    blockers_json,
+                    reasons_json,
+                    component_status_json,
+                    freshness_json,
+                    raw_summary_json,
+                    now_iso,
+                ),
+            )
+            for scope_row in summary.get("scope_status") if isinstance(summary.get("scope_status"), list) else []:
+                if not isinstance(scope_row, dict):
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO health_scope_snapshots (
+                        scope_snapshot_id, snapshot_id, scope_type, bot_id, symbol, evaluated_at, state,
+                        score, severity, blocking_bool, top_priority_reason_code, blockers_json,
+                        reasons_json, freshness_json, raw_scope_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid4()),
+                        snapshot_id,
+                        normalize_health_scope_type(scope_row.get("scope_type")),
+                        self._normalize_safety_bot_id(scope_row.get("bot_id")),
+                        self._normalize_safety_symbol(scope_row.get("symbol")),
+                        str(scope_row.get("evaluated_at") or evaluated_at),
+                        str(scope_row.get("state") or "DEGRADED"),
+                        int(scope_row.get("score") or 0),
+                        str(scope_row.get("severity") or "WARN"),
+                        1 if bool(scope_row.get("blocking_bool", False)) else 0,
+                        str(scope_row.get("top_priority_reason_code") or ""),
+                        json.dumps(scope_row.get("hard_blockers") if isinstance(scope_row.get("hard_blockers"), list) else [], ensure_ascii=True, sort_keys=True),
+                        json.dumps(scope_row.get("reason_codes") if isinstance(scope_row.get("reason_codes"), list) else [], ensure_ascii=True, sort_keys=True),
+                        json.dumps(scope_row.get("freshness") if isinstance(scope_row.get("freshness"), dict) else {}, ensure_ascii=True, sort_keys=True),
+                        json.dumps(scope_row, ensure_ascii=True, sort_keys=True),
+                        now_iso,
+                    ),
+                )
+                scope_reason_items = scope_row.get("reason_items") if isinstance(scope_row.get("reason_items"), list) else []
+                for reason_row in scope_reason_items:
+                    if isinstance(reason_row, dict):
+                        reason_items.append(reason_row)
+            self._sync_health_reason_events(conn, reason_items, now_iso=now_iso)
+        out = dict(summary)
+        out["snapshot_id"] = snapshot_id
+        out["persisted_at"] = now_iso
+        return out
+
+    def latest_health_summary_snapshot(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT snapshot_id, raw_summary_json, evaluated_at, created_at
+                FROM health_summary_snapshots
+                ORDER BY evaluated_at DESC, snapshot_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["raw_summary_json"] or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["snapshot_id"] = str(row["snapshot_id"] or "")
+        payload["persisted_at"] = str(row["created_at"] or "")
+        payload.setdefault("last_evaluated_at", str(row["evaluated_at"] or ""))
+        return payload
+
+    def list_health_summary_snapshots(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT snapshot_id, evaluated_at, state, score, severity, blocking_bool,
+                       top_priority_reason_code, blockers_json, reasons_json, raw_summary_json, created_at
+                FROM health_summary_snapshots
+                ORDER BY evaluated_at DESC, snapshot_id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                raw = json.loads(str(row["raw_summary_json"] or "{}"))
+            except Exception:
+                raw = {}
+            if not isinstance(raw, dict):
+                raw = {}
+            items.append(
+                {
+                    "snapshot_id": str(row["snapshot_id"] or ""),
+                    "evaluated_at": str(row["evaluated_at"] or ""),
+                    "state": str(row["state"] or ""),
+                    "score": int(row["score"] or 0),
+                    "severity": str(row["severity"] or ""),
+                    "blocking_bool": bool(row["blocking_bool"]),
+                    "top_priority_reason_code": str(row["top_priority_reason_code"] or ""),
+                    "hard_blockers": json.loads(str(row["blockers_json"] or "[]")),
+                    "reason_codes": json.loads(str(row["reasons_json"] or "[]")),
+                    "persisted_at": str(row["created_at"] or ""),
+                    "raw_summary": raw,
+                }
+            )
+        return items
+
+    def list_health_scope_snapshots(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = 250,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if snapshot_id:
+            clauses.append("snapshot_id = ?")
+            params.append(str(snapshot_id))
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_health_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM health_scope_snapshots
+                WHERE {' AND '.join(clauses)}
+                ORDER BY evaluated_at DESC, scope_snapshot_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                raw = json.loads(str(row["raw_scope_json"] or "{}"))
+            except Exception:
+                raw = {}
+            if not isinstance(raw, dict):
+                raw = {}
+            raw.setdefault("scope_snapshot_id", str(row["scope_snapshot_id"] or ""))
+            raw.setdefault("snapshot_id", str(row["snapshot_id"] or ""))
+            raw.setdefault("evaluated_at", str(row["evaluated_at"] or ""))
+            items.append(raw)
         return items
 
     def _ensure_defaults(self) -> None:
@@ -7091,6 +7490,609 @@ class RuntimeBridge:
                 "runtime_unknown_timeout_since": str(state_n.get("runtime_unknown_timeout_since") or ""),
             }
 
+    def _live_health_policy(self) -> dict[str, Any]:
+        payload = load_execution_safety_policy()
+        policy = payload.get("live_health_summary") if isinstance(payload.get("live_health_summary"), dict) else {}
+        return {
+            **DEFAULT_LIVE_HEALTH_POLICY,
+            **policy,
+        }
+
+    def build_live_health_summary(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        persist: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            now_dt = utc_now()
+            now_iso = now_dt.isoformat()
+            state_n = dict(state or {})
+            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
+            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
+            health_policy = self._live_health_policy()
+            ops_policy = self._operational_safety_policy()
+            runtime_snapshot = _runtime_contract_snapshot(state_n, target_mode="live")
+            telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+            gates_payload = evaluate_gates("live", force_exchange_check=True, runtime_state=state_n)
+            can_live, live_reason = live_can_be_enabled(gates_payload)
+            safety_summary = self.operational_safety_summary(state=state_n, bot_id=bot_id_n, symbol=symbol_n)
+            if not bot_id_n and not symbol_n:
+                all_breakers = store.list_safety_breakers(limit=500)
+                all_blocking_breakers = [
+                    row for row in all_breakers if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
+                ]
+                all_manual_locks = [
+                    row for row in all_breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
+                ]
+                safety_summary = {
+                    **dict(safety_summary),
+                    "global_state": RuntimeBridge._safety_global_state_from_breakers(all_breakers),
+                    "blocking_bool": bool(all_blocking_breakers),
+                    "breakers_open_count": len(all_breakers),
+                    "breakers_blocking_count": len(all_blocking_breakers),
+                    "manual_lock_count": len(all_manual_locks),
+                    "breakers": all_breakers,
+                    "blocking_scopes": [
+                        {
+                            "breaker_code": str(row.get("breaker_code") or ""),
+                            "scope_type": str(row.get("scope_type") or ""),
+                            "bot_id": row.get("bot_id"),
+                            "symbol": row.get("symbol"),
+                            "state": str(row.get("state") or ""),
+                        }
+                        for row in all_blocking_breakers
+                    ],
+                    "events": store.list_safety_guardrail_events(limit=50)[:20],
+                }
+            reconcile = dict(self._last_reconcile) if isinstance(self._last_reconcile, dict) else {}
+            manual_actions = store.list_safety_manual_actions(limit=100)
+
+            stale_sec = int(health_policy.get("preflight_stale_sec", 300))
+            expired_sec = int(health_policy.get("preflight_expired_sec", 600))
+            emergency_window_sec = int(health_policy.get("recent_emergency_action_window_sec", 300))
+            heartbeat_warn_ms = int(ops_policy.get("guardrail_stream_gap_warn_ms", 5000))
+            heartbeat_critical_ms = int(ops_policy.get("guardrail_stream_gap_critical_ms", 10000))
+            unknown_hard_sec = int(ops_policy.get("guardrail_unknown_timeout_hard_sec", 30))
+            open_orders_warn_count = int(ops_policy.get("guardrail_open_orders_warn_count", 10))
+
+            preflight_ts = (
+                str(state_n.get("runtime_last_safety_eval_at") or "").strip()
+                or str(runtime_snapshot.get("runtime_exchange_verified_at") or "").strip()
+                or str(runtime_snapshot.get("runtime_last_reconcile_at") or "").strip()
+                or str(runtime_snapshot.get("runtime_heartbeat_at") or "").strip()
+            )
+            preflight_age_sec = _runtime_ts_age_sec(preflight_ts, now=now_dt)
+            heartbeat_age_sec = runtime_snapshot.get("heartbeat_age_sec")
+            heartbeat_age_ms = int(float(heartbeat_age_sec or 0) * 1000)
+            exchange_reason = str(runtime_snapshot.get("runtime_exchange_reason") or "")
+            unknown_timeout_active = bool(state_n.get("runtime_unknown_timeout_active", False))
+            unknown_timeout_since = str(state_n.get("runtime_unknown_timeout_since") or "")
+            unknown_timeout_age_sec = _runtime_ts_age_sec(unknown_timeout_since, now=now_dt) if unknown_timeout_active else None
+            remote_open_orders_count = int(reconcile.get("remote_open_orders_count") or 0)
+
+            gates_by_id = {
+                str(row.get("id") or ""): dict(row)
+                for row in gates_payload.get("gates", [])
+                if isinstance(row, dict)
+            }
+            failed_required_gates = [
+                gate_id
+                for gate_id in [
+                    "G1_CONFIG_VALID",
+                    "G2_AUTH_READY",
+                    "G3_BACKEND_HEALTH",
+                    "G5_STRATEGY_PRINCIPAL_SET",
+                    "G6_RISK_LIMITS_SET",
+                    "G4_EXCHANGE_CONNECTOR_READY",
+                    "G7_ORDER_SIM_OR_PAPER_OK",
+                    "G9_RUNTIME_ENGINE_REAL",
+                    "G10_STORAGE_PERSISTENCE",
+                ]
+                if str((gates_by_id.get(gate_id) or {}).get("status") or "") != "PASS"
+            ]
+
+            active_breakers = [
+                row
+                for row in (safety_summary.get("breakers") if isinstance(safety_summary.get("breakers"), list) else [])
+                if normalize_safety_breaker_state(row.get("state")) != "CLOSED"
+            ]
+            blocking_breakers = [
+                row
+                for row in active_breakers
+                if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
+            ]
+            manual_locks = [
+                row for row in active_breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
+            ]
+
+            summary_reasons: list[dict[str, Any]] = []
+            scoped_reason_rows: dict[str, list[dict[str, Any]]] = {}
+            recommended_actions = {
+                str(action)
+                for action in (safety_summary.get("recommended_actions") if isinstance(safety_summary.get("recommended_actions"), list) else [])
+                if str(action).strip()
+            }
+
+            def _add_scoped_row(row: dict[str, Any]) -> None:
+                key = health_scope_key(row.get("scope_type"), row.get("bot_id"), row.get("symbol"))
+                scoped_reason_rows.setdefault(key, []).append(row)
+
+            def _add_reason(
+                *,
+                reason_code: str,
+                severity: str | None = None,
+                scope_type: str = "GLOBAL",
+                bot_id: str | None = None,
+                symbol: str | None = None,
+                blocking_bool: bool | None = None,
+                scope_blocking_bool: bool | None = None,
+                evidence: dict[str, Any] | None = None,
+                action: str | None = None,
+            ) -> None:
+                row = build_health_reason(
+                    reason_code=reason_code,
+                    severity=severity,
+                    scope_type=scope_type,
+                    bot_id=bot_id,
+                    symbol=symbol,
+                    blocking_bool=blocking_bool,
+                    evidence=evidence,
+                )
+                summary_reasons.append(row)
+                if action:
+                    recommended_actions.add(str(action))
+                if scope_blocking_bool is not None and normalize_health_scope_type(scope_type) != "GLOBAL":
+                    scoped_row = dict(row)
+                    scoped_row["blocking_bool"] = bool(scope_blocking_bool)
+                    _add_scoped_row(scoped_row)
+
+            def _collapse_reasons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                merged: dict[tuple[str, str, str | None, str | None], dict[str, Any]] = {}
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    key = (
+                        normalize_health_reason_code(row.get("reason_code")),
+                        normalize_health_scope_type(row.get("scope_type")),
+                        str(row.get("bot_id") or "").strip() or None,
+                        str(row.get("symbol") or "").strip().upper() or None,
+                    )
+                    current = merged.get(key)
+                    if current is None:
+                        merged[key] = dict(row)
+                        continue
+                    current["blocking_bool"] = bool(current.get("blocking_bool", False)) or bool(row.get("blocking_bool", False))
+                    if int(row.get("penalty") or 0) > int(current.get("penalty") or 0):
+                        current["penalty"] = int(row.get("penalty") or 0)
+                    if int(row.get("priority_rank") or 99) < int(current.get("priority_rank") or 99):
+                        current["priority"] = row.get("priority")
+                        current["priority_rank"] = row.get("priority_rank")
+                    if health_severity_rank(row.get("severity")) > health_severity_rank(current.get("severity")):
+                        current["severity"] = row.get("severity")
+                    evidence = current.get("evidence") if isinstance(current.get("evidence"), dict) else {}
+                    if isinstance(row.get("evidence"), dict):
+                        evidence = {**evidence, **row["evidence"]}
+                    current["evidence"] = evidence
+                return list(merged.values())
+
+            if preflight_age_sec is None or preflight_age_sec > expired_sec:
+                _add_reason(
+                    reason_code="PREFLIGHT_EXPIRED",
+                    severity="CRITICAL",
+                    blocking_bool=True,
+                    evidence={
+                        "preflight_evaluated_at": preflight_ts,
+                        "preflight_age_sec": preflight_age_sec,
+                        "expired_threshold_sec": expired_sec,
+                    },
+                    action="RUN_LIVE_PREFLIGHT",
+                )
+            elif preflight_age_sec > stale_sec:
+                _add_reason(
+                    reason_code="PREFLIGHT_STALE",
+                    severity="WARN",
+                    blocking_bool=False,
+                    evidence={
+                        "preflight_evaluated_at": preflight_ts,
+                        "preflight_age_sec": preflight_age_sec,
+                        "stale_threshold_sec": stale_sec,
+                    },
+                    action="RUN_LIVE_PREFLIGHT",
+                )
+
+            if not can_live and not (preflight_age_sec is None or preflight_age_sec > expired_sec):
+                _add_reason(
+                    reason_code="PREFLIGHT_FAIL",
+                    severity="CRITICAL",
+                    blocking_bool=True,
+                    evidence={
+                        "reason": str(live_reason or ""),
+                        "gates_overall_status": str(gates_payload.get("overall_status") or ""),
+                        "failed_required_gates": failed_required_gates,
+                    },
+                    action="RUN_LIVE_PREFLIGHT",
+                )
+
+            if int(reconcile.get("desync_count") or 0) > 0 or any(str(row.get("breaker_code") or "") == "RECONCILIATION_DESYNC_BLOCKING" for row in blocking_breakers):
+                _add_reason(
+                    reason_code="RECONCILIATION_DESYNC",
+                    severity="CRITICAL",
+                    scope_type="GLOBAL",
+                    blocking_bool=True,
+                    evidence={
+                        "desync_count": int(reconcile.get("desync_count") or 0),
+                        "missing_local": reconcile.get("missing_local"),
+                        "missing_exchange": reconcile.get("missing_exchange"),
+                        "qty_mismatches": reconcile.get("qty_mismatches"),
+                    },
+                    action="RUN_RECONCILIATION",
+                )
+
+            if any(str(row.get("breaker_code") or "") == "RECONCILIATION_MANUAL_REVIEW_BLOCKING" for row in active_breakers):
+                _add_reason(
+                    reason_code="RECONCILIATION_MANUAL_REVIEW",
+                    severity="CRITICAL",
+                    blocking_bool=True,
+                    evidence={"active_breaker_codes": [str(row.get("breaker_code") or "") for row in active_breakers]},
+                    action="REQUIRE_MANUAL_REVIEW",
+                )
+
+            generic_blocking_breakers = [
+                row
+                for row in blocking_breakers
+                if normalize_safety_breaker_state(row.get("state")) != "MANUAL_LOCK"
+                if str(row.get("breaker_code") or "") not in {
+                    "RECONCILIATION_MANUAL_REVIEW_BLOCKING",
+                    "TOO_MANY_REQUESTS_PRESSURE",
+                    "TOO_MANY_OPEN_ORDERS",
+                }
+            ]
+            if generic_blocking_breakers:
+                _add_reason(
+                    reason_code="BREAKER_OPEN",
+                    severity="CRITICAL",
+                    blocking_bool=True,
+                    evidence={
+                        "blocking_breakers": [
+                            {
+                                "breaker_code": str(row.get("breaker_code") or ""),
+                                "scope_type": str(row.get("scope_type") or ""),
+                                "bot_id": row.get("bot_id"),
+                                "symbol": row.get("symbol"),
+                                "state": str(row.get("state") or ""),
+                            }
+                            for row in generic_blocking_breakers
+                        ]
+                    },
+                    action="RUN_RECONCILIATION",
+                )
+
+            if exchange_reason and "eventstreamterminated" in exchange_reason.lower():
+                _add_reason(
+                    reason_code="STREAM_TERMINATED",
+                    severity="CRITICAL",
+                    blocking_bool=True,
+                    evidence={"exchange_reason": exchange_reason},
+                    action="RESTORE_STREAM",
+                )
+            elif any(str(row.get("breaker_code") or "") == "STREAM_TERMINATED" for row in blocking_breakers):
+                _add_reason(
+                    reason_code="STREAM_TERMINATED",
+                    severity="CRITICAL",
+                    blocking_bool=True,
+                    evidence={"blocking_breakers": [str(row.get("breaker_code") or "") for row in blocking_breakers]},
+                    action="RESTORE_STREAM",
+                )
+
+            if heartbeat_age_ms >= heartbeat_warn_ms:
+                _add_reason(
+                    reason_code="STREAM_HEALTH_DEGRADED",
+                    severity="CRITICAL" if heartbeat_age_ms >= heartbeat_critical_ms else "WARN",
+                    blocking_bool=False,
+                    evidence={
+                        "heartbeat_age_ms": heartbeat_age_ms,
+                        "warn_threshold_ms": heartbeat_warn_ms,
+                        "critical_threshold_ms": heartbeat_critical_ms,
+                    },
+                    action="RESTORE_STREAM",
+                )
+
+            if unknown_timeout_active and (unknown_timeout_age_sec or 0) >= unknown_hard_sec:
+                _add_reason(
+                    reason_code="UNKNOWN_TIMEOUT_STUCK",
+                    severity="CRITICAL",
+                    blocking_bool=True,
+                    evidence={
+                        "unknown_timeout_since": unknown_timeout_since,
+                        "unknown_timeout_age_sec": unknown_timeout_age_sec,
+                        "hard_deadline_sec": unknown_hard_sec,
+                    },
+                    action="RUN_RECONCILIATION",
+                )
+
+            active_breaker_codes = {str(row.get("breaker_code") or "") for row in active_breakers}
+            if "TOO_MANY_REQUESTS_PRESSURE" in active_breaker_codes:
+                _add_reason(
+                    reason_code="RATE_LIMIT_PRESSURE",
+                    severity="WARN",
+                    scope_type="GLOBAL",
+                    blocking_bool=False,
+                    evidence={"blocking_breakers": [str(row.get("breaker_code") or "") for row in active_breakers]},
+                    action="BACKOFF_REQUESTS",
+                )
+
+            if "HTTP_418_BAN_RISK" in active_breaker_codes:
+                _add_reason(
+                    reason_code="HTTP_418_BAN_RISK",
+                    severity="WARN",
+                    scope_type="GLOBAL",
+                    blocking_bool=False,
+                    evidence={"blocking_breakers": [str(row.get("breaker_code") or "") for row in active_breakers]},
+                    action="BACKOFF_REQUESTS",
+                )
+
+            if remote_open_orders_count >= open_orders_warn_count or "TOO_MANY_OPEN_ORDERS" in active_breaker_codes:
+                _add_reason(
+                    reason_code="OPEN_ORDER_PRESSURE",
+                    severity="WARN",
+                    blocking_bool=False,
+                    evidence={"remote_open_orders_count": remote_open_orders_count, "warn_threshold": open_orders_warn_count},
+                    action="RUN_RECONCILIATION",
+                )
+
+            stale_components = [
+                key
+                for key in ["heartbeat_fresh", "reconciliation_fresh", "exchange_check_fresh"]
+                if not bool((runtime_snapshot.get("checks") if isinstance(runtime_snapshot.get("checks"), dict) else {}).get(key, False))
+            ]
+            if stale_components:
+                _add_reason(
+                    reason_code="SNAPSHOT_STALE",
+                    severity="INFO",
+                    blocking_bool=False,
+                    evidence={"stale_components": stale_components},
+                    action="REFRESH_RUNTIME_SNAPSHOTS",
+                )
+
+            recent_emergency_actions = [
+                row
+                for row in manual_actions
+                if str(row.get("action_type") or "") == "EMERGENCY_CANCEL_SYMBOL"
+                and ((_runtime_ts_age_sec(str(row.get("applied_at") or row.get("requested_at") or ""), now=now_dt) or 999999) <= emergency_window_sec)
+            ]
+            if recent_emergency_actions:
+                _add_reason(
+                    reason_code="EMERGENCY_ACTION_ACTIVE",
+                    severity="WARN",
+                    blocking_bool=False,
+                    evidence={"recent_emergency_actions": recent_emergency_actions[:5]},
+                    action="ACK_ALERT",
+                )
+
+            for row in manual_locks:
+                scope_type_row = str(row.get("scope_type") or "GLOBAL")
+                bot_row = str(row.get("bot_id") or "").strip() or None
+                symbol_row = str(row.get("symbol") or "").strip().upper() or None
+                if normalize_safety_scope_type(scope_type_row) == "GLOBAL":
+                    _add_reason(
+                        reason_code="MANUAL_LOCK_ACTIVE",
+                        severity="CRITICAL",
+                        scope_type="GLOBAL",
+                        blocking_bool=True,
+                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
+                        action="MANUAL_UNFREEZE",
+                    )
+                    _add_reason(
+                        reason_code="FREEZE_GLOBAL_ACTIVE",
+                        severity="CRITICAL",
+                        scope_type="GLOBAL",
+                        blocking_bool=True,
+                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
+                        action="MANUAL_UNFREEZE",
+                    )
+                elif normalize_safety_scope_type(scope_type_row) == "BOT":
+                    _add_reason(
+                        reason_code="FREEZE_BOT_ACTIVE",
+                        severity="WARN",
+                        scope_type=scope_type_row,
+                        bot_id=bot_row,
+                        symbol=symbol_row,
+                        blocking_bool=False,
+                        scope_blocking_bool=True,
+                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
+                        action="MANUAL_UNFREEZE",
+                    )
+                else:
+                    _add_reason(
+                        reason_code="FREEZE_SYMBOL_ACTIVE",
+                        severity="WARN",
+                        scope_type=scope_type_row,
+                        bot_id=bot_row,
+                        symbol=symbol_row,
+                        blocking_bool=False,
+                        scope_blocking_bool=True,
+                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
+                        action="MANUAL_UNFREEZE",
+                    )
+
+            for row in active_breakers:
+                scope_type_row = str(row.get("scope_type") or "GLOBAL")
+                if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK":
+                    continue
+                breaker_code = str(row.get("breaker_code") or "")
+                bot_row = str(row.get("bot_id") or "").strip() or None
+                symbol_row = str(row.get("symbol") or "").strip().upper() or None
+                if breaker_code == "TOO_MANY_REQUESTS_PRESSURE":
+                    _add_reason(
+                        reason_code="RATE_LIMIT_PRESSURE",
+                        severity="WARN",
+                        scope_type=scope_type_row,
+                        bot_id=bot_row,
+                        symbol=symbol_row,
+                        blocking_bool=False,
+                        scope_blocking_bool=safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool")),
+                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_count_window": row.get("trigger_count_window")},
+                        action="BACKOFF_REQUESTS",
+                    )
+                elif breaker_code == "TOO_MANY_OPEN_ORDERS":
+                    _add_reason(
+                        reason_code="OPEN_ORDER_PRESSURE",
+                        severity="WARN",
+                        scope_type=scope_type_row,
+                        bot_id=bot_row,
+                        symbol=symbol_row,
+                        blocking_bool=False,
+                        scope_blocking_bool=safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool")),
+                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_count_window": row.get("trigger_count_window")},
+                        action="RUN_RECONCILIATION",
+                    )
+                elif breaker_code == "HTTP_418_BAN_RISK":
+                    _add_reason(
+                        reason_code="HTTP_418_BAN_RISK",
+                        severity="WARN",
+                        scope_type=scope_type_row,
+                        bot_id=bot_row,
+                        symbol=symbol_row,
+                        blocking_bool=normalize_safety_scope_type(scope_type_row) == "GLOBAL",
+                        scope_blocking_bool=safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool")),
+                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_count_window": row.get("trigger_count_window")},
+                        action="BACKOFF_REQUESTS",
+                    )
+                elif breaker_code == "SAFETY_POLICY_VIOLATION" and normalize_safety_scope_type(scope_type_row) == "GLOBAL":
+                    _add_reason(
+                        reason_code="SAFETY_POLICY_VIOLATION",
+                        severity="CRITICAL",
+                        blocking_bool=True,
+                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_reason": row.get("trigger_reason")},
+                        action="REQUIRE_MANUAL_ACK",
+                    )
+
+            summary_reasons = _collapse_reasons(summary_reasons)
+            scope_contexts: dict[str, dict[str, Any]] = {
+                "GLOBAL": {"scope_type": "GLOBAL", "bot_id": None, "symbol": None}
+            }
+            for row in active_breakers:
+                key = health_scope_key(row.get("scope_type"), row.get("bot_id"), row.get("symbol"))
+                scope_contexts[key] = {
+                    "scope_type": normalize_health_scope_type(row.get("scope_type")),
+                    "bot_id": str(row.get("bot_id") or "").strip() or None,
+                    "symbol": str(row.get("symbol") or "").strip().upper() or None,
+                }
+            for row in recent_emergency_actions:
+                key = health_scope_key("SYMBOL", symbol=row.get("symbol"))
+                scope_contexts[key] = {
+                    "scope_type": "SYMBOL",
+                    "bot_id": None,
+                    "symbol": str(row.get("symbol") or "").strip().upper() or None,
+                }
+
+            component_status = {
+                "preflight": {
+                    "status": "PASS" if can_live else "FAIL",
+                    "reason": str(live_reason or ""),
+                    "gates_overall_status": str(gates_payload.get("overall_status") or ""),
+                    "failed_required_gates": failed_required_gates,
+                    "evaluated_at": preflight_ts,
+                    "age_sec": preflight_age_sec,
+                },
+                "reconciliation": {
+                    "status": "DESYNC" if int(reconcile.get("desync_count") or 0) > 0 else "CLEAN",
+                    "desync_count": int(reconcile.get("desync_count") or 0),
+                    "source_ok": bool(reconcile.get("source_ok", False)),
+                    "source": str(reconcile.get("source") or ""),
+                    "source_reason": str(reconcile.get("source_reason") or ""),
+                    "missing_local": reconcile.get("missing_local"),
+                    "missing_exchange": reconcile.get("missing_exchange"),
+                    "qty_mismatches": reconcile.get("qty_mismatches"),
+                },
+                "operational_safety": {
+                    "state": str(safety_summary.get("global_state") or "CLOSED"),
+                    "blocking_bool": bool(safety_summary.get("blocking_bool", False)),
+                    "breakers_open_count": int(safety_summary.get("breakers_open_count") or 0),
+                    "breakers_blocking_count": int(safety_summary.get("breakers_blocking_count") or 0),
+                    "manual_lock_count": int(safety_summary.get("manual_lock_count") or 0),
+                },
+                "stream": {
+                    "exchange_reason": exchange_reason,
+                    "heartbeat_age_ms": heartbeat_age_ms,
+                    "heartbeat_warn_ms": heartbeat_warn_ms,
+                    "heartbeat_critical_ms": heartbeat_critical_ms,
+                    "runtime_loop_alive": bool(runtime_snapshot.get("runtime_loop_alive", False)),
+                    "executor_connected": bool(runtime_snapshot.get("executor_connected", False)),
+                },
+                "runtime": {
+                    "ready_for_live": bool(runtime_snapshot.get("ready_for_live", False)),
+                    "telemetry_ok": bool(telemetry_guard.get("ok", False)),
+                    "telemetry_fail_closed": bool(telemetry_guard.get("fail_closed", True)),
+                    "telemetry_reason": str(telemetry_guard.get("reason") or ""),
+                    "unknown_timeout_active": unknown_timeout_active,
+                    "unknown_timeout_age_sec": unknown_timeout_age_sec,
+                    "remote_open_orders_count": remote_open_orders_count,
+                },
+            }
+
+            freshness = {
+                "preflight_evaluated_at": preflight_ts,
+                "preflight_age_sec": preflight_age_sec,
+                "preflight_stale_threshold_sec": stale_sec,
+                "preflight_expired_threshold_sec": expired_sec,
+                "runtime_last_safety_eval_at": str(state_n.get("runtime_last_safety_eval_at") or ""),
+                "heartbeat_age_sec": runtime_snapshot.get("heartbeat_age_sec"),
+                "reconciliation_age_sec": runtime_snapshot.get("reconciliation_age_sec"),
+                "exchange_check_age_sec": runtime_snapshot.get("exchange_check_age_sec"),
+                "stale_components": stale_components,
+            }
+
+            scope_status: list[dict[str, Any]] = []
+            for context in scope_contexts.values():
+                scope_rows = [
+                    row
+                    for row in summary_reasons
+                    if health_scope_matches(
+                        row_scope_type=row.get("scope_type"),
+                        row_bot_id=row.get("bot_id"),
+                        row_symbol=row.get("symbol"),
+                        bot_id=context.get("bot_id"),
+                        symbol=context.get("symbol"),
+                    )
+                ]
+                scope_rows.extend(scoped_reason_rows.get(health_scope_key(context.get("scope_type"), context.get("bot_id"), context.get("symbol")), []))
+                scope_rows = _collapse_reasons(scope_rows)
+                scope_status.append(
+                    finalize_health_scope(
+                        scope_type=str(context.get("scope_type") or "GLOBAL"),
+                        bot_id=context.get("bot_id"),
+                        symbol=context.get("symbol"),
+                        reasons=scope_rows,
+                        freshness=freshness,
+                        recommended_actions=sorted(recommended_actions),
+                        component_status=component_status,
+                        evaluated_at=now_iso,
+                    )
+                )
+
+            summary = finalize_live_health_summary(
+                evaluated_at=now_iso,
+                reasons=summary_reasons,
+                component_status=component_status,
+                freshness=freshness,
+                recommended_actions=sorted(recommended_actions),
+                scope_status=scope_status,
+            )
+            summary["component_status"]["runtime_snapshot"] = runtime_snapshot
+            summary["component_status"]["operational_safety_summary"] = safety_summary
+            summary["component_status"]["reconciliation_raw"] = reconcile
+            summary["can_enable_live_mode"] = bool(can_live) and str(summary.get("state") or "") not in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}
+            summary["can_start_live"] = bool(can_live) and str(summary.get("state") or "") not in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}
+            summary["can_submit_order_by_scope"]["GLOBAL"] = bool(summary.get("state") not in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"})
+            if persist:
+                summary = store.insert_health_summary_snapshot(summary)
+            return summary
+
     def evaluate_operational_safety(
         self,
         *,
@@ -10145,6 +11147,7 @@ def build_status_payload() -> dict[str, Any]:
     runtime_snapshot = _runtime_contract_snapshot(state)
     telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
     operational_safety = runtime_bridge.operational_safety_summary(state=state)
+    live_health_summary = runtime_bridge.build_live_health_summary(state=state, settings=settings, persist=False)
     runtime_engine = str(runtime_snapshot.get("runtime_engine") or _runtime_engine_from_state(state))
     runtime_real = runtime_engine == RUNTIME_ENGINE_REAL
     runtime_mode = "real" if runtime_real else "simulado"
@@ -10195,6 +11198,7 @@ def build_status_payload() -> dict[str, Any]:
             "errors_24h": int(execution_snapshot.get("api_errors", 0)),
         },
         "operational_safety": operational_safety,
+        "live_health_summary": live_health_summary,
         "gates_overall": gates["overall_status"],
         "positions": runtime_positions,
     }
@@ -13596,6 +14600,73 @@ def create_app() -> FastAPI:
     def execution_metrics(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return build_execution_metrics_payload()
 
+    @app.get("/api/v1/execution/health/summary")
+    def execution_health_summary(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        return runtime_bridge.build_live_health_summary(
+            state=state,
+            settings=settings,
+            bot_id=str(bot_id or "").strip() or None,
+            symbol=str(symbol or "").strip().upper() or None,
+            persist=False,
+        )
+
+    @app.get("/api/v1/execution/health/scopes")
+    def execution_health_scopes(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        summary = runtime_bridge.build_live_health_summary(
+            state=state,
+            settings=settings,
+            bot_id=str(bot_id or "").strip() or None,
+            symbol=str(symbol or "").strip().upper() or None,
+            persist=False,
+        )
+        return {
+            "evaluated_at": str(summary.get("last_evaluated_at") or ""),
+            "global_state": str(summary.get("state") or "DEGRADED"),
+            "items": list(summary.get("scope_status") or []),
+        }
+
+    @app.get("/api/v1/execution/health/history")
+    def execution_health_history(
+        limit: int = Query(default=50, ge=1, le=250),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {"items": store.list_health_summary_snapshots(limit=limit)}
+
+    @app.post("/api/v1/execution/health/evaluate")
+    def execution_health_evaluate(
+        body: HealthEvaluateBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        summary = runtime_bridge.build_live_health_summary(
+            state=state,
+            settings=settings,
+            bot_id=str((body.bot_id if body else "") or "").strip() or None,
+            symbol=str((body.symbol if body else "") or "").strip().upper() or None,
+            persist=True,
+        )
+        store.insert_safety_manual_action(
+            action_type="ACK_ALERT",
+            scope_type="GLOBAL",
+            requested_by=str(user.get("username") or "admin"),
+            result={"ok": True, "action": "health_evaluate", "summary_snapshot_id": summary.get("snapshot_id")},
+            audit_note="manual_live_health_evaluate",
+        )
+        return summary
+
     @app.get("/api/v1/execution/safety/summary")
     def execution_safety_summary(
         bot_id: str | None = None,
@@ -13892,7 +14963,27 @@ def create_app() -> FastAPI:
                 force_reconcile=True,
             )
             if not safety_ok:
-                raise HTTPException(status_code=400, detail=f"LIVE blocked by operational safety: {safety_reason}")
+                health_summary = runtime_bridge.build_live_health_summary(
+                    state=preview_state,
+                    settings=store.load_settings(),
+                    bot_id=str(preview_state.get("active_bot_id") or "") or None,
+                    persist=True,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by operational safety: {safety_reason}. health={health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
+                )
+            health_summary = runtime_bridge.build_live_health_summary(
+                state=preview_state,
+                settings=store.load_settings(),
+                bot_id=str(preview_state.get("active_bot_id") or "") or None,
+                persist=True,
+            )
+            if str(health_summary.get("state") or "") in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by health summary: {health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
+                )
         state = store.load_bot_state()
         state["mode"] = mode
         state["runtime_engine"] = _runtime_engine_from_state(state)
@@ -13937,7 +15028,27 @@ def create_app() -> FastAPI:
                 force_reconcile=True,
             )
             if not safety_ok:
-                raise HTTPException(status_code=400, detail=f"LIVE blocked by operational safety: {safety_reason}")
+                health_summary = runtime_bridge.build_live_health_summary(
+                    state=state,
+                    settings=settings,
+                    bot_id=active_bot_id,
+                    persist=True,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by operational safety: {safety_reason}. health={health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
+                )
+            health_summary = runtime_bridge.build_live_health_summary(
+                state=state,
+                settings=settings,
+                bot_id=active_bot_id,
+                persist=True,
+            )
+            if str(health_summary.get("state") or "") in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by health summary: {health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
+                )
         if not strategy_name:
             principal = store.registry.get_principal(state["mode"])
             if not principal:

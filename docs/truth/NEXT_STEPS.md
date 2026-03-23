@@ -13,17 +13,13 @@ Fecha: 2026-03-23
 - [x] `RTLOPS-50` persistencia canonica de fills/eventos live
 - [x] `RTLOPS-23` reconciliation engine formal
 - [x] `RTLOPS-29` operational safety guardrails
+- [x] `RTLOPS-30` health summary live + score explicable + degraded visibility
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-30` `Health summary live + score explicable + degraded visibility`
-  - consolidar un health summary unico por streams, execution, reconciliation, preflight y guardrails;
-  - hacer visible `degraded mode`, bloqueos y severidad en backend/API/frontend sin ocultar riesgos;
-  - reutilizar el estado ya cerrado en:
-    - `RTLOPS-47`
-    - `RTLOPS-48`
-    - `RTLOPS-50`
-    - `RTLOPS-23`
-    - `RTLOPS-29`
+- [ ] `RTLOPS-26` `Metricas operativas live de execution, streams, fills y risk`
+  - consolidar metricas backend-first reutilizables por `health summary`, alertas y release gate;
+  - exponer stale age, reject rate, reconcile mismatch rate, cancel success rate, kill switch trips y degradacion por dominio;
+  - dejar nomenclatura y freshness consistentes para que `RTLOPS-27` consuma estas metricas sin recomputo fragil.
 
 ## Estado administrativo Linear
 - [x] Sync administrativo real completado para los cierres recientes:
@@ -57,6 +53,7 @@ Fecha: 2026-03-23
   - preflight final fresco y `PASS`
   - reconciliation sin casos bloqueantes
   - operational safety sin breakers bloqueantes ni manual locks
+  - health summary canonico sin `BLOCKED` ni `MANUAL_REVIEW_REQUIRED`
   - runtime real y exchange listos antes de permitir `mode/start live`
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
