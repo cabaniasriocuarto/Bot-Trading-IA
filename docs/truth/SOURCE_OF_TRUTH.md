@@ -32,6 +32,9 @@ Fecha de actualizacion: 2026-03-23
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
   - `RTLOPS-27` `Live alerts persistentes + catalogo de triggers operativos`.
+- Follow-up chico administrativo/arquitectonico abierto en Linear:
+  - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`;
+  - este follow-up no reabre `RTLOPS-26` y existe solo para endurecer el contrato raw si `RTLOPS-27` o futuros consumidores presionan demasiado la CAPA A.
 - Estado administrativo real de Linear al 2026-03-23:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29` y `RTLOPS-30`;
   - mapa de proyectos alineado con dominios reales del repo;
@@ -39,6 +42,11 @@ Fecha de actualizacion: 2026-03-23
     - CAPA A `señal cruda`: `RTLOPS-26` + `RTLOPS-63` + `RTLOPS-64`
     - CAPA B `interpretación`: `RTLOPS-30`
     - CAPA C `acción`: `RTLOPS-29` reubicada en `Execution Reality + Live Safety`
+  - `RTLOPS-27` queda congelada como consumidor persistente de outputs de CAPA A / CAPA B / CAPA C:
+    - consume señal cruda (`RTLOPS-26`)
+    - consume `health_summary` (`RTLOPS-30`)
+    - consume safety states (`RTLOPS-29`)
+    - no es dueña de `live_signals.py` ni del score global ni de breakers/freezes;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
 
 ## RTLOPS-26 - live signals foundation / CAPA A de señal cruda - 2026-03-23

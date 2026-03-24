@@ -2,6 +2,25 @@
 
 ## 2026-03-23
 
+### Alineacion minima Linear entre senal / interpretacion / accion
+- Ajuste administrativo/arquitectonico sin cambios de producto:
+  - `RTLOPS-27` quedo redefinida en Linear como consumidor persistente de outputs de:
+    - `RTLOPS-26` CAPA A de senal cruda
+    - `RTLOPS-30` CAPA B de interpretacion / `health_summary`
+    - `RTLOPS-29` CAPA C de accion / `operational_safety`
+  - `RTLOPS-27` ya no queda ambigua como posible dueña de signal collection o de score/acciones.
+- Gap real detectado y aislado en issue chica nueva:
+  - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`
+  - objetivo:
+    - endurecer envelope tipado y disciplina por `snapshot_type`
+    - evitar que `live_signals.py` absorba logica de interpretacion, alerting o frontend
+    - mantener `RTLOPS-30` congelada salvo compatibilidad minima
+- Comentarios minimos agregados en Linear a:
+  - `RTLOPS-26`
+  - `RTLOPS-29`
+  - `RTLOPS-30`
+  para dejar explicita la frontera entre CAPA A, CAPA B y CAPA C.
+
 ### RTLOPS-26 - live signals foundation / CAPA A de senal cruda
 - Backend:
   - nuevo modulo `rtlab_autotrader/rtlab_core/execution/live_signals.py` para normalizar scopes, snapshot types, payloads y eventos de senal cruda;

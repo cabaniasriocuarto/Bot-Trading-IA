@@ -19,8 +19,15 @@ Fecha: 2026-03-23
 ## Siguiente issue exacto
 - [ ] `RTLOPS-27` `Live alerts persistentes + catalogo de triggers operativos`
   - consumir la CAPA A (`RTLOPS-26`) y la CAPA B (`RTLOPS-30`) sin mezclar senal con accion;
+  - consumir tambien outputs de CAPA C (`RTLOPS-29`) solo como estado/actionability ya decidido, sin redefinir breakers ni freezes;
   - cerrar catalogo de alerts/triggers persistente y reutilizable por monitoring/release gate;
   - mantener `RTLOPS-29` como capa de accion y no como segunda verdad de lectura.
+
+## Follow-up chico abierto
+- [ ] `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`
+  - endurecer el contrato raw de `live_signals` sin reabrir `RTLOPS-26`;
+  - mantener `RTLOPS-30` congelada salvo compatibilidad minima;
+  - evitar que `RTLOPS-27` empuje campos ad hoc de alerting/UI dentro de CAPA A.
 
 ## Estado administrativo Linear
 - [x] Sync administrativo real completado para los cierres recientes:
