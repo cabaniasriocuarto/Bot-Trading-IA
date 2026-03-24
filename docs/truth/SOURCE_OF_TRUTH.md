@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-24
 ## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-37` Live Runbooks + docs/truth + incidentes/rollback
   - `RTLOPS-53` Backend QA Live
   - `RTLOPS-52` Shadow Mode operativo
   - `RTLOPS-51` integracion real de `RTLOPS-36` con runtime live
@@ -38,13 +39,67 @@ Fecha de actualizacion: 2026-03-24
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-37` `Live Runbooks + docs/truth + incidentes/rollback`.
+  - `RTLOPS-35` `Playwright Live Smoke / QA operator flows`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
 - Estado administrativo real de Linear al 2026-03-24:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-37`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
+  - inconsistencia nueva observada en el subarbol UI/playwright:
+    - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`;
+    - el repo y `docs/truth` ya muestran trabajo live UI mas avanzado que esa foto administrativa;
+    - no se corrigio en este bloque porque RTLOPS-37 es documental y esa limpieza requiere validacion puntual en Linear UI.
+
+## RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback - 2026-03-24
+
+- Gap real cerrado:
+  - el repo ya tenia surfaces canonicas suficientes para operar live/canary/shadow, pero seguian repartidas entre backend, tests y `docs/truth`;
+  - faltaban runbooks cortos, ejecutables y honestos para arranque, diagnostico, contencion, incidentes y rollback;
+  - faltaba dejar por escrito que rollback existe realmente hoy y que sigue siendo solo recomendacion/accion humana.
+- Runbooks reales agregados:
+  - `docs/runbooks/LIVE_READY_AND_DIAGNOSTICS.md`
+  - `docs/runbooks/LIVE_CONTAINMENT_AND_ROLLBACK.md`
+  - `docs/runbooks/LIVE_INCIDENT_RESPONSE.md`
+- Patrones operativos cubiertos:
+  - preflight bloqueante o vencido
+  - operational safety blocking / manual lock / freeze / breaker
+  - `G9_RUNTIME_ENGINE_REAL` fail-closed
+  - account surface no tradeable o no fresca
+  - reconciliacion stale / desync / manual review
+  - canary en `HOLD`
+  - canary con `ROLLBACK_RECOMMENDED`
+  - health degradado o bloqueado
+  - alertas criticas abiertas e historia como fuente operativa
+  - `LIVE_SHADOW` no operativo
+  - consulta de `config/policies` como autoridad de thresholds y toggles
+- Rollback y contencion documentados honestamente:
+  - rollback soportado hoy:
+    - `POST /api/v1/rollout/rollback`
+    - devuelve el rollout manager a baseline `100/0`
+    - persiste `rollback_snapshot`
+    - el rollout manager tambien puede hacer auto rollback en fases live por hard fail thresholds
+  - contencion soportada hoy:
+    - `freeze` por `GLOBAL`, `BOT` y `SYMBOL`
+    - `unfreeze`
+    - `emergency-cancel/{symbol}`
+    - `hold/resume/abort` de canary
+  - recomendacion de rollback con intervencion humana:
+    - `POST /api/v1/execution/canary/{run_id}/rollback`
+    - el canary controller hoy no confirma rollback real por si mismo;
+    - mientras `rollback_execution_supported = false` y no exista confirmacion canonica, la salida valida sigue siendo `ROLLBACK_RECOMMENDED`.
+- Incident response minimo-profesional:
+  - working log minimo
+  - clasificacion operativa simple (`CRITICAL/WARN/INFO`)
+  - criterio de escalamiento
+  - criterio de cierre
+  - regla de no improvisar ni levantar bloqueos por conveniencia
+- Limites honestos:
+  - bloque documental/operativo, sin cambios de producto;
+  - no inventa rollback inexistente;
+  - no introduce tooling nuevo de incident management;
+  - mantiene como deuda administrativa separada el sync `RTLOPS-51/54` en Linear UI;
+  - aparece ademas una inconsistencia administrativa nueva alrededor de `RTLOPS-35` y sus prerequisitos UI, pero no bloquea estos runbooks.
 
 ## RTLOPS-53 - Backend QA Live - 2026-03-24
 

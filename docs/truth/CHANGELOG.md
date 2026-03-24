@@ -2,6 +2,28 @@
 
 ## 2026-03-24
 
+### RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback
+- Runbooks nuevos:
+  - `docs/runbooks/LIVE_READY_AND_DIAGNOSTICS.md`
+  - `docs/runbooks/LIVE_CONTAINMENT_AND_ROLLBACK.md`
+  - `docs/runbooks/LIVE_INCIDENT_RESPONSE.md`
+- Cobertura operativa cerrada:
+  - diagnostico de `preflight`, `health`, `safety`, `alerts`, `canary`, `shadow`, `readiness_by_stage`, `G9_RUNTIME_ENGINE_REAL` y `config/policies`
+  - contencion con `freeze`, `unfreeze`, `emergency-cancel` y `hold`
+  - rollback real documentado solo donde hoy existe:
+    - `POST /api/v1/rollout/rollback`
+    - auto rollback del rollout manager en live phases por hard fail thresholds
+  - rollback del canary controller documentado honestamente como recomendacion/decision humana mientras no haya confirmacion canonica de ejecucion
+- Incident response:
+  - working log minimo
+  - criterio de escalamiento
+  - criterio de cierre
+  - registro minimo de evidencia
+- Limite honesto:
+  - bloque documental/operativo, sin cambios de producto ni tests nuevos
+  - el sync administrativo `RTLOPS-51/RTLOPS-54` sigue pendiente en Linear UI y no bloqueo este bloque
+  - aparecio una inconsistencia administrativa nueva en el subarbol `RTLOPS-35` vs `RTLOPS-24/32/33/34`; se deja observada pero no corregida en este bloque
+
 ### RTLOPS-53 - Backend QA Live
 - Backend QA:
   - nueva suite focalizada [backend QA live]:

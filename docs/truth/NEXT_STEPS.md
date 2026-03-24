@@ -72,12 +72,26 @@ Fecha: 2026-03-24
   - Playwright queda diferido con justificacion honesta:
     - el repo actual muestra base real de `Vitest` en `rtlab_dashboard`, pero no una base Playwright ya integrada y chica para sumarla en este bloque sin expandir alcance;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, no bloqueante para este cierre tecnico.
+- [x] `RTLOPS-37` `Live Runbooks + docs/truth + incidentes/rollback`
+  - nuevos runbooks:
+    - `docs/runbooks/LIVE_READY_AND_DIAGNOSTICS.md`
+    - `docs/runbooks/LIVE_CONTAINMENT_AND_ROLLBACK.md`
+    - `docs/runbooks/LIVE_INCIDENT_RESPONSE.md`
+  - deja documentado:
+    - que mirar ante preflight blocking, safety blocking, `G9` fail-closed, account surface no tradeable, reconciliacion blocking, canary hold / rollback recomendado y `LIVE_SHADOW` no operativo
+    - que rollback existe realmente hoy
+    - que contencion es `hold/freeze/emergency-cancel`
+    - que el canary controller hoy recomienda rollback pero no confirma ejecucion canonica de rollback real por si mismo
+  - mantiene separado el pendiente administrativo:
+    - `RTLOPS-51` / `RTLOPS-54` sigue como sync UI no bloqueante
+  - nueva observacion administrativa:
+    - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`, aunque repo/docs muestran trabajo UI live mas avanzado; requiere validacion puntual antes del cierre final de ese subarbol.
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-37` `Live Runbooks + docs/truth + incidentes/rollback`
-  - queda como siguiente tramo real recomendado antes del `Final Live Release Gate`;
-  - debe cerrar runbooks operativos de arranque, incidentes y rollback sin sobredeclarar el runtime real;
-  - `RTLOPS-35` `Playwright Live Smoke / QA operator flows` sigue pendiente como prerequisito separado antes de `RTLOPS-38`;
+- [ ] `RTLOPS-35` `Playwright Live Smoke / QA operator flows`
+  - sigue siendo el prerequisito explicito antes de `RTLOPS-38`;
+  - debe cerrarse con smoke operatorio UI/live chico y util, sin duplicar el QA backend ya cerrado en `RTLOPS-53`;
+  - antes de declararla cerrable, conviene validar el subarbol UI/playwright en Linear porque `RTLOPS-24/32/33/34` siguen en `Backlog` mientras repo/docs muestran avance mayor en ese frente;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
