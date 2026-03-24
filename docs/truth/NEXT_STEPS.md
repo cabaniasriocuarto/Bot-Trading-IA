@@ -54,15 +54,30 @@ Fecha: 2026-03-24
     - rechaza `baseline_signal` / `candidate_signal` vacios o sin `action` reconocible ni score numerico explicito;
   - no duplica execution ni reabre `learning/shadow`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, sin bloquear el repo ni este cierre tecnico.
+- [x] `RTLOPS-53` `Backend QA Live`
+  - nueva suite focalizada:
+    - `rtlab_autotrader/tests/test_backend_qa_live.py`
+  - quality gates reales del bloque:
+    - `smoke critico` -> bloquea release
+    - `compat/regression selectiva` -> bloquea promocion de stage
+    - `policy/contracts` -> deja observacion no bloqueante
+  - surfaces cubiertas por la capa QA:
+    - `G9_RUNTIME_ENGINE_REAL`
+    - `config/policies`
+    - `execution/health/summary`
+    - `execution/alerts/open` + `history`
+    - `execution/canary/status`
+    - `rollout/shadow/status`
+    - `rollout/status` con `readiness_by_stage`
+  - Playwright queda diferido con justificacion honesta:
+    - el repo actual muestra base real de `Vitest` en `rtlab_dashboard`, pero no una base Playwright ya integrada y chica para sumarla en este bloque sin expandir alcance;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, no bloqueante para este cierre tecnico.
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-53` `Backend QA Live`
-  - queda como siguiente tramo real del proyecto `Release / Canary / Rollback / Auditoria Final`;
-  - debe validar end-to-end la cadena ya cerrada:
-    - runtime real
-    - shadow operativo
-    - canary controller
-    - readiness por stage
+- [ ] `RTLOPS-37` `Live Runbooks + docs/truth + incidentes/rollback`
+  - queda como siguiente tramo real recomendado antes del `Final Live Release Gate`;
+  - debe cerrar runbooks operativos de arranque, incidentes y rollback sin sobredeclarar el runtime real;
+  - `RTLOPS-35` `Playwright Live Smoke / QA operator flows` sigue pendiente como prerequisito separado antes de `RTLOPS-38`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
@@ -92,6 +107,7 @@ Fecha: 2026-03-24
   - `RTLOPS-65` = hardening chico del contrato raw backend
   - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
   - `RTLOPS-52` = shadow operativo sobre `LIVE_SHADOW`, auditable y fail-closed, sin duplicar execution
+  - `RTLOPS-53` = backend QA live con gates reproducibles sobre surfaces canonicas ya cerradas
   - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
   - precedence de alerting ya endurecida tambien en config:

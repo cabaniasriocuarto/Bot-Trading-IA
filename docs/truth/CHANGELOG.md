@@ -2,6 +2,42 @@
 
 ## 2026-03-24
 
+### RTLOPS-53 - Backend QA Live
+- Backend QA:
+  - nueva suite focalizada [backend QA live]:
+    - `rtlab_autotrader/tests/test_backend_qa_live.py`
+  - la suite nueva fija tres capas ejecutables y chicas:
+    - smoke crítico fail-closed
+    - policy/contracts
+    - compat de runtime ready
+  - la estrategia de QA del bloque queda apoyada además en regresiones selectivas ya existentes de:
+    - `test_web_live_ready.py`
+    - `test_rollout_safe_update.py`
+    - `test_policy_paths.py`
+- Quality gates definidos:
+  - `smoke crítico`:
+    - bloquea release
+    - valida G9/runtime contract, `config/policies`, `health summary`, `alerts/open`, `canary status`, `shadow status` y `readiness_by_stage` en modo fail-closed
+  - `compat/regression selectiva`:
+    - bloquea promoción de stage
+    - valida safety gating, preflight blocking, reconciliation stale/blocking, shadow fail-closed, canary contracts y health/alerts contracts
+  - `policy/contracts`:
+    - deja observación no bloqueante
+    - valida exposición canónica de bundles/rutas y shapes mínimas de contracts QA
+- Playwright:
+  - diferido honestamente en este bloque;
+  - el repo actual muestra base real de `Vitest` en `rtlab_dashboard`, pero no una base Playwright ya integrada y chica que permita incorporarla sin expandir scope.
+- Validación local real:
+  - `py_compile` sobre `rtlab_autotrader/tests/test_backend_qa_live.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_backend_qa_live.py --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-backend-qa-live -q` -> PASS (`3 passed`)
+  - `pytest rtlab_autotrader/tests/test_rollout_safe_update.py -k "rollout_api_blending_preview_records_telemetry or rollout_shadow_status_and_signal_are_fail_closed_until_runtime_live_is_ready or rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-rollout -q` -> PASS (`3 passed`)
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_account_surface_is_not_tradeable or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or execution_alert_endpoints_expose_catalog_history_and_lifecycle or execution_canary_start_holds_when_preflight_is_expired or execution_canary_recommends_rollback_when_reconciliation_turns_blocking or execution_canary_status_and_endpoints_expose_contract or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-live-ready -q` -> PASS (`11 passed`)
+  - `pytest rtlab_autotrader/tests/test_policy_paths.py --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-policy-paths -q` -> PASS (`2 passed`)
+- Límite honesto:
+  - no se vende cobertura exhaustiva;
+  - Playwright queda fuera de RTLOPS-53 por base/alcance insuficiente en este repo;
+  - la relación `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI y no bloqueó el trabajo técnico.
+
 ### RTLOPS-52 - Shadow Mode operativo
 - Backend:
   - nuevos endpoints:
