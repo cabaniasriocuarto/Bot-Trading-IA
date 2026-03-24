@@ -2,6 +2,32 @@
 
 ## 2026-03-24
 
+### RTLOPS-52 - Shadow Mode operativo
+- Backend:
+  - nuevos endpoints:
+    - `GET /api/v1/rollout/shadow/status`
+    - `POST /api/v1/rollout/shadow/signal`
+  - `build_rollout_shadow_status()` agrega una surface operativa y fail-closed para `LIVE_SHADOW` usando rollout real + runtime contract live + `runtime_telemetry_guard`;
+  - `RolloutManager.route_live_signal(...)` ahora persiste mejor auditabilidad con:
+    - `source_label`
+    - `source_refs`
+    - `note`
+    - `history += live_signal_routed`
+  - `POST /api/v1/rollout/shadow/signal` deja trazabilidad auditable en decision log via `rollout_shadow_signal`.
+- Semantica:
+  - `LIVE_SHADOW` deja de depender solo de `blending/preview` manual;
+  - shadow falla cerrado si no hay:
+    - estado `LIVE_SHADOW`
+    - `routing.shadow_only`
+    - `runtime_telemetry_guard.ok`
+    - `runtime_contract.ready_for_live`
+  - no duplica execution ni reabre `learning/shadow`;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, sin bloquear este cierre tecnico.
+- Tests:
+  - `py_compile` sobre `app.py`, `rollout/manager.py` y `test_rollout_safe_update.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_rollout_safe_update.py -k "shadow or rollout_api_blending_preview_records_telemetry or evaluate_phase_fail_closed_when_runtime_telemetry_synthetic" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-shadow-rollout -q` -> PASS (`3 passed`)
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_account_surface_is_not_tradeable or runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-shadow-compat -q` -> PASS (`3 passed`)
+
 ### RTLOPS-51 - Integracion real de RTLOPS-36 con runtime live
 - Backend:
   - `RuntimeBridge` endurece `/api/v3/account` como `account surface` canonica y no solo como derivacion legacy de `positions`;

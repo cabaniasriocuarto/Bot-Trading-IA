@@ -350,6 +350,9 @@ class RolloutManager:
         candidate_signal: dict[str, Any],
         symbol: str | None = None,
         timeframe: str | None = None,
+        source_refs: dict[str, Any] | None = None,
+        source_label: str | None = None,
+        note: str | None = None,
         record_telemetry: bool = True,
     ) -> dict[str, Any]:
         state = self.load_state()
@@ -406,6 +409,9 @@ class RolloutManager:
             "state": current_state,
             "symbol": symbol or "",
             "timeframe": timeframe or "",
+            "source_label": str(source_label or "manual_preview"),
+            "source_refs": source_refs if isinstance(source_refs, dict) else {},
+            "note": str(note or ""),
             "agreement": agreement,
             "execution_mode": execution_mode,
             "routing": {
@@ -446,6 +452,18 @@ class RolloutManager:
 
         if record_telemetry:
             self._record_live_signal_telemetry(state, event)
+            self._append_history(
+                state,
+                "live_signal_routed",
+                {
+                    "phase": phase_name,
+                    "symbol": symbol or "",
+                    "timeframe": timeframe or "",
+                    "executed_action": executed_action,
+                    "source_label": str(source_label or "manual_preview"),
+                    "shadow_only": shadow_only,
+                },
+            )
             state = self.save_state(state)
 
         return {

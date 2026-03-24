@@ -709,6 +709,15 @@ class RolloutBlendPreviewBody(BaseModel):
     record_telemetry: bool = True
 
 
+class RolloutShadowSignalBody(BaseModel):
+    baseline_signal: dict[str, Any]
+    candidate_signal: dict[str, Any]
+    symbol: str | None = None
+    timeframe: str | None = None
+    source_refs: dict[str, Any] | None = None
+    note: str | None = None
+
+
 class ResearchChangePointsBody(BaseModel):
     series: list[float]
     signal_name: str = "returns"
@@ -15228,6 +15237,69 @@ def build_rollout_readiness_by_stage() -> dict[str, Any]:
     }
 
 
+def build_rollout_shadow_status() -> dict[str, Any]:
+    settings_payload = store.load_settings()
+    rollout_state = rollout_manager.status()
+    runtime_state = _sync_runtime_state(store.load_bot_state(), settings=settings_payload, persist=True)
+    runtime_snapshot_live = _runtime_contract_snapshot(runtime_state, target_mode="live")
+    telemetry_guard = _runtime_telemetry_guard(runtime_snapshot_live)
+
+    current_state = str(rollout_state.get("state") or "IDLE")
+    current_phase = str(rollout_state.get("current_phase") or "")
+    routing = rollout_state.get("routing") if isinstance(rollout_state.get("routing"), dict) else {}
+    telemetry = rollout_state.get("live_signal_telemetry") if isinstance(rollout_state.get("live_signal_telemetry"), dict) else {}
+    recent = telemetry.get("recent") if isinstance(telemetry.get("recent"), list) else []
+    recent_shadow_events = [
+        row for row in recent if isinstance(row, dict) and str(row.get("phase") or "").strip().lower() == "shadow"
+    ]
+    phases = telemetry.get("phases") if isinstance(telemetry.get("phases"), dict) else {}
+    phase_shadow = phases.get("shadow") if isinstance(phases.get("shadow"), dict) else {}
+
+    reasons: list[str] = []
+    if current_state != "LIVE_SHADOW":
+        reasons.append("rollout_not_in_live_shadow")
+    if current_phase != "shadow":
+        reasons.append("shadow_phase_not_active")
+    if not bool(routing.get("shadow_only", False)):
+        reasons.append("routing_not_shadow_only")
+    if not bool(telemetry_guard.get("ok", False)):
+        reasons.append("runtime_telemetry_not_real")
+    if not bool(runtime_snapshot_live.get("ready_for_live", False)):
+        reasons.append("runtime_contract_not_ready")
+
+    return {
+        "evaluated_at": utc_now_iso(),
+        "active": current_state == "LIVE_SHADOW",
+        "operational": len(reasons) == 0,
+        "state": current_state,
+        "current_phase": current_phase,
+        "routing": routing,
+        "reasons": reasons,
+        "runtime_contract": {
+            "mode": str(runtime_snapshot_live.get("mode") or ""),
+            "runtime_engine": str(runtime_snapshot_live.get("runtime_engine") or ""),
+            "telemetry_source": str(runtime_snapshot_live.get("telemetry_source") or ""),
+            "ready_for_live": bool(runtime_snapshot_live.get("ready_for_live", False)),
+            "missing_checks": [str(row) for row in (runtime_snapshot_live.get("missing_checks") or []) if str(row).strip()],
+            "account_surface_ok": bool(runtime_snapshot_live.get("runtime_account_surface_ok", False)),
+            "account_surface_reason": str(runtime_snapshot_live.get("runtime_account_surface_reason") or ""),
+            "exchange_mode": str(runtime_snapshot_live.get("runtime_exchange_mode") or ""),
+        },
+        "telemetry_guard": telemetry_guard,
+        "shadow_events_count": int(phase_shadow.get("events") or len(recent_shadow_events)),
+        "last_shadow_event": phase_shadow.get("last") if isinstance(phase_shadow.get("last"), dict) else None,
+        "recent_shadow_events": recent_shadow_events[-20:],
+        "source_refs": {
+            "rollout_id": str(rollout_state.get("rollout_id") or ""),
+            "runtime_contract_mode": str(runtime_snapshot_live.get("mode") or ""),
+            "runtime_contract_version": str(runtime_snapshot_live.get("contract_version") or ""),
+            "runtime_telemetry_source": str(runtime_snapshot_live.get("telemetry_source") or ""),
+            "runtime_exchange_mode": str(runtime_snapshot_live.get("runtime_exchange_mode") or ""),
+            "account_surface_ok": bool(runtime_snapshot_live.get("runtime_account_surface_ok", False)),
+        },
+    }
+
+
 def build_execution_metrics_payload() -> dict[str, Any]:
     settings = store.load_settings()
     state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
@@ -16812,6 +16884,10 @@ def create_app() -> FastAPI:
             "readiness_by_stage": readiness_by_stage,
         }
 
+    @app.get("/api/v1/rollout/shadow/status")
+    def rollout_shadow_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return build_rollout_shadow_status()
+
     @app.post("/api/v1/rollout/blending/preview")
     def rollout_blending_preview(body: RolloutBlendPreviewBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         try:
@@ -16821,6 +16897,8 @@ def create_app() -> FastAPI:
                 candidate_signal=body.candidate_signal,
                 symbol=body.symbol,
                 timeframe=body.timeframe,
+                source_refs={"actor": user.get("username", "admin"), "source_kind": "preview_api"},
+                source_label="preview_api",
                 record_telemetry=bool(body.record_telemetry),
             )
         except ValueError as exc:
@@ -16842,6 +16920,55 @@ def create_app() -> FastAPI:
             },
         )
         return {"ok": True, **result}
+
+    @app.post("/api/v1/rollout/shadow/signal")
+    def rollout_shadow_signal(body: RolloutShadowSignalBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        shadow_status = build_rollout_shadow_status()
+        if not bool(shadow_status.get("active", False)):
+            raise HTTPException(status_code=400, detail="Rollout shadow requiere estado LIVE_SHADOW activo.")
+        if not bool(shadow_status.get("operational", False)):
+            reasons = [str(row) for row in (shadow_status.get("reasons") or []) if str(row).strip()]
+            detail = ", ".join(reasons) if reasons else "shadow_not_operational"
+            raise HTTPException(status_code=400, detail=f"Rollout shadow no operativo: {detail}")
+
+        merged_source_refs = {
+            **(shadow_status.get("source_refs") if isinstance(shadow_status.get("source_refs"), dict) else {}),
+            **(body.source_refs if isinstance(body.source_refs, dict) else {}),
+            "actor": user.get("username", "admin"),
+            "source_kind": "rollout_shadow_runtime",
+        }
+        try:
+            result = rollout_manager.route_live_signal(
+                settings=store.load_settings(),
+                baseline_signal=body.baseline_signal,
+                candidate_signal=body.candidate_signal,
+                symbol=body.symbol,
+                timeframe=body.timeframe,
+                source_refs=merged_source_refs,
+                source_label="rollout_shadow_runtime",
+                note=body.note,
+                record_telemetry=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        event = result.get("event", {}) if isinstance(result, dict) else {}
+        store.add_log(
+            event_type="rollout_shadow_signal",
+            severity="info",
+            module="rollout",
+            message=f"Shadow signal routed ({event.get('phase', '-')})",
+            related_ids=[str((result.get("state") or {}).get("rollout_id") or "")] if isinstance(result.get("state"), dict) else [],
+            payload={
+                "symbol": body.symbol or "",
+                "timeframe": body.timeframe or "",
+                "event": event,
+                "actor": user.get("username", "admin"),
+                "source_refs": merged_source_refs,
+                "note": body.note or "",
+            },
+        )
+        return {"ok": True, **result, "shadow_status": build_rollout_shadow_status()}
 
     @app.post("/api/v1/rollout/start")
     def rollout_start(body: RolloutStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

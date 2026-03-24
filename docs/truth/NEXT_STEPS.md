@@ -1,4 +1,4 @@
-# NEXT STEPS (Prioridades Reales)
+﻿# NEXT STEPS (Prioridades Reales)
 
 Fecha: 2026-03-24
 
@@ -43,13 +43,25 @@ Fecha: 2026-03-24
     - operational safety
     - alertas persistentes
   - `TESTNET` deja de quedar `READY` solo porque un soak previo paso; si el runtime contract actual no esta listo, falla cerrado.
+- [x] `RTLOPS-52` `Shadow Mode operativo`
+  - `LIVE_SHADOW` deja de depender solo del preview manual;
+  - nuevo status operativo fail-closed:
+    - `GET /api/v1/rollout/shadow/status`
+  - nueva ingest de decisiones auditables:
+    - `POST /api/v1/rollout/shadow/signal`
+  - reutiliza rollout manager + runtime contract live + `runtime_telemetry_guard`;
+  - no duplica execution ni reabre `learning/shadow`;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, sin bloquear el repo ni este cierre tecnico.
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-52` `Shadow Mode operativo`
-  - ahora queda desbloqueado por el cierre real de `RTLOPS-51`;
-  - sigue siendo el siguiente tramo del proyecto `Release / Canary / Rollback / Auditoría Final` antes de `RTLOPS-53`;
-  - debe reutilizar runtime real ya cableado, sin duplicar execution ni crear una verdad paralela.
-
+- [ ] `RTLOPS-53` `Backend QA Live`
+  - queda como siguiente tramo real del proyecto `Release / Canary / Rollback / Auditoria Final`;
+  - debe validar end-to-end la cadena ya cerrada:
+    - runtime real
+    - shadow operativo
+    - canary controller
+    - readiness por stage
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.
@@ -60,6 +72,7 @@ Fecha: 2026-03-24
   - `RTLOPS-26`
   - `RTLOPS-27`
   - `RTLOPS-51`
+  - `RTLOPS-52`
   - `RTLOPS-66`
   - `RTLOPS-45`
   - `RTLOPS-46`
@@ -76,6 +89,7 @@ Fecha: 2026-03-24
   - `RTLOPS-27` = consumer persistente de alerting
   - `RTLOPS-65` = hardening chico del contrato raw backend
   - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
+  - `RTLOPS-52` = shadow operativo sobre `LIVE_SHADOW`, auditable y fail-closed, sin duplicar execution
   - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
   - precedence de alerting ya endurecida tambien en config:
@@ -93,7 +107,7 @@ Fecha: 2026-03-24
   - `Frontend Console 10/10 + Playwright QA`
   - `Release / Canary / Rollback / Auditoria Final`
 - [x] Dominio `observability / health / safety` separado conceptualmente:
-  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A `señal cruda`
+  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A `seÃ±al cruda`
   - `RTLOPS-30` = CAPA B `interpretacion`
   - `RTLOPS-29` = CAPA C `accion`
 - [x] Nuevas issues de backlog creadas solo donde habia gap real:
@@ -171,13 +185,13 @@ Fecha: 2026-03-24
 
 ## Siguiente bloque chico tras RTLRESE-7
 - [x] Clasificacion minima `trusted/legacy/quarantine` en `strategy_evidence`.
-- [x] Exclusión de `quarantine` de aprendizaje, guidance y rankings de Option B.
+- [x] ExclusiÃ³n de `quarantine` de aprendizaje, guidance y rankings de Option B.
 - [x] `legacy` conservado con `needs_validation` explicito y penalizacion de confianza.
 - [ ] Exponer `evidence_status/evidence_flags` en endpoints o UI solo donde haga falta auditoria operativa, sin volver a mezclar truth con evidence.
 - [ ] Extender esta misma frontera a rankings/catalogos fuera de Option B solo cuando exista un consumidor real y justificado.
 - [ ] Revisar si conviene un backfill chico para episodios legacy historicos que hoy no traen metadata suficiente para clasificacion fina.
 - [ ] Mantener RTLRESE-10 separado: no mezclar esta cuarentena de evidencia con cambios nuevos de producto, frontend o refactors masivos.
-## RTLRESE-10 · research funnel / trial ledger
+## RTLRESE-10 Â· research funnel / trial ledger
 - [x] Exponer `GET /api/v1/research/funnel`.
 - [x] Exponer `GET /api/v1/research/trial-ledger`.
 - [x] Mostrar `Research Funnel y Trial Ledger` en `Backtests`.
@@ -426,7 +440,7 @@ Fecha: 2026-03-24
 - [x] Workflow `security-ci` endurecido para instalar `gitleaks` desde release oficial versionado (`8.30.0`) con retries.
 - [x] Fallback agregado a install script versionado (`v8.30.0`) + check fail-closed de binario instalado.
 - [x] Export `PATH` en el mismo step de instalacion para validar `gitleaks version` en esa corrida.
-- [x] Baseline canónica versionada para CI:
+- [x] Baseline canÃ³nica versionada para CI:
   - `docs/security/gitleaks-baseline.json`
   - `scripts/security_scan.sh` actualizado para usarla por defecto.
 - [x] `setup-python` en Security CI alineado a `3.11`.
@@ -468,7 +482,7 @@ Fecha: 2026-03-24
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or runtime_stop_testnet_cancels_remote_open_orders_idempotently" -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS (`11 passed`).
 - Pendiente inmediato:
-  - completar wiring de ejecucion real por señales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
+  - completar wiring de ejecucion real por seÃ±ales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
 
 
 ## Actualizacion tecnica AP-8012 (2026-03-04)
@@ -518,7 +532,7 @@ Fecha: 2026-03-24
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS (`10 passed`).
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
 - Pendiente inmediato de runtime real:
-  - submit real idempotente (`newClientOrderId`) con pipeline de señales/ejecución, y reconciliacion de posiciones (no solo órdenes abiertas).
+  - submit real idempotente (`newClientOrderId`) con pipeline de seÃ±ales/ejecuciÃ³n, y reconciliacion de posiciones (no solo Ã³rdenes abiertas).
 
 ## Actualizacion tecnica AP-BOT-1006 (2026-03-04)
 - [x] Submit remoto idempotente agregado en runtime `testnet/live` con `newClientOrderId` y ventana configurable.
