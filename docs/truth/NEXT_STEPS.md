@@ -18,7 +18,7 @@ Fecha: 2026-03-23
 
 ## Siguiente issue exacto
 - [ ] `RTLOPS-27` `Live alerts persistentes + catalogo de triggers operativos`
-  - cerrar CAPA A de señal cruda, sin score ni acciones;
+  - consumir la CAPA A (`RTLOPS-26`) y la CAPA B (`RTLOPS-30`) sin mezclar senal con accion;
   - cerrar catalogo de alerts/triggers persistente y reutilizable por monitoring/release gate;
   - mantener `RTLOPS-29` como capa de accion y no como segunda verdad de lectura.
 
