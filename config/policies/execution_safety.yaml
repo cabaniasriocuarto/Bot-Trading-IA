@@ -37,4 +37,11 @@ execution_safety:
     reopen_on_active_condition: true
     manual_resolve_requires_inactive: true
   live_signals:
+    schema_version: 2
     default_window_ms: 300000
+    payload_sections:
+      - numeric_metrics
+      - state_values
+      - timestamps_ms
+      - refs
+    risk_observed_only: true

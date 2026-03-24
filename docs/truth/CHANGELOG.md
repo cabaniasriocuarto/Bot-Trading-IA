@@ -2,6 +2,46 @@
 
 ## 2026-03-24
 
+### RTLOPS-65 - raw live signal contract hardening
+- Backend:
+  - se endurece el contrato raw backend de `live_signals` sin reabrir score/health ni actions;
+  - `live_signal_snapshots` pasa a persistir envelope canonico con:
+    - `schema_version`
+    - `collected_at_ms`
+    - `window_ms`
+    - `payload_json`
+  - `payload` queda tipado por `snapshot_type` en:
+    - `kind`
+    - `numeric_metrics`
+    - `state_values`
+    - `timestamps_ms`
+    - `refs`
+  - `live_signal_events` queda mas claro como evento puntual con:
+    - `schema_version`
+    - `event_time_ms`
+  - `signal_payload_json` se conserva solo como espejo de compatibilidad de migracion; el contrato canonico nuevo es `payload_json` / `payload`.
+- Schema discipline:
+  - `EXECUTION` no mezcla campos de `STREAM`
+  - `STREAM` no mezcla semantica interpretada de health/safety
+  - `PREFLIGHT` y `RECONCILIATION` exponen ages/timestamps/counts de forma mas disciplinada
+  - `RATE_LIMIT` expone counts/flags claros sin inferir actions
+  - `RISK` queda explicitamente limitado a senal observada real de runtime (`risk_observed_only = true`)
+- Compatibilidad:
+  - `RTLOPS-30` sigue consumiendo CAPA A solo como lectura compatible
+  - `RTLOPS-27` sigue consumiendo refs/payload tipado sin empujar schema ad hoc a `live_signals.py`
+  - no se crean contratos de conveniencia para frontend/dashboard
+- Policy:
+  - `execution_safety.live_signals` agrega declaracion explicita de:
+    - `schema_version = 2`
+    - `payload_sections = [numeric_metrics, state_values, timestamps_ms, refs]`
+    - `risk_observed_only = true`
+- Modulo:
+  - `live_signals.py` no se partio en este bloque porque su tamano real sigue acotado y el riesgo principal estaba en schema discipline, no en volumen.
+- Validacion local real:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/live_signals.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or execution_signals_endpoints_return_summary_history_and_scopes or live_health_summary_contract_survives_raw_signal_snapshot_persistence or execution_alert_consumer_leaves_raw_signal_contract_unchanged or execution_alert_consumer_does_not_recalculate_health_or_open_safety_actions" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-hardening -q` -> PASS (`9 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-signals-hardening` -> PASS (`2 passed`)
+
 ### RTLOPS-66 - alert lifecycle semantics hardening
 - Backend:
   - se endurece la semantica de `EXPIRED` vs `RESOLVED` sin reabrir `RTLOPS-27` completa;
@@ -140,12 +180,18 @@
     - `PREFLIGHT`
     - `RATE_LIMIT`
     - `RISK`
-  - contratos raw canonicos separados en:
+  - contrato raw inicial separado en:
     - `metrics`
     - `observed_states`
     - `freshness`
     - `source_timestamps`
     - `source_refs`
+  - ese shape inicial quedo endurecido despues en `RTLOPS-65` hacia:
+    - `payload.kind`
+    - `payload.numeric_metrics`
+    - `payload.state_values`
+    - `payload.timestamps_ms`
+    - `payload.refs`
   - endpoints nuevos:
     - `GET /api/v1/execution/signals/summary`
     - `GET /api/v1/execution/signals/history`

@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-24
 ## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-65` raw live signal contract hardening
   - `RTLOPS-26` live signals foundation - CAPA A de señal cruda
   - `RTLOPS-27` live alerts persistentes - consumer persistente de alerting
   - `RTLOPS-66` alert lifecycle semantics hardening
@@ -33,10 +34,10 @@ Fecha de actualizacion: 2026-03-24
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`.
+  - `RTLOPS-54` `Canary Live Controller`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
-  - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`;
-  - este follow-up no reabre `RTLOPS-26` y existe solo para endurecer el contrato raw si `RTLOPS-27` o futuros consumidores presionan demasiado la CAPA A.
+  - `RTLOPS-54` `Canary Live Controller`;
+  - queda habilitada ahora que el contrato raw backend de CAPA A ya quedo endurecido.
 - Estado administrativo real de Linear al 2026-03-24:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30` y `RTLOPS-66`;
   - mapa de proyectos alineado con dominios reales del repo;
@@ -50,6 +51,79 @@ Fecha de actualizacion: 2026-03-24
     - consume safety states (`RTLOPS-29`)
     - no es dueña de `live_signals.py` ni del score global ni de breakers/freezes;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
+
+## RTLOPS-65 - raw live signal contract hardening - 2026-03-24
+
+- Objetivo real cerrado:
+  - endurecer el contrato raw backend de `live_signals` sin reabrir `RTLOPS-26`;
+  - dejar un envelope comun, tipado y auditable para snapshots raw;
+  - tipar el `payload` por `snapshot_type` sin meter score, alerts ni actions;
+  - mantener compatibilidad minima con `RTLOPS-30` y `RTLOPS-27` sin crear shape de conveniencia para frontend.
+- Implementacion real:
+  - `rtlab_autotrader/rtlab_core/execution/live_signals.py` sigue siendo el modulo de collection/normalization/snapshotting/persist;
+  - `ConsoleStore`/SQLite endurece `live_signal_snapshots` con:
+    - `schema_version`
+    - `collected_at_ms`
+    - `window_ms`
+    - `payload_json` como contrato canonico persistido
+  - `live_signal_events` queda explicitamente separado como evento puntual con:
+    - `schema_version`
+    - `event_time_ms`
+  - `signal_payload_json` se conserva solo como espejo de compatibilidad de migracion para tablas previas; el contrato canonico nuevo es `payload_json` / `payload`.
+- Envelope canonico final de snapshot:
+  - `signal_snapshot_id`
+  - `scope_type`
+  - `bot_id`
+  - `symbol`
+  - `snapshot_type`
+  - `schema_version`
+  - `collected_at`
+  - `collected_at_ms`
+  - `window_ms`
+  - `source_module`
+  - `source_status`
+  - `freshness_ms`
+  - `payload`
+- `payload` tipado por `snapshot_type`:
+  - `kind`
+  - `numeric_metrics`
+  - `state_values`
+  - `timestamps_ms`
+  - `refs`
+- Snapshot types endurecidos:
+  - `EXECUTION`
+  - `FILLS`
+  - `STREAM`
+  - `RECONCILIATION`
+  - `PREFLIGHT`
+  - `RATE_LIMIT`
+  - `RISK`
+- Regla vigente para `RISK` en CAPA A:
+  - solo contiene senal observada real de runtime;
+  - no contiene conclusiones interpretadas ni recomendaciones de bloqueo;
+  - `risk_observed_only = true` queda explicito en policy/config.
+- Snapshot vs event:
+  - `live_signal_snapshots` = estado periodico/envelope completo por `snapshot_type`;
+  - `live_signal_events` = observacion puntual de recoleccion, con `observed_value` resumido y `raw_payload` referenciable;
+  - ambos quedan auditables sin mezclar semantica de summary ni alert lifecycle.
+- Compatibilidad real:
+  - `RTLOPS-30` sigue consumiendo CAPA A solo como lectura de compatibilidad minima (`component_status.live_signals`);
+  - `RTLOPS-27` sigue consumiendo CAPA A via accessors/backend refs sin empujar fields ad hoc a `live_signals.py`;
+  - frontend/dashboard no fuerzan shape de conveniencia sobre el raw backend.
+- Modulo:
+  - `live_signals.py` no se dividio en este bloque porque su tamano real sigue acotado;
+  - el riesgo actual ya no es "JSON libre", sino crecimiento futuro si aparecen mas `snapshot_type`.
+- Fuente proyecto:
+  - `rtlab_autotrader/rtlab_core/execution/live_signals.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+  - `rtlab_autotrader/tests/test_web_live_ready.py`
+  - `config/policies/execution_safety.yaml`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Validacion local cerrada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/live_signals.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or execution_signals_endpoints_return_summary_history_and_scopes or live_health_summary_contract_survives_raw_signal_snapshot_persistence or execution_alert_consumer_leaves_raw_signal_contract_unchanged or execution_alert_consumer_does_not_recalculate_health_or_open_safety_actions" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-hardening -q` -> PASS (`9 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-signals-hardening` -> PASS (`2 passed`)
 
 ## RTLOPS-66 - alert lifecycle semantics hardening - 2026-03-24
 
@@ -222,21 +296,26 @@ Fecha de actualizacion: 2026-03-24
     - `build_live_health_summary(...)` agrega referencia a la capa de senal cruda en `component_status.live_signals`;
     - no cambia score, severidad ni reason codes finales.
 - Contrato canonico de snapshot:
+  - endurecido posteriormente en `RTLOPS-65` sin reabrir ownership de CAPA A;
   - `scope`
   - `collected_at`
+  - `schema_version`
   - `window_ms`
   - `items[]`
+    - `signal_snapshot_id`
     - `scope_type`
     - `snapshot_type`
+    - `schema_version`
+    - `collected_at_ms`
     - `source_module`
     - `freshness_ms`
     - `source_status`
-    - `signal_payload`
-      - `metrics`
-      - `observed_states`
-      - `freshness`
-      - `source_timestamps`
-      - `source_refs`
+    - `payload`
+      - `kind`
+      - `numeric_metrics`
+      - `state_values`
+      - `timestamps_ms`
+      - `refs`
 - Snapshot types emitidos:
   - `EXECUTION`
   - `FILLS`
@@ -301,7 +380,8 @@ Fecha de actualizacion: 2026-03-24
 - Riesgo / limite conocido:
   - esta capa no decide estados globales ni acciones;
   - `RTLOPS-30` sigue siendo la capa de interpretacion y `RTLOPS-29` la capa de accion;
-  - el contrato ya deja preparada la base para alertas/drift, pero esos consumers quedan fuera de esta issue.
+  - el contrato ya deja preparada la base para alerts/drift, pero esos consumers quedan fuera de esta issue;
+  - el endurecimiento de schema/versionado quedó cerrado despues en `RTLOPS-65`.
 - Validacion local cerrada:
   - `python -m py_compile rtlab_autotrader/rtlab_core/execution/live_signals.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or execution_signals_endpoints_return_summary_history_and_scopes or live_health_summary_contract_survives_raw_signal_snapshot_persistence or live_health_summary_is_healthy_when_sources_are_clean or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-round2 -q` -> PASS (`8 passed`)

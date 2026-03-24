@@ -5869,11 +5869,17 @@ def test_live_signal_snapshot_builds_and_persists_domain_snapshots(tmp_path: Pat
   )
   by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
 
-  assert by_type["EXECUTION"]["signal_payload"]["metrics"]["execution_submit_total_window"] >= 1
-  assert by_type["FILLS"]["signal_payload"]["metrics"]["fills_recent_count"] >= 1
-  assert by_type["STREAM"]["signal_payload"]["metrics"]["stream_last_event_age_ms"] is not None
-  assert by_type["RECONCILIATION"]["signal_payload"]["metrics"]["reconciliation_last_run_age_ms"] is not None
-  assert by_type["PREFLIGHT"]["signal_payload"]["metrics"]["preflight_last_run_age_ms"] is not None
+  assert snapshot["schema_version"] >= 2
+  assert by_type["EXECUTION"]["schema_version"] >= 2
+  assert by_type["EXECUTION"]["collected_at_ms"] is not None
+  assert by_type["EXECUTION"]["window_ms"] == snapshot["window_ms"]
+  assert by_type["EXECUTION"]["payload"]["kind"] == "EXECUTION"
+  assert by_type["EXECUTION"]["payload"]["numeric_metrics"]["execution_submit_total_window"] >= 1
+  assert by_type["FILLS"]["payload"]["kind"] == "FILLS"
+  assert by_type["FILLS"]["payload"]["numeric_metrics"]["fills_recent_count"] >= 1
+  assert by_type["STREAM"]["payload"]["numeric_metrics"]["stream_last_event_age_ms"] is not None
+  assert by_type["RECONCILIATION"]["payload"]["numeric_metrics"]["reconciliation_last_run_age_ms"] is not None
+  assert by_type["PREFLIGHT"]["payload"]["numeric_metrics"]["preflight_last_run_age_ms"] is not None
 
   stored = module.store.list_live_signal_snapshots(limit=50)
   assert any(row["snapshot_type"] == "EXECUTION" for row in stored)
@@ -5881,6 +5887,34 @@ def test_live_signal_snapshot_builds_and_persists_domain_snapshots(tmp_path: Pat
   assert any(row["snapshot_type"] == "STREAM" for row in stored)
   assert any(row["snapshot_type"] == "RECONCILIATION" for row in stored)
   assert any(row["snapshot_type"] == "PREFLIGHT" for row in stored)
+  assert all("payload" in row for row in stored)
+
+
+def test_live_signal_snapshot_type_disciplines_payload_fields(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  snapshot = module.runtime_bridge.build_live_signal_snapshot(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+    persist=False,
+  )
+  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
+
+  execution_payload = by_type["EXECUTION"]["payload"]
+  stream_payload = by_type["STREAM"]["payload"]
+  preflight_payload = by_type["PREFLIGHT"]["payload"]
+  reconciliation_payload = by_type["RECONCILIATION"]["payload"]
+
+  assert set(execution_payload.keys()) == {"kind", "numeric_metrics", "state_values", "timestamps_ms", "refs"}
+  assert "stream_gap_ms" not in execution_payload["numeric_metrics"]
+  assert "execution_submit_total_window" in execution_payload["numeric_metrics"]
+  assert "stream_gap_ms" in stream_payload["numeric_metrics"]
+  assert "health_state" not in stream_payload["state_values"]
+  assert "preflight_last_run_at_ms" in preflight_payload["timestamps_ms"]
+  assert "reconciliation_last_run_age_ms" in reconciliation_payload["numeric_metrics"]
+  assert "reconciliation_source_ok" in reconciliation_payload["state_values"]
 
 
 def test_live_signal_snapshot_reflects_rate_limit_pressure_as_signal_only(tmp_path: Path, monkeypatch) -> None:
@@ -5904,8 +5938,8 @@ def test_live_signal_snapshot_reflects_rate_limit_pressure_as_signal_only(tmp_pa
   by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
   rate_limit = by_type["RATE_LIMIT"]
 
-  assert rate_limit["signal_payload"]["metrics"]["rate_limit_429_count_window"] == 3
-  assert rate_limit["signal_payload"]["observed_states"]["retry_after_active_bool"] is True
+  assert rate_limit["payload"]["numeric_metrics"]["rate_limit_429_count_window"] == 3
+  assert rate_limit["payload"]["state_values"]["retry_after_active_bool"] is True
   assert "state" not in rate_limit
   assert "blocking_bool" not in rate_limit
 
@@ -5928,8 +5962,8 @@ def test_live_signal_snapshot_reflects_unknown_timeout_as_signal_only(tmp_path: 
   by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
   execution = by_type["EXECUTION"]
 
-  assert execution["signal_payload"]["metrics"]["execution_unknown_timeout_active_count"] == 1
-  assert execution["signal_payload"]["observed_states"]["runtime_unknown_timeout_active"] is True
+  assert execution["payload"]["numeric_metrics"]["execution_unknown_timeout_active_count"] == 1
+  assert execution["payload"]["state_values"]["runtime_unknown_timeout_active"] is True
   assert "state" not in snapshot
   assert "blocking_bool" not in execution
 
@@ -5952,7 +5986,7 @@ def test_live_signal_snapshot_persists_symbol_scope_correctly(tmp_path: Path, mo
 
   assert snapshot["scope"]["scope_type"] == "SYMBOL"
   assert snapshot["scope"]["symbol"] == "BTCUSDT"
-  assert by_type["EXECUTION"]["signal_payload"]["metrics"]["execution_submit_total_window"] == 1
+  assert by_type["EXECUTION"]["payload"]["numeric_metrics"]["execution_submit_total_window"] == 1
   stored = module.store.list_live_signal_snapshots(scope_type="SYMBOL", symbol="BTCUSDT", limit=20)
   assert stored
   assert all(row["scope_type"] == "SYMBOL" for row in stored)
@@ -5971,6 +6005,8 @@ def test_execution_signals_endpoints_return_summary_history_and_scopes(tmp_path:
   assert create.status_code == 200, create.text
   created = create.json()
   assert isinstance(created.get("items"), list) and created["items"]
+  assert created["schema_version"] >= 2
+  assert set(created["items"][0]["payload"].keys()) == {"kind", "numeric_metrics", "state_values", "timestamps_ms", "refs"}
 
   summary = client.get("/api/v1/execution/signals/summary", headers=headers)
   assert summary.status_code == 200, summary.text
@@ -5978,12 +6014,14 @@ def test_execution_signals_endpoints_return_summary_history_and_scopes(tmp_path:
   assert summary_payload["scope"]["scope_type"] == "GLOBAL"
   assert isinstance(summary_payload.get("items"), list)
   assert any(row["snapshot_type"] == "EXECUTION" for row in summary_payload["items"])
+  assert all("payload" in row for row in summary_payload["items"])
 
   history = client.get("/api/v1/execution/signals/history", headers=headers)
   assert history.status_code == 200, history.text
   history_payload = history.json()
   assert isinstance(history_payload.get("snapshots"), list) and history_payload["snapshots"]
   assert isinstance(history_payload.get("events"), list) and history_payload["events"]
+  assert history_payload["events"][0]["event_time_ms"] is not None
 
   scopes = client.get("/api/v1/execution/signals/scopes", headers=headers)
   assert scopes.status_code == 200, scopes.text
@@ -6007,6 +6045,27 @@ def test_live_health_summary_contract_survives_raw_signal_snapshot_persistence(t
   )
   assert summary["state"] == "HEALTHY"
   assert "component_status" in summary
+  assert summary["component_status"]["live_signals"]["schema_version"] >= 2
+
+
+def test_live_signal_risk_snapshot_stays_observed_only(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  snapshot = module.runtime_bridge.build_live_signal_snapshot(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+    persist=False,
+  )
+  risk = {row["snapshot_type"]: row for row in snapshot["items"]}["RISK"]
+  risk_payload = risk["payload"]
+
+  assert risk_payload["kind"] == "RISK"
+  assert risk_payload["refs"]["risk_observed_only"] is True
+  assert "risk_open_positions_count" in risk_payload["numeric_metrics"]
+  assert "block_new_positions" not in risk_payload["state_values"]
+  assert "risk_level" not in risk_payload["state_values"]
   assert "scope_status" in summary
 
 
@@ -6348,7 +6407,8 @@ def test_execution_alert_consumer_leaves_raw_signal_contract_unchanged(tmp_path:
   after_types = {row["snapshot_type"] for row in after["items"]}
   assert before_types == after_types
   for row in after["items"]:
-    assert set(row["signal_payload"].keys()) == {"metrics", "observed_states", "freshness", "source_timestamps", "source_refs"}
+    assert set(row["payload"].keys()) == {"kind", "numeric_metrics", "state_values", "timestamps_ms", "refs"}
+    assert row["payload"]["kind"] == row["snapshot_type"]
     assert "trigger_code" not in row
     assert "state" not in row
 

@@ -17,18 +17,19 @@ Fecha: 2026-03-24
 - [x] `RTLOPS-26` live signals foundation: execution, streams, fills, risk y snapshots operativos
 - [x] `RTLOPS-27` live alerts persistentes + catalogo de triggers operativos
 - [x] `RTLOPS-66` alert lifecycle semantics hardening
+- [x] `RTLOPS-65` raw live signal contract hardening: typed snapshot envelope + schema discipline
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`
-  - endurecer el contrato raw backend de `live_signals` sin reabrir `RTLOPS-26`;
-  - tipar mejor envelope/payload por `snapshot_type` sin meter score ni actions;
-  - mantener `RTLOPS-27` como consumer de alerts y no como duenio de schema evolution;
-  - mantener `RTLOPS-30` congelada salvo compatibilidad minima.
+- [ ] `RTLOPS-54` `Canary Live Controller`
+  - reactivar el controlador de canary sobre una base ya cerrada de:
+    - raw signals tipados (`RTLOPS-65`)
+    - health summary (`RTLOPS-30`)
+    - alert lifecycle semantico (`RTLOPS-66`)
+    - operational safety (`RTLOPS-29`)
 
 ## Follow-up chico abierto
-- [ ] `RTLOPS-54` `Canary Live Controller`
-  - sigue bloqueada conceptualmente por la base de observability/alerts ya cerrada;
-  - reevaluar solo despues de endurecer el contrato raw backend con `RTLOPS-65`.
+- [ ] `RTLOPS-61` `Cost source snapshots live por familia`
+  - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.
 
 ## Estado administrativo Linear
 - [x] Sync administrativo real completado para los cierres recientes:
@@ -52,6 +53,7 @@ Fecha: 2026-03-24
   - `RTLOPS-65` = hardening chico del contrato raw backend
   - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
+  - contrato raw backend canonico = envelope `schema_version + collected_at_ms + window_ms + payload(kind/numeric_metrics/state_values/timestamps_ms/refs)`
 - [x] Mapa de proyectos alineado con dominios reales:
   - `Nucleo Arquitectonico y Policies`
   - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`

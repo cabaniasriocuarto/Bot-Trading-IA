@@ -68,9 +68,16 @@ from rtlab_core.execution.health_summary import (
     normalize_health_scope_type,
 )
 from rtlab_core.execution.live_signals import (
+    LIVE_SIGNAL_SCHEMA_VERSION,
+    build_live_signal_payload,
     build_live_signal_event,
     build_live_signal_snapshot,
+    live_signal_numeric_metrics,
+    live_signal_refs,
     live_signal_scope_key,
+    live_signal_snapshot_payload,
+    live_signal_state_values,
+    live_signal_timestamps_ms,
     normalize_live_signal_scope_type,
     normalize_live_signal_severity,
     normalize_live_signal_snapshot_type,
@@ -458,9 +465,13 @@ CREATE TABLE IF NOT EXISTS live_signal_snapshots (
     bot_id TEXT,
     symbol TEXT,
     snapshot_type TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 2,
     collected_at TEXT NOT NULL,
+    collected_at_ms INTEGER,
+    window_ms INTEGER,
     source_module TEXT NOT NULL,
     freshness_ms INTEGER,
+    payload_json TEXT NOT NULL DEFAULT '{}',
     signal_payload_json TEXT NOT NULL,
     source_status TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -469,7 +480,9 @@ CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_collected ON live_signal_sn
 CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_scope ON live_signal_snapshots(scope_type, bot_id, symbol, snapshot_type, collected_at DESC);
 CREATE TABLE IF NOT EXISTS live_signal_events (
     signal_event_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL DEFAULT 2,
     event_time TEXT NOT NULL,
+    event_time_ms INTEGER,
     source_type TEXT NOT NULL,
     event_code TEXT NOT NULL,
     scope_type TEXT NOT NULL,
@@ -946,7 +959,10 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_alerting_resolved_ttl_sec": alerting.get("resolved_ttl_sec"),
         "execution_alerting_expired_reopens_same_instance": alerting.get("expired_reopens_same_instance"),
         "execution_alerting_severity_source_precedence": alerting.get("severity_source_precedence"),
+        "execution_live_signals_schema_version": live_signals.get("schema_version"),
         "execution_live_signals_default_window_ms": live_signals.get("default_window_ms"),
+        "execution_live_signals_payload_sections": live_signals.get("payload_sections"),
+        "execution_live_signals_risk_observed_only": live_signals.get("risk_observed_only"),
         "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
         "beast_requires_postgres": b.get("requires_postgres"),
         "fees_ttl_hours": f.get("fee_snapshot_ttl_hours"),
@@ -1024,7 +1040,10 @@ DEFAULT_LIVE_HEALTH_POLICY: dict[str, Any] = {
 }
 
 DEFAULT_LIVE_SIGNALS_POLICY: dict[str, Any] = {
+    "schema_version": LIVE_SIGNAL_SCHEMA_VERSION,
     "default_window_ms": 300000,
+    "payload_sections": ["numeric_metrics", "state_values", "timestamps_ms", "refs"],
+    "risk_observed_only": True,
 }
 
 DEFAULT_ALERTING_POLICY: dict[str, Any] = {
@@ -2459,9 +2478,13 @@ class ConsoleStore:
                 bot_id TEXT,
                 symbol TEXT,
                 snapshot_type TEXT NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 2,
                 collected_at TEXT NOT NULL,
+                collected_at_ms INTEGER,
+                window_ms INTEGER,
                 source_module TEXT NOT NULL,
                 freshness_ms INTEGER,
+                payload_json TEXT NOT NULL DEFAULT '{}',
                 signal_payload_json TEXT NOT NULL,
                 source_status TEXT NOT NULL,
                 created_at TEXT NOT NULL
@@ -2470,11 +2493,24 @@ class ConsoleStore:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_collected ON live_signal_snapshots(collected_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_scope ON live_signal_snapshots(scope_type, bot_id, symbol, snapshot_type, collected_at DESC)")
+        live_signal_snapshot_columns = {
+            str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(live_signal_snapshots)").fetchall()
+        }
+        if "schema_version" not in live_signal_snapshot_columns:
+            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 2")
+        if "collected_at_ms" not in live_signal_snapshot_columns:
+            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN collected_at_ms INTEGER")
+        if "window_ms" not in live_signal_snapshot_columns:
+            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN window_ms INTEGER")
+        if "payload_json" not in live_signal_snapshot_columns:
+            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS live_signal_events (
                 signal_event_id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL DEFAULT 2,
                 event_time TEXT NOT NULL,
+                event_time_ms INTEGER,
                 source_type TEXT NOT NULL,
                 event_code TEXT NOT NULL,
                 scope_type TEXT NOT NULL,
@@ -2489,6 +2525,13 @@ class ConsoleStore:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_time ON live_signal_events(event_time DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_scope ON live_signal_events(scope_type, bot_id, symbol, source_type, event_time DESC)")
+        live_signal_event_columns = {
+            str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(live_signal_events)").fetchall()
+        }
+        if "schema_version" not in live_signal_event_columns:
+            conn.execute("ALTER TABLE live_signal_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 2")
+        if "event_time_ms" not in live_signal_event_columns:
+            conn.execute("ALTER TABLE live_signal_events ADD COLUMN event_time_ms INTEGER")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS execution_alert_catalog (
@@ -3351,16 +3394,20 @@ class ConsoleStore:
     def insert_live_signal_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         signal_snapshot_id = str(uuid4())
         created_at = utc_now_iso()
-        payload = snapshot.get("signal_payload") if isinstance(snapshot.get("signal_payload"), dict) else {}
+        payload = live_signal_snapshot_payload(snapshot)
         row = {
             "signal_snapshot_id": signal_snapshot_id,
             "scope_type": normalize_live_signal_scope_type(snapshot.get("scope_type")),
             "bot_id": self._normalize_safety_bot_id(snapshot.get("bot_id")),
             "symbol": self._normalize_safety_symbol(snapshot.get("symbol")),
             "snapshot_type": normalize_live_signal_snapshot_type(snapshot.get("snapshot_type")),
+            "schema_version": int(snapshot.get("schema_version")) if snapshot.get("schema_version") is not None else LIVE_SIGNAL_SCHEMA_VERSION,
             "collected_at": str(snapshot.get("collected_at") or created_at),
+            "collected_at_ms": int(snapshot.get("collected_at_ms")) if snapshot.get("collected_at_ms") is not None else None,
+            "window_ms": int(snapshot.get("window_ms")) if snapshot.get("window_ms") is not None else None,
             "source_module": str(snapshot.get("source_module") or "runtime_bridge.live_signals"),
             "freshness_ms": int(snapshot.get("freshness_ms")) if snapshot.get("freshness_ms") is not None else None,
+            "payload_json": json.dumps(payload, ensure_ascii=True, sort_keys=True),
             "signal_payload_json": json.dumps(payload, ensure_ascii=True, sort_keys=True),
             "source_status": normalize_live_signal_source_status(snapshot.get("source_status")),
             "created_at": created_at,
@@ -3369,11 +3416,13 @@ class ConsoleStore:
             conn.execute(
                 """
                 INSERT INTO live_signal_snapshots (
-                    signal_snapshot_id, scope_type, bot_id, symbol, snapshot_type, collected_at,
-                    source_module, freshness_ms, signal_payload_json, source_status, created_at
+                    signal_snapshot_id, scope_type, bot_id, symbol, snapshot_type, schema_version, collected_at,
+                    collected_at_ms, window_ms, source_module, freshness_ms, payload_json,
+                    signal_payload_json, source_status, created_at
                 ) VALUES (
-                    :signal_snapshot_id, :scope_type, :bot_id, :symbol, :snapshot_type, :collected_at,
-                    :source_module, :freshness_ms, :signal_payload_json, :source_status, :created_at
+                    :signal_snapshot_id, :scope_type, :bot_id, :symbol, :snapshot_type, :schema_version, :collected_at,
+                    :collected_at_ms, :window_ms, :source_module, :freshness_ms, :payload_json,
+                    :signal_payload_json, :source_status, :created_at
                 )
                 """,
                 row,
@@ -3384,7 +3433,12 @@ class ConsoleStore:
         out["bot_id"] = row["bot_id"]
         out["symbol"] = row["symbol"]
         out["snapshot_type"] = row["snapshot_type"]
+        out["schema_version"] = row["schema_version"]
+        out["collected_at"] = row["collected_at"]
+        out["collected_at_ms"] = row["collected_at_ms"]
+        out["window_ms"] = row["window_ms"]
         out["source_status"] = row["source_status"]
+        out["payload"] = payload
         out["signal_payload"] = payload
         out["created_at"] = created_at
         out["scope_key"] = live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"])
@@ -3398,6 +3452,8 @@ class ConsoleStore:
         row = {
             "signal_event_id": signal_event_id,
             "event_time": str(event.get("event_time") or created_at),
+            "schema_version": int(event.get("schema_version")) if event.get("schema_version") is not None else LIVE_SIGNAL_SCHEMA_VERSION,
+            "event_time_ms": int(event.get("event_time_ms")) if event.get("event_time_ms") is not None else None,
             "source_type": normalize_live_signal_source_type(event.get("source_type")),
             "event_code": str(event.get("event_code") or "SIGNAL_OBSERVED"),
             "scope_type": normalize_live_signal_scope_type(event.get("scope_type")),
@@ -3412,10 +3468,10 @@ class ConsoleStore:
             conn.execute(
                 """
                 INSERT INTO live_signal_events (
-                    signal_event_id, event_time, source_type, event_code, scope_type, bot_id,
+                    signal_event_id, schema_version, event_time, event_time_ms, source_type, event_code, scope_type, bot_id,
                     symbol, severity_observed, observed_value_json, raw_payload_json, created_at
                 ) VALUES (
-                    :signal_event_id, :event_time, :source_type, :event_code, :scope_type, :bot_id,
+                    :signal_event_id, :schema_version, :event_time, :event_time_ms, :source_type, :event_code, :scope_type, :bot_id,
                     :symbol, :severity_observed, :observed_value_json, :raw_payload_json, :created_at
                 )
                 """,
@@ -3423,10 +3479,13 @@ class ConsoleStore:
             )
         return {
             "signal_event_id": signal_event_id,
+            "schema_version": row["schema_version"],
             "event_time": row["event_time"],
+            "event_time_ms": row["event_time_ms"],
             "source_type": row["source_type"],
             "event_code": row["event_code"],
             "scope_type": row["scope_type"],
+            "scope_key": live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
             "bot_id": row["bot_id"],
             "symbol": row["symbol"],
             "severity_observed": row["severity_observed"],
@@ -3472,11 +3531,11 @@ class ConsoleStore:
         items: list[dict[str, Any]] = []
         for row in rows:
             try:
-                signal_payload = json.loads(str(row["signal_payload_json"] or "{}"))
+                payload = json.loads(str(row["payload_json"] or row["signal_payload_json"] or "{}"))
             except Exception:
-                signal_payload = {}
-            if not isinstance(signal_payload, dict):
-                signal_payload = {}
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
             items.append(
                 {
                     "signal_snapshot_id": str(row["signal_snapshot_id"] or ""),
@@ -3485,10 +3544,14 @@ class ConsoleStore:
                     "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
                     "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
                     "snapshot_type": str(row["snapshot_type"] or ""),
+                    "schema_version": int(row["schema_version"]) if row["schema_version"] is not None else LIVE_SIGNAL_SCHEMA_VERSION,
                     "collected_at": str(row["collected_at"] or ""),
+                    "collected_at_ms": int(row["collected_at_ms"]) if row["collected_at_ms"] is not None else None,
+                    "window_ms": int(row["window_ms"]) if row["window_ms"] is not None else None,
                     "source_module": str(row["source_module"] or ""),
                     "freshness_ms": int(row["freshness_ms"]) if row["freshness_ms"] is not None else None,
-                    "signal_payload": signal_payload,
+                    "payload": live_signal_snapshot_payload({"snapshot_type": row["snapshot_type"], "payload": payload}),
+                    "signal_payload": live_signal_snapshot_payload({"snapshot_type": row["snapshot_type"], "payload": payload}),
                     "source_status": str(row["source_status"] or ""),
                     "created_at": str(row["created_at"] or ""),
                 }
@@ -3546,7 +3609,9 @@ class ConsoleStore:
             items.append(
                 {
                     "signal_event_id": str(row["signal_event_id"] or ""),
+                    "schema_version": int(row["schema_version"]) if row["schema_version"] is not None else LIVE_SIGNAL_SCHEMA_VERSION,
                     "event_time": str(row["event_time"] or ""),
+                    "event_time_ms": int(row["event_time_ms"]) if row["event_time_ms"] is not None else None,
                     "source_type": str(row["source_type"] or ""),
                     "event_code": str(row["event_code"] or ""),
                     "scope_type": str(row["scope_type"] or ""),
@@ -8398,10 +8463,18 @@ class RuntimeBridge:
     def _live_signals_policy(self) -> dict[str, Any]:
         payload = load_execution_safety_policy()
         policy = payload.get("live_signals") if isinstance(payload.get("live_signals"), dict) else {}
-        return {
+        merged = {
             **DEFAULT_LIVE_SIGNALS_POLICY,
             **policy,
         }
+        merged["schema_version"] = max(1, _as_int(merged.get("schema_version"), LIVE_SIGNAL_SCHEMA_VERSION))
+        merged["payload_sections"] = [
+            str(value or "").strip()
+            for value in (merged.get("payload_sections") if isinstance(merged.get("payload_sections"), list) else DEFAULT_LIVE_SIGNALS_POLICY["payload_sections"])
+            if str(value or "").strip()
+        ]
+        merged["risk_observed_only"] = bool(merged.get("risk_observed_only", True))
+        return merged
 
     def _alerting_policy(self) -> dict[str, Any]:
         payload = load_execution_safety_policy()
@@ -8470,8 +8543,9 @@ class RuntimeBridge:
             signals_policy = self._live_signals_policy()
             health_policy = self._live_health_policy()
             ops_policy = self._operational_safety_policy()
+            schema_version = max(1, _as_int(signals_policy.get("schema_version"), LIVE_SIGNAL_SCHEMA_VERSION))
             window_ms = max(1000, _as_int(signals_policy.get("default_window_ms"), 300000))
-            window_sec = float(window_ms) / 1000.0
+            risk_observed_only = bool(signals_policy.get("risk_observed_only", True))
 
             runtime_snapshot = _runtime_contract_snapshot(state_n, target_mode="live")
             exec_snapshot = self.execution_metrics_snapshot()
@@ -8490,6 +8564,25 @@ class RuntimeBridge:
                 if not isinstance(value, datetime):
                     return None
                 return max(0, int((now_dt - value).total_seconds() * 1000.0))
+
+            def _timestamp_ms_from_dt(value: datetime | None) -> int | None:
+                if not isinstance(value, datetime):
+                    return None
+                return int(value.timestamp() * 1000.0)
+
+            def _timestamp_ms_from_iso(value: Any) -> int | None:
+                text = str(value or "").strip()
+                if not text:
+                    return None
+                if text.endswith("Z"):
+                    text = f"{text[:-1]}+00:00"
+                try:
+                    parsed = datetime.fromisoformat(text)
+                except Exception:
+                    return None
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return int(parsed.timestamp() * 1000.0)
 
             recent_orders = [
                 order
@@ -8581,9 +8674,9 @@ class RuntimeBridge:
             snapshots: list[dict[str, Any]] = []
 
             execution_status = "WARN" if unknown_timeout_active else "OK"
-            execution_payload = {
-                "metrics": {
-                    "window_ms": window_ms,
+            execution_payload = build_live_signal_payload(
+                snapshot_type="EXECUTION",
+                numeric_metrics={
                     "execution_submit_total_window": len([order for order in orders if (_age_ms_from_dt(order.created_at) or 999999999) <= window_ms]),
                     "execution_reject_total_window": len([order for order in orders if order.status == OrderStatus.REJECTED and (_age_ms_from_dt(order.updated_at) or 999999999) <= window_ms]),
                     "execution_cancel_fail_total_window": cancel_fail_window_count,
@@ -8592,7 +8685,7 @@ class RuntimeBridge:
                     "execution_terminal_orders_recent_count": len([order for order in recent_orders if order.status in terminal_statuses]),
                     "execution_pending_orders_recent_count": len([order for order in recent_orders if order.status in {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}]),
                 },
-                "observed_states": {
+                state_values={
                     "runtime_last_remote_submit_error": str(state_n.get("runtime_last_remote_submit_error") or ""),
                     "runtime_last_remote_submit_reason": str(state_n.get("runtime_last_remote_submit_reason") or ""),
                     "runtime_last_signal_action": str(state_n.get("runtime_last_signal_action") or ""),
@@ -8600,23 +8693,17 @@ class RuntimeBridge:
                     "runtime_last_signal_side": str(state_n.get("runtime_last_signal_side") or ""),
                     "runtime_unknown_timeout_active": unknown_timeout_active,
                 },
-                "freshness": {
-                    "window_ms": window_ms,
-                    "latest_order_age_ms": latest_order_age_ms,
-                    "unknown_timeout_age_ms": unknown_timeout_age_ms,
+                timestamps_ms={
+                    "latest_order_updated_at_ms": _timestamp_ms_from_dt(latest_order_dt),
+                    "runtime_last_remote_submit_at_ms": _timestamp_ms_from_iso(state_n.get("runtime_last_remote_submit_at")),
+                    "runtime_unknown_timeout_since_ms": _timestamp_ms_from_iso(unknown_timeout_since),
                 },
-                "source_timestamps": {
-                    "latest_order_updated_at": RuntimeBridge._event_time_iso_from_dt(latest_order_dt),
-                    "runtime_last_remote_submit_at": str(state_n.get("runtime_last_remote_submit_at") or ""),
-                    "runtime_unknown_timeout_since": unknown_timeout_since,
-                },
-                "source_refs": {
+                refs={
                     "scope_key": scope_key,
-                    "window_ms": window_ms,
                     "source_table": "runtime_bridge.oms",
                     "source_module": "RuntimeBridge.execution_metrics_snapshot",
                 },
-            }
+            )
             snapshots.append(
                 build_live_signal_snapshot(
                     scope_type=scope_type,
@@ -8624,16 +8711,18 @@ class RuntimeBridge:
                     symbol=scope_symbol,
                     snapshot_type="EXECUTION",
                     collected_at=now_iso,
+                    window_ms=window_ms,
                     source_module="RuntimeBridge.execution_metrics_snapshot",
                     freshness_ms=latest_order_age_ms,
-                    signal_payload=execution_payload,
+                    payload=execution_payload,
+                    schema_version=schema_version,
                     source_status=execution_status,
                 )
             )
 
-            fills_payload = {
-                "metrics": {
-                    "window_ms": window_ms,
+            fills_payload = build_live_signal_payload(
+                snapshot_type="FILLS",
+                numeric_metrics={
                     "fills_recent_count": len(fills_recent),
                     "fills_partial_recent_count": len(fills_partial_recent),
                     "fills_final_recent_count": len(fills_final_recent),
@@ -8642,24 +8731,19 @@ class RuntimeBridge:
                     "fills_count_runtime_total": int(exec_snapshot.get("fills_count_runtime") or 0),
                     "fills_notional_runtime_usd_total": round(_as_float(exec_snapshot.get("fills_notional_runtime_usd"), 0.0), 6),
                 },
-                "observed_states": {
+                state_values={
                     "commission_observed_supported": False,
                     "runtime_cost_proxy_available": bool(_as_int(exec_snapshot.get("fills_count_runtime"), 0) > 0),
                     "fills_runtime_costs_source": "runtime_costs_proxy",
                 },
-                "freshness": {
-                    "window_ms": window_ms,
-                    "fills_last_event_age_ms": latest_fill_age_ms,
+                timestamps_ms={
+                    "last_fill_updated_at_ms": _timestamp_ms_from_dt(latest_fill_dt),
                 },
-                "source_timestamps": {
-                    "last_fill_updated_at": RuntimeBridge._event_time_iso_from_dt(latest_fill_dt),
-                },
-                "source_refs": {
+                refs={
                     "scope_key": scope_key,
-                    "window_ms": window_ms,
                     "source_module": "RuntimeBridge.oms/runtime_costs",
                 },
-            }
+            )
             snapshots.append(
                 build_live_signal_snapshot(
                     scope_type=scope_type,
@@ -8667,9 +8751,11 @@ class RuntimeBridge:
                     symbol=scope_symbol,
                     snapshot_type="FILLS",
                     collected_at=now_iso,
+                    window_ms=window_ms,
                     source_module="RuntimeBridge.oms",
                     freshness_ms=latest_fill_age_ms,
-                    signal_payload=fills_payload,
+                    payload=fills_payload,
+                    schema_version=schema_version,
                     source_status="OK",
                 )
             )
@@ -8679,34 +8765,29 @@ class RuntimeBridge:
                 stream_status = "CRITICAL"
             elif heartbeat_age_ms is not None and heartbeat_age_ms > stream_warn_ms:
                 stream_status = "WARN"
-            stream_payload = {
-                "metrics": {
-                    "window_ms": window_ms,
+            stream_payload = build_live_signal_payload(
+                snapshot_type="STREAM",
+                numeric_metrics={
                     "stream_gap_ms": heartbeat_age_ms,
                     "stream_last_event_age_ms": heartbeat_age_ms,
                     "stream_reconnect_count_window": 0,
                 },
-                "observed_states": {
+                state_values={
                     "stream_connected_bool": stream_connected,
                     "stream_terminated_bool": stream_terminated,
                     "stream_reconnect_count_observed": False,
                     "runtime_exchange_reason": str(runtime_snapshot.get("runtime_exchange_reason") or ""),
                 },
-                "freshness": {
-                    "stream_gap_ms": heartbeat_age_ms,
-                    "stream_last_event_age_ms": heartbeat_age_ms,
-                    "window_ms": window_ms,
+                timestamps_ms={
+                    "stream_last_event_at_ms": _timestamp_ms_from_iso(runtime_snapshot.get("runtime_heartbeat_at")),
                 },
-                "source_timestamps": {
-                    "stream_last_event_at": str(runtime_snapshot.get("runtime_heartbeat_at") or ""),
-                },
-                "source_refs": {
+                refs={
                     "scope_key": scope_key,
                     "stream_gap_warn_ms": stream_warn_ms,
                     "stream_gap_critical_ms": stream_critical_ms,
                     "source_module": "runtime_contract_snapshot",
                 },
-            }
+            )
             snapshots.append(
                 build_live_signal_snapshot(
                     scope_type=scope_type,
@@ -8714,39 +8795,37 @@ class RuntimeBridge:
                     symbol=scope_symbol,
                     snapshot_type="STREAM",
                     collected_at=now_iso,
+                    window_ms=window_ms,
                     source_module="_runtime_contract_snapshot",
                     freshness_ms=heartbeat_age_ms,
-                    signal_payload=stream_payload,
+                    payload=stream_payload,
+                    schema_version=schema_version,
                     source_status=stream_status,
                 )
             )
 
             reconciliation_status = "WARN" if (int(reconcile.get("desync_count") or 0) > 0 or len(manual_review_breakers) > 0 or not bool(reconcile.get("source_ok", False))) else "OK"
-            reconciliation_payload = {
-                "metrics": {
-                    "window_ms": window_ms,
+            reconciliation_payload = build_live_signal_payload(
+                snapshot_type="RECONCILIATION",
+                numeric_metrics={
                     "reconciliation_last_run_age_ms": reconcile_age_ms,
                     "reconciliation_open_cases_count": reconciliation_open_cases_count,
                     "reconciliation_desync_count": int(reconcile.get("desync_count") or 0),
                     "reconciliation_manual_review_count": len(manual_review_breakers),
                 },
-                "observed_states": {
+                state_values={
                     "reconciliation_source": str(reconcile.get("source") or ""),
                     "reconciliation_source_ok": bool(reconcile.get("source_ok", False)),
                     "reconciliation_source_reason": str(reconcile.get("source_reason") or ""),
                 },
-                "freshness": {
-                    "reconciliation_last_run_age_ms": reconcile_age_ms,
-                    "window_ms": window_ms,
+                timestamps_ms={
+                    "reconciliation_last_run_at_ms": _timestamp_ms_from_iso(runtime_snapshot.get("runtime_last_reconcile_at")),
                 },
-                "source_timestamps": {
-                    "reconciliation_last_run_at": str(runtime_snapshot.get("runtime_last_reconcile_at") or ""),
-                },
-                "source_refs": {
+                refs={
                     "scope_key": scope_key,
                     "source_module": "RuntimeBridge._last_reconcile",
                 },
-            }
+            )
             snapshots.append(
                 build_live_signal_snapshot(
                     scope_type=scope_type,
@@ -8754,40 +8833,38 @@ class RuntimeBridge:
                     symbol=scope_symbol,
                     snapshot_type="RECONCILIATION",
                     collected_at=now_iso,
+                    window_ms=window_ms,
                     source_module="RuntimeBridge._last_reconcile",
                     freshness_ms=reconcile_age_ms,
-                    signal_payload=reconciliation_payload,
+                    payload=reconciliation_payload,
+                    schema_version=schema_version,
                     source_status=reconciliation_status,
                 )
             )
 
             preflight_status_signal = "MISSING" if preflight_status == "MISSING" else ("WARN" if preflight_status in {"FAIL", "EXPIRED", "STALE"} else "OK")
-            preflight_payload = {
-                "metrics": {
-                    "window_ms": window_ms,
+            preflight_payload = build_live_signal_payload(
+                snapshot_type="PREFLIGHT",
+                numeric_metrics={
                     "preflight_last_run_age_ms": preflight_age_ms,
                     "preflight_time_to_expiry_ms": preflight_time_to_expiry_ms,
                     "preflight_attestation_age_ms": None,
                 },
-                "observed_states": {
+                state_values={
                     "preflight_last_status_observed": preflight_status,
                     "preflight_last_reason_observed": str(live_reason or ""),
                     "preflight_attestation_supported": False,
                 },
-                "freshness": {
-                    "preflight_last_run_age_ms": preflight_age_ms,
-                    "window_ms": window_ms,
+                timestamps_ms={
+                    "preflight_last_run_at_ms": _timestamp_ms_from_iso(preflight_ts),
                 },
-                "source_timestamps": {
-                    "preflight_last_run_at": preflight_ts,
-                },
-                "source_refs": {
+                refs={
                     "scope_key": scope_key,
                     "preflight_stale_threshold_ms": stale_sec * 1000,
                     "preflight_expired_threshold_ms": expired_sec * 1000,
                     "source_module": "evaluate_gates/live_can_be_enabled",
                 },
-            }
+            )
             snapshots.append(
                 build_live_signal_snapshot(
                     scope_type=scope_type,
@@ -8795,38 +8872,37 @@ class RuntimeBridge:
                     symbol=scope_symbol,
                     snapshot_type="PREFLIGHT",
                     collected_at=now_iso,
+                    window_ms=window_ms,
                     source_module="evaluate_gates/live_can_be_enabled",
                     freshness_ms=preflight_age_ms,
-                    signal_payload=preflight_payload,
+                    payload=preflight_payload,
+                    schema_version=schema_version,
                     source_status=preflight_status_signal,
                 )
             )
 
             rate_limit_status = "CRITICAL" if ban_active else ("WARN" if rate_limit_window_count > 0 or retry_after_active else "OK")
-            rate_limit_payload = {
-                "metrics": {
-                    "window_ms": window_ms,
+            rate_limit_payload = build_live_signal_payload(
+                snapshot_type="RATE_LIMIT",
+                numeric_metrics={
                     "rate_limit_429_count_window": rate_limit_window_count,
                     "open_order_pressure_count": open_order_pressure_count,
                     "rate_limit_hits_cumulative": int(exec_snapshot.get("rate_limit_hits") or 0),
+                    "last_rate_limit_event_age_ms": rate_limit_age_ms,
                 },
-                "observed_states": {
+                state_values={
                     "rate_limit_418_active_bool": ban_active,
                     "retry_after_active_bool": retry_after_active,
                 },
-                "freshness": {
-                    "window_ms": window_ms,
-                    "last_rate_limit_event_age_ms": rate_limit_age_ms,
+                timestamps_ms={
+                    "last_rate_limit_event_at_ms": _timestamp_ms_from_iso(latest_rate_limit_event_at),
                 },
-                "source_timestamps": {
-                    "last_rate_limit_event_at": latest_rate_limit_event_at,
-                },
-                "source_refs": {
+                refs={
                     "scope_key": scope_key,
                     "guardrail_http_429_threshold": int(ops_policy.get("guardrail_http_429_threshold", 3)),
                     "source_module": "operational_safety_summary/execution_metrics_snapshot",
                 },
-            }
+            )
             snapshots.append(
                 build_live_signal_snapshot(
                     scope_type=scope_type,
@@ -8834,37 +8910,36 @@ class RuntimeBridge:
                     symbol=scope_symbol,
                     snapshot_type="RATE_LIMIT",
                     collected_at=now_iso,
+                    window_ms=window_ms,
                     source_module="RuntimeBridge.operational_safety_summary",
                     freshness_ms=rate_limit_age_ms,
-                    signal_payload=rate_limit_payload,
+                    payload=rate_limit_payload,
+                    schema_version=schema_version,
                     source_status=rate_limit_status,
                 )
             )
 
-            risk_payload = {
-                "metrics": {
-                    "window_ms": window_ms,
+            risk_payload = build_live_signal_payload(
+                snapshot_type="RISK",
+                numeric_metrics={
                     "risk_open_positions_count": len(positions),
                     "risk_daily_loss_value": round(risk_daily_loss_value, 6),
                     "risk_max_drawdown_value": round(risk_max_dd_value, 6),
                     "risk_equity_value": round(risk_equity_value, 6),
                 },
-                "observed_states": {
+                state_values={
                     "runtime_risk_allow_new_positions": bool(state_n.get("runtime_risk_allow_new_positions", True)),
                     "runtime_risk_reason": str(state_n.get("runtime_risk_reason") or ""),
                 },
-                "freshness": {
-                    "runtime_last_event_age_ms": heartbeat_age_ms,
-                    "window_ms": window_ms,
+                timestamps_ms={
+                    "runtime_last_event_at_ms": _timestamp_ms_from_iso(runtime_snapshot.get("runtime_heartbeat_at")),
                 },
-                "source_timestamps": {
-                    "runtime_last_event_at": str(runtime_snapshot.get("runtime_heartbeat_at") or ""),
-                },
-                "source_refs": {
+                refs={
                     "scope_key": scope_key,
                     "source_module": "runtime_state",
+                    "risk_observed_only": risk_observed_only,
                 },
-            }
+            )
             snapshots.append(
                 build_live_signal_snapshot(
                     scope_type=scope_type,
@@ -8872,9 +8947,11 @@ class RuntimeBridge:
                     symbol=scope_symbol,
                     snapshot_type="RISK",
                     collected_at=now_iso,
+                    window_ms=window_ms,
                     source_module="runtime_state",
                     freshness_ms=heartbeat_age_ms,
-                    signal_payload=risk_payload,
+                    payload=risk_payload,
+                    schema_version=schema_version,
                     source_status="OK",
                 )
             )
@@ -8885,7 +8962,7 @@ class RuntimeBridge:
                 for snapshot in snapshots:
                     stored_snapshot = store.insert_live_signal_snapshot(snapshot)
                     persisted_snapshots.append(stored_snapshot)
-                    observed_payload = stored_snapshot.get("signal_payload") if isinstance(stored_snapshot.get("signal_payload"), dict) else {}
+                    observed_payload = live_signal_snapshot_payload(stored_snapshot)
                     event = build_live_signal_event(
                         source_type=self._live_signal_source_type_for_snapshot(str(stored_snapshot.get("snapshot_type") or "")),
                         event_code=f"{str(stored_snapshot.get('snapshot_type') or 'SIGNAL').upper()}_SNAPSHOT_COLLECTED",
@@ -8895,9 +8972,11 @@ class RuntimeBridge:
                         event_time=str(stored_snapshot.get("collected_at") or now_iso),
                         severity_observed=self._live_signal_severity_from_status(stored_snapshot.get("source_status")),
                         observed_value={
+                            "schema_version": stored_snapshot.get("schema_version"),
                             "snapshot_type": str(stored_snapshot.get("snapshot_type") or ""),
                             "source_status": str(stored_snapshot.get("source_status") or ""),
                             "freshness_ms": stored_snapshot.get("freshness_ms"),
+                            "window_ms": stored_snapshot.get("window_ms"),
                         },
                         raw_payload=observed_payload,
                     )
@@ -8906,6 +8985,7 @@ class RuntimeBridge:
                 persisted_snapshots = [dict(snapshot) for snapshot in snapshots]
 
             return {
+                "schema_version": schema_version,
                 "scope": {
                     "scope_type": scope_type,
                     "scope_key": scope_key,
@@ -9463,6 +9543,7 @@ class RuntimeBridge:
                 persist=False,
             )
             component_status["live_signals"] = {
+                "schema_version": int(raw_signals.get("schema_version") or LIVE_SIGNAL_SCHEMA_VERSION),
                 "scope": raw_signals.get("scope") if isinstance(raw_signals.get("scope"), dict) else {},
                 "collected_at": str(raw_signals.get("collected_at") or ""),
                 "window_ms": int(raw_signals.get("window_ms") or 0),
@@ -9694,10 +9775,9 @@ class RuntimeBridge:
 
             stream_item = self._alert_signal_item(raw_signals, "STREAM")
             if stream_item:
-                stream_payload = stream_item.get("signal_payload") if isinstance(stream_item.get("signal_payload"), dict) else {}
-                stream_metrics = stream_payload.get("metrics") if isinstance(stream_payload.get("metrics"), dict) else {}
-                stream_states = stream_payload.get("observed_states") if isinstance(stream_payload.get("observed_states"), dict) else {}
-                stream_refs = stream_payload.get("source_refs") if isinstance(stream_payload.get("source_refs"), dict) else {}
+                stream_metrics = live_signal_numeric_metrics(stream_item)
+                stream_states = live_signal_state_values(stream_item)
+                stream_refs = live_signal_refs(stream_item)
                 stream_gap_ms = _as_int(stream_metrics.get("stream_gap_ms"), 0)
                 stream_warn_ms = _as_int(stream_refs.get("stream_gap_warn_ms"), _as_int(ops_policy.get("guardrail_stream_gap_warn_ms"), 5000))
                 stream_critical_ms = _as_int(stream_refs.get("stream_gap_critical_ms"), _as_int(ops_policy.get("guardrail_stream_gap_critical_ms"), 10000))
@@ -9744,10 +9824,9 @@ class RuntimeBridge:
 
             rate_item = self._alert_signal_item(raw_signals, "RATE_LIMIT")
             if rate_item:
-                rate_payload = rate_item.get("signal_payload") if isinstance(rate_item.get("signal_payload"), dict) else {}
-                rate_metrics = rate_payload.get("metrics") if isinstance(rate_payload.get("metrics"), dict) else {}
-                rate_states = rate_payload.get("observed_states") if isinstance(rate_payload.get("observed_states"), dict) else {}
-                rate_refs = rate_payload.get("source_refs") if isinstance(rate_payload.get("source_refs"), dict) else {}
+                rate_metrics = live_signal_numeric_metrics(rate_item)
+                rate_states = live_signal_state_values(rate_item)
+                rate_refs = live_signal_refs(rate_item)
                 threshold_429 = _as_int(rate_refs.get("guardrail_http_429_threshold"), _as_int(ops_policy.get("guardrail_http_429_threshold"), 3))
                 open_order_warn = _as_int(ops_policy.get("guardrail_open_orders_warn_count"), 10)
                 primary_ref = _signal_ref(rate_item, "RATE_LIMIT")
@@ -9759,7 +9838,7 @@ class RuntimeBridge:
                         evidence={
                             "event_code": "HTTP_418_RISK_ACTIVE",
                             "rate_limit_429_count_window": _as_int(rate_metrics.get("rate_limit_429_count_window"), 0),
-                            "last_rate_limit_event_age_ms": (rate_payload.get("freshness") if isinstance(rate_payload.get("freshness"), dict) else {}).get("last_rate_limit_event_age_ms"),
+                            "last_rate_limit_event_age_ms": _as_int(rate_metrics.get("last_rate_limit_event_age_ms"), 0),
                         },
                         primary_refs=[primary_ref],
                     )
