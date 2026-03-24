@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-24
 ## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-53` Backend QA Live
   - `RTLOPS-52` Shadow Mode operativo
   - `RTLOPS-51` integracion real de `RTLOPS-36` con runtime live
   - `RTLOPS-54` Canary Live Controller
@@ -37,13 +38,60 @@ Fecha de actualizacion: 2026-03-24
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-53` `Backend QA Live`.
+  - `RTLOPS-37` `Live Runbooks + docs/truth + incidentes/rollback`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
 - Estado administrativo real de Linear al 2026-03-24:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-54` y `RTLOPS-66`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
+
+## RTLOPS-53 - Backend QA Live - 2026-03-24
+
+- Gap real cerrado:
+  - el repo ya tenia mucha validacion dispersa sobre runtime, shadow, canary, alerts, health y gates, pero todavia no existia una capa QA backend/live explicitada como quality gate reproducible y corta;
+  - faltaba separar con claridad:
+    - smoke critico
+    - compat/regression selectiva
+    - policy/contracts
+  - y faltaba dejar una postura honesta sobre Playwright en este estado del repo.
+- Implementacion real:
+  - nueva suite focalizada:
+    - `rtlab_autotrader/tests/test_backend_qa_live.py`
+  - la suite nueva verifica con `TestClient` y surfaces canonicas:
+    - `config/policies`
+    - `execution/health/summary`
+    - `execution/alerts/open` e `execution/alerts/history`
+    - `execution/canary/status`
+    - `rollout/shadow/status`
+    - `rollout/status` con `readiness_by_stage`
+    - `G9_RUNTIME_ENGINE_REAL` fail/pass segun evidencia real de runtime contract
+  - RTLOPS-53 queda definido por tres gates chicos y ejecutables:
+    - `smoke critico`
+    - `compat/regression selectiva`
+    - `policy/contracts`
+- Quality gates reales del bloque:
+  - `smoke critico`:
+    - bloquea release
+    - comando base:
+      - `pytest rtlab_autotrader/tests/test_backend_qa_live.py --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-backend-qa-live -q`
+  - `compat/regression selectiva`:
+    - bloquea promocion de stage
+    - comandos base:
+      - `pytest rtlab_autotrader/tests/test_rollout_safe_update.py -k "rollout_api_blending_preview_records_telemetry or rollout_shadow_status_and_signal_are_fail_closed_until_runtime_live_is_ready or rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-rollout -q`
+      - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_account_surface_is_not_tradeable or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or execution_alert_endpoints_expose_catalog_history_and_lifecycle or execution_canary_start_holds_when_preflight_is_expired or execution_canary_recommends_rollback_when_reconciliation_turns_blocking or execution_canary_status_and_endpoints_expose_contract or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-live-ready -q`
+  - `policy/contracts`:
+    - deja observacion no bloqueante
+    - comando base:
+      - `pytest rtlab_autotrader/tests/test_policy_paths.py --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-policy-paths -q`
+- Playwright:
+  - diferido honestamente;
+  - el repo actual muestra base real de `Vitest` en `rtlab_dashboard`, pero no una base Playwright ya integrada y chica que justifique incorporarla aqui sin expandir alcance.
+- Limites honestos:
+  - no se vendio cobertura exhaustiva;
+  - no se tocaron ownerships de runtime/execution/canary/shadow/safety;
+  - no se agrego WebSocket ni QA UI nueva;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI; no bloqueante para este trabajo tecnico.
 
 ## RTLOPS-52 - Shadow Mode operativo - 2026-03-24
 
