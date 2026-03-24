@@ -30,6 +30,10 @@ execution_safety:
     default_cooldown_sec: 300
     resolved_ttl_sec: 3600
     expired_reopens_same_instance: true
+    severity_rank:
+      - CRITICAL
+      - WARN
+      - INFO
     severity_source_precedence:
       - SAFETY
       - HEALTH

@@ -63,6 +63,7 @@ from rtlab_core.execution.alerts import (
     normalize_alert_event_type,
     normalize_alert_scope_type,
     normalize_alert_severity,
+    normalize_alert_severity_precedence,
     normalize_alert_source_layer,
     normalize_alert_source_precedence,
     normalize_alert_state,
@@ -991,6 +992,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_alerting_default_cooldown_sec": alerting.get("default_cooldown_sec"),
         "execution_alerting_resolved_ttl_sec": alerting.get("resolved_ttl_sec"),
         "execution_alerting_expired_reopens_same_instance": alerting.get("expired_reopens_same_instance"),
+        "execution_alerting_severity_rank": alerting.get("severity_rank"),
         "execution_alerting_severity_source_precedence": alerting.get("severity_source_precedence"),
         "execution_live_signals_schema_version": live_signals.get("schema_version"),
         "execution_live_signals_default_window_ms": live_signals.get("default_window_ms"),
@@ -1090,6 +1092,7 @@ DEFAULT_ALERTING_POLICY: dict[str, Any] = {
     "reopen_on_active_condition": True,
     "manual_resolve_requires_inactive": True,
     "expired_reopens_same_instance": True,
+    "severity_rank": ["CRITICAL", "WARN", "INFO"],
     "severity_source_precedence": ["SAFETY", "HEALTH", "RAW"],
 }
 
@@ -9078,6 +9081,7 @@ class RuntimeBridge:
             **DEFAULT_ALERTING_POLICY,
             **policy,
         }
+        merged["severity_rank"] = normalize_alert_severity_precedence(merged.get("severity_rank"))
         merged["severity_source_precedence"] = normalize_alert_source_precedence(merged.get("severity_source_precedence"))
         # Current storage model keeps one canonical alert instance per trigger+scope.
         # Reappearance after EXPIRED therefore reopens the same instance explicitly.
@@ -10362,6 +10366,7 @@ class RuntimeBridge:
             ) -> None:
                 entry = alert_catalog_entry(trigger_code)
                 layer = normalize_alert_source_layer(source_layer or entry.get("source_layer"))
+                severity_rank = normalize_alert_severity_precedence(alert_policy.get("severity_rank"))
                 severity_source_precedence = normalize_alert_source_precedence(alert_policy.get("severity_source_precedence"))
                 selected_candidate = choose_alert_severity_candidate(
                     {
@@ -10373,6 +10378,7 @@ class RuntimeBridge:
                         "source_layer": layer,
                     },
                     source_precedence=severity_source_precedence,
+                    severity_precedence=severity_rank,
                 )
                 selected_severity = selected_candidate["severity"]
                 refs = [dict(row) for row in (primary_refs or []) if isinstance(row, dict)]
@@ -10380,6 +10386,7 @@ class RuntimeBridge:
                     "source_layer": layer,
                     "scope_key": raw_scope_key,
                     "primary": refs,
+                    "severity_rank": severity_rank,
                     "severity_source_precedence": severity_source_precedence,
                     "severity_selected_from_layer": selected_candidate["source_layer"],
                     "severity_selection_mode": "severity_then_source_layer_precedence",
@@ -11103,6 +11110,7 @@ class RuntimeBridge:
                 None,
             )
             if bool(policy.get("manual_resolve_requires_inactive", True)) and isinstance(active_condition, dict):
+                severity_rank = normalize_alert_severity_precedence(policy.get("severity_rank"))
                 severity_source_precedence = normalize_alert_source_precedence(policy.get("severity_source_precedence"))
                 current = store.upsert_execution_alert_instance(
                     trigger_code=str(instance.get("trigger_code") or ""),
@@ -11116,6 +11124,7 @@ class RuntimeBridge:
                             "source_layer": active_condition.get("source_layer"),
                         },
                         source_precedence=severity_source_precedence,
+                        severity_precedence=severity_rank,
                     ),
                     state=str(instance.get("state") or "OPEN"),
                     source_layer=str(active_condition.get("source_layer") or instance.get("source_layer") or "RAW"),

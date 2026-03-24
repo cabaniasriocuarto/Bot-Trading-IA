@@ -4768,6 +4768,8 @@ def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, 
   assert "gates" in body["policies"] and "microstructure" in body["policies"]
   assert body["summary"]["pbo_reject_if_gt"] == 0.05
   assert body["summary"]["vpin_soft_kill_cdf"] == 0.9
+  assert body["summary"]["execution_alerting_severity_rank"] == ["CRITICAL", "WARN", "INFO"]
+  assert body["summary"]["execution_alerting_severity_source_precedence"] == ["SAFETY", "HEALTH", "RAW"]
   assert "authority" in body and isinstance(body["authority"], dict)
   assert body["authority"]["canonical_role"] == "monorepo_root"
   assert "mode_taxonomy" in body and body["mode_taxonomy"]["global_runtime_modes"] == ["PAPER", "TESTNET", "LIVE"]
@@ -6306,11 +6308,17 @@ def test_execution_alert_manual_resolve_does_not_hide_active_condition(tmp_path:
 
 def test_execution_alert_severity_precedence_is_explicit_and_stable(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  severity_rank = module.runtime_bridge._alerting_policy()["severity_rank"]
   precedence = module.runtime_bridge._alerting_policy()["severity_source_precedence"]
+
+  assert severity_rank == ["CRITICAL", "WARN", "INFO"]
+  assert module.alert_severity_rank("CRITICAL", severity_precedence=severity_rank) > module.alert_severity_rank("WARN", severity_precedence=severity_rank)
+  assert module.alert_severity_rank("WARN", severity_precedence=severity_rank) > module.alert_severity_rank("INFO", severity_precedence=severity_rank)
 
   severe_raw = module.choose_alert_severity_candidate(
     {"source_layer": "RAW", "severity": "CRITICAL"},
     {"source_layer": "SAFETY", "severity": "WARN"},
+    severity_precedence=severity_rank,
     source_precedence=precedence,
   )
   assert severe_raw["severity"] == "CRITICAL"
@@ -6320,6 +6328,7 @@ def test_execution_alert_severity_precedence_is_explicit_and_stable(tmp_path: Pa
     {"source_layer": "RAW", "severity": "WARN"},
     {"source_layer": "HEALTH", "severity": "WARN"},
     {"source_layer": "SAFETY", "severity": "WARN"},
+    severity_precedence=severity_rank,
     source_precedence=precedence,
   )
   assert tied["severity"] == "WARN"
@@ -6333,7 +6342,9 @@ def test_execution_alert_policy_is_separate_from_operational_safety_policy(tmp_p
   assert "alerting" in policy
   assert "operational_safety" in policy
   assert "expired_reopens_same_instance" in policy["alerting"]
+  assert policy["alerting"]["severity_rank"] == ["CRITICAL", "WARN", "INFO"]
   assert "severity_source_precedence" in policy["alerting"]
+  assert "severity_rank" not in policy["operational_safety"]
   assert "expired_reopens_same_instance" not in policy["operational_safety"]
   assert "severity_source_precedence" not in policy["operational_safety"]
 

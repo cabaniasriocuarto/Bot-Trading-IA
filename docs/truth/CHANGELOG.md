@@ -109,6 +109,7 @@
 - Policy:
   - `execution_safety.alerting` agrega configuracion explicita de:
     - `expired_reopens_same_instance`
+    - `severity_rank`
     - `severity_source_precedence`
   - se dejan comentarios claros para separar lifecycle de alertas de `operational_safety`.
 - Modulo:
@@ -124,6 +125,15 @@
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_alert" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening -q` -> PASS (`13 passed`)
   - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-alert-hardening` -> PASS (`2 passed`)
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening-compat -q` -> PASS (`21 passed`)
+
+### Hardening declarativo chico - severity ranking en config
+- Se cierra el gap detectado en auditoria:
+  - `severity_source_precedence` ya estaba declarada en YAML;
+  - `severity_rank = [CRITICAL, WARN, INFO]` ahora tambien queda declarada en `execution_safety.alerting`.
+- La logica de seleccion de severidad queda alineada con esa representacion declarativa:
+  - primero manda la severidad mas alta observada;
+  - en empate desempata `severity_source_precedence`.
+- No reabre `RTLOPS-54` ni cambia semantica de canary/hold/abort/rollback; solo endurece declarativamente la precedence de alerting.
 
 ## 2026-03-23
 

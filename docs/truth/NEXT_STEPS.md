@@ -61,6 +61,9 @@ Fecha: 2026-03-24
   - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
   - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
+  - precedence de alerting ya endurecida tambien en config:
+    - `severity_rank = [CRITICAL, WARN, INFO]`
+    - `severity_source_precedence = [SAFETY, HEALTH, RAW]`
   - contrato raw backend canonico = envelope `schema_version + collected_at_ms + window_ms + payload(kind/numeric_metrics/state_values/timestamps_ms/refs)`
 - [x] Mapa de proyectos alineado con dominios reales:
   - `Nucleo Arquitectonico y Policies`

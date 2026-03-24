@@ -215,6 +215,9 @@ Fecha de actualizacion: 2026-03-24
   - primero manda la severidad mas alta observada (`CRITICAL > WARN > INFO`);
   - si hay empate de severidad, desempata la fuente mas fuerte:
     - `SAFETY > HEALTH > RAW`
+  - esta precedencia ya no queda solo en codigo/docs:
+    - `execution_safety.alerting.severity_rank = [CRITICAL, WARN, INFO]`
+    - `execution_safety.alerting.severity_source_precedence = [SAFETY, HEALTH, RAW]`
   - el catalogo/default severity solo funciona como fallback, no como override ad hoc de endpoint/UI.
 - Limite actual de `alerts.py`:
   - el modulo sigue concentrando catalogo + helpers comunes porque su tamano real sigue siendo acotado para este repo;
