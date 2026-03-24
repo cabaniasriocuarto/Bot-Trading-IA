@@ -5604,6 +5604,12 @@ def _patch_live_gates_green(module, monkeypatch) -> None:
   monkeypatch.setattr(module, "live_can_be_enabled", lambda payload: (True, ""))
 
 
+def _find_execution_alert(module, trigger_code: str) -> dict:
+  rows = module.store.list_execution_alert_instances(trigger_code=trigger_code, limit=20)
+  assert rows, f"missing alert for {trigger_code}"
+  return rows[0]
+
+
 def test_live_health_summary_is_healthy_when_sources_are_clean(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="live")
   _mark_live_health_ready(module)
@@ -6002,4 +6008,291 @@ def test_live_health_summary_contract_survives_raw_signal_snapshot_persistence(t
   assert summary["state"] == "HEALTHY"
   assert "component_status" in summary
   assert "scope_status" in summary
+
+
+def test_execution_alert_evaluate_opens_persistent_stream_alert(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+
+  payload = module.runtime_bridge.evaluate_execution_alerts(
+    state=state,
+    settings=module.store.load_settings(),
+    persist=True,
+  )
+
+  assert any(row["trigger_code"] == "STREAM_TERMINATED" for row in payload["open_items"])
+  alert = _find_execution_alert(module, "STREAM_TERMINATED")
+  assert alert["state"] == "OPEN"
+  assert alert["source_layer"] == "RAW"
+  assert alert["source_refs"]["primary"][0]["type"] == "live_signal_snapshot"
+
+
+def test_execution_alert_dedups_same_active_condition(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  first = _find_execution_alert(module, "STREAM_TERMINATED")
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  second = _find_execution_alert(module, "STREAM_TERMINATED")
+
+  assert first["alert_instance_id"] == second["alert_instance_id"]
+  assert len(module.store.list_execution_alert_instances(trigger_code="STREAM_TERMINATED", limit=20)) == 1
+  events = module.store.list_execution_alert_events(alert_instance_id=first["alert_instance_id"], limit=20)
+  assert [row["event_type"] for row in events].count("OPENED") == 1
+
+
+def test_execution_alert_distinguishes_multiple_triggers_same_scope(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+  module.store.upsert_safety_breaker(
+    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
+    scope_type="GLOBAL",
+    state="COOLDOWN",
+    blocking_bool=True,
+    trigger_count_window=3,
+    trigger_reason={"rate_limit_hits": 3},
+  )
+
+  payload = module.runtime_bridge.evaluate_execution_alerts(
+    state=state,
+    settings=module.store.load_settings(),
+    persist=True,
+  )
+  trigger_codes = {row["trigger_code"] for row in payload["open_items"]}
+
+  assert "STREAM_TERMINATED" in trigger_codes
+  assert "RATE_LIMIT_PRESSURE_HIGH" in trigger_codes
+
+
+def test_execution_alert_ack_keeps_active_condition_visible(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  alert = _find_execution_alert(module, "STREAM_TERMINATED")
+
+  acked = module.runtime_bridge.ack_execution_alert(
+    alert_instance_id=alert["alert_instance_id"],
+    requested_by="tester",
+    audit_note="ack active",
+  )["alert"]
+  assert acked["state"] == "ACKED"
+
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  current = _find_execution_alert(module, "STREAM_TERMINATED")
+  assert current["alert_instance_id"] == alert["alert_instance_id"]
+  assert current["state"] == "ACKED"
+
+
+def test_execution_alert_suppress_keeps_evidence_and_avoids_duplicate_noise(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.store.upsert_safety_breaker(
+    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
+    scope_type="GLOBAL",
+    state="COOLDOWN",
+    blocking_bool=True,
+    trigger_count_window=3,
+    trigger_reason={"rate_limit_hits": 3},
+  )
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  alert = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
+
+  suppressed = module.runtime_bridge.suppress_execution_alert(
+    alert_instance_id=alert["alert_instance_id"],
+    requested_by="tester",
+    duration_sec=600,
+    audit_note="suppress",
+  )["alert"]
+  assert suppressed["state"] == "SUPPRESSED"
+  assert suppressed["source_refs"]["primary"]
+
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  current = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
+  assert current["alert_instance_id"] == alert["alert_instance_id"]
+  assert current["state"] == "SUPPRESSED"
+
+
+def test_execution_alert_cooldown_avoids_immediate_reopen(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.store.upsert_safety_breaker(
+    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
+    scope_type="GLOBAL",
+    state="COOLDOWN",
+    blocking_bool=True,
+    trigger_count_window=3,
+    trigger_reason={"rate_limit_hits": 3},
+  )
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  alert = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
+
+  module.store.upsert_safety_breaker(
+    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
+    scope_type="GLOBAL",
+    state="CLOSED",
+    blocking_bool=False,
+    trigger_count_window=0,
+    trigger_reason={"rate_limit_hits": 0},
+  )
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  resolved = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
+  assert resolved["state"] == "RESOLVED"
+
+  module.store.upsert_safety_breaker(
+    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
+    scope_type="GLOBAL",
+    state="COOLDOWN",
+    blocking_bool=True,
+    trigger_count_window=3,
+    trigger_reason={"rate_limit_hits": 3},
+  )
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  current = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
+  assert current["alert_instance_id"] == alert["alert_instance_id"]
+  assert current["state"] == "COOLDOWN"
+
+
+def test_execution_alert_manual_resolve_does_not_hide_active_condition(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  alert = _find_execution_alert(module, "STREAM_TERMINATED")
+
+  result = module.runtime_bridge.resolve_execution_alert(
+    alert_instance_id=alert["alert_instance_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    requested_by="tester",
+    audit_note="should reject",
+  )
+
+  assert result["ok"] is False
+  assert result["reason"] == "condition_still_active"
+  current = _find_execution_alert(module, "STREAM_TERMINATED")
+  assert current["state"] == "OPEN"
+  history = module.store.list_execution_alert_events(alert_instance_id=alert["alert_instance_id"], limit=20)
+  assert any(row["event_type"] == "RESOLVE_REJECTED" for row in history)
+
+
+def test_execution_alert_endpoints_expose_catalog_history_and_lifecycle(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  catalog = client.get("/api/v1/execution/alerts/catalog", headers=headers)
+  assert catalog.status_code == 200, catalog.text
+  assert any(row["trigger_code"] == "STREAM_TERMINATED" for row in catalog.json()["items"])
+
+  evaluated = client.post("/api/v1/execution/alerts/evaluate", json={}, headers=headers)
+  assert evaluated.status_code == 200, evaluated.text
+  open_items = evaluated.json()["open_items"]
+  assert open_items
+  alert_id = open_items[0]["alert_instance_id"]
+
+  open_res = client.get("/api/v1/execution/alerts/open", headers=headers)
+  assert open_res.status_code == 200, open_res.text
+  assert any(row["alert_instance_id"] == alert_id for row in open_res.json()["items"])
+
+  detail = client.get(f"/api/v1/execution/alerts/{alert_id}", headers=headers)
+  assert detail.status_code == 200, detail.text
+  assert detail.json()["alert"]["alert_instance_id"] == alert_id
+
+  ack = client.post(f"/api/v1/execution/alerts/{alert_id}/ack", json={"audit_note": "ack"}, headers=headers)
+  assert ack.status_code == 200, ack.text
+  assert ack.json()["alert"]["state"] == "ACKED"
+
+  suppress = client.post(f"/api/v1/execution/alerts/{alert_id}/suppress", json={"duration_sec": 120, "audit_note": "suppress"}, headers=headers)
+  assert suppress.status_code == 200, suppress.text
+  assert suppress.json()["alert"]["state"] == "SUPPRESSED"
+
+  resolve = client.post(f"/api/v1/execution/alerts/{alert_id}/resolve", json={"audit_note": "resolve"}, headers=headers)
+  assert resolve.status_code == 200, resolve.text
+  assert resolve.json()["ok"] is False
+
+  history = client.get("/api/v1/execution/alerts/history", headers=headers)
+  assert history.status_code == 200, history.text
+  history_payload = history.json()
+  assert any(row["alert_instance_id"] == alert_id for row in history_payload["items"])
+  assert any(row["alert_instance_id"] == alert_id for row in history_payload["events"])
+
+
+def test_execution_alert_consumer_leaves_raw_signal_contract_unchanged(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+
+  before = module.runtime_bridge.build_live_signal_snapshot(
+    state=state,
+    settings=module.store.load_settings(),
+    persist=False,
+  )
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  after = module.runtime_bridge.build_live_signal_snapshot(
+    state=state,
+    settings=module.store.load_settings(),
+    persist=False,
+  )
+
+  before_types = {row["snapshot_type"] for row in before["items"]}
+  after_types = {row["snapshot_type"] for row in after["items"]}
+  assert before_types == after_types
+  for row in after["items"]:
+    assert set(row["signal_payload"].keys()) == {"metrics", "observed_states", "freshness", "source_timestamps", "source_refs"}
+    assert "trigger_code" not in row
+    assert "state" not in row
+
+
+def test_execution_alert_consumer_does_not_recalculate_health_or_open_safety_actions(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+
+  before_summary = module.runtime_bridge.build_live_health_summary(
+    state=state,
+    settings=module.store.load_settings(),
+  )
+  before_manual_actions = len(module.store.list_safety_manual_actions(limit=50))
+
+  module.runtime_bridge.evaluate_execution_alerts(
+    state=state,
+    settings=module.store.load_settings(),
+    persist=True,
+  )
+
+  after_summary = module.runtime_bridge.build_live_health_summary(
+    state=state,
+    settings=module.store.load_settings(),
+  )
+  after_manual_actions = len(module.store.list_safety_manual_actions(limit=50))
+
+  assert after_summary["state"] == before_summary["state"]
+  assert after_summary["score"] == before_summary["score"]
+  assert after_summary["top_priority_reason_code"] == before_summary["top_priority_reason_code"]
+  assert after_manual_actions == before_manual_actions
 

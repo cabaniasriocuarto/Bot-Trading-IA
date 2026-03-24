@@ -23,5 +23,11 @@ execution_safety:
     preflight_stale_sec: 300
     preflight_expired_sec: 600
     recent_emergency_action_window_sec: 300
+  alerting:
+    default_suppression_sec: 900
+    default_cooldown_sec: 300
+    resolved_ttl_sec: 3600
+    reopen_on_active_condition: true
+    manual_resolve_requires_inactive: true
   live_signals:
     default_window_ms: 300000

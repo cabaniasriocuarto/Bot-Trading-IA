@@ -15,23 +15,25 @@ Fecha: 2026-03-23
 - [x] `RTLOPS-29` operational safety guardrails
 - [x] `RTLOPS-30` health summary live + score explicable + degraded visibility
 - [x] `RTLOPS-26` live signals foundation: execution, streams, fills, risk y snapshots operativos
+- [x] `RTLOPS-27` live alerts persistentes + catalogo de triggers operativos
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-27` `Live alerts persistentes + catalogo de triggers operativos`
-  - consumir la CAPA A (`RTLOPS-26`) y la CAPA B (`RTLOPS-30`) sin mezclar senal con accion;
-  - consumir tambien outputs de CAPA C (`RTLOPS-29`) solo como estado/actionability ya decidido, sin redefinir breakers ni freezes;
-  - cerrar catalogo de alerts/triggers persistente y reutilizable por monitoring/release gate;
-  - mantener `RTLOPS-29` como capa de accion y no como segunda verdad de lectura.
+- [ ] `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`
+  - endurecer el contrato raw backend de `live_signals` sin reabrir `RTLOPS-26`;
+  - tipar mejor envelope/payload por `snapshot_type` sin meter score ni actions;
+  - mantener `RTLOPS-27` como consumer de alerts y no como duenio de schema evolution;
+  - mantener `RTLOPS-30` congelada salvo compatibilidad minima.
 
 ## Follow-up chico abierto
-- [ ] `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`
-  - endurecer el contrato raw de `live_signals` sin reabrir `RTLOPS-26`;
-  - mantener `RTLOPS-30` congelada salvo compatibilidad minima;
-  - evitar que `RTLOPS-27` empuje campos ad hoc de alerting/UI dentro de CAPA A.
+- [ ] `RTLOPS-54` `Canary Live Controller`
+  - sigue bloqueada conceptualmente por la base de observability/alerts ya cerrada;
+  - reevaluar solo despues de endurecer el contrato raw backend con `RTLOPS-65`.
 
 ## Estado administrativo Linear
 - [x] Sync administrativo real completado para los cierres recientes:
   - `RTLOPS-23`
+  - `RTLOPS-26`
+  - `RTLOPS-27`
   - `RTLOPS-45`
   - `RTLOPS-46`
   - `RTLOPS-47`
@@ -40,6 +42,12 @@ Fecha: 2026-03-23
   - `RTLOPS-50`
   - `RTLOPS-29`
   - `RTLOPS-30`
+- [x] Frontera actual ya congelada para continuar sin ambiguedad:
+  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A de senal cruda
+  - `RTLOPS-30` = CAPA B de interpretacion
+  - `RTLOPS-29` = CAPA C de accion
+  - `RTLOPS-27` = consumer persistente de alerting
+  - `RTLOPS-65` = hardening chico del contrato raw backend
 - [x] Mapa de proyectos alineado con dominios reales:
   - `Nucleo Arquitectonico y Policies`
   - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`

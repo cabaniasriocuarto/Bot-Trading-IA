@@ -36,6 +36,24 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.execution.alerts import (
+    alert_catalog_entry,
+    alert_scope_key,
+    alert_scope_matches,
+    alert_severity_rank,
+    alert_state_active,
+    alert_summary_text,
+    build_alert_event,
+    build_alert_instance,
+    choose_alert_severity,
+    default_alert_catalog_entries,
+    normalize_alert_event_type,
+    normalize_alert_scope_type,
+    normalize_alert_severity,
+    normalize_alert_source_layer,
+    normalize_alert_state,
+    normalize_alert_trigger_code,
+)
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.health_summary import (
     build_health_reason,
@@ -462,6 +480,57 @@ CREATE TABLE IF NOT EXISTS live_signal_events (
 );
 CREATE INDEX IF NOT EXISTS idx_live_signal_events_time ON live_signal_events(event_time DESC);
 CREATE INDEX IF NOT EXISTS idx_live_signal_events_scope ON live_signal_events(scope_type, bot_id, symbol, source_type, event_time DESC);
+CREATE TABLE IF NOT EXISTS execution_alert_catalog (
+    trigger_code TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    default_severity TEXT NOT NULL,
+    source_layer TEXT NOT NULL,
+    scope_type_supported_json TEXT NOT NULL,
+    dedup_strategy TEXT NOT NULL,
+    suppression_strategy TEXT NOT NULL,
+    cooldown_strategy TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS execution_alert_instances (
+    alert_instance_id TEXT PRIMARY KEY,
+    trigger_code TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    state TEXT NOT NULL,
+    source_layer TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    opened_at TEXT,
+    last_seen_at TEXT NOT NULL,
+    acked_at TEXT,
+    suppressed_until TEXT,
+    cooldown_until TEXT,
+    resolved_at TEXT,
+    expires_at TEXT,
+    source_refs_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_alert_instances_unique_scope
+  ON execution_alert_instances(trigger_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''));
+CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_state ON execution_alert_instances(state, severity, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_scope ON execution_alert_instances(scope_type, bot_id, symbol, updated_at DESC);
+CREATE TABLE IF NOT EXISTS execution_alert_events (
+    transition_id TEXT PRIMARY KEY,
+    alert_instance_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    previous_state TEXT,
+    next_state TEXT,
+    occurred_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    actor TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_execution_alert_events_alert ON execution_alert_events(alert_instance_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_alert_events_time ON execution_alert_events(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC);
 """
 
@@ -494,6 +563,20 @@ class HealthEvaluateBody(BaseModel):
 class LiveSignalsSnapshotBody(BaseModel):
     bot_id: str | None = None
     symbol: str | None = None
+
+
+class AlertEvaluateBody(BaseModel):
+    bot_id: str | None = None
+    symbol: str | None = None
+
+
+class AlertLifecycleBody(BaseModel):
+    audit_note: str | None = None
+
+
+class AlertSuppressBody(BaseModel):
+    duration_sec: int | None = None
+    audit_note: str | None = None
 
 
 class SafetyFreezeBody(BaseModel):
@@ -830,6 +913,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
     es = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
     ops = es.get("operational_safety") if isinstance(es.get("operational_safety"), dict) else {}
+    alerting = es.get("alerting") if isinstance(es.get("alerting"), dict) else {}
     live_signals = es.get("live_signals") if isinstance(es.get("live_signals"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
@@ -855,6 +939,9 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_guardrail_open_orders_warn_count": ops.get("guardrail_open_orders_warn_count"),
         "execution_guardrail_open_orders_block_count": ops.get("guardrail_open_orders_block_count"),
         "execution_guardrail_cooldown_sec": ops.get("guardrail_cooldown_sec"),
+        "execution_alerting_default_suppression_sec": alerting.get("default_suppression_sec"),
+        "execution_alerting_default_cooldown_sec": alerting.get("default_cooldown_sec"),
+        "execution_alerting_resolved_ttl_sec": alerting.get("resolved_ttl_sec"),
         "execution_live_signals_default_window_ms": live_signals.get("default_window_ms"),
         "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
         "beast_requires_postgres": b.get("requires_postgres"),
@@ -936,6 +1023,14 @@ DEFAULT_LIVE_SIGNALS_POLICY: dict[str, Any] = {
     "default_window_ms": 300000,
 }
 
+DEFAULT_ALERTING_POLICY: dict[str, Any] = {
+    "default_suppression_sec": 900,
+    "default_cooldown_sec": 300,
+    "resolved_ttl_sec": 3600,
+    "reopen_on_active_condition": True,
+    "manual_resolve_requires_inactive": True,
+}
+
 
 def load_execution_safety_policy() -> dict[str, Any]:
     bundle = load_numeric_policies_bundle()
@@ -945,6 +1040,7 @@ def load_execution_safety_policy() -> dict[str, Any]:
     ops = root.get("operational_safety") if isinstance(root.get("operational_safety"), dict) else {}
     live_health = root.get("live_health_summary") if isinstance(root.get("live_health_summary"), dict) else {}
     live_signals = root.get("live_signals") if isinstance(root.get("live_signals"), dict) else {}
+    alerting = root.get("alerting") if isinstance(root.get("alerting"), dict) else {}
     return {
         "source": "config/policies/execution_safety.yaml" if ops else "default_fail_closed_operational_safety",
         "operational_safety": {
@@ -958,6 +1054,10 @@ def load_execution_safety_policy() -> dict[str, Any]:
         "live_signals": {
             **DEFAULT_LIVE_SIGNALS_POLICY,
             **live_signals,
+        },
+        "alerting": {
+            **DEFAULT_ALERTING_POLICY,
+            **alerting,
         },
     }
 
@@ -2383,6 +2483,73 @@ class ConsoleStore:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_time ON live_signal_events(event_time DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_scope ON live_signal_events(scope_type, bot_id, symbol, source_type, event_time DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS execution_alert_catalog (
+                trigger_code TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                default_severity TEXT NOT NULL,
+                source_layer TEXT NOT NULL,
+                scope_type_supported_json TEXT NOT NULL,
+                dedup_strategy TEXT NOT NULL,
+                suppression_strategy TEXT NOT NULL,
+                cooldown_strategy TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS execution_alert_instances (
+                alert_instance_id TEXT PRIMARY KEY,
+                trigger_code TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                state TEXT NOT NULL,
+                source_layer TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                opened_at TEXT,
+                last_seen_at TEXT NOT NULL,
+                acked_at TEXT,
+                suppressed_until TEXT,
+                cooldown_until TEXT,
+                resolved_at TEXT,
+                expires_at TEXT,
+                source_refs_json TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                summary_text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_alert_instances_unique_scope
+            ON execution_alert_instances(trigger_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''))
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_state ON execution_alert_instances(state, severity, updated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_scope ON execution_alert_instances(scope_type, bot_id, symbol, updated_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS execution_alert_events (
+                transition_id TEXT PRIMARY KEY,
+                alert_instance_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                previous_state TEXT,
+                next_state TEXT,
+                occurred_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                actor TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_events_alert ON execution_alert_events(alert_instance_id, occurred_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_events_time ON execution_alert_events(occurred_at DESC)")
         self._backfill_logs_has_bot_ref(conn)
         self._backfill_log_bot_refs(conn)
 
@@ -3388,9 +3555,423 @@ class ConsoleStore:
             )
         return items
 
+    @staticmethod
+    def _execution_alert_catalog_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            scope_type_supported = json.loads(str(row["scope_type_supported_json"] or "[]"))
+        except Exception:
+            scope_type_supported = []
+        if not isinstance(scope_type_supported, list):
+            scope_type_supported = []
+        return {
+            "trigger_code": str(row["trigger_code"] or ""),
+            "description": str(row["description"] or ""),
+            "default_severity": str(row["default_severity"] or ""),
+            "source_layer": str(row["source_layer"] or ""),
+            "scope_type_supported": [normalize_alert_scope_type(value) for value in scope_type_supported],
+            "dedup_strategy": str(row["dedup_strategy"] or ""),
+            "suppression_strategy": str(row["suppression_strategy"] or ""),
+            "cooldown_strategy": str(row["cooldown_strategy"] or ""),
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    def _execution_alert_instance_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            source_refs = json.loads(str(row["source_refs_json"] or "{}"))
+        except Exception:
+            source_refs = {}
+        try:
+            evidence = json.loads(str(row["evidence_json"] or "{}"))
+        except Exception:
+            evidence = {}
+        instance = build_alert_instance(
+            trigger_code=row["trigger_code"],
+            severity=row["severity"],
+            state=row["state"],
+            source_layer=row["source_layer"],
+            scope_type=row["scope_type"],
+            bot_id=row["bot_id"],
+            symbol=row["symbol"],
+            opened_at=row["opened_at"],
+            last_seen_at=row["last_seen_at"],
+            acked_at=row["acked_at"],
+            suppressed_until=row["suppressed_until"],
+            cooldown_until=row["cooldown_until"],
+            resolved_at=row["resolved_at"],
+            expires_at=row["expires_at"],
+            source_refs=source_refs if isinstance(source_refs, dict) else {},
+            evidence=evidence if isinstance(evidence, dict) else {},
+            summary_text=row["summary_text"],
+        )
+        instance["alert_instance_id"] = str(row["alert_instance_id"] or "")
+        instance["created_at"] = str(row["created_at"] or "")
+        instance["updated_at"] = str(row["updated_at"] or "")
+        return instance
+
+    @staticmethod
+    def _execution_alert_event_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        return {
+            "transition_id": str(row["transition_id"] or ""),
+            "alert_instance_id": str(row["alert_instance_id"] or ""),
+            "event_type": str(row["event_type"] or ""),
+            "previous_state": str(row["previous_state"] or "") if row["previous_state"] is not None else None,
+            "next_state": str(row["next_state"] or "") if row["next_state"] is not None else None,
+            "occurred_at": str(row["occurred_at"] or ""),
+            "payload": payload,
+            "actor": str(row["actor"] or "") if row["actor"] is not None else None,
+            "created_at": str(row["created_at"] or ""),
+        }
+
+    def sync_execution_alert_catalog(self, entries: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        now_iso = utc_now_iso()
+        rows = entries if isinstance(entries, list) else default_alert_catalog_entries()
+        with self._connect() as conn:
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                trigger_code = normalize_alert_trigger_code(item.get("trigger_code"))
+                payload = {
+                    "trigger_code": trigger_code,
+                    "description": str(item.get("description") or trigger_code),
+                    "default_severity": normalize_alert_severity(item.get("default_severity")),
+                    "source_layer": normalize_alert_source_layer(item.get("source_layer")),
+                    "scope_type_supported_json": json.dumps(
+                        [normalize_alert_scope_type(value) for value in list(item.get("scope_type_supported") or [])],
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    ),
+                    "dedup_strategy": str(item.get("dedup_strategy") or "trigger_scope_active"),
+                    "suppression_strategy": str(item.get("suppression_strategy") or "manual_until"),
+                    "cooldown_strategy": str(item.get("cooldown_strategy") or "timebox_rearm"),
+                    "updated_at": now_iso,
+                }
+                row = conn.execute(
+                    "SELECT created_at FROM execution_alert_catalog WHERE trigger_code = ?",
+                    (trigger_code,),
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        """
+                        INSERT INTO execution_alert_catalog (
+                            trigger_code, description, default_severity, source_layer, scope_type_supported_json,
+                            dedup_strategy, suppression_strategy, cooldown_strategy, created_at, updated_at
+                        ) VALUES (
+                            :trigger_code, :description, :default_severity, :source_layer, :scope_type_supported_json,
+                            :dedup_strategy, :suppression_strategy, :cooldown_strategy, :updated_at, :updated_at
+                        )
+                        """,
+                        payload,
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE execution_alert_catalog
+                        SET description = :description,
+                            default_severity = :default_severity,
+                            source_layer = :source_layer,
+                            scope_type_supported_json = :scope_type_supported_json,
+                            dedup_strategy = :dedup_strategy,
+                            suppression_strategy = :suppression_strategy,
+                            cooldown_strategy = :cooldown_strategy,
+                            updated_at = :updated_at
+                        WHERE trigger_code = :trigger_code
+                        """,
+                        payload,
+                    )
+        return self.list_execution_alert_catalog(limit=500)
+
+    def list_execution_alert_catalog(self, *, limit: int = 250) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM execution_alert_catalog
+                ORDER BY trigger_code ASC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [self._execution_alert_catalog_from_row(row) for row in rows]
+
+    def get_execution_alert_instance(self, alert_instance_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM execution_alert_instances
+                WHERE alert_instance_id = ?
+                LIMIT 1
+                """,
+                (str(alert_instance_id or ""),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._execution_alert_instance_from_row(row)
+
+    def find_execution_alert_instance(
+        self,
+        *,
+        trigger_code: str,
+        scope_type: str,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any] | None:
+        trigger_code_n = normalize_alert_trigger_code(trigger_code)
+        scope_type_n = normalize_alert_scope_type(scope_type)
+        bot_id_n = self._normalize_safety_bot_id(bot_id)
+        symbol_n = self._normalize_safety_symbol(symbol)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM execution_alert_instances
+                WHERE trigger_code = ?
+                  AND scope_type = ?
+                  AND COALESCE(bot_id, '') = COALESCE(?, '')
+                  AND COALESCE(symbol, '') = COALESCE(?, '')
+                LIMIT 1
+                """,
+                (trigger_code_n, scope_type_n, bot_id_n, symbol_n),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._execution_alert_instance_from_row(row)
+
+    def upsert_execution_alert_instance(
+        self,
+        *,
+        trigger_code: str,
+        severity: str,
+        state: str,
+        source_layer: str,
+        scope_type: str,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        opened_at: str | None = None,
+        last_seen_at: str | None = None,
+        acked_at: str | None = None,
+        suppressed_until: str | None = None,
+        cooldown_until: str | None = None,
+        resolved_at: str | None = None,
+        expires_at: str | None = None,
+        source_refs: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
+        summary_text: str | None = None,
+    ) -> dict[str, Any]:
+        trigger_code_n = normalize_alert_trigger_code(trigger_code)
+        scope_type_n = normalize_alert_scope_type(scope_type)
+        bot_id_n = self._normalize_safety_bot_id(bot_id)
+        symbol_n = self._normalize_safety_symbol(symbol)
+        now_iso = utc_now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT alert_instance_id, created_at
+                FROM execution_alert_instances
+                WHERE trigger_code = ?
+                  AND scope_type = ?
+                  AND COALESCE(bot_id, '') = COALESCE(?, '')
+                  AND COALESCE(symbol, '') = COALESCE(?, '')
+                LIMIT 1
+                """,
+                (trigger_code_n, scope_type_n, bot_id_n, symbol_n),
+            ).fetchone()
+            payload = {
+                "alert_instance_id": str(row["alert_instance_id"]) if row is not None else str(uuid4()),
+                "trigger_code": trigger_code_n,
+                "severity": normalize_alert_severity(severity),
+                "state": normalize_alert_state(state),
+                "source_layer": normalize_alert_source_layer(source_layer),
+                "scope_type": scope_type_n,
+                "bot_id": bot_id_n,
+                "symbol": symbol_n,
+                "opened_at": str(opened_at or "") or None,
+                "last_seen_at": str(last_seen_at or now_iso),
+                "acked_at": str(acked_at or "") or None,
+                "suppressed_until": str(suppressed_until or "") or None,
+                "cooldown_until": str(cooldown_until or "") or None,
+                "resolved_at": str(resolved_at or "") or None,
+                "expires_at": str(expires_at or "") or None,
+                "source_refs_json": json.dumps(source_refs or {}, ensure_ascii=True, sort_keys=True),
+                "evidence_json": json.dumps(evidence or {}, ensure_ascii=True, sort_keys=True),
+                "summary_text": str(summary_text or ""),
+                "created_at": str(row["created_at"]) if row is not None else now_iso,
+                "updated_at": now_iso,
+            }
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO execution_alert_instances (
+                        alert_instance_id, trigger_code, severity, state, source_layer, scope_type, bot_id, symbol,
+                        opened_at, last_seen_at, acked_at, suppressed_until, cooldown_until, resolved_at, expires_at,
+                        source_refs_json, evidence_json, summary_text, created_at, updated_at
+                    ) VALUES (
+                        :alert_instance_id, :trigger_code, :severity, :state, :source_layer, :scope_type, :bot_id, :symbol,
+                        :opened_at, :last_seen_at, :acked_at, :suppressed_until, :cooldown_until, :resolved_at, :expires_at,
+                        :source_refs_json, :evidence_json, :summary_text, :created_at, :updated_at
+                    )
+                    """,
+                    payload,
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE execution_alert_instances
+                    SET severity = :severity,
+                        state = :state,
+                        source_layer = :source_layer,
+                        opened_at = :opened_at,
+                        last_seen_at = :last_seen_at,
+                        acked_at = :acked_at,
+                        suppressed_until = :suppressed_until,
+                        cooldown_until = :cooldown_until,
+                        resolved_at = :resolved_at,
+                        expires_at = :expires_at,
+                        source_refs_json = :source_refs_json,
+                        evidence_json = :evidence_json,
+                        summary_text = :summary_text,
+                        updated_at = :updated_at
+                    WHERE alert_instance_id = :alert_instance_id
+                    """,
+                    payload,
+                )
+        return self.find_execution_alert_instance(
+            trigger_code=trigger_code_n,
+            scope_type=scope_type_n,
+            bot_id=bot_id_n,
+            symbol=symbol_n,
+        ) or {}
+
+    def insert_execution_alert_event(
+        self,
+        *,
+        alert_instance_id: str,
+        event_type: str,
+        previous_state: str | None = None,
+        next_state: str | None = None,
+        payload: dict[str, Any] | None = None,
+        actor: str | None = None,
+        occurred_at: str | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "transition_id": str(uuid4()),
+            "alert_instance_id": str(alert_instance_id or ""),
+            "event_type": normalize_alert_event_type(event_type),
+            "previous_state": normalize_alert_state(previous_state) if str(previous_state or "").strip() else None,
+            "next_state": normalize_alert_state(next_state) if str(next_state or "").strip() else None,
+            "occurred_at": str(occurred_at or utc_now_iso()),
+            "payload_json": json.dumps(payload or {}, ensure_ascii=True, sort_keys=True),
+            "actor": str(actor or "").strip() or None,
+            "created_at": utc_now_iso(),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_alert_events (
+                    transition_id, alert_instance_id, event_type, previous_state, next_state, occurred_at, payload_json, actor, created_at
+                ) VALUES (
+                    :transition_id, :alert_instance_id, :event_type, :previous_state, :next_state, :occurred_at, :payload_json, :actor, :created_at
+                )
+                """,
+                row,
+            )
+        return {
+            "transition_id": row["transition_id"],
+            "alert_instance_id": row["alert_instance_id"],
+            "event_type": row["event_type"],
+            "previous_state": row["previous_state"],
+            "next_state": row["next_state"],
+            "occurred_at": row["occurred_at"],
+            "payload": payload or {},
+            "actor": row["actor"],
+            "created_at": row["created_at"],
+        }
+
+    def list_execution_alert_instances(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        trigger_code: str | None = None,
+        states: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_alert_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        if trigger_code:
+            clauses.append("trigger_code = ?")
+            params.append(normalize_alert_trigger_code(trigger_code))
+        states_n = [normalize_alert_state(value) for value in (states or []) if str(value or "").strip()]
+        if states_n:
+            placeholders = ", ".join(["?"] * len(states_n))
+            clauses.append(f"state IN ({placeholders})")
+            params.extend(states_n)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_alert_instances
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC, alert_instance_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        items = [self._execution_alert_instance_from_row(row) for row in rows]
+        return sorted(
+            items,
+            key=lambda row: (
+                -alert_severity_rank(row.get("severity")),
+                0 if alert_state_active(row.get("state")) else 1,
+                -int(datetime.fromisoformat(str(row.get("updated_at") or utc_now_iso())).timestamp()) if str(row.get("updated_at") or "").strip() else 0,
+            ),
+        )
+
+    def list_execution_alert_events(
+        self,
+        *,
+        alert_instance_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if alert_instance_id:
+            clauses.append("alert_instance_id = ?")
+            params.append(str(alert_instance_id))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM execution_alert_events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY occurred_at DESC, transition_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        return [self._execution_alert_event_from_row(row) for row in rows]
+
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
+        self._ensure_default_alert_catalog()
         self._ensure_default_strategy()
         self._ensure_knowledge_strategies_registry()
         self._ensure_strategy_registry_invariants()
@@ -3411,6 +3992,9 @@ class ConsoleStore:
 
     def _ensure_default_bot_state(self) -> None:
         self.policy_state.ensure_default_bot_state()
+
+    def _ensure_default_alert_catalog(self) -> None:
+        self.sync_execution_alert_catalog(default_alert_catalog_entries())
 
     def _write_default_strategy_pack(self) -> Path:
         target = UPLOADS_DIR / f"{DEFAULT_STRATEGY_ID}_{DEFAULT_STRATEGY_VERSION}.zip"
@@ -7813,6 +8397,14 @@ class RuntimeBridge:
             **policy,
         }
 
+    def _alerting_policy(self) -> dict[str, Any]:
+        payload = load_execution_safety_policy()
+        policy = payload.get("alerting") if isinstance(payload.get("alerting"), dict) else {}
+        return {
+            **DEFAULT_ALERTING_POLICY,
+            **policy,
+        }
+
     @staticmethod
     def _live_signal_severity_from_status(value: Any) -> str:
         normalized = normalize_live_signal_source_status(value)
@@ -8924,6 +9516,892 @@ class RuntimeBridge:
             if persist:
                 summary = store.insert_health_summary_snapshot(summary)
             return summary
+
+    @staticmethod
+    def _alert_parse_iso(value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _alert_iso_after(base_dt: datetime, seconds: Any) -> str:
+        return (base_dt + timedelta(seconds=max(0, int(_as_int(seconds, 0))))).isoformat()
+
+    @staticmethod
+    def _alert_signal_item(raw_signals: dict[str, Any], snapshot_type: str) -> dict[str, Any]:
+        for row in raw_signals.get("items") if isinstance(raw_signals.get("items"), list) else []:
+            if isinstance(row, dict) and str(row.get("snapshot_type") or "").upper() == str(snapshot_type).upper():
+                return row
+        return {}
+
+    @staticmethod
+    def _alert_health_scope(
+        summary: dict[str, Any],
+        *,
+        scope_type: str,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        if normalize_alert_scope_type(scope_type) == "GLOBAL":
+            return dict(summary or {})
+        for row in summary.get("scope_status") if isinstance(summary.get("scope_status"), list) else []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("scope_type") or "").upper() != normalize_alert_scope_type(scope_type):
+                continue
+            if str(row.get("bot_id") or "").strip() != str(bot_id or "").strip():
+                continue
+            if str(row.get("symbol") or "").strip().upper() != str(symbol or "").strip().upper():
+                continue
+            return dict(row)
+        return dict(summary or {})
+
+    def _collect_execution_alert_conditions(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        persist_sources: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            store.sync_execution_alert_catalog(default_alert_catalog_entries())
+            now_dt = utc_now()
+            now_iso = now_dt.isoformat()
+            ops_policy = self._operational_safety_policy()
+            health_policy = self._live_health_policy()
+            state_n = dict(state or {})
+            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
+            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
+            scope_type, scope_bot_id, scope_symbol = self._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+            raw_scope_key = alert_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol)
+
+            raw_signals = self.build_live_signal_snapshot(
+                state=state_n,
+                settings=settings,
+                bot_id=scope_bot_id,
+                symbol=scope_symbol,
+                persist=persist_sources,
+            )
+            health_summary = self.build_live_health_summary(
+                state=state_n,
+                settings=settings,
+                bot_id=scope_bot_id,
+                symbol=scope_symbol,
+                persist=persist_sources,
+            )
+            safety_summary = self.operational_safety_summary(state=state_n, bot_id=scope_bot_id, symbol=scope_symbol)
+            manual_actions = store.list_safety_manual_actions(bot_id=scope_bot_id, symbol=scope_symbol, limit=100)
+            health_scope = self._alert_health_scope(
+                health_summary,
+                scope_type=scope_type,
+                bot_id=scope_bot_id,
+                symbol=scope_symbol,
+            )
+            health_reason_items = {
+                str(row.get("reason_code") or ""): dict(row)
+                for row in (health_scope.get("reason_items") if isinstance(health_scope.get("reason_items"), list) else [])
+                if isinstance(row, dict)
+            }
+            conditions: list[dict[str, Any]] = []
+
+            def _signal_ref(row: dict[str, Any], snapshot_type: str) -> dict[str, Any]:
+                return {
+                    "type": "live_signal_snapshot",
+                    "signal_snapshot_id": str(row.get("signal_snapshot_id") or ""),
+                    "snapshot_type": str(snapshot_type or ""),
+                    "collected_at": str(row.get("collected_at") or raw_signals.get("collected_at") or ""),
+                    "source_status": str(row.get("source_status") or ""),
+                }
+
+            def _add_condition(
+                trigger_code: str,
+                *,
+                severity: str | None = None,
+                source_layer: str | None = None,
+                evidence: dict[str, Any] | None = None,
+                primary_refs: list[dict[str, Any]] | None = None,
+            ) -> None:
+                entry = alert_catalog_entry(trigger_code)
+                layer = normalize_alert_source_layer(source_layer or entry.get("source_layer"))
+                refs = [dict(row) for row in (primary_refs or []) if isinstance(row, dict)]
+                source_refs = {
+                    "source_layer": layer,
+                    "scope_key": raw_scope_key,
+                    "primary": refs,
+                }
+                if layer == "RAW":
+                    source_refs["raw_collected_at"] = str(raw_signals.get("collected_at") or "")
+                elif layer == "HEALTH":
+                    source_refs["health_snapshot_id"] = str(health_summary.get("snapshot_id") or "")
+                    source_refs["health_evaluated_at"] = str(health_summary.get("last_evaluated_at") or "")
+                elif layer == "SAFETY":
+                    source_refs["safety_evaluated_at"] = str(safety_summary.get("evaluated_at") or "")
+                evidence_n = evidence if isinstance(evidence, dict) else {}
+                conditions.append(
+                    {
+                        "trigger_code": normalize_alert_trigger_code(trigger_code),
+                        "severity": choose_alert_severity(entry.get("default_severity"), severity),
+                        "source_layer": layer,
+                        "scope_type": scope_type,
+                        "scope_key": raw_scope_key,
+                        "bot_id": scope_bot_id,
+                        "symbol": scope_symbol,
+                        "source_refs": source_refs,
+                        "evidence": evidence_n,
+                        "summary_text": alert_summary_text(
+                            trigger_code,
+                            scope_type=scope_type,
+                            bot_id=scope_bot_id,
+                            symbol=scope_symbol,
+                            evidence=evidence_n,
+                        ),
+                    }
+                )
+
+            stream_item = self._alert_signal_item(raw_signals, "STREAM")
+            if stream_item:
+                stream_payload = stream_item.get("signal_payload") if isinstance(stream_item.get("signal_payload"), dict) else {}
+                stream_metrics = stream_payload.get("metrics") if isinstance(stream_payload.get("metrics"), dict) else {}
+                stream_states = stream_payload.get("observed_states") if isinstance(stream_payload.get("observed_states"), dict) else {}
+                stream_refs = stream_payload.get("source_refs") if isinstance(stream_payload.get("source_refs"), dict) else {}
+                stream_gap_ms = _as_int(stream_metrics.get("stream_gap_ms"), 0)
+                stream_warn_ms = _as_int(stream_refs.get("stream_gap_warn_ms"), _as_int(ops_policy.get("guardrail_stream_gap_warn_ms"), 5000))
+                stream_critical_ms = _as_int(stream_refs.get("stream_gap_critical_ms"), _as_int(ops_policy.get("guardrail_stream_gap_critical_ms"), 10000))
+                primary_ref = _signal_ref(stream_item, "STREAM")
+                if bool(stream_states.get("stream_terminated_bool", False)):
+                    _add_condition(
+                        "STREAM_TERMINATED",
+                        severity="CRITICAL",
+                        source_layer="RAW",
+                        evidence={
+                            "event_code": "STREAM_TERMINATED",
+                            "stream_gap_ms": stream_gap_ms,
+                            "stream_last_event_age_ms": stream_metrics.get("stream_last_event_age_ms"),
+                            "runtime_exchange_reason": str(stream_states.get("runtime_exchange_reason") or ""),
+                        },
+                        primary_refs=[primary_ref],
+                    )
+                elif str(stream_item.get("source_status") or "").upper() == "CRITICAL" or stream_gap_ms >= stream_critical_ms:
+                    _add_condition(
+                        "STREAM_GAP_CRITICAL",
+                        severity="CRITICAL",
+                        source_layer="RAW",
+                        evidence={
+                            "event_code": "STREAM_GAP_CRITICAL",
+                            "stream_gap_ms": stream_gap_ms,
+                            "warn_threshold_ms": stream_warn_ms,
+                            "critical_threshold_ms": stream_critical_ms,
+                        },
+                        primary_refs=[primary_ref],
+                    )
+                elif str(stream_item.get("source_status") or "").upper() == "WARN" or stream_gap_ms >= stream_warn_ms:
+                    _add_condition(
+                        "STREAM_GAP_WARN",
+                        severity="WARN",
+                        source_layer="RAW",
+                        evidence={
+                            "event_code": "STREAM_GAP_WARN",
+                            "stream_gap_ms": stream_gap_ms,
+                            "warn_threshold_ms": stream_warn_ms,
+                            "critical_threshold_ms": stream_critical_ms,
+                        },
+                        primary_refs=[primary_ref],
+                    )
+
+            rate_item = self._alert_signal_item(raw_signals, "RATE_LIMIT")
+            if rate_item:
+                rate_payload = rate_item.get("signal_payload") if isinstance(rate_item.get("signal_payload"), dict) else {}
+                rate_metrics = rate_payload.get("metrics") if isinstance(rate_payload.get("metrics"), dict) else {}
+                rate_states = rate_payload.get("observed_states") if isinstance(rate_payload.get("observed_states"), dict) else {}
+                rate_refs = rate_payload.get("source_refs") if isinstance(rate_payload.get("source_refs"), dict) else {}
+                threshold_429 = _as_int(rate_refs.get("guardrail_http_429_threshold"), _as_int(ops_policy.get("guardrail_http_429_threshold"), 3))
+                open_order_warn = _as_int(ops_policy.get("guardrail_open_orders_warn_count"), 10)
+                primary_ref = _signal_ref(rate_item, "RATE_LIMIT")
+                if bool(rate_states.get("rate_limit_418_active_bool", False)):
+                    _add_condition(
+                        "HTTP_418_RISK_ACTIVE",
+                        severity="CRITICAL",
+                        source_layer="RAW",
+                        evidence={
+                            "event_code": "HTTP_418_RISK_ACTIVE",
+                            "rate_limit_429_count_window": _as_int(rate_metrics.get("rate_limit_429_count_window"), 0),
+                            "last_rate_limit_event_age_ms": (rate_payload.get("freshness") if isinstance(rate_payload.get("freshness"), dict) else {}).get("last_rate_limit_event_age_ms"),
+                        },
+                        primary_refs=[primary_ref],
+                    )
+                if _as_int(rate_metrics.get("rate_limit_429_count_window"), 0) >= threshold_429:
+                    _add_condition(
+                        "RATE_LIMIT_PRESSURE_HIGH",
+                        severity="WARN",
+                        source_layer="RAW",
+                        evidence={
+                            "event_code": "RATE_LIMIT_PRESSURE_HIGH",
+                            "rate_limit_429_count_window": _as_int(rate_metrics.get("rate_limit_429_count_window"), 0),
+                            "threshold": threshold_429,
+                            "retry_after_active_bool": bool(rate_states.get("retry_after_active_bool", False)),
+                        },
+                        primary_refs=[primary_ref],
+                    )
+                if _as_int(rate_metrics.get("open_order_pressure_count"), 0) >= open_order_warn:
+                    _add_condition(
+                        "OPEN_ORDER_PRESSURE_HIGH",
+                        severity="WARN",
+                        source_layer="RAW",
+                        evidence={
+                            "event_code": "OPEN_ORDER_PRESSURE_HIGH",
+                            "open_order_pressure_count": _as_int(rate_metrics.get("open_order_pressure_count"), 0),
+                            "warn_threshold": open_order_warn,
+                        },
+                        primary_refs=[primary_ref],
+                    )
+
+            for reason_code, trigger_code in {
+                "PREFLIGHT_EXPIRED": "PREFLIGHT_EXPIRED",
+                "PREFLIGHT_FAIL": "PREFLIGHT_FAIL",
+                "RECONCILIATION_DESYNC": "RECONCILIATION_DESYNC_OPEN",
+                "RECONCILIATION_MANUAL_REVIEW": "RECONCILIATION_MANUAL_REVIEW_OPEN",
+                "UNKNOWN_TIMEOUT_STUCK": "UNKNOWN_TIMEOUT_STUCK",
+            }.items():
+                reason_item = health_reason_items.get(reason_code)
+                if not reason_item:
+                    continue
+                _add_condition(
+                    trigger_code,
+                    severity=str(reason_item.get("severity") or health_scope.get("severity") or "WARN"),
+                    source_layer="HEALTH",
+                    evidence={
+                        "reason_code": reason_code,
+                        "health_state": str(health_scope.get("state") or health_summary.get("state") or ""),
+                        "health_severity": str(health_scope.get("severity") or health_summary.get("severity") or ""),
+                        "blocking_bool": bool(reason_item.get("blocking_bool", False)),
+                        "evidence": reason_item.get("evidence") if isinstance(reason_item.get("evidence"), dict) else {},
+                    },
+                    primary_refs=[
+                        {
+                            "type": "health_summary_snapshot",
+                            "snapshot_id": str(health_summary.get("snapshot_id") or ""),
+                            "evaluated_at": str(health_summary.get("last_evaluated_at") or ""),
+                            "reason_code": reason_code,
+                            "scope_type": str(health_scope.get("scope_type") or scope_type),
+                        }
+                    ],
+                )
+
+            safety_breakers = [row for row in safety_summary.get("breakers") if isinstance(row, dict)] if isinstance(safety_summary.get("breakers"), list) else []
+            manual_locks = [row for row in safety_breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"]
+            blocking_breakers = [row for row in safety_breakers if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))]
+            if blocking_breakers:
+                breaker_refs = [
+                    {
+                        "type": "safety_breaker",
+                        "breaker_id": str(row.get("breaker_id") or ""),
+                        "breaker_code": str(row.get("breaker_code") or ""),
+                        "state": str(row.get("state") or ""),
+                        "scope_type": str(row.get("scope_type") or ""),
+                    }
+                    for row in blocking_breakers
+                ]
+                _add_condition(
+                    "BREAKER_OPEN_BLOCKING",
+                    severity="CRITICAL",
+                    source_layer="SAFETY",
+                    evidence={"breaker_code": "BREAKER_OPEN_BLOCKING", "blocking_breakers": breaker_refs},
+                    primary_refs=breaker_refs,
+                )
+            if manual_locks:
+                lock_refs = [
+                    {
+                        "type": "safety_breaker",
+                        "breaker_id": str(row.get("breaker_id") or ""),
+                        "breaker_code": str(row.get("breaker_code") or ""),
+                        "state": str(row.get("state") or ""),
+                        "scope_type": str(row.get("scope_type") or ""),
+                    }
+                    for row in manual_locks
+                ]
+                _add_condition(
+                    "MANUAL_LOCK_ACTIVE",
+                    severity="CRITICAL",
+                    source_layer="SAFETY",
+                    evidence={"breaker_code": "MANUAL_LOCK_ACTIVE", "manual_locks": lock_refs},
+                    primary_refs=lock_refs,
+                )
+                if any(normalize_safety_scope_type(row.get("scope_type")) == "GLOBAL" for row in manual_locks):
+                    _add_condition(
+                        "FREEZE_GLOBAL_ACTIVE",
+                        severity="CRITICAL",
+                        source_layer="SAFETY",
+                        evidence={"breaker_code": "FREEZE_GLOBAL_ACTIVE", "manual_locks": lock_refs},
+                        primary_refs=lock_refs,
+                    )
+                if any(normalize_safety_scope_type(row.get("scope_type")) == "BOT" for row in manual_locks):
+                    _add_condition(
+                        "FREEZE_BOT_ACTIVE",
+                        severity="WARN",
+                        source_layer="SAFETY",
+                        evidence={"breaker_code": "FREEZE_BOT_ACTIVE", "manual_locks": lock_refs},
+                        primary_refs=lock_refs,
+                    )
+                if any(normalize_safety_scope_type(row.get("scope_type")) in {"SYMBOL", "BOT_SYMBOL"} for row in manual_locks):
+                    _add_condition(
+                        "FREEZE_SYMBOL_ACTIVE",
+                        severity="WARN",
+                        source_layer="SAFETY",
+                        evidence={"breaker_code": "FREEZE_SYMBOL_ACTIVE", "manual_locks": lock_refs},
+                        primary_refs=lock_refs,
+                    )
+
+            recent_emergency_window_sec = max(0, _as_int(health_policy.get("recent_emergency_action_window_sec"), 300))
+            recent_emergency_actions = [
+                row
+                for row in manual_actions
+                if str(row.get("action_type") or "") == "EMERGENCY_CANCEL_SYMBOL"
+                and ((_runtime_ts_age_sec(str(row.get("applied_at") or row.get("requested_at") or ""), now=now_dt) or 999999) <= recent_emergency_window_sec)
+            ]
+            if recent_emergency_actions:
+                action_refs = [
+                    {
+                        "type": "safety_manual_action",
+                        "manual_action_id": str(row.get("manual_action_id") or ""),
+                        "action_type": str(row.get("action_type") or ""),
+                        "requested_at": str(row.get("requested_at") or ""),
+                        "applied_at": str(row.get("applied_at") or ""),
+                    }
+                    for row in recent_emergency_actions
+                ]
+                _add_condition(
+                    "EMERGENCY_ACTION_ACTIVE",
+                    severity="WARN",
+                    source_layer="SAFETY",
+                    evidence={"action_type": "EMERGENCY_CANCEL_SYMBOL", "recent_actions": action_refs},
+                    primary_refs=action_refs,
+                )
+
+            return {
+                "evaluated_at": now_iso,
+                "scope": {
+                    "scope_type": scope_type,
+                    "scope_key": raw_scope_key,
+                    "bot_id": scope_bot_id,
+                    "symbol": scope_symbol,
+                },
+                "raw_signals": raw_signals,
+                "health_summary": health_summary,
+                "health_scope": health_scope,
+                "safety_summary": safety_summary,
+                "conditions": conditions,
+            }
+
+    def _sync_execution_alert_condition(
+        self,
+        condition: dict[str, Any],
+        *,
+        policy: dict[str, Any],
+        actor: str = "system",
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        now_dt = utc_now()
+        now_iso = now_dt.isoformat()
+        trigger_code = str(condition.get("trigger_code") or "")
+        scope_type = str(condition.get("scope_type") or "GLOBAL")
+        bot_id = str(condition.get("bot_id") or "").strip() or None
+        symbol = str(condition.get("symbol") or "").strip().upper() or None
+        existing = store.find_execution_alert_instance(
+            trigger_code=trigger_code,
+            scope_type=scope_type,
+            bot_id=bot_id,
+            symbol=symbol,
+        )
+        severity = str(condition.get("severity") or "WARN")
+        source_layer = str(condition.get("source_layer") or "RAW")
+        source_refs = condition.get("source_refs") if isinstance(condition.get("source_refs"), dict) else {}
+        evidence = condition.get("evidence") if isinstance(condition.get("evidence"), dict) else {}
+        summary_text = str(condition.get("summary_text") or "")
+        cooldown_sec = max(0, _as_int(policy.get("default_cooldown_sec"), 300))
+        previous_state = str(existing.get("state") or "") if isinstance(existing, dict) else None
+
+        if not existing:
+            instance = store.upsert_execution_alert_instance(
+                trigger_code=trigger_code,
+                severity=severity,
+                state="OPEN",
+                source_layer=source_layer,
+                scope_type=scope_type,
+                bot_id=bot_id,
+                symbol=symbol,
+                opened_at=now_iso,
+                last_seen_at=now_iso,
+                source_refs=source_refs,
+                evidence=evidence,
+                summary_text=summary_text,
+            )
+            event = store.insert_execution_alert_event(
+                alert_instance_id=str(instance.get("alert_instance_id") or ""),
+                event_type="OPENED",
+                previous_state=None,
+                next_state="OPEN",
+                payload={"source_refs": source_refs, "evidence": evidence},
+                actor=actor,
+                occurred_at=now_iso,
+            )
+            return instance, event
+
+        current_state = normalize_alert_state(existing.get("state"))
+        suppressed_until_dt = self._alert_parse_iso(existing.get("suppressed_until"))
+        cooldown_until_dt = self._alert_parse_iso(existing.get("cooldown_until"))
+        state_after = current_state
+        event_type: str | None = None
+        opened_at = str(existing.get("opened_at") or "") or now_iso
+        acked_at = existing.get("acked_at")
+        suppressed_until = existing.get("suppressed_until")
+        cooldown_until = existing.get("cooldown_until")
+        resolved_at = existing.get("resolved_at")
+        expires_at = existing.get("expires_at")
+
+        if current_state == "SUPPRESSED" and suppressed_until_dt and suppressed_until_dt > now_dt:
+            state_after = "SUPPRESSED"
+        elif current_state == "ACKED":
+            state_after = "ACKED"
+        elif current_state == "SUPPRESSED":
+            state_after = "OPEN"
+            event_type = "REOPENED"
+            opened_at = now_iso
+            acked_at = None
+            suppressed_until = None
+            resolved_at = None
+            expires_at = None
+        elif current_state in {"RESOLVED", "EXPIRED", "COOLDOWN"}:
+            if bool(policy.get("reopen_on_active_condition", True)) and cooldown_until_dt and cooldown_until_dt > now_dt:
+                state_after = "COOLDOWN"
+                if current_state != "COOLDOWN":
+                    event_type = "COOLDOWN_STARTED"
+                cooldown_until = str(existing.get("cooldown_until") or self._alert_iso_after(now_dt, cooldown_sec))
+            else:
+                state_after = "OPEN"
+                event_type = "REOPENED"
+                cooldown_until = None
+            opened_at = now_iso
+            acked_at = None
+            suppressed_until = None
+            resolved_at = None
+            expires_at = None
+        else:
+            state_after = "OPEN"
+
+        instance = store.upsert_execution_alert_instance(
+            trigger_code=trigger_code,
+            severity=severity,
+            state=state_after,
+            source_layer=source_layer,
+            scope_type=scope_type,
+            bot_id=bot_id,
+            symbol=symbol,
+            opened_at=opened_at,
+            last_seen_at=now_iso,
+            acked_at=acked_at,
+            suppressed_until=suppressed_until,
+            cooldown_until=cooldown_until,
+            resolved_at=resolved_at,
+            expires_at=expires_at,
+            source_refs=source_refs,
+            evidence=evidence,
+            summary_text=summary_text,
+        )
+        if event_type:
+            event = store.insert_execution_alert_event(
+                alert_instance_id=str(instance.get("alert_instance_id") or ""),
+                event_type=event_type,
+                previous_state=previous_state,
+                next_state=state_after,
+                payload={"source_refs": source_refs, "evidence": evidence},
+                actor=actor,
+                occurred_at=now_iso,
+            )
+            return instance, event
+        return instance, None
+
+    def _sweep_inactive_execution_alerts(
+        self,
+        *,
+        scope_type: str,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        active_keys: set[tuple[str, str, str | None, str | None]],
+        policy: dict[str, Any],
+        actor: str = "system",
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        now_dt = utc_now()
+        now_iso = now_dt.isoformat()
+        cooldown_sec = max(0, _as_int(policy.get("default_cooldown_sec"), 300))
+        resolved_ttl_sec = max(cooldown_sec, _as_int(policy.get("resolved_ttl_sec"), 3600))
+        updated_rows: list[dict[str, Any]] = []
+        transitions: list[dict[str, Any]] = []
+        scope_rows = store.list_execution_alert_instances(
+            scope_type=scope_type,
+            bot_id=bot_id,
+            symbol=symbol,
+            limit=250,
+        )
+        for row in scope_rows:
+            row_key = (
+                str(row.get("trigger_code") or ""),
+                str(row.get("scope_type") or "GLOBAL"),
+                str(row.get("bot_id") or "").strip() or None,
+                str(row.get("symbol") or "").strip().upper() or None,
+            )
+            if row_key in active_keys:
+                continue
+            state_before = normalize_alert_state(row.get("state"))
+            if state_before in {"OPEN", "ACKED", "SUPPRESSED", "COOLDOWN"}:
+                resolved = store.upsert_execution_alert_instance(
+                    trigger_code=str(row.get("trigger_code") or ""),
+                    severity=str(row.get("severity") or "WARN"),
+                    state="RESOLVED",
+                    source_layer=str(row.get("source_layer") or "RAW"),
+                    scope_type=str(row.get("scope_type") or "GLOBAL"),
+                    bot_id=str(row.get("bot_id") or "").strip() or None,
+                    symbol=str(row.get("symbol") or "").strip().upper() or None,
+                    opened_at=str(row.get("opened_at") or "") or None,
+                    last_seen_at=str(row.get("last_seen_at") or "") or now_iso,
+                    acked_at=str(row.get("acked_at") or "") or None,
+                    suppressed_until=None,
+                    cooldown_until=self._alert_iso_after(now_dt, cooldown_sec),
+                    resolved_at=now_iso,
+                    expires_at=None,
+                    source_refs=row.get("source_refs") if isinstance(row.get("source_refs"), dict) else {},
+                    evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
+                    summary_text=str(row.get("summary_text") or ""),
+                )
+                updated_rows.append(resolved)
+                transitions.append(
+                    store.insert_execution_alert_event(
+                        alert_instance_id=str(resolved.get("alert_instance_id") or ""),
+                        event_type="RESOLVED",
+                        previous_state=state_before,
+                        next_state="RESOLVED",
+                        payload={"reason": "condition_inactive"},
+                        actor=actor,
+                        occurred_at=now_iso,
+                    )
+                )
+            elif state_before == "RESOLVED":
+                resolved_at_dt = self._alert_parse_iso(row.get("resolved_at"))
+                if resolved_at_dt and (now_dt - resolved_at_dt).total_seconds() >= resolved_ttl_sec:
+                    expired = store.upsert_execution_alert_instance(
+                        trigger_code=str(row.get("trigger_code") or ""),
+                        severity=str(row.get("severity") or "WARN"),
+                        state="EXPIRED",
+                        source_layer=str(row.get("source_layer") or "RAW"),
+                        scope_type=str(row.get("scope_type") or "GLOBAL"),
+                        bot_id=str(row.get("bot_id") or "").strip() or None,
+                        symbol=str(row.get("symbol") or "").strip().upper() or None,
+                        opened_at=str(row.get("opened_at") or "") or None,
+                        last_seen_at=str(row.get("last_seen_at") or "") or now_iso,
+                        acked_at=str(row.get("acked_at") or "") or None,
+                        suppressed_until=None,
+                        cooldown_until=str(row.get("cooldown_until") or "") or None,
+                        resolved_at=str(row.get("resolved_at") or "") or None,
+                        expires_at=now_iso,
+                        source_refs=row.get("source_refs") if isinstance(row.get("source_refs"), dict) else {},
+                        evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
+                        summary_text=str(row.get("summary_text") or ""),
+                    )
+                    updated_rows.append(expired)
+                    transitions.append(
+                        store.insert_execution_alert_event(
+                            alert_instance_id=str(expired.get("alert_instance_id") or ""),
+                            event_type="EXPIRED",
+                            previous_state="RESOLVED",
+                            next_state="EXPIRED",
+                            payload={"reason": "resolved_ttl_elapsed", "resolved_ttl_sec": resolved_ttl_sec},
+                            actor=actor,
+                            occurred_at=now_iso,
+                        )
+                    )
+        return updated_rows, transitions
+
+    def evaluate_execution_alerts(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        with self._lock:
+            policy = self._alerting_policy()
+            store.sync_execution_alert_catalog(default_alert_catalog_entries())
+            payload = self._collect_execution_alert_conditions(
+                state=state,
+                settings=settings,
+                bot_id=bot_id,
+                symbol=symbol,
+                persist_sources=persist,
+            )
+            scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+            scope_type = str(scope.get("scope_type") or "GLOBAL")
+            scope_bot_id = str(scope.get("bot_id") or "").strip() or None
+            scope_symbol = str(scope.get("symbol") or "").strip().upper() or None
+            conditions = [row for row in payload.get("conditions") if isinstance(row, dict)] if isinstance(payload.get("conditions"), list) else []
+            active_keys: set[tuple[str, str, str | None, str | None]] = set()
+            transitions: list[dict[str, Any]] = []
+            touched_ids: set[str] = set()
+            for condition in conditions:
+                key = (
+                    str(condition.get("trigger_code") or ""),
+                    str(condition.get("scope_type") or "GLOBAL"),
+                    str(condition.get("bot_id") or "").strip() or None,
+                    str(condition.get("symbol") or "").strip().upper() or None,
+                )
+                active_keys.add(key)
+                instance, event = self._sync_execution_alert_condition(condition, policy=policy, actor="system")
+                if isinstance(instance, dict):
+                    touched_ids.add(str(instance.get("alert_instance_id") or ""))
+                if isinstance(event, dict):
+                    transitions.append(event)
+
+            inactive_rows, inactive_events = self._sweep_inactive_execution_alerts(
+                scope_type=scope_type,
+                bot_id=scope_bot_id,
+                symbol=scope_symbol,
+                active_keys=active_keys,
+                policy=policy,
+                actor="system",
+            )
+            for row in inactive_rows:
+                if isinstance(row, dict):
+                    touched_ids.add(str(row.get("alert_instance_id") or ""))
+            transitions.extend(inactive_events)
+
+            items = store.list_execution_alert_instances(
+                scope_type=scope_type,
+                bot_id=scope_bot_id,
+                symbol=scope_symbol,
+                limit=250,
+            )
+            return {
+                "evaluated_at": str(payload.get("evaluated_at") or utc_now_iso()),
+                "scope": scope,
+                "policy_source": str(load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml"),
+                "upstream_refs": {
+                    "raw_signal_snapshot_ids": [
+                        str(row.get("signal_snapshot_id") or "")
+                        for row in payload.get("raw_signals", {}).get("items", [])
+                        if isinstance(row, dict) and str(row.get("signal_snapshot_id") or "").strip()
+                    ]
+                    if isinstance(payload.get("raw_signals"), dict)
+                    else [],
+                    "health_snapshot_id": str(payload.get("health_summary", {}).get("snapshot_id") or "")
+                    if isinstance(payload.get("health_summary"), dict)
+                    else "",
+                    "safety_evaluated_at": str(payload.get("safety_summary", {}).get("evaluated_at") or "")
+                    if isinstance(payload.get("safety_summary"), dict)
+                    else "",
+                },
+                "conditions": conditions,
+                "items": items,
+                "open_items": [row for row in items if alert_state_active(row.get("state"))],
+                "transitions": transitions,
+                "touched_alert_instance_ids": [value for value in touched_ids if value],
+            }
+
+    def ack_execution_alert(
+        self,
+        *,
+        alert_instance_id: str,
+        requested_by: str,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            instance = store.get_execution_alert_instance(alert_instance_id)
+            if not instance:
+                raise KeyError(alert_instance_id)
+            now_iso = utc_now_iso()
+            state_before = normalize_alert_state(instance.get("state"))
+            if state_before == "ACKED":
+                return {"alert": instance, "transition": None}
+            updated = store.upsert_execution_alert_instance(
+                trigger_code=str(instance.get("trigger_code") or ""),
+                severity=str(instance.get("severity") or "WARN"),
+                state="ACKED",
+                source_layer=str(instance.get("source_layer") or "RAW"),
+                scope_type=str(instance.get("scope_type") or "GLOBAL"),
+                bot_id=str(instance.get("bot_id") or "").strip() or None,
+                symbol=str(instance.get("symbol") or "").strip().upper() or None,
+                opened_at=str(instance.get("opened_at") or "") or None,
+                last_seen_at=str(instance.get("last_seen_at") or "") or now_iso,
+                acked_at=now_iso,
+                suppressed_until=str(instance.get("suppressed_until") or "") or None,
+                cooldown_until=str(instance.get("cooldown_until") or "") or None,
+                resolved_at=str(instance.get("resolved_at") or "") or None,
+                expires_at=str(instance.get("expires_at") or "") or None,
+                source_refs=instance.get("source_refs") if isinstance(instance.get("source_refs"), dict) else {},
+                evidence=instance.get("evidence") if isinstance(instance.get("evidence"), dict) else {},
+                summary_text=str(instance.get("summary_text") or ""),
+            )
+            event = store.insert_execution_alert_event(
+                alert_instance_id=str(updated.get("alert_instance_id") or ""),
+                event_type="ACKED",
+                previous_state=state_before,
+                next_state="ACKED",
+                payload={"audit_note": str(audit_note or "")},
+                actor=str(requested_by or "admin"),
+                occurred_at=now_iso,
+            )
+            return {"alert": updated, "transition": event}
+
+    def suppress_execution_alert(
+        self,
+        *,
+        alert_instance_id: str,
+        requested_by: str,
+        duration_sec: int | None = None,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            policy = self._alerting_policy()
+            instance = store.get_execution_alert_instance(alert_instance_id)
+            if not instance:
+                raise KeyError(alert_instance_id)
+            now_dt = utc_now()
+            now_iso = now_dt.isoformat()
+            suppression_sec = max(1, _as_int(duration_sec, _as_int(policy.get("default_suppression_sec"), 900)))
+            updated = store.upsert_execution_alert_instance(
+                trigger_code=str(instance.get("trigger_code") or ""),
+                severity=str(instance.get("severity") or "WARN"),
+                state="SUPPRESSED",
+                source_layer=str(instance.get("source_layer") or "RAW"),
+                scope_type=str(instance.get("scope_type") or "GLOBAL"),
+                bot_id=str(instance.get("bot_id") or "").strip() or None,
+                symbol=str(instance.get("symbol") or "").strip().upper() or None,
+                opened_at=str(instance.get("opened_at") or "") or None,
+                last_seen_at=str(instance.get("last_seen_at") or "") or now_iso,
+                acked_at=str(instance.get("acked_at") or "") or None,
+                suppressed_until=self._alert_iso_after(now_dt, suppression_sec),
+                cooldown_until=str(instance.get("cooldown_until") or "") or None,
+                resolved_at=str(instance.get("resolved_at") or "") or None,
+                expires_at=str(instance.get("expires_at") or "") or None,
+                source_refs=instance.get("source_refs") if isinstance(instance.get("source_refs"), dict) else {},
+                evidence=instance.get("evidence") if isinstance(instance.get("evidence"), dict) else {},
+                summary_text=str(instance.get("summary_text") or ""),
+            )
+            event = store.insert_execution_alert_event(
+                alert_instance_id=str(updated.get("alert_instance_id") or ""),
+                event_type="SUPPRESSED",
+                previous_state=str(instance.get("state") or ""),
+                next_state="SUPPRESSED",
+                payload={"audit_note": str(audit_note or ""), "duration_sec": suppression_sec},
+                actor=str(requested_by or "admin"),
+                occurred_at=now_iso,
+            )
+            return {"alert": updated, "transition": event}
+
+    def resolve_execution_alert(
+        self,
+        *,
+        alert_instance_id: str,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        requested_by: str,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            policy = self._alerting_policy()
+            instance = store.get_execution_alert_instance(alert_instance_id)
+            if not instance:
+                raise KeyError(alert_instance_id)
+            now_dt = utc_now()
+            now_iso = now_dt.isoformat()
+            condition_payload = self._collect_execution_alert_conditions(
+                state=state,
+                settings=settings,
+                bot_id=str(instance.get("bot_id") or "").strip() or None,
+                symbol=str(instance.get("symbol") or "").strip().upper() or None,
+                persist_sources=False,
+            )
+            active_condition = next(
+                (
+                    row
+                    for row in (condition_payload.get("conditions") if isinstance(condition_payload.get("conditions"), list) else [])
+                    if isinstance(row, dict)
+                    and str(row.get("trigger_code") or "") == str(instance.get("trigger_code") or "")
+                    and str(row.get("scope_type") or "") == str(instance.get("scope_type") or "")
+                    and (str(row.get("bot_id") or "").strip() or None) == (str(instance.get("bot_id") or "").strip() or None)
+                    and (str(row.get("symbol") or "").strip().upper() or None) == (str(instance.get("symbol") or "").strip().upper() or None)
+                ),
+                None,
+            )
+            if bool(policy.get("manual_resolve_requires_inactive", True)) and isinstance(active_condition, dict):
+                current = store.upsert_execution_alert_instance(
+                    trigger_code=str(instance.get("trigger_code") or ""),
+                    severity=choose_alert_severity(instance.get("severity"), active_condition.get("severity")),
+                    state=str(instance.get("state") or "OPEN"),
+                    source_layer=str(active_condition.get("source_layer") or instance.get("source_layer") or "RAW"),
+                    scope_type=str(instance.get("scope_type") or "GLOBAL"),
+                    bot_id=str(instance.get("bot_id") or "").strip() or None,
+                    symbol=str(instance.get("symbol") or "").strip().upper() or None,
+                    opened_at=str(instance.get("opened_at") or "") or None,
+                    last_seen_at=now_iso,
+                    acked_at=str(instance.get("acked_at") or "") or None,
+                    suppressed_until=str(instance.get("suppressed_until") or "") or None,
+                    cooldown_until=str(instance.get("cooldown_until") or "") or None,
+                    resolved_at=str(instance.get("resolved_at") or "") or None,
+                    expires_at=str(instance.get("expires_at") or "") or None,
+                    source_refs=active_condition.get("source_refs") if isinstance(active_condition.get("source_refs"), dict) else {},
+                    evidence=active_condition.get("evidence") if isinstance(active_condition.get("evidence"), dict) else {},
+                    summary_text=str(active_condition.get("summary_text") or instance.get("summary_text") or ""),
+                )
+                event = store.insert_execution_alert_event(
+                    alert_instance_id=str(current.get("alert_instance_id") or ""),
+                    event_type="RESOLVE_REJECTED",
+                    previous_state=str(current.get("state") or ""),
+                    next_state=str(current.get("state") or ""),
+                    payload={
+                        "audit_note": str(audit_note or ""),
+                        "reason": "condition_still_active",
+                        "source_refs": active_condition.get("source_refs") if isinstance(active_condition.get("source_refs"), dict) else {},
+                    },
+                    actor=str(requested_by or "admin"),
+                    occurred_at=now_iso,
+                )
+                return {"ok": False, "reason": "condition_still_active", "alert": current, "transition": event}
+
+            cooldown_sec = max(0, _as_int(policy.get("default_cooldown_sec"), 300))
+            updated = store.upsert_execution_alert_instance(
+                trigger_code=str(instance.get("trigger_code") or ""),
+                severity=str(instance.get("severity") or "WARN"),
+                state="RESOLVED",
+                source_layer=str(instance.get("source_layer") or "RAW"),
+                scope_type=str(instance.get("scope_type") or "GLOBAL"),
+                bot_id=str(instance.get("bot_id") or "").strip() or None,
+                symbol=str(instance.get("symbol") or "").strip().upper() or None,
+                opened_at=str(instance.get("opened_at") or "") or None,
+                last_seen_at=str(instance.get("last_seen_at") or "") or now_iso,
+                acked_at=str(instance.get("acked_at") or "") or None,
+                suppressed_until=None,
+                cooldown_until=self._alert_iso_after(now_dt, cooldown_sec),
+                resolved_at=now_iso,
+                expires_at=None,
+                source_refs=instance.get("source_refs") if isinstance(instance.get("source_refs"), dict) else {},
+                evidence=instance.get("evidence") if isinstance(instance.get("evidence"), dict) else {},
+                summary_text=str(instance.get("summary_text") or ""),
+            )
+            event = store.insert_execution_alert_event(
+                alert_instance_id=str(updated.get("alert_instance_id") or ""),
+                event_type="RESOLVED",
+                previous_state=str(instance.get("state") or ""),
+                next_state="RESOLVED",
+                payload={"audit_note": str(audit_note or ""), "manual": True},
+                actor=str(requested_by or "admin"),
+                occurred_at=now_iso,
+            )
+            return {"ok": True, "alert": updated, "transition": event}
 
     def evaluate_operational_safety(
         self,
@@ -15743,6 +17221,145 @@ def create_app() -> FastAPI:
             requested_by=str(user.get("username") or "admin"),
             audit_note=body.audit_note if body else None,
         )
+
+    @app.get("/api/v1/execution/alerts/catalog")
+    def execution_alerts_catalog(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        store.sync_execution_alert_catalog(default_alert_catalog_entries())
+        return {"items": store.list_execution_alert_catalog(limit=500)}
+
+    @app.get("/api/v1/execution/alerts")
+    def execution_alerts(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        state: str | None = None,
+        trigger_code: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        states = [str(state).strip().upper()] if str(state or "").strip() else None
+        return {
+            "items": store.list_execution_alert_instances(
+                bot_id=str(bot_id or "").strip() or None,
+                symbol=str(symbol or "").strip().upper() or None,
+                trigger_code=str(trigger_code or "").strip() or None,
+                states=states,
+                limit=limit,
+            )
+        }
+
+    @app.get("/api/v1/execution/alerts/open")
+    def execution_alerts_open(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {
+            "items": store.list_execution_alert_instances(
+                bot_id=str(bot_id or "").strip() or None,
+                symbol=str(symbol or "").strip().upper() or None,
+                states=["OPEN", "ACKED", "SUPPRESSED", "COOLDOWN"],
+                limit=limit,
+            )
+        }
+
+    @app.get("/api/v1/execution/alerts/history")
+    def execution_alerts_history(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        scope_bot = str(bot_id or "").strip() or None
+        scope_symbol = str(symbol or "").strip().upper() or None
+        items = store.list_execution_alert_instances(bot_id=scope_bot, symbol=scope_symbol, limit=limit)
+        allowed_ids = {str(row.get("alert_instance_id") or "") for row in items if isinstance(row, dict)}
+        events = [
+            row
+            for row in store.list_execution_alert_events(limit=max(limit * 3, 100))
+            if not allowed_ids or str(row.get("alert_instance_id") or "") in allowed_ids
+        ][:limit]
+        return {
+            "items": items,
+            "events": events,
+        }
+
+    @app.post("/api/v1/execution/alerts/evaluate")
+    def execution_alerts_evaluate(
+        body: AlertEvaluateBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        payload = runtime_bridge.evaluate_execution_alerts(
+            state=state,
+            settings=settings,
+            bot_id=str((body.bot_id if body else "") or "").strip() or None,
+            symbol=str((body.symbol if body else "") or "").strip().upper() or None,
+            persist=True,
+        )
+        return payload
+
+    @app.get("/api/v1/execution/alerts/{alert_instance_id}")
+    def execution_alerts_detail(
+        alert_instance_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        alert = store.get_execution_alert_instance(alert_instance_id)
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        history = store.list_execution_alert_events(alert_instance_id=alert_instance_id, limit=250)
+        return {"alert": alert, "history": history}
+
+    @app.post("/api/v1/execution/alerts/{alert_instance_id}/ack")
+    def execution_alerts_ack(
+        alert_instance_id: str,
+        body: AlertLifecycleBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return runtime_bridge.ack_execution_alert(
+                alert_instance_id=alert_instance_id,
+                requested_by=str(user.get("username") or "admin"),
+                audit_note=body.audit_note if body else None,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Alert not found")
+
+    @app.post("/api/v1/execution/alerts/{alert_instance_id}/suppress")
+    def execution_alerts_suppress(
+        alert_instance_id: str,
+        body: AlertSuppressBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return runtime_bridge.suppress_execution_alert(
+                alert_instance_id=alert_instance_id,
+                requested_by=str(user.get("username") or "admin"),
+                duration_sec=body.duration_sec if body else None,
+                audit_note=body.audit_note if body else None,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Alert not found")
+
+    @app.post("/api/v1/execution/alerts/{alert_instance_id}/resolve")
+    def execution_alerts_resolve(
+        alert_instance_id: str,
+        body: AlertLifecycleBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        try:
+            return runtime_bridge.resolve_execution_alert(
+                alert_instance_id=alert_instance_id,
+                state=state,
+                settings=settings,
+                requested_by=str(user.get("username") or "admin"),
+                audit_note=body.audit_note if body else None,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Alert not found")
 
     @app.get("/api/v1/settings")
     def settings(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

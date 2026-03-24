@@ -6,6 +6,7 @@ Fecha de actualizacion: 2026-03-23
 
 - Estado real cerrado en repo para la linea LIVE Spot:
   - `RTLOPS-26` live signals foundation - CAPA A de señal cruda
+  - `RTLOPS-27` live alerts persistentes - consumer persistente de alerting
   - `RTLOPS-36` validacion `paper -> testnet -> canary`
   - `RTLOPS-49` exchange adapter live hardening
   - `RTLOPS-44` market websocket runtime live
@@ -31,12 +32,12 @@ Fecha de actualizacion: 2026-03-23
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-27` `Live alerts persistentes + catalogo de triggers operativos`.
+  - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`;
   - este follow-up no reabre `RTLOPS-26` y existe solo para endurecer el contrato raw si `RTLOPS-27` o futuros consumidores presionan demasiado la CAPA A.
 - Estado administrativo real de Linear al 2026-03-23:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29` y `RTLOPS-30`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29` y `RTLOPS-30`;
   - mapa de proyectos alineado con dominios reales del repo;
   - dominio `observability / health / safety` alineado en tres capas:
     - CAPA A `señal cruda`: `RTLOPS-26` + `RTLOPS-63` + `RTLOPS-64`
@@ -48,6 +49,101 @@ Fecha de actualizacion: 2026-03-23
     - consume safety states (`RTLOPS-29`)
     - no es dueña de `live_signals.py` ni del score global ni de breakers/freezes;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
+
+## RTLOPS-27 - live alerts persistentes / consumer persistente de alerts - 2026-03-23
+
+- Objetivo real cerrado:
+  - consumir outputs canonicamente persistidos de `RTLOPS-26`, `RTLOPS-30` y `RTLOPS-29`;
+  - materializar condiciones derivadas en alertas persistentes con lifecycle auditable;
+  - resolver catalogo de triggers, deduplicacion, suppressions, cooldowns, acknowledgements y resolve semantico correcto;
+  - sin recolectar senal cruda nueva, sin recalcular `health_summary` y sin abrir acciones nuevas de safety.
+- Implementacion real:
+  - nuevo modulo:
+    - `rtlab_autotrader/rtlab_core/execution/alerts.py`
+  - persistencia auditable en SQLite:
+    - `execution_alert_catalog`
+    - `execution_alert_instances`
+    - `execution_alert_events`
+  - policy numerica minima nueva:
+    - `execution_safety.alerting.default_suppression_sec = 900`
+    - `execution_safety.alerting.default_cooldown_sec = 300`
+    - `execution_safety.alerting.resolved_ttl_sec = 3600`
+    - `execution_safety.alerting.reopen_on_active_condition = true`
+    - `execution_safety.alerting.manual_resolve_requires_inactive = true`
+  - endpoints nuevos:
+    - `GET /api/v1/execution/alerts/catalog`
+    - `GET /api/v1/execution/alerts`
+    - `GET /api/v1/execution/alerts/open`
+    - `GET /api/v1/execution/alerts/{alert_instance_id}`
+    - `POST /api/v1/execution/alerts/evaluate`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/ack`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/suppress`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/resolve`
+    - `GET /api/v1/execution/alerts/history`
+- Catalogo canonico de triggers implementado:
+  - `STREAM_GAP_WARN`
+  - `STREAM_GAP_CRITICAL`
+  - `STREAM_TERMINATED`
+  - `PREFLIGHT_EXPIRED`
+  - `PREFLIGHT_FAIL`
+  - `RECONCILIATION_DESYNC_OPEN`
+  - `RECONCILIATION_MANUAL_REVIEW_OPEN`
+  - `UNKNOWN_TIMEOUT_STUCK`
+  - `BREAKER_OPEN_BLOCKING`
+  - `MANUAL_LOCK_ACTIVE`
+  - `RATE_LIMIT_PRESSURE_HIGH`
+  - `HTTP_418_RISK_ACTIVE`
+  - `OPEN_ORDER_PRESSURE_HIGH`
+  - `EMERGENCY_ACTION_ACTIVE`
+  - `FREEZE_SYMBOL_ACTIVE`
+  - `FREEZE_BOT_ACTIVE`
+  - `FREEZE_GLOBAL_ACTIVE`
+- Lifecycle persistente implementado:
+  - `OPEN`
+  - `ACKED`
+  - `SUPPRESSED`
+  - `COOLDOWN`
+  - `RESOLVED`
+  - `EXPIRED`
+- Semantica cerrada y obligatoria:
+  - `alert_instances` no reemplaza la verdad canonica del sistema; solo referencia evidencia primaria de `RTLOPS-26`, `RTLOPS-30` y `RTLOPS-29`;
+  - `SUPPRESSED` no es `COOLDOWN`:
+    - `SUPPRESSED` silencia temporalmente una alerta mientras la condicion puede seguir activa;
+    - `COOLDOWN` evita reapertura inmediata por rebote despues de `ACKED` o `RESOLVED`;
+  - resolve manual no puede falsear el estado subyacente:
+    - si la condicion base sigue activa, la alerta no se cierra mentirosamente;
+    - la evaluacion siguiente la mantiene visible o la reabre segun policy;
+  - `EXPIRED` no equivale a `RESOLVED`; solo aplica por obsolescencia/TTL sin observacion suficiente nueva.
+- Reglas de ingenieria cerradas:
+  - `RTLOPS-27` consume salidas canonicamente expuestas por:
+    - `RTLOPS-26` raw snapshots/eventos
+    - `RTLOPS-30` `health_summary`
+    - `RTLOPS-29` safety states / manual locks / emergency actions
+  - no modifica ni endurece el contrato raw ad hoc; cualquier presion de schema discipline se deriva a `RTLOPS-65`;
+  - no toca `live_signals.py`;
+  - no recalcula score global ni prioridades finales;
+  - no crea contratos especiales de conveniencia para frontend sobre el raw backend.
+- Fuente proyecto:
+  - `rtlab_autotrader/rtlab_core/execution/alerts.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+  - `rtlab_autotrader/tests/test_web_live_ready.py`
+  - `config/policies/execution_safety.yaml`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Fuente oficial / conceptual:
+  - Binance Spot User Data Stream y errores oficiales para las condiciones observadas consumidas;
+  - OpenTelemetry como referencia de separacion entre senal y consumo;
+  - Prometheus/Alertmanager como referencia de separacion entre condicion y lifecycle de alerta.
+- Riesgo / limite conocido:
+  - este bloque es backend-first y no agrega UI nueva;
+  - el endurecimiento residual del envelope raw sigue separado en `RTLOPS-65`;
+  - la alerta nunca reemplaza ni oculta la verdad operativa de las capas fuente.
+- Validacion local cerrada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/alerts.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_alert" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts -q` -> PASS (`10 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts-compat -q` -> PASS (`18 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-alerts` -> PASS (`2 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle or live_health_summary_contract_survives_raw_signal_snapshot_persistence or execution_signals_endpoints_return_summary_history_and_scopes" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts-compat2 -q` -> PASS (`5 passed`)
 
 ## RTLOPS-26 - live signals foundation / CAPA A de señal cruda - 2026-03-23
 

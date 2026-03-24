@@ -2,6 +2,81 @@
 
 ## 2026-03-23
 
+### RTLOPS-27 - live alerts persistentes + catalogo de triggers operativos
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/alerts.py` como consumer persistente de outputs de:
+    - `RTLOPS-26` CAPA A de senal cruda
+    - `RTLOPS-30` CAPA B de interpretacion / `health_summary`
+    - `RTLOPS-29` CAPA C de accion / `operational_safety`
+  - `ConsoleStore`/SQLite agregan:
+    - `execution_alert_catalog`
+    - `execution_alert_instances`
+    - `execution_alert_events`
+  - `RuntimeBridge.evaluate_execution_alerts(...)` materializa condiciones derivadas en instancias persistentes sin invadir CAPA A/B/C;
+  - nuevos endpoints:
+    - `GET /api/v1/execution/alerts/catalog`
+    - `GET /api/v1/execution/alerts`
+    - `GET /api/v1/execution/alerts/open`
+    - `GET /api/v1/execution/alerts/{alert_instance_id}`
+    - `POST /api/v1/execution/alerts/evaluate`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/ack`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/suppress`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/resolve`
+    - `GET /api/v1/execution/alerts/history`
+- Policy:
+  - nueva seccion `execution_safety.alerting` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - valores cerrados:
+    - `default_suppression_sec = 900`
+    - `default_cooldown_sec = 300`
+    - `resolved_ttl_sec = 3600`
+    - `reopen_on_active_condition = true`
+    - `manual_resolve_requires_inactive = true`
+- Catalogo de triggers persistentes soportados:
+  - `STREAM_GAP_WARN`
+  - `STREAM_GAP_CRITICAL`
+  - `STREAM_TERMINATED`
+  - `PREFLIGHT_EXPIRED`
+  - `PREFLIGHT_FAIL`
+  - `RECONCILIATION_DESYNC_OPEN`
+  - `RECONCILIATION_MANUAL_REVIEW_OPEN`
+  - `UNKNOWN_TIMEOUT_STUCK`
+  - `BREAKER_OPEN_BLOCKING`
+  - `MANUAL_LOCK_ACTIVE`
+  - `RATE_LIMIT_PRESSURE_HIGH`
+  - `HTTP_418_RISK_ACTIVE`
+  - `OPEN_ORDER_PRESSURE_HIGH`
+  - `EMERGENCY_ACTION_ACTIVE`
+  - `FREEZE_SYMBOL_ACTIVE`
+  - `FREEZE_BOT_ACTIVE`
+  - `FREEZE_GLOBAL_ACTIVE`
+- Lifecycle y semantica cerrados:
+  - estados:
+    - `OPEN`
+    - `ACKED`
+    - `SUPPRESSED`
+    - `COOLDOWN`
+    - `RESOLVED`
+    - `EXPIRED`
+  - dedup por `trigger_code + scope + condicion activa`
+  - `SUPPRESSED` y `COOLDOWN` no son sinonimos
+  - resolve manual no puede ocultar una condicion aun activa
+  - `alert_instances` no reemplaza la verdad canonica del runtime; solo referencia evidencia primaria upstream
+- No-goals respetados:
+  - sin nueva senal cruda en `live_signals.py`
+  - sin hardening del raw contract dentro de `RTLOPS-27`
+  - sin recalcular `health_summary`
+  - sin score global nuevo
+  - sin acciones nuevas de safety
+  - sin UI-first ni contrato especial de frontend
+- Validacion local real:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/alerts.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_alert" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts -q` -> PASS (`10 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts-compat -q` -> PASS (`18 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-alerts` -> PASS (`2 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle or live_health_summary_contract_survives_raw_signal_snapshot_persistence or execution_signals_endpoints_return_summary_history_and_scopes" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts-compat2 -q` -> PASS (`5 passed`)
+
 ### Alineacion minima Linear entre senal / interpretacion / accion
 - Ajuste administrativo/arquitectonico sin cambios de producto:
   - `RTLOPS-27` quedo redefinida en Linear como consumidor persistente de outputs de:
