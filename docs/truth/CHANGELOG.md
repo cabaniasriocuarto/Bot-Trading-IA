@@ -2,6 +2,30 @@
 
 ## 2026-03-24
 
+### RTLOPS-51 - Integracion real de RTLOPS-36 con runtime live
+- Backend:
+  - `RuntimeBridge` endurece `/api/v3/account` como `account surface` canonica y no solo como derivacion legacy de `positions`;
+  - `_sync_runtime_state(...)` persiste:
+    - `runtime_account_surface_ok`
+    - `runtime_account_surface_verified_at`
+    - `runtime_account_surface_reason`
+    - `runtime_account_can_trade`
+    - `runtime_account_permissions`
+    - `runtime_account_balances_count`
+  - `_runtime_contract_snapshot(...)` agrega checks canonicos de cuenta para `G9_RUNTIME_ENGINE_REAL`:
+    - `account_surface_ok`
+    - `account_surface_fresh`
+    - `account_can_trade`
+  - `GET /api/v1/rollout/status` ahora expone `readiness_by_stage` consumiendo surfaces reales ya cerradas.
+- Semantica:
+  - `TESTNET` deja de quedar listo solo por una evaluacion historica de soak; si el runtime contract actual esta incompleto, la readiness falla cerrada;
+  - no se reabren ownerships de submit/reconcile/safety/health/alerts;
+  - no se agrega UI nueva ni WebSocket nuevo.
+- Tests:
+  - cobertura selectiva de account surface + `G9_RUNTIME_ENGINE_REAL`;
+  - cobertura selectiva de `rollout/status` con `readiness_by_stage`;
+  - compatibilidad minima de runtime real sobre submit/reconcile/order status/open orders.
+
 ### RTLOPS-54 - Canary Live Controller
 - Backend:
   - nuevo modulo `rtlab_autotrader/rtlab_core/execution/canary.py` para gate evaluation y phase progression del canary controller;

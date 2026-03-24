@@ -12616,13 +12616,53 @@ class RuntimeBridge:
         positions.sort(key=lambda row: str(row.get("symbol") or ""))
         return positions
 
-    def _fetch_exchange_account_positions(self, *, mode: str) -> tuple[list[dict[str, Any]], str, bool, str]:
+    @staticmethod
+    def _parse_exchange_account_surface_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        balances = payload.get("balances") if isinstance(payload.get("balances"), list) else []
+        permissions_raw = payload.get("permissions") if isinstance(payload.get("permissions"), list) else []
+        permissions = [str(row).strip().upper() for row in permissions_raw if str(row).strip()]
+        nonzero_balances: list[dict[str, Any]] = []
+        for row in balances:
+            if not isinstance(row, dict):
+                continue
+            asset = str(row.get("asset") or "").strip().upper()
+            free_qty = max(0.0, _as_float(row.get("free"), 0.0))
+            locked_qty = max(0.0, _as_float(row.get("locked"), 0.0))
+            total_qty = free_qty + locked_qty
+            if not asset or total_qty <= 0.0:
+                continue
+            nonzero_balances.append(
+                {
+                    "asset": asset,
+                    "free_qty": round(free_qty, 8),
+                    "locked_qty": round(locked_qty, 8),
+                    "total_qty": round(total_qty, 8),
+                }
+            )
+        nonzero_balances.sort(key=lambda row: str(row.get("asset") or ""))
+        can_trade = bool(payload.get("canTrade", True))
+        can_withdraw = bool(payload.get("canWithdraw", True))
+        can_deposit = bool(payload.get("canDeposit", True))
+        update_time_ms = _as_int(payload.get("updateTime"), 0)
+        return {
+            "balances": nonzero_balances,
+            "positions": RuntimeBridge._parse_exchange_account_positions_payload(payload),
+            "balances_count": len(nonzero_balances),
+            "permissions": permissions,
+            "can_trade": can_trade,
+            "can_withdraw": can_withdraw,
+            "can_deposit": can_deposit,
+            "update_time_ms": update_time_ms,
+            "source_type": "GET /api/v3/account",
+        }
+
+    def _fetch_exchange_account_surface(self, *, mode: str) -> tuple[dict[str, Any], str, bool, str]:
         mode_n = str(mode or "").strip().lower()
         if mode_n not in {"testnet", "live"}:
-            return [], "exchange_api_skip_mode", False, f"Modo no soportado para exchange account: {mode_n or 'unknown'}"
+            return {}, "exchange_api_skip_mode", False, f"Modo no soportado para exchange account: {mode_n or 'unknown'}"
         creds = load_exchange_credentials(mode_n)
         if not bool(creds.get("has_keys", False)):
-            return [], "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para account snapshot."
+            return {}, "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para account snapshot."
         timeout_sec = _exchange_timeout_seconds()
         try:
             request_ok, result = _binance_signed_request(
@@ -12636,13 +12676,17 @@ class RuntimeBridge:
             )
             payload = result.get("payload")
             if request_ok and isinstance(payload, dict):
-                return RuntimeBridge._parse_exchange_account_positions_payload(payload), "exchange_api", True, ""
+                return RuntimeBridge._parse_exchange_account_surface_payload(payload), "exchange_api", True, ""
             status_code = int(_as_int(result.get("status_code"), 0))
             category, detail = _classify_exchange_error(status_code, payload)
             reason = detail if detail else f"Exchange account failed ({category})"
-            return [], "exchange_api_error", False, reason
+            return {}, "exchange_api_error", False, reason
         except Exception as exc:
-            return [], "exchange_api_exception", False, str(exc)
+            return {}, "exchange_api_exception", False, str(exc)
+
+    def _fetch_exchange_account_positions(self, *, mode: str) -> tuple[list[dict[str, Any]], str, bool, str]:
+        surface, source, ok, reason = self._fetch_exchange_account_surface(mode=mode)
+        return list(surface.get("positions") or []), source, ok, reason
 
     def _fetch_exchange_order_status(
         self,
@@ -13501,6 +13545,12 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_exchange_connector_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_order_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_account_surface_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_surface_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_surface_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_account_can_trade", False) or changed
+                changed = self._set_state_value(state, "runtime_account_permissions", []) or changed
+                changed = self._set_state_value(state, "runtime_account_balances_count", 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
@@ -13541,6 +13591,12 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_last_safety_eval_at", now_iso) or changed
                 changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
                 changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
+                changed = self._set_state_value(state, "runtime_account_surface_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_surface_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_surface_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_account_can_trade", False) or changed
+                changed = self._set_state_value(state, "runtime_account_permissions", []) or changed
+                changed = self._set_state_value(state, "runtime_account_balances_count", 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
@@ -13586,14 +13642,32 @@ class RuntimeBridge:
             changed = self._set_state_value(state, "runtime_heartbeat_at", now_iso) or changed
             changed = self._set_state_value(state, "runtime_last_reconcile_at", now_iso) or changed
             if active_mode in {"testnet", "live"}:
-                account_positions, account_source, account_ok, account_reason = self._fetch_exchange_account_positions(
+                account_surface, account_source, account_ok, account_reason = self._fetch_exchange_account_surface(
                     mode=active_mode
                 )
+                account_positions = list(account_surface.get("positions") or [])
+                account_permissions = [str(row) for row in (account_surface.get("permissions") or []) if str(row).strip()]
+                account_can_trade = bool(account_surface.get("can_trade", False))
+                account_balances_count = int(_as_int(account_surface.get("balances_count"), 0))
                 if account_ok:
                     self._remote_positions = account_positions
                 else:
                     self._remote_positions = []
                     self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
+                changed = self._set_state_value(state, "runtime_account_surface_ok", bool(account_ok)) or changed
+                changed = self._set_state_value(
+                    state,
+                    "runtime_account_surface_verified_at",
+                    now_iso if bool(account_ok) else "",
+                ) or changed
+                changed = self._set_state_value(
+                    state,
+                    "runtime_account_surface_reason",
+                    str(account_reason or account_source),
+                ) or changed
+                changed = self._set_state_value(state, "runtime_account_can_trade", bool(account_can_trade if account_ok else False)) or changed
+                changed = self._set_state_value(state, "runtime_account_permissions", account_permissions if account_ok else []) or changed
+                changed = self._set_state_value(state, "runtime_account_balances_count", account_balances_count if account_ok else 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", bool(account_ok)) or changed
                 changed = self._set_state_value(
                     state,
@@ -13607,6 +13681,12 @@ class RuntimeBridge:
                 ) or changed
             else:
                 self._remote_positions = []
+                changed = self._set_state_value(state, "runtime_account_surface_ok", False) or changed
+                changed = self._set_state_value(state, "runtime_account_surface_verified_at", "") or changed
+                changed = self._set_state_value(state, "runtime_account_surface_reason", "") or changed
+                changed = self._set_state_value(state, "runtime_account_can_trade", False) or changed
+                changed = self._set_state_value(state, "runtime_account_permissions", []) or changed
+                changed = self._set_state_value(state, "runtime_account_balances_count", 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
@@ -14457,6 +14537,15 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
     exchange_mode = str(snapshot.get("runtime_exchange_mode") or "").strip().lower()
     exchange_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_exchange_verified_at") or ""), now=now_dt)
     exchange_required = mode_n in {"testnet", "live"}
+    account_surface_ok = bool(snapshot.get("runtime_account_surface_ok", False))
+    account_surface_reason = str(snapshot.get("runtime_account_surface_reason") or "")
+    account_surface_verified_at = str(snapshot.get("runtime_account_surface_verified_at") or "")
+    account_surface_age_sec = _runtime_ts_age_sec(account_surface_verified_at, now=now_dt)
+    account_can_trade = bool(snapshot.get("runtime_account_can_trade", False))
+    account_permissions = snapshot.get("runtime_account_permissions")
+    if not isinstance(account_permissions, list):
+        account_permissions = []
+    account_balances_count = int(_as_int(snapshot.get("runtime_account_balances_count"), 0))
     heartbeat_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_heartbeat_at") or ""), now=now_dt)
     reconcile_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_last_reconcile_at") or ""), now=now_dt)
 
@@ -14473,6 +14562,10 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
         "exchange_check_fresh": (not exchange_required)
         or (exchange_age_sec is not None and exchange_age_sec <= int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC)),
         "exchange_mode_match": (not exchange_required) or exchange_mode == mode_n,
+        "account_surface_ok": (not exchange_required) or account_surface_ok,
+        "account_surface_fresh": (not exchange_required)
+        or (account_surface_age_sec is not None and account_surface_age_sec <= int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC)),
+        "account_can_trade": (not exchange_required) or account_can_trade,
     }
     missing_checks = [key for key, ok in checks.items() if not bool(ok)]
     ready_for_live = len(missing_checks) == 0
@@ -14491,6 +14584,13 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
         "runtime_exchange_mode": exchange_mode,
         "runtime_exchange_verified_at": str(snapshot.get("runtime_exchange_verified_at") or ""),
         "runtime_exchange_reason": str(snapshot.get("runtime_exchange_reason") or ""),
+        "runtime_account_surface_ok": account_surface_ok,
+        "runtime_account_surface_verified_at": account_surface_verified_at,
+        "runtime_account_surface_reason": account_surface_reason,
+        "runtime_account_surface_age_sec": account_surface_age_sec,
+        "runtime_account_can_trade": account_can_trade,
+        "runtime_account_permissions": account_permissions,
+        "runtime_account_balances_count": account_balances_count,
         "exchange_check_age_sec": exchange_age_sec,
         "exchange_check_max_age_sec": int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC),
         "runtime_heartbeat_at": str(snapshot.get("runtime_heartbeat_at") or ""),
@@ -14560,6 +14660,12 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_exchange_mode", "")
     runtime_state.setdefault("runtime_exchange_verified_at", "")
     runtime_state.setdefault("runtime_exchange_reason", "")
+    runtime_state.setdefault("runtime_account_surface_ok", False)
+    runtime_state.setdefault("runtime_account_surface_verified_at", "")
+    runtime_state.setdefault("runtime_account_surface_reason", "")
+    runtime_state.setdefault("runtime_account_can_trade", False)
+    runtime_state.setdefault("runtime_account_permissions", [])
+    runtime_state.setdefault("runtime_account_balances_count", 0)
     runtime_state.setdefault("runtime_account_positions_ok", False)
     runtime_state.setdefault("runtime_account_positions_verified_at", "")
     runtime_state.setdefault("runtime_account_positions_reason", "")
@@ -14921,6 +15027,15 @@ def build_status_payload() -> dict[str, Any]:
             "telemetry_ok": bool(telemetry_guard.get("ok", False)),
             "telemetry_fail_closed": bool(telemetry_guard.get("fail_closed", True)),
             "telemetry_reason": str(telemetry_guard.get("reason") or ""),
+            "account_surface": {
+                "ok": bool(runtime_snapshot.get("runtime_account_surface_ok", False)),
+                "verified_at": str(runtime_snapshot.get("runtime_account_surface_verified_at") or ""),
+                "age_sec": runtime_snapshot.get("runtime_account_surface_age_sec"),
+                "reason": str(runtime_snapshot.get("runtime_account_surface_reason") or ""),
+                "can_trade": bool(runtime_snapshot.get("runtime_account_can_trade", False)),
+                "permissions": list(runtime_snapshot.get("runtime_account_permissions") or []),
+                "balances_count": int(_as_int(runtime_snapshot.get("runtime_account_balances_count"), 0)),
+            },
             "warning": None if runtime_real else "Runtime simulado: no se envian ordenes reales al exchange.",
         },
         "runtime_engine": runtime_engine,
@@ -14951,6 +15066,165 @@ def build_status_payload() -> dict[str, Any]:
         "live_health_summary": live_health_summary,
         "gates_overall": gates["overall_status"],
         "positions": runtime_positions,
+    }
+
+
+def _rollout_stage_readiness_row(
+    *,
+    stage_id: str,
+    ready: bool,
+    reasons: list[str],
+    warnings: list[str] | None = None,
+    blocking_sources: list[str] | None = None,
+    source_refs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    warnings_n = [str(row) for row in (warnings or []) if str(row).strip()]
+    reasons_n = [str(row) for row in reasons if str(row).strip()]
+    blocking_n = [str(row) for row in (blocking_sources or []) if str(row).strip()]
+    status = "READY" if bool(ready) else ("BLOCKED" if reasons_n or blocking_n else "PENDING")
+    return {
+        "stage": stage_id,
+        "ready_bool": bool(ready),
+        "status": status,
+        "reasons": reasons_n,
+        "warnings": warnings_n,
+        "blocking_sources": blocking_n,
+        "source_refs": dict(source_refs or {}),
+        "evaluated_at": utc_now_iso(),
+    }
+
+
+def build_rollout_readiness_by_stage() -> dict[str, Any]:
+    settings = store.load_settings()
+    state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    rollout_state = rollout_manager.status()
+    runtime_snapshot_live = _runtime_contract_snapshot(state, target_mode="live")
+    runtime_snapshot_testnet = _runtime_contract_snapshot(state, target_mode="testnet")
+    live_health_summary = runtime_bridge.build_live_health_summary(state=state, settings=settings, persist=False)
+    operational_safety = runtime_bridge.operational_safety_summary(state=state)
+    canary_status = runtime_bridge.execution_canary_status(state=state, settings=settings)
+    canary_eval = canary_status.get("current_evaluation") if isinstance(canary_status.get("current_evaluation"), dict) else {}
+    latest_canary_run = canary_status.get("latest_run") if isinstance(canary_status.get("latest_run"), dict) else {}
+    open_alerts = store.list_execution_alert_instances(limit=250)
+    open_critical_alert_ids = [
+        str(row.get("alert_instance_id") or "")
+        for row in open_alerts
+        if isinstance(row, dict)
+        and alert_state_active(row.get("state"))
+        and str(row.get("severity") or "").strip().upper() == "CRITICAL"
+        and str(row.get("alert_instance_id") or "").strip()
+    ]
+    offline_gates = rollout_state.get("offline_gates") if isinstance(rollout_state.get("offline_gates"), dict) else {}
+    phase_evals = rollout_state.get("phase_evaluations") if isinstance(rollout_state.get("phase_evaluations"), dict) else {}
+    paper_eval = phase_evals.get("paper_soak") if isinstance(phase_evals.get("paper_soak"), dict) else {}
+    testnet_eval = phase_evals.get("testnet_soak") if isinstance(phase_evals.get("testnet_soak"), dict) else {}
+    live_mode_warning = []
+    if str(state.get("mode") or "").strip().lower() != "live":
+        live_mode_warning.append("runtime_mode_actual_no_es_live")
+    if str(runtime_snapshot_live.get("runtime_exchange_mode") or "").strip().lower() == "testnet":
+        live_mode_warning.append("spot_testnet_no_equivale_live")
+
+    paper_ready = bool(offline_gates.get("passed", False)) or bool(paper_eval.get("passed", False))
+    paper_reasons = []
+    if not paper_ready:
+        failed_ids = offline_gates.get("failed_ids") if isinstance(offline_gates.get("failed_ids"), list) else []
+        paper_reasons = [str(row) for row in failed_ids if str(row).strip()] or ["offline_rollout_gates_not_ready"]
+
+    testnet_missing = [str(row) for row in (runtime_snapshot_testnet.get("missing_checks") or []) if str(row).strip()]
+    testnet_eval_present = bool(testnet_eval)
+    testnet_soak_passed = bool(testnet_eval.get("passed", False))
+    testnet_contract_ready = bool(runtime_snapshot_testnet.get("ready_for_live", False))
+    testnet_ready = paper_ready and testnet_contract_ready and (not testnet_eval_present or testnet_soak_passed)
+    testnet_reasons = []
+    if not paper_ready:
+        testnet_reasons.append("paper_stage_not_ready")
+    if not testnet_contract_ready:
+        testnet_reasons.extend(testnet_missing)
+    if testnet_eval_present and not testnet_soak_passed:
+        testnet_reasons.append("testnet_soak_not_passed")
+    if isinstance(testnet_eval.get("failed_ids"), list):
+        testnet_reasons.extend(str(row) for row in testnet_eval.get("failed_ids") if str(row).strip())
+
+    canary_ready = bool(canary_eval.get("canary_allowed_bool", False)) and not bool(canary_eval.get("hold_required_bool", False))
+    canary_reasons = [str(row) for row in (canary_eval.get("gating_reasons") or []) if str(row).strip()]
+    canary_blocking_sources = [str(row) for row in (canary_eval.get("blocking_sources") or []) if str(row).strip()]
+    canary_warnings = [str(row) for row in (canary_eval.get("advisory_warnings") or []) if str(row).strip()]
+
+    latest_phase = normalize_canary_phase(latest_canary_run.get("phase")) if latest_canary_run else ""
+    live_serio_ready = (
+        bool(runtime_snapshot_live.get("ready_for_live", False))
+        and bool(canary_eval.get("promotion_allowed_bool", False))
+        and latest_phase == "PASSED"
+        and not bool(live_health_summary.get("blocking_bool", False))
+        and not bool(operational_safety.get("blocking_bool", False))
+    )
+    live_serio_reasons: list[str] = []
+    if not bool(runtime_snapshot_live.get("ready_for_live", False)):
+        live_serio_reasons.extend(str(row) for row in (runtime_snapshot_live.get("missing_checks") or []) if str(row).strip())
+    if latest_phase != "PASSED":
+        live_serio_reasons.append("canary_not_passed")
+    if not bool(canary_eval.get("promotion_allowed_bool", False)):
+        live_serio_reasons.extend(str(row) for row in (canary_eval.get("gating_reasons") or []) if str(row).strip())
+    if bool(live_health_summary.get("blocking_bool", False)):
+        live_serio_reasons.extend(str(row) for row in (live_health_summary.get("hard_blockers") or []) if str(row).strip())
+    if bool(operational_safety.get("blocking_bool", False)):
+        live_serio_reasons.append(str(operational_safety.get("top_priority_reason_code") or "operational_safety_blocked"))
+
+    return {
+        "evaluated_at": utc_now_iso(),
+        "items": [
+            _rollout_stage_readiness_row(
+                stage_id="PAPER",
+                ready=paper_ready,
+                reasons=paper_reasons,
+                source_refs={
+                    "offline_gates_passed": bool(offline_gates.get("passed", False)),
+                    "paper_soak_passed": bool(paper_eval.get("passed", False)),
+                },
+            ),
+            _rollout_stage_readiness_row(
+                stage_id="TESTNET",
+                ready=testnet_ready,
+                reasons=testnet_reasons,
+                source_refs={
+                    "runtime_contract_mode": "testnet",
+                    "runtime_contract_missing_checks": testnet_missing,
+                    "account_surface_ok": bool(runtime_snapshot_testnet.get("runtime_account_surface_ok", False)),
+                    "account_surface_reason": str(runtime_snapshot_testnet.get("runtime_account_surface_reason") or ""),
+                    "testnet_soak_passed": bool(testnet_eval.get("passed", False)),
+                },
+            ),
+            _rollout_stage_readiness_row(
+                stage_id="CANARY",
+                ready=canary_ready,
+                reasons=canary_reasons,
+                warnings=canary_warnings,
+                blocking_sources=canary_blocking_sources,
+                source_refs={
+                    "canary_run_id": str(latest_canary_run.get("run_id") or ""),
+                    "canary_phase": latest_phase,
+                    "canary_allowed_bool": bool(canary_eval.get("canary_allowed_bool", False)),
+                    "hold_required_bool": bool(canary_eval.get("hold_required_bool", False)),
+                },
+            ),
+            _rollout_stage_readiness_row(
+                stage_id="LIVE_SERIO",
+                ready=live_serio_ready,
+                reasons=live_serio_reasons,
+                warnings=live_mode_warning,
+                blocking_sources=[str(row) for row in (canary_eval.get("blocking_sources") or []) if str(row).strip()],
+                source_refs={
+                    "runtime_contract_mode": "live",
+                    "canary_phase": latest_phase,
+                    "promotion_allowed_bool": bool(canary_eval.get("promotion_allowed_bool", False)),
+                    "health_state": str(live_health_summary.get("state") or ""),
+                    "operational_safety_state": str(operational_safety.get("global_state") or ""),
+                    "account_surface_ok": bool(runtime_snapshot_live.get("runtime_account_surface_ok", False)),
+                    "account_surface_reason": str(runtime_snapshot_live.get("runtime_account_surface_reason") or ""),
+                    "open_critical_alert_instance_ids": open_critical_alert_ids,
+                },
+            ),
+        ],
     }
 
 
@@ -16527,6 +16801,7 @@ def create_app() -> FastAPI:
     def rollout_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         state = rollout_manager.status()
         settings_payload = store.load_settings()
+        readiness_by_stage = build_rollout_readiness_by_stage()
         return {
             **state,
             "config": settings_payload.get("rollout", RolloutManager.default_rollout_config()),
@@ -16534,6 +16809,7 @@ def create_app() -> FastAPI:
             "live_stable_100_requires_approve": bool(
                 (settings_payload.get("rollout") or {}).get("require_manual_approval_for_live", True)
             ),
+            "readiness_by_stage": readiness_by_stage,
         }
 
     @app.post("/api/v1/rollout/blending/preview")

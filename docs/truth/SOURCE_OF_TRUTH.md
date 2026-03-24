@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-24
 ## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-51` integracion real de `RTLOPS-36` con runtime live
   - `RTLOPS-54` Canary Live Controller
   - `RTLOPS-65` raw live signal contract hardening
   - `RTLOPS-26` live signals foundation - CAPA A de señal cruda
@@ -35,12 +36,12 @@ Fecha de actualizacion: 2026-03-24
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-51` `Integracion real de RTLOPS-36 con runtime live`.
+  - `RTLOPS-52` `Shadow Mode operativo`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
 - Estado administrativo real de Linear al 2026-03-24:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-54` y `RTLOPS-66`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-54` y `RTLOPS-66`;
   - mapa de proyectos alineado con dominios reales del repo;
   - dominio `observability / health / safety` alineado en tres capas:
     - CAPA A `señal cruda`: `RTLOPS-26` + `RTLOPS-63` + `RTLOPS-64`
@@ -52,6 +53,55 @@ Fecha de actualizacion: 2026-03-24
     - consume safety states (`RTLOPS-29`)
     - no es dueña de `live_signals.py` ni del score global ni de breakers/freezes;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
+
+## RTLOPS-51 - Integracion real de RTLOPS-36 con runtime live - 2026-03-24
+
+- Gap real cerrado:
+  - el runtime real ya tenia submit/cancel/reconcile/fills cableados y testeados, pero todavia faltaba endurecer la surface canonica de cuenta y conectarla con la readiness por stage de rollout;
+  - `G9_RUNTIME_ENGINE_REAL` podia depender de wiring de cuenta menos estricto del deseado;
+  - `rollout/status` todavia no exponia `readiness_by_stage` sobre surfaces canonicas ya cerradas.
+- Implementacion real:
+  - `RuntimeBridge` deja de tratar `/api/v3/account` solo como derivacion legacy de `positions` y expone una `account surface` canonica con:
+    - balances observados no cero
+    - `permissions`
+    - `can_trade`
+    - `can_withdraw`
+    - `can_deposit`
+    - `update_time_ms`
+    - `balances_count`
+  - `_sync_runtime_state(...)` persiste esa evidencia en bot state con:
+    - `runtime_account_surface_ok`
+    - `runtime_account_surface_verified_at`
+    - `runtime_account_surface_reason`
+    - `runtime_account_can_trade`
+    - `runtime_account_permissions`
+    - `runtime_account_balances_count`
+  - `_runtime_contract_snapshot(...)` endurece `G9_RUNTIME_ENGINE_REAL` para exigir en `testnet/live`:
+    - `account_surface_ok`
+    - `account_surface_fresh`
+    - `account_can_trade`
+  - `GET /api/v1/rollout/status` ahora devuelve `readiness_by_stage` para:
+    - `PAPER`
+    - `TESTNET`
+    - `CANARY`
+    - `LIVE_SERIO`
+    consumiendo surfaces canonicas ya existentes de runtime contract, canary, health summary, operational safety y alertas persistentes.
+- Semantica importante:
+  - `TESTNET` no queda `READY` solo porque un soak previo paso; si el runtime contract actual no esta listo, la readiness falla cerrada;
+  - no se reabrieron ownerships de submit/reconciliation/safety/health/alerts;
+  - no se agrego una nueva verdad de runtime ni contratos de conveniencia para frontend.
+- Archivos de producto tocados:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+  - `rtlab_autotrader/rtlab_core/domains/policy_state/repository.py`
+- Validacion real corrida:
+  - `py_compile` sobre `app.py`, `repository.py`, `test_web_live_ready.py` y `test_rollout_safe_update.py`;
+  - pytest selectivo de `G9/account surface/runtime start`;
+  - pytest selectivo de `rollout/status` y fail-closed de `evaluate-phase`;
+  - pytest extra de compatibilidad sobre submit/reconcile runtime real (`open_orders`, `order_status`, `remote_submit`, `absent_local_open_orders`, `unknown_timeout`).
+- Limites honestos:
+  - no se agrego WebSocket nuevo;
+  - no se rehizo cost stack ni reporting;
+  - `G9_RUNTIME_ENGINE_REAL` sigue dependiendo de evidencia real/fresca y no se considera `PASS` global fuera del contexto canónico de runtime real.
 
 ## RTLOPS-54 - Canary Live Controller - 2026-03-24
 

@@ -24,15 +24,31 @@ Fecha: 2026-03-24
     - `resume` rearma estabilidad minima antes de volver a `RUNNING`
     - `ROLLED_BACK` reservado a evidencia canonica confirmada; si no, `ROLLBACK_RECOMMENDED`
     - alertas abiertas solo bloquean canary cuando la policy de fase las clasifica como impeditivas
+- [x] `RTLOPS-51` integracion real de `RTLOPS-36` con runtime live
+  - `GET /api/v3/account` deja surface canonica persistida en bot state con:
+    - `runtime_account_surface_ok`
+    - `runtime_account_surface_verified_at`
+    - `runtime_account_surface_reason`
+    - `runtime_account_can_trade`
+    - `runtime_account_permissions`
+    - `runtime_account_balances_count`
+  - `G9_RUNTIME_ENGINE_REAL` endurece checks de cuenta:
+    - `account_surface_ok`
+    - `account_surface_fresh`
+    - `account_can_trade`
+  - `GET /api/v1/rollout/status` expone `readiness_by_stage` consumiendo surfaces canonicas de:
+    - runtime contract real/testnet-live
+    - canary controller
+    - health summary
+    - operational safety
+    - alertas persistentes
+  - `TESTNET` deja de quedar `READY` solo porque un soak previo paso; si el runtime contract actual no esta listo, falla cerrado.
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-51` `Integracion real de RTLOPS-36 con runtime live`
-  - cablear `ValidationService` / readiness por stage con surfaces reales ya cerradas de:
-    - canary controller (`RTLOPS-54`)
-    - health summary (`RTLOPS-30`)
-    - operational safety (`RTLOPS-29`)
-    - alert lifecycle persistente (`RTLOPS-27` / `RTLOPS-66`)
-    - preflight / reconciliation / fills / raw signals ya estabilizados
+- [ ] `RTLOPS-52` `Shadow Mode operativo`
+  - ahora queda desbloqueado por el cierre real de `RTLOPS-51`;
+  - sigue siendo el siguiente tramo del proyecto `Release / Canary / Rollback / Auditoría Final` antes de `RTLOPS-53`;
+  - debe reutilizar runtime real ya cableado, sin duplicar execution ni crear una verdad paralela.
 
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
@@ -43,6 +59,7 @@ Fecha: 2026-03-24
   - `RTLOPS-23`
   - `RTLOPS-26`
   - `RTLOPS-27`
+  - `RTLOPS-51`
   - `RTLOPS-66`
   - `RTLOPS-45`
   - `RTLOPS-46`

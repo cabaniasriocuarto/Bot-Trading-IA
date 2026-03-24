@@ -1007,6 +1007,15 @@ defaults:
   assert status.status_code == 200, status.text
   status_payload = status.json()
   assert status_payload["live_signal_telemetry"]["phases"]["shadow"]["events"] >= 1
+  readiness = status_payload.get("readiness_by_stage") or {}
+  assert isinstance(readiness.get("items"), list)
+  readiness_by_stage = {str(row.get("stage") or ""): row for row in readiness["items"]}
+  assert readiness_by_stage["TESTNET"]["ready_bool"] is False
+  assert readiness_by_stage["TESTNET"]["source_refs"]["runtime_contract_mode"] == "testnet"
+  assert readiness_by_stage["TESTNET"]["source_refs"]["account_surface_ok"] is False
+  assert "account_surface_ok" in set(readiness_by_stage["TESTNET"].get("reasons") or [])
+  assert readiness_by_stage["LIVE_SERIO"]["ready_bool"] is False
+  assert "canary_not_passed" in set(readiness_by_stage["LIVE_SERIO"].get("reasons") or [])
 
 
 def test_rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic(tmp_path: Path, monkeypatch) -> None:
