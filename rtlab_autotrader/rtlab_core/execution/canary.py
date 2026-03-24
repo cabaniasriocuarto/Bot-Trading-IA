@@ -472,7 +472,7 @@ def decide_canary_phase_transition(
         return "ARMED", {"reason": "awaiting_running_window", "running_started_at": run.get("running_started_at"), "ended_at": run.get("ended_at")}
 
     if current_phase == "HOLD":
-        return "RUNNING", {"reason": "hold_resolved_resume_running", "running_started_at": str(run.get("running_started_at") or now_iso), "ended_at": run.get("ended_at")}
+        return "ARMED", {"reason": "hold_resolved_resume_armed", "running_started_at": None, "ended_at": run.get("ended_at")}
 
     if current_phase == "RUNNING" and bool(evaluation.get("promotion_allowed_bool", False)):
         return "PASSED", {"reason": "promotion_window_stable", "running_started_at": run.get("running_started_at"), "ended_at": now_iso}

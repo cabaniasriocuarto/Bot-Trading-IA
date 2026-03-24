@@ -92,11 +92,15 @@ Fecha de actualizacion: 2026-03-24
   - alertas persistentes (`RTLOPS-27`)
 - Semantica real de gate:
   - `canary_allowed_bool`, `hold_required_bool`, `rollback_recommended_bool` y `promotion_allowed_bool` se derivan solo de surfaces canonicas ya existentes;
+  - el scope canary reutiliza la convencion canonica ya presente en runtime/store/API (`GLOBAL`, `BOT`, `SYMBOL`, `BOT_SYMBOL`) via la misma semantica de scope de execution/safety; no inventa `symbol_first` ni un modo paralelo;
   - ante surfaces faltantes, stale o ambiguas, el canary falla cerrado;
   - `PROMOTION_ALLOWED` exige estabilidad minima (`promotion_stability_sec`) y no solo ausencia momentanea de blockers;
+  - `resume` solo es valido desde `HOLD`; no reanuda un `ABORTED` y rearma la ventana de estabilidad antes de volver a `RUNNING`;
+  - una alerta abierta no bloquea por mera existencia: solo bloquea si la policy canary la clasifica como impeditiva para la fase actual;
   - `rollback_execution_supported = false` por policy en este estado:
     - el runtime puede recomendar rollback y persistir la transicion,
     - pero no inventa ejecucion real de rollback sin soporte coherente confirmado.
+  - `ROLLED_BACK` queda reservado para cuando exista confirmacion persistida por surfaces canonicas; mientras eso no exista, la transicion valida es `ROLLBACK_RECOMMENDED`.
 - Limites honestos:
   - no agrega UI nueva en este bloque;
   - no recalcula score global ni readiness upstream;

@@ -36,9 +36,13 @@
     - `RTLOPS-30` health summary
     - `RTLOPS-27` persistent alerts
   - no recalcula esas verdades ni crea una sexta verdad del runtime;
+  - reutiliza la semantica canonica de scope live ya existente (`GLOBAL`, `BOT`, `SYMBOL`, `BOT_SYMBOL`) y no introduce un scope mode paralelo;
   - `PROMOTION_ALLOWED` exige ventana minima de estabilidad;
+  - `resume` solo es valido desde `HOLD` y rearma estabilidad antes de volver a `RUNNING`;
+  - una alerta abierta solo bloquea si la policy canary la clasifica como impeditiva; no bloquea por mera existencia;
   - si una surface esta ausente o insuficiente, el canary falla cerrado;
-  - `rollback_execution_supported = false` deja el runtime en `ROLLBACK_RECOMMENDED` y no inventa rollback real.
+  - `rollback_execution_supported = false` deja el runtime en `ROLLBACK_RECOMMENDED` y no inventa rollback real;
+  - incluso si el soporte futuro existiera, `ROLLED_BACK` queda reservado a ejecucion confirmada por surfaces canonicas persistidas.
 - Policy:
   - nueva seccion `execution_safety.canary_live_controller` con thresholds y toggles explicitos para:
     - health threshold de readiness

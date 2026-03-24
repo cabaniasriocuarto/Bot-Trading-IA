@@ -70,3 +70,4 @@ execution_safety:
     promotion_stability_sec: 300
     rollback_recommend_on_hard_block: true
     rollback_execution_supported: false
+    rollback_requires_canonical_confirmation: true

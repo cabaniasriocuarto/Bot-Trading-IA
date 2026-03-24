@@ -19,6 +19,11 @@ Fecha: 2026-03-24
 - [x] `RTLOPS-66` alert lifecycle semantics hardening
 - [x] `RTLOPS-65` raw live signal contract hardening: typed snapshot envelope + schema discipline
 - [x] `RTLOPS-54` Canary Live Controller
+  - hardening semantico vigente:
+    - `resume` solo desde `HOLD`, sin equivaler a `promote`
+    - `resume` rearma estabilidad minima antes de volver a `RUNNING`
+    - `ROLLED_BACK` reservado a evidencia canonica confirmada; si no, `ROLLBACK_RECOMMENDED`
+    - alertas abiertas solo bloquean canary cuando la policy de fase las clasifica como impeditivas
 
 ## Siguiente issue exacto
 - [ ] `RTLOPS-51` `Integracion real de RTLOPS-36 con runtime live`

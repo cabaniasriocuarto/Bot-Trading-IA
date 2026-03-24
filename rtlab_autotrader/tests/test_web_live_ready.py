@@ -6705,3 +6705,137 @@ def test_execution_canary_status_does_not_open_new_alerts_or_safety_actions(tmp_
   assert after_alerts == before_alerts
   assert after_actions == before_actions
 
+
+def test_execution_canary_resume_is_only_valid_from_hold(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  started = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert started["run"]["phase"] == "ARMED"
+
+  with pytest.raises(ValueError, match="only valid from HOLD"):
+    module.runtime_bridge.resume_canary_run(
+      run_id=started["run"]["run_id"],
+      state=state,
+      settings=module.store.load_settings(),
+      actor="tester",
+    )
+
+
+def test_execution_canary_warn_alert_does_not_block_by_mere_existence(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  module.store.upsert_execution_alert_instance(
+    trigger_code="STREAM_GAP_WARN",
+    severity="WARN",
+    state="OPEN",
+    source_layer="RAW",
+    scope_type="GLOBAL",
+    source_refs={"primary": [{"type": "live_signal_snapshot", "id": "sig-1"}]},
+    evidence={"stream_gap_ms": 7000},
+    summary_text="warn alert",
+  )
+
+  payload = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+
+  assert payload["ok"] is True
+  assert payload["run"]["phase"] == "ARMED"
+  assert "ALERTS" not in payload["latest_evaluation"]["blocking_sources"]
+
+
+def test_execution_canary_resume_rearms_and_resets_stability_window(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  started = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  running = module.runtime_bridge.evaluate_canary_run(
+    run_id=started["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert running["run"]["phase"] == "RUNNING"
+  first_running_started_at = str(running["run"]["running_started_at"] or "")
+  assert first_running_started_at
+
+  held = module.runtime_bridge.hold_canary_run(
+    run_id=running["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+    reason="manual_hold",
+  )
+  assert held["run"]["phase"] == "HOLD"
+
+  resumed = module.runtime_bridge.resume_canary_run(
+    run_id=running["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+    reason="resume_after_hold",
+  )
+  assert resumed["ok"] is True
+  assert resumed["run"]["phase"] == "ARMED"
+  assert resumed["run"]["running_started_at"] is None
+
+  rerun = module.runtime_bridge.evaluate_canary_run(
+    run_id=running["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert rerun["run"]["phase"] == "RUNNING"
+  assert str(rerun["run"]["running_started_at"] or "") != first_running_started_at
+
+
+def test_execution_canary_rollback_requires_canonical_confirmation(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  started = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  running = module.runtime_bridge.evaluate_canary_run(
+    run_id=started["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert running["run"]["phase"] == "RUNNING"
+
+  policy = dict(module.runtime_bridge._canary_policy())
+  policy["rollback_execution_supported"] = True
+  monkeypatch.setattr(module.runtime_bridge, "_canary_policy", lambda: policy)
+
+  payload = module.runtime_bridge.rollback_canary_run(
+    run_id=running["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+
+  assert payload["ok"] is False
+  assert payload["action"] == "rollback_recommended"
+  assert payload["run"]["phase"] == "ROLLBACK_RECOMMENDED"
+  assert payload["latest_evaluation"]["rollback_confirmation"]["required"] is True
+  assert payload["latest_evaluation"]["rollback_confirmation"]["confirmed"] is False
+

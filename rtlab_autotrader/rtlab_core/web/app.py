@@ -1110,6 +1110,7 @@ DEFAULT_CANARY_LIVE_CONTROLLER_POLICY: dict[str, Any] = {
     "promotion_stability_sec": 300,
     "rollback_recommend_on_hard_block": True,
     "rollback_execution_supported": False,
+    "rollback_requires_canonical_confirmation": True,
 }
 
 
@@ -9125,6 +9126,7 @@ class RuntimeBridge:
         merged["fail_closed_on_missing_surfaces"] = bool(merged.get("fail_closed_on_missing_surfaces", True))
         merged["rollback_recommend_on_hard_block"] = bool(merged.get("rollback_recommend_on_hard_block", True))
         merged["rollback_execution_supported"] = bool(merged.get("rollback_execution_supported", False))
+        merged["rollback_requires_canonical_confirmation"] = True
         return merged
 
     @staticmethod
@@ -11665,6 +11667,8 @@ class RuntimeBridge:
             run = store.get_canary_run(run_id)
             if not run:
                 raise KeyError(run_id)
+            if normalize_canary_phase(run.get("phase")) != "HOLD":
+                raise ValueError("Canary resume is only valid from HOLD")
             evaluation = self.build_execution_canary_gate_evaluation(
                 state=state,
                 settings=settings,
@@ -11676,7 +11680,7 @@ class RuntimeBridge:
             )
             next_phase, meta = decide_canary_phase_transition(
                 policy=self._canary_policy(),
-                run={**run, "phase": "HOLD"},
+                run=run,
                 evaluation=evaluation,
                 now_iso=str(evaluation.get("evaluated_at") or utc_now_iso()),
             )
@@ -11688,7 +11692,7 @@ class RuntimeBridge:
                 event_type="RESUMED" if next_phase != "HOLD" else "HELD",
                 reason=str(reason or audit_note or meta.get("reason") or "resume_evaluated"),
                 started_at=run.get("started_at"),
-                running_started_at=meta.get("running_started_at"),
+                running_started_at="" if next_phase == "ARMED" else meta.get("running_started_at"),
                 ended_at=meta.get("ended_at"),
             )
             return {
@@ -11771,14 +11775,26 @@ class RuntimeBridge:
             policy = self._canary_policy()
             evaluation_for_rollback = dict(evaluation)
             evaluation_for_rollback["rollback_recommended_bool"] = True
-            if not bool(policy.get("rollback_execution_supported", False)):
+            rollback_supported = bool(policy.get("rollback_execution_supported", False))
+            rollback_requires_confirmation = True
+            rollback_confirmation_ref = {}
+            rollback_confirmed = False
+            evaluation_for_rollback["rollback_confirmation"] = {
+                "required": rollback_requires_confirmation,
+                "confirmed": rollback_confirmed,
+                "source_ref": rollback_confirmation_ref,
+            }
+            if (not rollback_supported) or (not rollback_confirmed):
+                rollback_reason = "rollback_execution_not_supported"
+                if rollback_supported and rollback_requires_confirmation and not rollback_confirmed:
+                    rollback_reason = "rollback_confirmation_missing"
                 updated, event, snapshot = self._persist_canary_run_update(
                     run=run,
                     phase="ROLLBACK_RECOMMENDED",
                     evaluation=evaluation_for_rollback,
                     actor=actor,
                     event_type="ROLLBACK_REQUESTED",
-                    reason=str(reason or audit_note or "rollback_execution_not_supported"),
+                    reason=str(reason or audit_note or rollback_reason),
                     started_at=run.get("started_at"),
                     running_started_at=run.get("running_started_at"),
                     ended_at=None,
@@ -11787,12 +11803,13 @@ class RuntimeBridge:
                     "ok": False,
                     "action": "rollback_recommended",
                     "manual_action_required": True,
-                    "reason": str(reason or audit_note or "rollback_execution_not_supported"),
+                    "reason": str(reason or audit_note or rollback_reason),
                     "run": updated,
                     "event": event,
                     "phase_snapshot": snapshot,
                     "latest_evaluation": evaluation_for_rollback,
-                    "rollback_execution_supported": False,
+                    "rollback_execution_supported": rollback_supported,
+                    "rollback_confirmation_required": rollback_requires_confirmation,
                 }
             updated, event, snapshot = self._persist_canary_run_update(
                 run=run,
@@ -18913,6 +18930,8 @@ def create_app() -> FastAPI:
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="Canary run not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post("/api/v1/execution/canary/{run_id}/abort")
     def execution_canary_abort(
