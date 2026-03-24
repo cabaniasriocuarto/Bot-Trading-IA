@@ -45,3 +45,28 @@ execution_safety:
       - timestamps_ms
       - refs
     risk_observed_only: true
+  # Canary policy governs rollout/progression only. It must not redefine
+  # preflight, reconciliation, operational_safety, health_summary or alert truth.
+  canary_live_controller:
+    allow_health_states:
+      - HEALTHY
+      - DEGRADED
+    promotion_health_states:
+      - HEALTHY
+    min_health_score_ready: 70
+    min_health_score_promotion: 90
+    max_blocking_critical_alerts: 0
+    critical_alert_blocking_states:
+      - OPEN
+      - ACKED
+      - COOLDOWN
+    count_suppressed_critical_alerts_as_blocking: false
+    require_preflight_pass: true
+    require_reconciliation_clean: true
+    require_operational_safety_clear: true
+    require_health_non_blocking: true
+    fail_closed_on_missing_surfaces: true
+    armed_to_running_min_sec: 0
+    promotion_stability_sec: 300
+    rollback_recommend_on_hard_block: true
+    rollback_execution_supported: false

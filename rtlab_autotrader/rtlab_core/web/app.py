@@ -36,6 +36,18 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.execution.canary import (
+    CANARY_PHASES,
+    build_canary_gate_reason,
+    build_canary_gate_evaluation as finalize_canary_gate_evaluation,
+    canary_phase_is_terminal,
+    canary_scope_key,
+    decide_canary_phase_transition,
+    normalize_canary_event_type,
+    normalize_canary_phase,
+    normalize_canary_scope_type,
+    sort_canary_gate_reasons,
+)
 from rtlab_core.execution.alerts import (
     alert_catalog_entry,
     alert_scope_key,
@@ -594,6 +606,26 @@ class AlertSuppressBody(BaseModel):
     audit_note: str | None = None
 
 
+class CanaryEvaluateBody(BaseModel):
+    run_id: str | None = None
+    scope_type: Literal["GLOBAL", "BOT", "SYMBOL", "BOT_SYMBOL"] = "GLOBAL"
+    bot_id: str | None = None
+    symbol: str | None = None
+    persist: bool = True
+
+
+class CanaryStartBody(BaseModel):
+    scope_type: Literal["GLOBAL", "BOT", "SYMBOL", "BOT_SYMBOL"] = "GLOBAL"
+    bot_id: str | None = None
+    symbol: str | None = None
+    note: str | None = None
+
+
+class CanaryActionBody(BaseModel):
+    reason: str | None = None
+    audit_note: str | None = None
+
+
 class SafetyFreezeBody(BaseModel):
     bot_id: str | None = None
     audit_note: str | None = None
@@ -930,6 +962,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     ops = es.get("operational_safety") if isinstance(es.get("operational_safety"), dict) else {}
     alerting = es.get("alerting") if isinstance(es.get("alerting"), dict) else {}
     live_signals = es.get("live_signals") if isinstance(es.get("live_signals"), dict) else {}
+    canary = es.get("canary_live_controller") if isinstance(es.get("canary_live_controller"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
     fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
@@ -963,6 +996,10 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_live_signals_default_window_ms": live_signals.get("default_window_ms"),
         "execution_live_signals_payload_sections": live_signals.get("payload_sections"),
         "execution_live_signals_risk_observed_only": live_signals.get("risk_observed_only"),
+        "execution_canary_min_health_score_ready": canary.get("min_health_score_ready"),
+        "execution_canary_min_health_score_promotion": canary.get("min_health_score_promotion"),
+        "execution_canary_promotion_stability_sec": canary.get("promotion_stability_sec"),
+        "execution_canary_rollback_execution_supported": canary.get("rollback_execution_supported"),
         "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
         "beast_requires_postgres": b.get("requires_postgres"),
         "fees_ttl_hours": f.get("fee_snapshot_ttl_hours"),
@@ -1056,6 +1093,25 @@ DEFAULT_ALERTING_POLICY: dict[str, Any] = {
     "severity_source_precedence": ["SAFETY", "HEALTH", "RAW"],
 }
 
+DEFAULT_CANARY_LIVE_CONTROLLER_POLICY: dict[str, Any] = {
+    "allow_health_states": ["HEALTHY", "DEGRADED"],
+    "promotion_health_states": ["HEALTHY"],
+    "min_health_score_ready": 70,
+    "min_health_score_promotion": 90,
+    "max_blocking_critical_alerts": 0,
+    "critical_alert_blocking_states": ["OPEN", "ACKED", "COOLDOWN"],
+    "count_suppressed_critical_alerts_as_blocking": False,
+    "require_preflight_pass": True,
+    "require_reconciliation_clean": True,
+    "require_operational_safety_clear": True,
+    "require_health_non_blocking": True,
+    "fail_closed_on_missing_surfaces": True,
+    "armed_to_running_min_sec": 0,
+    "promotion_stability_sec": 300,
+    "rollback_recommend_on_hard_block": True,
+    "rollback_execution_supported": False,
+}
+
 
 def load_execution_safety_policy() -> dict[str, Any]:
     bundle = load_numeric_policies_bundle()
@@ -1066,6 +1122,7 @@ def load_execution_safety_policy() -> dict[str, Any]:
     live_health = root.get("live_health_summary") if isinstance(root.get("live_health_summary"), dict) else {}
     live_signals = root.get("live_signals") if isinstance(root.get("live_signals"), dict) else {}
     alerting = root.get("alerting") if isinstance(root.get("alerting"), dict) else {}
+    canary = root.get("canary_live_controller") if isinstance(root.get("canary_live_controller"), dict) else {}
     return {
         "source": "config/policies/execution_safety.yaml" if ops else "default_fail_closed_operational_safety",
         "operational_safety": {
@@ -1083,6 +1140,10 @@ def load_execution_safety_policy() -> dict[str, Any]:
         "alerting": {
             **DEFAULT_ALERTING_POLICY,
             **alerting,
+        },
+        "canary_live_controller": {
+            **DEFAULT_CANARY_LIVE_CONTROLLER_POLICY,
+            **canary,
         },
     }
 
@@ -2599,6 +2660,92 @@ class ConsoleStore:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_events_alert ON execution_alert_events(alert_instance_id, occurred_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_events_time ON execution_alert_events(occurred_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS canary_runs (
+                run_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                phase TEXT NOT NULL,
+                canary_allowed_bool INTEGER NOT NULL DEFAULT 0,
+                hold_required_bool INTEGER NOT NULL DEFAULT 0,
+                rollback_recommended_bool INTEGER NOT NULL DEFAULT 0,
+                promotion_allowed_bool INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                running_started_at TEXT,
+                last_evaluated_at TEXT,
+                ended_at TEXT,
+                last_gate_evaluation_id TEXT,
+                blocking_sources_json TEXT NOT NULL,
+                gating_reasons_json TEXT NOT NULL,
+                advisory_warnings_json TEXT NOT NULL,
+                upstream_refs_json TEXT NOT NULL,
+                summary_text TEXT NOT NULL,
+                raw_run_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_runs_phase ON canary_runs(phase, updated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_runs_scope ON canary_runs(scope_type, bot_id, symbol, updated_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS canary_gate_evaluations (
+                evaluation_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                phase TEXT NOT NULL,
+                canary_allowed_bool INTEGER NOT NULL DEFAULT 0,
+                hold_required_bool INTEGER NOT NULL DEFAULT 0,
+                rollback_recommended_bool INTEGER NOT NULL DEFAULT 0,
+                promotion_allowed_bool INTEGER NOT NULL DEFAULT 0,
+                blocking_sources_json TEXT NOT NULL,
+                gating_reasons_json TEXT NOT NULL,
+                advisory_warnings_json TEXT NOT NULL,
+                upstream_refs_json TEXT NOT NULL,
+                raw_evaluation_json TEXT NOT NULL,
+                evaluated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_gate_evaluations_eval ON canary_gate_evaluations(evaluated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_gate_evaluations_run ON canary_gate_evaluations(run_id, evaluated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_gate_evaluations_scope ON canary_gate_evaluations(scope_type, bot_id, symbol, evaluated_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS canary_phase_snapshots (
+                phase_snapshot_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                gate_evaluation_id TEXT,
+                snapshot_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_phase_snapshots_run ON canary_phase_snapshots(run_id, created_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS canary_run_events (
+                event_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                previous_phase TEXT,
+                next_phase TEXT,
+                occurred_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                actor TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_run_events_run ON canary_run_events(run_id, occurred_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_run_events_time ON canary_run_events(occurred_at DESC)")
         self._backfill_logs_has_bot_ref(conn)
         self._backfill_log_bot_refs(conn)
 
@@ -4038,6 +4185,453 @@ class ConsoleStore:
                 tuple([*params, max(1, int(limit))]),
             ).fetchall()
         return [self._execution_alert_event_from_row(row) for row in rows]
+
+    @staticmethod
+    def _canary_json_load(value: Any, default: Any) -> Any:
+        try:
+            payload = json.loads(str(value or ""))
+        except Exception:
+            payload = default
+        return payload if isinstance(payload, type(default)) else default
+
+    def _canary_run_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "run_id": str(row["run_id"] or ""),
+            "scope_type": str(row["scope_type"] or ""),
+            "scope_key": canary_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
+            "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
+            "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
+            "phase": str(row["phase"] or ""),
+            "canary_allowed_bool": bool(row["canary_allowed_bool"]),
+            "hold_required_bool": bool(row["hold_required_bool"]),
+            "rollback_recommended_bool": bool(row["rollback_recommended_bool"]),
+            "promotion_allowed_bool": bool(row["promotion_allowed_bool"]),
+            "started_at": str(row["started_at"] or "") if row["started_at"] is not None else None,
+            "running_started_at": str(row["running_started_at"] or "") if row["running_started_at"] is not None else None,
+            "last_evaluated_at": str(row["last_evaluated_at"] or "") if row["last_evaluated_at"] is not None else None,
+            "ended_at": str(row["ended_at"] or "") if row["ended_at"] is not None else None,
+            "last_gate_evaluation_id": str(row["last_gate_evaluation_id"] or "") if row["last_gate_evaluation_id"] is not None else None,
+            "blocking_sources": self._canary_json_load(row["blocking_sources_json"], []),
+            "gating_reasons": self._canary_json_load(row["gating_reasons_json"], []),
+            "advisory_warnings": self._canary_json_load(row["advisory_warnings_json"], []),
+            "upstream_refs": self._canary_json_load(row["upstream_refs_json"], {}),
+            "summary_text": str(row["summary_text"] or ""),
+            "raw_run": self._canary_json_load(row["raw_run_json"], {}),
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    def _canary_gate_evaluation_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        raw = self._canary_json_load(row["raw_evaluation_json"], {})
+        if not isinstance(raw, dict):
+            raw = {}
+        raw.setdefault("evaluation_id", str(row["evaluation_id"] or ""))
+        raw.setdefault("run_id", str(row["run_id"] or "") if row["run_id"] is not None else None)
+        raw.setdefault("scope_type", str(row["scope_type"] or ""))
+        raw.setdefault("scope_key", canary_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]))
+        raw.setdefault("bot_id", str(row["bot_id"] or "") if row["bot_id"] is not None else None)
+        raw.setdefault("symbol", str(row["symbol"] or "") if row["symbol"] is not None else None)
+        raw.setdefault("phase", str(row["phase"] or ""))
+        raw.setdefault("canary_allowed_bool", bool(row["canary_allowed_bool"]))
+        raw.setdefault("hold_required_bool", bool(row["hold_required_bool"]))
+        raw.setdefault("rollback_recommended_bool", bool(row["rollback_recommended_bool"]))
+        raw.setdefault("promotion_allowed_bool", bool(row["promotion_allowed_bool"]))
+        raw.setdefault("blocking_sources", self._canary_json_load(row["blocking_sources_json"], []))
+        raw.setdefault("gating_reasons", self._canary_json_load(row["gating_reasons_json"], []))
+        raw.setdefault("advisory_warnings", self._canary_json_load(row["advisory_warnings_json"], []))
+        raw.setdefault("upstream_refs", self._canary_json_load(row["upstream_refs_json"], {}))
+        raw.setdefault("evaluated_at", str(row["evaluated_at"] or ""))
+        raw.setdefault("created_at", str(row["created_at"] or ""))
+        return raw
+
+    @staticmethod
+    def _canary_run_event_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        return {
+            "event_id": str(row["event_id"] or ""),
+            "run_id": str(row["run_id"] or ""),
+            "event_type": str(row["event_type"] or ""),
+            "previous_phase": str(row["previous_phase"] or "") if row["previous_phase"] is not None else None,
+            "next_phase": str(row["next_phase"] or "") if row["next_phase"] is not None else None,
+            "occurred_at": str(row["occurred_at"] or ""),
+            "payload": payload,
+            "actor": str(row["actor"] or "") if row["actor"] is not None else None,
+            "created_at": str(row["created_at"] or ""),
+        }
+
+    @staticmethod
+    def _canary_phase_snapshot_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            payload = json.loads(str(row["snapshot_json"] or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.setdefault("phase_snapshot_id", str(row["phase_snapshot_id"] or ""))
+        payload.setdefault("run_id", str(row["run_id"] or ""))
+        payload.setdefault("phase", str(row["phase"] or ""))
+        payload.setdefault("gate_evaluation_id", str(row["gate_evaluation_id"] or "") if row["gate_evaluation_id"] is not None else None)
+        payload.setdefault("created_at", str(row["created_at"] or ""))
+        return payload
+
+    def upsert_canary_run(
+        self,
+        *,
+        run_id: str | None = None,
+        scope_type: str,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        phase: str,
+        canary_allowed_bool: bool,
+        hold_required_bool: bool,
+        rollback_recommended_bool: bool,
+        promotion_allowed_bool: bool,
+        started_at: str | None = None,
+        running_started_at: str | None = None,
+        last_evaluated_at: str | None = None,
+        ended_at: str | None = None,
+        last_gate_evaluation_id: str | None = None,
+        blocking_sources: list[str] | None = None,
+        gating_reasons: list[dict[str, Any]] | None = None,
+        advisory_warnings: list[dict[str, Any]] | None = None,
+        upstream_refs: dict[str, Any] | None = None,
+        summary_text: str | None = None,
+        raw_run: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        run_id_n = str(run_id or uuid4())
+        now_iso = utc_now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT created_at FROM canary_runs WHERE run_id = ? LIMIT 1",
+                (run_id_n,),
+            ).fetchone()
+            payload = {
+                "run_id": run_id_n,
+                "scope_type": normalize_canary_scope_type(scope_type),
+                "bot_id": self._normalize_safety_bot_id(bot_id),
+                "symbol": self._normalize_safety_symbol(symbol),
+                "phase": normalize_canary_phase(phase),
+                "canary_allowed_bool": 1 if bool(canary_allowed_bool) else 0,
+                "hold_required_bool": 1 if bool(hold_required_bool) else 0,
+                "rollback_recommended_bool": 1 if bool(rollback_recommended_bool) else 0,
+                "promotion_allowed_bool": 1 if bool(promotion_allowed_bool) else 0,
+                "started_at": str(started_at or "") or None,
+                "running_started_at": str(running_started_at or "") or None,
+                "last_evaluated_at": str(last_evaluated_at or "") or None,
+                "ended_at": str(ended_at or "") or None,
+                "last_gate_evaluation_id": str(last_gate_evaluation_id or "") or None,
+                "blocking_sources_json": json.dumps(list(blocking_sources or []), ensure_ascii=True, sort_keys=True),
+                "gating_reasons_json": json.dumps(list(gating_reasons or []), ensure_ascii=True, sort_keys=True),
+                "advisory_warnings_json": json.dumps(list(advisory_warnings or []), ensure_ascii=True, sort_keys=True),
+                "upstream_refs_json": json.dumps(upstream_refs or {}, ensure_ascii=True, sort_keys=True),
+                "summary_text": str(summary_text or ""),
+                "raw_run_json": json.dumps(raw_run or {}, ensure_ascii=True, sort_keys=True),
+                "created_at": str(row["created_at"]) if row is not None else now_iso,
+                "updated_at": now_iso,
+            }
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO canary_runs (
+                        run_id, scope_type, bot_id, symbol, phase, canary_allowed_bool, hold_required_bool,
+                        rollback_recommended_bool, promotion_allowed_bool, started_at, running_started_at,
+                        last_evaluated_at, ended_at, last_gate_evaluation_id, blocking_sources_json,
+                        gating_reasons_json, advisory_warnings_json, upstream_refs_json, summary_text,
+                        raw_run_json, created_at, updated_at
+                    ) VALUES (
+                        :run_id, :scope_type, :bot_id, :symbol, :phase, :canary_allowed_bool, :hold_required_bool,
+                        :rollback_recommended_bool, :promotion_allowed_bool, :started_at, :running_started_at,
+                        :last_evaluated_at, :ended_at, :last_gate_evaluation_id, :blocking_sources_json,
+                        :gating_reasons_json, :advisory_warnings_json, :upstream_refs_json, :summary_text,
+                        :raw_run_json, :created_at, :updated_at
+                    )
+                    """,
+                    payload,
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE canary_runs
+                    SET scope_type = :scope_type,
+                        bot_id = :bot_id,
+                        symbol = :symbol,
+                        phase = :phase,
+                        canary_allowed_bool = :canary_allowed_bool,
+                        hold_required_bool = :hold_required_bool,
+                        rollback_recommended_bool = :rollback_recommended_bool,
+                        promotion_allowed_bool = :promotion_allowed_bool,
+                        started_at = :started_at,
+                        running_started_at = :running_started_at,
+                        last_evaluated_at = :last_evaluated_at,
+                        ended_at = :ended_at,
+                        last_gate_evaluation_id = :last_gate_evaluation_id,
+                        blocking_sources_json = :blocking_sources_json,
+                        gating_reasons_json = :gating_reasons_json,
+                        advisory_warnings_json = :advisory_warnings_json,
+                        upstream_refs_json = :upstream_refs_json,
+                        summary_text = :summary_text,
+                        raw_run_json = :raw_run_json,
+                        updated_at = :updated_at
+                    WHERE run_id = :run_id
+                    """,
+                    payload,
+                )
+        return self.get_canary_run(run_id_n) or {}
+
+    def get_canary_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM canary_runs WHERE run_id = ? LIMIT 1",
+                (str(run_id or ""),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._canary_run_from_row(row)
+
+    def list_canary_runs(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_canary_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM canary_runs
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC, run_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        return [self._canary_run_from_row(row) for row in rows]
+
+    def latest_canary_run(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any] | None:
+        items = self.list_canary_runs(scope_type=scope_type, bot_id=bot_id, symbol=symbol, limit=1)
+        return items[0] if items else None
+
+    def insert_canary_gate_evaluation(self, evaluation: dict[str, Any]) -> dict[str, Any]:
+        evaluation_id = str(uuid4())
+        created_at = utc_now_iso()
+        row = {
+            "evaluation_id": evaluation_id,
+            "run_id": str(evaluation.get("run_id") or "") or None,
+            "scope_type": normalize_canary_scope_type(evaluation.get("scope_type")),
+            "bot_id": self._normalize_safety_bot_id(evaluation.get("bot_id")),
+            "symbol": self._normalize_safety_symbol(evaluation.get("symbol")),
+            "phase": normalize_canary_phase(evaluation.get("phase")),
+            "canary_allowed_bool": 1 if bool(evaluation.get("canary_allowed_bool", False)) else 0,
+            "hold_required_bool": 1 if bool(evaluation.get("hold_required_bool", False)) else 0,
+            "rollback_recommended_bool": 1 if bool(evaluation.get("rollback_recommended_bool", False)) else 0,
+            "promotion_allowed_bool": 1 if bool(evaluation.get("promotion_allowed_bool", False)) else 0,
+            "blocking_sources_json": json.dumps(list(evaluation.get("blocking_sources") or []), ensure_ascii=True, sort_keys=True),
+            "gating_reasons_json": json.dumps(list(evaluation.get("gating_reasons") or []), ensure_ascii=True, sort_keys=True),
+            "advisory_warnings_json": json.dumps(list(evaluation.get("advisory_warnings") or []), ensure_ascii=True, sort_keys=True),
+            "upstream_refs_json": json.dumps(evaluation.get("upstream_refs") or {}, ensure_ascii=True, sort_keys=True),
+            "raw_evaluation_json": json.dumps(evaluation, ensure_ascii=True, sort_keys=True),
+            "evaluated_at": str(evaluation.get("evaluated_at") or created_at),
+            "created_at": created_at,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO canary_gate_evaluations (
+                    evaluation_id, run_id, scope_type, bot_id, symbol, phase, canary_allowed_bool,
+                    hold_required_bool, rollback_recommended_bool, promotion_allowed_bool,
+                    blocking_sources_json, gating_reasons_json, advisory_warnings_json,
+                    upstream_refs_json, raw_evaluation_json, evaluated_at, created_at
+                ) VALUES (
+                    :evaluation_id, :run_id, :scope_type, :bot_id, :symbol, :phase, :canary_allowed_bool,
+                    :hold_required_bool, :rollback_recommended_bool, :promotion_allowed_bool,
+                    :blocking_sources_json, :gating_reasons_json, :advisory_warnings_json,
+                    :upstream_refs_json, :raw_evaluation_json, :evaluated_at, :created_at
+                )
+                """,
+                row,
+            )
+        return self.get_canary_gate_evaluation(evaluation_id) or {}
+
+    def get_canary_gate_evaluation(self, evaluation_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM canary_gate_evaluations WHERE evaluation_id = ? LIMIT 1",
+                (str(evaluation_id or ""),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._canary_gate_evaluation_from_row(row)
+
+    def list_canary_gate_evaluations(
+        self,
+        *,
+        run_id: str | None = None,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if run_id:
+            clauses.append("run_id = ?")
+            params.append(str(run_id))
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_canary_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM canary_gate_evaluations
+                WHERE {' AND '.join(clauses)}
+                ORDER BY evaluated_at DESC, evaluation_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        return [self._canary_gate_evaluation_from_row(row) for row in rows]
+
+    def insert_canary_phase_snapshot(
+        self,
+        *,
+        run_id: str,
+        phase: str,
+        gate_evaluation_id: str | None = None,
+        snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "phase_snapshot_id": str(uuid4()),
+            "run_id": str(run_id or ""),
+            "phase": normalize_canary_phase(phase),
+            "gate_evaluation_id": str(gate_evaluation_id or "") or None,
+            "snapshot_json": json.dumps(snapshot or {}, ensure_ascii=True, sort_keys=True),
+            "created_at": utc_now_iso(),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO canary_phase_snapshots (
+                    phase_snapshot_id, run_id, phase, gate_evaluation_id, snapshot_json, created_at
+                ) VALUES (
+                    :phase_snapshot_id, :run_id, :phase, :gate_evaluation_id, :snapshot_json, :created_at
+                )
+                """,
+                row,
+            )
+        return {
+            **(snapshot or {}),
+            "phase_snapshot_id": row["phase_snapshot_id"],
+            "run_id": row["run_id"],
+            "phase": row["phase"],
+            "gate_evaluation_id": row["gate_evaluation_id"],
+            "created_at": row["created_at"],
+        }
+
+    def list_canary_phase_snapshots(self, *, run_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM canary_phase_snapshots
+                WHERE run_id = ?
+                ORDER BY created_at DESC, phase_snapshot_id DESC
+                LIMIT ?
+                """,
+                (str(run_id or ""), max(1, int(limit))),
+            ).fetchall()
+        return [self._canary_phase_snapshot_from_row(row) for row in rows]
+
+    def insert_canary_run_event(
+        self,
+        *,
+        run_id: str,
+        event_type: str,
+        previous_phase: str | None = None,
+        next_phase: str | None = None,
+        payload: dict[str, Any] | None = None,
+        actor: str | None = None,
+        occurred_at: str | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "event_id": str(uuid4()),
+            "run_id": str(run_id or ""),
+            "event_type": normalize_canary_event_type(event_type),
+            "previous_phase": normalize_canary_phase(previous_phase) if str(previous_phase or "").strip() else None,
+            "next_phase": normalize_canary_phase(next_phase) if str(next_phase or "").strip() else None,
+            "occurred_at": str(occurred_at or utc_now_iso()),
+            "payload_json": json.dumps(payload or {}, ensure_ascii=True, sort_keys=True),
+            "actor": str(actor or "").strip() or None,
+            "created_at": utc_now_iso(),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO canary_run_events (
+                    event_id, run_id, event_type, previous_phase, next_phase, occurred_at,
+                    payload_json, actor, created_at
+                ) VALUES (
+                    :event_id, :run_id, :event_type, :previous_phase, :next_phase, :occurred_at,
+                    :payload_json, :actor, :created_at
+                )
+                """,
+                row,
+            )
+        return {
+            "event_id": row["event_id"],
+            "run_id": row["run_id"],
+            "event_type": row["event_type"],
+            "previous_phase": row["previous_phase"],
+            "next_phase": row["next_phase"],
+            "occurred_at": row["occurred_at"],
+            "payload": payload or {},
+            "actor": row["actor"],
+            "created_at": row["created_at"],
+        }
+
+    def list_canary_run_events(self, *, run_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM canary_run_events
+                WHERE run_id = ?
+                ORDER BY occurred_at DESC, event_id DESC
+                LIMIT ?
+                """,
+                (str(run_id or ""), max(1, int(limit))),
+            ).fetchall()
+        return [self._canary_run_event_from_row(row) for row in rows]
 
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
@@ -8489,6 +9083,50 @@ class RuntimeBridge:
         merged["expired_reopens_same_instance"] = True
         return merged
 
+    def _canary_policy(self) -> dict[str, Any]:
+        payload = load_execution_safety_policy()
+        policy = payload.get("canary_live_controller") if isinstance(payload.get("canary_live_controller"), dict) else {}
+        merged = {
+            **DEFAULT_CANARY_LIVE_CONTROLLER_POLICY,
+            **policy,
+        }
+        merged["allow_health_states"] = [
+            str(value or "").strip().upper()
+            for value in (merged.get("allow_health_states") if isinstance(merged.get("allow_health_states"), list) else DEFAULT_CANARY_LIVE_CONTROLLER_POLICY["allow_health_states"])
+            if str(value or "").strip()
+        ]
+        merged["promotion_health_states"] = [
+            str(value or "").strip().upper()
+            for value in (merged.get("promotion_health_states") if isinstance(merged.get("promotion_health_states"), list) else DEFAULT_CANARY_LIVE_CONTROLLER_POLICY["promotion_health_states"])
+            if str(value or "").strip()
+        ]
+        merged["critical_alert_blocking_states"] = [
+            normalize_alert_state(value)
+            for value in (
+                merged.get("critical_alert_blocking_states")
+                if isinstance(merged.get("critical_alert_blocking_states"), list)
+                else DEFAULT_CANARY_LIVE_CONTROLLER_POLICY["critical_alert_blocking_states"]
+            )
+            if str(value or "").strip()
+        ]
+        merged["min_health_score_ready"] = max(0, min(100, _as_int(merged.get("min_health_score_ready"), 70)))
+        merged["min_health_score_promotion"] = max(0, min(100, _as_int(merged.get("min_health_score_promotion"), 90)))
+        merged["max_blocking_critical_alerts"] = max(0, _as_int(merged.get("max_blocking_critical_alerts"), 0))
+        merged["armed_to_running_min_sec"] = max(0, _as_int(merged.get("armed_to_running_min_sec"), 0))
+        merged["promotion_stability_sec"] = max(
+            merged["armed_to_running_min_sec"],
+            _as_int(merged.get("promotion_stability_sec"), 300),
+        )
+        merged["count_suppressed_critical_alerts_as_blocking"] = bool(merged.get("count_suppressed_critical_alerts_as_blocking", False))
+        merged["require_preflight_pass"] = bool(merged.get("require_preflight_pass", True))
+        merged["require_reconciliation_clean"] = bool(merged.get("require_reconciliation_clean", True))
+        merged["require_operational_safety_clear"] = bool(merged.get("require_operational_safety_clear", True))
+        merged["require_health_non_blocking"] = bool(merged.get("require_health_non_blocking", True))
+        merged["fail_closed_on_missing_surfaces"] = bool(merged.get("fail_closed_on_missing_surfaces", True))
+        merged["rollback_recommend_on_hard_block"] = bool(merged.get("rollback_recommend_on_hard_block", True))
+        merged["rollback_execution_supported"] = bool(merged.get("rollback_execution_supported", False))
+        return merged
+
     @staticmethod
     def _live_signal_severity_from_status(value: Any) -> str:
         normalized = normalize_live_signal_source_status(value)
@@ -10538,6 +11176,646 @@ class RuntimeBridge:
                 occurred_at=now_iso,
             )
             return {"ok": True, "alert": updated, "transition": event}
+
+    def _collect_canary_surfaces(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        persist_sources: bool = False,
+        refresh_alerts: bool = False,
+    ) -> dict[str, Any]:
+        state_n = dict(state or {})
+        bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
+        symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
+        scope_type, scope_bot_id, scope_symbol = self._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+        raw_signals = self.build_live_signal_snapshot(
+            state=state_n,
+            settings=settings,
+            bot_id=scope_bot_id,
+            symbol=scope_symbol,
+            persist=persist_sources,
+        )
+        health_summary = self.build_live_health_summary(
+            state=state_n,
+            settings=settings,
+            bot_id=scope_bot_id,
+            symbol=scope_symbol,
+            persist=persist_sources,
+        )
+        safety_summary = self.operational_safety_summary(
+            state=state_n,
+            bot_id=scope_bot_id,
+            symbol=scope_symbol,
+        )
+        if refresh_alerts:
+            alerts_payload = self.evaluate_execution_alerts(
+                state=state_n,
+                settings=settings,
+                bot_id=scope_bot_id,
+                symbol=scope_symbol,
+                persist=persist_sources,
+            )
+        else:
+            items = store.list_execution_alert_instances(
+                scope_type=scope_type,
+                bot_id=scope_bot_id,
+                symbol=scope_symbol,
+                limit=250,
+            )
+            alerts_payload = {
+                "evaluated_at": utc_now_iso(),
+                "scope": {
+                    "scope_type": scope_type,
+                    "scope_key": canary_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol),
+                    "bot_id": scope_bot_id,
+                    "symbol": scope_symbol,
+                },
+                "items": items,
+                "open_items": [row for row in items if alert_state_active(row.get("state"))],
+                "transitions": [],
+                "touched_alert_instance_ids": [],
+            }
+        return {
+            "scope": {
+                "scope_type": scope_type,
+                "scope_key": canary_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol),
+                "bot_id": scope_bot_id,
+                "symbol": scope_symbol,
+            },
+            "raw_signals": raw_signals,
+            "health_summary": health_summary,
+            "safety_summary": safety_summary,
+            "alerts_payload": alerts_payload,
+        }
+
+    def build_execution_canary_gate_evaluation(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        run: dict[str, Any] | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        persist: bool = False,
+        refresh_alerts: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            surfaces = self._collect_canary_surfaces(
+                state=state,
+                settings=settings,
+                bot_id=bot_id or (str((run or {}).get("bot_id") or "").strip() or None),
+                symbol=symbol or (str((run or {}).get("symbol") or "").strip().upper() or None),
+                persist_sources=persist,
+                refresh_alerts=refresh_alerts,
+            )
+            evaluation = finalize_canary_gate_evaluation(
+                policy=self._canary_policy(),
+                scope=surfaces["scope"],
+                raw_signals=surfaces["raw_signals"],
+                health_summary=surfaces["health_summary"],
+                safety_summary=surfaces["safety_summary"],
+                open_alerts=[row for row in (surfaces["alerts_payload"].get("open_items") or []) if isinstance(row, dict)],
+                evaluated_at=utc_now_iso(),
+                run=run,
+            )
+            evaluation["policy_source"] = str(load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml")
+            evaluation["rollback_execution_supported"] = bool(self._canary_policy().get("rollback_execution_supported", False))
+            evaluation["upstream_refs"] = {
+                "raw_signal_snapshot_ids": [
+                    str(row.get("signal_snapshot_id") or "")
+                    for row in (surfaces["raw_signals"].get("items") if isinstance(surfaces["raw_signals"].get("items"), list) else [])
+                    if isinstance(row, dict) and str(row.get("signal_snapshot_id") or "").strip()
+                ],
+                "health_snapshot_id": str(surfaces["health_summary"].get("snapshot_id") or ""),
+                "safety_evaluated_at": str(surfaces["safety_summary"].get("evaluated_at") or ""),
+                "alert_instance_ids": [
+                    str(row.get("alert_instance_id") or "")
+                    for row in (surfaces["alerts_payload"].get("open_items") if isinstance(surfaces["alerts_payload"].get("open_items"), list) else [])
+                    if isinstance(row, dict) and str(row.get("alert_instance_id") or "").strip()
+                ],
+            }
+            if persist:
+                evaluation = store.insert_canary_gate_evaluation(evaluation)
+            return evaluation
+
+    def _persist_canary_run_update(
+        self,
+        *,
+        run: dict[str, Any] | None,
+        phase: str,
+        evaluation: dict[str, Any],
+        actor: str,
+        event_type: str,
+        reason: str | None = None,
+        started_at: str | None = None,
+        running_started_at: str | None = None,
+        ended_at: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        run_n = dict(run or {})
+        previous_phase = normalize_canary_phase(run_n.get("phase")) if run_n else None
+        raw_run = dict(run_n.get("raw_run") or {})
+        raw_run["last_gate_evaluation"] = evaluation
+        if reason:
+            raw_run["last_transition_reason"] = reason
+        updated = store.upsert_canary_run(
+            run_id=str(run_n.get("run_id") or "") or None,
+            scope_type=str(evaluation.get("scope_type") or "GLOBAL"),
+            bot_id=str(evaluation.get("bot_id") or "").strip() or None,
+            symbol=str(evaluation.get("symbol") or "").strip().upper() or None,
+            phase=phase,
+            canary_allowed_bool=bool(evaluation.get("canary_allowed_bool", False)),
+            hold_required_bool=bool(evaluation.get("hold_required_bool", False)),
+            rollback_recommended_bool=bool(evaluation.get("rollback_recommended_bool", False)),
+            promotion_allowed_bool=bool(evaluation.get("promotion_allowed_bool", False)),
+            started_at=started_at or run_n.get("started_at"),
+            running_started_at=running_started_at if running_started_at is not None else run_n.get("running_started_at"),
+            last_evaluated_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
+            ended_at=ended_at if ended_at is not None else run_n.get("ended_at"),
+            last_gate_evaluation_id=str(evaluation.get("evaluation_id") or "") or None,
+            blocking_sources=list(evaluation.get("blocking_sources") or []),
+            gating_reasons=list(evaluation.get("gating_reasons") or []),
+            advisory_warnings=list(evaluation.get("advisory_warnings") or []),
+            upstream_refs=evaluation.get("upstream_refs") if isinstance(evaluation.get("upstream_refs"), dict) else {},
+            summary_text=str(reason or (list(evaluation.get("blocking_sources") or [])[:1] or [phase])[0]),
+            raw_run=raw_run,
+        )
+        event = store.insert_canary_run_event(
+            run_id=str(updated.get("run_id") or ""),
+            event_type=event_type,
+            previous_phase=previous_phase,
+            next_phase=phase,
+            payload={
+                "reason": str(reason or ""),
+                "evaluation_id": str(evaluation.get("evaluation_id") or ""),
+                "blocking_sources": list(evaluation.get("blocking_sources") or []),
+                "gating_reasons": list(evaluation.get("gating_reasons") or []),
+            },
+            actor=actor,
+            occurred_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
+        )
+        snapshot = store.insert_canary_phase_snapshot(
+            run_id=str(updated.get("run_id") or ""),
+            phase=phase,
+            gate_evaluation_id=str(evaluation.get("evaluation_id") or "") or None,
+            snapshot={"run": updated, "evaluation": evaluation, "reason": str(reason or "")},
+        )
+        return updated, event, snapshot
+
+    @staticmethod
+    def _resolve_canary_scope(
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        bot_id_n = str(bot_id or "").strip() or None
+        symbol_n = str(symbol or "").strip().upper() or None
+        if bot_id_n or symbol_n:
+            return RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+        scope_type_n = normalize_canary_scope_type(scope_type)
+        if scope_type_n == "BOT":
+            raise ValueError("bot_id is required for BOT canary scope")
+        if scope_type_n == "SYMBOL":
+            raise ValueError("symbol is required for SYMBOL canary scope")
+        if scope_type_n == "BOT_SYMBOL":
+            raise ValueError("bot_id and symbol are required for BOT_SYMBOL canary scope")
+        return "GLOBAL", None, None
+
+    def _canary_run_detail(self, run: dict[str, Any] | None, *, evaluation: dict[str, Any] | None = None) -> dict[str, Any]:
+        run_n = dict(run or {})
+        run_id = str(run_n.get("run_id") or "")
+        history = {
+            "events": store.list_canary_run_events(run_id=run_id, limit=100) if run_id else [],
+            "phase_snapshots": store.list_canary_phase_snapshots(run_id=run_id, limit=100) if run_id else [],
+            "gate_evaluations": store.list_canary_gate_evaluations(run_id=run_id, limit=100) if run_id else [],
+        }
+        latest_evaluation = (
+            dict(evaluation or {})
+            or (history["gate_evaluations"][0] if history["gate_evaluations"] else {})
+        )
+        return {
+            "run": run_n,
+            "latest_evaluation": latest_evaluation,
+            **history,
+        }
+
+    def execution_canary_status(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            scope_type_n, bot_id_n, symbol_n = self._resolve_canary_scope(
+                scope_type=scope_type,
+                bot_id=bot_id,
+                symbol=symbol,
+            )
+            latest_run = store.latest_canary_run(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n)
+            evaluation = self.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=latest_run,
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+                persist=False,
+                refresh_alerts=False,
+            )
+            return {
+                "scope": {
+                    "scope_type": scope_type_n,
+                    "scope_key": canary_scope_key(scope_type_n, bot_id=bot_id_n, symbol=symbol_n),
+                    "bot_id": bot_id_n,
+                    "symbol": symbol_n,
+                },
+                "policy": self._canary_policy(),
+                "policy_source": str(evaluation.get("policy_source") or load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml"),
+                "latest_run": latest_run or {},
+                "current_evaluation": evaluation,
+                "open_runs": [
+                    row
+                    for row in store.list_canary_runs(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n, limit=20)
+                    if not canary_phase_is_terminal(row.get("phase"))
+                ],
+                "history": self._canary_run_detail(latest_run, evaluation=evaluation) if latest_run else {"events": [], "phase_snapshots": [], "gate_evaluations": []},
+                "rollback_execution_supported": bool(self._canary_policy().get("rollback_execution_supported", False)),
+            }
+
+    def start_canary_run(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        actor: str = "system",
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            scope_type_n, bot_id_n, symbol_n = self._resolve_canary_scope(
+                scope_type=scope_type,
+                bot_id=bot_id,
+                symbol=symbol,
+            )
+            existing = store.latest_canary_run(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n)
+            if existing and not canary_phase_is_terminal(existing.get("phase")):
+                return {
+                    "ok": True,
+                    "action": "existing_run_reused",
+                    "reason": "canary_run_already_active",
+                    **self._canary_run_detail(
+                        existing,
+                        evaluation=self.build_execution_canary_gate_evaluation(
+                            state=state,
+                            settings=settings,
+                            run=existing,
+                            bot_id=bot_id_n,
+                            symbol=symbol_n,
+                            persist=False,
+                            refresh_alerts=False,
+                        ),
+                    ),
+                }
+            evaluation = self.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=None,
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+                persist=False,
+                refresh_alerts=False,
+            )
+            phase = "ARMED" if bool(evaluation.get("canary_allowed_bool", False)) and not bool(evaluation.get("hold_required_bool", False)) else "HOLD"
+            reason = str(note or "")
+            if not reason:
+                gating = evaluation.get("gating_reasons") if isinstance(evaluation.get("gating_reasons"), list) else []
+                reason = str((gating[0] or {}).get("reason_code") or "") if gating else ""
+            reason = reason or ("canary_start_allowed" if phase == "ARMED" else "canary_start_blocked")
+            started_at = str(evaluation.get("evaluated_at") or utc_now_iso())
+            bootstrap_run = store.upsert_canary_run(
+                run_id=None,
+                scope_type=scope_type_n,
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+                phase=phase,
+                canary_allowed_bool=bool(evaluation.get("canary_allowed_bool", False)),
+                hold_required_bool=bool(evaluation.get("hold_required_bool", False)),
+                rollback_recommended_bool=bool(evaluation.get("rollback_recommended_bool", False)),
+                promotion_allowed_bool=bool(evaluation.get("promotion_allowed_bool", False)),
+                started_at=started_at,
+                running_started_at=None,
+                last_evaluated_at=str(evaluation.get("evaluated_at") or started_at),
+                ended_at=None,
+                last_gate_evaluation_id=None,
+                blocking_sources=list(evaluation.get("blocking_sources") or []),
+                gating_reasons=list(evaluation.get("gating_reasons") or []),
+                advisory_warnings=list(evaluation.get("advisory_warnings") or []),
+                upstream_refs=evaluation.get("upstream_refs") if isinstance(evaluation.get("upstream_refs"), dict) else {},
+                summary_text=reason,
+                raw_run={"last_transition_reason": reason},
+            )
+            evaluation = store.insert_canary_gate_evaluation(
+                {
+                    **evaluation,
+                    "run_id": str(bootstrap_run.get("run_id") or ""),
+                    "phase": phase,
+                }
+            )
+            run, event, snapshot = self._persist_canary_run_update(
+                run=bootstrap_run,
+                phase=phase,
+                evaluation=evaluation,
+                actor=actor,
+                event_type="STARTED" if phase == "ARMED" else "HELD",
+                reason=reason,
+                started_at=started_at,
+                running_started_at=None,
+                ended_at=None,
+            )
+            return {
+                "ok": phase == "ARMED",
+                "action": "start",
+                "reason": reason,
+                "run": run,
+                "event": event,
+                "phase_snapshot": snapshot,
+                "latest_evaluation": evaluation,
+            }
+
+    def evaluate_canary_run(
+        self,
+        *,
+        run_id: str,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        with self._lock:
+            run = store.get_canary_run(run_id)
+            if not run:
+                raise KeyError(run_id)
+            evaluation = self.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=run,
+                bot_id=str(run.get("bot_id") or "").strip() or None,
+                symbol=str(run.get("symbol") or "").strip().upper() or None,
+                persist=True,
+                refresh_alerts=False,
+            )
+            next_phase, meta = decide_canary_phase_transition(
+                policy=self._canary_policy(),
+                run=run,
+                evaluation=evaluation,
+                now_iso=str(evaluation.get("evaluated_at") or utc_now_iso()),
+            )
+            event_type = "EVALUATED"
+            if next_phase != normalize_canary_phase(run.get("phase")):
+                if next_phase == "HOLD":
+                    event_type = "HELD"
+                elif next_phase == "ROLLBACK_RECOMMENDED":
+                    event_type = "ROLLBACK_RECOMMENDED"
+                elif next_phase == "FAILED":
+                    event_type = "FAILED"
+                else:
+                    event_type = "PHASE_CHANGED"
+            updated, event, snapshot = self._persist_canary_run_update(
+                run=run,
+                phase=next_phase,
+                evaluation=evaluation,
+                actor=actor,
+                event_type=event_type,
+                reason=str(meta.get("reason") or "evaluated"),
+                started_at=run.get("started_at"),
+                running_started_at=meta.get("running_started_at"),
+                ended_at=meta.get("ended_at"),
+            )
+            return {
+                "ok": True,
+                "action": "evaluate",
+                "reason": str(meta.get("reason") or "evaluated"),
+                "run": updated,
+                "event": event,
+                "phase_snapshot": snapshot,
+                "latest_evaluation": evaluation,
+            }
+
+    def hold_canary_run(
+        self,
+        *,
+        run_id: str,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        actor: str = "system",
+        reason: str | None = None,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            run = store.get_canary_run(run_id)
+            if not run:
+                raise KeyError(run_id)
+            evaluation = self.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=run,
+                bot_id=str(run.get("bot_id") or "").strip() or None,
+                symbol=str(run.get("symbol") or "").strip().upper() or None,
+                persist=True,
+                refresh_alerts=False,
+            )
+            updated, event, snapshot = self._persist_canary_run_update(
+                run=run,
+                phase="HOLD",
+                evaluation=evaluation,
+                actor=actor,
+                event_type="HELD",
+                reason=str(reason or audit_note or "manual_hold"),
+                started_at=run.get("started_at"),
+                running_started_at=run.get("running_started_at"),
+                ended_at=None,
+            )
+            return {
+                "ok": True,
+                "action": "hold",
+                "reason": str(reason or audit_note or "manual_hold"),
+                "run": updated,
+                "event": event,
+                "phase_snapshot": snapshot,
+                "latest_evaluation": evaluation,
+            }
+
+    def resume_canary_run(
+        self,
+        *,
+        run_id: str,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        actor: str = "system",
+        reason: str | None = None,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            run = store.get_canary_run(run_id)
+            if not run:
+                raise KeyError(run_id)
+            evaluation = self.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=run,
+                bot_id=str(run.get("bot_id") or "").strip() or None,
+                symbol=str(run.get("symbol") or "").strip().upper() or None,
+                persist=True,
+                refresh_alerts=False,
+            )
+            next_phase, meta = decide_canary_phase_transition(
+                policy=self._canary_policy(),
+                run={**run, "phase": "HOLD"},
+                evaluation=evaluation,
+                now_iso=str(evaluation.get("evaluated_at") or utc_now_iso()),
+            )
+            updated, event, snapshot = self._persist_canary_run_update(
+                run=run,
+                phase=next_phase,
+                evaluation=evaluation,
+                actor=actor,
+                event_type="RESUMED" if next_phase != "HOLD" else "HELD",
+                reason=str(reason or audit_note or meta.get("reason") or "resume_evaluated"),
+                started_at=run.get("started_at"),
+                running_started_at=meta.get("running_started_at"),
+                ended_at=meta.get("ended_at"),
+            )
+            return {
+                "ok": next_phase != "HOLD",
+                "action": "resume",
+                "reason": str(reason or audit_note or meta.get("reason") or "resume_evaluated"),
+                "run": updated,
+                "event": event,
+                "phase_snapshot": snapshot,
+                "latest_evaluation": evaluation,
+            }
+
+    def abort_canary_run(
+        self,
+        *,
+        run_id: str,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        actor: str = "system",
+        reason: str | None = None,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            run = store.get_canary_run(run_id)
+            if not run:
+                raise KeyError(run_id)
+            evaluation = self.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=run,
+                bot_id=str(run.get("bot_id") or "").strip() or None,
+                symbol=str(run.get("symbol") or "").strip().upper() or None,
+                persist=True,
+                refresh_alerts=False,
+            )
+            updated, event, snapshot = self._persist_canary_run_update(
+                run=run,
+                phase="ABORTED",
+                evaluation=evaluation,
+                actor=actor,
+                event_type="ABORTED",
+                reason=str(reason or audit_note or "manual_abort"),
+                started_at=run.get("started_at"),
+                running_started_at=run.get("running_started_at"),
+                ended_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
+            )
+            return {
+                "ok": True,
+                "action": "abort",
+                "reason": str(reason or audit_note or "manual_abort"),
+                "run": updated,
+                "event": event,
+                "phase_snapshot": snapshot,
+                "latest_evaluation": evaluation,
+            }
+
+    def rollback_canary_run(
+        self,
+        *,
+        run_id: str,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        actor: str = "system",
+        reason: str | None = None,
+        audit_note: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            run = store.get_canary_run(run_id)
+            if not run:
+                raise KeyError(run_id)
+            evaluation = self.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=run,
+                bot_id=str(run.get("bot_id") or "").strip() or None,
+                symbol=str(run.get("symbol") or "").strip().upper() or None,
+                persist=True,
+                refresh_alerts=False,
+            )
+            policy = self._canary_policy()
+            evaluation_for_rollback = dict(evaluation)
+            evaluation_for_rollback["rollback_recommended_bool"] = True
+            if not bool(policy.get("rollback_execution_supported", False)):
+                updated, event, snapshot = self._persist_canary_run_update(
+                    run=run,
+                    phase="ROLLBACK_RECOMMENDED",
+                    evaluation=evaluation_for_rollback,
+                    actor=actor,
+                    event_type="ROLLBACK_REQUESTED",
+                    reason=str(reason or audit_note or "rollback_execution_not_supported"),
+                    started_at=run.get("started_at"),
+                    running_started_at=run.get("running_started_at"),
+                    ended_at=None,
+                )
+                return {
+                    "ok": False,
+                    "action": "rollback_recommended",
+                    "manual_action_required": True,
+                    "reason": str(reason or audit_note or "rollback_execution_not_supported"),
+                    "run": updated,
+                    "event": event,
+                    "phase_snapshot": snapshot,
+                    "latest_evaluation": evaluation_for_rollback,
+                    "rollback_execution_supported": False,
+                }
+            updated, event, snapshot = self._persist_canary_run_update(
+                run=run,
+                phase="ROLLED_BACK",
+                evaluation=evaluation_for_rollback,
+                actor=actor,
+                event_type="ROLLED_BACK",
+                reason=str(reason or audit_note or "rollback_executed"),
+                started_at=run.get("started_at"),
+                running_started_at=run.get("running_started_at"),
+                ended_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
+            )
+            return {
+                "ok": True,
+                "action": "rollback",
+                "manual_action_required": False,
+                "reason": str(reason or audit_note or "rollback_executed"),
+                "run": updated,
+                "event": event,
+                "phase_snapshot": snapshot,
+                "latest_evaluation": evaluation_for_rollback,
+                "rollback_execution_supported": True,
+            }
 
     def evaluate_operational_safety(
         self,
@@ -17496,6 +18774,185 @@ def create_app() -> FastAPI:
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="Alert not found")
+
+    @app.get("/api/v1/execution/canary/status")
+    def execution_canary_status(
+        scope_type: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        try:
+            return runtime_bridge.execution_canary_status(
+                state=state,
+                settings=settings,
+                scope_type=str(scope_type or "").strip() or None,
+                bot_id=str(bot_id or "").strip() or None,
+                symbol=str(symbol or "").strip().upper() or None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/v1/execution/canary/runs")
+    def execution_canary_runs(
+        scope_type: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        scope_type_n = str(scope_type or "").strip() or None
+        return {
+            "items": store.list_canary_runs(
+                scope_type=scope_type_n,
+                bot_id=str(bot_id or "").strip() or None,
+                symbol=str(symbol or "").strip().upper() or None,
+                limit=limit,
+            )
+        }
+
+    @app.get("/api/v1/execution/canary/runs/{run_id}")
+    def execution_canary_run_detail(
+        run_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        run = store.get_canary_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Canary run not found")
+        return runtime_bridge._canary_run_detail(run)
+
+    @app.post("/api/v1/execution/canary/evaluate")
+    def execution_canary_evaluate(
+        body: CanaryEvaluateBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        run_id = str((body.run_id if body else "") or "").strip() or None
+        if run_id:
+            try:
+                return runtime_bridge.evaluate_canary_run(
+                    run_id=run_id,
+                    state=state,
+                    settings=settings,
+                    actor=str(user.get("username") or "admin"),
+                )
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Canary run not found")
+        try:
+            return runtime_bridge.build_execution_canary_gate_evaluation(
+                state=state,
+                settings=settings,
+                run=None,
+                bot_id=str((body.bot_id if body else "") or "").strip() or None,
+                symbol=str((body.symbol if body else "") or "").strip().upper() or None,
+                persist=bool(body.persist if body else True),
+                refresh_alerts=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/v1/execution/canary/start")
+    def execution_canary_start(
+        body: CanaryStartBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        try:
+            return runtime_bridge.start_canary_run(
+                state=state,
+                settings=settings,
+                scope_type=body.scope_type,
+                bot_id=str(body.bot_id or "").strip() or None,
+                symbol=str(body.symbol or "").strip().upper() or None,
+                actor=str(user.get("username") or "admin"),
+                note=body.note,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/v1/execution/canary/{run_id}/hold")
+    def execution_canary_hold(
+        run_id: str,
+        body: CanaryActionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        try:
+            return runtime_bridge.hold_canary_run(
+                run_id=run_id,
+                state=state,
+                settings=settings,
+                actor=str(user.get("username") or "admin"),
+                reason=body.reason if body else None,
+                audit_note=body.audit_note if body else None,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Canary run not found")
+
+    @app.post("/api/v1/execution/canary/{run_id}/resume")
+    def execution_canary_resume(
+        run_id: str,
+        body: CanaryActionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        try:
+            return runtime_bridge.resume_canary_run(
+                run_id=run_id,
+                state=state,
+                settings=settings,
+                actor=str(user.get("username") or "admin"),
+                reason=body.reason if body else None,
+                audit_note=body.audit_note if body else None,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Canary run not found")
+
+    @app.post("/api/v1/execution/canary/{run_id}/abort")
+    def execution_canary_abort(
+        run_id: str,
+        body: CanaryActionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        try:
+            return runtime_bridge.abort_canary_run(
+                run_id=run_id,
+                state=state,
+                settings=settings,
+                actor=str(user.get("username") or "admin"),
+                reason=body.reason if body else None,
+                audit_note=body.audit_note if body else None,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Canary run not found")
+
+    @app.post("/api/v1/execution/canary/{run_id}/rollback")
+    def execution_canary_rollback(
+        run_id: str,
+        body: CanaryActionBody | None = None,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        try:
+            return runtime_bridge.rollback_canary_run(
+                run_id=run_id,
+                state=state,
+                settings=settings,
+                actor=str(user.get("username") or "admin"),
+                reason=body.reason if body else None,
+                audit_note=body.audit_note if body else None,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Canary run not found")
 
     @app.get("/api/v1/settings")
     def settings(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

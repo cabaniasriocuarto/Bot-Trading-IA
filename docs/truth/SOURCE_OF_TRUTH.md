@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-24
 ## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-54` Canary Live Controller
   - `RTLOPS-65` raw live signal contract hardening
   - `RTLOPS-26` live signals foundation - CAPA A de señal cruda
   - `RTLOPS-27` live alerts persistentes - consumer persistente de alerting
@@ -34,12 +35,12 @@ Fecha de actualizacion: 2026-03-24
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-54` `Canary Live Controller`.
+  - `RTLOPS-51` `Integracion real de RTLOPS-36 con runtime live`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
-  - `RTLOPS-54` `Canary Live Controller`;
-  - queda habilitada ahora que el contrato raw backend de CAPA A ya quedo endurecido.
+  - `RTLOPS-61` `Cost source snapshots live por familia`;
+  - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
 - Estado administrativo real de Linear al 2026-03-24:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30` y `RTLOPS-66`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-54` y `RTLOPS-66`;
   - mapa de proyectos alineado con dominios reales del repo;
   - dominio `observability / health / safety` alineado en tres capas:
     - CAPA A `señal cruda`: `RTLOPS-26` + `RTLOPS-63` + `RTLOPS-64`
@@ -51,6 +52,68 @@ Fecha de actualizacion: 2026-03-24
     - consume safety states (`RTLOPS-29`)
     - no es dueña de `live_signals.py` ni del score global ni de breakers/freezes;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
+
+## RTLOPS-54 - Canary Live Controller - 2026-03-24
+
+- Objetivo real cerrado:
+  - agregar una capa backend-first de orquestacion de rollout canary sin reabrir ownership de preflight, reconciliation, operational safety, health summary ni alerts;
+  - consumir surfaces canonicas upstream para decidir readiness, progression, hold y rollback recommendation fail-closed;
+  - persistir runs, gate evaluations, phase snapshots y run events con trazabilidad auditable.
+- Implementacion real:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/canary.py` con:
+    - fases canonicas (`DRAFT`, `READY`, `ARMED`, `RUNNING`, `HOLD`, `PASSED`, `FAILED`, `ROLLBACK_RECOMMENDED`, `ROLLED_BACK`, `ABORTED`);
+    - sort/precedencia de razones de gate;
+    - evaluacion canary sobre surfaces upstream;
+    - transicion de fases sin reinterpretar la verdad upstream;
+  - `ConsoleStore`/SQLite agregan:
+    - `canary_runs`
+    - `canary_gate_evaluations`
+    - `canary_phase_snapshots`
+    - `canary_run_events`
+  - `RuntimeBridge` agrega:
+    - `execution_canary_status(...)`
+    - `build_execution_canary_gate_evaluation(...)`
+    - `start/evaluate/hold/resume/abort/rollback_canary_run(...)`
+  - nuevos endpoints:
+    - `GET /api/v1/execution/canary/status`
+    - `GET /api/v1/execution/canary/runs`
+    - `GET /api/v1/execution/canary/runs/{run_id}`
+    - `POST /api/v1/execution/canary/evaluate`
+    - `POST /api/v1/execution/canary/start`
+    - `POST /api/v1/execution/canary/{run_id}/hold`
+    - `POST /api/v1/execution/canary/{run_id}/resume`
+    - `POST /api/v1/execution/canary/{run_id}/abort`
+    - `POST /api/v1/execution/canary/{run_id}/rollback`
+- Superficies consumidas, sin invadir ownership:
+  - preflight final (`RTLOPS-47`)
+  - reconciliation (`RTLOPS-23`)
+  - operational safety / breakers / freezes (`RTLOPS-29`)
+  - health summary (`RTLOPS-30`)
+  - alertas persistentes (`RTLOPS-27`)
+- Semantica real de gate:
+  - `canary_allowed_bool`, `hold_required_bool`, `rollback_recommended_bool` y `promotion_allowed_bool` se derivan solo de surfaces canonicas ya existentes;
+  - ante surfaces faltantes, stale o ambiguas, el canary falla cerrado;
+  - `PROMOTION_ALLOWED` exige estabilidad minima (`promotion_stability_sec`) y no solo ausencia momentanea de blockers;
+  - `rollback_execution_supported = false` por policy en este estado:
+    - el runtime puede recomendar rollback y persistir la transicion,
+    - pero no inventa ejecucion real de rollback sin soporte coherente confirmado.
+- Limites honestos:
+  - no agrega UI nueva en este bloque;
+  - no recalcula score global ni readiness upstream;
+  - no crea nuevos breakers ni alertas paralelas;
+  - no ejecuta rollback real porque ese soporte no existe todavia como surface confirmada.
+- Fuente proyecto:
+  - `rtlab_autotrader/rtlab_core/execution/canary.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+  - `rtlab_autotrader/tests/test_web_live_ready.py`
+  - `config/policies/execution_safety.yaml`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Validacion local cerrada:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/canary.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_canary" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-canary -q` -> PASS (`9 passed`)
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary or execution_alert or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-canary-compat -q` -> PASS (`35 passed`)
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-canary-compat` -> PASS (`2 passed`)
 
 ## RTLOPS-65 - raw live signal contract hardening - 2026-03-24
 

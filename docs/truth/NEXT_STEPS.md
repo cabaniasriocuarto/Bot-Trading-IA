@@ -18,14 +18,16 @@ Fecha: 2026-03-24
 - [x] `RTLOPS-27` live alerts persistentes + catalogo de triggers operativos
 - [x] `RTLOPS-66` alert lifecycle semantics hardening
 - [x] `RTLOPS-65` raw live signal contract hardening: typed snapshot envelope + schema discipline
+- [x] `RTLOPS-54` Canary Live Controller
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-54` `Canary Live Controller`
-  - reactivar el controlador de canary sobre una base ya cerrada de:
-    - raw signals tipados (`RTLOPS-65`)
+- [ ] `RTLOPS-51` `Integracion real de RTLOPS-36 con runtime live`
+  - cablear `ValidationService` / readiness por stage con surfaces reales ya cerradas de:
+    - canary controller (`RTLOPS-54`)
     - health summary (`RTLOPS-30`)
-    - alert lifecycle semantico (`RTLOPS-66`)
     - operational safety (`RTLOPS-29`)
+    - alert lifecycle persistente (`RTLOPS-27` / `RTLOPS-66`)
+    - preflight / reconciliation / fills / raw signals ya estabilizados
 
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
@@ -52,6 +54,7 @@ Fecha: 2026-03-24
   - `RTLOPS-27` = consumer persistente de alerting
   - `RTLOPS-65` = hardening chico del contrato raw backend
   - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
+  - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
   - contrato raw backend canonico = envelope `schema_version + collected_at_ms + window_ms + payload(kind/numeric_metrics/state_values/timestamps_ms/refs)`
 - [x] Mapa de proyectos alineado con dominios reales:

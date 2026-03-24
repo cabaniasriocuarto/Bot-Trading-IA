@@ -6443,3 +6443,265 @@ def test_execution_alert_consumer_does_not_recalculate_health_or_open_safety_act
   assert after_summary["top_priority_reason_code"] == before_summary["top_priority_reason_code"]
   assert after_manual_actions == before_manual_actions
 
+
+def test_execution_canary_start_holds_when_preflight_is_expired(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_last_safety_eval_at"] = (module.utc_now() - timedelta(seconds=700)).isoformat()
+  module.store.save_bot_state(state)
+
+  payload = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+
+  assert payload["ok"] is False
+  assert payload["run"]["phase"] == "HOLD"
+  reasons = {row["reason_code"] for row in payload["latest_evaluation"]["gating_reasons"]}
+  assert "PREFLIGHT_EXPIRED" in reasons
+  stored = module.store.list_canary_gate_evaluations(run_id=payload["run"]["run_id"], limit=20)
+  assert stored
+  assert "PREFLIGHT" in stored[0]["blocking_sources"]
+
+
+def test_execution_canary_recommends_rollback_when_reconciliation_turns_blocking(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  started = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert started["run"]["phase"] == "ARMED"
+
+  running = module.runtime_bridge.evaluate_canary_run(
+    run_id=started["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert running["run"]["phase"] == "RUNNING"
+
+  module.runtime_bridge._last_reconcile = {
+    **module.runtime_bridge._last_reconcile,
+    "desync_count": 1,
+    "missing_local": [{"order_id": "remote-1"}],
+    "source_ok": True,
+  }
+  blocked = module.runtime_bridge.evaluate_canary_run(
+    run_id=started["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+
+  assert blocked["run"]["phase"] == "ROLLBACK_RECOMMENDED"
+  assert blocked["latest_evaluation"]["rollback_recommended_bool"] is True
+  assert "RECONCILIATION" in blocked["latest_evaluation"]["blocking_sources"]
+
+
+def test_execution_canary_blocks_when_operational_safety_manual_lock_is_active(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.runtime_bridge.freeze_global(requested_by="tester", audit_note="canary_test")
+
+  payload = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+
+  assert payload["ok"] is False
+  assert payload["run"]["phase"] == "HOLD"
+  assert "SAFETY" in payload["latest_evaluation"]["blocking_sources"]
+
+
+def test_execution_canary_consumes_blocking_health_surface_without_redefining_it(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  def _blocked_health_summary(**_kwargs):
+    return {
+      "snapshot_id": "health-blocked-1",
+      "state": "BLOCKED",
+      "score": 42,
+      "blocking_bool": True,
+      "top_priority_reason_code": "PREFLIGHT_EXPIRED",
+      "reason_codes": ["PREFLIGHT_EXPIRED"],
+      "hard_blockers": ["PREFLIGHT_EXPIRED"],
+      "warnings": [],
+      "scope_status": [],
+    }
+
+  monkeypatch.setattr(module.runtime_bridge, "build_live_health_summary", _blocked_health_summary)
+
+  payload = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+
+  assert payload["ok"] is False
+  assert payload["run"]["phase"] == "HOLD"
+  reasons = {row["reason_code"] for row in payload["latest_evaluation"]["gating_reasons"]}
+  assert "HEALTH_BLOCKED" in reasons
+
+
+def test_execution_canary_critical_alert_surface_blocks_without_creating_new_alerts(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  module.store.upsert_execution_alert_instance(
+    trigger_code="STREAM_TERMINATED",
+    severity="CRITICAL",
+    state="OPEN",
+    source_layer="HEALTH",
+    scope_type="GLOBAL",
+    source_refs={"primary": [{"type": "health_summary", "id": "health-1"}]},
+    evidence={"reason": "upstream_critical_alert"},
+    summary_text="critical alert already open",
+  )
+  before_count = len(module.store.list_execution_alert_instances(limit=50))
+
+  payload = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+
+  after_count = len(module.store.list_execution_alert_instances(limit=50))
+  assert payload["ok"] is False
+  assert payload["run"]["phase"] == "HOLD"
+  assert "ALERTS" in payload["latest_evaluation"]["blocking_sources"]
+  assert after_count == before_count
+
+
+def test_execution_canary_healthy_run_progresses_and_persists_history(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  started = module.runtime_bridge.start_canary_run(
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert started["run"]["phase"] == "ARMED"
+
+  running = module.runtime_bridge.evaluate_canary_run(
+    run_id=started["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert running["run"]["phase"] == "RUNNING"
+
+  module.store.upsert_canary_run(
+    run_id=running["run"]["run_id"],
+    scope_type=running["run"]["scope_type"],
+    bot_id=running["run"]["bot_id"],
+    symbol=running["run"]["symbol"],
+    phase="RUNNING",
+    canary_allowed_bool=True,
+    hold_required_bool=False,
+    rollback_recommended_bool=False,
+    promotion_allowed_bool=False,
+    started_at=running["run"]["started_at"],
+    running_started_at=(module.utc_now() - timedelta(seconds=600)).isoformat(),
+    last_evaluated_at=running["run"]["last_evaluated_at"],
+    ended_at=None,
+    last_gate_evaluation_id=running["run"]["last_gate_evaluation_id"],
+    blocking_sources=running["run"]["blocking_sources"],
+    gating_reasons=running["run"]["gating_reasons"],
+    advisory_warnings=running["run"]["advisory_warnings"],
+    upstream_refs=running["run"]["upstream_refs"],
+    summary_text=running["run"]["summary_text"],
+    raw_run=running["run"]["raw_run"],
+  )
+
+  passed = module.runtime_bridge.evaluate_canary_run(
+    run_id=running["run"]["run_id"],
+    state=state,
+    settings=module.store.load_settings(),
+    actor="tester",
+  )
+  assert passed["run"]["phase"] == "PASSED"
+  assert module.store.list_canary_gate_evaluations(run_id=running["run"]["run_id"], limit=20)
+  assert module.store.list_canary_phase_snapshots(run_id=running["run"]["run_id"], limit=20)
+  assert module.store.list_canary_run_events(run_id=running["run"]["run_id"], limit=20)
+
+
+def test_execution_canary_fail_closed_when_surfaces_are_missing(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  monkeypatch.setattr(module.runtime_bridge, "build_live_signal_snapshot", lambda **_kwargs: {"items": []})
+
+  evaluation = module.runtime_bridge.build_execution_canary_gate_evaluation(
+    state=state,
+    settings=module.store.load_settings(),
+    persist=False,
+    refresh_alerts=False,
+  )
+
+  assert evaluation["canary_allowed_bool"] is False
+  assert evaluation["hold_required_bool"] is True
+  assert "EVIDENCE" in evaluation["blocking_sources"]
+
+
+def test_execution_canary_status_and_endpoints_expose_contract(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  admin = _login(client, "Wadmin", "moroco123")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  start = client.post(
+    "/api/v1/execution/canary/start",
+    headers=_auth_headers(admin),
+    json={},
+  )
+  assert start.status_code == 200, start.text
+  start_payload = start.json()
+  run_id = start_payload["run"]["run_id"]
+  assert start_payload["run"]["phase"] == "ARMED"
+
+  status = client.get("/api/v1/execution/canary/status", headers=_auth_headers(admin))
+  assert status.status_code == 200, status.text
+  status_payload = status.json()
+  assert set(status_payload.keys()) >= {"scope", "policy", "latest_run", "current_evaluation", "history"}
+  assert status_payload["latest_run"]["run_id"] == run_id
+
+  detail = client.get(f"/api/v1/execution/canary/runs/{run_id}", headers=_auth_headers(admin))
+  assert detail.status_code == 200, detail.text
+  detail_payload = detail.json()
+  assert detail_payload["run"]["run_id"] == run_id
+  assert isinstance(detail_payload["events"], list)
+  assert isinstance(detail_payload["gate_evaluations"], list)
+
+
+def test_execution_canary_status_does_not_open_new_alerts_or_safety_actions(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  before_alerts = len(module.store.list_execution_alert_instances(limit=50))
+  before_actions = len(module.store.list_safety_manual_actions(limit=50))
+
+  payload = module.runtime_bridge.execution_canary_status(
+    state=state,
+    settings=module.store.load_settings(),
+  )
+
+  after_alerts = len(module.store.list_execution_alert_instances(limit=50))
+  after_actions = len(module.store.list_safety_manual_actions(limit=50))
+  assert payload["current_evaluation"]["canary_allowed_bool"] is True
+  assert after_alerts == before_alerts
+  assert after_actions == before_actions
+

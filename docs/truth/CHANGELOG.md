@@ -2,6 +2,57 @@
 
 ## 2026-03-24
 
+### RTLOPS-54 - Canary Live Controller
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/canary.py` para gate evaluation y phase progression del canary controller;
+  - `RuntimeBridge` agrega orchestration backend-first para:
+    - status
+    - start
+    - evaluate
+    - hold
+    - resume
+    - abort
+    - rollback recommendation / rollback action solo si la policy lo soporta;
+  - `ConsoleStore`/SQLite agregan persistencia auditable:
+    - `canary_runs`
+    - `canary_gate_evaluations`
+    - `canary_phase_snapshots`
+    - `canary_run_events`
+  - nuevos endpoints:
+    - `GET /api/v1/execution/canary/status`
+    - `GET /api/v1/execution/canary/runs`
+    - `GET /api/v1/execution/canary/runs/{run_id}`
+    - `POST /api/v1/execution/canary/evaluate`
+    - `POST /api/v1/execution/canary/start`
+    - `POST /api/v1/execution/canary/{run_id}/hold`
+    - `POST /api/v1/execution/canary/{run_id}/resume`
+    - `POST /api/v1/execution/canary/{run_id}/abort`
+    - `POST /api/v1/execution/canary/{run_id}/rollback`
+- Gate semantics:
+  - el controller consume exclusivamente surfaces canonicas ya cerradas de:
+    - `RTLOPS-47` preflight
+    - `RTLOPS-23` reconciliation
+    - `RTLOPS-29` operational safety
+    - `RTLOPS-30` health summary
+    - `RTLOPS-27` persistent alerts
+  - no recalcula esas verdades ni crea una sexta verdad del runtime;
+  - `PROMOTION_ALLOWED` exige ventana minima de estabilidad;
+  - si una surface esta ausente o insuficiente, el canary falla cerrado;
+  - `rollback_execution_supported = false` deja el runtime en `ROLLBACK_RECOMMENDED` y no inventa rollback real.
+- Policy:
+  - nueva seccion `execution_safety.canary_live_controller` con thresholds y toggles explicitos para:
+    - health threshold de readiness
+    - health threshold de promotion
+    - alertas criticas bloqueantes
+    - surfaces requeridas
+    - ventana de estabilidad
+    - soporte real/no real de rollback execution
+- Validacion local real:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/canary.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_canary" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-canary -q` -> PASS (`9 passed`)
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary or execution_alert or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-canary-compat -q` -> PASS (`35 passed`)
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-canary-compat` -> PASS (`2 passed`)
+
 ### RTLOPS-65 - raw live signal contract hardening
 - Backend:
   - se endurece el contrato raw backend de `live_signals` sin reabrir score/health ni actions;
