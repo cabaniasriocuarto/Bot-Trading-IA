@@ -2,6 +2,32 @@
 
 ## 2026-03-23
 
+### Alineación conceptual Observability / Health / Safety en Linear
+- Linear MCP:
+  - el servidor oficial de Linear quedó operativo en este entorno a través de las herramientas MCP de issue/project;
+  - la configuración real cargada por Codex sigue apuntando a `https://mcp.linear.app/mcp`;
+  - `resources/list` no está implementado por este servidor y devuelve `-32601 Method not found`, pero las operaciones reales de `get/save/list` sobre proyectos/issues funcionan.
+- Reordenamiento administrativo mínimo y real:
+  - `RTLOPS-26` quedó redefinida como **CAPA A — señal cruda** con nuevo título:
+    - `Live signals foundation: execution, streams, fills, risk y snapshots operativos`
+  - `RTLOPS-30` quedó reafirmada como **CAPA B — interpretación** (`health_summary`, score, priorities, degraded visibility, sin acciones)
+  - `RTLOPS-29` quedó reubicada en `Execution Reality + Live Safety` como **CAPA C — acción**
+- Sub-issues creadas por gap real debajo de `RTLOPS-26`:
+  - `RTLOPS-63` `Raw live signals I: execution, fills, rate-limit y open-order pressure snapshots`
+  - `RTLOPS-64` `Raw live signals II: stream health + freshness de runtime/reconciliation/preflight`
+- Relaciones explícitas dejadas en Linear:
+  - `RTLOPS-26` relacionada con `RTLOPS-30`
+  - `RTLOPS-30` relacionada con `RTLOPS-26`, `RTLOPS-47`, `RTLOPS-23` y `RTLOPS-29`
+  - `RTLOPS-26` y `RTLOPS-30` quedaron como `blockedBy` de `RTLOPS-27`
+- Proyectos/milestones ajustados:
+  - `Monitoring + Drift + Kill Switches + Health` ahora explicita en summary/description que concentra CAPA A + CAPA B
+  - `Execution Reality + Live Safety` ahora explicita que concentra CAPA C
+  - `Frontend Console 10/10 + Playwright QA` ahora explicita que renderiza contratos backend sin segunda verdad
+  - milestones renombrados en Monitoring:
+    - `M1 Señal cruda + métricas + ids`
+    - `M3 Acción safety + kill switches`
+    - `M4 Health summary + degraded visibility`
+
 ### RTLOPS-30 - health summary live + score explicable + degraded visibility
 - Backend:
   - nuevo modulo `rtlab_autotrader/rtlab_core/execution/health_summary.py` con taxonomia canonica de:

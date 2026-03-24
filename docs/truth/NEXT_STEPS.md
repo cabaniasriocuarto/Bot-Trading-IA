@@ -16,10 +16,12 @@ Fecha: 2026-03-23
 - [x] `RTLOPS-30` health summary live + score explicable + degraded visibility
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-26` `Metricas operativas live de execution, streams, fills y risk`
-  - consolidar metricas backend-first reutilizables por `health summary`, alertas y release gate;
-  - exponer stale age, reject rate, reconcile mismatch rate, cancel success rate, kill switch trips y degradacion por dominio;
-  - dejar nomenclatura y freshness consistentes para que `RTLOPS-27` consuma estas metricas sin recomputo fragil.
+- [ ] `RTLOPS-26` `Live signals foundation: execution, streams, fills, risk y snapshots operativos`
+  - cerrar CAPA A de señal cruda, sin score ni acciones;
+  - sub-issues ya preparadas para ejecutar sin mezclar dominios:
+    - `RTLOPS-63` execution/fills/rate-limit/open-order pressure snapshots
+    - `RTLOPS-64` stream health + runtime/reconciliation/preflight freshness
+  - dejar contratos y persistencia reutilizables por `RTLOPS-30`, `RTLOPS-27` y release gate.
 
 ## Estado administrativo Linear
 - [x] Sync administrativo real completado para los cierres recientes:
@@ -42,6 +44,10 @@ Fecha: 2026-03-23
   - `Monitoring + Drift + Kill Switches + Health`
   - `Frontend Console 10/10 + Playwright QA`
   - `Release / Canary / Rollback / Auditoria Final`
+- [x] Dominio `observability / health / safety` separado conceptualmente:
+  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A `señal cruda`
+  - `RTLOPS-30` = CAPA B `interpretacion`
+  - `RTLOPS-29` = CAPA C `accion`
 - [x] Nuevas issues de backlog creadas solo donde habia gap real:
   - `RTLOPS-58` Margin live parity
   - `RTLOPS-59` COIN-M Futures live parity

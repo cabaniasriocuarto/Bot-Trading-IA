@@ -30,10 +30,14 @@ Fecha de actualizacion: 2026-03-23
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-26` `Metricas operativas live de execution, streams, fills y risk`.
+  - `RTLOPS-26` `Live signals foundation: execution, streams, fills, risk y snapshots operativos`.
 - Estado administrativo real de Linear al 2026-03-23:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29` y `RTLOPS-30`;
   - mapa de proyectos alineado con dominios reales del repo;
+  - dominio `observability / health / safety` alineado en tres capas:
+    - CAPA A `señal cruda`: `RTLOPS-26` + `RTLOPS-63` + `RTLOPS-64`
+    - CAPA B `interpretación`: `RTLOPS-30`
+    - CAPA C `acción`: `RTLOPS-29` reubicada en `Execution Reality + Live Safety`
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
 
 ## RTLOPS-30 - health summary live unico y explicable - 2026-03-23
