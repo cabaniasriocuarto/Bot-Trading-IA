@@ -8,6 +8,7 @@ ALERT_SEVERITIES = {"INFO", "WARN", "CRITICAL"}
 ALERT_STATES = {"OPEN", "ACKED", "SUPPRESSED", "COOLDOWN", "RESOLVED", "EXPIRED"}
 ALERT_ACTIVE_STATES = {"OPEN", "ACKED", "SUPPRESSED", "COOLDOWN"}
 ALERT_SOURCE_LAYERS = {"RAW", "HEALTH", "SAFETY"}
+DEFAULT_ALERT_SOURCE_PRECEDENCE = ("SAFETY", "HEALTH", "RAW")
 ALERT_EVENT_TYPES = {
     "OPENED",
     "UPDATED",
@@ -203,6 +204,19 @@ def normalize_alert_source_layer(value: Any) -> str:
     return normalized if normalized in ALERT_SOURCE_LAYERS else "RAW"
 
 
+def normalize_alert_source_precedence(values: Any = None) -> list[str]:
+    normalized: list[str] = []
+    if isinstance(values, (list, tuple)):
+        for value in values:
+            layer = normalize_alert_source_layer(value)
+            if layer not in normalized:
+                normalized.append(layer)
+    for layer in DEFAULT_ALERT_SOURCE_PRECEDENCE:
+        if layer not in normalized:
+            normalized.append(layer)
+    return normalized
+
+
 def normalize_alert_event_type(value: Any) -> str:
     normalized = _normalize_upper(value).replace("-", "_").replace(" ", "_")
     return normalized if normalized in ALERT_EVENT_TYPES else "UPDATED"
@@ -256,6 +270,16 @@ def alert_severity_rank(value: Any) -> int:
     return {"INFO": 0, "WARN": 1, "CRITICAL": 2}.get(normalize_alert_severity(value), 1)
 
 
+def alert_source_layer_rank(value: Any, *, source_precedence: Any = None) -> int:
+    precedence = normalize_alert_source_precedence(source_precedence)
+    layer = normalize_alert_source_layer(value)
+    try:
+        index = precedence.index(layer)
+    except ValueError:
+        index = len(precedence) - 1
+    return len(precedence) - index
+
+
 def alert_state_active(value: Any) -> bool:
     return normalize_alert_state(value) in ALERT_ACTIVE_STATES
 
@@ -265,6 +289,40 @@ def choose_alert_severity(*values: Any) -> str:
     if not candidates:
         return "WARN"
     return max(candidates, key=alert_severity_rank)
+
+
+def choose_alert_severity_candidate(*candidates: Any, source_precedence: Any = None) -> dict[str, str]:
+    normalized_candidates: list[tuple[int, int, str, str]] = []
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            severity = candidate.get("severity")
+            source_layer = candidate.get("source_layer")
+        elif isinstance(candidate, (list, tuple)) and len(candidate) >= 2:
+            source_layer = candidate[0]
+            severity = candidate[1]
+        else:
+            source_layer = "RAW"
+            severity = candidate
+        if not str(severity or "").strip():
+            continue
+        severity_n = normalize_alert_severity(severity)
+        source_layer_n = normalize_alert_source_layer(source_layer)
+        normalized_candidates.append(
+            (
+                alert_severity_rank(severity_n),
+                alert_source_layer_rank(source_layer_n, source_precedence=source_precedence),
+                severity_n,
+                source_layer_n,
+            )
+        )
+    if not normalized_candidates:
+        return {"severity": "WARN", "source_layer": "RAW"}
+    winner = max(normalized_candidates)
+    return {"severity": winner[2], "source_layer": winner[3]}
+
+
+def choose_alert_severity_with_precedence(*candidates: Any, source_precedence: Any = None) -> str:
+    return choose_alert_severity_candidate(*candidates, source_precedence=source_precedence)["severity"]
 
 
 def alert_catalog_entry(trigger_code: Any) -> dict[str, Any]:

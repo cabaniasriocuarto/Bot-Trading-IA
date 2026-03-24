@@ -6167,6 +6167,58 @@ def test_execution_alert_cooldown_avoids_immediate_reopen(tmp_path: Path, monkey
   assert current["state"] == "COOLDOWN"
 
 
+def test_execution_alert_expired_is_retention_only_and_reopens_same_instance(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  state = _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  opened = _find_execution_alert(module, "STREAM_TERMINATED")
+
+  state["runtime_exchange_reason"] = ""
+  module.store.save_bot_state(state)
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  resolved = _find_execution_alert(module, "STREAM_TERMINATED")
+  assert resolved["state"] == "RESOLVED"
+
+  resolved_ttl_sec = int(module.runtime_bridge._alerting_policy()["resolved_ttl_sec"])
+  aged = module.store.upsert_execution_alert_instance(
+    trigger_code=resolved["trigger_code"],
+    severity=resolved["severity"],
+    state="RESOLVED",
+    source_layer=resolved["source_layer"],
+    scope_type=resolved["scope_type"],
+    bot_id=resolved["bot_id"],
+    symbol=resolved["symbol"],
+    opened_at=resolved["opened_at"],
+    last_seen_at=resolved["last_seen_at"],
+    acked_at=resolved["acked_at"],
+    suppressed_until=resolved["suppressed_until"],
+    cooldown_until=resolved["cooldown_until"],
+    resolved_at=(module.utc_now() - timedelta(seconds=resolved_ttl_sec + 1)).isoformat(),
+    expires_at=None,
+    source_refs=resolved["source_refs"],
+    evidence=resolved["evidence"],
+    summary_text=resolved["summary_text"],
+  )
+  assert aged["alert_instance_id"] == opened["alert_instance_id"]
+
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  expired = _find_execution_alert(module, "STREAM_TERMINATED")
+  assert expired["state"] == "EXPIRED"
+  assert expired["alert_instance_id"] == opened["alert_instance_id"]
+  history = module.store.list_execution_alert_events(alert_instance_id=expired["alert_instance_id"], limit=20)
+  assert any(row["event_type"] == "EXPIRED" for row in history)
+
+  state["runtime_exchange_reason"] = "eventStreamTerminated"
+  module.store.save_bot_state(state)
+  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
+  reopened = _find_execution_alert(module, "STREAM_TERMINATED")
+  assert reopened["state"] == "OPEN"
+  assert reopened["alert_instance_id"] == opened["alert_instance_id"]
+
+
 def test_execution_alert_manual_resolve_does_not_hide_active_condition(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch, mode="live")
   state = _mark_live_health_ready(module)
@@ -6190,6 +6242,40 @@ def test_execution_alert_manual_resolve_does_not_hide_active_condition(tmp_path:
   assert current["state"] == "OPEN"
   history = module.store.list_execution_alert_events(alert_instance_id=alert["alert_instance_id"], limit=20)
   assert any(row["event_type"] == "RESOLVE_REJECTED" for row in history)
+
+
+def test_execution_alert_severity_precedence_is_explicit_and_stable(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  precedence = module.runtime_bridge._alerting_policy()["severity_source_precedence"]
+
+  severe_raw = module.choose_alert_severity_candidate(
+    {"source_layer": "RAW", "severity": "CRITICAL"},
+    {"source_layer": "SAFETY", "severity": "WARN"},
+    source_precedence=precedence,
+  )
+  assert severe_raw["severity"] == "CRITICAL"
+  assert severe_raw["source_layer"] == "RAW"
+
+  tied = module.choose_alert_severity_candidate(
+    {"source_layer": "RAW", "severity": "WARN"},
+    {"source_layer": "HEALTH", "severity": "WARN"},
+    {"source_layer": "SAFETY", "severity": "WARN"},
+    source_precedence=precedence,
+  )
+  assert tied["severity"] == "WARN"
+  assert tied["source_layer"] == "SAFETY"
+
+
+def test_execution_alert_policy_is_separate_from_operational_safety_policy(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  policy = module.load_execution_safety_policy()
+
+  assert "alerting" in policy
+  assert "operational_safety" in policy
+  assert "expired_reopens_same_instance" in policy["alerting"]
+  assert "severity_source_precedence" in policy["alerting"]
+  assert "expired_reopens_same_instance" not in policy["operational_safety"]
+  assert "severity_source_precedence" not in policy["operational_safety"]
 
 
 def test_execution_alert_endpoints_expose_catalog_history_and_lifecycle(tmp_path: Path, monkeypatch) -> None:

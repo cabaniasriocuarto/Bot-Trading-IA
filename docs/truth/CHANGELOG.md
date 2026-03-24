@@ -1,5 +1,34 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-24
+
+### RTLOPS-66 - alert lifecycle semantics hardening
+- Backend:
+  - se endurece la semantica de `EXPIRED` vs `RESOLVED` sin reabrir `RTLOPS-27` completa;
+  - `EXPIRED` queda como estado de retencion/lifecycle posterior a `RESOLVED`, no como "resuelto automatico" ambiguo;
+  - si la condicion reaparece tras `EXPIRED`, la misma instancia se reabre para mantener continuidad auditable por `trigger + scope`;
+  - se agrega helper explicito de precedencia de severidad con desempate por fuente:
+    - severidad mas alta primero
+    - en empate: `SAFETY > HEALTH > RAW`
+- Policy:
+  - `execution_safety.alerting` agrega configuracion explicita de:
+    - `expired_reopens_same_instance`
+    - `severity_source_precedence`
+  - se dejan comentarios claros para separar lifecycle de alertas de `operational_safety`.
+- Modulo:
+  - `alerts.py` no se partio en este bloque porque su tamano real sigue acotado;
+  - queda documentado como limite que, si crece, la particion natural es `catalog/repository/lifecycle/evaluator/contracts`.
+- Tests nuevos:
+  - diferencia semantica `RESOLVED` vs `EXPIRED`
+  - reapertura de instancia expirada bajo continuidad auditable
+  - precedencia de severidad entre CAPA A / CAPA B / CAPA C
+  - separacion de alert lifecycle policy vs safety policy
+- Validacion local real:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/alerts.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_alert" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening -q` -> PASS (`13 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-alert-hardening` -> PASS (`2 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening-compat -q` -> PASS (`21 passed`)
+
 ## 2026-03-23
 
 ### RTLOPS-27 - live alerts persistentes + catalogo de triggers operativos

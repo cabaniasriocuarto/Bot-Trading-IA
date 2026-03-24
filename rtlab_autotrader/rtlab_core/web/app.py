@@ -45,12 +45,14 @@ from rtlab_core.execution.alerts import (
     alert_summary_text,
     build_alert_event,
     build_alert_instance,
-    choose_alert_severity,
+    choose_alert_severity_candidate,
+    choose_alert_severity_with_precedence,
     default_alert_catalog_entries,
     normalize_alert_event_type,
     normalize_alert_scope_type,
     normalize_alert_severity,
     normalize_alert_source_layer,
+    normalize_alert_source_precedence,
     normalize_alert_state,
     normalize_alert_trigger_code,
 )
@@ -942,6 +944,8 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_alerting_default_suppression_sec": alerting.get("default_suppression_sec"),
         "execution_alerting_default_cooldown_sec": alerting.get("default_cooldown_sec"),
         "execution_alerting_resolved_ttl_sec": alerting.get("resolved_ttl_sec"),
+        "execution_alerting_expired_reopens_same_instance": alerting.get("expired_reopens_same_instance"),
+        "execution_alerting_severity_source_precedence": alerting.get("severity_source_precedence"),
         "execution_live_signals_default_window_ms": live_signals.get("default_window_ms"),
         "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
         "beast_requires_postgres": b.get("requires_postgres"),
@@ -1029,6 +1033,8 @@ DEFAULT_ALERTING_POLICY: dict[str, Any] = {
     "resolved_ttl_sec": 3600,
     "reopen_on_active_condition": True,
     "manual_resolve_requires_inactive": True,
+    "expired_reopens_same_instance": True,
+    "severity_source_precedence": ["SAFETY", "HEALTH", "RAW"],
 }
 
 
@@ -8400,10 +8406,12 @@ class RuntimeBridge:
     def _alerting_policy(self) -> dict[str, Any]:
         payload = load_execution_safety_policy()
         policy = payload.get("alerting") if isinstance(payload.get("alerting"), dict) else {}
-        return {
+        merged = {
             **DEFAULT_ALERTING_POLICY,
             **policy,
         }
+        merged["severity_source_precedence"] = normalize_alert_source_precedence(merged.get("severity_source_precedence"))
+        return merged
 
     @staticmethod
     def _live_signal_severity_from_status(value: Any) -> str:
@@ -9575,6 +9583,7 @@ class RuntimeBridge:
             now_iso = now_dt.isoformat()
             ops_policy = self._operational_safety_policy()
             health_policy = self._live_health_policy()
+            alert_policy = self._alerting_policy()
             state_n = dict(state or {})
             bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
             symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
@@ -9629,11 +9638,27 @@ class RuntimeBridge:
             ) -> None:
                 entry = alert_catalog_entry(trigger_code)
                 layer = normalize_alert_source_layer(source_layer or entry.get("source_layer"))
+                severity_source_precedence = normalize_alert_source_precedence(alert_policy.get("severity_source_precedence"))
+                selected_candidate = choose_alert_severity_candidate(
+                    {
+                        "severity": entry.get("default_severity"),
+                        "source_layer": entry.get("source_layer"),
+                    },
+                    {
+                        "severity": severity,
+                        "source_layer": layer,
+                    },
+                    source_precedence=severity_source_precedence,
+                )
+                selected_severity = selected_candidate["severity"]
                 refs = [dict(row) for row in (primary_refs or []) if isinstance(row, dict)]
                 source_refs = {
                     "source_layer": layer,
                     "scope_key": raw_scope_key,
                     "primary": refs,
+                    "severity_source_precedence": severity_source_precedence,
+                    "severity_selected_from_layer": selected_candidate["source_layer"],
+                    "severity_selection_mode": "severity_then_source_layer_precedence",
                 }
                 if layer == "RAW":
                     source_refs["raw_collected_at"] = str(raw_signals.get("collected_at") or "")
@@ -9646,7 +9671,7 @@ class RuntimeBridge:
                 conditions.append(
                     {
                         "trigger_code": normalize_alert_trigger_code(trigger_code),
-                        "severity": choose_alert_severity(entry.get("default_severity"), severity),
+                        "severity": selected_severity,
                         "source_layer": layer,
                         "scope_type": scope_type,
                         "scope_key": raw_scope_key,
@@ -9954,6 +9979,7 @@ class RuntimeBridge:
         current_state = normalize_alert_state(existing.get("state"))
         suppressed_until_dt = self._alert_parse_iso(existing.get("suppressed_until"))
         cooldown_until_dt = self._alert_parse_iso(existing.get("cooldown_until"))
+        expired_reopens_same_instance = bool(policy.get("expired_reopens_same_instance", True))
         state_after = current_state
         event_type: str | None = None
         opened_at = str(existing.get("opened_at") or "") or now_iso
@@ -9975,7 +10001,20 @@ class RuntimeBridge:
             suppressed_until = None
             resolved_at = None
             expires_at = None
-        elif current_state in {"RESOLVED", "EXPIRED", "COOLDOWN"}:
+        elif current_state == "EXPIRED":
+            if expired_reopens_same_instance:
+                state_after = "OPEN"
+                event_type = "REOPENED"
+            else:
+                state_after = "OPEN"
+                event_type = "REOPENED"
+            cooldown_until = None
+            opened_at = now_iso
+            acked_at = None
+            suppressed_until = None
+            resolved_at = None
+            expires_at = None
+        elif current_state in {"RESOLVED", "COOLDOWN"}:
             if bool(policy.get("reopen_on_active_condition", True)) and cooldown_until_dt and cooldown_until_dt > now_dt:
                 state_after = "COOLDOWN"
                 if current_state != "COOLDOWN":
@@ -10118,7 +10157,11 @@ class RuntimeBridge:
                             event_type="EXPIRED",
                             previous_state="RESOLVED",
                             next_state="EXPIRED",
-                            payload={"reason": "resolved_ttl_elapsed", "resolved_ttl_sec": resolved_ttl_sec},
+                            payload={
+                                "reason": "resolved_retention_elapsed_without_new_observation",
+                                "resolved_ttl_sec": resolved_ttl_sec,
+                                "semantics": "lifecycle_retention_only",
+                            },
                             actor=actor,
                             occurred_at=now_iso,
                         )
@@ -10338,9 +10381,20 @@ class RuntimeBridge:
                 None,
             )
             if bool(policy.get("manual_resolve_requires_inactive", True)) and isinstance(active_condition, dict):
+                severity_source_precedence = normalize_alert_source_precedence(policy.get("severity_source_precedence"))
                 current = store.upsert_execution_alert_instance(
                     trigger_code=str(instance.get("trigger_code") or ""),
-                    severity=choose_alert_severity(instance.get("severity"), active_condition.get("severity")),
+                    severity=choose_alert_severity_with_precedence(
+                        {
+                            "severity": instance.get("severity"),
+                            "source_layer": instance.get("source_layer"),
+                        },
+                        {
+                            "severity": active_condition.get("severity"),
+                            "source_layer": active_condition.get("source_layer"),
+                        },
+                        source_precedence=severity_source_precedence,
+                    ),
                     state=str(instance.get("state") or "OPEN"),
                     source_layer=str(active_condition.get("source_layer") or instance.get("source_layer") or "RAW"),
                     scope_type=str(instance.get("scope_type") or "GLOBAL"),

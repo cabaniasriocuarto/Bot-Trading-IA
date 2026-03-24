@@ -1,12 +1,13 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-23
+Fecha de actualizacion: 2026-03-24
 
-## Programa LIVE Spot actual - 2026-03-23
+## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
   - `RTLOPS-26` live signals foundation - CAPA A de señal cruda
   - `RTLOPS-27` live alerts persistentes - consumer persistente de alerting
+  - `RTLOPS-66` alert lifecycle semantics hardening
   - `RTLOPS-36` validacion `paper -> testnet -> canary`
   - `RTLOPS-49` exchange adapter live hardening
   - `RTLOPS-44` market websocket runtime live
@@ -36,8 +37,8 @@ Fecha de actualizacion: 2026-03-23
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`;
   - este follow-up no reabre `RTLOPS-26` y existe solo para endurecer el contrato raw si `RTLOPS-27` o futuros consumidores presionan demasiado la CAPA A.
-- Estado administrativo real de Linear al 2026-03-23:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29` y `RTLOPS-30`;
+- Estado administrativo real de Linear al 2026-03-24:
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30` y `RTLOPS-66`;
   - mapa de proyectos alineado con dominios reales del repo;
   - dominio `observability / health / safety` alineado en tres capas:
     - CAPA A `señal cruda`: `RTLOPS-26` + `RTLOPS-63` + `RTLOPS-64`
@@ -49,6 +50,58 @@ Fecha de actualizacion: 2026-03-23
     - consume safety states (`RTLOPS-29`)
     - no es dueña de `live_signals.py` ni del score global ni de breakers/freezes;
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
+
+## RTLOPS-66 - alert lifecycle semantics hardening - 2026-03-24
+
+- Objetivo real cerrado:
+  - endurecer la semantica delicada de alert lifecycle sin reabrir `RTLOPS-27` completa;
+  - fijar la definicion exacta de `EXPIRED`;
+  - fijar una precedencia explicita y estable de severidad entre CAPA A / CAPA B / CAPA C;
+  - dejar explicito que la policy de lifecycle de alertas es separada de la policy de safety/action.
+- Definicion final de lifecycle:
+  - `RESOLVED`:
+    - la condicion base dejo de observarse o quedo resuelta con evidencia suficiente;
+    - entra en ventana de cooldown y retencion;
+  - `EXPIRED`:
+    - la alerta ya estaba `RESOLVED` y supero `resolved_ttl_sec` sin nueva observacion suficiente;
+    - es un estado de lifecycle/retencion, no un "resuelto automatico" ni una segunda verdad del sistema;
+    - no apaga ni contradice la verdad canonica upstream;
+  - reaparicion despues de `EXPIRED`:
+    - reabre la misma instancia para mantener continuidad auditable por `trigger + scope`;
+    - no crea una segunda instancia competidora del mismo `trigger + scope`.
+- Precedencia final de severidad:
+  - primero manda la severidad mas alta observada (`CRITICAL > WARN > INFO`);
+  - si hay empate de severidad, desempata la fuente mas fuerte:
+    - `SAFETY > HEALTH > RAW`
+  - el catalogo/default severity solo funciona como fallback, no como override ad hoc de endpoint/UI.
+- Limite actual de `alerts.py`:
+  - el modulo sigue concentrando catalogo + helpers comunes porque su tamano real sigue siendo acotado para este repo;
+  - queda explicitado que no debe crecer indefinidamente como archivo central;
+  - si el crecimiento real lo exige, la siguiente particion natural es:
+    - catalog
+    - repository
+    - lifecycle
+    - evaluator/consumer
+    - api contracts
+- Policy cerrada:
+  - `execution_safety.alerting` queda explicitamente separada de `execution_safety.operational_safety`;
+  - la seccion `alerting` cubre lifecycle y precedence de alertas;
+  - no define breakers, freezes ni gates de `mode/start/submit`.
+- Fuente proyecto:
+  - `rtlab_autotrader/rtlab_core/execution/alerts.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+  - `rtlab_autotrader/tests/test_web_live_ready.py`
+  - `config/policies/execution_safety.yaml`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Riesgo / limite conocido:
+  - este hardening no endurece el raw contract; cualquier presion en CAPA A sigue yendo a `RTLOPS-65`;
+  - no recalcula `health_summary` ni agrega acciones nuevas de safety.
+- Validacion local cerrada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/alerts.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_alert" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening -q` -> PASS (`13 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-alert-hardening` -> PASS (`2 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening-compat -q` -> PASS (`21 passed`)
 
 ## RTLOPS-27 - live alerts persistentes / consumer persistente de alerts - 2026-03-23
 

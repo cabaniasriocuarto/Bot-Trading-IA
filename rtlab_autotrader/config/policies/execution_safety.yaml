@@ -23,10 +23,17 @@ execution_safety:
     preflight_stale_sec: 300
     preflight_expired_sec: 600
     recent_emergency_action_window_sec: 300
+  # Alert lifecycle only. This section must not define breakers, freezes,
+  # mode/start/submit gates, or other action semantics owned by operational_safety.
   alerting:
     default_suppression_sec: 900
     default_cooldown_sec: 300
     resolved_ttl_sec: 3600
+    expired_reopens_same_instance: true
+    severity_source_precedence:
+      - SAFETY
+      - HEALTH
+      - RAW
     reopen_on_active_condition: true
     manual_resolve_requires_inactive: true
   live_signals:

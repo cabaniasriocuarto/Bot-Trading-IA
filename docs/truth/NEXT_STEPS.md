@@ -1,6 +1,6 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-23
+Fecha: 2026-03-24
 
 ## Programa LIVE Spot actual
 - [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
@@ -16,6 +16,7 @@ Fecha: 2026-03-23
 - [x] `RTLOPS-30` health summary live + score explicable + degraded visibility
 - [x] `RTLOPS-26` live signals foundation: execution, streams, fills, risk y snapshots operativos
 - [x] `RTLOPS-27` live alerts persistentes + catalogo de triggers operativos
+- [x] `RTLOPS-66` alert lifecycle semantics hardening
 
 ## Siguiente issue exacto
 - [ ] `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`
@@ -34,6 +35,7 @@ Fecha: 2026-03-23
   - `RTLOPS-23`
   - `RTLOPS-26`
   - `RTLOPS-27`
+  - `RTLOPS-66`
   - `RTLOPS-45`
   - `RTLOPS-46`
   - `RTLOPS-47`
@@ -48,6 +50,7 @@ Fecha: 2026-03-23
   - `RTLOPS-29` = CAPA C de accion
   - `RTLOPS-27` = consumer persistente de alerting
   - `RTLOPS-65` = hardening chico del contrato raw backend
+  - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
 - [x] Mapa de proyectos alineado con dominios reales:
   - `Nucleo Arquitectonico y Policies`
   - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`
