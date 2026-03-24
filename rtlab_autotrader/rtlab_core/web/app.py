@@ -8411,6 +8411,9 @@ class RuntimeBridge:
             **policy,
         }
         merged["severity_source_precedence"] = normalize_alert_source_precedence(merged.get("severity_source_precedence"))
+        # Current storage model keeps one canonical alert instance per trigger+scope.
+        # Reappearance after EXPIRED therefore reopens the same instance explicitly.
+        merged["expired_reopens_same_instance"] = True
         return merged
 
     @staticmethod
@@ -10002,12 +10005,12 @@ class RuntimeBridge:
             resolved_at = None
             expires_at = None
         elif current_state == "EXPIRED":
-            if expired_reopens_same_instance:
-                state_after = "OPEN"
-                event_type = "REOPENED"
-            else:
-                state_after = "OPEN"
-                event_type = "REOPENED"
+            # Explicit policy: after EXPIRED, this repo reopens the same instance
+            # instead of creating a new competing instance for the same trigger+scope.
+            if not expired_reopens_same_instance:
+                raise RuntimeError("expired_reopens_same_instance=false is not supported by the current alert storage model")
+            state_after = "OPEN"
+            event_type = "REOPENED"
             cooldown_until = None
             opened_at = now_iso
             acked_at = None

@@ -6217,6 +6217,7 @@ def test_execution_alert_expired_is_retention_only_and_reopens_same_instance(tmp
   reopened = _find_execution_alert(module, "STREAM_TERMINATED")
   assert reopened["state"] == "OPEN"
   assert reopened["alert_instance_id"] == opened["alert_instance_id"]
+  assert module.runtime_bridge._alerting_policy()["expired_reopens_same_instance"] is True
 
 
 def test_execution_alert_manual_resolve_does_not_hide_active_condition(tmp_path: Path, monkeypatch) -> None:

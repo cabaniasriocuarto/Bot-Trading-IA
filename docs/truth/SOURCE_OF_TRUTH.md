@@ -67,8 +67,9 @@ Fecha de actualizacion: 2026-03-24
     - es un estado de lifecycle/retencion, no un "resuelto automatico" ni una segunda verdad del sistema;
     - no apaga ni contradice la verdad canonica upstream;
   - reaparicion despues de `EXPIRED`:
-    - reabre la misma instancia para mantener continuidad auditable por `trigger + scope`;
-    - no crea una segunda instancia competidora del mismo `trigger + scope`.
+    - reabre explicitamente la misma instancia para mantener continuidad auditable por `trigger + scope`;
+    - no crea una segunda instancia competidora del mismo `trigger + scope`;
+    - este comportamiento es parte del diseno actual del storage y no queda opcional/implicito.
 - Precedencia final de severidad:
   - primero manda la severidad mas alta observada (`CRITICAL > WARN > INFO`);
   - si hay empate de severidad, desempata la fuente mas fuerte:

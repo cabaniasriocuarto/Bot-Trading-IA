@@ -6,7 +6,8 @@
 - Backend:
   - se endurece la semantica de `EXPIRED` vs `RESOLVED` sin reabrir `RTLOPS-27` completa;
   - `EXPIRED` queda como estado de retencion/lifecycle posterior a `RESOLVED`, no como "resuelto automatico" ambiguo;
-  - si la condicion reaparece tras `EXPIRED`, la misma instancia se reabre para mantener continuidad auditable por `trigger + scope`;
+  - si la condicion reaparece tras `EXPIRED`, la misma instancia se reabre explicitamente para mantener continuidad auditable por `trigger + scope`;
+  - el runtime ya no deja este comportamiento implicito: el modelo actual soporta reapertura de la misma instancia y no creacion de una nueva para el mismo `trigger + scope`;
   - se agrega helper explicito de precedencia de severidad con desempate por fuente:
     - severidad mas alta primero
     - en empate: `SAFETY > HEALTH > RAW`

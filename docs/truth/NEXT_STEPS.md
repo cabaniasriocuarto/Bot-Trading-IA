@@ -51,6 +51,7 @@ Fecha: 2026-03-24
   - `RTLOPS-27` = consumer persistente de alerting
   - `RTLOPS-65` = hardening chico del contrato raw backend
   - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
+  - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
 - [x] Mapa de proyectos alineado con dominios reales:
   - `Nucleo Arquitectonico y Policies`
   - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`
