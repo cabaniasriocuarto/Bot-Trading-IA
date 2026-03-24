@@ -50,6 +50,8 @@ Fecha: 2026-03-24
   - nueva ingest de decisiones auditables:
     - `POST /api/v1/rollout/shadow/signal`
   - reutiliza rollout manager + runtime contract live + `runtime_telemetry_guard`;
+  - endurecimiento final chico:
+    - rechaza `baseline_signal` / `candidate_signal` vacios o sin `action` reconocible ni score numerico explicito;
   - no duplica execution ni reabre `learning/shadow`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, sin bloquear el repo ni este cierre tecnico.
 
@@ -107,7 +109,7 @@ Fecha: 2026-03-24
   - `Frontend Console 10/10 + Playwright QA`
   - `Release / Canary / Rollback / Auditoria Final`
 - [x] Dominio `observability / health / safety` separado conceptualmente:
-  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A `seÃ±al cruda`
+  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A `señal cruda`
   - `RTLOPS-30` = CAPA B `interpretacion`
   - `RTLOPS-29` = CAPA C `accion`
 - [x] Nuevas issues de backlog creadas solo donde habia gap real:
@@ -185,13 +187,13 @@ Fecha: 2026-03-24
 
 ## Siguiente bloque chico tras RTLRESE-7
 - [x] Clasificacion minima `trusted/legacy/quarantine` en `strategy_evidence`.
-- [x] ExclusiÃ³n de `quarantine` de aprendizaje, guidance y rankings de Option B.
+- [x] Exclusión de `quarantine` de aprendizaje, guidance y rankings de Option B.
 - [x] `legacy` conservado con `needs_validation` explicito y penalizacion de confianza.
 - [ ] Exponer `evidence_status/evidence_flags` en endpoints o UI solo donde haga falta auditoria operativa, sin volver a mezclar truth con evidence.
 - [ ] Extender esta misma frontera a rankings/catalogos fuera de Option B solo cuando exista un consumidor real y justificado.
 - [ ] Revisar si conviene un backfill chico para episodios legacy historicos que hoy no traen metadata suficiente para clasificacion fina.
 - [ ] Mantener RTLRESE-10 separado: no mezclar esta cuarentena de evidencia con cambios nuevos de producto, frontend o refactors masivos.
-## RTLRESE-10 Â· research funnel / trial ledger
+## RTLRESE-10 · research funnel / trial ledger
 - [x] Exponer `GET /api/v1/research/funnel`.
 - [x] Exponer `GET /api/v1/research/trial-ledger`.
 - [x] Mostrar `Research Funnel y Trial Ledger` en `Backtests`.
@@ -440,7 +442,7 @@ Fecha: 2026-03-24
 - [x] Workflow `security-ci` endurecido para instalar `gitleaks` desde release oficial versionado (`8.30.0`) con retries.
 - [x] Fallback agregado a install script versionado (`v8.30.0`) + check fail-closed de binario instalado.
 - [x] Export `PATH` en el mismo step de instalacion para validar `gitleaks version` en esa corrida.
-- [x] Baseline canÃ³nica versionada para CI:
+- [x] Baseline canónica versionada para CI:
   - `docs/security/gitleaks-baseline.json`
   - `scripts/security_scan.sh` actualizado para usarla por defecto.
 - [x] `setup-python` en Security CI alineado a `3.11`.
@@ -482,7 +484,7 @@ Fecha: 2026-03-24
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet_ignores_filled_local_orders_in_open_orders_reconciliation or runtime_sync_testnet_closes_absent_local_open_orders_after_grace or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or runtime_stop_testnet_cancels_remote_open_orders_idempotently" -q` -> PASS.
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_sync_testnet or g9_live" -q` -> PASS (`11 passed`).
 - Pendiente inmediato:
-  - completar wiring de ejecucion real por seÃ±ales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
+  - completar wiring de ejecucion real por señales (no solo seed/diagnose/reconcile), y rerun de checks protegidos + benchmark remoto.
 
 
 ## Actualizacion tecnica AP-8012 (2026-03-04)
@@ -532,7 +534,7 @@ Fecha: 2026-03-24
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "runtime_stop_testnet_cancels_remote_open_orders_idempotently or runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression or live_mode_blocked_when_runtime_engine_is_simulated or bots_overview" -q` -> PASS (`10 passed`).
   - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers" -q` -> PASS.
 - Pendiente inmediato de runtime real:
-  - submit real idempotente (`newClientOrderId`) con pipeline de seÃ±ales/ejecuciÃ³n, y reconciliacion de posiciones (no solo Ã³rdenes abiertas).
+  - submit real idempotente (`newClientOrderId`) con pipeline de señales/ejecución, y reconciliacion de posiciones (no solo órdenes abiertas).
 
 ## Actualizacion tecnica AP-BOT-1006 (2026-03-04)
 - [x] Submit remoto idempotente agregado en runtime `testnet/live` con `newClientOrderId` y ventana configurable.

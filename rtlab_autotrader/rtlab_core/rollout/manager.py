@@ -295,6 +295,19 @@ class RolloutManager:
             return "short"
         return "flat"
 
+    def _signal_payload_has_minimum_contract(self, payload: dict[str, Any] | None) -> bool:
+        row = payload if isinstance(payload, dict) else {}
+        if not row:
+            return False
+        raw_action = str(row.get("action") or "").strip().lower()
+        if raw_action in {"buy", "long", "bull", "sell", "short", "bear", "flat", "hold", "none", "neutral"}:
+            return True
+        for key in ("score", "signal_score", "alpha", "value"):
+            value = row.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return True
+        return False
+
     def _empty_live_signal_telemetry(self) -> dict[str, Any]:
         return {
             "recent": [],
@@ -366,6 +379,10 @@ class RolloutManager:
         self._apply_live_phase_routing(state, phase_name=phase_name, settings=settings)
         routing = state.get("routing") if isinstance(state.get("routing"), dict) else {}
         blending_cfg = self._blending_cfg(settings)
+
+        for field_name, payload in (("baseline_signal", baseline_signal), ("candidate_signal", candidate_signal)):
+            if not self._signal_payload_has_minimum_contract(payload):
+                raise ValueError(f"{field_name} requiere action reconocible o score numerico explicito")
 
         base_action = self._normalize_signal_action(baseline_signal.get("action"))
         cand_action = self._normalize_signal_action(candidate_signal.get("action"))

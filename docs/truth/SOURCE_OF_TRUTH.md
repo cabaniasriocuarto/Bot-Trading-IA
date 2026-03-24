@@ -70,6 +70,7 @@ Fecha de actualizacion: 2026-03-24
     - mantener `shadow_only = true` en `LIVE_SHADOW`
     - registrar telemetria reutilizable por rollout/canary
     - escribir evidencia auditable en decision log con `event_type = rollout_shadow_signal`
+    - rechazar payloads vacios o no decidibles sin `action` reconocible ni score numerico explicito
 - Semantica operativa:
   - fail-closed si shadow no esta realmente operativo:
     - no esta en `LIVE_SHADOW`
@@ -77,6 +78,9 @@ Fecha de actualizacion: 2026-03-24
     - `routing.shadow_only` no esta activo
     - `runtime_telemetry_guard` no esta en fuente real
     - `runtime_contract` live no esta listo
+  - fail-closed tambien a nivel de contract de ingest:
+    - `baseline_signal` y `candidate_signal` deben traer una decision minima interpretable
+    - no se aceptan dicts vacios ni payloads solo con `confidence/probability` sin direccion o score
   - no se agrega un segundo runtime de execution;
   - no se reabre `learning/shadow`;
   - no se inventa ejecucion real candidate en shadow.
@@ -2663,8 +2667,8 @@ El proyecto tiene:
 - Parser de errores de Backtests endurecido para evitar `[object Object]` en UI y mostrar `detail/message/cause` real
 - `Research Batch` con shortlist persistente por `BX`:
   - guardado de variantes/runs en `best_runs_cache`
-  - restauraciÃ³n de shortlist al reabrir batch
-  - sincronizaciÃ³n opcional con Comparador de Runs
+  - restauración de shortlist al reabrir batch
+  - sincronización opcional con Comparador de Runs
 - Backtests / Runs D2 (Comparison Table Pro) ahora renderiza por ventana visible (virtualizacion + overscan + espaciadores).
 - Strategies compactado para escalar con 50+ filas (menos altura por fila y acciones principales mas compactas).
 - `Detalle de Corrida` con estructura tipo Strategy Tester por pestanas

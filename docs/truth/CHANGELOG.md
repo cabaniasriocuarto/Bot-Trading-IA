@@ -13,7 +13,9 @@
     - `source_refs`
     - `note`
     - `history += live_signal_routed`
-  - `POST /api/v1/rollout/shadow/signal` deja trazabilidad auditable en decision log via `rollout_shadow_signal`.
+  - `POST /api/v1/rollout/shadow/signal` deja trazabilidad auditable en decision log via `rollout_shadow_signal`;
+  - micro-hardening final:
+    - rechazo fail-closed de `baseline_signal` / `candidate_signal` vacios o sin `action` reconocible ni score numerico explicito.
 - Semantica:
   - `LIVE_SHADOW` deja de depender solo de `blending/preview` manual;
   - shadow falla cerrado si no hay:

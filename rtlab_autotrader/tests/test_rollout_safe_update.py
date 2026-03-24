@@ -1148,6 +1148,20 @@ defaults:
   assert ok_body["runtime_contract"]["mode"] == "live"
   assert ok_body["telemetry_guard"]["ok"] is True
 
+  invalid_payload = client.post(
+    "/api/v1/rollout/shadow/signal",
+    headers=headers,
+    json={
+      "baseline_signal": {},
+      "candidate_signal": {"confidence": 0.9},
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+    },
+  )
+  assert invalid_payload.status_code == 400, invalid_payload.text
+  invalid_detail = str(invalid_payload.json().get("detail") or "")
+  assert "baseline_signal requiere action reconocible o score numerico explicito" in invalid_detail
+
   routed = client.post(
     "/api/v1/rollout/shadow/signal",
     headers=headers,
