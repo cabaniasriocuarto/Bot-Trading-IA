@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-23
 ## Programa LIVE Spot actual - 2026-03-23
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-26` live signals foundation - CAPA A de señal cruda
   - `RTLOPS-36` validacion `paper -> testnet -> canary`
   - `RTLOPS-49` exchange adapter live hardening
   - `RTLOPS-44` market websocket runtime live
@@ -30,7 +31,7 @@ Fecha de actualizacion: 2026-03-23
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-26` `Live signals foundation: execution, streams, fills, risk y snapshots operativos`.
+  - `RTLOPS-27` `Live alerts persistentes + catalogo de triggers operativos`.
 - Estado administrativo real de Linear al 2026-03-23:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29` y `RTLOPS-30`;
   - mapa de proyectos alineado con dominios reales del repo;
@@ -39,6 +40,115 @@ Fecha de actualizacion: 2026-03-23
     - CAPA B `interpretación`: `RTLOPS-30`
     - CAPA C `acción`: `RTLOPS-29` reubicada en `Execution Reality + Live Safety`
   - backlog nuevo creado solo para gaps explicitos de `Margin`, `COIN-M`, `Wallet/transfers` y `Cost Stack`.
+
+## RTLOPS-26 - live signals foundation / CAPA A de señal cruda - 2026-03-23
+
+- Objetivo real cerrado:
+  - crear la capa canonica de **senal cruda** para live/observability;
+  - medir, normalizar, snapshotear, persistir y exponer senales operativas reutilizables por `RTLOPS-30`;
+  - sin score global, sin estados finales `HEALTHY/DEGRADED/BLOCKED/MANUAL_REVIEW_REQUIRED` y sin acciones automáticas.
+- Implementacion real:
+  - nuevo modulo:
+    - `rtlab_autotrader/rtlab_core/execution/live_signals.py`
+  - persistencia auditable en SQLite:
+    - `live_signal_snapshots`
+    - `live_signal_events`
+  - policy numerica minima nueva:
+    - `execution_safety.live_signals.default_window_ms = 300000`
+  - endpoints nuevos:
+    - `GET /api/v1/execution/signals/summary`
+    - `GET /api/v1/execution/signals/history`
+    - `GET /api/v1/execution/signals/scopes`
+    - `POST /api/v1/execution/signals/snapshot`
+  - integracion minima con `RTLOPS-30`:
+    - `build_live_health_summary(...)` agrega referencia a la capa de senal cruda en `component_status.live_signals`;
+    - no cambia score, severidad ni reason codes finales.
+- Contrato canonico de snapshot:
+  - `scope`
+  - `collected_at`
+  - `window_ms`
+  - `items[]`
+    - `scope_type`
+    - `snapshot_type`
+    - `source_module`
+    - `freshness_ms`
+    - `source_status`
+    - `signal_payload`
+      - `metrics`
+      - `observed_states`
+      - `freshness`
+      - `source_timestamps`
+      - `source_refs`
+- Snapshot types emitidos:
+  - `EXECUTION`
+  - `FILLS`
+  - `STREAM`
+  - `RECONCILIATION`
+  - `PREFLIGHT`
+  - `RATE_LIMIT`
+  - `RISK`
+- Senales minimas expuestas:
+  - execution:
+    - `execution_submit_total_window`
+    - `execution_reject_total_window`
+    - `execution_cancel_fail_total_window`
+    - `execution_unknown_timeout_active_count`
+    - `execution_open_orders_count`
+    - `execution_terminal_orders_recent_count`
+  - fills:
+    - `fills_recent_count`
+    - `fills_partial_recent_count`
+    - `fills_final_recent_count`
+    - `fills_commission_observed_recent_count`
+    - `fills_last_event_age_ms`
+  - stream:
+    - `stream_connected_bool`
+    - `stream_terminated_bool`
+    - `stream_gap_ms`
+    - `stream_last_event_age_ms`
+    - `stream_reconnect_count_window`
+  - reconciliation:
+    - `reconciliation_last_run_age_ms`
+    - `reconciliation_open_cases_count`
+    - `reconciliation_desync_count`
+    - `reconciliation_manual_review_count`
+  - preflight:
+    - `preflight_last_run_age_ms`
+    - `preflight_time_to_expiry_ms`
+    - `preflight_last_status_observed`
+    - `preflight_attestation_age_ms`
+  - rate limits / pressure:
+    - `rate_limit_429_count_window`
+    - `rate_limit_418_active_bool`
+    - `open_order_pressure_count`
+    - `retry_after_active_bool`
+- Decisiones de ingenieria:
+  - `RTLOPS-26` solo lee outputs canonicos existentes de runtime/preflight/reconciliation/safety;
+  - no duplica score ni blockers finales;
+  - la ventana default para metrics `*_window` y `recent_*` queda fijada en `300000 ms`;
+  - `fills_commission_observed_recent_count` queda explicitamente soportado como `0` cuando la base real actual no expone comision observada por fill en este contrato, evitando inventar una estimacion como si fuera observada.
+- Fuente proyecto:
+  - `rtlab_autotrader/rtlab_core/execution/live_signals.py`
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+  - `rtlab_autotrader/tests/test_web_live_ready.py`
+  - `config/policies/execution_safety.yaml`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Fuente oficial exchange:
+  - Binance Spot User Data Stream (`executionReport`, `eventStreamTerminated`)
+  - Binance Spot REST `GET /api/v3/order`
+  - Binance Spot REST `GET /api/v3/openOrders`
+  - Binance Spot REST `GET /api/v3/myTrades`
+  - Binance Spot errors `-1007`, `-1003`/`429` y riesgo `418`
+- Riesgo / limite conocido:
+  - esta capa no decide estados globales ni acciones;
+  - `RTLOPS-30` sigue siendo la capa de interpretacion y `RTLOPS-29` la capa de accion;
+  - el contrato ya deja preparada la base para alertas/drift, pero esos consumers quedan fuera de esta issue.
+- Validacion local cerrada:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/live_signals.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or execution_signals_endpoints_return_summary_history_and_scopes or live_health_summary_contract_survives_raw_signal_snapshot_persistence or live_health_summary_is_healthy_when_sources_are_clean or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-round2 -q` -> PASS (`8 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-signals` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-compat2 -q` -> PASS
 
 ## RTLOPS-30 - health summary live unico y explicable - 2026-03-23
 

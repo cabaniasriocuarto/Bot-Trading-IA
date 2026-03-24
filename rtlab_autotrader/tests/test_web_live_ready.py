@@ -5845,3 +5845,161 @@ def test_execution_health_summary_and_evaluate_endpoints_return_and_persist_cont
   scopes_payload = scopes_res.json()
   assert isinstance(scopes_payload.get("items"), list)
 
+
+def test_live_signal_snapshot_builds_and_persists_domain_snapshots(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  submitted = module.runtime_bridge._oms.submit(
+    module.Order(order_id="ord-1", symbol="BTCUSDT", side=module.Side.LONG, qty=1.0)
+  )
+  module.runtime_bridge._oms.apply_fill(submitted.order_id, 0.4)
+
+  snapshot = module.runtime_bridge.build_live_signal_snapshot(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+    persist=True,
+  )
+  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
+
+  assert by_type["EXECUTION"]["signal_payload"]["metrics"]["execution_submit_total_window"] >= 1
+  assert by_type["FILLS"]["signal_payload"]["metrics"]["fills_recent_count"] >= 1
+  assert by_type["STREAM"]["signal_payload"]["metrics"]["stream_last_event_age_ms"] is not None
+  assert by_type["RECONCILIATION"]["signal_payload"]["metrics"]["reconciliation_last_run_age_ms"] is not None
+  assert by_type["PREFLIGHT"]["signal_payload"]["metrics"]["preflight_last_run_age_ms"] is not None
+
+  stored = module.store.list_live_signal_snapshots(limit=50)
+  assert any(row["snapshot_type"] == "EXECUTION" for row in stored)
+  assert any(row["snapshot_type"] == "FILLS" for row in stored)
+  assert any(row["snapshot_type"] == "STREAM" for row in stored)
+  assert any(row["snapshot_type"] == "RECONCILIATION" for row in stored)
+  assert any(row["snapshot_type"] == "PREFLIGHT" for row in stored)
+
+
+def test_live_signal_snapshot_reflects_rate_limit_pressure_as_signal_only(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  module.store.upsert_safety_breaker(
+    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
+    scope_type="GLOBAL",
+    state="COOLDOWN",
+    blocking_bool=True,
+    trigger_count_window=3,
+    trigger_reason={"rate_limit_hits": 3},
+  )
+
+  snapshot = module.runtime_bridge.build_live_signal_snapshot(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+    persist=False,
+  )
+  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
+  rate_limit = by_type["RATE_LIMIT"]
+
+  assert rate_limit["signal_payload"]["metrics"]["rate_limit_429_count_window"] == 3
+  assert rate_limit["signal_payload"]["observed_states"]["retry_after_active_bool"] is True
+  assert "state" not in rate_limit
+  assert "blocking_bool" not in rate_limit
+
+
+def test_live_signal_snapshot_reflects_unknown_timeout_as_signal_only(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  state = module.store.load_bot_state()
+  state["runtime_unknown_timeout_active"] = True
+  state["runtime_unknown_timeout_since"] = (module.utc_now() - timedelta(seconds=31)).isoformat()
+  module.store.save_bot_state(state)
+
+  snapshot = module.runtime_bridge.build_live_signal_snapshot(
+    state=state,
+    settings=module.store.load_settings(),
+    persist=False,
+  )
+  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
+  execution = by_type["EXECUTION"]
+
+  assert execution["signal_payload"]["metrics"]["execution_unknown_timeout_active_count"] == 1
+  assert execution["signal_payload"]["observed_states"]["runtime_unknown_timeout_active"] is True
+  assert "state" not in snapshot
+  assert "blocking_bool" not in execution
+
+
+def test_live_signal_snapshot_persists_symbol_scope_correctly(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  module.runtime_bridge._oms.submit(module.Order(order_id="btc-1", symbol="BTCUSDT", side=module.Side.LONG, qty=1.0))
+  module.runtime_bridge._oms.submit(module.Order(order_id="eth-1", symbol="ETHUSDT", side=module.Side.LONG, qty=1.0))
+
+  snapshot = module.runtime_bridge.build_live_signal_snapshot(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+    symbol="BTCUSDT",
+    persist=True,
+  )
+  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
+
+  assert snapshot["scope"]["scope_type"] == "SYMBOL"
+  assert snapshot["scope"]["symbol"] == "BTCUSDT"
+  assert by_type["EXECUTION"]["signal_payload"]["metrics"]["execution_submit_total_window"] == 1
+  stored = module.store.list_live_signal_snapshots(scope_type="SYMBOL", symbol="BTCUSDT", limit=20)
+  assert stored
+  assert all(row["scope_type"] == "SYMBOL" for row in stored)
+  assert all(row["symbol"] == "BTCUSDT" for row in stored)
+
+
+def test_execution_signals_endpoints_return_summary_history_and_scopes(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_ENGINE", "real")
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  create = client.post("/api/v1/execution/signals/snapshot", json={}, headers=headers)
+  assert create.status_code == 200, create.text
+  created = create.json()
+  assert isinstance(created.get("items"), list) and created["items"]
+
+  summary = client.get("/api/v1/execution/signals/summary", headers=headers)
+  assert summary.status_code == 200, summary.text
+  summary_payload = summary.json()
+  assert summary_payload["scope"]["scope_type"] == "GLOBAL"
+  assert isinstance(summary_payload.get("items"), list)
+  assert any(row["snapshot_type"] == "EXECUTION" for row in summary_payload["items"])
+
+  history = client.get("/api/v1/execution/signals/history", headers=headers)
+  assert history.status_code == 200, history.text
+  history_payload = history.json()
+  assert isinstance(history_payload.get("snapshots"), list) and history_payload["snapshots"]
+  assert isinstance(history_payload.get("events"), list) and history_payload["events"]
+
+  scopes = client.get("/api/v1/execution/signals/scopes", headers=headers)
+  assert scopes.status_code == 200, scopes.text
+  scopes_payload = scopes.json()
+  assert isinstance(scopes_payload.get("items"), list) and scopes_payload["items"]
+
+
+def test_live_health_summary_contract_survives_raw_signal_snapshot_persistence(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mark_live_health_ready(module)
+  _patch_live_gates_green(module, monkeypatch)
+
+  module.runtime_bridge.build_live_signal_snapshot(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+    persist=True,
+  )
+  summary = module.runtime_bridge.build_live_health_summary(
+    state=module.store.load_bot_state(),
+    settings=module.store.load_settings(),
+  )
+  assert summary["state"] == "HEALTHY"
+  assert "component_status" in summary
+  assert "scope_status" in summary
+

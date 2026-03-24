@@ -47,6 +47,16 @@ from rtlab_core.execution.health_summary import (
     normalize_health_reason_code,
     normalize_health_scope_type,
 )
+from rtlab_core.execution.live_signals import (
+    build_live_signal_event,
+    build_live_signal_snapshot,
+    live_signal_scope_key,
+    normalize_live_signal_scope_type,
+    normalize_live_signal_severity,
+    normalize_live_signal_snapshot_type,
+    normalize_live_signal_source_type,
+    normalize_live_signal_source_status,
+)
 from rtlab_core.execution.operational_safety import (
     normalize_safety_breaker_action,
     normalize_safety_breaker_state,
@@ -422,6 +432,36 @@ CREATE TABLE IF NOT EXISTS health_reason_events (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_health_reason_events_unique_scope
   ON health_reason_events(reason_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''));
 CREATE INDEX IF NOT EXISTS idx_health_reason_events_active ON health_reason_events(active_bool, scope_type, updated_at DESC);
+CREATE TABLE IF NOT EXISTS live_signal_snapshots (
+    signal_snapshot_id TEXT PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    snapshot_type TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    source_module TEXT NOT NULL,
+    freshness_ms INTEGER,
+    signal_payload_json TEXT NOT NULL,
+    source_status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_collected ON live_signal_snapshots(collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_scope ON live_signal_snapshots(scope_type, bot_id, symbol, snapshot_type, collected_at DESC);
+CREATE TABLE IF NOT EXISTS live_signal_events (
+    signal_event_id TEXT PRIMARY KEY,
+    event_time TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    event_code TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    bot_id TEXT,
+    symbol TEXT,
+    severity_observed TEXT NOT NULL,
+    observed_value_json TEXT NOT NULL,
+    raw_payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_live_signal_events_time ON live_signal_events(event_time DESC);
+CREATE INDEX IF NOT EXISTS idx_live_signal_events_scope ON live_signal_events(scope_type, bot_id, symbol, source_type, event_time DESC);
 CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC);
 """
 
@@ -447,6 +487,11 @@ class SafetyEvaluateBody(BaseModel):
 
 
 class HealthEvaluateBody(BaseModel):
+    bot_id: str | None = None
+    symbol: str | None = None
+
+
+class LiveSignalsSnapshotBody(BaseModel):
     bot_id: str | None = None
     symbol: str | None = None
 
@@ -785,6 +830,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
     es = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
     ops = es.get("operational_safety") if isinstance(es.get("operational_safety"), dict) else {}
+    live_signals = es.get("live_signals") if isinstance(es.get("live_signals"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
     fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
@@ -809,6 +855,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_guardrail_open_orders_warn_count": ops.get("guardrail_open_orders_warn_count"),
         "execution_guardrail_open_orders_block_count": ops.get("guardrail_open_orders_block_count"),
         "execution_guardrail_cooldown_sec": ops.get("guardrail_cooldown_sec"),
+        "execution_live_signals_default_window_ms": live_signals.get("default_window_ms"),
         "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
         "beast_requires_postgres": b.get("requires_postgres"),
         "fees_ttl_hours": f.get("fee_snapshot_ttl_hours"),
@@ -885,6 +932,10 @@ DEFAULT_LIVE_HEALTH_POLICY: dict[str, Any] = {
     "recent_emergency_action_window_sec": 300,
 }
 
+DEFAULT_LIVE_SIGNALS_POLICY: dict[str, Any] = {
+    "default_window_ms": 300000,
+}
+
 
 def load_execution_safety_policy() -> dict[str, Any]:
     bundle = load_numeric_policies_bundle()
@@ -893,6 +944,7 @@ def load_execution_safety_policy() -> dict[str, Any]:
     root = payload.get("execution_safety") if isinstance(payload.get("execution_safety"), dict) else {}
     ops = root.get("operational_safety") if isinstance(root.get("operational_safety"), dict) else {}
     live_health = root.get("live_health_summary") if isinstance(root.get("live_health_summary"), dict) else {}
+    live_signals = root.get("live_signals") if isinstance(root.get("live_signals"), dict) else {}
     return {
         "source": "config/policies/execution_safety.yaml" if ops else "default_fail_closed_operational_safety",
         "operational_safety": {
@@ -902,6 +954,10 @@ def load_execution_safety_policy() -> dict[str, Any]:
         "live_health_summary": {
             **DEFAULT_LIVE_HEALTH_POLICY,
             **live_health,
+        },
+        "live_signals": {
+            **DEFAULT_LIVE_SIGNALS_POLICY,
+            **live_signals,
         },
     }
 
@@ -2289,6 +2345,44 @@ class ConsoleStore:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_health_reason_events_active ON health_reason_events(active_bool, scope_type, updated_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS live_signal_snapshots (
+                signal_snapshot_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                snapshot_type TEXT NOT NULL,
+                collected_at TEXT NOT NULL,
+                source_module TEXT NOT NULL,
+                freshness_ms INTEGER,
+                signal_payload_json TEXT NOT NULL,
+                source_status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_collected ON live_signal_snapshots(collected_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_scope ON live_signal_snapshots(scope_type, bot_id, symbol, snapshot_type, collected_at DESC)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS live_signal_events (
+                signal_event_id TEXT PRIMARY KEY,
+                event_time TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                event_code TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                bot_id TEXT,
+                symbol TEXT,
+                severity_observed TEXT NOT NULL,
+                observed_value_json TEXT NOT NULL,
+                raw_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_time ON live_signal_events(event_time DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_scope ON live_signal_events(scope_type, bot_id, symbol, source_type, event_time DESC)")
         self._backfill_logs_has_bot_ref(conn)
         self._backfill_log_bot_refs(conn)
 
@@ -3079,6 +3173,219 @@ class ConsoleStore:
             raw.setdefault("snapshot_id", str(row["snapshot_id"] or ""))
             raw.setdefault("evaluated_at", str(row["evaluated_at"] or ""))
             items.append(raw)
+        return items
+
+    def insert_live_signal_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        signal_snapshot_id = str(uuid4())
+        created_at = utc_now_iso()
+        payload = snapshot.get("signal_payload") if isinstance(snapshot.get("signal_payload"), dict) else {}
+        row = {
+            "signal_snapshot_id": signal_snapshot_id,
+            "scope_type": normalize_live_signal_scope_type(snapshot.get("scope_type")),
+            "bot_id": self._normalize_safety_bot_id(snapshot.get("bot_id")),
+            "symbol": self._normalize_safety_symbol(snapshot.get("symbol")),
+            "snapshot_type": normalize_live_signal_snapshot_type(snapshot.get("snapshot_type")),
+            "collected_at": str(snapshot.get("collected_at") or created_at),
+            "source_module": str(snapshot.get("source_module") or "runtime_bridge.live_signals"),
+            "freshness_ms": int(snapshot.get("freshness_ms")) if snapshot.get("freshness_ms") is not None else None,
+            "signal_payload_json": json.dumps(payload, ensure_ascii=True, sort_keys=True),
+            "source_status": normalize_live_signal_source_status(snapshot.get("source_status")),
+            "created_at": created_at,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_signal_snapshots (
+                    signal_snapshot_id, scope_type, bot_id, symbol, snapshot_type, collected_at,
+                    source_module, freshness_ms, signal_payload_json, source_status, created_at
+                ) VALUES (
+                    :signal_snapshot_id, :scope_type, :bot_id, :symbol, :snapshot_type, :collected_at,
+                    :source_module, :freshness_ms, :signal_payload_json, :source_status, :created_at
+                )
+                """,
+                row,
+            )
+        out = dict(snapshot)
+        out["signal_snapshot_id"] = signal_snapshot_id
+        out["scope_type"] = row["scope_type"]
+        out["bot_id"] = row["bot_id"]
+        out["symbol"] = row["symbol"]
+        out["snapshot_type"] = row["snapshot_type"]
+        out["source_status"] = row["source_status"]
+        out["signal_payload"] = payload
+        out["created_at"] = created_at
+        out["scope_key"] = live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"])
+        return out
+
+    def insert_live_signal_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        signal_event_id = str(uuid4())
+        created_at = utc_now_iso()
+        observed = event.get("observed_value") if isinstance(event.get("observed_value"), dict) else {}
+        raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        row = {
+            "signal_event_id": signal_event_id,
+            "event_time": str(event.get("event_time") or created_at),
+            "source_type": normalize_live_signal_source_type(event.get("source_type")),
+            "event_code": str(event.get("event_code") or "SIGNAL_OBSERVED"),
+            "scope_type": normalize_live_signal_scope_type(event.get("scope_type")),
+            "bot_id": self._normalize_safety_bot_id(event.get("bot_id")),
+            "symbol": self._normalize_safety_symbol(event.get("symbol")),
+            "severity_observed": normalize_live_signal_severity(event.get("severity_observed")),
+            "observed_value_json": json.dumps(observed, ensure_ascii=True, sort_keys=True),
+            "raw_payload_json": json.dumps(raw_payload, ensure_ascii=True, sort_keys=True),
+            "created_at": created_at,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_signal_events (
+                    signal_event_id, event_time, source_type, event_code, scope_type, bot_id,
+                    symbol, severity_observed, observed_value_json, raw_payload_json, created_at
+                ) VALUES (
+                    :signal_event_id, :event_time, :source_type, :event_code, :scope_type, :bot_id,
+                    :symbol, :severity_observed, :observed_value_json, :raw_payload_json, :created_at
+                )
+                """,
+                row,
+            )
+        return {
+            "signal_event_id": signal_event_id,
+            "event_time": row["event_time"],
+            "source_type": row["source_type"],
+            "event_code": row["event_code"],
+            "scope_type": row["scope_type"],
+            "bot_id": row["bot_id"],
+            "symbol": row["symbol"],
+            "severity_observed": row["severity_observed"],
+            "observed_value": observed,
+            "raw_payload": raw_payload,
+            "created_at": created_at,
+        }
+
+    def list_live_signal_snapshots(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        snapshot_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_live_signal_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        if snapshot_type:
+            clauses.append("snapshot_type = ?")
+            params.append(normalize_live_signal_snapshot_type(snapshot_type))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM live_signal_snapshots
+                WHERE {' AND '.join(clauses)}
+                ORDER BY collected_at DESC, signal_snapshot_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                signal_payload = json.loads(str(row["signal_payload_json"] or "{}"))
+            except Exception:
+                signal_payload = {}
+            if not isinstance(signal_payload, dict):
+                signal_payload = {}
+            items.append(
+                {
+                    "signal_snapshot_id": str(row["signal_snapshot_id"] or ""),
+                    "scope_type": str(row["scope_type"] or ""),
+                    "scope_key": live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
+                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
+                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
+                    "snapshot_type": str(row["snapshot_type"] or ""),
+                    "collected_at": str(row["collected_at"] or ""),
+                    "source_module": str(row["source_module"] or ""),
+                    "freshness_ms": int(row["freshness_ms"]) if row["freshness_ms"] is not None else None,
+                    "signal_payload": signal_payload,
+                    "source_status": str(row["source_status"] or ""),
+                    "created_at": str(row["created_at"] or ""),
+                }
+            )
+        return items
+
+    def list_live_signal_events(
+        self,
+        *,
+        scope_type: str | None = None,
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        source_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if scope_type:
+            clauses.append("scope_type = ?")
+            params.append(normalize_live_signal_scope_type(scope_type))
+        if bot_id:
+            clauses.append("bot_id = ?")
+            params.append(self._normalize_safety_bot_id(bot_id))
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(self._normalize_safety_symbol(symbol))
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(normalize_live_signal_source_type(source_type))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM live_signal_events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY event_time DESC, signal_event_id DESC
+                LIMIT ?
+                """,
+                tuple([*params, max(1, int(limit))]),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                observed_value = json.loads(str(row["observed_value_json"] or "{}"))
+            except Exception:
+                observed_value = {}
+            try:
+                raw_payload = json.loads(str(row["raw_payload_json"] or "{}"))
+            except Exception:
+                raw_payload = {}
+            if not isinstance(observed_value, dict):
+                observed_value = {}
+            if not isinstance(raw_payload, dict):
+                raw_payload = {}
+            items.append(
+                {
+                    "signal_event_id": str(row["signal_event_id"] or ""),
+                    "event_time": str(row["event_time"] or ""),
+                    "source_type": str(row["source_type"] or ""),
+                    "event_code": str(row["event_code"] or ""),
+                    "scope_type": str(row["scope_type"] or ""),
+                    "scope_key": live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
+                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
+                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
+                    "severity_observed": str(row["severity_observed"] or ""),
+                    "observed_value": observed_value,
+                    "raw_payload": raw_payload,
+                    "created_at": str(row["created_at"] or ""),
+                }
+            )
         return items
 
     def _ensure_defaults(self) -> None:
@@ -7498,6 +7805,517 @@ class RuntimeBridge:
             **policy,
         }
 
+    def _live_signals_policy(self) -> dict[str, Any]:
+        payload = load_execution_safety_policy()
+        policy = payload.get("live_signals") if isinstance(payload.get("live_signals"), dict) else {}
+        return {
+            **DEFAULT_LIVE_SIGNALS_POLICY,
+            **policy,
+        }
+
+    @staticmethod
+    def _live_signal_severity_from_status(value: Any) -> str:
+        normalized = normalize_live_signal_source_status(value)
+        if normalized == "CRITICAL":
+            return "CRITICAL"
+        if normalized in {"WARN", "MISSING"}:
+            return "WARN"
+        return "INFO"
+
+    @staticmethod
+    def _live_signal_source_type_for_snapshot(snapshot_type: str) -> str:
+        mapping = {
+            "EXECUTION": "EXECUTION",
+            "FILLS": "FILL",
+            "STREAM": "STREAM",
+            "RECONCILIATION": "RECONCILIATION",
+            "PREFLIGHT": "PREFLIGHT",
+            "RATE_LIMIT": "RATE_LIMIT",
+            "RISK": "RISK",
+        }
+        return normalize_live_signal_source_type(mapping.get(normalize_live_signal_snapshot_type(snapshot_type), "EXECUTION"))
+
+    @staticmethod
+    def _live_signal_scope_matches(order: Order, *, symbol: str | None = None) -> bool:
+        symbol_n = str(symbol or "").strip().upper()
+        if symbol_n and str(order.symbol or "").strip().upper() != symbol_n:
+            return False
+        return True
+
+    @staticmethod
+    def _event_time_iso_from_dt(value: datetime | None) -> str:
+        return value.isoformat() if isinstance(value, datetime) else ""
+
+    def build_live_signal_snapshot(
+        self,
+        *,
+        state: dict[str, Any],
+        settings: dict[str, Any],
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        persist: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            now_dt = utc_now()
+            now_iso = now_dt.isoformat()
+            state_n = dict(state or {})
+            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
+            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
+            scope_type, scope_bot_id, scope_symbol = self._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
+            scope_key = live_signal_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol)
+
+            signals_policy = self._live_signals_policy()
+            health_policy = self._live_health_policy()
+            ops_policy = self._operational_safety_policy()
+            window_ms = max(1000, _as_int(signals_policy.get("default_window_ms"), 300000))
+            window_sec = float(window_ms) / 1000.0
+
+            runtime_snapshot = _runtime_contract_snapshot(state_n, target_mode="live")
+            exec_snapshot = self.execution_metrics_snapshot()
+            safety_summary = self.operational_safety_summary(state=state_n, bot_id=scope_bot_id, symbol=scope_symbol)
+            reconcile = dict(self._last_reconcile) if isinstance(self._last_reconcile, dict) else {}
+
+            orders = [
+                order
+                for order in self._oms.orders.values()
+                if RuntimeBridge._live_signal_scope_matches(order, symbol=scope_symbol)
+            ]
+            terminal_statuses = {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.STALE, OrderStatus.REJECTED}
+            open_orders = [order for order in orders if order.status in {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}]
+
+            def _age_ms_from_dt(value: datetime | None) -> int | None:
+                if not isinstance(value, datetime):
+                    return None
+                return max(0, int((now_dt - value).total_seconds() * 1000.0))
+
+            recent_orders = [
+                order
+                for order in orders
+                if (_age_ms_from_dt(order.created_at) or 999999999) <= window_ms
+                or (_age_ms_from_dt(order.updated_at) or 999999999) <= window_ms
+            ]
+            latest_order_dt = max((order.updated_at for order in orders), default=None)
+            latest_order_age_ms = _age_ms_from_dt(latest_order_dt)
+
+            relevant_breakers = list(safety_summary.get("breakers") or [])
+            rate_limit_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "TOO_MANY_REQUESTS_PRESSURE"]
+            rate_limit_ban_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "HTTP_418_BAN_RISK"]
+            manual_review_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "RECONCILIATION_MANUAL_REVIEW_BLOCKING"]
+            execution_cancel_fail_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "EXCESSIVE_CANCEL_FAILS"]
+            rate_limit_window_count = max((int(row.get("trigger_count_window") or 0) for row in rate_limit_breakers), default=0)
+            cancel_fail_window_count = max((int(row.get("trigger_count_window") or 0) for row in execution_cancel_fail_breakers), default=0)
+            ban_active = any(normalize_safety_breaker_state(row.get("state")) in {"OPEN", "COOLDOWN", "MANUAL_LOCK"} for row in rate_limit_ban_breakers)
+            retry_after_active = any(normalize_safety_breaker_state(row.get("state")) == "COOLDOWN" for row in rate_limit_breakers)
+
+            latest_rate_limit_event_at = ""
+            for row in rate_limit_breakers + rate_limit_ban_breakers:
+                candidate = str(row.get("last_trigger_at") or row.get("updated_at") or "")
+                if candidate and candidate > latest_rate_limit_event_at:
+                    latest_rate_limit_event_at = candidate
+            rate_limit_age_ms = (_runtime_ts_age_sec(latest_rate_limit_event_at, now=now_dt) * 1000) if latest_rate_limit_event_at else None
+
+            fills_recent = [order for order in recent_orders if float(order.filled_qty) > 0.0]
+            fills_partial_recent = [order for order in fills_recent if order.status == OrderStatus.PARTIALLY_FILLED]
+            fills_final_recent = [order for order in fills_recent if order.status == OrderStatus.FILLED]
+            latest_fill_dt = max((order.updated_at for order in orders if float(order.filled_qty) > 0.0), default=None)
+            latest_fill_age_ms = _age_ms_from_dt(latest_fill_dt)
+
+            heartbeat_age_ms = (_runtime_ts_age_sec(str(runtime_snapshot.get("runtime_heartbeat_at") or ""), now=now_dt) * 1000) if str(runtime_snapshot.get("runtime_heartbeat_at") or "").strip() else None
+            reconcile_age_ms = (_runtime_ts_age_sec(str(runtime_snapshot.get("runtime_last_reconcile_at") or ""), now=now_dt) * 1000) if str(runtime_snapshot.get("runtime_last_reconcile_at") or "").strip() else None
+            stream_connected = bool(runtime_snapshot.get("runtime_loop_alive", False))
+            stream_terminated = "eventstreamterminated" in str(runtime_snapshot.get("runtime_exchange_reason") or "").strip().lower()
+            stream_warn_ms = max(0, _as_int(ops_policy.get("guardrail_stream_gap_warn_ms"), 5000))
+            stream_critical_ms = max(stream_warn_ms, _as_int(ops_policy.get("guardrail_stream_gap_critical_ms"), 10000))
+
+            preflight_ts = (
+                str(state_n.get("runtime_last_safety_eval_at") or "").strip()
+                or str(runtime_snapshot.get("runtime_last_reconcile_at") or "").strip()
+                or str(runtime_snapshot.get("runtime_heartbeat_at") or "").strip()
+            )
+            preflight_age_sec = _runtime_ts_age_sec(preflight_ts, now=now_dt)
+            preflight_age_ms = (preflight_age_sec * 1000) if preflight_age_sec is not None else None
+            stale_sec = max(0, _as_int(health_policy.get("preflight_stale_sec"), 300))
+            expired_sec = max(stale_sec, _as_int(health_policy.get("preflight_expired_sec"), 600))
+            gates_payload = evaluate_gates("live", force_exchange_check=True, runtime_state=state_n)
+            can_live, live_reason = live_can_be_enabled(gates_payload)
+            if preflight_age_sec is None:
+                preflight_status = "MISSING"
+            elif preflight_age_sec > expired_sec:
+                preflight_status = "EXPIRED"
+            elif not can_live:
+                preflight_status = "FAIL"
+            elif preflight_age_sec > stale_sec:
+                preflight_status = "STALE"
+            else:
+                preflight_status = "PASS"
+            preflight_time_to_expiry_ms = (
+                max(0, (expired_sec * 1000) - int(preflight_age_ms or 0))
+                if preflight_age_ms is not None
+                else None
+            )
+
+            unknown_timeout_active = bool(state_n.get("runtime_unknown_timeout_active", False))
+            unknown_timeout_since = str(state_n.get("runtime_unknown_timeout_since") or "")
+            unknown_timeout_age_ms = (
+                _runtime_ts_age_sec(unknown_timeout_since, now=now_dt) * 1000
+                if unknown_timeout_active and unknown_timeout_since
+                else None
+            )
+
+            open_order_pressure_count = max(
+                int(reconcile.get("remote_open_orders_count") or 0),
+                int(reconcile.get("local_open_orders_count") or 0),
+            )
+            reconciliation_open_cases_count = int(reconcile.get("desync_count") or 0) + len(manual_review_breakers)
+
+            positions = self.positions()
+            if scope_symbol:
+                positions = [row for row in positions if str(row.get("symbol") or "").strip().upper() == scope_symbol]
+            risk_daily_loss_value = _as_float(state_n.get("daily_loss"), 0.0)
+            risk_max_dd_value = _as_float(state_n.get("max_dd"), 0.0)
+            risk_equity_value = _as_float(state_n.get("equity"), 0.0)
+
+            snapshots: list[dict[str, Any]] = []
+
+            execution_status = "WARN" if unknown_timeout_active else "OK"
+            execution_payload = {
+                "metrics": {
+                    "window_ms": window_ms,
+                    "execution_submit_total_window": len([order for order in orders if (_age_ms_from_dt(order.created_at) or 999999999) <= window_ms]),
+                    "execution_reject_total_window": len([order for order in orders if order.status == OrderStatus.REJECTED and (_age_ms_from_dt(order.updated_at) or 999999999) <= window_ms]),
+                    "execution_cancel_fail_total_window": cancel_fail_window_count,
+                    "execution_unknown_timeout_active_count": 1 if unknown_timeout_active else 0,
+                    "execution_open_orders_count": len(open_orders),
+                    "execution_terminal_orders_recent_count": len([order for order in recent_orders if order.status in terminal_statuses]),
+                    "execution_pending_orders_recent_count": len([order for order in recent_orders if order.status in {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}]),
+                },
+                "observed_states": {
+                    "runtime_last_remote_submit_error": str(state_n.get("runtime_last_remote_submit_error") or ""),
+                    "runtime_last_remote_submit_reason": str(state_n.get("runtime_last_remote_submit_reason") or ""),
+                    "runtime_last_signal_action": str(state_n.get("runtime_last_signal_action") or ""),
+                    "runtime_last_signal_symbol": str(state_n.get("runtime_last_signal_symbol") or ""),
+                    "runtime_last_signal_side": str(state_n.get("runtime_last_signal_side") or ""),
+                    "runtime_unknown_timeout_active": unknown_timeout_active,
+                },
+                "freshness": {
+                    "window_ms": window_ms,
+                    "latest_order_age_ms": latest_order_age_ms,
+                    "unknown_timeout_age_ms": unknown_timeout_age_ms,
+                },
+                "source_timestamps": {
+                    "latest_order_updated_at": RuntimeBridge._event_time_iso_from_dt(latest_order_dt),
+                    "runtime_last_remote_submit_at": str(state_n.get("runtime_last_remote_submit_at") or ""),
+                    "runtime_unknown_timeout_since": unknown_timeout_since,
+                },
+                "source_refs": {
+                    "scope_key": scope_key,
+                    "window_ms": window_ms,
+                    "source_table": "runtime_bridge.oms",
+                    "source_module": "RuntimeBridge.execution_metrics_snapshot",
+                },
+            }
+            snapshots.append(
+                build_live_signal_snapshot(
+                    scope_type=scope_type,
+                    bot_id=scope_bot_id,
+                    symbol=scope_symbol,
+                    snapshot_type="EXECUTION",
+                    collected_at=now_iso,
+                    source_module="RuntimeBridge.execution_metrics_snapshot",
+                    freshness_ms=latest_order_age_ms,
+                    signal_payload=execution_payload,
+                    source_status=execution_status,
+                )
+            )
+
+            fills_payload = {
+                "metrics": {
+                    "window_ms": window_ms,
+                    "fills_recent_count": len(fills_recent),
+                    "fills_partial_recent_count": len(fills_partial_recent),
+                    "fills_final_recent_count": len(fills_final_recent),
+                    "fills_commission_observed_recent_count": 0,
+                    "fills_last_event_age_ms": latest_fill_age_ms,
+                    "fills_count_runtime_total": int(exec_snapshot.get("fills_count_runtime") or 0),
+                    "fills_notional_runtime_usd_total": round(_as_float(exec_snapshot.get("fills_notional_runtime_usd"), 0.0), 6),
+                },
+                "observed_states": {
+                    "commission_observed_supported": False,
+                    "runtime_cost_proxy_available": bool(_as_int(exec_snapshot.get("fills_count_runtime"), 0) > 0),
+                    "fills_runtime_costs_source": "runtime_costs_proxy",
+                },
+                "freshness": {
+                    "window_ms": window_ms,
+                    "fills_last_event_age_ms": latest_fill_age_ms,
+                },
+                "source_timestamps": {
+                    "last_fill_updated_at": RuntimeBridge._event_time_iso_from_dt(latest_fill_dt),
+                },
+                "source_refs": {
+                    "scope_key": scope_key,
+                    "window_ms": window_ms,
+                    "source_module": "RuntimeBridge.oms/runtime_costs",
+                },
+            }
+            snapshots.append(
+                build_live_signal_snapshot(
+                    scope_type=scope_type,
+                    bot_id=scope_bot_id,
+                    symbol=scope_symbol,
+                    snapshot_type="FILLS",
+                    collected_at=now_iso,
+                    source_module="RuntimeBridge.oms",
+                    freshness_ms=latest_fill_age_ms,
+                    signal_payload=fills_payload,
+                    source_status="OK",
+                )
+            )
+
+            stream_status = "OK"
+            if stream_terminated or not stream_connected or (heartbeat_age_ms is not None and heartbeat_age_ms > stream_critical_ms):
+                stream_status = "CRITICAL"
+            elif heartbeat_age_ms is not None and heartbeat_age_ms > stream_warn_ms:
+                stream_status = "WARN"
+            stream_payload = {
+                "metrics": {
+                    "window_ms": window_ms,
+                    "stream_gap_ms": heartbeat_age_ms,
+                    "stream_last_event_age_ms": heartbeat_age_ms,
+                    "stream_reconnect_count_window": 0,
+                },
+                "observed_states": {
+                    "stream_connected_bool": stream_connected,
+                    "stream_terminated_bool": stream_terminated,
+                    "stream_reconnect_count_observed": False,
+                    "runtime_exchange_reason": str(runtime_snapshot.get("runtime_exchange_reason") or ""),
+                },
+                "freshness": {
+                    "stream_gap_ms": heartbeat_age_ms,
+                    "stream_last_event_age_ms": heartbeat_age_ms,
+                    "window_ms": window_ms,
+                },
+                "source_timestamps": {
+                    "stream_last_event_at": str(runtime_snapshot.get("runtime_heartbeat_at") or ""),
+                },
+                "source_refs": {
+                    "scope_key": scope_key,
+                    "stream_gap_warn_ms": stream_warn_ms,
+                    "stream_gap_critical_ms": stream_critical_ms,
+                    "source_module": "runtime_contract_snapshot",
+                },
+            }
+            snapshots.append(
+                build_live_signal_snapshot(
+                    scope_type=scope_type,
+                    bot_id=scope_bot_id,
+                    symbol=scope_symbol,
+                    snapshot_type="STREAM",
+                    collected_at=now_iso,
+                    source_module="_runtime_contract_snapshot",
+                    freshness_ms=heartbeat_age_ms,
+                    signal_payload=stream_payload,
+                    source_status=stream_status,
+                )
+            )
+
+            reconciliation_status = "WARN" if (int(reconcile.get("desync_count") or 0) > 0 or len(manual_review_breakers) > 0 or not bool(reconcile.get("source_ok", False))) else "OK"
+            reconciliation_payload = {
+                "metrics": {
+                    "window_ms": window_ms,
+                    "reconciliation_last_run_age_ms": reconcile_age_ms,
+                    "reconciliation_open_cases_count": reconciliation_open_cases_count,
+                    "reconciliation_desync_count": int(reconcile.get("desync_count") or 0),
+                    "reconciliation_manual_review_count": len(manual_review_breakers),
+                },
+                "observed_states": {
+                    "reconciliation_source": str(reconcile.get("source") or ""),
+                    "reconciliation_source_ok": bool(reconcile.get("source_ok", False)),
+                    "reconciliation_source_reason": str(reconcile.get("source_reason") or ""),
+                },
+                "freshness": {
+                    "reconciliation_last_run_age_ms": reconcile_age_ms,
+                    "window_ms": window_ms,
+                },
+                "source_timestamps": {
+                    "reconciliation_last_run_at": str(runtime_snapshot.get("runtime_last_reconcile_at") or ""),
+                },
+                "source_refs": {
+                    "scope_key": scope_key,
+                    "source_module": "RuntimeBridge._last_reconcile",
+                },
+            }
+            snapshots.append(
+                build_live_signal_snapshot(
+                    scope_type=scope_type,
+                    bot_id=scope_bot_id,
+                    symbol=scope_symbol,
+                    snapshot_type="RECONCILIATION",
+                    collected_at=now_iso,
+                    source_module="RuntimeBridge._last_reconcile",
+                    freshness_ms=reconcile_age_ms,
+                    signal_payload=reconciliation_payload,
+                    source_status=reconciliation_status,
+                )
+            )
+
+            preflight_status_signal = "MISSING" if preflight_status == "MISSING" else ("WARN" if preflight_status in {"FAIL", "EXPIRED", "STALE"} else "OK")
+            preflight_payload = {
+                "metrics": {
+                    "window_ms": window_ms,
+                    "preflight_last_run_age_ms": preflight_age_ms,
+                    "preflight_time_to_expiry_ms": preflight_time_to_expiry_ms,
+                    "preflight_attestation_age_ms": None,
+                },
+                "observed_states": {
+                    "preflight_last_status_observed": preflight_status,
+                    "preflight_last_reason_observed": str(live_reason or ""),
+                    "preflight_attestation_supported": False,
+                },
+                "freshness": {
+                    "preflight_last_run_age_ms": preflight_age_ms,
+                    "window_ms": window_ms,
+                },
+                "source_timestamps": {
+                    "preflight_last_run_at": preflight_ts,
+                },
+                "source_refs": {
+                    "scope_key": scope_key,
+                    "preflight_stale_threshold_ms": stale_sec * 1000,
+                    "preflight_expired_threshold_ms": expired_sec * 1000,
+                    "source_module": "evaluate_gates/live_can_be_enabled",
+                },
+            }
+            snapshots.append(
+                build_live_signal_snapshot(
+                    scope_type=scope_type,
+                    bot_id=scope_bot_id,
+                    symbol=scope_symbol,
+                    snapshot_type="PREFLIGHT",
+                    collected_at=now_iso,
+                    source_module="evaluate_gates/live_can_be_enabled",
+                    freshness_ms=preflight_age_ms,
+                    signal_payload=preflight_payload,
+                    source_status=preflight_status_signal,
+                )
+            )
+
+            rate_limit_status = "CRITICAL" if ban_active else ("WARN" if rate_limit_window_count > 0 or retry_after_active else "OK")
+            rate_limit_payload = {
+                "metrics": {
+                    "window_ms": window_ms,
+                    "rate_limit_429_count_window": rate_limit_window_count,
+                    "open_order_pressure_count": open_order_pressure_count,
+                    "rate_limit_hits_cumulative": int(exec_snapshot.get("rate_limit_hits") or 0),
+                },
+                "observed_states": {
+                    "rate_limit_418_active_bool": ban_active,
+                    "retry_after_active_bool": retry_after_active,
+                },
+                "freshness": {
+                    "window_ms": window_ms,
+                    "last_rate_limit_event_age_ms": rate_limit_age_ms,
+                },
+                "source_timestamps": {
+                    "last_rate_limit_event_at": latest_rate_limit_event_at,
+                },
+                "source_refs": {
+                    "scope_key": scope_key,
+                    "guardrail_http_429_threshold": int(ops_policy.get("guardrail_http_429_threshold", 3)),
+                    "source_module": "operational_safety_summary/execution_metrics_snapshot",
+                },
+            }
+            snapshots.append(
+                build_live_signal_snapshot(
+                    scope_type=scope_type,
+                    bot_id=scope_bot_id,
+                    symbol=scope_symbol,
+                    snapshot_type="RATE_LIMIT",
+                    collected_at=now_iso,
+                    source_module="RuntimeBridge.operational_safety_summary",
+                    freshness_ms=rate_limit_age_ms,
+                    signal_payload=rate_limit_payload,
+                    source_status=rate_limit_status,
+                )
+            )
+
+            risk_payload = {
+                "metrics": {
+                    "window_ms": window_ms,
+                    "risk_open_positions_count": len(positions),
+                    "risk_daily_loss_value": round(risk_daily_loss_value, 6),
+                    "risk_max_drawdown_value": round(risk_max_dd_value, 6),
+                    "risk_equity_value": round(risk_equity_value, 6),
+                },
+                "observed_states": {
+                    "runtime_risk_allow_new_positions": bool(state_n.get("runtime_risk_allow_new_positions", True)),
+                    "runtime_risk_reason": str(state_n.get("runtime_risk_reason") or ""),
+                },
+                "freshness": {
+                    "runtime_last_event_age_ms": heartbeat_age_ms,
+                    "window_ms": window_ms,
+                },
+                "source_timestamps": {
+                    "runtime_last_event_at": str(runtime_snapshot.get("runtime_heartbeat_at") or ""),
+                },
+                "source_refs": {
+                    "scope_key": scope_key,
+                    "source_module": "runtime_state",
+                },
+            }
+            snapshots.append(
+                build_live_signal_snapshot(
+                    scope_type=scope_type,
+                    bot_id=scope_bot_id,
+                    symbol=scope_symbol,
+                    snapshot_type="RISK",
+                    collected_at=now_iso,
+                    source_module="runtime_state",
+                    freshness_ms=heartbeat_age_ms,
+                    signal_payload=risk_payload,
+                    source_status="OK",
+                )
+            )
+
+            persisted_snapshots: list[dict[str, Any]] = []
+            persisted_events: list[dict[str, Any]] = []
+            if persist:
+                for snapshot in snapshots:
+                    stored_snapshot = store.insert_live_signal_snapshot(snapshot)
+                    persisted_snapshots.append(stored_snapshot)
+                    observed_payload = stored_snapshot.get("signal_payload") if isinstance(stored_snapshot.get("signal_payload"), dict) else {}
+                    event = build_live_signal_event(
+                        source_type=self._live_signal_source_type_for_snapshot(str(stored_snapshot.get("snapshot_type") or "")),
+                        event_code=f"{str(stored_snapshot.get('snapshot_type') or 'SIGNAL').upper()}_SNAPSHOT_COLLECTED",
+                        scope_type=str(stored_snapshot.get("scope_type") or "GLOBAL"),
+                        bot_id=stored_snapshot.get("bot_id"),
+                        symbol=stored_snapshot.get("symbol"),
+                        event_time=str(stored_snapshot.get("collected_at") or now_iso),
+                        severity_observed=self._live_signal_severity_from_status(stored_snapshot.get("source_status")),
+                        observed_value={
+                            "snapshot_type": str(stored_snapshot.get("snapshot_type") or ""),
+                            "source_status": str(stored_snapshot.get("source_status") or ""),
+                            "freshness_ms": stored_snapshot.get("freshness_ms"),
+                        },
+                        raw_payload=observed_payload,
+                    )
+                    persisted_events.append(store.insert_live_signal_event(event))
+            else:
+                persisted_snapshots = [dict(snapshot) for snapshot in snapshots]
+
+            return {
+                "scope": {
+                    "scope_type": scope_type,
+                    "scope_key": scope_key,
+                    "bot_id": scope_bot_id,
+                    "symbol": scope_symbol,
+                },
+                "collected_at": now_iso,
+                "window_ms": window_ms,
+                "policy_source": str(load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml"),
+                "items": persisted_snapshots,
+                "events": persisted_events,
+            }
+
     def build_live_health_summary(
         self,
         *,
@@ -8034,12 +8852,26 @@ class RuntimeBridge:
                     "remote_open_orders_count": remote_open_orders_count,
                 },
             }
+            raw_signals = self.build_live_signal_snapshot(
+                state=state_n,
+                settings=settings,
+                bot_id=bot_id_n,
+                symbol=symbol_n,
+                persist=False,
+            )
+            component_status["live_signals"] = {
+                "scope": raw_signals.get("scope") if isinstance(raw_signals.get("scope"), dict) else {},
+                "collected_at": str(raw_signals.get("collected_at") or ""),
+                "window_ms": int(raw_signals.get("window_ms") or 0),
+                "snapshot_types": [str(row.get("snapshot_type") or "") for row in raw_signals.get("items") if isinstance(row, dict)],
+            }
 
             freshness = {
                 "preflight_evaluated_at": preflight_ts,
                 "preflight_age_sec": preflight_age_sec,
                 "preflight_stale_threshold_sec": stale_sec,
                 "preflight_expired_threshold_sec": expired_sec,
+                "live_signals_collected_at": str(raw_signals.get("collected_at") or ""),
                 "runtime_last_safety_eval_at": str(state_n.get("runtime_last_safety_eval_at") or ""),
                 "heartbeat_age_sec": runtime_snapshot.get("heartbeat_age_sec"),
                 "reconciliation_age_sec": runtime_snapshot.get("reconciliation_age_sec"),
@@ -14599,6 +15431,98 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/execution/metrics")
     def execution_metrics(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return build_execution_metrics_payload()
+
+    @app.get("/api/v1/execution/signals/summary")
+    def execution_signals_summary(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        return runtime_bridge.build_live_signal_snapshot(
+            state=state,
+            settings=settings,
+            bot_id=str(bot_id or "").strip() or None,
+            symbol=str(symbol or "").strip().upper() or None,
+            persist=False,
+        )
+
+    @app.get("/api/v1/execution/signals/scopes")
+    def execution_signals_scopes(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = Query(default=250, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        rows = store.list_live_signal_snapshots(
+            bot_id=str(bot_id or "").strip() or None,
+            symbol=str(symbol or "").strip().upper() or None,
+            limit=limit,
+        )
+        if not rows:
+            settings = store.load_settings()
+            state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+            current = runtime_bridge.build_live_signal_snapshot(
+                state=state,
+                settings=settings,
+                bot_id=str(bot_id or "").strip() or None,
+                symbol=str(symbol or "").strip().upper() or None,
+                persist=False,
+            )
+            return {"items": [current]}
+
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            scope_key = str(row.get("scope_key") or "GLOBAL")
+            bucket = grouped.setdefault(
+                scope_key,
+                {
+                    "scope": {
+                        "scope_type": str(row.get("scope_type") or "GLOBAL"),
+                        "scope_key": scope_key,
+                        "bot_id": row.get("bot_id"),
+                        "symbol": row.get("symbol"),
+                    },
+                    "collected_at": str(row.get("collected_at") or ""),
+                    "items": [],
+                },
+            )
+            existing_types = {str(item.get("snapshot_type") or "") for item in bucket["items"]}
+            if str(row.get("snapshot_type") or "") not in existing_types:
+                bucket["items"].append(row)
+            if str(row.get("collected_at") or "") > str(bucket.get("collected_at") or ""):
+                bucket["collected_at"] = str(row.get("collected_at") or "")
+        return {"items": list(grouped.values())}
+
+    @app.get("/api/v1/execution/signals/history")
+    def execution_signals_history(
+        bot_id: str | None = None,
+        symbol: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        scope_bot = str(bot_id or "").strip() or None
+        scope_symbol = str(symbol or "").strip().upper() or None
+        return {
+            "snapshots": store.list_live_signal_snapshots(bot_id=scope_bot, symbol=scope_symbol, limit=limit),
+            "events": store.list_live_signal_events(bot_id=scope_bot, symbol=scope_symbol, limit=limit),
+        }
+
+    @app.post("/api/v1/execution/signals/snapshot")
+    def execution_signals_snapshot(
+        body: LiveSignalsSnapshotBody | None = None,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        settings = store.load_settings()
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        return runtime_bridge.build_live_signal_snapshot(
+            state=state,
+            settings=settings,
+            bot_id=str((body.bot_id if body else "") or "").strip() or None,
+            symbol=str((body.symbol if body else "") or "").strip().upper() or None,
+            persist=True,
+        )
 
     @app.get("/api/v1/execution/health/summary")
     def execution_health_summary(

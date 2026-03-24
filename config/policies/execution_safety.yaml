@@ -23,3 +23,5 @@ execution_safety:
     preflight_stale_sec: 300
     preflight_expired_sec: 600
     recent_emergency_action_window_sec: 300
+  live_signals:
+    default_window_ms: 300000

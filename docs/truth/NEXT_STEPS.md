@@ -14,14 +14,13 @@ Fecha: 2026-03-23
 - [x] `RTLOPS-23` reconciliation engine formal
 - [x] `RTLOPS-29` operational safety guardrails
 - [x] `RTLOPS-30` health summary live + score explicable + degraded visibility
+- [x] `RTLOPS-26` live signals foundation: execution, streams, fills, risk y snapshots operativos
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-26` `Live signals foundation: execution, streams, fills, risk y snapshots operativos`
+- [ ] `RTLOPS-27` `Live alerts persistentes + catalogo de triggers operativos`
   - cerrar CAPA A de señal cruda, sin score ni acciones;
-  - sub-issues ya preparadas para ejecutar sin mezclar dominios:
-    - `RTLOPS-63` execution/fills/rate-limit/open-order pressure snapshots
-    - `RTLOPS-64` stream health + runtime/reconciliation/preflight freshness
-  - dejar contratos y persistencia reutilizables por `RTLOPS-30`, `RTLOPS-27` y release gate.
+  - cerrar catalogo de alerts/triggers persistente y reutilizable por monitoring/release gate;
+  - mantener `RTLOPS-29` como capa de accion y no como segunda verdad de lectura.
 
 ## Estado administrativo Linear
 - [x] Sync administrativo real completado para los cierres recientes:

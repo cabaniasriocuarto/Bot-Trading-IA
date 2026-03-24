@@ -2,6 +2,53 @@
 
 ## 2026-03-23
 
+### RTLOPS-26 - live signals foundation / CAPA A de senal cruda
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/live_signals.py` para normalizar scopes, snapshot types, payloads y eventos de senal cruda;
+  - `ConsoleStore`/SQLite agregan:
+    - `live_signal_snapshots`
+    - `live_signal_events`
+  - `RuntimeBridge.build_live_signal_snapshot(...)` ahora colecta y, opcionalmente, persiste snapshots raw de:
+    - `EXECUTION`
+    - `FILLS`
+    - `STREAM`
+    - `RECONCILIATION`
+    - `PREFLIGHT`
+    - `RATE_LIMIT`
+    - `RISK`
+  - contratos raw canonicos separados en:
+    - `metrics`
+    - `observed_states`
+    - `freshness`
+    - `source_timestamps`
+    - `source_refs`
+  - endpoints nuevos:
+    - `GET /api/v1/execution/signals/summary`
+    - `GET /api/v1/execution/signals/history`
+    - `GET /api/v1/execution/signals/scopes`
+    - `POST /api/v1/execution/signals/snapshot`
+- Policy:
+  - nueva seccion `execution_safety.live_signals` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - ventana canonica explicita:
+    - `default_window_ms = 300000`
+- Integracion minima con RTLOPS-30:
+  - `health_summary` no fue reescrita;
+  - solo agrega una referencia a la capa raw en `component_status.live_signals`, sin tocar score, reason codes ni estados finales.
+- No-goals respetados:
+  - sin score global nuevo;
+  - sin blockers finales nuevos;
+  - sin breakers/freezes/actions;
+  - sin UI pesada.
+- Validacion local real:
+  - `py_compile rtlab_autotrader/rtlab_core/execution/live_signals.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or execution_signals_endpoints_return_summary_history_and_scopes or live_health_summary_contract_survives_raw_signal_snapshot_persistence or live_health_summary_is_healthy_when_sources_are_clean or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-round2 -q` -> PASS (`8 passed`)
+  - `pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-signals` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-compat2 -q` -> PASS
+  - warning no bloqueante:
+    - `PytestCacheWarning` por `.pytest_cache`
+
 ### Alineación conceptual Observability / Health / Safety en Linear
 - Linear MCP:
   - el servidor oficial de Linear quedó operativo en este entorno a través de las herramientas MCP de issue/project;
