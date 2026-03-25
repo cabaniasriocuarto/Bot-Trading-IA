@@ -3,7 +3,7 @@ import { defineConfig } from "@playwright/test";
 const port = Number(process.env.PLAYWRIGHT_PORT || 3100);
 const externalBaseUrl = (process.env.PLAYWRIGHT_BASE_URL || "").trim();
 const useLocalServer = !externalBaseUrl;
-const baseURL = externalBaseUrl || `http://127.0.0.1:${port}`;
+const baseURL = externalBaseUrl || `http://localhost:${port}`;
 const npmRun = process.platform === "win32" ? "npm.cmd" : "npm";
 
 export default defineConfig({
