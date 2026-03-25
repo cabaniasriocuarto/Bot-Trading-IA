@@ -1,10 +1,11 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-24
+Fecha de actualizacion: 2026-03-25
 
-## Programa LIVE Spot actual - 2026-03-24
+## Programa LIVE Spot actual - 2026-03-25
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-38` Final Live Release Gate / go-no-go serio
   - `RTLOPS-35` Playwright Live Smoke / QA operator flows
   - `RTLOPS-37` Live Runbooks + docs/truth + incidentes/rollback
   - `RTLOPS-53` Backend QA Live
@@ -39,15 +40,55 @@ Fecha de actualizacion: 2026-03-24
     - storage canonico de fills,
     - reconciliation engine,
     - guardrails operativos/breakers.
-- Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-38` `Final Live Release Gate / go-no-go serio`.
+- Siguiente paso operativo exacto despues de este estado:
+  - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo inmediatamente antes de habilitar `LIVE_SERIO`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
-- Estado administrativo real de Linear al 2026-03-24:
+- Estado administrativo real de Linear al 2026-03-25:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-35`, `RTLOPS-37`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
   - `RTLOPS-35` ya no se toma como bloqueada tecnicamente por los `blockedBy` viejos con `RTLOPS-24/32/33/34`; esa foto quedo stale frente a repo + docs/truth y no bloquea la secuencia real.
+
+## RTLOPS-38 - Final Live Release Gate / go-no-go serio - 2026-03-25
+
+- Gap real cerrado:
+  - el repo ya tenia gates, QA backend, smoke UI minima, runbooks y rollback real, pero la decision final seguia repartida entre bloques previos y snapshots historicos de `docs/truth`;
+  - faltaba una decision operativa unica, auditable y fechada que distinguiera:
+    - blockers duros de release,
+    - blockers duros de promocion de stage,
+    - riesgos aceptables con restricciones,
+    - observaciones no bloqueantes.
+- Artefacto operativo agregado:
+  - `docs/runbooks/LIVE_RELEASE_GATE.md`
+- Evidencia revalidada ahora mismo:
+  - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_backend_qa_live.py --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-backend-qa-live-final -q` -> PASS (`3 passed`)
+  - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_rollout_safe_update.py -k "rollout_shadow_status_and_signal_are_fail_closed_until_runtime_live_is_ready or rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic or rollout_api_blending_preview_records_telemetry" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-rollout-final -q` -> PASS (`3 passed`)
+  - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_web_live_ready.py -k "execution_canary_start_holds_when_preflight_is_expired or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_account_surface_is_not_tradeable or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or execution_alert_endpoints_expose_catalog_history_and_lifecycle or execution_canary_recommends_rollback_when_reconciliation_turns_blocking or execution_canary_status_and_endpoints_expose_contract or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-live-ready-final -q` -> PASS (`11 passed`)
+  - `npm.cmd --prefix rtlab_dashboard run test:playwright` -> PASS (`3 passed`)
+- Decision vigente del gate:
+  - `GO con restricciones`
+  - aplica al estado actual del repo, al release path y a la preparacion de `LIVE_SERIO`;
+  - no equivale a `GO` limpio para habilitar `LIVE_SERIO` sin revalidacion fresca en el entorno objetivo.
+- Motivo principal para no declarar `GO` limpio:
+  - aunque el repo, las suites y los runbooks cierran bien, la decision live seria sigue dependiendo de evidencia operativa fresca que no existe todavia en este bloque para:
+    - `preflight PASS`
+    - `G9_RUNTIME_ENGINE_REAL = PASS`
+    - `account surface` fresca y tradeable
+    - reconciliacion sin `BLOCKED` ni `MANUAL_REVIEW_REQUIRED`
+    - `health_summary` sin blockers duros
+    - `safety_summary.blocking_bool = false`
+    - alertas `CRITICAL` impeditivas resueltas
+    - canary sin `HOLD` ni `ROLLBACK_RECOMMENDED` al momento de promover
+- Rollback y mitigacion reales disponibles:
+  - `POST /api/v1/rollout/rollback`
+  - auto rollback del rollout manager en live phases por hard fail thresholds
+  - `freeze`, `unfreeze`, `emergency-cancel`, `hold`, `resume`, `abort`
+  - el rollback del canary controller sigue siendo recomendacion humana mientras `rollback_execution_supported = false`
+- Regla documental vigente:
+  - las entradas antiguas de `NO GO` mas profundas en `SOURCE_OF_TRUTH.md` o `CHANGELOG.md` quedan como snapshots historicos y no reemplazan esta decision fechada de `RTLOPS-38`.
+- Siguiente paso exacto despues de este estado:
+  - ejecutar el gate en el entorno objetivo inmediatamente antes de habilitar `LIVE_SERIO`, archivando snapshots frescos de `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary`.
 
 ## RTLOPS-35 - Playwright Live Smoke / QA operator flows - 2026-03-24
 

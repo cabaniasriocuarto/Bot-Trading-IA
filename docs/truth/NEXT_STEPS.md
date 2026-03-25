@@ -1,6 +1,6 @@
 ﻿# NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-24
+Fecha: 2026-03-25
 
 ## Programa LIVE Spot actual
 - [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
@@ -107,15 +107,35 @@ Fecha: 2026-03-24
     - la corrida validada en este entorno fue local/deterministica;
     - la suite queda lista para apuntar a staging/real por env sin rehacer frontend ni backend;
     - no reemplaza `RTLOPS-53` ni equivale a QA live final total.
+- [x] `RTLOPS-38` `Final Live Release Gate / go-no-go serio`
+  - gate final consolidado en:
+    - `docs/runbooks/LIVE_RELEASE_GATE.md`
+  - decision vigente:
+    - `GO con restricciones`
+  - lectura correcta:
+    - el programa ya tiene evidencia suficiente para cerrar el gate como artefacto auditable;
+    - no existe `GO` limpio para `LIVE_SERIO` sin reevaluacion fresca del entorno objetivo.
+  - evidencia revalidada ahora:
+    - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_backend_qa_live.py --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-backend-qa-live-final -q` -> PASS (`3 passed`)
+    - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_rollout_safe_update.py -k "rollout_shadow_status_and_signal_are_fail_closed_until_runtime_live_is_ready or rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic or rollout_api_blending_preview_records_telemetry" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-rollout-final -q` -> PASS (`3 passed`)
+    - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_web_live_ready.py -k "execution_canary_start_holds_when_preflight_is_expired or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_account_surface_is_not_tradeable or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or execution_alert_endpoints_expose_catalog_history_and_lifecycle or execution_canary_recommends_rollback_when_reconciliation_turns_blocking or execution_canary_status_and_endpoints_expose_contract or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-live-ready-final -q` -> PASS (`11 passed`)
+    - `npm.cmd --prefix rtlab_dashboard run test:playwright` -> PASS (`3 passed`)
+  - bloqueo real para promocion de `LIVE_SERIO`:
+    - sigue siendo obligatoria una reevaluacion fresca de `preflight`, `G9`, account surface, reconciliacion, `health`, `safety`, alertas y canary en el entorno objetivo.
 
-## Siguiente issue exacto
-- [ ] `RTLOPS-38` `Final Live Release Gate / go-no-go serio`
-  - ahora si queda como siguiente issue explicita del release path;
-  - debe consumir:
-    - backend QA live (`RTLOPS-53`)
-    - runbooks/rollback (`RTLOPS-37`)
-    - smoke UI/playwright minima (`RTLOPS-35`)
-  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI y no redefine el orden tecnico real.
+## Siguiente paso exacto
+- [ ] Ejecutar el gate de `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo inmediatamente antes de habilitar `LIVE_SERIO`
+  - reevaluar y archivar:
+    - `POST /api/v1/gates/reevaluate`
+    - `POST /api/v1/execution/health/evaluate`
+    - `POST /api/v1/execution/alerts/evaluate`
+    - `GET /api/v1/gates`
+    - `GET /api/v1/rollout/status`
+    - `GET /api/v1/execution/health/summary`
+    - `GET /api/v1/execution/safety/summary`
+    - `GET /api/v1/execution/alerts/open`
+    - `GET /api/v1/execution/canary/status`
+  - si cualquiera de esas surfaces queda `FAIL`, `BLOCKED`, `MANUAL_REVIEW_REQUIRED`, `HOLD` o `ROLLBACK_RECOMMENDED`, no habilitar live.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.

@@ -1,5 +1,28 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-25
+
+### RTLOPS-38 - Final Live Release Gate / go-no-go serio
+- Gate final consolidado en:
+  - `docs/runbooks/LIVE_RELEASE_GATE.md`
+- Decision vigente del bloque:
+  - `GO con restricciones`
+- Lectura correcta de la decision:
+  - el repo y las evidencias actuales permiten cerrar el gate como artefacto serio del programa;
+  - no se declara `GO` limpio para `LIVE_SERIO` porque la activacion final sigue requiriendo reevaluacion fresca del entorno objetivo.
+- Evidencia revalidada ahora:
+  - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_backend_qa_live.py --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-backend-qa-live-final -q` -> PASS (`3 passed`)
+  - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_rollout_safe_update.py -k "rollout_shadow_status_and_signal_are_fail_closed_until_runtime_live_is_ready or rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic or rollout_api_blending_preview_records_telemetry" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-rollout-final -q` -> PASS (`3 passed`)
+  - `.\\rtlab_autotrader\\.venv\\Scripts\\pytest.exe rtlab_autotrader/tests/test_web_live_ready.py -k "execution_canary_start_holds_when_preflight_is_expired or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_account_surface_is_not_tradeable or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or execution_alert_endpoints_expose_catalog_history_and_lifecycle or execution_canary_recommends_rollback_when_reconciliation_turns_blocking or execution_canary_status_and_endpoints_expose_contract or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-qa-live-ready-final -q` -> PASS (`11 passed`)
+  - `npm.cmd --prefix rtlab_dashboard run test:playwright` -> PASS (`3 passed`)
+- Restricciones explicitadas:
+  - Playwright sigue pesando como evidencia complementaria/operatoria, no como sustituto del gate backend/live;
+  - falta revalidacion fresca de `preflight`, `G9`, account surface, reconciliacion, `health`, `safety`, alertas y canary en el entorno objetivo antes de habilitar `LIVE_SERIO`;
+  - rollback real disponible:
+    - `POST /api/v1/rollout/rollback`
+    - auto rollback del rollout manager
+  - el rollback del canary controller sigue siendo recomendacion humana mientras `rollback_execution_supported = false`
+
 ## 2026-03-24
 
 ### RTLOPS-35 - Playwright Live Smoke / QA operator flows
