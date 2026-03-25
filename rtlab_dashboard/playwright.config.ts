@@ -4,6 +4,7 @@ const port = Number(process.env.PLAYWRIGHT_PORT || 3100);
 const externalBaseUrl = (process.env.PLAYWRIGHT_BASE_URL || "").trim();
 const useLocalServer = !externalBaseUrl;
 const baseURL = externalBaseUrl || `http://127.0.0.1:${port}`;
+const npmRun = process.platform === "win32" ? "npm.cmd" : "npm";
 
 export default defineConfig({
   testDir: "./tests/playwright",
@@ -18,13 +19,13 @@ export default defineConfig({
   use: {
     baseURL,
     headless: true,
-    trace: "off",
+    trace: process.env.CI ? "on-first-retry" : "off",
     screenshot: "off",
     video: "off",
   },
   webServer: useLocalServer
     ? {
-        command: `npm.cmd run dev -- --port ${port}`,
+        command: `${npmRun} run dev -- --port ${port}`,
         cwd: __dirname,
         url: `${baseURL}/login`,
         reuseExistingServer: !process.env.CI,
