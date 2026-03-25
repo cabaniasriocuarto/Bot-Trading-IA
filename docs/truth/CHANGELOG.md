@@ -2,6 +2,34 @@
 
 ## 2026-03-24
 
+### RTLOPS-35 - Playwright Live Smoke / QA operator flows
+- Playwright minima incorporada en `rtlab_dashboard`:
+  - `@playwright/test`
+  - `playwright.config.ts`
+  - `tests/playwright/live-smoke.spec.ts`
+  - script `npm run test:playwright`
+- Smoke flows cubiertos:
+  - login -> `Ejecucion`
+  - surfaces operatorias visibles en `Ejecucion`:
+    - `Checklist Live Ready`
+    - `Health Summary`
+    - `Operational Safety`
+  - controles visibles sin side effects:
+    - `Freeze global`
+    - `Unfreeze global`
+    - `Emergency cancel`
+    - `Health evaluate`
+  - navegacion a `Alertas y Logs`
+- Validacion local real:
+  - `npm.cmd --prefix rtlab_dashboard run test:playwright` -> PASS (`3 passed`)
+  - `npm.cmd --prefix rtlab_dashboard run lint -- playwright.config.ts tests/playwright/live-smoke.spec.ts` -> PASS
+  - `.\\node_modules\\.bin\\tsc.cmd -p tsconfig.json --noEmit` desde `rtlab_dashboard` -> PASS
+- Limite honesto:
+  - smoke UI minima y util, no QA live final total;
+  - la corrida validada fue local/deterministica;
+  - la misma suite queda parametrizada para staging/real por `PLAYWRIGHT_BASE_URL` + credenciales cuando el entorno las provea;
+  - no se tocaron backend ni ownerships ya cerrados de runtime/canary/shadow.
+
 ### RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback
 - Runbooks nuevos:
   - `docs/runbooks/LIVE_READY_AND_DIAGNOSTICS.md`

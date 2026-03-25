@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-24
 ## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-35` Playwright Live Smoke / QA operator flows
   - `RTLOPS-37` Live Runbooks + docs/truth + incidentes/rollback
   - `RTLOPS-53` Backend QA Live
   - `RTLOPS-52` Shadow Mode operativo
@@ -39,17 +40,58 @@ Fecha de actualizacion: 2026-03-24
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-35` `Playwright Live Smoke / QA operator flows`.
+  - `RTLOPS-38` `Final Live Release Gate / go-no-go serio`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
 - Estado administrativo real de Linear al 2026-03-24:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-37`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-35`, `RTLOPS-37`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
-  - inconsistencia nueva observada en el subarbol UI/playwright:
-    - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`;
-    - el repo y `docs/truth` ya muestran trabajo live UI mas avanzado que esa foto administrativa;
-    - no se corrigio en este bloque porque RTLOPS-37 es documental y esa limpieza requiere validacion puntual en Linear UI.
+  - `RTLOPS-35` ya no se toma como bloqueada tecnicamente por los `blockedBy` viejos con `RTLOPS-24/32/33/34`; esa foto quedo stale frente a repo + docs/truth y no bloquea la secuencia real.
+
+## RTLOPS-35 - Playwright Live Smoke / QA operator flows - 2026-03-24
+
+- Gap real cerrado:
+  - el repo ya tenia dashboard live util, `Vitest`, login operativo y una convencion real de smoke staging, pero todavia no existia una capa Playwright integrada, chica y mantenible para flujos operatorios UI;
+  - faltaba una smoke UI que reutilizara las surfaces canonicas ya existentes sin reabrir backend ni convertir la UI en una segunda verdad.
+- Implementacion real:
+  - Playwright integrada en `rtlab_dashboard` con:
+    - dependencia `@playwright/test`
+    - script `npm run test:playwright`
+    - `rtlab_dashboard/playwright.config.ts`
+    - `rtlab_dashboard/tests/playwright/live-smoke.spec.ts`
+  - la config queda preparada en dos modos:
+    - local deterministico:
+      - levanta Next local
+      - usa login frontend por env
+      - usa BFF/mock local para no depender de secretos externos
+    - base URL externa por env:
+      - `PLAYWRIGHT_BASE_URL`
+      - `PLAYWRIGHT_USERNAME`
+      - `PLAYWRIGHT_PASSWORD`
+      - permite apuntar la misma smoke a staging/real cuando haya credenciales
+- Smoke flows cubiertos:
+  - login -> `Ejecucion`
+  - visibilidad de surfaces operatorias criticas en `Ejecucion`:
+    - `Checklist Live Ready`
+    - `Health Summary`
+    - `Operational Safety`
+  - presencia de controles operatorios sin ejecutar side effects:
+    - `Freeze global`
+    - `Unfreeze global`
+    - `Emergency cancel`
+    - `Health evaluate`
+  - navegacion de consulta a `Alertas y Logs`
+- Validacion real del bloque:
+  - `npm.cmd --prefix rtlab_dashboard run test:playwright` -> PASS (`3 passed`)
+  - `npm.cmd --prefix rtlab_dashboard run lint -- playwright.config.ts tests/playwright/live-smoke.spec.ts` -> PASS
+  - `.\\node_modules\\.bin\\tsc.cmd -p tsconfig.json --noEmit` desde `rtlab_dashboard` -> PASS
+- Limites honestos:
+  - esta smoke UI no reemplaza `RTLOPS-53` ni declara QA live final total;
+  - la corrida validada en este entorno fue local/deterministica y no contra staging real, porque no habia secretos/URLs operativas cargadas en env;
+  - la suite queda lista para apuntar a staging real por env, pero esa ejecucion sigue siendo un paso operativo aparte del release gate final;
+  - no se tocaron backend ni runtime live para este bloque;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
 
 ## RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback - 2026-03-24
 

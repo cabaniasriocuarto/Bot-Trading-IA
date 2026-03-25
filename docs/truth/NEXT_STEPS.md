@@ -86,13 +86,36 @@ Fecha: 2026-03-24
     - `RTLOPS-51` / `RTLOPS-54` sigue como sync UI no bloqueante
   - nueva observacion administrativa:
     - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`, aunque repo/docs muestran trabajo UI live mas avanzado; requiere validacion puntual antes del cierre final de ese subarbol.
+- [x] `RTLOPS-35` `Playwright Live Smoke / QA operator flows`
+  - Playwright minima ya integrada en `rtlab_dashboard` con:
+    - `@playwright/test`
+    - `playwright.config.ts`
+    - `tests/playwright/live-smoke.spec.ts`
+    - `npm run test:playwright`
+  - smoke UI cubierta en este bloque:
+    - login -> `Ejecucion`
+    - `Checklist Live Ready`
+    - `Health Summary`
+    - `Operational Safety`
+    - visibilidad de controles operatorios sin side effects
+    - navegacion a `Alertas y Logs`
+  - validacion real ejecutada:
+    - `npm.cmd --prefix rtlab_dashboard run test:playwright` -> `3 passed`
+    - `npm.cmd --prefix rtlab_dashboard run lint -- playwright.config.ts tests/playwright/live-smoke.spec.ts` -> PASS
+    - `.\\node_modules\\.bin\\tsc.cmd -p tsconfig.json --noEmit` desde `rtlab_dashboard` -> PASS
+  - limite honesto:
+    - la corrida validada en este entorno fue local/deterministica;
+    - la suite queda lista para apuntar a staging/real por env sin rehacer frontend ni backend;
+    - no reemplaza `RTLOPS-53` ni equivale a QA live final total.
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-35` `Playwright Live Smoke / QA operator flows`
-  - sigue siendo el prerequisito explicito antes de `RTLOPS-38`;
-  - debe cerrarse con smoke operatorio UI/live chico y util, sin duplicar el QA backend ya cerrado en `RTLOPS-53`;
-  - antes de declararla cerrable, conviene validar el subarbol UI/playwright en Linear porque `RTLOPS-24/32/33/34` siguen en `Backlog` mientras repo/docs muestran avance mayor en ese frente;
-  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
+- [ ] `RTLOPS-38` `Final Live Release Gate / go-no-go serio`
+  - ahora si queda como siguiente issue explicita del release path;
+  - debe consumir:
+    - backend QA live (`RTLOPS-53`)
+    - runbooks/rollback (`RTLOPS-37`)
+    - smoke UI/playwright minima (`RTLOPS-35`)
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI y no redefine el orden tecnico real.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.
