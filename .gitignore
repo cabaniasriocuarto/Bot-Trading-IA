@@ -32,3 +32,6 @@ rtlab_autotrader/user_data/strategy_packs/results/
 rtlab_autotrader/user_data/data/crypto/processed/*.csv
 rtlab_autotrader/user_data/data/crypto/binance_public/
 rtlab_autotrader/user_data/data/crypto/manifests/
+
+rtlab_autotrader/.tmp/
+rtlab_dashboard/.pytest_cache/
