@@ -1,5 +1,0 @@
-id: rollout_candidate_strategy_5
-name: Rollout Candidate 5
-version: 1.0.0
-defaults:
-  risk_per_trade_pct: 0.5

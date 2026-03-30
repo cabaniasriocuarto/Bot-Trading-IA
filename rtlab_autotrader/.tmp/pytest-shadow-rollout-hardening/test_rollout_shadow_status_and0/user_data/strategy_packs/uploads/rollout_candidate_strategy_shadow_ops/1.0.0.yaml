@@ -1,5 +1,0 @@
-id: rollout_candidate_strategy_shadow_ops
-name: Rollout Candidate Shadow Ops
-version: 1.0.0
-defaults:
-  risk_per_trade_pct: 0.5
