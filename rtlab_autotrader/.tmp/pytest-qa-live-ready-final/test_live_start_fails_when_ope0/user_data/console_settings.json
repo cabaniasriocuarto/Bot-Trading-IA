@@ -1,0 +1,138 @@
+{
+  "mode": "PAPER",
+  "exchange": "binance",
+  "exchange_plugin_options": [
+    "binance",
+    "bybit",
+    "oanda",
+    "alpaca"
+  ],
+  "credentials": {
+    "exchange_configured": false,
+    "telegram_configured": false,
+    "telegram_chat_id": ""
+  },
+  "telegram": {
+    "enabled": false,
+    "chat_id": ""
+  },
+  "risk_defaults": {
+    "max_daily_loss": 5.0,
+    "max_dd": 22.0,
+    "max_positions": 20,
+    "risk_per_trade": 0.75
+  },
+  "execution": {
+    "post_only_default": true,
+    "slippage_max_bps": 12,
+    "request_timeout_ms": 4000
+  },
+  "feature_flags": {
+    "orderflow": true,
+    "vpin": true,
+    "ml": false,
+    "alerts": true
+  },
+  "learning": {
+    "enabled": false,
+    "mode": "OFF",
+    "engine_id": "bandit_thompson",
+    "selector_algo": "thompson",
+    "drift_algo": "adwin",
+    "max_candidates": 30,
+    "top_n": 5,
+    "validation": {
+      "walk_forward": true,
+      "train_days": 252,
+      "test_days": 126,
+      "enforce_pbo": true,
+      "enforce_dsr": true,
+      "enforce_cpcv": false
+    },
+    "promotion": {
+      "allow_auto_apply": false,
+      "allow_live": false
+    },
+    "risk_profile": {
+      "risk_profile": "policy_medium",
+      "paper": {
+        "risk_per_trade_pct": 0.5,
+        "max_daily_loss_pct": 1.0,
+        "max_drawdown_pct": 8.0
+      },
+      "live_initial": {
+        "risk_per_trade_pct": 0.25,
+        "max_daily_loss_pct": 1.5,
+        "max_drawdown_pct": 8.0
+      },
+      "max_positions": 10,
+      "correlation_penalty_threshold": 0.75,
+      "source": "config/policies/risk_policy.yaml"
+    }
+  },
+  "rollout": {
+    "enabled": true,
+    "require_manual_approval_for_live": true,
+    "paper_soak_days": 14,
+    "testnet_soak_days": 7,
+    "phases": [
+      {
+        "name": "shadow",
+        "type": "shadow",
+        "duration_hours": 24
+      },
+      {
+        "name": "canary05",
+        "type": "canary",
+        "capital_pct": 5,
+        "bake_hours": 24
+      },
+      {
+        "name": "canary15",
+        "type": "canary",
+        "capital_pct": 15,
+        "bake_hours": 24
+      },
+      {
+        "name": "canary35",
+        "type": "canary",
+        "capital_pct": 35,
+        "bake_hours": 24
+      },
+      {
+        "name": "canary60",
+        "type": "canary",
+        "capital_pct": 60,
+        "bake_hours": 24
+      },
+      {
+        "name": "stable",
+        "type": "stable",
+        "capital_pct": 100
+      }
+    ],
+    "abort_thresholds": {
+      "max_dd_increment_phase_pct": 2.0,
+      "slippage_p95_bps_max": 20.0,
+      "api_error_rate_24h_max": 0.02,
+      "breakers_24h_max": 3
+    },
+    "improve_vs_baseline": {
+      "min_expectancy_gain_pct": 5.0,
+      "min_net_pnl_gain_pct": 3.0,
+      "max_dd_worsen_pct": 2.0,
+      "max_costs_increase_pct": 10.0
+    },
+    "testnet_checks": {
+      "fill_ratio_min": 0.3,
+      "api_error_rate_24h_max": 0.02,
+      "latency_p95_ms_max": 250.0
+    }
+  },
+  "blending": {
+    "enabled": true,
+    "mode": "consenso",
+    "alpha": 0.5
+  },
+  "gate_checklist": []
+}

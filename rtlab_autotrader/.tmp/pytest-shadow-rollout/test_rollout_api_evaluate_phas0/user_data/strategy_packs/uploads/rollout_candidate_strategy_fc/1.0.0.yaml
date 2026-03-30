@@ -1,0 +1,5 @@
+id: rollout_candidate_strategy_fc
+name: Rollout Candidate FC
+version: 1.0.0
+defaults:
+  risk_per_trade_pct: 0.5
