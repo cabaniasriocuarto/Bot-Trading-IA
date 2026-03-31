@@ -34,5 +34,10 @@ rtlab_autotrader/user_data/data/crypto/binance_public/
 rtlab_autotrader/user_data/data/crypto/manifests/
 .env*.local
 
+<<<<<<< HEAD
 Add-Content .gitignore "`nrtlab_autotrader/.tmp/"
 Add-Content .gitignore "rtlab_dashboard/.pytest_cache/"
+=======
+rtlab_autotrader/.tmp/
+rtlab_dashboard/.pytest_cache/
+>>>>>>> 3729389 (Chore: ignorar temporales de pytest y caches)
