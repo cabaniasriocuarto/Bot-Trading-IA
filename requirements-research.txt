@@ -20,7 +20,7 @@ vectorbt==0.26.2
 PyPortfolioOpt==1.5.6
 riskfolio-lib==7.0.1
 cvxpy==1.6.0
-requests==2.33.1
+
 
 # Opcionales offline (activar si se usan realmente en research)
 # xgboost==2.1.3
