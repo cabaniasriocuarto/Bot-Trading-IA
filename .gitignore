@@ -33,3 +33,6 @@ rtlab_autotrader/user_data/data/crypto/processed/*.csv
 rtlab_autotrader/user_data/data/crypto/binance_public/
 rtlab_autotrader/user_data/data/crypto/manifests/
 .env*.local
+
+Add-Content .gitignore "`nrtlab_autotrader/.tmp/"
+Add-Content .gitignore "rtlab_dashboard/.pytest_cache/"
