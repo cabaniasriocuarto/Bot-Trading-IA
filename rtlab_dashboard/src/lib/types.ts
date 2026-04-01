@@ -49,6 +49,153 @@ export interface ExchangeDiagnoseResponse {
   checks: Record<string, unknown>;
 }
 
+export interface OperationalSafetyBreaker {
+  breaker_id: string;
+  breaker_code: string;
+  scope_type: string;
+  bot_id?: string | null;
+  symbol?: string | null;
+  state: "CLOSED" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
+  opened_at?: string | null;
+  cooldown_until?: string | null;
+  last_trigger_at?: string | null;
+  trigger_count_window: number;
+  trigger_reason: Record<string, unknown>;
+  blocking_bool: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationalSafetyEvent {
+  safety_event_id: string;
+  event_time: string;
+  scope_type: string;
+  bot_id?: string | null;
+  symbol?: string | null;
+  trigger_code: string;
+  severity: "INFO" | "WARN" | "CRITICAL" | string;
+  evidence: Record<string, unknown>;
+  action_taken?: string | null;
+  blocking_bool: boolean;
+  created_at: string;
+}
+
+export interface OperationalSafetySummaryResponse {
+  evaluated_at: string;
+  policy_source: string;
+  scope: {
+    bot_id?: string | null;
+    symbol?: string | null;
+  };
+  global_state: "CLOSED" | "WARN" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
+  blocking_bool: boolean;
+  breakers_open_count: number;
+  breakers_blocking_count: number;
+  manual_lock_count: number;
+  breakers: OperationalSafetyBreaker[];
+  blocking_scopes: Array<{
+    breaker_code: string;
+    scope_type: string;
+    bot_id?: string | null;
+    symbol?: string | null;
+    state: string;
+  }>;
+  events: OperationalSafetyEvent[];
+  runtime_unknown_timeout_active: boolean;
+  runtime_unknown_timeout_since?: string | null;
+  recommended_actions?: string[];
+  applied_actions?: string[];
+}
+
+export interface OperationalSafetyLocksResponse {
+  manual_locks: OperationalSafetyBreaker[];
+  manual_actions: Array<{
+    manual_action_id: string;
+    action_type: string;
+    scope_type: string;
+    bot_id?: string | null;
+    symbol?: string | null;
+    requested_by: string;
+    requested_at: string;
+    applied_at?: string | null;
+    result: Record<string, unknown>;
+    audit_note?: string | null;
+  }>;
+}
+
+export interface LiveHealthReason {
+  reason_code: string;
+  priority: "P1" | "P2" | "P3" | string;
+  priority_rank: number;
+  severity: "INFO" | "WARN" | "CRITICAL" | string;
+  blocking_bool: boolean;
+  scope_type: string;
+  bot_id?: string | null;
+  symbol?: string | null;
+  evidence: Record<string, unknown>;
+  penalty: number;
+}
+
+export interface LiveHealthScopeSummary {
+  scope_key: string;
+  scope_type: string;
+  bot_id?: string | null;
+  symbol?: string | null;
+  state: "HEALTHY" | "DEGRADED" | "BLOCKED" | "MANUAL_REVIEW_REQUIRED" | string;
+  score: number;
+  severity: "INFO" | "WARN" | "CRITICAL" | string;
+  blocking_bool: boolean;
+  top_priority_reason_code: string;
+  reason_codes: string[];
+  hard_blockers: string[];
+  warnings: string[];
+  reason_items: LiveHealthReason[];
+  score_penalties: Array<{
+    reason_code: string;
+    scope_type: string;
+    bot_id?: string | null;
+    symbol?: string | null;
+    penalty: number;
+  }>;
+  freshness: Record<string, unknown>;
+  recommended_actions: string[];
+  component_status: Record<string, unknown>;
+  can_submit_order: boolean;
+  evaluated_at: string;
+}
+
+export interface LiveHealthSummaryResponse {
+  state: "HEALTHY" | "DEGRADED" | "BLOCKED" | "MANUAL_REVIEW_REQUIRED" | string;
+  score: number;
+  severity: "INFO" | "WARN" | "CRITICAL" | string;
+  global_state: string;
+  global_score: number;
+  global_severity: string;
+  blocking_bool: boolean;
+  top_priority_reason_code: string;
+  reason_codes: string[];
+  hard_blockers: string[];
+  warnings: string[];
+  reason_items: LiveHealthReason[];
+  score_penalties: Array<{
+    reason_code: string;
+    scope_type: string;
+    bot_id?: string | null;
+    symbol?: string | null;
+    penalty: number;
+  }>;
+  component_status: Record<string, unknown>;
+  scope_status: LiveHealthScopeSummary[];
+  freshness: Record<string, unknown>;
+  recommended_actions: string[];
+  can_enable_live_mode: boolean;
+  can_start_live: boolean;
+  can_submit_order_by_scope: Record<string, boolean>;
+  last_evaluated_at: string;
+  snapshot_id?: string;
+  persisted_at?: string;
+}
+
 export interface StrategyManifest {
   id: string;
   name: string;

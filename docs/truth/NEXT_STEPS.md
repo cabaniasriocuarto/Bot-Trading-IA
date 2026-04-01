@@ -1,32 +1,115 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-18
+Fecha: 2026-03-24
 
-## Cierre del bloque RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - 2026-03-18
-- [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.
-- [x] Dejar `rtlab_autotrader/config/policies/` solo como compatibilidad/fallback y no como autoridad equivalente.
-- [x] Exponer por API la metadata de autoridad (`authority`) y la taxonomia canonica (`mode_taxonomy`).
-- [x] Cerrar el micro-hardening final del frontend de authority/runtime:
-  - `lint` deja de escanear `rtlab_dashboard/.pytest_cache` por ignores explicitos en flat config.
-  - `auth-backend.test.ts` usa un helper de env de test valido con `NODE_ENV=test` y `BACKEND_API_URL=https://api.example.com`.
-  - validacion local final ejecutada:
-    - `npm.cmd run lint`
-    - `npm.cmd run build`
-    - `npx.cmd tsc --noEmit`
-- [x] Documentar jerarquia de autoridad tecnica en:
-  - `docs/truth/SOURCE_OF_TRUTH.md`
-  - `docs/plan/AUTHORITY_HIERARCHY.md`
-- [x] Normalizar semanticamente la taxonomia visible:
-  - runtime global `PAPER / TESTNET / LIVE`
-  - bots `shadow / paper / testnet / live`
-  - evidence `backtest / shadow / paper / testnet`
-  - `MOCK` como alias legado local, no como runtime real
+## Programa LIVE Spot actual
+- [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
+- [x] `RTLOPS-49` exchange adapter live hardening
+- [x] `RTLOPS-44` market websocket runtime live
+- [x] `RTLOPS-45` private user/account/order streams live
+- [x] `RTLOPS-46` exchange filters pre-validator hardening
+- [x] `RTLOPS-47` live preflight final
+- [x] `RTLOPS-48` state machine formal de orden live
+- [x] `RTLOPS-50` persistencia canonica de fills/eventos live
+- [x] `RTLOPS-23` reconciliation engine formal
+- [x] `RTLOPS-29` operational safety guardrails
+- [x] `RTLOPS-30` health summary live + score explicable + degraded visibility
+- [x] `RTLOPS-26` live signals foundation: execution, streams, fills, risk y snapshots operativos
+- [x] `RTLOPS-27` live alerts persistentes + catalogo de triggers operativos
+- [x] `RTLOPS-66` alert lifecycle semantics hardening
+- [x] `RTLOPS-65` raw live signal contract hardening: typed snapshot envelope + schema discipline
+- [x] `RTLOPS-54` Canary Live Controller
+  - hardening semantico vigente:
+    - `resume` solo desde `HOLD`, sin equivaler a `promote`
+    - `resume` rearma estabilidad minima antes de volver a `RUNNING`
+    - `ROLLED_BACK` reservado a evidencia canonica confirmada; si no, `ROLLBACK_RECOMMENDED`
+    - alertas abiertas solo bloquean canary cuando la policy de fase las clasifica como impeditivas
+- [x] `RTLOPS-51` integracion real de `RTLOPS-36` con runtime live
+  - `GET /api/v3/account` deja surface canonica persistida en bot state con:
+    - `runtime_account_surface_ok`
+    - `runtime_account_surface_verified_at`
+    - `runtime_account_surface_reason`
+    - `runtime_account_can_trade`
+    - `runtime_account_permissions`
+    - `runtime_account_balances_count`
+  - `G9_RUNTIME_ENGINE_REAL` endurece checks de cuenta:
+    - `account_surface_ok`
+    - `account_surface_fresh`
+    - `account_can_trade`
+  - `GET /api/v1/rollout/status` expone `readiness_by_stage` consumiendo surfaces canonicas de:
+    - runtime contract real/testnet-live
+    - canary controller
+    - health summary
+    - operational safety
+    - alertas persistentes
+  - `TESTNET` deja de quedar `READY` solo porque un soak previo paso; si el runtime contract actual no esta listo, falla cerrado.
 
-## Siguiente bloque recomendado
-- [ ] Cerrar M2 de `Nucleo Arquitectonico y Policies` en pasos chicos:
-  - centralizar thresholds numericos explicitos en YAML;
-  - auditar y acotar `execution_modes`, `observability`, `drift`, `health_scoring` y `alert_thresholds` para que no queden como backlog demasiado amplio.
-- [ ] Solo despues de ese cierre, abrir el bloque `Binance Catalog + Universes + Live Parity`.
+## Siguiente issue exacto
+- [ ] `RTLOPS-52` `Shadow Mode operativo`
+  - ahora queda desbloqueado por el cierre real de `RTLOPS-51`;
+  - sigue siendo el siguiente tramo del proyecto `Release / Canary / Rollback / Auditoría Final` antes de `RTLOPS-53`;
+  - debe reutilizar runtime real ya cableado, sin duplicar execution ni crear una verdad paralela.
+
+## Follow-up chico abierto
+- [ ] `RTLOPS-61` `Cost source snapshots live por familia`
+  - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.
+
+## Estado administrativo Linear
+- [x] Sync administrativo real completado para los cierres recientes:
+  - `RTLOPS-23`
+  - `RTLOPS-26`
+  - `RTLOPS-27`
+  - `RTLOPS-51`
+  - `RTLOPS-66`
+  - `RTLOPS-45`
+  - `RTLOPS-46`
+  - `RTLOPS-47`
+  - `RTLOPS-48`
+  - `RTLOPS-49`
+  - `RTLOPS-50`
+  - `RTLOPS-29`
+  - `RTLOPS-30`
+- [x] Frontera actual ya congelada para continuar sin ambiguedad:
+  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A de senal cruda
+  - `RTLOPS-30` = CAPA B de interpretacion
+  - `RTLOPS-29` = CAPA C de accion
+  - `RTLOPS-27` = consumer persistente de alerting
+  - `RTLOPS-65` = hardening chico del contrato raw backend
+  - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
+  - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
+  - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
+  - precedence de alerting ya endurecida tambien en config:
+    - `severity_rank = [CRITICAL, WARN, INFO]`
+    - `severity_source_precedence = [SAFETY, HEALTH, RAW]`
+  - contrato raw backend canonico = envelope `schema_version + collected_at_ms + window_ms + payload(kind/numeric_metrics/state_values/timestamps_ms/refs)`
+- [x] Mapa de proyectos alineado con dominios reales:
+  - `Nucleo Arquitectonico y Policies`
+  - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`
+  - `Strategy Truth + Evidence + Brain + OPE`
+  - `Binance Catalog + Universes + Live Parity`
+  - `Execution Reality + Live Safety`
+  - `Cost Stack + Reporting + Export`
+  - `Monitoring + Drift + Kill Switches + Health`
+  - `Frontend Console 10/10 + Playwright QA`
+  - `Release / Canary / Rollback / Auditoria Final`
+- [x] Dominio `observability / health / safety` separado conceptualmente:
+  - `RTLOPS-26` + `RTLOPS-63/64` = CAPA A `señal cruda`
+  - `RTLOPS-30` = CAPA B `interpretacion`
+  - `RTLOPS-29` = CAPA C `accion`
+- [x] Nuevas issues de backlog creadas solo donde habia gap real:
+  - `RTLOPS-58` Margin live parity
+  - `RTLOPS-59` COIN-M Futures live parity
+  - `RTLOPS-60` Wallet / transfers / capabilities matrix
+  - `RTLOPS-61` Cost source snapshots live por familia
+  - `RTLOPS-62` Estimated vs realized cost parity + reporting/export integration
+
+## Regla operativa vigente
+- [x] Mantener `LIVE` fail-closed:
+  - preflight final fresco y `PASS`
+  - reconciliation sin casos bloqueantes
+  - operational safety sin breakers bloqueantes ni manual locks
+  - health summary canonico sin `BLOCKED` ni `MANUAL_REVIEW_REQUIRED`
+  - runtime real y exchange listos antes de permitir `mode/start live`
 
 ## Seguimiento RTLRESE backend domains/contracts - 2026-03-16
 - [x] RTLRESE-13:

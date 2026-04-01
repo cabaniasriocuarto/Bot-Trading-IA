@@ -1,5 +1,467 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-03-24
+
+### RTLOPS-51 - Integracion real de RTLOPS-36 con runtime live
+- Backend:
+  - `RuntimeBridge` endurece `/api/v3/account` como `account surface` canonica y no solo como derivacion legacy de `positions`;
+  - `_sync_runtime_state(...)` persiste:
+    - `runtime_account_surface_ok`
+    - `runtime_account_surface_verified_at`
+    - `runtime_account_surface_reason`
+    - `runtime_account_can_trade`
+    - `runtime_account_permissions`
+    - `runtime_account_balances_count`
+  - `_runtime_contract_snapshot(...)` agrega checks canonicos de cuenta para `G9_RUNTIME_ENGINE_REAL`:
+    - `account_surface_ok`
+    - `account_surface_fresh`
+    - `account_can_trade`
+  - `GET /api/v1/rollout/status` ahora expone `readiness_by_stage` consumiendo surfaces reales ya cerradas.
+- Semantica:
+  - `TESTNET` deja de quedar listo solo por una evaluacion historica de soak; si el runtime contract actual esta incompleto, la readiness falla cerrada;
+  - no se reabren ownerships de submit/reconcile/safety/health/alerts;
+  - no se agrega UI nueva ni WebSocket nuevo.
+- Tests:
+  - cobertura selectiva de account surface + `G9_RUNTIME_ENGINE_REAL`;
+  - cobertura selectiva de `rollout/status` con `readiness_by_stage`;
+  - compatibilidad minima de runtime real sobre submit/reconcile/order status/open orders.
+
+### RTLOPS-54 - Canary Live Controller
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/canary.py` para gate evaluation y phase progression del canary controller;
+  - `RuntimeBridge` agrega orchestration backend-first para:
+    - status
+    - start
+    - evaluate
+    - hold
+    - resume
+    - abort
+    - rollback recommendation / rollback action solo si la policy lo soporta;
+  - `ConsoleStore`/SQLite agregan persistencia auditable:
+    - `canary_runs`
+    - `canary_gate_evaluations`
+    - `canary_phase_snapshots`
+    - `canary_run_events`
+  - nuevos endpoints:
+    - `GET /api/v1/execution/canary/status`
+    - `GET /api/v1/execution/canary/runs`
+    - `GET /api/v1/execution/canary/runs/{run_id}`
+    - `POST /api/v1/execution/canary/evaluate`
+    - `POST /api/v1/execution/canary/start`
+    - `POST /api/v1/execution/canary/{run_id}/hold`
+    - `POST /api/v1/execution/canary/{run_id}/resume`
+    - `POST /api/v1/execution/canary/{run_id}/abort`
+    - `POST /api/v1/execution/canary/{run_id}/rollback`
+- Gate semantics:
+  - el controller consume exclusivamente surfaces canonicas ya cerradas de:
+    - `RTLOPS-47` preflight
+    - `RTLOPS-23` reconciliation
+    - `RTLOPS-29` operational safety
+    - `RTLOPS-30` health summary
+    - `RTLOPS-27` persistent alerts
+  - no recalcula esas verdades ni crea una sexta verdad del runtime;
+  - reutiliza la semantica canonica de scope live ya existente (`GLOBAL`, `BOT`, `SYMBOL`, `BOT_SYMBOL`) y no introduce un scope mode paralelo;
+  - `PROMOTION_ALLOWED` exige ventana minima de estabilidad;
+  - `resume` solo es valido desde `HOLD` y rearma estabilidad antes de volver a `RUNNING`;
+  - una alerta abierta solo bloquea si la policy canary la clasifica como impeditiva; no bloquea por mera existencia;
+  - si una surface esta ausente o insuficiente, el canary falla cerrado;
+  - `rollback_execution_supported = false` deja el runtime en `ROLLBACK_RECOMMENDED` y no inventa rollback real;
+  - incluso si el soporte futuro existiera, `ROLLED_BACK` queda reservado a ejecucion confirmada por surfaces canonicas persistidas.
+- Policy:
+  - nueva seccion `execution_safety.canary_live_controller` con thresholds y toggles explicitos para:
+    - health threshold de readiness
+    - health threshold de promotion
+    - alertas criticas bloqueantes
+    - surfaces requeridas
+    - ventana de estabilidad
+    - soporte real/no real de rollback execution
+- Validacion local real:
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m py_compile rtlab_autotrader/rtlab_core/execution/canary.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_canary" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-canary -q` -> PASS (`9 passed`)
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary or execution_alert or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-canary-compat -q` -> PASS (`35 passed`)
+  - `rtlab_autotrader/.venv/Scripts/python.exe -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-canary-compat` -> PASS (`2 passed`)
+
+### RTLOPS-65 - raw live signal contract hardening
+- Backend:
+  - se endurece el contrato raw backend de `live_signals` sin reabrir score/health ni actions;
+  - `live_signal_snapshots` pasa a persistir envelope canonico con:
+    - `schema_version`
+    - `collected_at_ms`
+    - `window_ms`
+    - `payload_json`
+  - `payload` queda tipado por `snapshot_type` en:
+    - `kind`
+    - `numeric_metrics`
+    - `state_values`
+    - `timestamps_ms`
+    - `refs`
+  - `live_signal_events` queda mas claro como evento puntual con:
+    - `schema_version`
+    - `event_time_ms`
+  - `signal_payload_json` se conserva solo como espejo de compatibilidad de migracion; el contrato canonico nuevo es `payload_json` / `payload`.
+- Schema discipline:
+  - `EXECUTION` no mezcla campos de `STREAM`
+  - `STREAM` no mezcla semantica interpretada de health/safety
+  - `PREFLIGHT` y `RECONCILIATION` exponen ages/timestamps/counts de forma mas disciplinada
+  - `RATE_LIMIT` expone counts/flags claros sin inferir actions
+  - `RISK` queda explicitamente limitado a senal observada real de runtime (`risk_observed_only = true`)
+- Compatibilidad:
+  - `RTLOPS-30` sigue consumiendo CAPA A solo como lectura compatible
+  - `RTLOPS-27` sigue consumiendo refs/payload tipado sin empujar schema ad hoc a `live_signals.py`
+  - no se crean contratos de conveniencia para frontend/dashboard
+- Policy:
+  - `execution_safety.live_signals` agrega declaracion explicita de:
+    - `schema_version = 2`
+    - `payload_sections = [numeric_metrics, state_values, timestamps_ms, refs]`
+    - `risk_observed_only = true`
+- Modulo:
+  - `live_signals.py` no se partio en este bloque porque su tamano real sigue acotado y el riesgo principal estaba en schema discipline, no en volumen.
+- Validacion local real:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/live_signals.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or execution_signals_endpoints_return_summary_history_and_scopes or live_health_summary_contract_survives_raw_signal_snapshot_persistence or execution_alert_consumer_leaves_raw_signal_contract_unchanged or execution_alert_consumer_does_not_recalculate_health_or_open_safety_actions" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-hardening -q` -> PASS (`9 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-signals-hardening` -> PASS (`2 passed`)
+
+### RTLOPS-66 - alert lifecycle semantics hardening
+- Backend:
+  - se endurece la semantica de `EXPIRED` vs `RESOLVED` sin reabrir `RTLOPS-27` completa;
+  - `EXPIRED` queda como estado de retencion/lifecycle posterior a `RESOLVED`, no como "resuelto automatico" ambiguo;
+  - si la condicion reaparece tras `EXPIRED`, la misma instancia se reabre explicitamente para mantener continuidad auditable por `trigger + scope`;
+  - el runtime ya no deja este comportamiento implicito: el modelo actual soporta reapertura de la misma instancia y no creacion de una nueva para el mismo `trigger + scope`;
+  - se agrega helper explicito de precedencia de severidad con desempate por fuente:
+    - severidad mas alta primero
+    - en empate: `SAFETY > HEALTH > RAW`
+- Policy:
+  - `execution_safety.alerting` agrega configuracion explicita de:
+    - `expired_reopens_same_instance`
+    - `severity_rank`
+    - `severity_source_precedence`
+  - se dejan comentarios claros para separar lifecycle de alertas de `operational_safety`.
+- Modulo:
+  - `alerts.py` no se partio en este bloque porque su tamano real sigue acotado;
+  - queda documentado como limite que, si crece, la particion natural es `catalog/repository/lifecycle/evaluator/contracts`.
+- Tests nuevos:
+  - diferencia semantica `RESOLVED` vs `EXPIRED`
+  - reapertura de instancia expirada bajo continuidad auditable
+  - precedencia de severidad entre CAPA A / CAPA B / CAPA C
+  - separacion de alert lifecycle policy vs safety policy
+- Validacion local real:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/alerts.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_alert" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening -q` -> PASS (`13 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-alert-hardening` -> PASS (`2 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alert-hardening-compat -q` -> PASS (`21 passed`)
+
+### Hardening declarativo chico - severity ranking en config
+- Se cierra el gap detectado en auditoria:
+  - `severity_source_precedence` ya estaba declarada en YAML;
+  - `severity_rank = [CRITICAL, WARN, INFO]` ahora tambien queda declarada en `execution_safety.alerting`.
+- La logica de seleccion de severidad queda alineada con esa representacion declarativa:
+  - primero manda la severidad mas alta observada;
+  - en empate desempata `severity_source_precedence`.
+- No reabre `RTLOPS-54` ni cambia semantica de canary/hold/abort/rollback; solo endurece declarativamente la precedence de alerting.
+
+## 2026-03-23
+
+### RTLOPS-27 - live alerts persistentes + catalogo de triggers operativos
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/alerts.py` como consumer persistente de outputs de:
+    - `RTLOPS-26` CAPA A de senal cruda
+    - `RTLOPS-30` CAPA B de interpretacion / `health_summary`
+    - `RTLOPS-29` CAPA C de accion / `operational_safety`
+  - `ConsoleStore`/SQLite agregan:
+    - `execution_alert_catalog`
+    - `execution_alert_instances`
+    - `execution_alert_events`
+  - `RuntimeBridge.evaluate_execution_alerts(...)` materializa condiciones derivadas en instancias persistentes sin invadir CAPA A/B/C;
+  - nuevos endpoints:
+    - `GET /api/v1/execution/alerts/catalog`
+    - `GET /api/v1/execution/alerts`
+    - `GET /api/v1/execution/alerts/open`
+    - `GET /api/v1/execution/alerts/{alert_instance_id}`
+    - `POST /api/v1/execution/alerts/evaluate`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/ack`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/suppress`
+    - `POST /api/v1/execution/alerts/{alert_instance_id}/resolve`
+    - `GET /api/v1/execution/alerts/history`
+- Policy:
+  - nueva seccion `execution_safety.alerting` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - valores cerrados:
+    - `default_suppression_sec = 900`
+    - `default_cooldown_sec = 300`
+    - `resolved_ttl_sec = 3600`
+    - `reopen_on_active_condition = true`
+    - `manual_resolve_requires_inactive = true`
+- Catalogo de triggers persistentes soportados:
+  - `STREAM_GAP_WARN`
+  - `STREAM_GAP_CRITICAL`
+  - `STREAM_TERMINATED`
+  - `PREFLIGHT_EXPIRED`
+  - `PREFLIGHT_FAIL`
+  - `RECONCILIATION_DESYNC_OPEN`
+  - `RECONCILIATION_MANUAL_REVIEW_OPEN`
+  - `UNKNOWN_TIMEOUT_STUCK`
+  - `BREAKER_OPEN_BLOCKING`
+  - `MANUAL_LOCK_ACTIVE`
+  - `RATE_LIMIT_PRESSURE_HIGH`
+  - `HTTP_418_RISK_ACTIVE`
+  - `OPEN_ORDER_PRESSURE_HIGH`
+  - `EMERGENCY_ACTION_ACTIVE`
+  - `FREEZE_SYMBOL_ACTIVE`
+  - `FREEZE_BOT_ACTIVE`
+  - `FREEZE_GLOBAL_ACTIVE`
+- Lifecycle y semantica cerrados:
+  - estados:
+    - `OPEN`
+    - `ACKED`
+    - `SUPPRESSED`
+    - `COOLDOWN`
+    - `RESOLVED`
+    - `EXPIRED`
+  - dedup por `trigger_code + scope + condicion activa`
+  - `SUPPRESSED` y `COOLDOWN` no son sinonimos
+  - resolve manual no puede ocultar una condicion aun activa
+  - `alert_instances` no reemplaza la verdad canonica del runtime; solo referencia evidencia primaria upstream
+- No-goals respetados:
+  - sin nueva senal cruda en `live_signals.py`
+  - sin hardening del raw contract dentro de `RTLOPS-27`
+  - sin recalcular `health_summary`
+  - sin score global nuevo
+  - sin acciones nuevas de safety
+  - sin UI-first ni contrato especial de frontend
+- Validacion local real:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/execution/alerts.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "execution_alert" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts -q` -> PASS (`10 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or live_health_summary" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts-compat -q` -> PASS (`18 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-alerts` -> PASS (`2 passed`)
+  - `python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle or live_health_summary_contract_survives_raw_signal_snapshot_persistence or execution_signals_endpoints_return_summary_history_and_scopes" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-alerts-compat2 -q` -> PASS (`5 passed`)
+
+### Alineacion minima Linear entre senal / interpretacion / accion
+- Ajuste administrativo/arquitectonico sin cambios de producto:
+  - `RTLOPS-27` quedo redefinida en Linear como consumidor persistente de outputs de:
+    - `RTLOPS-26` CAPA A de senal cruda
+    - `RTLOPS-30` CAPA B de interpretacion / `health_summary`
+    - `RTLOPS-29` CAPA C de accion / `operational_safety`
+  - `RTLOPS-27` ya no queda ambigua como posible dueña de signal collection o de score/acciones.
+- Gap real detectado y aislado en issue chica nueva:
+  - `RTLOPS-65` `Raw live signal contract hardening: typed snapshot envelope + schema discipline`
+  - objetivo:
+    - endurecer envelope tipado y disciplina por `snapshot_type`
+    - evitar que `live_signals.py` absorba logica de interpretacion, alerting o frontend
+    - mantener `RTLOPS-30` congelada salvo compatibilidad minima
+- Comentarios minimos agregados en Linear a:
+  - `RTLOPS-26`
+  - `RTLOPS-29`
+  - `RTLOPS-30`
+  para dejar explicita la frontera entre CAPA A, CAPA B y CAPA C.
+
+### RTLOPS-26 - live signals foundation / CAPA A de senal cruda
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/live_signals.py` para normalizar scopes, snapshot types, payloads y eventos de senal cruda;
+  - `ConsoleStore`/SQLite agregan:
+    - `live_signal_snapshots`
+    - `live_signal_events`
+  - `RuntimeBridge.build_live_signal_snapshot(...)` ahora colecta y, opcionalmente, persiste snapshots raw de:
+    - `EXECUTION`
+    - `FILLS`
+    - `STREAM`
+    - `RECONCILIATION`
+    - `PREFLIGHT`
+    - `RATE_LIMIT`
+    - `RISK`
+  - contrato raw inicial separado en:
+    - `metrics`
+    - `observed_states`
+    - `freshness`
+    - `source_timestamps`
+    - `source_refs`
+  - ese shape inicial quedo endurecido despues en `RTLOPS-65` hacia:
+    - `payload.kind`
+    - `payload.numeric_metrics`
+    - `payload.state_values`
+    - `payload.timestamps_ms`
+    - `payload.refs`
+  - endpoints nuevos:
+    - `GET /api/v1/execution/signals/summary`
+    - `GET /api/v1/execution/signals/history`
+    - `GET /api/v1/execution/signals/scopes`
+    - `POST /api/v1/execution/signals/snapshot`
+- Policy:
+  - nueva seccion `execution_safety.live_signals` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - ventana canonica explicita:
+    - `default_window_ms = 300000`
+- Integracion minima con RTLOPS-30:
+  - `health_summary` no fue reescrita;
+  - solo agrega una referencia a la capa raw en `component_status.live_signals`, sin tocar score, reason codes ni estados finales.
+- No-goals respetados:
+  - sin score global nuevo;
+  - sin blockers finales nuevos;
+  - sin breakers/freezes/actions;
+  - sin UI pesada.
+- Validacion local real:
+  - `py_compile rtlab_autotrader/rtlab_core/execution/live_signals.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_signal_snapshot or execution_signals_endpoints_return_summary_history_and_scopes or live_health_summary_contract_survives_raw_signal_snapshot_persistence or live_health_summary_is_healthy_when_sources_are_clean or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-round2 -q` -> PASS (`8 passed`)
+  - `pytest rtlab_autotrader/tests/test_policy_paths.py -q --basetemp .\\rtlab_autotrader\\.tmp\\pytest-policy-signals` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-signals-compat2 -q` -> PASS
+  - warning no bloqueante:
+    - `PytestCacheWarning` por `.pytest_cache`
+
+### Alineación conceptual Observability / Health / Safety en Linear
+- Linear MCP:
+  - el servidor oficial de Linear quedó operativo en este entorno a través de las herramientas MCP de issue/project;
+  - la configuración real cargada por Codex sigue apuntando a `https://mcp.linear.app/mcp`;
+  - `resources/list` no está implementado por este servidor y devuelve `-32601 Method not found`, pero las operaciones reales de `get/save/list` sobre proyectos/issues funcionan.
+- Reordenamiento administrativo mínimo y real:
+  - `RTLOPS-26` quedó redefinida como **CAPA A — señal cruda** con nuevo título:
+    - `Live signals foundation: execution, streams, fills, risk y snapshots operativos`
+  - `RTLOPS-30` quedó reafirmada como **CAPA B — interpretación** (`health_summary`, score, priorities, degraded visibility, sin acciones)
+  - `RTLOPS-29` quedó reubicada en `Execution Reality + Live Safety` como **CAPA C — acción**
+- Sub-issues creadas por gap real debajo de `RTLOPS-26`:
+  - `RTLOPS-63` `Raw live signals I: execution, fills, rate-limit y open-order pressure snapshots`
+  - `RTLOPS-64` `Raw live signals II: stream health + freshness de runtime/reconciliation/preflight`
+- Relaciones explícitas dejadas en Linear:
+  - `RTLOPS-26` relacionada con `RTLOPS-30`
+  - `RTLOPS-30` relacionada con `RTLOPS-26`, `RTLOPS-47`, `RTLOPS-23` y `RTLOPS-29`
+  - `RTLOPS-26` y `RTLOPS-30` quedaron como `blockedBy` de `RTLOPS-27`
+- Proyectos/milestones ajustados:
+  - `Monitoring + Drift + Kill Switches + Health` ahora explicita en summary/description que concentra CAPA A + CAPA B
+  - `Execution Reality + Live Safety` ahora explicita que concentra CAPA C
+  - `Frontend Console 10/10 + Playwright QA` ahora explicita que renderiza contratos backend sin segunda verdad
+  - milestones renombrados en Monitoring:
+    - `M1 Señal cruda + métricas + ids`
+    - `M3 Acción safety + kill switches`
+    - `M4 Health summary + degraded visibility`
+
+### RTLOPS-30 - health summary live + score explicable + degraded visibility
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/health_summary.py` con taxonomia canonica de:
+    - estados `HEALTHY/DEGRADED/BLOCKED/MANUAL_REVIEW_REQUIRED`
+    - severidades `INFO/WARN/CRITICAL`
+    - reason codes priorizados
+    - score explicable con penalizaciones auditables
+    - finalizacion global y por scope
+  - `RuntimeBridge.build_live_health_summary(...)` consolida:
+    - gates/readiness actuales
+    - `_last_reconcile`
+    - `operational_safety_summary(...)`
+    - runtime snapshot / heartbeat / freshness
+  - nuevo storage auditable:
+    - `health_summary_snapshots`
+    - `health_scope_snapshots`
+    - `health_reason_events`
+  - nuevos endpoints:
+    - `GET /api/v1/execution/health/summary`
+    - `GET /api/v1/execution/health/scopes`
+    - `GET /api/v1/execution/health/history`
+    - `POST /api/v1/execution/health/evaluate`
+  - `build_status_payload()` ahora expone `live_health_summary`;
+  - `/api/v1/bot/mode` y `/api/v1/bot/start` usan el summary como superficie unificada de explicacion sin duplicar la verdad de safety/reconciliation.
+- Policy:
+  - nueva seccion `execution_safety.live_health_summary` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - thresholds cerrados:
+    - `preflight_stale_sec = 300`
+    - `preflight_expired_sec = 600`
+    - `recent_emergency_action_window_sec = 300`
+- UI:
+  - `Execution` agrega bloque sobrio `Health Summary` con:
+    - state
+    - score
+    - severity
+    - blockers
+    - top reasons
+    - recommended actions
+    - degraded visibility
+    - tabla por scope
+    - detalle expandible del score/penalties
+  - la UI no calcula salud; solo renderiza el contrato backend.
+- Validacion local real:
+  - `py_compile rtlab_autotrader/rtlab_core/execution/health_summary.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_health_summary or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or manual_lock_persists_after_reload or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp .\\rtlab_autotrader\\.tmp\\pytest-health -q` -> PASS (`18 passed`)
+  - `pytest rtlab_autotrader/tests/test_policy_paths.py -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or manual_lock_persists_after_reload or config_policies_endpoint_exposes_numeric_policy_bundle" --basetemp .\\rtlab_autotrader\\.tmp\\pytest-health-compat -q` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+- Nota operativa:
+  - el summary global puede quedar `DEGRADED` mientras un scope puntual queda `BLOCKED`; eso es intencional y evita exagerar un freeze scoped a bloqueo global;
+  - los blockers duros siguen prevaleciendo sobre cualquier score bonito.
+  - `RTLOPS-30` quedo sincronizada en Linear como `Done` con comentario de evidencia tecnica.
+
+### Alineacion administrativa Linear + mapa de proyectos
+- Linear:
+  - `RTLOPS-23`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48` y `RTLOPS-50` quedaron sincronizadas como `Done` con comentario minimo y evidencia real de repo/docs/tests;
+  - `RTLOPS-29` ya estaba sincronizada en `Done` y se dejo sin ruido extra;
+  - `RTLOPS-30` quedo ubicada correctamente en `Monitoring + Drift + Kill Switches + Health`, con descripcion reescrita en clave backend-first;
+  - proyectos renombrados para reflejar mejor el dominio real:
+    - `Research Funnel + Beast/Batch + Trial Ledger + Provenance`
+    - `Strategy Truth + Evidence + Brain + OPE`
+  - proyectos creados por gap real:
+    - `Cost Stack + Reporting + Export`
+    - `Release / Canary / Rollback / Auditoria Final`
+  - issues reubicadas por dominio:
+    - `RTLOPS-22`, `RTLOPS-43` -> `Cost Stack + Reporting + Export`
+    - `RTLOPS-36`, `RTLOPS-37`, `RTLOPS-38`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` -> `Release / Canary / Rollback / Auditoria Final`
+  - backlog nuevo creado solo donde faltaba contenedor explicito:
+    - `RTLOPS-58` Margin live parity
+    - `RTLOPS-59` COIN-M Futures live parity
+    - `RTLOPS-60` Wallet / transfers / capabilities matrix
+    - `RTLOPS-61` Cost source snapshots live por familia
+    - `RTLOPS-62` Estimated vs realized cost parity + reporting/export integration
+
+### RTLOPS-29 - operational safety guardrails live Spot
+- Backend:
+  - nuevo modulo `rtlab_autotrader/rtlab_core/execution/operational_safety.py` con taxonomia canonica de:
+    - triggers
+    - estados de breaker
+    - severidades
+    - acciones
+    - matching por scope
+  - `RuntimeBridge` y `ConsoleStore` ahora persisten y exponen:
+    - `safety_guardrail_events`
+    - `safety_breakers`
+    - `safety_manual_actions`
+  - guardrails integrados a:
+    - `/api/v1/bot/mode` en `live`
+    - `/api/v1/bot/start` en `live`
+    - submit runtime live
+    - `build_status_payload()`
+    - summary de riesgo/runtime
+  - `DELETE /api/v3/openOrders` por simbolo queda cableado como `emergency cancel` oficial Spot.
+- Policy:
+  - nueva `execution_safety.operational_safety` en:
+    - `config/policies/execution_safety.yaml`
+    - `rtlab_autotrader/config/policies/execution_safety.yaml`
+  - thresholds numericos cerrados:
+    - stream gap warn/critical
+    - unknown timeout hard deadline
+    - rate-limit thresholds
+    - reject/cancel fail windows
+    - open order pressure
+    - cooldown
+    - manual lock persistence
+- API/UI:
+  - endpoints nuevos de `operational safety` para summary, breakers, eventos, locks y acciones manuales;
+  - `Execution` agrega bloque operativo con:
+    - summary global
+    - tabla de breakers
+    - tabla de eventos
+    - panel de acciones (`freeze`, `unfreeze`, `emergency cancel`, `reconcile manual`)
+    - banner critico cuando hay bloqueo global o manual locks activos
+- Validacion local real:
+  - `py_compile rtlab_autotrader/rtlab_core/execution/operational_safety.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/domains/policy_state/repository.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "operational_safety or emergency_cancel_symbol or manual_lock_persists_after_reload or live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk"` -> PASS
+  - `pytest rtlab_autotrader/tests/test_policy_paths.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_feature_set_fail_closed.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "config_policies_endpoint_exposes_numeric_policy_bundle"` -> PASS
+  - `npx.cmd tsc --noEmit` en `rtlab_dashboard` -> PASS
+- Nota administrativa:
+  - la validacion de `pytest` requirio `--basetemp` explicito por restricciones de permisos del entorno sobre `%TEMP%`;
+  - no existe `test_web_execution_reality_api.py` en esta base real, por eso la regresion web se hizo sobre la suite efectiva del repo (`test_web_feature_set_fail_closed.py` + `test_web_live_ready.py`);
+  - `RTLOPS-29` quedo sincronizada en Linear como `Done` con comentario de evidencia tecnica.
+
 ## 2026-03-18
 
 ### RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - micro-hardening final frontend de authority/runtime

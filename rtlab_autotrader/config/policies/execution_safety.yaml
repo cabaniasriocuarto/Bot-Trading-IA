@@ -1,0 +1,77 @@
+execution_safety:
+  operational_safety:
+    guardrail_stream_gap_warn_ms: 5000
+    guardrail_stream_gap_critical_ms: 10000
+    guardrail_unknown_timeout_hard_sec: 30
+    guardrail_http_429_window_sec: 60
+    guardrail_http_429_threshold: 3
+    guardrail_http_418_blocks_live: true
+    guardrail_cancel_fail_window_sec: 300
+    guardrail_cancel_fail_threshold: 3
+    guardrail_reject_window_sec: 300
+    guardrail_reject_threshold: 5
+    guardrail_stp_expired_window_sec: 300
+    guardrail_stp_expired_threshold: 5
+    guardrail_open_orders_warn_count: 10
+    guardrail_open_orders_block_count: 20
+    guardrail_cooldown_sec: 120
+    guardrail_manual_lock_persists_until_clear: true
+    guardrail_prestart_requires_all_breakers_closed: true
+    guardrail_emergency_cancel_enabled: true
+    guardrail_emergency_cancel_scope: symbol_first
+  live_health_summary:
+    preflight_stale_sec: 300
+    preflight_expired_sec: 600
+    recent_emergency_action_window_sec: 300
+  # Alert lifecycle only. This section must not define breakers, freezes,
+  # mode/start/submit gates, or other action semantics owned by operational_safety.
+  alerting:
+    default_suppression_sec: 900
+    default_cooldown_sec: 300
+    resolved_ttl_sec: 3600
+    expired_reopens_same_instance: true
+    severity_rank:
+      - CRITICAL
+      - WARN
+      - INFO
+    severity_source_precedence:
+      - SAFETY
+      - HEALTH
+      - RAW
+    reopen_on_active_condition: true
+    manual_resolve_requires_inactive: true
+  live_signals:
+    schema_version: 2
+    default_window_ms: 300000
+    payload_sections:
+      - numeric_metrics
+      - state_values
+      - timestamps_ms
+      - refs
+    risk_observed_only: true
+  # Canary policy governs rollout/progression only. It must not redefine
+  # preflight, reconciliation, operational_safety, health_summary or alert truth.
+  canary_live_controller:
+    allow_health_states:
+      - HEALTHY
+      - DEGRADED
+    promotion_health_states:
+      - HEALTHY
+    min_health_score_ready: 70
+    min_health_score_promotion: 90
+    max_blocking_critical_alerts: 0
+    critical_alert_blocking_states:
+      - OPEN
+      - ACKED
+      - COOLDOWN
+    count_suppressed_critical_alerts_as_blocking: false
+    require_preflight_pass: true
+    require_reconciliation_clean: true
+    require_operational_safety_clear: true
+    require_health_non_blocking: true
+    fail_closed_on_missing_surfaces: true
+    armed_to_running_min_sec: 0
+    promotion_stability_sec: 300
+    rollback_recommend_on_hard_block: true
+    rollback_execution_supported: false
+    rollback_requires_canonical_confirmation: true
