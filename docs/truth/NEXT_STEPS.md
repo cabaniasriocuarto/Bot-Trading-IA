@@ -1,4 +1,4 @@
-# NEXT STEPS (Prioridades Reales)
+﻿# NEXT STEPS (Prioridades Reales)
 
 Fecha: 2026-03-24
 
@@ -43,13 +43,27 @@ Fecha: 2026-03-24
     - operational safety
     - alertas persistentes
   - `TESTNET` deja de quedar `READY` solo porque un soak previo paso; si el runtime contract actual no esta listo, falla cerrado.
+- [x] `RTLOPS-52` `Shadow Mode operativo`
+  - `LIVE_SHADOW` deja de depender solo del preview manual;
+  - nuevo status operativo fail-closed:
+    - `GET /api/v1/rollout/shadow/status`
+  - nueva ingest de decisiones auditables:
+    - `POST /api/v1/rollout/shadow/signal`
+  - reutiliza rollout manager + runtime contract live + `runtime_telemetry_guard`;
+  - endurecimiento final chico:
+    - rechaza `baseline_signal` / `candidate_signal` vacios o sin `action` reconocible ni score numerico explicito;
+  - no duplica execution ni reabre `learning/shadow`;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, sin bloquear el repo ni este cierre tecnico.
 
 ## Siguiente issue exacto
-- [ ] `RTLOPS-52` `Shadow Mode operativo`
-  - ahora queda desbloqueado por el cierre real de `RTLOPS-51`;
-  - sigue siendo el siguiente tramo del proyecto `Release / Canary / Rollback / Auditoría Final` antes de `RTLOPS-53`;
-  - debe reutilizar runtime real ya cableado, sin duplicar execution ni crear una verdad paralela.
-
+- [ ] `RTLOPS-53` `Backend QA Live`
+  - queda como siguiente tramo real del proyecto `Release / Canary / Rollback / Auditoria Final`;
+  - debe validar end-to-end la cadena ya cerrada:
+    - runtime real
+    - shadow operativo
+    - canary controller
+    - readiness por stage
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.
@@ -60,6 +74,7 @@ Fecha: 2026-03-24
   - `RTLOPS-26`
   - `RTLOPS-27`
   - `RTLOPS-51`
+  - `RTLOPS-52`
   - `RTLOPS-66`
   - `RTLOPS-45`
   - `RTLOPS-46`
@@ -76,6 +91,7 @@ Fecha: 2026-03-24
   - `RTLOPS-27` = consumer persistente de alerting
   - `RTLOPS-65` = hardening chico del contrato raw backend
   - `RTLOPS-66` = hardening semantico chico de lifecycle / precedence / policy
+  - `RTLOPS-52` = shadow operativo sobre `LIVE_SHADOW`, auditable y fail-closed, sin duplicar execution
   - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
   - precedence de alerting ya endurecida tambien en config:

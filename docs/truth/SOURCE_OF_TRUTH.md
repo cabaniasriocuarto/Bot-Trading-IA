@@ -5,6 +5,7 @@ Fecha de actualizacion: 2026-03-24
 ## Programa LIVE Spot actual - 2026-03-24
 
 - Estado real cerrado en repo para la linea LIVE Spot:
+  - `RTLOPS-52` Shadow Mode operativo
   - `RTLOPS-51` integracion real de `RTLOPS-36` con runtime live
   - `RTLOPS-54` Canary Live Controller
   - `RTLOPS-65` raw live signal contract hardening
@@ -36,12 +37,57 @@ Fecha de actualizacion: 2026-03-24
     - reconciliation engine,
     - guardrails operativos/breakers.
 - Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-52` `Shadow Mode operativo`.
+  - `RTLOPS-53` `Backend QA Live`.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
 - Estado administrativo real de Linear al 2026-03-24:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-54` y `RTLOPS-66`;
+  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-54` y `RTLOPS-66`;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
+
+## RTLOPS-52 - Shadow Mode operativo - 2026-03-24
+
+- Gap real cerrado:
+  - el repo ya tenia `LIVE_SHADOW` en rollout/canary y un shadow legacy de learning, pero el shadow del rollout seguia dependiendo de `blending/preview` manual;
+  - faltaba una surface operativa y auditable para enrutar decisiones baseline/candidate durante `LIVE_SHADOW` sin duplicar execution ni mezclarlo con el shadow legacy.
+- Implementacion real:
+  - nuevos endpoints backend-first:
+    - `GET /api/v1/rollout/shadow/status`
+    - `POST /api/v1/rollout/shadow/signal`
+  - `build_rollout_shadow_status()` expone estado operativo fail-closed de shadow sobre surfaces canonicas ya existentes:
+    - rollout actual en `LIVE_SHADOW`
+    - `routing.shadow_only`
+    - `runtime_contract` live listo
+    - `runtime_telemetry_guard` real
+    - eventos recientes de shadow
+  - `RolloutManager.route_live_signal(...)` ahora persiste mejor trazabilidad:
+    - `source_label`
+    - `source_refs`
+    - `note`
+    - evento `live_signal_routed` en `history`
+  - `POST /api/v1/rollout/shadow/signal` reutiliza el rollout manager real para:
+    - comparar `baseline_signal` vs `candidate_signal`
+    - mantener `shadow_only = true` en `LIVE_SHADOW`
+    - registrar telemetria reutilizable por rollout/canary
+    - escribir evidencia auditable en decision log con `event_type = rollout_shadow_signal`
+    - rechazar payloads vacios o no decidibles sin `action` reconocible ni score numerico explicito
+- Semantica operativa:
+  - fail-closed si shadow no esta realmente operativo:
+    - no esta en `LIVE_SHADOW`
+    - la fase actual no es `shadow`
+    - `routing.shadow_only` no esta activo
+    - `runtime_telemetry_guard` no esta en fuente real
+    - `runtime_contract` live no esta listo
+  - fail-closed tambien a nivel de contract de ingest:
+    - `baseline_signal` y `candidate_signal` deben traer una decision minima interpretable
+    - no se aceptan dicts vacios ni payloads solo con `confidence/probability` sin direccion o score
+  - no se agrega un segundo runtime de execution;
+  - no se reabre `learning/shadow`;
+  - no se inventa ejecucion real candidate en shadow.
+- Limites honestos:
+  - no se agrego un productor interno nuevo de senales baseline/candidate dentro del runtime;
+  - la surface operativa queda lista para que runtime/orquestacion existente inyecte decisiones auditables sin duplicar el motor;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
   - mapa de proyectos alineado con dominios reales del repo;
   - dominio `observability / health / safety` alineado en tres capas:
     - CAPA A `señal cruda`: `RTLOPS-26` + `RTLOPS-63` + `RTLOPS-64`
@@ -2621,8 +2667,8 @@ El proyecto tiene:
 - Parser de errores de Backtests endurecido para evitar `[object Object]` en UI y mostrar `detail/message/cause` real
 - `Research Batch` con shortlist persistente por `BX`:
   - guardado de variantes/runs en `best_runs_cache`
-  - restauraciÃ³n de shortlist al reabrir batch
-  - sincronizaciÃ³n opcional con Comparador de Runs
+  - restauración de shortlist al reabrir batch
+  - sincronización opcional con Comparador de Runs
 - Backtests / Runs D2 (Comparison Table Pro) ahora renderiza por ventana visible (virtualizacion + overscan + espaciadores).
 - Strategies compactado para escalar con 50+ filas (menos altura por fila y acciones principales mas compactas).
 - `Detalle de Corrida` con estructura tipo Strategy Tester por pestanas
