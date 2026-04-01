@@ -4,14 +4,6 @@ Fecha: 2026-04-01
 
 ## Programa LIVE Spot actual
 - [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
-- [x] `RTLOPS-49` exchange adapter live hardening
-- [x] `RTLOPS-44` market websocket runtime live
-- [x] `RTLOPS-45` private user/account/order streams live
-- [x] `RTLOPS-46` exchange filters pre-validator hardening
-- [x] `RTLOPS-47` live preflight final
-- [x] `RTLOPS-48` state machine formal de orden live
-- [x] `RTLOPS-50` persistencia canonica de fills/eventos live
-- [x] `RTLOPS-23` reconciliation engine formal
 - [x] `RTLOPS-29` operational safety guardrails
 - [x] `RTLOPS-30` health summary live + score explicable + degraded visibility
 - [x] `RTLOPS-26` live signals foundation: execution, streams, fills, risk y snapshots operativos
@@ -87,7 +79,41 @@ Fecha: 2026-04-01
   - nueva observacion administrativa:
     - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`, aunque repo/docs muestran trabajo UI live mas avanzado; requiere validacion puntual antes del cierre final de ese subarbol.
 
-## Siguiente issue exacto
+## Drift confirmado en esta base antes de seguir con UI/release
+- [ ] `RTLOPS-23` `Reconciliation Engine formal`
+  - absorbido parcial en `app.py` + `execution/reconciliation.py`;
+  - faltan `reconciliation_engine.py` y storage persistente del cierre fuente `aa2ebd4`;
+  - el commit fuente no es ancestro de esta rama.
+- [ ] `RTLOPS-47` `Live Preflight final`
+  - absorbido parcial por freshness/expiry y hard blocks actuales;
+  - faltan `live_preflight.py` y attestation manual persistida del cierre fuente `1335857`;
+  - la base actual expone `preflight_attestation_supported = false`.
+- [ ] `RTLOPS-48` `State machine formal de orden live`
+  - absorbido parcial por reconciliacion de `openOrders`, idempotencia y `unknown_timeout`;
+  - faltan `live_order_state.py` y journal append-only del cierre fuente `a320f7d`.
+- [ ] `RTLOPS-49` `Exchange adapter live hardening`
+  - absorbido parcial por signed REST live embebido en `app.py`;
+  - no existe `binance_adapter.py` ni el cierre fuente `27a2367` como ancestro.
+- [ ] `RTLOPS-50` `Persistencia canonica de fills/eventos live`
+  - absorbido parcial por métricas runtime y actualización de `filled_qty`;
+  - faltan `live_fill_state.py`, reconciliación con `myTrades` y storage canónico del cierre fuente `3f1f36b`.
+- [ ] `RTLOPS-44` `Market WebSocket Runtime live`
+  - no absorbido en esta base;
+  - faltan `live_market_runtime.py`, `binance_live_runtime.yaml` y endpoints `/api/v1/execution/market-streams/*` del cierre fuente `8f615bc`.
+- [ ] `RTLOPS-46` `Exchange filters pre-validator hardening`
+  - no absorbido en esta base;
+  - falta `filter_prevalidator.py` y la policy explícita del cierre fuente `4785d86`.
+- [ ] `RTLOPS-45` `Private user/account/order streams live`
+  - pendiente de revalidacion puntual;
+  - no se auditó con el mismo rigor en este bloque y no debe tratarse como claim fuerte de integración local.
+
+## Siguiente bloque exacto en esta base
+- [ ] Recuperacion / reconciliacion del core live (`RTLOPS-23/44/46/47/48/49/50`)
+  - reauditar rama por rama sobre una base limpia derivada de `rtlops-sync-release-live-unification`;
+  - decidir por evidencia si algun bloque se integra por merge/cherry-pick o si solo corresponde bajar el claim documental;
+  - no pasar a `RTLOPS-35` mientras estos siete cierres sigan fuera o parciales en la base real.
+
+## Despues del bloque de recuperacion
 - [ ] `RTLOPS-35` `Playwright Live Smoke / QA operator flows`
   - sigue siendo el prerequisito explicito antes de `RTLOPS-38`;
   - debe cerrarse con smoke operatorio UI/live chico y util, sin duplicar el QA backend ya cerrado en `RTLOPS-53`;
@@ -125,6 +151,7 @@ Fecha: 2026-04-01
   - `RTLOPS-52` = shadow operativo sobre `LIVE_SHADOW`, auditable y fail-closed, sin duplicar execution
   - `RTLOPS-53` = backend QA live con gates reproducibles sobre surfaces canonicas ya cerradas
   - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
+  - `RTLOPS-23/44/46/47/48/49/50` siguen con drift de integracion confirmado en esta rama y no deben tratarse como `[x]` locales solo por `Done` en Linear
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
   - precedence de alerting ya endurecida tambien en config:
     - `severity_rank = [CRITICAL, WARN, INFO]`

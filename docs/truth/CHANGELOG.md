@@ -2,6 +2,39 @@
 
 ## 2026-04-01
 
+### Auditoria / reconciliacion del core live de la base actual
+- Bloques reauditados contra repo local, ramas remotas y Linear:
+  - `RTLOPS-23`
+  - `RTLOPS-44`
+  - `RTLOPS-46`
+  - `RTLOPS-47`
+  - `RTLOPS-48`
+  - `RTLOPS-49`
+  - `RTLOPS-50`
+- Resultado confirmado:
+  - los commits fuente `aa2ebd4`, `8f615bc`, `4785d86`, `1335857`, `a320f7d`, `27a2367` y `3f1f36b` no son ancestros de `rtlops-sync-release-live-unification`;
+  - `git apply --check` falla para los siete cierres sobre la base actual;
+  - tampoco conviene mergear ramas completas en este bloque porque traen un paquete lateral grande (`execution/reality.py`, tests dedicados, policies y bridge/reporting) fuera del alcance de una recuperacion quirurgica.
+- Clasificacion honesta dejada en docs/truth:
+  - absorbidos parciales en esta base:
+    - `RTLOPS-23`
+    - `RTLOPS-47`
+    - `RTLOPS-48`
+    - `RTLOPS-49`
+    - `RTLOPS-50`
+  - no absorbidos en esta base:
+    - `RTLOPS-44`
+    - `RTLOPS-46`
+  - pendiente de validar en esta base:
+    - `RTLOPS-45`
+- Archivos de seguimiento actualizados:
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/START_HERE.md`
+- Decision de este bloque:
+  - no hubo integracion de producto;
+  - se corrigio la verdad documental para que la base actual no venda como localmente absorbidos cierres que hoy viven en ramas fuente separadas.
+
 ### Sync release-live sobre base alineada RTLOPS-51/52
 - Integracion realizada en esta rama:
   - `RTLOPS-53` via cherry-pick de `9758ab4` (`RTLOPS-53 backend QA live`)

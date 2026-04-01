@@ -4,7 +4,7 @@ Fecha de actualizacion: 2026-04-01
 
 ## Programa LIVE Spot actual - 2026-04-01
 
-- Estado real cerrado en repo para la linea LIVE Spot:
+- Estado real absorbido y revalidado en esta base para la linea LIVE Spot:
   - `RTLOPS-37` Live Runbooks + docs/truth + incidentes/rollback
   - `RTLOPS-53` Backend QA Live
   - `RTLOPS-52` Shadow Mode operativo
@@ -15,36 +15,66 @@ Fecha de actualizacion: 2026-04-01
   - `RTLOPS-27` live alerts persistentes - consumer persistente de alerting
   - `RTLOPS-66` alert lifecycle semantics hardening
   - `RTLOPS-36` validacion `paper -> testnet -> canary`
-  - `RTLOPS-49` exchange adapter live hardening
-  - `RTLOPS-44` market websocket runtime live
-  - `RTLOPS-45` private user/account/order streams live
-  - `RTLOPS-46` exchange filters pre-validator hardening
-  - `RTLOPS-47` live preflight final
-  - `RTLOPS-48` state machine formal de orden live
-  - `RTLOPS-50` persistencia canonica de fills/eventos live
-  - `RTLOPS-23` reconciliation engine formal
   - `RTLOPS-29` operational safety guardrails
   - `RTLOPS-30` health summary live + score explicable + degraded visibility
+- Drift confirmado entre esta base y cierres `Done` en Linear / ramas fuente:
+  - `RTLOPS-23`:
+    - absorbido parcial en `rtlab_autotrader/rtlab_core/web/app.py` + `rtlab_autotrader/rtlab_core/execution/reconciliation.py`;
+    - faltan `reconciliation_engine.py` y el storage persistente de `reconciliation_cases / reconciliation_case_events / reconciliation_snapshots` del cierre fuente `aa2ebd4`.
+  - `RTLOPS-47`:
+    - absorbido parcial por freshness/expiry + hard blocks actuales;
+    - faltan `live_preflight.py` y la attestation manual persistida del cierre fuente `1335857`;
+    - la base actual expone `preflight_attestation_supported = false`.
+  - `RTLOPS-48`:
+    - absorbido parcial por reconciliacion de `openOrders`, idempotencia, `unknown_timeout` y mapeo de estados remotos en `app.py`;
+    - faltan `live_order_state.py` y journal append-only del cierre fuente `a320f7d`.
+  - `RTLOPS-49`:
+    - absorbido parcial por signed REST live en `app.py` (`/api/v3/account`, `/api/v3/order`, `/api/v3/openOrders`, `recvWindow`);
+    - no existe `binance_adapter.py` ni el cierre fuente `27a2367` como ancestro de esta rama.
+  - `RTLOPS-50`:
+    - absorbido parcial por métricas de fills/runtime cost proxy y actualización de `filled_qty` desde `openOrders` / `order status`;
+    - faltan `live_fill_state.py`, reconciliación con `myTrades` y storage canónico de fills del cierre fuente `3f1f36b`.
+  - `RTLOPS-44`:
+    - no absorbido en esta base;
+    - faltan `live_market_runtime.py`, `binance_live_runtime.yaml` y endpoints `/api/v1/execution/market-streams/*` del cierre fuente `8f615bc`.
+  - `RTLOPS-46`:
+    - no absorbido en esta base;
+    - falta `filter_prevalidator.py` y la policy explícita del cierre fuente `4785d86`.
+- Pendiente de validar en esta base:
+  - `RTLOPS-45`:
+    - no se reauditó en este bloque;
+    - no debe usarse como claim fuerte de integración local hasta contrastarlo de nuevo con repo/ramas fuente.
 - Arquitectura real del repo para esta linea:
   - backend concentrado en `rtlab_autotrader/rtlab_core/web/app.py` con `ConsoleStore` + `RuntimeBridge`;
   - policies numericas canonicas en `config/policies/`;
   - `rtlab_autotrader/config/policies/` queda como compatibilidad/fallback y no como autoridad equivalente;
-  - la verdad operativa live Spot se apoya en:
-    - adapter REST endurecido,
-    - market/public websocket,
-    - private streams,
-    - preflight final,
-    - state machine de orden,
-    - storage canonico de fills,
-    - reconciliation engine,
-    - guardrails operativos/breakers.
-- Siguiente issue tecnico exacto despues de este estado:
-  - `RTLOPS-35` `Playwright Live Smoke / QA operator flows`.
+  - capas realmente consolidadas hoy en esta base:
+    - `live_signals`,
+    - `alerts`,
+    - `operational_safety`,
+    - `health_summary`,
+    - `canary`,
+    - `rollout` (`RTLOPS-51/52`),
+    - `backend QA` (`RTLOPS-53`),
+    - runbooks live (`RTLOPS-37`);
+  - esta base no contiene hoy los módulos fuente dedicados:
+    - `reconciliation_engine.py`
+    - `live_market_runtime.py`
+    - `filter_prevalidator.py`
+    - `live_preflight.py`
+    - `live_order_state.py`
+    - `binance_adapter.py`
+    - `live_fill_state.py`
+  - por lo tanto, el estado operativo correcto sigue siendo `LIVE: NO GO` tambien por recuperacion/reconciliacion del core live, no solo por UI/release gate.
+- Siguiente bloque tecnico exacto despues de este estado:
+  - recuperar o bajar claims de `RTLOPS-23/44/46/47/48/49/50` sobre una rama limpia derivada de `rtlops-sync-release-live-unification`;
+  - `RTLOPS-35` queda despues de esa recuperacion del core live.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
 - Estado administrativo real de Linear al 2026-04-01:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-37`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
+  - `Done` en Linear no equivale en esta base a ancestro integrado para `RTLOPS-23`, `RTLOPS-44`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49` y `RTLOPS-50`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
   - inconsistencia nueva observada en el subarbol UI/playwright:
     - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`;

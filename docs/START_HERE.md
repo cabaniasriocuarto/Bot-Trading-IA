@@ -26,7 +26,11 @@ Este archivo centraliza la documentacion vigente del proyecto.
 ## Estado operativo actual
 - `NO-LIVE`: GO (staging/testnet/paper).
 - `LIVE`: NO GO.
-- Condicion para LIVE: sync y validacion local de `RTLOPS-35`, luego gate final `RTLOPS-38` y aprobacion humana sobre el entorno objetivo.
+- Condicion para LIVE:
+  - primero recuperar/reconciliar en esta base los cierres core live con drift confirmado (`RTLOPS-23/44/46/47/48/49/50`);
+  - despues sync y validacion local de `RTLOPS-35`;
+  - luego gate final `RTLOPS-38`;
+  - y recien despues aprobacion humana sobre el entorno objetivo.
 
 ## Ambientes online de prueba (staging)
 - Frontend (Vercel staging): `https://bot-trading-ia-staging.vercel.app`
