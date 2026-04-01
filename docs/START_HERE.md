@@ -26,10 +26,10 @@ Este archivo centraliza la documentacion vigente del proyecto.
 ## Estado operativo actual
 - `NO-LIVE`: GO (staging/testnet/paper).
 - `LIVE`: NO GO.
-- Condicion para LIVE:
-  - primero recuperar/reconciliar en esta base los cierres core live con drift confirmado (`RTLOPS-23/44/46/47/48/49/50`);
-  - despues sync y validacion local de `RTLOPS-35`;
-  - luego gate final `RTLOPS-38`;
+- Condicion para LIVE bajo `Ruta A`:
+  - aceptar explicitamente que el core live de esta base sigue parcialmente absorbido/documentado y no se reabre en este bloque;
+  - revalidar `RTLOPS-35` en un entorno con `node` y `npm`;
+  - ejecutar `RTLOPS-38` mediante `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
   - y recien despues aprobacion humana sobre el entorno objetivo.
 
 ## Ambientes online de prueba (staging)
@@ -40,6 +40,7 @@ Este archivo centraliza la documentacion vigente del proyecto.
 - `docs/runbooks/LIVE_READY_AND_DIAGNOSTICS.md`
 - `docs/runbooks/LIVE_CONTAINMENT_AND_ROLLBACK.md`
 - `docs/runbooks/LIVE_INCIDENT_RESPONSE.md`
+- `docs/runbooks/LIVE_RELEASE_GATE.md`
 - `docs/deploy/VERCEL_STAGING.md`
 - `docs/deploy/RAILWAY_STAGING.md`
 - `docs/deploy/GITHUB_ACTIONS_SECRETS.md`

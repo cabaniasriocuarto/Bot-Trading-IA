@@ -20,20 +20,47 @@ export default function PortfolioPage() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [cooldownUntil, setCooldownUntil] = useState<number>(0);
 
-  const refresh = async () => {
+  const fetchPortfolioData = async () => {
     const [pos, pf, tr] = await Promise.all([
       apiGet<Position[]>("/api/v1/positions"),
       apiGet<PortfolioSnapshot>("/api/v1/portfolio"),
       apiGet<Trade[]>("/api/v1/trades"),
     ]);
+    return { pos, pf, tr };
+  };
+
+  const refresh = async () => {
+    const { pos, pf, tr } = await fetchPortfolioData();
     setPositions(pos);
     setPortfolio(pf);
     setTrades(tr.slice(0, 20));
   };
 
   useEffect(() => {
-    void refresh();
+    let cancelled = false;
+
+    async function loadPortfolioData() {
+      const { pos, pf, tr } = await fetchPortfolioData();
+      if (cancelled) return;
+      setPositions(pos);
+      setPortfolio(pf);
+      setTrades(tr.slice(0, 20));
+    }
+
+    void loadPortfolioData();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!cooldownUntil) return;
+    const timer = window.setTimeout(() => {
+      setCooldownUntil(0);
+    }, Math.max(cooldownUntil - Date.now(), 0));
+    return () => window.clearTimeout(timer);
+  }, [cooldownUntil]);
 
   const corr = useMemo(() => {
     const symbols = [...new Set([...positions.map((x) => x.symbol), "BTC/USDT", "ETH/USDT", "SOL/USDT"])];
@@ -48,7 +75,7 @@ export default function PortfolioPage() {
     );
   }, [positions]);
 
-  const onCooldown = Date.now() < cooldownUntil;
+  const onCooldown = cooldownUntil > 0;
 
   return (
     <div className="space-y-4">
