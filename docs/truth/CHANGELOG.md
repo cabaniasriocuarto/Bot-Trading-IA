@@ -2,6 +2,27 @@
 
 ## 2026-04-01
 
+### Ruta A - sync selectivo de RTLOPS-35 y RTLOPS-38
+- Decision operativa del bloque:
+  - se acepta la base actual con core live parcialmente absorbido y documentado;
+  - no se reabre en este bloque la cohorte `RTLOPS-23/44/46/47/48/49/50`.
+- `RTLOPS-35` integrado selectivamente en repo con:
+  - `rtlab_dashboard/playwright.config.ts`
+  - `rtlab_dashboard/tests/playwright/live-smoke.spec.ts`
+  - script `npm run test:playwright`
+  - lockfile/dependencia `@playwright/test`
+- `RTLOPS-38` integrado selectivamente como capa documental util con:
+  - `docs/runbooks/LIVE_RELEASE_GATE.md`
+  - decision vigente honesta del gate en esta base:
+    - `NO GO`
+    - no por ausencia del artefacto, sino por falta de revalidacion Playwright local en este entorno y por reevaluacion pendiente del entorno objetivo.
+- Validacion real corrida en este bloque:
+  - `git diff --check` -> PASS
+- Limite honesto:
+  - este entorno no tiene `node` ni `npm`;
+  - no se corrio `Playwright`, `lint` ni `build` del dashboard;
+  - el core live sigue parcialmente absorbido/documentado y fuera del alcance de Ruta A.
+
 ### Auditoria / reconciliacion del core live de la base actual
 - Bloques reauditados contra repo local, ramas remotas y Linear:
   - `RTLOPS-23`

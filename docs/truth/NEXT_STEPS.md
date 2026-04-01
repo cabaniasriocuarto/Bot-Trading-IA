@@ -78,6 +78,19 @@ Fecha: 2026-04-01
     - `RTLOPS-51` / `RTLOPS-54` sigue como sync UI no bloqueante
   - nueva observacion administrativa:
     - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`, aunque repo/docs muestran trabajo UI live mas avanzado; requiere validacion puntual antes del cierre final de ese subarbol.
+- [x] `RTLOPS-35` `Playwright Live Smoke / QA operator flows`
+  - integrado selectivamente en repo bajo `Ruta A` con:
+    - `rtlab_dashboard/playwright.config.ts`
+    - `rtlab_dashboard/tests/playwright/live-smoke.spec.ts`
+    - script `npm run test:playwright`
+    - dependencia/lockfile `@playwright/test`
+  - no reabre backend ni recuperacion de core live;
+  - validacion local pendiente en este entorno porque faltan `node` y `npm`.
+- [x] `RTLOPS-38` `Final live release gate`
+  - integrado selectivamente bajo `Ruta A` con:
+    - `docs/runbooks/LIVE_RELEASE_GATE.md`
+  - el gate queda presente como capa final util;
+  - la decision vigente del gate en esta base sigue siendo `NO GO` hasta revalidacion Playwright + snapshots frescos del entorno objetivo.
 
 ## Drift confirmado en esta base antes de seguir con UI/release
 - [ ] `RTLOPS-23` `Reconciliation Engine formal`
@@ -108,19 +121,20 @@ Fecha: 2026-04-01
   - no se auditó con el mismo rigor en este bloque y no debe tratarse como claim fuerte de integración local.
 
 ## Siguiente bloque exacto en esta base
-- [ ] Recuperacion / reconciliacion del core live (`RTLOPS-23/44/46/47/48/49/50`)
-  - reauditar rama por rama sobre una base limpia derivada de `rtlops-sync-release-live-unification`;
-  - decidir por evidencia si algun bloque se integra por merge/cherry-pick o si solo corresponde bajar el claim documental;
-  - no pasar a `RTLOPS-35` mientras estos siete cierres sigan fuera o parciales en la base real.
+- [ ] Revalidacion operativa de `Ruta A`
+  - correr `RTLOPS-35` en una maquina con `node` y `npm`;
+  - ejecutar `npm run test:playwright` en `rtlab_dashboard`;
+  - si el entorno lo permite, correr tambien `lint` o build minimo del dashboard para confirmar que la capa UI/playwright no quedo rota;
+  - archivar el resultado real de la smoke.
+- [ ] Ejecucion del gate final en entorno objetivo
+  - usar `docs/runbooks/LIVE_RELEASE_GATE.md`;
+  - reevaluar `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary` con snapshots frescos antes de cualquier promocion live.
 
-## Despues del bloque de recuperacion
-- [ ] `RTLOPS-35` `Playwright Live Smoke / QA operator flows`
-  - sigue siendo el prerequisito explicito antes de `RTLOPS-38`;
-  - debe cerrarse con smoke operatorio UI/live chico y util, sin duplicar el QA backend ya cerrado en `RTLOPS-53`;
-  - en Linear ya figura `Done`, pero esta rama aun no la integra porque hoy no hay `node`/`npm.cmd` local para revalidar Playwright/frontend de forma profesional;
-  - antes de declararla cerrable en esta base, conviene validar el subarbol UI/playwright en Linear porque `RTLOPS-24/32/33/34` siguen en `Backlog` mientras repo/docs muestran avance mayor en ese frente;
-  - `RTLOPS-38` queda inmediatamente despues, porque el release gate final no debe cerrarse aqui sin esa evidencia UI revalidada localmente;
-  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
+## Pendiente fuera de Ruta A
+- [ ] Recuperacion / reconciliacion del core live (`RTLOPS-23/44/46/47/48/49/50`)
+  - queda deliberadamente fuera de este bloque;
+  - sigue documentado como drift real de esta base;
+  - solo debe reabrirse en una linea separada si se decide priorizar reconciliacion arquitectonica por encima del release/UI path.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.

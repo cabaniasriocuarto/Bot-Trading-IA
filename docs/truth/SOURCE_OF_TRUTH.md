@@ -17,6 +17,15 @@ Fecha de actualizacion: 2026-04-01
   - `RTLOPS-36` validacion `paper -> testnet -> canary`
   - `RTLOPS-29` operational safety guardrails
   - `RTLOPS-30` health summary live + score explicable + degraded visibility
+- Estado real integrado selectivamente en esta base bajo `Ruta A`:
+  - `RTLOPS-35`:
+    - smoke Playwright presente en repo (`package.json`, `package-lock.json`, `playwright.config.ts`, `tests/playwright/live-smoke.spec.ts`);
+    - cobertura esperada: login -> `Ejecucion`, surfaces criticas de `Execution`, controles operatorios visibles y navegacion a `Alertas y Logs`;
+    - no revalidado localmente en este bloque porque el entorno actual no tiene `node` ni `npm`.
+  - `RTLOPS-38`:
+    - `docs/runbooks/LIVE_RELEASE_GATE.md` presente como capa final de decision/gate;
+    - el gate queda integrado como artefacto util, pero su decision vigente en esta base sigue siendo `NO GO`;
+    - no se usa este bloque para vender recuperacion completa del core live.
 - Drift confirmado entre esta base y cierres `Done` en Linear / ramas fuente:
   - `RTLOPS-23`:
     - absorbido parcial en `rtlab_autotrader/rtlab_core/web/app.py` + `rtlab_autotrader/rtlab_core/execution/reconciliation.py`;
@@ -65,10 +74,20 @@ Fecha de actualizacion: 2026-04-01
     - `live_order_state.py`
     - `binance_adapter.py`
     - `live_fill_state.py`
-  - por lo tanto, el estado operativo correcto sigue siendo `LIVE: NO GO` tambien por recuperacion/reconciliacion del core live, no solo por UI/release gate.
+  - `Ruta A` vigente en esta base:
+    - acepta operativamente el core live como parcialmente absorbido y documentado;
+    - no reabre la recuperacion de cohorte del core live en este bloque;
+    - integra `RTLOPS-35/38` solo como capa release/UI selectiva.
+  - por lo tanto, el estado operativo correcto sigue siendo `LIVE: NO GO` hasta:
+    - revalidar `RTLOPS-35` en un entorno con `node` y `npm`;
+    - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
+    - obtener aprobacion humana explicita antes de `LIVE_SERIO`.
 - Siguiente bloque tecnico exacto despues de este estado:
-  - recuperar o bajar claims de `RTLOPS-23/44/46/47/48/49/50` sobre una rama limpia derivada de `rtlops-sync-release-live-unification`;
-  - `RTLOPS-35` queda despues de esa recuperacion del core live.
+  - revalidacion operativa de `Ruta A`:
+    - correr `npm run test:playwright` para `RTLOPS-35` en un entorno con `node`/`npm`;
+    - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo;
+    - archivar snapshots frescos de `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary`.
+  - recuperacion/reconciliacion del core live (`RTLOPS-23/44/46/47/48/49/50`) queda fuera de este bloque y sigue pendiente como linea arquitectonica separada.
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
@@ -81,8 +100,8 @@ Fecha de actualizacion: 2026-04-01
     - el repo y `docs/truth` ya muestran trabajo live UI mas avanzado que esa foto administrativa;
     - no se corrigio en este bloque porque RTLOPS-37 es documental y esa limpieza requiere validacion puntual en Linear UI.
   - drift adicional vigente en esta rama:
-    - `RTLOPS-35` y `RTLOPS-38` figuran `Done` en Linear;
-    - esta rama no las integra todavia porque el entorno actual no tiene `node` ni `npm.cmd` para validar Playwright/frontend y el release gate final con evidencia local relevante.
+    - `RTLOPS-35` y `RTLOPS-38` figuran `Done` en Linear y ahora quedan integradas selectivamente en repo bajo `Ruta A`;
+    - su validacion local sigue parcial porque este entorno no tiene `node` ni `npm.cmd`.
 
 ## RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback - 2026-03-24
 
