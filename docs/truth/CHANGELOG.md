@@ -1,5 +1,22 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-01
+
+### Sync release-live sobre base alineada RTLOPS-51/52
+- Integracion realizada en esta rama:
+  - `RTLOPS-53` via cherry-pick de `9758ab4` (`RTLOPS-53 backend QA live`)
+  - `RTLOPS-37` via cherry-pick de `1be0586` (`RTLOPS-37 live runbooks and rollback docs`)
+- Validacion local reejecutada en esta rama:
+  - `uv run --project rtlab_autotrader python -m py_compile rtlab_autotrader/tests/test_backend_qa_live.py` -> PASS
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_backend_qa_live.py --maxfail=1 --basetemp C:/tmp/rt53-backend-qa-live-sync -q` -> PASS (`3 passed`)
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_rollout_safe_update.py -k "rollout_api_blending_preview_records_telemetry or rollout_shadow_status_and_signal_are_fail_closed_until_runtime_live_is_ready or rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic" --maxfail=1 --basetemp C:/tmp/rt53-rollout-sync -q` -> PASS (`3 passed`)
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "live_mode_fails_when_operational_safety_gate_blocks or live_start_fails_when_operational_safety_gate_blocks or g9_live_passes_only_when_runtime_contract_is_fully_ready or g9_live_fails_when_account_surface_is_not_tradeable or g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers or execution_health_summary_and_evaluate_endpoints_return_and_persist_contract or execution_alert_endpoints_expose_catalog_history_and_lifecycle or execution_canary_start_holds_when_preflight_is_expired or execution_canary_recommends_rollback_when_reconciliation_turns_blocking or execution_canary_status_and_endpoints_expose_contract or config_policies_endpoint_exposes_numeric_policy_bundle" --maxfail=1 --basetemp C:/tmp/rt53-live-ready-sync -q` -> PASS (`11 passed`)
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_policy_paths.py --maxfail=1 --basetemp C:/tmp/rt53-policy-paths-sync -q` -> PASS (`2 passed`)
+- Drift que queda explicito despues de esta sync:
+  - `RTLOPS-35` y `RTLOPS-38` figuran `Done` en Linear, pero no se integran en esta rama todavia;
+  - motivo real: el entorno actual no tiene `node` ni `npm.cmd`, por lo que no existe validacion local profesional para Playwright/frontend en este bloque;
+  - por la misma razon, no se toma como valido cerrar aqui el release gate final basado en evidencia UI no revalidada localmente.
+
 ## 2026-03-24
 
 ### RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback

@@ -26,13 +26,16 @@ Este archivo centraliza la documentacion vigente del proyecto.
 ## Estado operativo actual
 - `NO-LIVE`: GO (staging/testnet/paper).
 - `LIVE`: NO GO.
-- Condicion para LIVE: cierre final de validacion operativa + canary + rollback + aprobacion humana.
+- Condicion para LIVE: sync y validacion local de `RTLOPS-35`, luego gate final `RTLOPS-38` y aprobacion humana sobre el entorno objetivo.
 
 ## Ambientes online de prueba (staging)
 - Frontend (Vercel staging): `https://bot-trading-ia-staging.vercel.app`
 - Backend (Railway staging): `https://bot-trading-ia-staging.up.railway.app`
 
-## Runbooks de despliegue y rollback
+## Runbooks operativos y de despliegue
+- `docs/runbooks/LIVE_READY_AND_DIAGNOSTICS.md`
+- `docs/runbooks/LIVE_CONTAINMENT_AND_ROLLBACK.md`
+- `docs/runbooks/LIVE_INCIDENT_RESPONSE.md`
 - `docs/deploy/VERCEL_STAGING.md`
 - `docs/deploy/RAILWAY_STAGING.md`
 - `docs/deploy/GITHUB_ACTIONS_SECRETS.md`

@@ -1,8 +1,8 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-24
+Fecha de actualizacion: 2026-04-01
 
-## Programa LIVE Spot actual - 2026-03-24
+## Programa LIVE Spot actual - 2026-04-01
 
 - Estado real cerrado en repo para la linea LIVE Spot:
   - `RTLOPS-37` Live Runbooks + docs/truth + incidentes/rollback
@@ -43,13 +43,16 @@ Fecha de actualizacion: 2026-03-24
 - Follow-up chico administrativo/arquitectonico abierto en Linear:
   - `RTLOPS-61` `Cost source snapshots live por familia`;
   - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
-- Estado administrativo real de Linear al 2026-03-24:
+- Estado administrativo real de Linear al 2026-04-01:
   - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-37`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
   - inconsistencia nueva observada en el subarbol UI/playwright:
     - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`;
     - el repo y `docs/truth` ya muestran trabajo live UI mas avanzado que esa foto administrativa;
     - no se corrigio en este bloque porque RTLOPS-37 es documental y esa limpieza requiere validacion puntual en Linear UI.
+  - drift adicional vigente en esta rama:
+    - `RTLOPS-35` y `RTLOPS-38` figuran `Done` en Linear;
+    - esta rama no las integra todavia porque el entorno actual no tiene `node` ni `npm.cmd` para validar Playwright/frontend y el release gate final con evidencia local relevante.
 
 ## RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback - 2026-03-24
 

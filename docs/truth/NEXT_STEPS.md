@@ -1,6 +1,6 @@
 ﻿# NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-24
+Fecha: 2026-04-01
 
 ## Programa LIVE Spot actual
 - [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
@@ -91,7 +91,9 @@ Fecha: 2026-03-24
 - [ ] `RTLOPS-35` `Playwright Live Smoke / QA operator flows`
   - sigue siendo el prerequisito explicito antes de `RTLOPS-38`;
   - debe cerrarse con smoke operatorio UI/live chico y util, sin duplicar el QA backend ya cerrado en `RTLOPS-53`;
-  - antes de declararla cerrable, conviene validar el subarbol UI/playwright en Linear porque `RTLOPS-24/32/33/34` siguen en `Backlog` mientras repo/docs muestran avance mayor en ese frente;
+  - en Linear ya figura `Done`, pero esta rama aun no la integra porque hoy no hay `node`/`npm.cmd` local para revalidar Playwright/frontend de forma profesional;
+  - antes de declararla cerrable en esta base, conviene validar el subarbol UI/playwright en Linear porque `RTLOPS-24/32/33/34` siguen en `Backlog` mientras repo/docs muestran avance mayor en ese frente;
+  - `RTLOPS-38` queda inmediatamente despues, porque el release gate final no debe cerrarse aqui sin esa evidencia UI revalidada localmente;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue siendo solo un sync administrativo pendiente en Linear UI.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
