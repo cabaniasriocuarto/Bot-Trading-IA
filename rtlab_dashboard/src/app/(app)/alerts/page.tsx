@@ -68,7 +68,7 @@ export default function AlertsLogsPage() {
     return params;
   }, [moduleName, severity, sinceInput, untilInput]);
 
-  const refresh = useCallback(async () => {
+  const fetchRows = useCallback(async () => {
     const params = buildQuery();
     const query = params.toString();
     const [alertsRows, logsPayload] = await Promise.all([
@@ -76,13 +76,31 @@ export default function AlertsLogsPage() {
       apiGet<LogEvent[] | LogsResponse>(`/api/v1/logs?${query}`),
     ]);
     const logsRows = Array.isArray(logsPayload) ? logsPayload : logsPayload.items;
-    setAlerts(alertsRows);
-    setLogs(logsRows);
+    return { alertsRows, logsRows };
   }, [buildQuery]);
 
+  const refresh = useCallback(async () => {
+    const { alertsRows, logsRows } = await fetchRows();
+    setAlerts(alertsRows);
+    setLogs(logsRows);
+  }, [fetchRows]);
+
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    let cancelled = false;
+
+    async function loadCurrentRows() {
+      const { alertsRows, logsRows } = await fetchRows();
+      if (cancelled) return;
+      setAlerts(alertsRows);
+      setLogs(logsRows);
+    }
+
+    void loadCurrentRows();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchRows]);
 
   useEffect(() => {
     const events = new EventSource("/api/events", { withCredentials: true });
