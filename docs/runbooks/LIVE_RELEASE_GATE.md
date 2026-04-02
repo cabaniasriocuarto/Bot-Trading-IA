@@ -128,28 +128,29 @@ Fecha: 2026-04-02
   - `G9_RUNTIME_ENGINE_REAL`
   - `account surface`
   - `reconciliation`
-  - `health`
-  - `safety`
-  - `alerts`
-  - `canary`
+  - `validation/readiness`
+  - `live-safety`
+  - `market-streams`
 - no hay aprobacion humana explicita posterior a esa reevaluacion.
 
 ## Que habilitaria pasar de `NO GO` a decision operable
 
-- empujar esta rama y refrescar el entorno de preview/staging que corresponda;
+- usar la branch ya pusheada y el Draft PR existente para refrescar el entorno de preview/staging que corresponda;
 - ejecutar este gate en el entorno objetivo con snapshots frescos de:
   - `GET /api/v1/gates`
   - `GET /api/v1/rollout/status`
-  - `GET /api/v1/execution/health/summary`
-  - `GET /api/v1/execution/safety/summary`
-  - `GET /api/v1/execution/alerts/open`
-  - `GET /api/v1/execution/canary/status`
+  - `GET /api/v1/validation/readiness`
+  - `GET /api/v1/execution/live-safety/summary`
+  - `GET /api/v1/execution/reconcile/summary`
+  - `GET /api/v1/execution/market-streams/summary`
+- si el entorno objetivo sigue mostrando `401/403/404` en alguna de esas surfaces:
+  - registrar la evidencia como pendiente por auth/acceso o drift de deployment;
+  - no levantar `NO GO` con snapshots incompletos o inventados.
 - obtener aprobacion humana explicita antes de habilitar `LIVE_SERIO`.
 
 ## Proximo paso operativo exacto
 
-- hacer push de `feature/live-core-coupled-recovery`;
-- abrir Draft PR contra `rtlops-sync-release-live-unification`;
+- conservar `feature/live-core-coupled-recovery` y el Draft PR `#13` contra `rtlops-sync-release-live-unification`;
 - dejar que preview/staging refresque sobre esta rama;
 - ejecutar este gate en el entorno objetivo inmediatamente antes de cualquier promocion live;
 - si alguna surface falla o queda stale:

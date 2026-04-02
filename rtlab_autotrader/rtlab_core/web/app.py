@@ -37,6 +37,10 @@ from rtlab_core.domains import (
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.execution import ExecutionRealityService
+from rtlab_core.execution.alerts import (
+    DEFAULT_ALERT_SEVERITY_PRECEDENCE,
+    DEFAULT_ALERT_SOURCE_PRECEDENCE,
+)
 from rtlab_core.execution.live_preflight import LivePreflightDB, attestation_status
 from rtlab_core.execution.live_market_runtime import load_binance_live_runtime_bundle
 from rtlab_core.execution.reality import load_execution_router_bundle, load_execution_safety_bundle
@@ -910,6 +914,7 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     exs_preflight = exs.get("preflight") if isinstance(exs.get("preflight"), dict) else {}
     exs_exchange_filters = exs.get("exchange_filters") if isinstance(exs.get("exchange_filters"), dict) else {}
     exs_live_preflight = exs.get("live_preflight") if isinstance(exs.get("live_preflight"), dict) else {}
+    exs_alerting = exs.get("alerting") if isinstance(exs.get("alerting"), dict) else {}
     exs_sizing = exs.get("sizing") if isinstance(exs.get("sizing"), dict) else {}
     exs_kill = exs.get("kill_switch") if isinstance(exs.get("kill_switch"), dict) else {}
     exr_families = exr.get("families_enabled") if isinstance(exr.get("families_enabled"), dict) else {}
@@ -995,6 +1000,16 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "execution_live_preflight_drift_warn_max_ms": exs_live_preflight.get("drift_warn_max_ms"),
         "execution_live_preflight_recv_window_warn_ms": exs_live_preflight.get("recv_window_warn_ms"),
         "execution_live_preflight_recv_window_fail_ms": exs_live_preflight.get("recv_window_fail_ms"),
+        "execution_alerting_severity_rank": (
+            [str(row) for row in exs_alerting.get("severity_rank") if str(row).strip()]
+            if isinstance(exs_alerting.get("severity_rank"), list)
+            else list(DEFAULT_ALERT_SEVERITY_PRECEDENCE)
+        ),
+        "execution_alerting_severity_source_precedence": (
+            [str(row) for row in exs_alerting.get("severity_source_precedence") if str(row).strip()]
+            if isinstance(exs_alerting.get("severity_source_precedence"), list)
+            else list(DEFAULT_ALERT_SOURCE_PRECEDENCE)
+        ),
         "execution_require_capability_snapshot": exs_preflight.get("require_capability_snapshot"),
         "execution_max_notional_per_order_usd": exs_sizing.get("max_notional_per_order_usd"),
         "execution_max_open_orders_total": exs_sizing.get("max_open_orders_total"),

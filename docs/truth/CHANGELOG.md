@@ -2,6 +2,29 @@
 
 ## 2026-04-02
 
+### Microbloque QA backend + release gate
+- `config/policies` recupera alias backward-compatible en `summary` para:
+  - `execution_alerting_severity_rank`
+  - `execution_alerting_severity_source_precedence`
+  - sin remover el shape canonico actual `ops_alert_*`
+- `readiness_by_stage` queda fijado como surface canonica en `GET /api/v1/validation/readiness`;
+  - `GET /api/v1/rollout/status` conserva estado/config/telemetry de rollout y no vuelve a publicar ese bloque
+- `test_backend_qa_live.py` y `test_rollout_safe_update.py` se alinean con las surfaces publicas reales de esta rama:
+  - `gates`
+  - `rollout/status`
+  - `validation/readiness`
+  - `execution/live-safety/summary`
+  - `execution/reconcile/summary`
+  - `execution/market-streams/summary`
+- `docs/runbooks/LIVE_RELEASE_GATE.md` se alinea con la realidad actual:
+  - el push y el Draft PR ya ocurrieron
+  - la probe de safety del gate en esta rama es `GET /api/v1/execution/live-safety/summary`
+  - las probes activas del gate dejan de apuntar a surfaces no expuestas por esta rama (`health`, `alerts`, `canary`, `rollout/shadow`)
+- `docs/START_HERE.md`, `docs/truth/SOURCE_OF_TRUTH.md` y `docs/truth/NEXT_STEPS.md` dejan de listar `push + Draft PR` como pasos pendientes de este release path
+- decision vigente tras este microbloque:
+  - `LIVE` sigue en `NO GO`
+  - ahora por falta de snapshots frescos completos del entorno objetivo y aprobacion humana explicita, no por drift local del contrato QA backend
+
 ### Carril 2 - cierre local del release path
 - Housekeeping seguro del bloque:
   - se borraron temporales/basura locales `ds}`, `erswalte...` y `tatus --short`

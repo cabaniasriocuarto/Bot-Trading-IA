@@ -47,34 +47,42 @@ def test_live_backend_qa_smoke_critical_fail_closed_surfaces(tmp_path: Path, mon
   policies_payload = policies.json()
   assert policies_payload["ok"] is True
   assert policies_payload["summary"]["execution_alerting_severity_rank"] == ["CRITICAL", "WARN", "INFO"]
+  assert policies_payload["summary"]["ops_alert_slippage_p95_warn_bps"] == 8.0
 
-  health = client.get("/api/v1/execution/health/summary", headers=headers)
-  assert health.status_code == 200, health.text
-  health_payload = health.json()
-  assert set(health_payload.keys()) >= {"state", "reason_codes", "component_status", "scope_status"}
+  gates = client.get("/api/v1/gates", headers=headers)
+  assert gates.status_code == 200, gates.text
+  gates_payload_endpoint = gates.json()
+  gate_rows = {row["id"]: row for row in gates_payload_endpoint.get("gates") or []}
+  assert gate_rows["G9_RUNTIME_ENGINE_REAL"]["status"] in {"WARN", "FAIL"}
 
-  alerts = client.get("/api/v1/execution/alerts/open", headers=headers)
-  assert alerts.status_code == 200, alerts.text
-  assert isinstance(alerts.json().get("items"), list)
+  live_safety = client.get("/api/v1/execution/live-safety/summary", headers=headers)
+  assert live_safety.status_code == 200, live_safety.text
+  live_safety_payload = live_safety.json()
+  assert set(live_safety_payload.keys()) >= {
+    "overall_status",
+    "live_parity_base_ready",
+    "market_stream_runtime",
+    "reconciliation_engine",
+    "safety_blockers",
+  }
+  assert live_safety_payload["live_parity_base_ready"] is False
 
-  canary = client.get("/api/v1/execution/canary/status", headers=headers)
-  assert canary.status_code == 200, canary.text
-  canary_payload = canary.json()
-  assert set(canary_payload.keys()) >= {"scope", "policy", "current_evaluation", "history"}
+  reconcile = client.get("/api/v1/execution/reconcile/summary", headers=headers)
+  assert reconcile.status_code == 200, reconcile.text
+  reconcile_payload = reconcile.json()
+  assert set(reconcile_payload.keys()) >= {"ack_missing", "unresolved_count", "reconciliation_run", "policy_source"}
 
-  shadow = client.get("/api/v1/rollout/shadow/status", headers=headers)
-  assert shadow.status_code == 200, shadow.text
-  shadow_payload = shadow.json()
-  assert shadow_payload["active"] is False
-  assert shadow_payload["operational"] is False
-  assert "rollout_not_in_live_shadow" in set(shadow_payload.get("reasons") or [])
+  market_streams = client.get("/api/v1/execution/market-streams/summary", headers=headers)
+  assert market_streams.status_code == 200, market_streams.text
+  market_streams_payload = market_streams.json()
+  assert set(market_streams_payload.keys()) >= {"live_blocked", "live_degraded", "running_sessions", "runtime_guardrails"}
 
-  rollout = client.get("/api/v1/rollout/status", headers=headers)
-  assert rollout.status_code == 200, rollout.text
-  readiness = (rollout.json().get("readiness_by_stage") or {}).get("items") or []
-  readiness_by_stage = {str(row.get("stage") or ""): row for row in readiness}
-  assert {"PAPER", "TESTNET", "CANARY", "LIVE_SERIO"} <= set(readiness_by_stage)
-  assert readiness_by_stage["LIVE_SERIO"]["ready_bool"] is False
+  readiness = client.get("/api/v1/validation/readiness", headers=headers)
+  assert readiness.status_code == 200, readiness.text
+  readiness_payload = readiness.json()
+  readiness_by_stage = readiness_payload.get("readiness_by_stage") or {}
+  assert {"paper", "testnet", "canary", "live_serio"} <= set(readiness_by_stage)
+  assert readiness_payload["live_serio_ready"] is False
 
 
 def test_live_backend_qa_policy_contracts_bundle_and_endpoint_shapes(tmp_path: Path, monkeypatch) -> None:
@@ -85,25 +93,36 @@ def test_live_backend_qa_policy_contracts_bundle_and_endpoint_shapes(tmp_path: P
   policies = client.get("/api/v1/config/policies", headers=headers)
   assert policies.status_code == 200, policies.text
   policies_payload = policies.json()
-  assert policies_payload["summary"]["execution_alerting_severity_rank"] == ["CRITICAL", "WARN", "INFO"]
-  assert policies_payload["summary"]["execution_alerting_severity_source_precedence"] == ["SAFETY", "HEALTH", "RAW"]
+  summary = policies_payload["summary"]
+  assert summary["execution_alerting_severity_rank"] == ["CRITICAL", "WARN", "INFO"]
+  assert summary["execution_alerting_severity_source_precedence"] == ["SAFETY", "HEALTH", "RAW"]
+  assert summary["ops_alert_drift_enabled"] is True
+  assert summary["ops_alert_api_errors_warn"] == 1
   assert policies_payload["authority"]["canonical_role"] == "monorepo_root"
 
-  health = client.get("/api/v1/execution/health/summary", headers=headers)
-  assert health.status_code == 200, health.text
-  health_payload = health.json()
-  assert isinstance(health_payload.get("component_status"), dict)
-  assert isinstance(health_payload.get("scope_status"), list)
+  rollout = client.get("/api/v1/rollout/status", headers=headers)
+  assert rollout.status_code == 200, rollout.text
+  rollout_payload = rollout.json()
+  assert isinstance(rollout_payload.get("phase_evaluations"), dict)
+  assert isinstance(rollout_payload.get("live_signal_telemetry"), dict)
+  assert isinstance(rollout_payload.get("routing"), dict)
+  assert "readiness_by_stage" not in rollout_payload
 
-  alerts_catalog = client.get("/api/v1/execution/alerts/catalog", headers=headers)
-  assert alerts_catalog.status_code == 200, alerts_catalog.text
-  assert isinstance(alerts_catalog.json().get("items"), list)
+  readiness = client.get("/api/v1/validation/readiness", headers=headers)
+  assert readiness.status_code == 200, readiness.text
+  readiness_payload = readiness.json()
+  assert {"readiness_by_stage", "live_serio_ready", "policy_source", "policy_hash"} <= set(readiness_payload)
+  assert {"paper", "testnet", "canary", "live_serio"} <= set(readiness_payload["readiness_by_stage"])
 
-  alerts_history = client.get("/api/v1/execution/alerts/history", headers=headers)
-  assert alerts_history.status_code == 200, alerts_history.text
-  alerts_history_payload = alerts_history.json()
-  assert isinstance(alerts_history_payload.get("items"), list)
-  assert isinstance(alerts_history_payload.get("events"), list)
+  live_safety = client.get("/api/v1/execution/live-safety/summary", headers=headers)
+  assert live_safety.status_code == 200, live_safety.text
+  live_safety_payload = live_safety.json()
+  assert isinstance(live_safety_payload.get("market_stream_runtime"), dict)
+  assert isinstance(live_safety_payload.get("reconciliation_engine"), dict)
+
+  reconcile = client.get("/api/v1/execution/reconcile/summary", headers=headers)
+  assert reconcile.status_code == 200, reconcile.text
+  assert reconcile.json()["policy_source"]["execution_safety"]["source_hash"]
 
 
 def test_live_backend_qa_compat_runtime_ready_surfaces_stay_coherent(tmp_path: Path, monkeypatch) -> None:
@@ -125,17 +144,23 @@ def test_live_backend_qa_compat_runtime_ready_surfaces_stay_coherent(tmp_path: P
 
   rollout = client.get("/api/v1/rollout/status", headers=headers)
   assert rollout.status_code == 200, rollout.text
-  readiness = (rollout.json().get("readiness_by_stage") or {}).get("items") or []
-  readiness_by_stage = {str(row.get("stage") or ""): row for row in readiness}
-  assert {"PAPER", "TESTNET", "CANARY", "LIVE_SERIO"} <= set(readiness_by_stage)
-  assert isinstance(readiness_by_stage["LIVE_SERIO"].get("reasons"), list)
+  rollout_payload = rollout.json()
+  assert isinstance(rollout_payload.get("phase_evaluations"), dict)
+  assert isinstance(rollout_payload.get("live_signal_telemetry"), dict)
+  assert "readiness_by_stage" not in rollout_payload
 
-  canary = client.get("/api/v1/execution/canary/status", headers=headers)
-  assert canary.status_code == 200, canary.text
-  assert isinstance((canary.json().get("current_evaluation") or {}).get("blocking_sources"), list)
+  readiness = client.get("/api/v1/validation/readiness", headers=headers)
+  assert readiness.status_code == 200, readiness.text
+  readiness_payload = readiness.json()
+  readiness_by_stage = readiness_payload.get("readiness_by_stage") or {}
+  assert {"paper", "testnet", "canary", "live_serio"} <= set(readiness_by_stage)
+  assert isinstance(readiness_by_stage["live_serio"].get("blocking_reasons"), list)
+  assert readiness_payload["live_serio_ready"] is False
 
-  shadow = client.get("/api/v1/rollout/shadow/status", headers=headers)
-  assert shadow.status_code == 200, shadow.text
-  shadow_payload = shadow.json()
-  assert shadow_payload["runtime_contract"]["ready_for_live"] is True
-  assert shadow_payload["telemetry_guard"]["ok"] is True
+  market_streams = client.get("/api/v1/execution/market-streams/summary", headers=headers)
+  assert market_streams.status_code == 200, market_streams.text
+  assert isinstance((market_streams.json().get("runtime_guardrails") or {}), dict)
+
+  live_safety = client.get("/api/v1/execution/live-safety/summary", headers=headers)
+  assert live_safety.status_code == 200, live_safety.text
+  assert isinstance((live_safety.json().get("market_stream_runtime") or {}), dict)

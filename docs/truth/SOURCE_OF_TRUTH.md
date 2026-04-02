@@ -105,13 +105,12 @@ Fecha de actualizacion: 2026-04-02
   - `LIVE`: NO GO
   - el blocker principal ya no es ausencia del core live acoplado en esta rama;
   - los bloqueos restantes para `LIVE_SERIO` son:
-    - push + Draft PR de `feature/live-core-coupled-recovery` para refrescar el release path sobre esta misma base;
+    - ejecutar el release gate sobre la branch ya pusheada `feature/live-core-coupled-recovery` y el Draft PR `#13` ya abierto contra `rtlops-sync-release-live-unification`;
     - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md` con snapshots frescos;
     - aprobacion humana explicita antes de promocion live.
 - Siguiente bloque tecnico exacto despues de este estado:
   - cierre de `Carril 2` sobre esta rama:
-    - push de `feature/live-core-coupled-recovery`;
-    - Draft PR contra `rtlops-sync-release-live-unification`;
+    - conservar el Draft PR `#13` ya abierto contra `rtlops-sync-release-live-unification`;
     - preview/staging refresh si aplica por integracion Git;
     - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md` con snapshots frescos del entorno objetivo.
 - Estado administrativo real de Linear al 2026-04-02:
@@ -183,11 +182,12 @@ Fecha de actualizacion: 2026-04-02
     - `rtlab_autotrader/tests/test_backend_qa_live.py`
   - la suite nueva verifica con `TestClient` y surfaces canonicas:
     - `config/policies`
-    - `execution/health/summary`
-    - `execution/alerts/open` e `execution/alerts/history`
-    - `execution/canary/status`
-    - `rollout/shadow/status`
-    - `rollout/status` con `readiness_by_stage`
+    - `gates`
+    - `rollout/status`
+    - `validation/readiness`
+    - `execution/live-safety/summary`
+    - `execution/reconcile/summary`
+    - `execution/market-streams/summary`
     - `G9_RUNTIME_ENGINE_REAL` fail/pass segun evidencia real de runtime contract
   - RTLOPS-53 queda definido por tres gates chicos y ejecutables:
     - `smoke critico`
@@ -222,15 +222,9 @@ Fecha de actualizacion: 2026-04-02
   - el repo ya tenia `LIVE_SHADOW` en rollout/canary y un shadow legacy de learning, pero el shadow del rollout seguia dependiendo de `blending/preview` manual;
   - faltaba una surface operativa y auditable para enrutar decisiones baseline/candidate durante `LIVE_SHADOW` sin duplicar execution ni mezclarlo con el shadow legacy.
 - Implementacion real:
-  - nuevos endpoints backend-first:
-    - `GET /api/v1/rollout/shadow/status`
-    - `POST /api/v1/rollout/shadow/signal`
-  - `build_rollout_shadow_status()` expone estado operativo fail-closed de shadow sobre surfaces canonicas ya existentes:
-    - rollout actual en `LIVE_SHADOW`
-    - `routing.shadow_only`
-    - `runtime_contract` live listo
-    - `runtime_telemetry_guard` real
-    - eventos recientes de shadow
+  - nota de rama actual:
+    - no aparece hoy una route publica dedicada `GET /api/v1/rollout/shadow/status` ni `POST /api/v1/rollout/shadow/signal` expuesta por `app.py`;
+    - la trazabilidad visible vigente queda en `GET /api/v1/rollout/status` y `POST /api/v1/rollout/blending/preview`
   - `RolloutManager.route_live_signal(...)` ahora persiste mejor trazabilidad:
     - `source_label`
     - `source_refs`

@@ -28,19 +28,15 @@ Fecha: 2026-04-02
     - `account_surface_ok`
     - `account_surface_fresh`
     - `account_can_trade`
-  - `GET /api/v1/rollout/status` expone `readiness_by_stage` consumiendo surfaces canonicas de:
-    - runtime contract real/testnet-live
-    - canary controller
-    - health summary
-    - operational safety
-    - alertas persistentes
+  - la surface canonica de readiness por etapa en esta rama es:
+    - `GET /api/v1/validation/readiness`
+  - `GET /api/v1/rollout/status` conserva estado/config/telemetry de rollout y ya no se usa como source de `readiness_by_stage`
   - `TESTNET` deja de quedar `READY` solo porque un soak previo paso; si el runtime contract actual no esta listo, falla cerrado.
 - [x] `RTLOPS-52` `Shadow Mode operativo`
   - `LIVE_SHADOW` deja de depender solo del preview manual;
-  - nuevo status operativo fail-closed:
-    - `GET /api/v1/rollout/shadow/status`
-  - nueva ingest de decisiones auditables:
-    - `POST /api/v1/rollout/shadow/signal`
+  - nota de rama actual:
+    - no aparece hoy una route publica dedicada `GET /api/v1/rollout/shadow/status` ni `POST /api/v1/rollout/shadow/signal` expuesta por `app.py`;
+    - la trazabilidad visible vigente queda en `GET /api/v1/rollout/status` y `POST /api/v1/rollout/blending/preview`
   - reutiliza rollout manager + runtime contract live + `runtime_telemetry_guard`;
   - endurecimiento final chico:
     - rechaza `baseline_signal` / `candidate_signal` vacios o sin `action` reconocible ni score numerico explicito;
@@ -56,11 +52,12 @@ Fecha: 2026-04-02
   - surfaces cubiertas por la capa QA:
     - `G9_RUNTIME_ENGINE_REAL`
     - `config/policies`
-    - `execution/health/summary`
-    - `execution/alerts/open` + `history`
-    - `execution/canary/status`
-    - `rollout/shadow/status`
-    - `rollout/status` con `readiness_by_stage`
+    - `gates`
+    - `rollout/status`
+    - `validation/readiness`
+    - `execution/live-safety/summary`
+    - `execution/reconcile/summary`
+    - `execution/market-streams/summary`
   - Playwright queda diferido con justificacion honesta:
     - el repo actual muestra base real de `Vitest` en `rtlab_dashboard`, pero no una base Playwright ya integrada y chica para sumarla en este bloque sin expandir alcance;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, no bloqueante para este cierre tecnico.
@@ -142,10 +139,9 @@ Fecha: 2026-04-02
 
 ## Siguiente bloque exacto en esta base
 - [ ] Carril 2 / release path sobre esta misma rama
-  - hacer push de `feature/live-core-coupled-recovery`;
-  - abrir Draft PR contra `rtlops-sync-release-live-unification`;
+  - conservar la branch ya pusheada `feature/live-core-coupled-recovery` y el Draft PR `#13` ya abierto contra `rtlops-sync-release-live-unification`;
   - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` sobre preview/staging o entorno objetivo fresco;
-  - archivar snapshots frescos de `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary`;
+  - archivar snapshots frescos de `gates`, `rollout/status`, `validation/readiness`, `live-safety`, `reconcile` y `market-streams`;
   - decidir `GO` / `NO GO` con evidencia fresca del entorno objetivo.
 
 ## Pendiente fuera de Carril 1

@@ -34,7 +34,7 @@ Este archivo centraliza la documentacion vigente del proyecto.
     - `npm run lint`
     - `npm run build`
     - `npm run test:playwright`
-  - push de `feature/live-core-coupled-recovery` y Draft PR contra `rtlops-sync-release-live-unification`;
+  - la branch `feature/live-core-coupled-recovery` ya esta pusheada y el Draft PR `#13` ya existe contra `rtlops-sync-release-live-unification`;
   - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
   - y recien despues aprobacion humana sobre el entorno objetivo.
 
