@@ -30,7 +30,11 @@ Este archivo centraliza la documentacion vigente del proyecto.
   - `Carril 1` ya recupero materialmente la cohorte tecnica acoplada `RTLOPS-44/45/46/47/48/49/50/23`;
   - el blocker principal ya no es ausencia de `execution/reality` ni de sus runtimes/modulos satelite.
 - Condicion para LIVE en esta base:
-  - revalidar la capa release/UI (`RTLOPS-35` / `RTLOPS-38`) sobre esta misma rama;
+  - la validacion local de release/UI en esta rama ya paso:
+    - `npm run lint`
+    - `npm run build`
+    - `npm run test:playwright`
+  - push de `feature/live-core-coupled-recovery` y Draft PR contra `rtlops-sync-release-live-unification`;
   - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
   - y recien despues aprobacion humana sobre el entorno objetivo.
 

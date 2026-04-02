@@ -1,12 +1,12 @@
 # Runbook: Final live release gate
 
-Fecha: 2026-04-01
+Fecha: 2026-04-02
 
 ## Contexto de este gate
 
-- este artefacto se integra en `Ruta A`;
-- `Ruta A` acepta el core live actual como base parcialmente absorbida y documentada;
-- este bloque no reabre la recuperacion de cohorte de `RTLOPS-23/44/46/47/48/49/50`;
+- este artefacto hoy se usa sobre `feature/live-core-coupled-recovery`;
+- `Carril 1` ya recupero materialmente la cohorte tecnica acoplada `RTLOPS-44/45/46/47/48/49/50/23`;
+- este bloque no reabre esa cohorte: la toma como base tecnica ya recuperada en esta rama;
 - este gate no convierte por si mismo al repo en `LIVE: GO`;
 - el uso correcto es decidir `GO`, `GO con restricciones` o `NO GO` con evidencia fresca y humana sobre el entorno objetivo.
 
@@ -14,9 +14,12 @@ Fecha: 2026-04-01
 
 - decision actual: `NO GO`
 - motivo:
-  - `RTLOPS-35` ya queda integrado en repo como smoke Playwright chica y util, pero no se revalida localmente en este entorno porque faltan `node` y `npm`;
-  - el core live sigue parcialmente absorbido/documentado en `docs/truth`;
-  - habilitar `LIVE_SERIO` sigue requiriendo reevaluacion fresca del entorno objetivo y aprobacion humana explicita.
+  - la rama ya quedo validada localmente para release path con:
+    - `npm run lint` -> PASS
+    - `npm run build` -> PASS
+    - `npm run test:playwright` -> PASS (`3 passed`)
+  - el core live acoplado ya no es el blocker principal en esta rama;
+  - habilitar `LIVE_SERIO` sigue requiriendo snapshots frescos del entorno objetivo y aprobacion humana explicita.
 
 ## Alcance real de la decision
 
@@ -28,7 +31,8 @@ Fecha: 2026-04-01
   - runbooks/rollback de `RTLOPS-37`
   - gates y contratos backend ya presentes en `RTLOPS-51/52/54/29/30`
 - mantiene como limitacion explicita:
-  - el drift documentado del core live `RTLOPS-23/44/46/47/48/49/50`.
+  - aun falta gate final contra el entorno objetivo;
+  - `LIVE` sigue fail-closed hasta reevaluacion fresca y aprobacion humana.
 
 ## Matriz de evidencia util
 
@@ -58,11 +62,10 @@ Fecha: 2026-04-01
 ### 4) Reconciliation
 
 - estado actual en repo:
-  - existe reconciliacion operativa y blocker semantico;
-  - el engine formal sigue parcialmente absorbido/documentado
+  - existe reconciliacion operativa y engine formal recuperado en esta rama
 - lectura correcta:
   - usarlo como gate real;
-  - no declararlo reconciliacion totalmente recuperada.
+  - no declararlo `PASS` hasta snapshot fresco del entorno objetivo.
 
 ### 5) Health / alerts / safety
 
@@ -101,12 +104,12 @@ Fecha: 2026-04-01
   - `tests/playwright/live-smoke.spec.ts`
 - cobertura integrada:
   - login -> `Ejecucion`
-  - visibilidad de `Checklist Live Ready`, `Health Summary`, `Operational Safety`
-  - visibilidad de `Freeze global`, `Unfreeze global`, `Emergency cancel`, `Health evaluate`
+  - visibilidad de `Checklist Live Ready`, `Preflight LIVE Final`, `Reconciliation`
+  - visibilidad de `Refrescar panel`, `Modo seguro ON`, `Cerrar posiciones`, `Kill switch`
   - navegacion a `Alertas y Logs`
-- limitacion honesta:
-  - en este bloque no se ejecuto porque el entorno actual no tiene `node` ni `npm`
-  - hasta revalidarlo, cuenta como capa integrada en repo pero no como evidencia fresca de paso.
+- validacion local fresca:
+  - `npm run test:playwright` -> PASS (`3 passed`)
+  - cuenta como evidencia local de release path en esta rama
 
 ### 10) Runbooks / incidentes
 
@@ -120,7 +123,6 @@ Fecha: 2026-04-01
 
 ## Blockers duros para pasar a LIVE
 
-- no hay revalidacion fresca de `RTLOPS-35` en este entorno;
 - no hay reevaluacion fresca del entorno objetivo para:
   - `preflight`
   - `G9_RUNTIME_ENGINE_REAL`
@@ -130,12 +132,11 @@ Fecha: 2026-04-01
   - `safety`
   - `alerts`
   - `canary`
-- el core live sigue parcialmente absorbido/documentado y no se reconcilia en este bloque.
+- no hay aprobacion humana explicita posterior a esa reevaluacion.
 
 ## Que habilitaria pasar de `NO GO` a decision operable
 
-- correr `RTLOPS-35` en una maquina con `node` y `npm` disponibles;
-- archivar resultado real de la smoke;
+- empujar esta rama y refrescar el entorno de preview/staging que corresponda;
 - ejecutar este gate en el entorno objetivo con snapshots frescos de:
   - `GET /api/v1/gates`
   - `GET /api/v1/rollout/status`
@@ -147,7 +148,9 @@ Fecha: 2026-04-01
 
 ## Proximo paso operativo exacto
 
-- revalidar la smoke Playwright de `RTLOPS-35` en un entorno con `node` y `npm`;
+- hacer push de `feature/live-core-coupled-recovery`;
+- abrir Draft PR contra `rtlops-sync-release-live-unification`;
+- dejar que preview/staging refresque sobre esta rama;
 - ejecutar este gate en el entorno objetivo inmediatamente antes de cualquier promocion live;
 - si alguna surface falla o queda stale:
   - no habilitar live

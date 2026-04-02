@@ -2,6 +2,25 @@
 
 ## 2026-04-02
 
+### Carril 2 - cierre local del release path
+- Housekeeping seguro del bloque:
+  - se borraron temporales/basura locales `ds}`, `erswalte...` y `tatus --short`
+  - `rtlab_autotrader/.tmp/` queda ahora ignorado via `rtlab_autotrader/.gitignore`
+- Revalidacion local final del dashboard/release path:
+  - `rtlab_dashboard/tests/playwright/live-smoke.spec.ts` se ajusto al contrato UI real vigente
+  - `npm run lint` en `rtlab_dashboard` -> PASS
+  - `npm run build` en `rtlab_dashboard` -> PASS
+  - `npm run test:playwright` en `rtlab_dashboard` -> PASS (`3 passed`)
+- Documentacion alineada con el estado real de esta rama:
+  - `docs/runbooks/LIVE_RELEASE_GATE.md`
+  - `docs/START_HERE.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Decision honesta vigente despues de esta revalidacion local:
+  - `LIVE` sigue en `NO GO`
+  - ya no por falta de `node/npm` ni por ausencia del core live acoplado en esta rama
+  - sino por falta de snapshots frescos del entorno objetivo y aprobacion humana explicita
+
 ### Carril 1 - cohorte tecnica acoplada del core live
 - Recuperacion material integrada en esta rama para:
   - `RTLOPS-44`

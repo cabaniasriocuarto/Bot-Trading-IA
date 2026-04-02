@@ -29,10 +29,13 @@ Fecha de actualizacion: 2026-04-02
 - Estado real integrado selectivamente en esta base bajo `Ruta A`:
   - `RTLOPS-35`:
     - smoke Playwright presente en repo (`package.json`, `package-lock.json`, `playwright.config.ts`, `tests/playwright/live-smoke.spec.ts`);
-    - cobertura esperada: login -> `Ejecucion`, surfaces criticas de `Execution`, controles operatorios visibles y navegacion a `Alertas y Logs`.
+    - cobertura vigente: login -> `Ejecucion`, `Checklist Live Ready`, `Preflight LIVE Final`, `Reconciliation`, controles operatorios visibles y navegacion a `Alertas y Logs`;
+    - validacion local fresca en esta rama:
+      - `npm run test:playwright` -> PASS (`3 passed`)
   - `RTLOPS-38`:
     - `docs/runbooks/LIVE_RELEASE_GATE.md` presente como capa final de decision/gate;
-    - el gate queda integrado como artefacto util, pero su decision vigente en esta base sigue siendo `NO GO`.
+    - el gate queda integrado como artefacto util y alineado con el estado actual de esta rama;
+    - su decision vigente en esta base sigue siendo `NO GO` por falta de snapshots frescos del entorno objetivo y aprobacion humana explicita.
 - Recuperacion acoplada confirmada en esta base:
   - modulos nucleo presentes y cableados:
     - `rtlab_autotrader/rtlab_core/execution/reality.py`
@@ -102,14 +105,15 @@ Fecha de actualizacion: 2026-04-02
   - `LIVE`: NO GO
   - el blocker principal ya no es ausencia del core live acoplado en esta rama;
   - los bloqueos restantes para `LIVE_SERIO` son:
-    - revalidacion final de `Ruta A`/release path sobre esta misma base;
+    - push + Draft PR de `feature/live-core-coupled-recovery` para refrescar el release path sobre esta misma base;
     - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md` con snapshots frescos;
     - aprobacion humana explicita antes de promocion live.
 - Siguiente bloque tecnico exacto despues de este estado:
-  - revalidacion final del release path sobre esta rama:
-    - rerun de `RTLOPS-35`/smoke UI si corresponde;
-    - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md`;
-    - preparacion de commit/push/PR de `feature/live-core-coupled-recovery`.
+  - cierre de `Carril 2` sobre esta rama:
+    - push de `feature/live-core-coupled-recovery`;
+    - Draft PR contra `rtlops-sync-release-live-unification`;
+    - preview/staging refresh si aplica por integracion Git;
+    - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md` con snapshots frescos del entorno objetivo.
 - Estado administrativo real de Linear al 2026-04-02:
   - los `Done` de `RTLOPS-44`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50` y `RTLOPS-23` ahora coinciden materialmente con esta rama por recuperacion de cohorte;
   - no se tocaron estados ni comentarios en Linear en este bloque;

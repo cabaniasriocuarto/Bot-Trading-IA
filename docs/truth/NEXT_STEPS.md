@@ -85,12 +85,15 @@ Fecha: 2026-04-02
     - script `npm run test:playwright`
     - dependencia/lockfile `@playwright/test`
   - no reabre backend ni recuperacion de core live;
-  - validacion local pendiente en este entorno porque faltan `node` y `npm`.
+  - validacion local fresca en esta rama:
+    - `npm run lint` -> PASS
+    - `npm run build` -> PASS
+    - `npm run test:playwright` -> PASS (`3 passed`)
 - [x] `RTLOPS-38` `Final live release gate`
   - integrado selectivamente bajo `Ruta A` con:
     - `docs/runbooks/LIVE_RELEASE_GATE.md`
   - el gate queda presente como capa final util;
-  - la decision vigente del gate en esta base sigue siendo `NO GO` hasta revalidacion Playwright + snapshots frescos del entorno objetivo.
+  - la decision vigente del gate en esta base sigue siendo `NO GO` hasta snapshots frescos del entorno objetivo + aprobacion humana explicita.
 - [x] `Carril 1` `Cohorte tecnica acoplada del core live`
   - recuperacion material integrada en esta rama para:
     - `RTLOPS-44`
@@ -134,20 +137,21 @@ Fecha: 2026-04-02
     - `npm run lint` en `rtlab_dashboard` -> PASS
     - `npm run build` en `rtlab_dashboard` -> PASS
   - limite honesto:
-    - no se corrio Playwright en este bloque;
+    - la revalidacion Playwright se resolvio despues en `Carril 2` y hoy ya pasa en esta rama;
     - no se amplio el alcance a Binance Catalog, Vercel ni cost bridge amplio.
 
 ## Siguiente bloque exacto en esta base
 - [ ] Carril 2 / release path sobre esta misma rama
-  - revalidar `RTLOPS-35`/smoke UI si corresponde en esta base ya recuperada;
-  - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md`;
+  - hacer push de `feature/live-core-coupled-recovery`;
+  - abrir Draft PR contra `rtlops-sync-release-live-unification`;
+  - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` sobre preview/staging o entorno objetivo fresco;
   - archivar snapshots frescos de `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary`;
-  - preparar commit/push/PR de `feature/live-core-coupled-recovery`.
+  - decidir `GO` / `NO GO` con evidencia fresca del entorno objetivo.
 
 ## Pendiente fuera de Carril 1
 - [ ] Revalidacion final de `Ruta A`
-  - `RTLOPS-35` y `RTLOPS-38` siguen separados del backend acoplado;
-  - no se tocaron como integracion nueva en este bloque;
+  - `RTLOPS-35` y `RTLOPS-38` ya quedaron validados localmente en esta rama;
+  - sigue pendiente su uso como release path contra preview/staging o entorno objetivo;
   - siguen siendo el paso necesario antes de cualquier promocion live.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
@@ -179,7 +183,7 @@ Fecha: 2026-04-02
   - `RTLOPS-52` = shadow operativo sobre `LIVE_SHADOW`, auditable y fail-closed, sin duplicar execution
   - `RTLOPS-53` = backend QA live con gates reproducibles sobre surfaces canonicas ya cerradas
   - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
-  - `RTLOPS-23/44/46/47/48/49/50` siguen con drift de integracion confirmado en esta rama y no deben tratarse como `[x]` locales solo por `Done` en Linear
+  - la cohorte `RTLOPS-23/44/45/46/47/48/49/50` ya quedo recuperada materialmente en `feature/live-core-coupled-recovery`
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
   - precedence de alerting ya endurecida tambien en config:
     - `severity_rank = [CRITICAL, WARN, INFO]`
