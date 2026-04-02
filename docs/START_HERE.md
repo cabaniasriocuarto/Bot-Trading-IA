@@ -26,10 +26,12 @@ Este archivo centraliza la documentacion vigente del proyecto.
 ## Estado operativo actual
 - `NO-LIVE`: GO (staging/testnet/paper).
 - `LIVE`: NO GO.
-- Condicion para LIVE bajo `Ruta A`:
-  - aceptar explicitamente que el core live de esta base sigue parcialmente absorbido/documentado y no se reabre en este bloque;
-  - revalidar `RTLOPS-35` en un entorno con `node` y `npm`;
-  - ejecutar `RTLOPS-38` mediante `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
+- Estado del core live en esta rama:
+  - `Carril 1` ya recupero materialmente la cohorte tecnica acoplada `RTLOPS-44/45/46/47/48/49/50/23`;
+  - el blocker principal ya no es ausencia de `execution/reality` ni de sus runtimes/modulos satelite.
+- Condicion para LIVE en esta base:
+  - revalidar la capa release/UI (`RTLOPS-35` / `RTLOPS-38`) sobre esta misma rama;
+  - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
   - y recien despues aprobacion humana sobre el entorno objetivo.
 
 ## Ambientes online de prueba (staging)

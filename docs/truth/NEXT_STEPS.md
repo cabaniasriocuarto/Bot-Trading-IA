@@ -1,6 +1,6 @@
 ﻿# NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-01
+Fecha: 2026-04-02
 
 ## Programa LIVE Spot actual
 - [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
@@ -91,50 +91,64 @@ Fecha: 2026-04-01
     - `docs/runbooks/LIVE_RELEASE_GATE.md`
   - el gate queda presente como capa final util;
   - la decision vigente del gate en esta base sigue siendo `NO GO` hasta revalidacion Playwright + snapshots frescos del entorno objetivo.
-
-## Drift confirmado en esta base antes de seguir con UI/release
-- [ ] `RTLOPS-23` `Reconciliation Engine formal`
-  - absorbido parcial en `app.py` + `execution/reconciliation.py`;
-  - faltan `reconciliation_engine.py` y storage persistente del cierre fuente `aa2ebd4`;
-  - el commit fuente no es ancestro de esta rama.
-- [ ] `RTLOPS-47` `Live Preflight final`
-  - absorbido parcial por freshness/expiry y hard blocks actuales;
-  - faltan `live_preflight.py` y attestation manual persistida del cierre fuente `1335857`;
-  - la base actual expone `preflight_attestation_supported = false`.
-- [ ] `RTLOPS-48` `State machine formal de orden live`
-  - absorbido parcial por reconciliacion de `openOrders`, idempotencia y `unknown_timeout`;
-  - faltan `live_order_state.py` y journal append-only del cierre fuente `a320f7d`.
-- [ ] `RTLOPS-49` `Exchange adapter live hardening`
-  - absorbido parcial por signed REST live embebido en `app.py`;
-  - no existe `binance_adapter.py` ni el cierre fuente `27a2367` como ancestro.
-- [ ] `RTLOPS-50` `Persistencia canonica de fills/eventos live`
-  - absorbido parcial por métricas runtime y actualización de `filled_qty`;
-  - faltan `live_fill_state.py`, reconciliación con `myTrades` y storage canónico del cierre fuente `3f1f36b`.
-- [ ] `RTLOPS-44` `Market WebSocket Runtime live`
-  - no absorbido en esta base;
-  - faltan `live_market_runtime.py`, `binance_live_runtime.yaml` y endpoints `/api/v1/execution/market-streams/*` del cierre fuente `8f615bc`.
-- [ ] `RTLOPS-46` `Exchange filters pre-validator hardening`
-  - no absorbido en esta base;
-  - falta `filter_prevalidator.py` y la policy explícita del cierre fuente `4785d86`.
-- [ ] `RTLOPS-45` `Private user/account/order streams live`
-  - pendiente de revalidacion puntual;
-  - no se auditó con el mismo rigor en este bloque y no debe tratarse como claim fuerte de integración local.
+- [x] `Carril 1` `Cohorte tecnica acoplada del core live`
+  - recuperacion material integrada en esta rama para:
+    - `RTLOPS-44`
+    - `RTLOPS-45`
+    - `RTLOPS-46`
+    - `RTLOPS-47`
+    - `RTLOPS-48`
+    - `RTLOPS-49`
+    - `RTLOPS-50`
+    - `RTLOPS-23`
+  - nucleo recuperado:
+    - `execution/reality.py`
+    - `binance_adapter.py`
+    - `live_user_stream_runtime.py`
+    - `live_market_runtime.py`
+    - `filter_prevalidator.py`
+    - `live_preflight.py`
+    - `live_order_state.py`
+    - `live_fill_state.py`
+    - `reconciliation_engine.py`
+    - wiring en `web/app.py`
+  - satelites imprescindibles incorporados:
+    - `execution/__init__.py`
+    - `instruments/__init__.py`
+    - `runtime_controls.py`
+    - `reporting/service.py`
+    - `universe/service.py`
+    - `validation/service.py`
+    - policy bundle minimo real:
+      - `execution_router.yaml`
+      - `runtime_controls.yaml`
+      - `instrument_registry.yaml`
+      - `universes.yaml`
+      - `cost_stack.yaml`
+      - `reporting_exports.yaml`
+      - `validation_gates.yaml`
+  - validacion real corrida:
+    - `py_compile` de modulos Python tocados -> PASS
+    - `uv run pytest tests/test_policy_paths.py tests/test_execution_reality.py tests/test_web_execution_reality_api.py` -> PASS (`91 passed`)
+    - `uv run pytest tests/test_web_live_ready.py -k "preflight or reconciliation or pending_cancel or partially_filled or expired_in_match or fills_recent or filled_qty or runtime_sync_testnet or live_mode_requires_clean_reconciliation_gate or live_start_requires_clean_reconciliation_gate"` -> PASS (`34 passed`, `93 deselected`)
+    - `npm run lint` en `rtlab_dashboard` -> PASS
+    - `npm run build` en `rtlab_dashboard` -> PASS
+  - limite honesto:
+    - no se corrio Playwright en este bloque;
+    - no se amplio el alcance a Binance Catalog, Vercel ni cost bridge amplio.
 
 ## Siguiente bloque exacto en esta base
-- [ ] Revalidacion operativa de `Ruta A`
-  - correr `RTLOPS-35` en una maquina con `node` y `npm`;
-  - ejecutar `npm run test:playwright` en `rtlab_dashboard`;
-  - si el entorno lo permite, correr tambien `lint` o build minimo del dashboard para confirmar que la capa UI/playwright no quedo rota;
-  - archivar el resultado real de la smoke.
-- [ ] Ejecucion del gate final en entorno objetivo
-  - usar `docs/runbooks/LIVE_RELEASE_GATE.md`;
-  - reevaluar `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary` con snapshots frescos antes de cualquier promocion live.
+- [ ] Carril 2 / release path sobre esta misma rama
+  - revalidar `RTLOPS-35`/smoke UI si corresponde en esta base ya recuperada;
+  - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md`;
+  - archivar snapshots frescos de `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary`;
+  - preparar commit/push/PR de `feature/live-core-coupled-recovery`.
 
-## Pendiente fuera de Ruta A
-- [ ] Recuperacion / reconciliacion del core live (`RTLOPS-23/44/46/47/48/49/50`)
-  - queda deliberadamente fuera de este bloque;
-  - sigue documentado como drift real de esta base;
-  - solo debe reabrirse en una linea separada si se decide priorizar reconciliacion arquitectonica por encima del release/UI path.
+## Pendiente fuera de Carril 1
+- [ ] Revalidacion final de `Ruta A`
+  - `RTLOPS-35` y `RTLOPS-38` siguen separados del backend acoplado;
+  - no se tocaron como integracion nueva en este bloque;
+  - siguen siendo el paso necesario antes de cualquier promocion live.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.

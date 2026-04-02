@@ -1,0 +1,54 @@
+instrument_registry:
+  sync:
+    manual_enabled: true
+    startup_enabled: true
+    startup_timeout_sec: 20
+    request_timeout_sec: 12
+    retries: 3
+    retry_backoff_sec: [0.5, 1.0, 2.0]
+  freshness:
+    warn_if_snapshot_older_than_hours: 24
+    block_if_snapshot_older_than_hours: 72
+  diffing:
+    enabled: true
+    symbol_count_warn_delta_pct: 10.0
+    symbol_count_block_delta_pct: 35.0
+    removed_live_eligible_warn_count: 5
+    removed_live_eligible_block_count: 20
+  eligibility:
+    require_status_active: true
+    require_basic_filters: true
+    require_permission_metadata_for_margin: true
+    delivery_block_if_hours_to_expiry_lt: 72
+  environments:
+    spot:
+      live: true
+      testnet: true
+    margin:
+      live: true
+      testnet: false
+    usdm_futures:
+      live: true
+      testnet: true
+    coinm_futures:
+      live: true
+      testnet: true
+  endpoints:
+    spot:
+      live: "https://api.binance.com/api/v3/exchangeInfo"
+      testnet: "https://testnet.binance.vision/api/v3/exchangeInfo"
+      account: "/api/v3/account"
+    margin:
+      live_catalog_from: "spot"
+      live_account: "https://api.binance.com/sapi/v1/margin/account"
+      testnet_account: null
+    usdm_futures:
+      live: "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      testnet: "https://demo-fapi.binance.com/fapi/v1/exchangeInfo"
+      account_live: "https://fapi.binance.com/fapi/v2/account"
+      account_testnet: "https://demo-fapi.binance.com/fapi/v2/account"
+    coinm_futures:
+      live: "https://dapi.binance.com/dapi/v1/exchangeInfo"
+      testnet: "https://testnet.binancefuture.com/dapi/v1/exchangeInfo"
+      account_live: "https://dapi.binance.com/dapi/v1/account"
+      account_testnet: "https://testnet.binancefuture.com/dapi/v1/account"

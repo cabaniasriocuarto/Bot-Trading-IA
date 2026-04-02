@@ -1,5 +1,54 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-02
+
+### Carril 1 - cohorte tecnica acoplada del core live
+- Recuperacion material integrada en esta rama para:
+  - `RTLOPS-44`
+  - `RTLOPS-45`
+  - `RTLOPS-46`
+  - `RTLOPS-47`
+  - `RTLOPS-48`
+  - `RTLOPS-49`
+  - `RTLOPS-50`
+  - `RTLOPS-23`
+- Paquete tecnico recuperado:
+  - `execution/reality.py`
+  - `binance_adapter.py`
+  - `live_user_stream_runtime.py`
+  - `live_market_runtime.py`
+  - `filter_prevalidator.py`
+  - `live_preflight.py`
+  - `live_order_state.py`
+  - `live_fill_state.py`
+  - `reconciliation_engine.py`
+  - wiring asociado en `web/app.py`
+- Satelites imprescindibles agregados para dejar la cohorte autoconsistente:
+  - `execution/__init__.py`
+  - `instruments/__init__.py`
+  - `reporting/service.py`
+  - `runtime_controls.py`
+  - `universe/service.py`
+  - `validation/service.py`
+  - root + compat de:
+    - `execution_router.yaml`
+    - `runtime_controls.yaml`
+    - `instrument_registry.yaml`
+    - `universes.yaml`
+    - `cost_stack.yaml`
+    - `reporting_exports.yaml`
+    - `validation_gates.yaml`
+- Validacion real corrida en este bloque:
+  - `py_compile` sobre modulos Python tocados -> PASS
+  - `uv run pytest tests/test_policy_paths.py tests/test_execution_reality.py tests/test_web_execution_reality_api.py` -> PASS (`91 passed`)
+  - `uv run pytest tests/test_web_live_ready.py -k "preflight or reconciliation or pending_cancel or partially_filled or expired_in_match or fills_recent or filled_qty or runtime_sync_testnet or live_mode_requires_clean_reconciliation_gate or live_start_requires_clean_reconciliation_gate"` -> PASS (`34 passed`, `93 deselected`)
+  - `npm run lint` en `rtlab_dashboard` -> PASS
+  - `npm run build` en `rtlab_dashboard` -> PASS
+- Limites honestos:
+  - no se corrio Playwright en este bloque;
+  - no se tocaron Binance Catalog, Vercel ni un cost bridge/reporting mas amplio que el estrictamente necesario para esta cohorte;
+  - la decision `LIVE` sigue en `NO GO` hasta el gate final de release sobre esta misma base.
+
 ## 2026-04-01
 
 ### Ruta A - sync selectivo de RTLOPS-35 y RTLOPS-38

@@ -1,8 +1,8 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-01
+Fecha de actualizacion: 2026-04-02
 
-## Programa LIVE Spot actual - 2026-04-01
+## Programa LIVE Spot actual - 2026-04-02
 
 - Estado real absorbido y revalidado en esta base para la linea LIVE Spot:
   - `RTLOPS-37` Live Runbooks + docs/truth + incidentes/rollback
@@ -17,56 +17,75 @@ Fecha de actualizacion: 2026-04-01
   - `RTLOPS-36` validacion `paper -> testnet -> canary`
   - `RTLOPS-29` operational safety guardrails
   - `RTLOPS-30` health summary live + score explicable + degraded visibility
+  - `Carril 1 - cohorte tecnica acoplada del core live`:
+    - `RTLOPS-44`
+    - `RTLOPS-45`
+    - `RTLOPS-46`
+    - `RTLOPS-47`
+    - `RTLOPS-48`
+    - `RTLOPS-49`
+    - `RTLOPS-50`
+    - `RTLOPS-23`
 - Estado real integrado selectivamente en esta base bajo `Ruta A`:
   - `RTLOPS-35`:
     - smoke Playwright presente en repo (`package.json`, `package-lock.json`, `playwright.config.ts`, `tests/playwright/live-smoke.spec.ts`);
-    - cobertura esperada: login -> `Ejecucion`, surfaces criticas de `Execution`, controles operatorios visibles y navegacion a `Alertas y Logs`;
-    - no revalidado localmente en este bloque porque el entorno actual no tiene `node` ni `npm`.
+    - cobertura esperada: login -> `Ejecucion`, surfaces criticas de `Execution`, controles operatorios visibles y navegacion a `Alertas y Logs`.
   - `RTLOPS-38`:
     - `docs/runbooks/LIVE_RELEASE_GATE.md` presente como capa final de decision/gate;
-    - el gate queda integrado como artefacto util, pero su decision vigente en esta base sigue siendo `NO GO`;
-    - no se usa este bloque para vender recuperacion completa del core live.
-- Drift confirmado entre esta base y cierres `Done` en Linear / ramas fuente:
-  - `RTLOPS-23`:
-    - absorbido parcial en `rtlab_autotrader/rtlab_core/web/app.py` + `rtlab_autotrader/rtlab_core/execution/reconciliation.py`;
-    - faltan `reconciliation_engine.py` y el storage persistente de `reconciliation_cases / reconciliation_case_events / reconciliation_snapshots` del cierre fuente `aa2ebd4`.
-  - `RTLOPS-47`:
-    - absorbido parcial por freshness/expiry + hard blocks actuales;
-    - faltan `live_preflight.py` y la attestation manual persistida del cierre fuente `1335857`;
-    - la base actual expone `preflight_attestation_supported = false`.
-  - `RTLOPS-48`:
-    - absorbido parcial por reconciliacion de `openOrders`, idempotencia, `unknown_timeout` y mapeo de estados remotos en `app.py`;
-    - faltan `live_order_state.py` y journal append-only del cierre fuente `a320f7d`.
-  - `RTLOPS-49`:
-    - absorbido parcial por signed REST live en `app.py` (`/api/v3/account`, `/api/v3/order`, `/api/v3/openOrders`, `recvWindow`);
-    - no existe `binance_adapter.py` ni el cierre fuente `27a2367` como ancestro de esta rama.
-  - `RTLOPS-50`:
-    - absorbido parcial por métricas de fills/runtime cost proxy y actualización de `filled_qty` desde `openOrders` / `order status`;
-    - faltan `live_fill_state.py`, reconciliación con `myTrades` y storage canónico de fills del cierre fuente `3f1f36b`.
-  - `RTLOPS-44`:
-    - no absorbido en esta base;
-    - faltan `live_market_runtime.py`, `binance_live_runtime.yaml` y endpoints `/api/v1/execution/market-streams/*` del cierre fuente `8f615bc`.
-  - `RTLOPS-46`:
-    - no absorbido en esta base;
-    - falta `filter_prevalidator.py` y la policy explícita del cierre fuente `4785d86`.
-- Pendiente de validar en esta base:
-  - `RTLOPS-45`:
-    - no se reauditó en este bloque;
-    - no debe usarse como claim fuerte de integración local hasta contrastarlo de nuevo con repo/ramas fuente.
+    - el gate queda integrado como artefacto util, pero su decision vigente en esta base sigue siendo `NO GO`.
+- Recuperacion acoplada confirmada en esta base:
+  - modulos nucleo presentes y cableados:
+    - `rtlab_autotrader/rtlab_core/execution/reality.py`
+    - `rtlab_autotrader/rtlab_core/execution/binance_adapter.py`
+    - `rtlab_autotrader/rtlab_core/execution/live_user_stream_runtime.py`
+    - `rtlab_autotrader/rtlab_core/execution/live_market_runtime.py`
+    - `rtlab_autotrader/rtlab_core/execution/filter_prevalidator.py`
+    - `rtlab_autotrader/rtlab_core/execution/live_preflight.py`
+    - `rtlab_autotrader/rtlab_core/execution/live_order_state.py`
+    - `rtlab_autotrader/rtlab_core/execution/live_fill_state.py`
+    - `rtlab_autotrader/rtlab_core/execution/reconciliation_engine.py`
+    - wiring asociado en `rtlab_autotrader/rtlab_core/web/app.py`
+  - satelites imprescindibles recuperados para que la cohorte quede autoconsistente:
+    - `rtlab_autotrader/rtlab_core/execution/__init__.py`
+    - `rtlab_autotrader/rtlab_core/instruments/__init__.py`
+    - `rtlab_autotrader/rtlab_core/reporting/__init__.py`
+    - `rtlab_autotrader/rtlab_core/reporting/service.py`
+    - `rtlab_autotrader/rtlab_core/runtime_controls.py`
+    - `rtlab_autotrader/rtlab_core/universe/__init__.py`
+    - `rtlab_autotrader/rtlab_core/universe/service.py`
+    - `rtlab_autotrader/rtlab_core/validation/__init__.py`
+    - `rtlab_autotrader/rtlab_core/validation/service.py`
+  - policy bundle minimo real presente en raiz canonica y compat:
+    - `execution_safety.yaml`
+    - `execution_router.yaml`
+    - `binance_live_runtime.yaml`
+    - `runtime_controls.yaml`
+    - `instrument_registry.yaml`
+    - `universes.yaml`
+    - `cost_stack.yaml`
+    - `reporting_exports.yaml`
+    - `validation_gates.yaml`
+  - tests backend/API corridos sobre esta cohorte:
+    - `py_compile` de modulos tocados -> PASS
+    - `uv run pytest tests/test_policy_paths.py tests/test_execution_reality.py tests/test_web_execution_reality_api.py` -> PASS (`91 passed`)
+    - `uv run pytest tests/test_web_live_ready.py -k "preflight or reconciliation or pending_cancel or partially_filled or expired_in_match or fills_recent or filled_qty or runtime_sync_testnet or live_mode_requires_clean_reconciliation_gate or live_start_requires_clean_reconciliation_gate"` -> PASS (`34 passed`, `93 deselected`)
+    - `npm run lint` en `rtlab_dashboard` -> PASS
+    - `npm run build` en `rtlab_dashboard` -> PASS
 - Arquitectura real del repo para esta linea:
-  - backend concentrado en `rtlab_autotrader/rtlab_core/web/app.py` con `ConsoleStore` + `RuntimeBridge`;
+  - backend concentrado en `rtlab_autotrader/rtlab_core/web/app.py` con `ConsoleStore` + `RuntimeBridge` + `ExecutionRealityService`;
   - policies numericas canonicas en `config/policies/`;
   - `rtlab_autotrader/config/policies/` queda como compatibilidad/fallback y no como autoridad equivalente;
-  - capas realmente consolidadas hoy en esta base:
-    - `live_signals`,
-    - `alerts`,
-    - `operational_safety`,
-    - `health_summary`,
-    - `canary`,
-    - `rollout` (`RTLOPS-51/52`),
-    - `backend QA` (`RTLOPS-53`),
-    - runbooks live (`RTLOPS-37`);
-  - esta base no contiene hoy los módulos fuente dedicados:
+  - capas consolidadas hoy en esta base:
+    - `live_signals`
+    - `alerts`
+    - `operational_safety`
+    - `health_summary`
+    - `canary`
+    - `rollout` (`RTLOPS-51/52`)
+    - `backend QA` (`RTLOPS-53`)
+    - runbooks live (`RTLOPS-37`)
+    - cohorte live acoplada `44/45/46/47/48/49/50/23`
+  - esta base ya contiene hoy los modulos fuente dedicados que antes faltaban:
     - `reconciliation_engine.py`
     - `live_market_runtime.py`
     - `filter_prevalidator.py`
@@ -74,34 +93,27 @@ Fecha de actualizacion: 2026-04-01
     - `live_order_state.py`
     - `binance_adapter.py`
     - `live_fill_state.py`
-  - `Ruta A` vigente en esta base:
-    - acepta operativamente el core live como parcialmente absorbido y documentado;
-    - no reabre la recuperacion de cohorte del core live en este bloque;
-    - integra `RTLOPS-35/38` solo como capa release/UI selectiva.
-  - por lo tanto, el estado operativo correcto sigue siendo `LIVE: NO GO` hasta:
-    - revalidar `RTLOPS-35` en un entorno con `node` y `npm`;
-    - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
-    - obtener aprobacion humana explicita antes de `LIVE_SERIO`.
+- Que sigue fuera o no cerrado por este bloque:
+  - `RTLOPS-61` `Cost source snapshots live por familia` sigue separado como linea transversal de costos/reporting;
+  - no se tocaron Binance Catalog, Vercel ni un cost/reporting bridge mas amplio que el estrictamente necesario para esta cohorte;
+  - no se tocaron `RTLOPS-35/38` como integracion nueva: solo se preserva su estado ya presente en esta base.
+- Estado operativo correcto:
+  - `NO-LIVE`: GO
+  - `LIVE`: NO GO
+  - el blocker principal ya no es ausencia del core live acoplado en esta rama;
+  - los bloqueos restantes para `LIVE_SERIO` son:
+    - revalidacion final de `Ruta A`/release path sobre esta misma base;
+    - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md` con snapshots frescos;
+    - aprobacion humana explicita antes de promocion live.
 - Siguiente bloque tecnico exacto despues de este estado:
-  - revalidacion operativa de `Ruta A`:
-    - correr `npm run test:playwright` para `RTLOPS-35` en un entorno con `node`/`npm`;
-    - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo;
-    - archivar snapshots frescos de `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary`.
-  - recuperacion/reconciliacion del core live (`RTLOPS-23/44/46/47/48/49/50`) queda fuera de este bloque y sigue pendiente como linea arquitectonica separada.
-- Follow-up chico administrativo/arquitectonico abierto en Linear:
-  - `RTLOPS-61` `Cost source snapshots live por familia`;
-  - sigue separado como linea transversal de costos/reporting y no como parte del canary controller.
-- Estado administrativo real de Linear al 2026-04-01:
-  - cierres recientes sincronizados en `Done` para `RTLOPS-23`, `RTLOPS-26`, `RTLOPS-27`, `RTLOPS-37`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50`, `RTLOPS-29`, `RTLOPS-30`, `RTLOPS-51`, `RTLOPS-52`, `RTLOPS-53`, `RTLOPS-54` y `RTLOPS-66`;
-  - `Done` en Linear no equivale en esta base a ancestro integrado para `RTLOPS-23`, `RTLOPS-44`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49` y `RTLOPS-50`;
-  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI; no bloquea el repo ni la secuencia tecnica real.
-  - inconsistencia nueva observada en el subarbol UI/playwright:
-    - `RTLOPS-35` sigue bloqueada en Linear por `RTLOPS-24/32/33/34`;
-    - el repo y `docs/truth` ya muestran trabajo live UI mas avanzado que esa foto administrativa;
-    - no se corrigio en este bloque porque RTLOPS-37 es documental y esa limpieza requiere validacion puntual en Linear UI.
-  - drift adicional vigente en esta rama:
-    - `RTLOPS-35` y `RTLOPS-38` figuran `Done` en Linear y ahora quedan integradas selectivamente en repo bajo `Ruta A`;
-    - su validacion local sigue parcial porque este entorno no tiene `node` ni `npm.cmd`.
+  - revalidacion final del release path sobre esta rama:
+    - rerun de `RTLOPS-35`/smoke UI si corresponde;
+    - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md`;
+    - preparacion de commit/push/PR de `feature/live-core-coupled-recovery`.
+- Estado administrativo real de Linear al 2026-04-02:
+  - los `Done` de `RTLOPS-44`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50` y `RTLOPS-23` ahora coinciden materialmente con esta rama por recuperacion de cohorte;
+  - no se tocaron estados ni comentarios en Linear en este bloque;
+  - la relacion `RTLOPS-51` / `RTLOPS-54` sigue con sync administrativo pendiente en Linear UI y no bloquea esta base.
 
 ## RTLOPS-37 - Live Runbooks + docs/truth + incidentes/rollback - 2026-03-24
 
