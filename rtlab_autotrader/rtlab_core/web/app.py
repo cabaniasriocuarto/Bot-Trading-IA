@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import copy
 import csv
 import hashlib
 import hmac
@@ -20,7 +21,6 @@ from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Literal
 from urllib.parse import urlencode, urlparse
-from uuid import uuid4
 
 import requests
 import yaml
@@ -36,78 +36,17 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
-from rtlab_core.execution.canary import (
-    CANARY_PHASES,
-    build_canary_gate_reason,
-    build_canary_gate_evaluation as finalize_canary_gate_evaluation,
-    canary_phase_is_terminal,
-    canary_scope_key,
-    decide_canary_phase_transition,
-    normalize_canary_event_type,
-    normalize_canary_phase,
-    normalize_canary_scope_type,
-    sort_canary_gate_reasons,
-)
+from rtlab_core.execution import ExecutionRealityService
 from rtlab_core.execution.alerts import (
-    alert_catalog_entry,
-    alert_scope_key,
-    alert_scope_matches,
-    alert_severity_rank,
-    alert_state_active,
-    alert_summary_text,
-    build_alert_event,
-    build_alert_instance,
-    choose_alert_severity_candidate,
-    choose_alert_severity_with_precedence,
-    default_alert_catalog_entries,
-    normalize_alert_event_type,
-    normalize_alert_scope_type,
-    normalize_alert_severity,
-    normalize_alert_severity_precedence,
-    normalize_alert_source_layer,
-    normalize_alert_source_precedence,
-    normalize_alert_state,
-    normalize_alert_trigger_code,
+    DEFAULT_ALERT_SEVERITY_PRECEDENCE,
+    DEFAULT_ALERT_SOURCE_PRECEDENCE,
 )
+from rtlab_core.execution.live_preflight import LivePreflightDB, attestation_status
+from rtlab_core.execution.live_market_runtime import load_binance_live_runtime_bundle
+from rtlab_core.execution.reality import load_execution_router_bundle, load_execution_safety_bundle
 from rtlab_core.execution.oms import OMS, Order
-from rtlab_core.execution.health_summary import (
-    build_health_reason,
-    finalize_health_scope,
-    finalize_live_health_summary,
-    health_severity_rank,
-    health_scope_matches,
-    health_scope_key,
-    normalize_health_reason_code,
-    normalize_health_scope_type,
-)
-from rtlab_core.execution.live_signals import (
-    LIVE_SIGNAL_SCHEMA_VERSION,
-    build_live_signal_payload,
-    build_live_signal_event,
-    build_live_signal_snapshot,
-    live_signal_numeric_metrics,
-    live_signal_refs,
-    live_signal_scope_key,
-    live_signal_snapshot_payload,
-    live_signal_state_values,
-    live_signal_timestamps_ms,
-    normalize_live_signal_scope_type,
-    normalize_live_signal_severity,
-    normalize_live_signal_snapshot_type,
-    normalize_live_signal_source_type,
-    normalize_live_signal_source_status,
-)
-from rtlab_core.execution.operational_safety import (
-    normalize_safety_breaker_action,
-    normalize_safety_breaker_state,
-    normalize_safety_event_severity,
-    normalize_safety_manual_action_type,
-    normalize_safety_scope_type,
-    normalize_safety_trigger_code,
-    safety_breaker_blocks_live,
-    safety_scope_matches,
-)
 from rtlab_core.execution.reconciliation import reconcile_orders
+from rtlab_core.instruments import BinanceInstrumentRegistryService
 from rtlab_core.learning import LearningService
 from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.knowledge import KnowledgeLoader
@@ -115,9 +54,16 @@ from rtlab_core.learning.option_b_engine import OptionBLearningEngine
 from rtlab_core.learning.shadow_runner import BINANCE_PUBLIC_MARKETDATA_BASE_URL, ShadowRunConfig, ShadowRunner
 from rtlab_core.mode_taxonomy import GLOBAL_RUNTIME_MODES, mode_taxonomy_payload, normalize_bot_policy_mode, normalize_global_runtime_mode
 from rtlab_core.policy_paths import describe_policy_root_resolution, resolve_policy_root
+from rtlab_core.reporting import ReportingBridgeService
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
+from rtlab_core.runtime_controls import (
+    alert_thresholds_policy,
+    default_global_runtime_mode as runtime_default_global_mode,
+    load_runtime_controls_bundle,
+    observability_policy,
+)
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.data.loader import DataLoader
@@ -126,12 +72,40 @@ from rtlab_core.src.research import MassBacktestCoordinator, MassBacktestEngine
 from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngine
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 from rtlab_core.types import OrderStatus, Side
+from rtlab_core.universe import InstrumentUniverseService
+from rtlab_core.validation import ValidationService, load_validation_gates_bundle
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 MONOREPO_ROOT = (PROJECT_ROOT.parent if (PROJECT_ROOT.parent / "knowledge").exists() else PROJECT_ROOT).resolve()
 DEFAULT_CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
 CONFIG_POLICIES_ROOT = resolve_policy_root(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
+_OBSERVABILITY_POLICY = observability_policy(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+_ALERT_THRESHOLDS_POLICY = alert_thresholds_policy(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+_RUNTIME_TELEMETRY_POLICY = (
+    _OBSERVABILITY_POLICY.get("runtime_telemetry")
+    if isinstance(_OBSERVABILITY_POLICY.get("runtime_telemetry"), dict)
+    else {}
+)
+_OBSERVABILITY_LOGGING_POLICY = (
+    _OBSERVABILITY_POLICY.get("logging")
+    if isinstance(_OBSERVABILITY_POLICY.get("logging"), dict)
+    else {}
+)
+_BREAKER_ALERT_THRESHOLDS = (
+    _ALERT_THRESHOLDS_POLICY.get("breaker_integrity")
+    if isinstance(_ALERT_THRESHOLDS_POLICY.get("breaker_integrity"), dict)
+    else {}
+)
+_OPS_ALERT_THRESHOLDS = (
+    _ALERT_THRESHOLDS_POLICY.get("operations")
+    if isinstance(_ALERT_THRESHOLDS_POLICY.get("operations"), dict)
+    else {}
+)
+DEFAULT_GLOBAL_RUNTIME_MODE = runtime_default_global_mode(
+    repo_root=MONOREPO_ROOT,
+    explicit_root=DEFAULT_CONFIG_POLICIES_ROOT,
+)
 
 
 def _resolve_user_data_dir() -> Path:
@@ -194,6 +168,7 @@ BOT_STATE_PATH = USER_DATA_DIR / "logs" / "bot_state.json"
 STRATEGY_META_PATH = STRATEGY_PACKS_DIR / "strategy_meta.json"
 RUNS_PATH = USER_DATA_DIR / "backtests" / "runs.json"
 BACKTEST_CATALOG_DB_PATH = USER_DATA_DIR / "backtests" / "catalog.sqlite3"
+INSTRUMENT_REGISTRY_DB_PATH = USER_DATA_DIR / "instruments" / "registry.sqlite3"
 BOTS_PATH = USER_DATA_DIR / "learning" / "bots.json"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -208,8 +183,12 @@ DEFAULT_VIEWER_PASSWORD = ""  # No hay default seguro — configurar VIEWER_PASS
 RUNTIME_ENGINE_REAL = "real"
 RUNTIME_ENGINE_SIMULATED = "simulated"
 RUNTIME_CONTRACT_VERSION = "runtime_snapshot_v1"
-RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = "synthetic_v1"
-RUNTIME_TELEMETRY_SOURCE_REAL = "runtime_loop_v1"
+RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = str(
+    _RUNTIME_TELEMETRY_POLICY["synthetic_source"]
+).strip().lower()
+RUNTIME_TELEMETRY_SOURCE_REAL = str(
+    _RUNTIME_TELEMETRY_POLICY["real_source"]
+).strip().lower()
 BINANCE_TESTNET_BASE_URL_DEFAULT = "https://testnet.binance.vision"
 BINANCE_TESTNET_WS_URL_DEFAULT = "wss://testnet.binance.vision/ws"
 BINANCE_LIVE_BASE_URL_DEFAULT = "https://api.binance.com"
@@ -279,14 +258,62 @@ RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER
 RUNTIME_REMOTE_ORDER_SYMBOL = str(os.getenv("RUNTIME_REMOTE_ORDER_SYMBOL", os.getenv("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))).strip().upper()
 RUNTIME_REMOTE_ORDER_SIDE = str(os.getenv("RUNTIME_REMOTE_ORDER_SIDE", "BUY")).strip().upper()
 RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC = max(1, _env_int("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", 20))
-BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
-BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
-BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
-SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(1, _env_int("SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC", 60))
-OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(0.1, _env_float("OPS_ALERT_SLIPPAGE_P95_WARN_BPS", 8.0))
-OPS_ALERT_API_ERRORS_WARN = max(1, _env_int("OPS_ALERT_API_ERRORS_WARN", 1))
-OPS_ALERT_BREAKER_WINDOW_HOURS = max(1, _env_int("OPS_ALERT_BREAKER_WINDOW_HOURS", 24))
-OPS_ALERT_DRIFT_ENABLED = _env_bool("OPS_ALERT_DRIFT_ENABLED", True)
+BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(
+    1,
+    _env_int(
+        "BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS",
+        int(_BREAKER_ALERT_THRESHOLDS["integrity_window_hours"]),
+    ),
+)
+BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(
+    1.0,
+    max(
+        0.0,
+        _env_float(
+            "BREAKER_EVENTS_UNKNOWN_RATIO_WARN",
+            float(_BREAKER_ALERT_THRESHOLDS["unknown_ratio_warn"]),
+        ),
+    ),
+)
+BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(
+    1,
+    _env_int(
+        "BREAKER_EVENTS_UNKNOWN_MIN_EVENTS",
+        int(_BREAKER_ALERT_THRESHOLDS["min_events_warn"]),
+    ),
+)
+SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(
+    1,
+    _env_int(
+        "SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC",
+        int(_OBSERVABILITY_LOGGING_POLICY["security_internal_header_alert_throttle_sec"]),
+    ),
+)
+OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(
+    0.1,
+    _env_float(
+        "OPS_ALERT_SLIPPAGE_P95_WARN_BPS",
+        float(_OPS_ALERT_THRESHOLDS["slippage_p95_warn_bps"]),
+    ),
+)
+OPS_ALERT_API_ERRORS_WARN = max(
+    1,
+    _env_int(
+        "OPS_ALERT_API_ERRORS_WARN",
+        int(_OPS_ALERT_THRESHOLDS["api_errors_warn"]),
+    ),
+)
+OPS_ALERT_BREAKER_WINDOW_HOURS = max(
+    1,
+    _env_int(
+        "OPS_ALERT_BREAKER_WINDOW_HOURS",
+        int(_OPS_ALERT_THRESHOLDS["breaker_window_hours"]),
+    ),
+)
+OPS_ALERT_DRIFT_ENABLED = _env_bool(
+    "OPS_ALERT_DRIFT_ENABLED",
+    bool(_OPS_ALERT_THRESHOLDS["drift_enabled"]),
+)
 SHADOW_MARKETDATA_BASE_URL = str(os.getenv("SHADOW_MARKETDATA_BASE_URL", BINANCE_PUBLIC_MARKETDATA_BASE_URL)).strip() or BINANCE_PUBLIC_MARKETDATA_BASE_URL
 SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 300))
 SHADOW_DEFAULT_POLL_SEC = max(10, _env_int("SHADOW_DEFAULT_POLL_SEC", 30))
@@ -368,197 +395,6 @@ CREATE TABLE IF NOT EXISTS breaker_events (
 );
 CREATE INDEX IF NOT EXISTS idx_breaker_events_bot_mode_ts ON breaker_events(bot_id, mode, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_breaker_events_ts ON breaker_events(ts DESC);
-CREATE TABLE IF NOT EXISTS safety_guardrail_events (
-    safety_event_id TEXT PRIMARY KEY,
-    event_time TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    trigger_code TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    evidence_json TEXT NOT NULL,
-    action_taken TEXT,
-    blocking_bool INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_time ON safety_guardrail_events(event_time DESC);
-CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_scope ON safety_guardrail_events(scope_type, bot_id, symbol, event_time DESC);
-CREATE TABLE IF NOT EXISTS safety_breakers (
-    breaker_id TEXT PRIMARY KEY,
-    breaker_code TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    state TEXT NOT NULL,
-    opened_at TEXT,
-    cooldown_until TEXT,
-    last_trigger_at TEXT,
-    trigger_count_window INTEGER NOT NULL DEFAULT 0,
-    trigger_reason_json TEXT NOT NULL,
-    blocking_bool INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_breakers_unique_scope
-  ON safety_breakers(breaker_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''));
-CREATE INDEX IF NOT EXISTS idx_safety_breakers_state ON safety_breakers(state, scope_type, updated_at DESC);
-CREATE TABLE IF NOT EXISTS safety_manual_actions (
-    manual_action_id TEXT PRIMARY KEY,
-    action_type TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    requested_by TEXT NOT NULL,
-    requested_at TEXT NOT NULL,
-    applied_at TEXT,
-    result_json TEXT NOT NULL,
-    audit_note TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_safety_manual_actions_requested_at ON safety_manual_actions(requested_at DESC);
-CREATE TABLE IF NOT EXISTS health_summary_snapshots (
-    snapshot_id TEXT PRIMARY KEY,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    evaluated_at TEXT NOT NULL,
-    state TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    severity TEXT NOT NULL,
-    blocking_bool INTEGER NOT NULL DEFAULT 0,
-    top_priority_reason_code TEXT,
-    blockers_json TEXT NOT NULL,
-    reasons_json TEXT NOT NULL,
-    component_status_json TEXT NOT NULL,
-    freshness_json TEXT NOT NULL,
-    raw_summary_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_eval ON health_summary_snapshots(evaluated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_scope ON health_summary_snapshots(scope_type, bot_id, symbol, evaluated_at DESC);
-CREATE TABLE IF NOT EXISTS health_scope_snapshots (
-    scope_snapshot_id TEXT PRIMARY KEY,
-    snapshot_id TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    evaluated_at TEXT NOT NULL,
-    state TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    severity TEXT NOT NULL,
-    blocking_bool INTEGER NOT NULL DEFAULT 0,
-    top_priority_reason_code TEXT,
-    blockers_json TEXT NOT NULL,
-    reasons_json TEXT NOT NULL,
-    freshness_json TEXT NOT NULL,
-    raw_scope_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_snapshot ON health_scope_snapshots(snapshot_id, evaluated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_scope ON health_scope_snapshots(scope_type, bot_id, symbol, evaluated_at DESC);
-CREATE TABLE IF NOT EXISTS health_reason_events (
-    event_id TEXT PRIMARY KEY,
-    reason_code TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    severity TEXT NOT NULL,
-    first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    active_bool INTEGER NOT NULL DEFAULT 1,
-    evidence_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_health_reason_events_unique_scope
-  ON health_reason_events(reason_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''));
-CREATE INDEX IF NOT EXISTS idx_health_reason_events_active ON health_reason_events(active_bool, scope_type, updated_at DESC);
-CREATE TABLE IF NOT EXISTS live_signal_snapshots (
-    signal_snapshot_id TEXT PRIMARY KEY,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    snapshot_type TEXT NOT NULL,
-    schema_version INTEGER NOT NULL DEFAULT 2,
-    collected_at TEXT NOT NULL,
-    collected_at_ms INTEGER,
-    window_ms INTEGER,
-    source_module TEXT NOT NULL,
-    freshness_ms INTEGER,
-    payload_json TEXT NOT NULL DEFAULT '{}',
-    signal_payload_json TEXT NOT NULL,
-    source_status TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_collected ON live_signal_snapshots(collected_at DESC);
-CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_scope ON live_signal_snapshots(scope_type, bot_id, symbol, snapshot_type, collected_at DESC);
-CREATE TABLE IF NOT EXISTS live_signal_events (
-    signal_event_id TEXT PRIMARY KEY,
-    schema_version INTEGER NOT NULL DEFAULT 2,
-    event_time TEXT NOT NULL,
-    event_time_ms INTEGER,
-    source_type TEXT NOT NULL,
-    event_code TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    severity_observed TEXT NOT NULL,
-    observed_value_json TEXT NOT NULL,
-    raw_payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_live_signal_events_time ON live_signal_events(event_time DESC);
-CREATE INDEX IF NOT EXISTS idx_live_signal_events_scope ON live_signal_events(scope_type, bot_id, symbol, source_type, event_time DESC);
-CREATE TABLE IF NOT EXISTS execution_alert_catalog (
-    trigger_code TEXT PRIMARY KEY,
-    description TEXT NOT NULL,
-    default_severity TEXT NOT NULL,
-    source_layer TEXT NOT NULL,
-    scope_type_supported_json TEXT NOT NULL,
-    dedup_strategy TEXT NOT NULL,
-    suppression_strategy TEXT NOT NULL,
-    cooldown_strategy TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS execution_alert_instances (
-    alert_instance_id TEXT PRIMARY KEY,
-    trigger_code TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    state TEXT NOT NULL,
-    source_layer TEXT NOT NULL,
-    scope_type TEXT NOT NULL,
-    bot_id TEXT,
-    symbol TEXT,
-    opened_at TEXT,
-    last_seen_at TEXT NOT NULL,
-    acked_at TEXT,
-    suppressed_until TEXT,
-    cooldown_until TEXT,
-    resolved_at TEXT,
-    expires_at TEXT,
-    source_refs_json TEXT NOT NULL,
-    evidence_json TEXT NOT NULL,
-    summary_text TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_alert_instances_unique_scope
-  ON execution_alert_instances(trigger_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''));
-CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_state ON execution_alert_instances(state, severity, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_scope ON execution_alert_instances(scope_type, bot_id, symbol, updated_at DESC);
-CREATE TABLE IF NOT EXISTS execution_alert_events (
-    transition_id TEXT PRIMARY KEY,
-    alert_instance_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    previous_state TEXT,
-    next_state TEXT,
-    occurred_at TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    actor TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_execution_alert_events_alert ON execution_alert_events(alert_instance_id, occurred_at DESC);
-CREATE INDEX IF NOT EXISTS idx_execution_alert_events_time ON execution_alert_events(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC);
 """
 
@@ -575,72 +411,6 @@ class StrategyPrimaryBody(BaseModel):
 class BotModeBody(BaseModel):
     mode: Literal["paper", "testnet", "live"]
     confirm: str | None = None
-
-
-class SafetyEvaluateBody(BaseModel):
-    bot_id: str | None = None
-    symbol: str | None = None
-    trigger: str | None = None
-
-
-class HealthEvaluateBody(BaseModel):
-    bot_id: str | None = None
-    symbol: str | None = None
-
-
-class LiveSignalsSnapshotBody(BaseModel):
-    bot_id: str | None = None
-    symbol: str | None = None
-
-
-class AlertEvaluateBody(BaseModel):
-    bot_id: str | None = None
-    symbol: str | None = None
-
-
-class AlertLifecycleBody(BaseModel):
-    audit_note: str | None = None
-
-
-class AlertSuppressBody(BaseModel):
-    duration_sec: int | None = None
-    audit_note: str | None = None
-
-
-class CanaryEvaluateBody(BaseModel):
-    run_id: str | None = None
-    scope_type: Literal["GLOBAL", "BOT", "SYMBOL", "BOT_SYMBOL"] = "GLOBAL"
-    bot_id: str | None = None
-    symbol: str | None = None
-    persist: bool = True
-
-
-class CanaryStartBody(BaseModel):
-    scope_type: Literal["GLOBAL", "BOT", "SYMBOL", "BOT_SYMBOL"] = "GLOBAL"
-    bot_id: str | None = None
-    symbol: str | None = None
-    note: str | None = None
-
-
-class CanaryActionBody(BaseModel):
-    reason: str | None = None
-    audit_note: str | None = None
-
-
-class SafetyFreezeBody(BaseModel):
-    bot_id: str | None = None
-    audit_note: str | None = None
-
-
-class SafetyUnfreezeBody(BaseModel):
-    scope_type: Literal["GLOBAL", "BOT", "BOT_SYMBOL", "SYMBOL"]
-    bot_id: str | None = None
-    symbol: str | None = None
-    audit_note: str | None = None
-
-
-class SafetyAckBody(BaseModel):
-    audit_note: str | None = None
 
 
 class StrategyEnableBody(BaseModel):
@@ -707,15 +477,6 @@ class RolloutBlendPreviewBody(BaseModel):
     symbol: str | None = None
     timeframe: str | None = None
     record_telemetry: bool = True
-
-
-class RolloutShadowSignalBody(BaseModel):
-    baseline_signal: dict[str, Any]
-    candidate_signal: dict[str, Any]
-    symbol: str | None = None
-    timeframe: str | None = None
-    source_refs: dict[str, Any] | None = None
-    note: str | None = None
 
 
 class ResearchChangePointsBody(BaseModel):
@@ -817,6 +578,23 @@ class BotStartBody(BaseModel):
     bot_id: str | None = None
 
 
+class LivePreflightRunBody(BaseModel):
+    mode: Literal["live", "testnet"] = "live"
+    symbol: str | None = None
+    side: Literal["BUY", "SELL"] = "BUY"
+    quantity: float | None = None
+    quote_order_qty: float | None = None
+
+
+class LivePreflightAttestBody(BaseModel):
+    mode: Literal["live", "testnet"] = "live"
+    manual_permissions_verified: bool = True
+    trade_enabled_verified: bool = True
+    withdraw_disabled_verified: bool = True
+    ip_restriction_verified: bool = True
+    note: str | None = None
+
+
 class ShadowStartBody(BaseModel):
     bot_id: str | None = None
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -876,6 +654,117 @@ class TradesBulkDeleteBody(BaseModel):
     date_from: str | None = None
     date_to: str | None = None
     dry_run: bool = False
+
+
+class InstrumentRegistrySyncBody(BaseModel):
+    family: Literal["spot", "margin", "usdm_futures", "coinm_futures"] | None = None
+    environment: Literal["live", "testnet"] | None = None
+
+
+class ReportingExportBody(BaseModel):
+    strategy_id: str | None = None
+    bot_id: str | None = None
+    venue: str | None = None
+    family: str | None = None
+    symbol: str | None = None
+    report_scope: Literal["summary", "daily", "monthly", "trades", "costs", "full"] = "full"
+
+
+class ExecutionPreflightBody(BaseModel):
+    family: str
+    environment: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: float | None = None
+    quote_quantity: float | None = None
+    price: float | None = None
+    stop_price: float | None = None
+    time_in_force: str | None = None
+    mode: str | None = None
+    strategy_id: str | None = None
+    bot_id: str | None = None
+    reduce_only: bool | None = None
+    requested_notional: float | None = None
+    slippage_bps: float | None = None
+    spread_bps: float | None = None
+    estimated_fee: float | None = None
+    market_snapshot: dict[str, Any] | None = None
+
+
+class ExecutionCancelAllBody(BaseModel):
+    family: str
+    environment: str
+    symbol: str
+
+
+class ExecutionKillSwitchTripBody(BaseModel):
+    reason: str
+    severity: str = "BLOCK"
+    trigger_type: str = "manual"
+    family: str | None = None
+    symbol: str | None = None
+
+
+class ExecutionKillSwitchResetBody(BaseModel):
+    reason: str = "manual_reset"
+
+
+class ExecutionMarketStreamStartBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+    symbols: list[str]
+    transport_mode: Literal["combined", "raw"] | None = None
+
+
+class ExecutionMarketStreamStopBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+
+
+class ExecutionUserStreamStartBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+    user_stream_mode: Literal["legacy_listenkey", "websocket_api_spot", "futures_listenkey"] | None = None
+
+
+class ExecutionUserStreamStopBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+
+
+class ExecutionLiveOrdersReconcileBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
+class ExecutionLiveFillsReconcileBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
+class ExecutionReconciliationRunBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
+class ValidationEvaluateBody(BaseModel):
+    stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
+    venue: str = "binance"
+    family: str | None = None
+    symbol: str | None = None
 
 
 def utc_now() -> datetime:
@@ -950,10 +839,16 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "gates": root / "gates.yaml",
         "microstructure": root / "microstructure.yaml",
         "risk_policy": root / "risk_policy.yaml",
-        "execution_safety": root / "execution_safety.yaml",
         "beast_mode": root / "beast_mode.yaml",
         "fees": root / "fees.yaml",
         "fundamentals_credit_filter": root / "fundamentals_credit_filter.yaml",
+        "runtime_controls": root / "runtime_controls.yaml",
+        "cost_stack": root / "cost_stack.yaml",
+        "reporting_exports": root / "reporting_exports.yaml",
+        "execution_safety": root / "execution_safety.yaml",
+        "execution_router": root / "execution_router.yaml",
+        "validation_gates": root / "validation_gates.yaml",
+        "binance_live_runtime": root / "binance_live_runtime.yaml",
     }
 
 
@@ -961,26 +856,79 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     gates = bundle.get("gates") if isinstance(bundle.get("gates"), dict) else {}
     micro = bundle.get("microstructure") if isinstance(bundle.get("microstructure"), dict) else {}
     risk = bundle.get("risk_policy") if isinstance(bundle.get("risk_policy"), dict) else {}
-    execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
     beast = bundle.get("beast_mode") if isinstance(bundle.get("beast_mode"), dict) else {}
     fees = bundle.get("fees") if isinstance(bundle.get("fees"), dict) else {}
     fundamentals = bundle.get("fundamentals_credit_filter") if isinstance(bundle.get("fundamentals_credit_filter"), dict) else {}
+    runtime_controls = bundle.get("runtime_controls") if isinstance(bundle.get("runtime_controls"), dict) else {}
+    cost_stack = bundle.get("cost_stack") if isinstance(bundle.get("cost_stack"), dict) else {}
+    reporting_exports = bundle.get("reporting_exports") if isinstance(bundle.get("reporting_exports"), dict) else {}
+    execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
+    execution_router = bundle.get("execution_router") if isinstance(bundle.get("execution_router"), dict) else {}
+    validation_gates = bundle.get("validation_gates") if isinstance(bundle.get("validation_gates"), dict) else {}
+    binance_live_runtime = bundle.get("binance_live_runtime") if isinstance(bundle.get("binance_live_runtime"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
-    es = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
-    ops = es.get("operational_safety") if isinstance(es.get("operational_safety"), dict) else {}
-    alerting = es.get("alerting") if isinstance(es.get("alerting"), dict) else {}
-    live_signals = es.get("live_signals") if isinstance(es.get("live_signals"), dict) else {}
-    canary = es.get("canary_live_controller") if isinstance(es.get("canary_live_controller"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
     fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
+    rc = runtime_controls.get("runtime_controls") if isinstance(runtime_controls.get("runtime_controls"), dict) else {}
+    cs = cost_stack.get("cost_stack") if isinstance(cost_stack.get("cost_stack"), dict) else {}
+    rexp = reporting_exports.get("reporting_exports") if isinstance(reporting_exports.get("reporting_exports"), dict) else {}
+    exs = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
+    exr = execution_router.get("execution_router") if isinstance(execution_router.get("execution_router"), dict) else {}
+    vg = validation_gates.get("validation_gates") if isinstance(validation_gates.get("validation_gates"), dict) else {}
+    blr = binance_live_runtime.get("binance_live_runtime") if isinstance(binance_live_runtime.get("binance_live_runtime"), dict) else {}
+    blr_connectors = blr.get("connectors") if isinstance(blr.get("connectors"), dict) else {}
+    blr_spot = blr_connectors.get("binance_spot") if isinstance(blr_connectors.get("binance_spot"), dict) else {}
+    blr_um = blr_connectors.get("binance_um_futures") if isinstance(blr_connectors.get("binance_um_futures"), dict) else {}
+    blr_spot_user = blr_spot.get("user_stream") if isinstance(blr_spot.get("user_stream"), dict) else {}
+    blr_um_user = blr_um.get("user_stream") if isinstance(blr_um.get("user_stream"), dict) else {}
+    blr_spot_ws = blr_spot.get("market_ws") if isinstance(blr_spot.get("market_ws"), dict) else {}
+    blr_um_ws = blr_um.get("market_ws") if isinstance(blr_um.get("market_ws"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
     thresholds = vpin.get("thresholds") if isinstance(vpin.get("thresholds"), dict) else {}
     surrogate = g.get("surrogate_adjustments") if isinstance(g.get("surrogate_adjustments"), dict) else {}
+    execution_modes = rc.get("execution_modes") if isinstance(rc.get("execution_modes"), dict) else {}
+    observability = rc.get("observability") if isinstance(rc.get("observability"), dict) else {}
+    runtime_telemetry = observability.get("runtime_telemetry") if isinstance(observability.get("runtime_telemetry"), dict) else {}
+    drift = rc.get("drift") if isinstance(rc.get("drift"), dict) else {}
+    drift_adwin = drift.get("adwin") if isinstance(drift.get("adwin"), dict) else {}
+    drift_page_hinkley = drift.get("page_hinkley") if isinstance(drift.get("page_hinkley"), dict) else {}
+    health_scoring = rc.get("health_scoring") if isinstance(rc.get("health_scoring"), dict) else {}
+    circuit_breakers = health_scoring.get("circuit_breakers") if isinstance(health_scoring.get("circuit_breakers"), dict) else {}
+    execution_guard = health_scoring.get("execution_guard") if isinstance(health_scoring.get("execution_guard"), dict) else {}
+    alert_thresholds = rc.get("alert_thresholds") if isinstance(rc.get("alert_thresholds"), dict) else {}
+    breaker_integrity = alert_thresholds.get("breaker_integrity") if isinstance(alert_thresholds.get("breaker_integrity"), dict) else {}
+    operations = alert_thresholds.get("operations") if isinstance(alert_thresholds.get("operations"), dict) else {}
+    legacy_aliases = execution_modes.get("legacy_aliases") if isinstance(execution_modes.get("legacy_aliases"), dict) else {}
+    cs_sources = cs.get("sources") if isinstance(cs.get("sources"), dict) else {}
+    cs_estimation = cs.get("estimation") if isinstance(cs.get("estimation"), dict) else {}
+    cs_aggregation = cs.get("aggregation") if isinstance(cs.get("aggregation"), dict) else {}
+    cs_alerts = cs.get("alerts") if isinstance(cs.get("alerts"), dict) else {}
+    rexp_formats = rexp.get("formats") if isinstance(rexp.get("formats"), dict) else {}
+    rexp_limits = rexp.get("limits") if isinstance(rexp.get("limits"), dict) else {}
+    exs_modes = exs.get("modes") if isinstance(exs.get("modes"), dict) else {}
+    exs_preflight = exs.get("preflight") if isinstance(exs.get("preflight"), dict) else {}
+    exs_exchange_filters = exs.get("exchange_filters") if isinstance(exs.get("exchange_filters"), dict) else {}
+    exs_live_preflight = exs.get("live_preflight") if isinstance(exs.get("live_preflight"), dict) else {}
+    exs_alerting = exs.get("alerting") if isinstance(exs.get("alerting"), dict) else {}
+    exs_sizing = exs.get("sizing") if isinstance(exs.get("sizing"), dict) else {}
+    exs_kill = exs.get("kill_switch") if isinstance(exs.get("kill_switch"), dict) else {}
+    exr_families = exr.get("families_enabled") if isinstance(exr.get("families_enabled"), dict) else {}
+    exr_supported = (
+        exr.get("first_iteration_supported_order_types")
+        if isinstance(exr.get("first_iteration_supported_order_types"), dict)
+        else {}
+    )
+    vg_stages = vg.get("stages") if isinstance(vg.get("stages"), dict) else {}
+    vg_paper = vg_stages.get("paper") if isinstance(vg_stages.get("paper"), dict) else {}
+    vg_testnet = vg_stages.get("testnet") if isinstance(vg_stages.get("testnet"), dict) else {}
+    vg_canary = vg_stages.get("canary") if isinstance(vg_stages.get("canary"), dict) else {}
+    vg_blocks = vg.get("blocks") if isinstance(vg.get("blocks"), dict) else {}
+    vg_promotion = vg.get("promotion") if isinstance(vg.get("promotion"), dict) else {}
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -990,27 +938,6 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "vpin_soft_kill_cdf": thresholds.get("soft_kill_cdf"),
         "vpin_hard_kill_cdf": thresholds.get("hard_kill_cdf"),
         "risk_kill_scope": r.get("scope") if isinstance(r.get("scope"), list) else [],
-        "execution_guardrail_stream_gap_warn_ms": ops.get("guardrail_stream_gap_warn_ms"),
-        "execution_guardrail_stream_gap_critical_ms": ops.get("guardrail_stream_gap_critical_ms"),
-        "execution_guardrail_unknown_timeout_hard_sec": ops.get("guardrail_unknown_timeout_hard_sec"),
-        "execution_guardrail_http_429_threshold": ops.get("guardrail_http_429_threshold"),
-        "execution_guardrail_open_orders_warn_count": ops.get("guardrail_open_orders_warn_count"),
-        "execution_guardrail_open_orders_block_count": ops.get("guardrail_open_orders_block_count"),
-        "execution_guardrail_cooldown_sec": ops.get("guardrail_cooldown_sec"),
-        "execution_alerting_default_suppression_sec": alerting.get("default_suppression_sec"),
-        "execution_alerting_default_cooldown_sec": alerting.get("default_cooldown_sec"),
-        "execution_alerting_resolved_ttl_sec": alerting.get("resolved_ttl_sec"),
-        "execution_alerting_expired_reopens_same_instance": alerting.get("expired_reopens_same_instance"),
-        "execution_alerting_severity_rank": alerting.get("severity_rank"),
-        "execution_alerting_severity_source_precedence": alerting.get("severity_source_precedence"),
-        "execution_live_signals_schema_version": live_signals.get("schema_version"),
-        "execution_live_signals_default_window_ms": live_signals.get("default_window_ms"),
-        "execution_live_signals_payload_sections": live_signals.get("payload_sections"),
-        "execution_live_signals_risk_observed_only": live_signals.get("risk_observed_only"),
-        "execution_canary_min_health_score_ready": canary.get("min_health_score_ready"),
-        "execution_canary_min_health_score_promotion": canary.get("min_health_score_promotion"),
-        "execution_canary_promotion_stability_sec": canary.get("promotion_stability_sec"),
-        "execution_canary_rollback_execution_supported": canary.get("rollback_execution_supported"),
         "beast_max_trials_per_batch": b.get("max_trials_per_batch"),
         "beast_requires_postgres": b.get("requires_postgres"),
         "fees_ttl_hours": f.get("fee_snapshot_ttl_hours"),
@@ -1023,6 +950,88 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "surrogate_adjustments_enabled": surrogate.get("enabled"),
         "surrogate_adjustments_allowed_execution_modes": surrogate.get("allowed_execution_modes") if isinstance(surrogate.get("allowed_execution_modes"), list) else [],
         "surrogate_adjustments_promotion_blocked": surrogate.get("promotion_blocked"),
+        "runtime_default_mode": execution_modes.get("default_global_runtime_mode"),
+        "runtime_global_modes": execution_modes.get("global_runtime_modes") if isinstance(execution_modes.get("global_runtime_modes"), list) else [],
+        "bot_policy_modes": execution_modes.get("bot_policy_modes") if isinstance(execution_modes.get("bot_policy_modes"), list) else [],
+        "legacy_non_runtime_aliases": sorted(
+            [("MOCK" if str(alias).strip().lower() == "mock" else str(alias)) for alias in legacy_aliases]
+        ),
+        "telemetry_real_source": runtime_telemetry.get("real_source"),
+        "telemetry_synthetic_source": runtime_telemetry.get("synthetic_source"),
+        "drift_default_algorithm": drift.get("default_algorithm"),
+        "drift_min_points": drift.get("min_points"),
+        "drift_trigger_votes_required": drift.get("trigger_votes_required"),
+        "drift_adwin_mean_shift_zscore_threshold": drift_adwin.get("mean_shift_zscore_threshold"),
+        "drift_page_hinkley_delta": drift_page_hinkley.get("delta"),
+        "drift_page_hinkley_lambda": drift_page_hinkley.get("lambda"),
+        "health_max_error_streak": circuit_breakers.get("max_error_streak"),
+        "health_max_ws_lag_ms": circuit_breakers.get("max_ws_lag_ms"),
+        "health_max_desync_count": circuit_breakers.get("max_desync_count"),
+        "health_max_spread_spike_bps": circuit_breakers.get("max_spread_spike_bps"),
+        "health_max_vpin_percentile": circuit_breakers.get("max_vpin_percentile"),
+        "health_critical_error_limit": execution_guard.get("critical_error_limit"),
+        "ops_alert_drift_enabled": operations.get("drift_enabled"),
+        "ops_alert_slippage_p95_warn_bps": operations.get("slippage_p95_warn_bps"),
+        "ops_alert_api_errors_warn": operations.get("api_errors_warn"),
+        "ops_alert_breaker_window_hours": operations.get("breaker_window_hours"),
+        "breaker_unknown_ratio_warn": breaker_integrity.get("unknown_ratio_warn"),
+        "breaker_min_events_warn": breaker_integrity.get("min_events_warn"),
+        "breaker_integrity_window_hours": breaker_integrity.get("integrity_window_hours"),
+        "cost_stack_spot_commission_source": cs_sources.get("spot_commission_source"),
+        "cost_stack_futures_income_source": cs_sources.get("futures_income_source"),
+        "cost_stack_margin_interest_source": cs_sources.get("margin_interest_source"),
+        "cost_stack_spread_bps_default": cs_estimation.get("spread_bps_default"),
+        "cost_stack_slippage_bps_default": cs_estimation.get("slippage_bps_default"),
+        "cost_stack_block_missing_live_real_source": cs_estimation.get("block_if_missing_real_cost_source_in_live"),
+        "cost_stack_allow_fallback_estimation_in_paper": cs_estimation.get("allow_fallback_estimation_in_paper"),
+        "cost_stack_supported_periods": cs_aggregation.get("supported_periods") if isinstance(cs_aggregation.get("supported_periods"), list) else [],
+        "cost_stack_fee_source_stale_warn_hours": cs_alerts.get("warn_if_fee_source_stale_hours_gt"),
+        "cost_stack_warn_total_cost_pct_gross": cs_alerts.get("warn_if_total_cost_pct_of_gross_pnl_gt"),
+        "cost_stack_block_total_cost_pct_gross": cs_alerts.get("block_if_total_cost_pct_of_gross_pnl_gt"),
+        "reporting_export_formats": sorted([fmt for fmt, enabled in rexp_formats.items() if enabled]),
+        "reporting_export_max_rows": rexp_limits.get("max_rows_per_export"),
+        "execution_allow_live": exs_modes.get("allow_live"),
+        "execution_quote_stale_block_ms": exs_preflight.get("quote_stale_block_ms"),
+        "execution_exchange_filters_max_age_ms": exs_exchange_filters.get("max_age_ms"),
+        "execution_exchange_filters_missing_symbol_filters": exs_exchange_filters.get("missing_symbol_filters"),
+        "execution_live_preflight_freshness_hard_max_sec": exs_live_preflight.get("freshness_hard_max_sec"),
+        "execution_live_preflight_attestation_max_age_days": exs_live_preflight.get("attestation_max_age_days"),
+        "execution_live_preflight_drift_pass_max_ms": exs_live_preflight.get("drift_pass_max_ms"),
+        "execution_live_preflight_drift_warn_max_ms": exs_live_preflight.get("drift_warn_max_ms"),
+        "execution_live_preflight_recv_window_warn_ms": exs_live_preflight.get("recv_window_warn_ms"),
+        "execution_live_preflight_recv_window_fail_ms": exs_live_preflight.get("recv_window_fail_ms"),
+        "execution_alerting_severity_rank": (
+            [str(row) for row in exs_alerting.get("severity_rank") if str(row).strip()]
+            if isinstance(exs_alerting.get("severity_rank"), list)
+            else list(DEFAULT_ALERT_SEVERITY_PRECEDENCE)
+        ),
+        "execution_alerting_severity_source_precedence": (
+            [str(row) for row in exs_alerting.get("severity_source_precedence") if str(row).strip()]
+            if isinstance(exs_alerting.get("severity_source_precedence"), list)
+            else list(DEFAULT_ALERT_SOURCE_PRECEDENCE)
+        ),
+        "execution_require_capability_snapshot": exs_preflight.get("require_capability_snapshot"),
+        "execution_max_notional_per_order_usd": exs_sizing.get("max_notional_per_order_usd"),
+        "execution_max_open_orders_total": exs_sizing.get("max_open_orders_total"),
+        "execution_kill_switch_enabled": exs_kill.get("enabled"),
+        "execution_kill_switch_auto_cancel_all": exs_kill.get("auto_cancel_all_on_trip"),
+        "execution_router_families_enabled": sorted([name for name, enabled in exr_families.items() if enabled]),
+        "execution_router_supported_order_types": exr_supported,
+        "validation_stage_order": vg_promotion.get("order") if isinstance(vg_promotion.get("order"), list) else [],
+        "validation_paper_min_orders": vg_paper.get("min_orders"),
+        "validation_testnet_min_orders": vg_testnet.get("min_orders"),
+        "validation_canary_min_orders": vg_canary.get("min_orders"),
+        "validation_block_if_policy_missing": vg_blocks.get("block_if_policy_missing"),
+        "validation_allow_manual_override": vg_blocks.get("allow_manual_override"),
+        "binance_live_connectors": sorted(list(blr_connectors.keys())),
+        "binance_spot_default_transport": blr_spot_ws.get("default_transport"),
+        "binance_spot_user_stream_mode": blr_spot.get("user_stream_mode"),
+        "binance_spot_user_stream_enabled": blr_spot_user.get("enabled"),
+        "binance_spot_user_stream_keepalive_sec": blr_spot_user.get("keepalive_interval_sec"),
+        "binance_um_default_transport": blr_um_ws.get("default_transport"),
+        "binance_um_user_stream_mode": blr_um.get("user_stream_mode"),
+        "binance_um_user_stream_enabled": blr_um_user.get("enabled"),
+        "binance_um_user_stream_keepalive_sec": blr_um_user.get("keepalive_interval_sec"),
     }
 
 
@@ -1033,6 +1042,95 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
     meta: dict[str, Any] = {}
     warnings: list[str] = list(authority.get("warnings") or [])
     for name, path in files.items():
+        if name == "runtime_controls":
+            runtime_bundle = load_runtime_controls_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if runtime_bundle.get("errors"):
+                warnings.extend(str(row) for row in (runtime_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = {"runtime_controls": runtime_bundle.get("runtime_controls", {})}
+            meta[name] = {
+                "path": str(runtime_bundle.get("path") or path),
+                "exists": bool(runtime_bundle.get("exists", False)),
+                "valid": bool(runtime_bundle.get("valid", False)),
+                "source": str(runtime_bundle.get("source") or ""),
+                "source_hash": str(runtime_bundle.get("source_hash") or ""),
+                "policy_hash": str(runtime_bundle.get("policy_hash") or ""),
+                "errors": list(runtime_bundle.get("errors") or []),
+            }
+            continue
+        if name in {"execution_safety", "execution_router"}:
+            execution_bundle = (
+                load_execution_safety_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+                if name == "execution_safety"
+                else load_execution_router_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            )
+            if execution_bundle.get("errors"):
+                warnings.extend(str(row) for row in (execution_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = execution_bundle.get("payload") if isinstance(execution_bundle.get("payload"), dict) else {}
+            meta[name] = {
+                "path": str(execution_bundle.get("path") or path),
+                "source_root": str(execution_bundle.get("source_root") or root),
+                "exists": bool(execution_bundle.get("exists", False)),
+                "valid": bool(execution_bundle.get("valid", False)),
+                "source": str(execution_bundle.get("source") or ""),
+                "source_hash": str(execution_bundle.get("source_hash") or ""),
+                "policy_hash": str(execution_bundle.get("policy_hash") or ""),
+                "errors": list(execution_bundle.get("errors") or []),
+                "warnings": list(execution_bundle.get("warnings") or []),
+                "fallback_used": bool(execution_bundle.get("fallback_used", False)),
+                "selected_role": execution_bundle.get("selected_role"),
+                "canonical_root": execution_bundle.get("canonical_root"),
+                "canonical_role": execution_bundle.get("canonical_role"),
+                "divergent_candidates": execution_bundle.get("divergent_candidates") or [],
+            }
+            continue
+        if name == "validation_gates":
+            validation_bundle = load_validation_gates_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if validation_bundle.get("errors"):
+                warnings.extend(str(row) for row in (validation_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = (
+                validation_bundle.get("validation_gates_bundle")
+                if isinstance(validation_bundle.get("validation_gates_bundle"), dict)
+                else {}
+            )
+            meta[name] = {
+                "path": str(validation_bundle.get("path") or path),
+                "source_root": str(validation_bundle.get("source_root") or root),
+                "exists": bool(validation_bundle.get("exists", False)),
+                "valid": bool(validation_bundle.get("valid", False)),
+                "source": str(validation_bundle.get("source") or ""),
+                "source_hash": str(validation_bundle.get("source_hash") or ""),
+                "policy_hash": str(validation_bundle.get("policy_hash") or ""),
+                "errors": list(validation_bundle.get("errors") or []),
+                "warnings": list(validation_bundle.get("warnings") or []),
+                "fallback_used": bool(validation_bundle.get("fallback_used", False)),
+                "selected_role": validation_bundle.get("selected_role"),
+                "canonical_root": validation_bundle.get("canonical_root"),
+                "canonical_role": validation_bundle.get("canonical_role"),
+                "divergent_candidates": validation_bundle.get("divergent_candidates") or [],
+            }
+            continue
+        if name == "binance_live_runtime":
+            runtime_bundle = load_binance_live_runtime_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if runtime_bundle.get("errors"):
+                warnings.extend(str(row) for row in (runtime_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = runtime_bundle.get("payload") if isinstance(runtime_bundle.get("payload"), dict) else {}
+            meta[name] = {
+                "path": str(runtime_bundle.get("path") or path),
+                "source_root": str(runtime_bundle.get("source_root") or root),
+                "exists": bool(runtime_bundle.get("exists", False)),
+                "valid": bool(runtime_bundle.get("valid", False)),
+                "source": str(runtime_bundle.get("source") or ""),
+                "source_hash": str(runtime_bundle.get("source_hash") or ""),
+                "policy_hash": str(runtime_bundle.get("policy_hash") or ""),
+                "errors": list(runtime_bundle.get("errors") or []),
+                "warnings": list(runtime_bundle.get("warnings") or []),
+                "fallback_used": bool(runtime_bundle.get("fallback_used", False)),
+                "selected_role": runtime_bundle.get("selected_role"),
+                "canonical_root": runtime_bundle.get("canonical_root"),
+                "canonical_role": runtime_bundle.get("canonical_role"),
+                "divergent_candidates": runtime_bundle.get("divergent_candidates") or [],
+            }
+            continue
         exists = path.exists()
         data = _yaml_file_or_default(path, {})
         valid = isinstance(data, dict) and bool(data)
@@ -1056,108 +1154,6 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
         "files": meta,
         "policies": payloads,
         "summary": _policy_summary(payloads),
-    }
-
-
-DEFAULT_OPERATIONAL_SAFETY_POLICY: dict[str, Any] = {
-    "guardrail_stream_gap_warn_ms": 5000,
-    "guardrail_stream_gap_critical_ms": 10000,
-    "guardrail_unknown_timeout_hard_sec": 30,
-    "guardrail_http_429_window_sec": 60,
-    "guardrail_http_429_threshold": 3,
-    "guardrail_http_418_blocks_live": True,
-    "guardrail_cancel_fail_window_sec": 300,
-    "guardrail_cancel_fail_threshold": 3,
-    "guardrail_reject_window_sec": 300,
-    "guardrail_reject_threshold": 5,
-    "guardrail_stp_expired_window_sec": 300,
-    "guardrail_stp_expired_threshold": 5,
-    "guardrail_open_orders_warn_count": 10,
-    "guardrail_open_orders_block_count": 20,
-    "guardrail_cooldown_sec": 120,
-    "guardrail_manual_lock_persists_until_clear": True,
-    "guardrail_prestart_requires_all_breakers_closed": True,
-    "guardrail_emergency_cancel_enabled": True,
-    "guardrail_emergency_cancel_scope": "symbol_first",
-}
-
-DEFAULT_LIVE_HEALTH_POLICY: dict[str, Any] = {
-    "preflight_stale_sec": 300,
-    "preflight_expired_sec": 600,
-    "recent_emergency_action_window_sec": 300,
-}
-
-DEFAULT_LIVE_SIGNALS_POLICY: dict[str, Any] = {
-    "schema_version": LIVE_SIGNAL_SCHEMA_VERSION,
-    "default_window_ms": 300000,
-    "payload_sections": ["numeric_metrics", "state_values", "timestamps_ms", "refs"],
-    "risk_observed_only": True,
-}
-
-DEFAULT_ALERTING_POLICY: dict[str, Any] = {
-    "default_suppression_sec": 900,
-    "default_cooldown_sec": 300,
-    "resolved_ttl_sec": 3600,
-    "reopen_on_active_condition": True,
-    "manual_resolve_requires_inactive": True,
-    "expired_reopens_same_instance": True,
-    "severity_rank": ["CRITICAL", "WARN", "INFO"],
-    "severity_source_precedence": ["SAFETY", "HEALTH", "RAW"],
-}
-
-DEFAULT_CANARY_LIVE_CONTROLLER_POLICY: dict[str, Any] = {
-    "allow_health_states": ["HEALTHY", "DEGRADED"],
-    "promotion_health_states": ["HEALTHY"],
-    "min_health_score_ready": 70,
-    "min_health_score_promotion": 90,
-    "max_blocking_critical_alerts": 0,
-    "critical_alert_blocking_states": ["OPEN", "ACKED", "COOLDOWN"],
-    "count_suppressed_critical_alerts_as_blocking": False,
-    "require_preflight_pass": True,
-    "require_reconciliation_clean": True,
-    "require_operational_safety_clear": True,
-    "require_health_non_blocking": True,
-    "fail_closed_on_missing_surfaces": True,
-    "armed_to_running_min_sec": 0,
-    "promotion_stability_sec": 300,
-    "rollback_recommend_on_hard_block": True,
-    "rollback_execution_supported": False,
-    "rollback_requires_canonical_confirmation": True,
-}
-
-
-def load_execution_safety_policy() -> dict[str, Any]:
-    bundle = load_numeric_policies_bundle()
-    policies = bundle.get("policies") if isinstance(bundle.get("policies"), dict) else {}
-    payload = policies.get("execution_safety") if isinstance(policies.get("execution_safety"), dict) else {}
-    root = payload.get("execution_safety") if isinstance(payload.get("execution_safety"), dict) else {}
-    ops = root.get("operational_safety") if isinstance(root.get("operational_safety"), dict) else {}
-    live_health = root.get("live_health_summary") if isinstance(root.get("live_health_summary"), dict) else {}
-    live_signals = root.get("live_signals") if isinstance(root.get("live_signals"), dict) else {}
-    alerting = root.get("alerting") if isinstance(root.get("alerting"), dict) else {}
-    canary = root.get("canary_live_controller") if isinstance(root.get("canary_live_controller"), dict) else {}
-    return {
-        "source": "config/policies/execution_safety.yaml" if ops else "default_fail_closed_operational_safety",
-        "operational_safety": {
-            **DEFAULT_OPERATIONAL_SAFETY_POLICY,
-            **ops,
-        },
-        "live_health_summary": {
-            **DEFAULT_LIVE_HEALTH_POLICY,
-            **live_health,
-        },
-        "live_signals": {
-            **DEFAULT_LIVE_SIGNALS_POLICY,
-            **live_signals,
-        },
-        "alerting": {
-            **DEFAULT_ALERTING_POLICY,
-            **alerting,
-        },
-        "canary_live_controller": {
-            **DEFAULT_CANARY_LIVE_CONTROLLER_POLICY,
-            **canary,
-        },
     }
 
 
@@ -1748,7 +1744,10 @@ def exchange_name() -> str:
 
 
 def default_mode() -> str:
-    return normalize_global_runtime_mode(get_env("MODE", "paper"), default="paper")
+    return normalize_global_runtime_mode(
+        get_env("MODE", DEFAULT_GLOBAL_RUNTIME_MODE),
+        default=DEFAULT_GLOBAL_RUNTIME_MODE,
+    )
 
 
 def running_on_railway() -> bool:
@@ -1962,12 +1961,8 @@ def _classify_exchange_error(status_code: int, payload: Any) -> tuple[str, str]:
         lower = msg.lower()
         if code in {-2015, -2014, -1022}:
             return "auth", f"Keys invalidas/permisos/IP restriction ({code}): {msg}"
-        if code in {-1007}:
-            return "unknown_timeout", f"Exchange timeout unknown ({code}): {msg or 'Execution status unknown; reconcile required'}"
         if code in {-1003} or status_code == 429:
             return "rate_limit", f"Rate limit ({code}): {msg or 'Too many requests'}"
-        if status_code == 418:
-            return "rate_limit_ban", f"IP ban risk / auto-ban ({status_code}): {msg or '418 auto-ban response'}"
         if "sapi" in lower:
             return "sapi_unsupported", f"sapi unsupported: {msg}"
         if code in {-2010, -2011, -1013, -1100, -1102}:
@@ -1977,32 +1972,6 @@ def _classify_exchange_error(status_code: int, payload: Any) -> tuple[str, str]:
     if status_code >= 500:
         return "endpoint", f"Endpoint no disponible (HTTP {status_code})"
     return "endpoint", f"Error de endpoint/auth (HTTP {status_code})"
-
-
-def _record_exchange_guardrail_event(
-    *,
-    trigger_code: str,
-    severity: str,
-    evidence: dict[str, Any] | None = None,
-    action_taken: str | None = None,
-    blocking_bool: bool = False,
-    symbol: str | None = None,
-) -> None:
-    try:
-        safety_store = globals().get("store")
-        if safety_store is None or not hasattr(safety_store, "insert_safety_guardrail_event"):
-            return
-        safety_store.insert_safety_guardrail_event(
-            scope_type="SYMBOL" if str(symbol or "").strip() else "GLOBAL",
-            trigger_code=trigger_code,
-            severity=severity,
-            evidence=evidence or {},
-            action_taken=action_taken,
-            blocking_bool=blocking_bool,
-            symbol=str(symbol or "").strip().upper() or None,
-        )
-    except Exception:
-        return
 
 
 def _probe_ws_endpoint(ws_url: str, timeout_sec: float) -> tuple[bool, str]:
@@ -2041,49 +2010,6 @@ def _binance_signed_request(
         timeout=timeout_sec,
     )
     payload = _parse_json_response(response)
-    symbol = str(params.get("symbol") or "").strip().upper() or None
-    status_code = int(_as_int(response.status_code, 0))
-    payload_code = int(_as_int((payload.get("code") if isinstance(payload, dict) else 0), 0))
-    if payload_code == -1003 or status_code == 429:
-        _record_exchange_guardrail_event(
-            trigger_code="TOO_MANY_REQUESTS_PRESSURE",
-            severity="WARN",
-            evidence={
-                "status_code": status_code,
-                "payload": payload if isinstance(payload, dict) else {"raw": str(payload)},
-                "path": path,
-                "symbol": symbol,
-            },
-            action_taken="WARN_ONLY",
-            blocking_bool=False,
-            symbol=symbol,
-        )
-        runtime = globals().get("runtime_bridge")
-        if runtime is not None and hasattr(runtime, "_stats"):
-            try:
-                runtime._stats["rate_limit_hits"] = int(runtime._stats.get("rate_limit_hits", 0)) + 1
-            except Exception:
-                pass
-    if status_code == 418:
-        _record_exchange_guardrail_event(
-            trigger_code="HTTP_418_BAN_RISK",
-            severity="CRITICAL",
-            evidence={
-                "status_code": status_code,
-                "payload": payload if isinstance(payload, dict) else {"raw": str(payload)},
-                "path": path,
-                "symbol": symbol,
-            },
-            action_taken="FREEZE_GLOBAL",
-            blocking_bool=True,
-            symbol=symbol,
-        )
-        runtime = globals().get("runtime_bridge")
-        if runtime is not None and hasattr(runtime, "_stats"):
-            try:
-                runtime._stats["rate_limit_hits"] = int(runtime._stats.get("rate_limit_hits", 0)) + 1
-            except Exception:
-                pass
     return response.ok, {
         "status_code": response.status_code,
         "payload": payload,
@@ -2223,7 +2149,11 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
             params={},
             timeout_sec=timeout_sec,
         )
-        checks["account"] = {"ok": account_ok, "status_code": account_result["status_code"], "endpoint": account_result["url"]}
+        checks["account"] = {
+            "ok": account_ok,
+            "status_code": account_result["status_code"],
+            "endpoint": account_result.get("url") or f"{creds['base_url']}/api/v3/account",
+        }
         if not account_ok:
             category, detail = _classify_exchange_error(account_result["status_code"], account_result["payload"])
             checks["account"]["error_type"] = category
@@ -2252,7 +2182,12 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
                 params={"symbol": symbol, "side": "BUY", "type": "MARKET", "quoteOrderQty": quote_qty},
                 timeout_sec=timeout_sec,
             )
-            checks["order_test"] = {"ok": order_ok, "status_code": order_result["status_code"], "endpoint": order_result["url"], "symbol": symbol}
+            checks["order_test"] = {
+                "ok": order_ok,
+                "status_code": order_result["status_code"],
+                "endpoint": order_result.get("url") or f"{creds['base_url']}/api/v3/order/test",
+                "symbol": symbol,
+            }
             if not order_ok:
                 category, detail = _classify_exchange_error(order_result["status_code"], order_result["payload"])
                 checks["order_test"]["error_type"] = category
@@ -2334,6 +2269,7 @@ def ensure_paths() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     (USER_DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
     (USER_DATA_DIR / "backtests").mkdir(parents=True, exist_ok=True)
+    (USER_DATA_DIR / "instruments").mkdir(parents=True, exist_ok=True)
 
 
 class ConsoleStore:
@@ -2371,6 +2307,44 @@ class ConsoleStore:
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
+        self.instrument_registry = BinanceInstrumentRegistryService(
+            db_path=INSTRUMENT_REGISTRY_DB_PATH,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+        )
+        self.instrument_universes = InstrumentUniverseService(self.instrument_registry)
+        self.reporting_bridge = ReportingBridgeService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            instrument_registry_service=self.instrument_registry,
+            runs_path=RUNS_PATH,
+        )
+        self.execution_reality = ExecutionRealityService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            instrument_registry_service=self.instrument_registry,
+            universe_service=self.instrument_universes,
+            reporting_bridge_service=self.reporting_bridge,
+            runs_loader=self.load_runs,
+        )
+        self.validation = ValidationService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            execution_service=self.execution_reality,
+            reporting_bridge_service=self.reporting_bridge,
+            instrument_registry_service=self.instrument_registry,
+            universe_service=self.instrument_universes,
+        )
+        self.live_preflight = LivePreflightDB(CONSOLE_DB_PATH)
+        self.instrument_registry_startup_sync: dict[str, Any] = {
+            "ok": True,
+            "startup": True,
+            "skipped": True,
+            "reason": "not_run",
+        }
         self._init_console_db()
         self._ensure_defaults()
 
@@ -2390,8 +2364,6 @@ class ConsoleStore:
 
     def _init_console_db(self) -> None:
         self.decision_log.initialize()
-        with self._connect() as conn:
-            self._ensure_console_db_migrations(conn)
 
     def _ensure_console_db_migrations(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
@@ -2408,357 +2380,6 @@ class ConsoleStore:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS safety_guardrail_events (
-                safety_event_id TEXT PRIMARY KEY,
-                event_time TEXT NOT NULL,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                trigger_code TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                evidence_json TEXT NOT NULL,
-                action_taken TEXT,
-                blocking_bool INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_time ON safety_guardrail_events(event_time DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_guardrail_events_scope ON safety_guardrail_events(scope_type, bot_id, symbol, event_time DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS safety_breakers (
-                breaker_id TEXT PRIMARY KEY,
-                breaker_code TEXT NOT NULL,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                state TEXT NOT NULL,
-                opened_at TEXT,
-                cooldown_until TEXT,
-                last_trigger_at TEXT,
-                trigger_count_window INTEGER NOT NULL DEFAULT 0,
-                trigger_reason_json TEXT NOT NULL,
-                blocking_bool INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_breakers_unique_scope
-            ON safety_breakers(breaker_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''))
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_breakers_state ON safety_breakers(state, scope_type, updated_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS safety_manual_actions (
-                manual_action_id TEXT PRIMARY KEY,
-                action_type TEXT NOT NULL,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                requested_by TEXT NOT NULL,
-                requested_at TEXT NOT NULL,
-                applied_at TEXT,
-                result_json TEXT NOT NULL,
-                audit_note TEXT
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_safety_manual_actions_requested_at ON safety_manual_actions(requested_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS health_summary_snapshots (
-                snapshot_id TEXT PRIMARY KEY,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                evaluated_at TEXT NOT NULL,
-                state TEXT NOT NULL,
-                score INTEGER NOT NULL,
-                severity TEXT NOT NULL,
-                blocking_bool INTEGER NOT NULL DEFAULT 0,
-                top_priority_reason_code TEXT,
-                blockers_json TEXT NOT NULL,
-                reasons_json TEXT NOT NULL,
-                component_status_json TEXT NOT NULL,
-                freshness_json TEXT NOT NULL,
-                raw_summary_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_eval ON health_summary_snapshots(evaluated_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_summary_snapshots_scope ON health_summary_snapshots(scope_type, bot_id, symbol, evaluated_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS health_scope_snapshots (
-                scope_snapshot_id TEXT PRIMARY KEY,
-                snapshot_id TEXT NOT NULL,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                evaluated_at TEXT NOT NULL,
-                state TEXT NOT NULL,
-                score INTEGER NOT NULL,
-                severity TEXT NOT NULL,
-                blocking_bool INTEGER NOT NULL DEFAULT 0,
-                top_priority_reason_code TEXT,
-                blockers_json TEXT NOT NULL,
-                reasons_json TEXT NOT NULL,
-                freshness_json TEXT NOT NULL,
-                raw_scope_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_snapshot ON health_scope_snapshots(snapshot_id, evaluated_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_scope_snapshots_scope ON health_scope_snapshots(scope_type, bot_id, symbol, evaluated_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS health_reason_events (
-                event_id TEXT PRIMARY KEY,
-                reason_code TEXT NOT NULL,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                severity TEXT NOT NULL,
-                first_seen_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                active_bool INTEGER NOT NULL DEFAULT 1,
-                evidence_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_health_reason_events_unique_scope
-            ON health_reason_events(reason_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''))
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_health_reason_events_active ON health_reason_events(active_bool, scope_type, updated_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS live_signal_snapshots (
-                signal_snapshot_id TEXT PRIMARY KEY,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                snapshot_type TEXT NOT NULL,
-                schema_version INTEGER NOT NULL DEFAULT 2,
-                collected_at TEXT NOT NULL,
-                collected_at_ms INTEGER,
-                window_ms INTEGER,
-                source_module TEXT NOT NULL,
-                freshness_ms INTEGER,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                signal_payload_json TEXT NOT NULL,
-                source_status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_collected ON live_signal_snapshots(collected_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_snapshots_scope ON live_signal_snapshots(scope_type, bot_id, symbol, snapshot_type, collected_at DESC)")
-        live_signal_snapshot_columns = {
-            str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(live_signal_snapshots)").fetchall()
-        }
-        if "schema_version" not in live_signal_snapshot_columns:
-            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 2")
-        if "collected_at_ms" not in live_signal_snapshot_columns:
-            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN collected_at_ms INTEGER")
-        if "window_ms" not in live_signal_snapshot_columns:
-            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN window_ms INTEGER")
-        if "payload_json" not in live_signal_snapshot_columns:
-            conn.execute("ALTER TABLE live_signal_snapshots ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS live_signal_events (
-                signal_event_id TEXT PRIMARY KEY,
-                schema_version INTEGER NOT NULL DEFAULT 2,
-                event_time TEXT NOT NULL,
-                event_time_ms INTEGER,
-                source_type TEXT NOT NULL,
-                event_code TEXT NOT NULL,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                severity_observed TEXT NOT NULL,
-                observed_value_json TEXT NOT NULL,
-                raw_payload_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_time ON live_signal_events(event_time DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signal_events_scope ON live_signal_events(scope_type, bot_id, symbol, source_type, event_time DESC)")
-        live_signal_event_columns = {
-            str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(live_signal_events)").fetchall()
-        }
-        if "schema_version" not in live_signal_event_columns:
-            conn.execute("ALTER TABLE live_signal_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 2")
-        if "event_time_ms" not in live_signal_event_columns:
-            conn.execute("ALTER TABLE live_signal_events ADD COLUMN event_time_ms INTEGER")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS execution_alert_catalog (
-                trigger_code TEXT PRIMARY KEY,
-                description TEXT NOT NULL,
-                default_severity TEXT NOT NULL,
-                source_layer TEXT NOT NULL,
-                scope_type_supported_json TEXT NOT NULL,
-                dedup_strategy TEXT NOT NULL,
-                suppression_strategy TEXT NOT NULL,
-                cooldown_strategy TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS execution_alert_instances (
-                alert_instance_id TEXT PRIMARY KEY,
-                trigger_code TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                state TEXT NOT NULL,
-                source_layer TEXT NOT NULL,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                opened_at TEXT,
-                last_seen_at TEXT NOT NULL,
-                acked_at TEXT,
-                suppressed_until TEXT,
-                cooldown_until TEXT,
-                resolved_at TEXT,
-                expires_at TEXT,
-                source_refs_json TEXT NOT NULL,
-                evidence_json TEXT NOT NULL,
-                summary_text TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_alert_instances_unique_scope
-            ON execution_alert_instances(trigger_code, scope_type, COALESCE(bot_id, ''), COALESCE(symbol, ''))
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_state ON execution_alert_instances(state, severity, updated_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_instances_scope ON execution_alert_instances(scope_type, bot_id, symbol, updated_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS execution_alert_events (
-                transition_id TEXT PRIMARY KEY,
-                alert_instance_id TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                previous_state TEXT,
-                next_state TEXT,
-                occurred_at TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                actor TEXT,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_events_alert ON execution_alert_events(alert_instance_id, occurred_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_alert_events_time ON execution_alert_events(occurred_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS canary_runs (
-                run_id TEXT PRIMARY KEY,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                phase TEXT NOT NULL,
-                canary_allowed_bool INTEGER NOT NULL DEFAULT 0,
-                hold_required_bool INTEGER NOT NULL DEFAULT 0,
-                rollback_recommended_bool INTEGER NOT NULL DEFAULT 0,
-                promotion_allowed_bool INTEGER NOT NULL DEFAULT 0,
-                started_at TEXT,
-                running_started_at TEXT,
-                last_evaluated_at TEXT,
-                ended_at TEXT,
-                last_gate_evaluation_id TEXT,
-                blocking_sources_json TEXT NOT NULL,
-                gating_reasons_json TEXT NOT NULL,
-                advisory_warnings_json TEXT NOT NULL,
-                upstream_refs_json TEXT NOT NULL,
-                summary_text TEXT NOT NULL,
-                raw_run_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_runs_phase ON canary_runs(phase, updated_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_runs_scope ON canary_runs(scope_type, bot_id, symbol, updated_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS canary_gate_evaluations (
-                evaluation_id TEXT PRIMARY KEY,
-                run_id TEXT,
-                scope_type TEXT NOT NULL,
-                bot_id TEXT,
-                symbol TEXT,
-                phase TEXT NOT NULL,
-                canary_allowed_bool INTEGER NOT NULL DEFAULT 0,
-                hold_required_bool INTEGER NOT NULL DEFAULT 0,
-                rollback_recommended_bool INTEGER NOT NULL DEFAULT 0,
-                promotion_allowed_bool INTEGER NOT NULL DEFAULT 0,
-                blocking_sources_json TEXT NOT NULL,
-                gating_reasons_json TEXT NOT NULL,
-                advisory_warnings_json TEXT NOT NULL,
-                upstream_refs_json TEXT NOT NULL,
-                raw_evaluation_json TEXT NOT NULL,
-                evaluated_at TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_gate_evaluations_eval ON canary_gate_evaluations(evaluated_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_gate_evaluations_run ON canary_gate_evaluations(run_id, evaluated_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_gate_evaluations_scope ON canary_gate_evaluations(scope_type, bot_id, symbol, evaluated_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS canary_phase_snapshots (
-                phase_snapshot_id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                gate_evaluation_id TEXT,
-                snapshot_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_phase_snapshots_run ON canary_phase_snapshots(run_id, created_at DESC)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS canary_run_events (
-                event_id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                previous_phase TEXT,
-                next_phase TEXT,
-                occurred_at TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                actor TEXT,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_run_events_run ON canary_run_events(run_id, occurred_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_canary_run_events_time ON canary_run_events(occurred_at DESC)")
         self._backfill_logs_has_bot_ref(conn)
         self._backfill_log_bot_refs(conn)
 
@@ -2942,1720 +2563,19 @@ class ConsoleStore:
 
     def breaker_events_integrity(self, *, window_hours: int | None = None, strict: bool = True) -> dict[str, Any]:
         return self.decision_log.breaker_events_integrity(window_hours=window_hours, strict=strict)
-
-    @staticmethod
-    def _normalize_safety_symbol(value: str | None) -> str | None:
-        symbol = str(value or "").strip().upper()
-        return symbol or None
-
-    @staticmethod
-    def _normalize_safety_bot_id(value: str | None) -> str | None:
-        bot_id = str(value or "").strip()
-        return bot_id or None
-
-    def insert_safety_guardrail_event(
-        self,
-        *,
-        scope_type: str,
-        trigger_code: str,
-        severity: str,
-        evidence: dict[str, Any] | None = None,
-        action_taken: str | None = None,
-        blocking_bool: bool = False,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        event_time: str | None = None,
-    ) -> dict[str, Any]:
-        row = {
-            "safety_event_id": str(uuid4()),
-            "event_time": str(event_time or utc_now_iso()),
-            "scope_type": normalize_safety_scope_type(scope_type),
-            "bot_id": self._normalize_safety_bot_id(bot_id),
-            "symbol": self._normalize_safety_symbol(symbol),
-            "trigger_code": normalize_safety_trigger_code(trigger_code),
-            "severity": normalize_safety_event_severity(severity),
-            "evidence_json": json.dumps(evidence or {}, ensure_ascii=True, sort_keys=True),
-            "action_taken": normalize_safety_breaker_action(action_taken) if action_taken else None,
-            "blocking_bool": 1 if bool(blocking_bool) else 0,
-            "created_at": utc_now_iso(),
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO safety_guardrail_events (
-                    safety_event_id, event_time, scope_type, bot_id, symbol, trigger_code,
-                    severity, evidence_json, action_taken, blocking_bool, created_at
-                ) VALUES (
-                    :safety_event_id, :event_time, :scope_type, :bot_id, :symbol, :trigger_code,
-                    :severity, :evidence_json, :action_taken, :blocking_bool, :created_at
-                )
-                """,
-                row,
-            )
-        return {
-            "safety_event_id": row["safety_event_id"],
-            "event_time": row["event_time"],
-            "scope_type": row["scope_type"],
-            "bot_id": row["bot_id"],
-            "symbol": row["symbol"],
-            "trigger_code": row["trigger_code"],
-            "severity": row["severity"],
-            "evidence": evidence or {},
-            "action_taken": row["action_taken"],
-            "blocking_bool": bool(row["blocking_bool"]),
-            "created_at": row["created_at"],
-        }
-
-    def list_safety_guardrail_events(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_safety_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM safety_guardrail_events
-                WHERE {' AND '.join(clauses)}
-                ORDER BY event_time DESC, safety_event_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            evidence = {}
-            try:
-                evidence = json.loads(str(row["evidence_json"] or "{}"))
-            except Exception:
-                evidence = {}
-            items.append(
-                {
-                    "safety_event_id": str(row["safety_event_id"]),
-                    "event_time": str(row["event_time"] or ""),
-                    "scope_type": str(row["scope_type"] or ""),
-                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
-                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
-                    "trigger_code": str(row["trigger_code"] or ""),
-                    "severity": str(row["severity"] or ""),
-                    "evidence": evidence if isinstance(evidence, dict) else {},
-                    "action_taken": str(row["action_taken"] or "") if row["action_taken"] is not None else None,
-                    "blocking_bool": bool(row["blocking_bool"]),
-                    "created_at": str(row["created_at"] or ""),
-                }
-            )
-        return items
-
-    def upsert_safety_breaker(
-        self,
-        *,
-        breaker_code: str,
-        scope_type: str,
-        state: str,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        blocking_bool: bool = False,
-        trigger_count_window: int = 0,
-        opened_at: str | None = None,
-        cooldown_until: str | None = None,
-        last_trigger_at: str | None = None,
-        trigger_reason: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        breaker_code_n = normalize_safety_trigger_code(breaker_code)
-        scope_type_n = normalize_safety_scope_type(scope_type)
-        state_n = normalize_safety_breaker_state(state)
-        bot_id_n = self._normalize_safety_bot_id(bot_id)
-        symbol_n = self._normalize_safety_symbol(symbol)
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT breaker_id, created_at
-                FROM safety_breakers
-                WHERE breaker_code = ?
-                  AND scope_type = ?
-                  AND COALESCE(bot_id, '') = COALESCE(?, '')
-                  AND COALESCE(symbol, '') = COALESCE(?, '')
-                """,
-                (breaker_code_n, scope_type_n, bot_id_n, symbol_n),
-            ).fetchone()
-            breaker_id = str(row["breaker_id"]) if row is not None else str(uuid4())
-            created_at = str(row["created_at"]) if row is not None else utc_now_iso()
-            payload = {
-                "breaker_id": breaker_id,
-                "breaker_code": breaker_code_n,
-                "scope_type": scope_type_n,
-                "bot_id": bot_id_n,
-                "symbol": symbol_n,
-                "state": state_n,
-                "opened_at": opened_at,
-                "cooldown_until": cooldown_until,
-                "last_trigger_at": last_trigger_at or utc_now_iso(),
-                "trigger_count_window": max(0, int(trigger_count_window)),
-                "trigger_reason_json": json.dumps(trigger_reason or {}, ensure_ascii=True, sort_keys=True),
-                "blocking_bool": 1 if bool(blocking_bool) else 0,
-                "created_at": created_at,
-                "updated_at": utc_now_iso(),
-            }
-            if row is None:
-                conn.execute(
-                    """
-                    INSERT INTO safety_breakers (
-                        breaker_id, breaker_code, scope_type, bot_id, symbol, state, opened_at,
-                        cooldown_until, last_trigger_at, trigger_count_window, trigger_reason_json,
-                        blocking_bool, created_at, updated_at
-                    ) VALUES (
-                        :breaker_id, :breaker_code, :scope_type, :bot_id, :symbol, :state, :opened_at,
-                        :cooldown_until, :last_trigger_at, :trigger_count_window, :trigger_reason_json,
-                        :blocking_bool, :created_at, :updated_at
-                    )
-                    """,
-                    payload,
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE safety_breakers
-                    SET state = :state,
-                        opened_at = :opened_at,
-                        cooldown_until = :cooldown_until,
-                        last_trigger_at = :last_trigger_at,
-                        trigger_count_window = :trigger_count_window,
-                        trigger_reason_json = :trigger_reason_json,
-                        blocking_bool = :blocking_bool,
-                        updated_at = :updated_at
-                    WHERE breaker_id = :breaker_id
-                    """,
-                    payload,
-                )
-        return self.list_safety_breakers(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n, breaker_code=breaker_code_n, limit=1)[0]
-
-    def list_safety_breakers(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        breaker_code: str | None = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_safety_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        if breaker_code:
-            clauses.append("breaker_code = ?")
-            params.append(normalize_safety_trigger_code(breaker_code))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM safety_breakers
-                WHERE {' AND '.join(clauses)}
-                ORDER BY updated_at DESC, breaker_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            trigger_reason = {}
-            try:
-                trigger_reason = json.loads(str(row["trigger_reason_json"] or "{}"))
-            except Exception:
-                trigger_reason = {}
-            items.append(
-                {
-                    "breaker_id": str(row["breaker_id"]),
-                    "breaker_code": str(row["breaker_code"] or ""),
-                    "scope_type": str(row["scope_type"] or ""),
-                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
-                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
-                    "state": str(row["state"] or ""),
-                    "opened_at": str(row["opened_at"] or "") if row["opened_at"] is not None else None,
-                    "cooldown_until": str(row["cooldown_until"] or "") if row["cooldown_until"] is not None else None,
-                    "last_trigger_at": str(row["last_trigger_at"] or "") if row["last_trigger_at"] is not None else None,
-                    "trigger_count_window": int(row["trigger_count_window"] or 0),
-                    "trigger_reason": trigger_reason if isinstance(trigger_reason, dict) else {},
-                    "blocking_bool": bool(row["blocking_bool"]),
-                    "created_at": str(row["created_at"] or ""),
-                    "updated_at": str(row["updated_at"] or ""),
-                }
-            )
-        return items
-
-    def insert_safety_manual_action(
-        self,
-        *,
-        action_type: str,
-        scope_type: str,
-        requested_by: str,
-        result: dict[str, Any] | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        audit_note: str | None = None,
-        requested_at: str | None = None,
-        applied_at: str | None = None,
-    ) -> dict[str, Any]:
-        row = {
-            "manual_action_id": str(uuid4()),
-            "action_type": normalize_safety_manual_action_type(action_type),
-            "scope_type": normalize_safety_scope_type(scope_type),
-            "bot_id": self._normalize_safety_bot_id(bot_id),
-            "symbol": self._normalize_safety_symbol(symbol),
-            "requested_by": str(requested_by or "admin"),
-            "requested_at": str(requested_at or utc_now_iso()),
-            "applied_at": str(applied_at or utc_now_iso()),
-            "result_json": json.dumps(result or {}, ensure_ascii=True, sort_keys=True),
-            "audit_note": str(audit_note or "") or None,
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO safety_manual_actions (
-                    manual_action_id, action_type, scope_type, bot_id, symbol,
-                    requested_by, requested_at, applied_at, result_json, audit_note
-                ) VALUES (
-                    :manual_action_id, :action_type, :scope_type, :bot_id, :symbol,
-                    :requested_by, :requested_at, :applied_at, :result_json, :audit_note
-                )
-                """,
-                row,
-            )
-        return {
-            "manual_action_id": row["manual_action_id"],
-            "action_type": row["action_type"],
-            "scope_type": row["scope_type"],
-            "bot_id": row["bot_id"],
-            "symbol": row["symbol"],
-            "requested_by": row["requested_by"],
-            "requested_at": row["requested_at"],
-            "applied_at": row["applied_at"],
-            "result": result or {},
-            "audit_note": row["audit_note"],
-        }
-
-    def list_safety_manual_actions(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_safety_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM safety_manual_actions
-                WHERE {' AND '.join(clauses)}
-                ORDER BY requested_at DESC, manual_action_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            result = {}
-            try:
-                result = json.loads(str(row["result_json"] or "{}"))
-            except Exception:
-                result = {}
-            items.append(
-                {
-                    "manual_action_id": str(row["manual_action_id"]),
-                    "action_type": str(row["action_type"] or ""),
-                    "scope_type": str(row["scope_type"] or ""),
-                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
-                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
-                    "requested_by": str(row["requested_by"] or ""),
-                    "requested_at": str(row["requested_at"] or ""),
-                    "applied_at": str(row["applied_at"] or "") if row["applied_at"] is not None else None,
-                    "result": result if isinstance(result, dict) else {},
-                    "audit_note": str(row["audit_note"] or "") if row["audit_note"] is not None else None,
-                }
-            )
-        return items
-
-    def _sync_health_reason_events(self, conn: sqlite3.Connection, reason_items: list[dict[str, Any]], *, now_iso: str) -> None:
-        active_keys = {
-            (
-                normalize_health_reason_code(row.get("reason_code")),
-                normalize_health_scope_type(row.get("scope_type")),
-                self._normalize_safety_bot_id(row.get("bot_id")),
-                self._normalize_safety_symbol(row.get("symbol")),
-            )
-            for row in reason_items
-            if isinstance(row, dict)
-        }
-        conn.execute("UPDATE health_reason_events SET active_bool = 0, updated_at = ?", (now_iso,))
-        for row in reason_items:
-            if not isinstance(row, dict):
-                continue
-            reason_code = normalize_health_reason_code(row.get("reason_code"))
-            scope_type = normalize_health_scope_type(row.get("scope_type"))
-            bot_id = self._normalize_safety_bot_id(row.get("bot_id"))
-            symbol = self._normalize_safety_symbol(row.get("symbol"))
-            severity = str(row.get("severity") or "WARN")
-            evidence_json = json.dumps(row.get("evidence") if isinstance(row.get("evidence"), dict) else {}, ensure_ascii=True, sort_keys=True)
-            existing = conn.execute(
-                """
-                SELECT event_id, first_seen_at
-                FROM health_reason_events
-                WHERE reason_code = ?
-                  AND scope_type = ?
-                  AND COALESCE(bot_id, '') = COALESCE(?, '')
-                  AND COALESCE(symbol, '') = COALESCE(?, '')
-                """,
-                (reason_code, scope_type, bot_id, symbol),
-            ).fetchone()
-            if existing is None:
-                conn.execute(
-                    """
-                    INSERT INTO health_reason_events (
-                        event_id, reason_code, scope_type, bot_id, symbol, severity,
-                        first_seen_at, last_seen_at, active_bool, evidence_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                    """,
-                    (str(uuid4()), reason_code, scope_type, bot_id, symbol, severity, now_iso, now_iso, evidence_json, now_iso, now_iso),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE health_reason_events
-                    SET severity = ?,
-                        last_seen_at = ?,
-                        active_bool = 1,
-                        evidence_json = ?,
-                        updated_at = ?
-                    WHERE event_id = ?
-                    """,
-                    (severity, now_iso, evidence_json, now_iso, str(existing["event_id"])),
-                )
-
-    def insert_health_summary_snapshot(self, summary: dict[str, Any]) -> dict[str, Any]:
-        snapshot_id = str(uuid4())
-        now_iso = utc_now_iso()
-        scope_type = normalize_health_scope_type("GLOBAL")
-        raw_summary_json = json.dumps(summary if isinstance(summary, dict) else {}, ensure_ascii=True, sort_keys=True)
-        reason_items = list(summary.get("reason_items")) if isinstance(summary.get("reason_items"), list) else []
-        blockers_json = json.dumps(summary.get("hard_blockers") if isinstance(summary.get("hard_blockers"), list) else [], ensure_ascii=True, sort_keys=True)
-        reasons_json = json.dumps(summary.get("reason_codes") if isinstance(summary.get("reason_codes"), list) else [], ensure_ascii=True, sort_keys=True)
-        component_status_json = json.dumps(summary.get("component_status") if isinstance(summary.get("component_status"), dict) else {}, ensure_ascii=True, sort_keys=True)
-        freshness_json = json.dumps(summary.get("freshness") if isinstance(summary.get("freshness"), dict) else {}, ensure_ascii=True, sort_keys=True)
-        evaluated_at = str(summary.get("last_evaluated_at") or now_iso)
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO health_summary_snapshots (
-                    snapshot_id, scope_type, bot_id, symbol, evaluated_at, state, score, severity,
-                    blocking_bool, top_priority_reason_code, blockers_json, reasons_json,
-                    component_status_json, freshness_json, raw_summary_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    snapshot_id,
-                    scope_type,
-                    None,
-                    None,
-                    evaluated_at,
-                    str(summary.get("state") or "DEGRADED"),
-                    int(summary.get("score") or 0),
-                    str(summary.get("severity") or "WARN"),
-                    1 if bool(summary.get("blocking_bool", False)) else 0,
-                    str(summary.get("top_priority_reason_code") or ""),
-                    blockers_json,
-                    reasons_json,
-                    component_status_json,
-                    freshness_json,
-                    raw_summary_json,
-                    now_iso,
-                ),
-            )
-            for scope_row in summary.get("scope_status") if isinstance(summary.get("scope_status"), list) else []:
-                if not isinstance(scope_row, dict):
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO health_scope_snapshots (
-                        scope_snapshot_id, snapshot_id, scope_type, bot_id, symbol, evaluated_at, state,
-                        score, severity, blocking_bool, top_priority_reason_code, blockers_json,
-                        reasons_json, freshness_json, raw_scope_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid4()),
-                        snapshot_id,
-                        normalize_health_scope_type(scope_row.get("scope_type")),
-                        self._normalize_safety_bot_id(scope_row.get("bot_id")),
-                        self._normalize_safety_symbol(scope_row.get("symbol")),
-                        str(scope_row.get("evaluated_at") or evaluated_at),
-                        str(scope_row.get("state") or "DEGRADED"),
-                        int(scope_row.get("score") or 0),
-                        str(scope_row.get("severity") or "WARN"),
-                        1 if bool(scope_row.get("blocking_bool", False)) else 0,
-                        str(scope_row.get("top_priority_reason_code") or ""),
-                        json.dumps(scope_row.get("hard_blockers") if isinstance(scope_row.get("hard_blockers"), list) else [], ensure_ascii=True, sort_keys=True),
-                        json.dumps(scope_row.get("reason_codes") if isinstance(scope_row.get("reason_codes"), list) else [], ensure_ascii=True, sort_keys=True),
-                        json.dumps(scope_row.get("freshness") if isinstance(scope_row.get("freshness"), dict) else {}, ensure_ascii=True, sort_keys=True),
-                        json.dumps(scope_row, ensure_ascii=True, sort_keys=True),
-                        now_iso,
-                    ),
-                )
-                scope_reason_items = scope_row.get("reason_items") if isinstance(scope_row.get("reason_items"), list) else []
-                for reason_row in scope_reason_items:
-                    if isinstance(reason_row, dict):
-                        reason_items.append(reason_row)
-            self._sync_health_reason_events(conn, reason_items, now_iso=now_iso)
-        out = dict(summary)
-        out["snapshot_id"] = snapshot_id
-        out["persisted_at"] = now_iso
-        return out
-
-    def latest_health_summary_snapshot(self) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT snapshot_id, raw_summary_json, evaluated_at, created_at
-                FROM health_summary_snapshots
-                ORDER BY evaluated_at DESC, snapshot_id DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        if row is None:
-            return None
-        try:
-            payload = json.loads(str(row["raw_summary_json"] or "{}"))
-        except Exception:
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        payload["snapshot_id"] = str(row["snapshot_id"] or "")
-        payload["persisted_at"] = str(row["created_at"] or "")
-        payload.setdefault("last_evaluated_at", str(row["evaluated_at"] or ""))
-        return payload
-
-    def list_health_summary_snapshots(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT snapshot_id, evaluated_at, state, score, severity, blocking_bool,
-                       top_priority_reason_code, blockers_json, reasons_json, raw_summary_json, created_at
-                FROM health_summary_snapshots
-                ORDER BY evaluated_at DESC, snapshot_id DESC
-                LIMIT ?
-                """,
-                (max(1, int(limit)),),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                raw = json.loads(str(row["raw_summary_json"] or "{}"))
-            except Exception:
-                raw = {}
-            if not isinstance(raw, dict):
-                raw = {}
-            items.append(
-                {
-                    "snapshot_id": str(row["snapshot_id"] or ""),
-                    "evaluated_at": str(row["evaluated_at"] or ""),
-                    "state": str(row["state"] or ""),
-                    "score": int(row["score"] or 0),
-                    "severity": str(row["severity"] or ""),
-                    "blocking_bool": bool(row["blocking_bool"]),
-                    "top_priority_reason_code": str(row["top_priority_reason_code"] or ""),
-                    "hard_blockers": json.loads(str(row["blockers_json"] or "[]")),
-                    "reason_codes": json.loads(str(row["reasons_json"] or "[]")),
-                    "persisted_at": str(row["created_at"] or ""),
-                    "raw_summary": raw,
-                }
-            )
-        return items
-
-    def list_health_scope_snapshots(
-        self,
-        *,
-        snapshot_id: str | None = None,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = 250,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if snapshot_id:
-            clauses.append("snapshot_id = ?")
-            params.append(str(snapshot_id))
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_health_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM health_scope_snapshots
-                WHERE {' AND '.join(clauses)}
-                ORDER BY evaluated_at DESC, scope_snapshot_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                raw = json.loads(str(row["raw_scope_json"] or "{}"))
-            except Exception:
-                raw = {}
-            if not isinstance(raw, dict):
-                raw = {}
-            raw.setdefault("scope_snapshot_id", str(row["scope_snapshot_id"] or ""))
-            raw.setdefault("snapshot_id", str(row["snapshot_id"] or ""))
-            raw.setdefault("evaluated_at", str(row["evaluated_at"] or ""))
-            items.append(raw)
-        return items
-
-    def insert_live_signal_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
-        signal_snapshot_id = str(uuid4())
-        created_at = utc_now_iso()
-        payload = live_signal_snapshot_payload(snapshot)
-        row = {
-            "signal_snapshot_id": signal_snapshot_id,
-            "scope_type": normalize_live_signal_scope_type(snapshot.get("scope_type")),
-            "bot_id": self._normalize_safety_bot_id(snapshot.get("bot_id")),
-            "symbol": self._normalize_safety_symbol(snapshot.get("symbol")),
-            "snapshot_type": normalize_live_signal_snapshot_type(snapshot.get("snapshot_type")),
-            "schema_version": int(snapshot.get("schema_version")) if snapshot.get("schema_version") is not None else LIVE_SIGNAL_SCHEMA_VERSION,
-            "collected_at": str(snapshot.get("collected_at") or created_at),
-            "collected_at_ms": int(snapshot.get("collected_at_ms")) if snapshot.get("collected_at_ms") is not None else None,
-            "window_ms": int(snapshot.get("window_ms")) if snapshot.get("window_ms") is not None else None,
-            "source_module": str(snapshot.get("source_module") or "runtime_bridge.live_signals"),
-            "freshness_ms": int(snapshot.get("freshness_ms")) if snapshot.get("freshness_ms") is not None else None,
-            "payload_json": json.dumps(payload, ensure_ascii=True, sort_keys=True),
-            "signal_payload_json": json.dumps(payload, ensure_ascii=True, sort_keys=True),
-            "source_status": normalize_live_signal_source_status(snapshot.get("source_status")),
-            "created_at": created_at,
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO live_signal_snapshots (
-                    signal_snapshot_id, scope_type, bot_id, symbol, snapshot_type, schema_version, collected_at,
-                    collected_at_ms, window_ms, source_module, freshness_ms, payload_json,
-                    signal_payload_json, source_status, created_at
-                ) VALUES (
-                    :signal_snapshot_id, :scope_type, :bot_id, :symbol, :snapshot_type, :schema_version, :collected_at,
-                    :collected_at_ms, :window_ms, :source_module, :freshness_ms, :payload_json,
-                    :signal_payload_json, :source_status, :created_at
-                )
-                """,
-                row,
-            )
-        out = dict(snapshot)
-        out["signal_snapshot_id"] = signal_snapshot_id
-        out["scope_type"] = row["scope_type"]
-        out["bot_id"] = row["bot_id"]
-        out["symbol"] = row["symbol"]
-        out["snapshot_type"] = row["snapshot_type"]
-        out["schema_version"] = row["schema_version"]
-        out["collected_at"] = row["collected_at"]
-        out["collected_at_ms"] = row["collected_at_ms"]
-        out["window_ms"] = row["window_ms"]
-        out["source_status"] = row["source_status"]
-        out["payload"] = payload
-        out["signal_payload"] = payload
-        out["created_at"] = created_at
-        out["scope_key"] = live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"])
-        return out
-
-    def insert_live_signal_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        signal_event_id = str(uuid4())
-        created_at = utc_now_iso()
-        observed = event.get("observed_value") if isinstance(event.get("observed_value"), dict) else {}
-        raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
-        row = {
-            "signal_event_id": signal_event_id,
-            "event_time": str(event.get("event_time") or created_at),
-            "schema_version": int(event.get("schema_version")) if event.get("schema_version") is not None else LIVE_SIGNAL_SCHEMA_VERSION,
-            "event_time_ms": int(event.get("event_time_ms")) if event.get("event_time_ms") is not None else None,
-            "source_type": normalize_live_signal_source_type(event.get("source_type")),
-            "event_code": str(event.get("event_code") or "SIGNAL_OBSERVED"),
-            "scope_type": normalize_live_signal_scope_type(event.get("scope_type")),
-            "bot_id": self._normalize_safety_bot_id(event.get("bot_id")),
-            "symbol": self._normalize_safety_symbol(event.get("symbol")),
-            "severity_observed": normalize_live_signal_severity(event.get("severity_observed")),
-            "observed_value_json": json.dumps(observed, ensure_ascii=True, sort_keys=True),
-            "raw_payload_json": json.dumps(raw_payload, ensure_ascii=True, sort_keys=True),
-            "created_at": created_at,
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO live_signal_events (
-                    signal_event_id, schema_version, event_time, event_time_ms, source_type, event_code, scope_type, bot_id,
-                    symbol, severity_observed, observed_value_json, raw_payload_json, created_at
-                ) VALUES (
-                    :signal_event_id, :schema_version, :event_time, :event_time_ms, :source_type, :event_code, :scope_type, :bot_id,
-                    :symbol, :severity_observed, :observed_value_json, :raw_payload_json, :created_at
-                )
-                """,
-                row,
-            )
-        return {
-            "signal_event_id": signal_event_id,
-            "schema_version": row["schema_version"],
-            "event_time": row["event_time"],
-            "event_time_ms": row["event_time_ms"],
-            "source_type": row["source_type"],
-            "event_code": row["event_code"],
-            "scope_type": row["scope_type"],
-            "scope_key": live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
-            "bot_id": row["bot_id"],
-            "symbol": row["symbol"],
-            "severity_observed": row["severity_observed"],
-            "observed_value": observed,
-            "raw_payload": raw_payload,
-            "created_at": created_at,
-        }
-
-    def list_live_signal_snapshots(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        snapshot_type: str | None = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_live_signal_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        if snapshot_type:
-            clauses.append("snapshot_type = ?")
-            params.append(normalize_live_signal_snapshot_type(snapshot_type))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM live_signal_snapshots
-                WHERE {' AND '.join(clauses)}
-                ORDER BY collected_at DESC, signal_snapshot_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                payload = json.loads(str(row["payload_json"] or row["signal_payload_json"] or "{}"))
-            except Exception:
-                payload = {}
-            if not isinstance(payload, dict):
-                payload = {}
-            items.append(
-                {
-                    "signal_snapshot_id": str(row["signal_snapshot_id"] or ""),
-                    "scope_type": str(row["scope_type"] or ""),
-                    "scope_key": live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
-                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
-                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
-                    "snapshot_type": str(row["snapshot_type"] or ""),
-                    "schema_version": int(row["schema_version"]) if row["schema_version"] is not None else LIVE_SIGNAL_SCHEMA_VERSION,
-                    "collected_at": str(row["collected_at"] or ""),
-                    "collected_at_ms": int(row["collected_at_ms"]) if row["collected_at_ms"] is not None else None,
-                    "window_ms": int(row["window_ms"]) if row["window_ms"] is not None else None,
-                    "source_module": str(row["source_module"] or ""),
-                    "freshness_ms": int(row["freshness_ms"]) if row["freshness_ms"] is not None else None,
-                    "payload": live_signal_snapshot_payload({"snapshot_type": row["snapshot_type"], "payload": payload}),
-                    "signal_payload": live_signal_snapshot_payload({"snapshot_type": row["snapshot_type"], "payload": payload}),
-                    "source_status": str(row["source_status"] or ""),
-                    "created_at": str(row["created_at"] or ""),
-                }
-            )
-        return items
-
-    def list_live_signal_events(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        source_type: str | None = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_live_signal_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        if source_type:
-            clauses.append("source_type = ?")
-            params.append(normalize_live_signal_source_type(source_type))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM live_signal_events
-                WHERE {' AND '.join(clauses)}
-                ORDER BY event_time DESC, signal_event_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                observed_value = json.loads(str(row["observed_value_json"] or "{}"))
-            except Exception:
-                observed_value = {}
-            try:
-                raw_payload = json.loads(str(row["raw_payload_json"] or "{}"))
-            except Exception:
-                raw_payload = {}
-            if not isinstance(observed_value, dict):
-                observed_value = {}
-            if not isinstance(raw_payload, dict):
-                raw_payload = {}
-            items.append(
-                {
-                    "signal_event_id": str(row["signal_event_id"] or ""),
-                    "schema_version": int(row["schema_version"]) if row["schema_version"] is not None else LIVE_SIGNAL_SCHEMA_VERSION,
-                    "event_time": str(row["event_time"] or ""),
-                    "event_time_ms": int(row["event_time_ms"]) if row["event_time_ms"] is not None else None,
-                    "source_type": str(row["source_type"] or ""),
-                    "event_code": str(row["event_code"] or ""),
-                    "scope_type": str(row["scope_type"] or ""),
-                    "scope_key": live_signal_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
-                    "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
-                    "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
-                    "severity_observed": str(row["severity_observed"] or ""),
-                    "observed_value": observed_value,
-                    "raw_payload": raw_payload,
-                    "created_at": str(row["created_at"] or ""),
-                }
-            )
-        return items
-
-    @staticmethod
-    def _execution_alert_catalog_from_row(row: sqlite3.Row) -> dict[str, Any]:
-        try:
-            scope_type_supported = json.loads(str(row["scope_type_supported_json"] or "[]"))
-        except Exception:
-            scope_type_supported = []
-        if not isinstance(scope_type_supported, list):
-            scope_type_supported = []
-        return {
-            "trigger_code": str(row["trigger_code"] or ""),
-            "description": str(row["description"] or ""),
-            "default_severity": str(row["default_severity"] or ""),
-            "source_layer": str(row["source_layer"] or ""),
-            "scope_type_supported": [normalize_alert_scope_type(value) for value in scope_type_supported],
-            "dedup_strategy": str(row["dedup_strategy"] or ""),
-            "suppression_strategy": str(row["suppression_strategy"] or ""),
-            "cooldown_strategy": str(row["cooldown_strategy"] or ""),
-            "created_at": str(row["created_at"] or ""),
-            "updated_at": str(row["updated_at"] or ""),
-        }
-
-    def _execution_alert_instance_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
-        try:
-            source_refs = json.loads(str(row["source_refs_json"] or "{}"))
-        except Exception:
-            source_refs = {}
-        try:
-            evidence = json.loads(str(row["evidence_json"] or "{}"))
-        except Exception:
-            evidence = {}
-        instance = build_alert_instance(
-            trigger_code=row["trigger_code"],
-            severity=row["severity"],
-            state=row["state"],
-            source_layer=row["source_layer"],
-            scope_type=row["scope_type"],
-            bot_id=row["bot_id"],
-            symbol=row["symbol"],
-            opened_at=row["opened_at"],
-            last_seen_at=row["last_seen_at"],
-            acked_at=row["acked_at"],
-            suppressed_until=row["suppressed_until"],
-            cooldown_until=row["cooldown_until"],
-            resolved_at=row["resolved_at"],
-            expires_at=row["expires_at"],
-            source_refs=source_refs if isinstance(source_refs, dict) else {},
-            evidence=evidence if isinstance(evidence, dict) else {},
-            summary_text=row["summary_text"],
-        )
-        instance["alert_instance_id"] = str(row["alert_instance_id"] or "")
-        instance["created_at"] = str(row["created_at"] or "")
-        instance["updated_at"] = str(row["updated_at"] or "")
-        return instance
-
-    @staticmethod
-    def _execution_alert_event_from_row(row: sqlite3.Row) -> dict[str, Any]:
-        try:
-            payload = json.loads(str(row["payload_json"] or "{}"))
-        except Exception:
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        return {
-            "transition_id": str(row["transition_id"] or ""),
-            "alert_instance_id": str(row["alert_instance_id"] or ""),
-            "event_type": str(row["event_type"] or ""),
-            "previous_state": str(row["previous_state"] or "") if row["previous_state"] is not None else None,
-            "next_state": str(row["next_state"] or "") if row["next_state"] is not None else None,
-            "occurred_at": str(row["occurred_at"] or ""),
-            "payload": payload,
-            "actor": str(row["actor"] or "") if row["actor"] is not None else None,
-            "created_at": str(row["created_at"] or ""),
-        }
-
-    def sync_execution_alert_catalog(self, entries: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-        now_iso = utc_now_iso()
-        rows = entries if isinstance(entries, list) else default_alert_catalog_entries()
-        with self._connect() as conn:
-            for item in rows:
-                if not isinstance(item, dict):
-                    continue
-                trigger_code = normalize_alert_trigger_code(item.get("trigger_code"))
-                payload = {
-                    "trigger_code": trigger_code,
-                    "description": str(item.get("description") or trigger_code),
-                    "default_severity": normalize_alert_severity(item.get("default_severity")),
-                    "source_layer": normalize_alert_source_layer(item.get("source_layer")),
-                    "scope_type_supported_json": json.dumps(
-                        [normalize_alert_scope_type(value) for value in list(item.get("scope_type_supported") or [])],
-                        ensure_ascii=True,
-                        sort_keys=True,
-                    ),
-                    "dedup_strategy": str(item.get("dedup_strategy") or "trigger_scope_active"),
-                    "suppression_strategy": str(item.get("suppression_strategy") or "manual_until"),
-                    "cooldown_strategy": str(item.get("cooldown_strategy") or "timebox_rearm"),
-                    "updated_at": now_iso,
-                }
-                row = conn.execute(
-                    "SELECT created_at FROM execution_alert_catalog WHERE trigger_code = ?",
-                    (trigger_code,),
-                ).fetchone()
-                if row is None:
-                    conn.execute(
-                        """
-                        INSERT INTO execution_alert_catalog (
-                            trigger_code, description, default_severity, source_layer, scope_type_supported_json,
-                            dedup_strategy, suppression_strategy, cooldown_strategy, created_at, updated_at
-                        ) VALUES (
-                            :trigger_code, :description, :default_severity, :source_layer, :scope_type_supported_json,
-                            :dedup_strategy, :suppression_strategy, :cooldown_strategy, :updated_at, :updated_at
-                        )
-                        """,
-                        payload,
-                    )
-                else:
-                    conn.execute(
-                        """
-                        UPDATE execution_alert_catalog
-                        SET description = :description,
-                            default_severity = :default_severity,
-                            source_layer = :source_layer,
-                            scope_type_supported_json = :scope_type_supported_json,
-                            dedup_strategy = :dedup_strategy,
-                            suppression_strategy = :suppression_strategy,
-                            cooldown_strategy = :cooldown_strategy,
-                            updated_at = :updated_at
-                        WHERE trigger_code = :trigger_code
-                        """,
-                        payload,
-                    )
-        return self.list_execution_alert_catalog(limit=500)
-
-    def list_execution_alert_catalog(self, *, limit: int = 250) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM execution_alert_catalog
-                ORDER BY trigger_code ASC
-                LIMIT ?
-                """,
-                (max(1, int(limit)),),
-            ).fetchall()
-        return [self._execution_alert_catalog_from_row(row) for row in rows]
-
-    def get_execution_alert_instance(self, alert_instance_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT *
-                FROM execution_alert_instances
-                WHERE alert_instance_id = ?
-                LIMIT 1
-                """,
-                (str(alert_instance_id or ""),),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._execution_alert_instance_from_row(row)
-
-    def find_execution_alert_instance(
-        self,
-        *,
-        trigger_code: str,
-        scope_type: str,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> dict[str, Any] | None:
-        trigger_code_n = normalize_alert_trigger_code(trigger_code)
-        scope_type_n = normalize_alert_scope_type(scope_type)
-        bot_id_n = self._normalize_safety_bot_id(bot_id)
-        symbol_n = self._normalize_safety_symbol(symbol)
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT *
-                FROM execution_alert_instances
-                WHERE trigger_code = ?
-                  AND scope_type = ?
-                  AND COALESCE(bot_id, '') = COALESCE(?, '')
-                  AND COALESCE(symbol, '') = COALESCE(?, '')
-                LIMIT 1
-                """,
-                (trigger_code_n, scope_type_n, bot_id_n, symbol_n),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._execution_alert_instance_from_row(row)
-
-    def upsert_execution_alert_instance(
-        self,
-        *,
-        trigger_code: str,
-        severity: str,
-        state: str,
-        source_layer: str,
-        scope_type: str,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        opened_at: str | None = None,
-        last_seen_at: str | None = None,
-        acked_at: str | None = None,
-        suppressed_until: str | None = None,
-        cooldown_until: str | None = None,
-        resolved_at: str | None = None,
-        expires_at: str | None = None,
-        source_refs: dict[str, Any] | None = None,
-        evidence: dict[str, Any] | None = None,
-        summary_text: str | None = None,
-    ) -> dict[str, Any]:
-        trigger_code_n = normalize_alert_trigger_code(trigger_code)
-        scope_type_n = normalize_alert_scope_type(scope_type)
-        bot_id_n = self._normalize_safety_bot_id(bot_id)
-        symbol_n = self._normalize_safety_symbol(symbol)
-        now_iso = utc_now_iso()
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT alert_instance_id, created_at
-                FROM execution_alert_instances
-                WHERE trigger_code = ?
-                  AND scope_type = ?
-                  AND COALESCE(bot_id, '') = COALESCE(?, '')
-                  AND COALESCE(symbol, '') = COALESCE(?, '')
-                LIMIT 1
-                """,
-                (trigger_code_n, scope_type_n, bot_id_n, symbol_n),
-            ).fetchone()
-            payload = {
-                "alert_instance_id": str(row["alert_instance_id"]) if row is not None else str(uuid4()),
-                "trigger_code": trigger_code_n,
-                "severity": normalize_alert_severity(severity),
-                "state": normalize_alert_state(state),
-                "source_layer": normalize_alert_source_layer(source_layer),
-                "scope_type": scope_type_n,
-                "bot_id": bot_id_n,
-                "symbol": symbol_n,
-                "opened_at": str(opened_at or "") or None,
-                "last_seen_at": str(last_seen_at or now_iso),
-                "acked_at": str(acked_at or "") or None,
-                "suppressed_until": str(suppressed_until or "") or None,
-                "cooldown_until": str(cooldown_until or "") or None,
-                "resolved_at": str(resolved_at or "") or None,
-                "expires_at": str(expires_at or "") or None,
-                "source_refs_json": json.dumps(source_refs or {}, ensure_ascii=True, sort_keys=True),
-                "evidence_json": json.dumps(evidence or {}, ensure_ascii=True, sort_keys=True),
-                "summary_text": str(summary_text or ""),
-                "created_at": str(row["created_at"]) if row is not None else now_iso,
-                "updated_at": now_iso,
-            }
-            if row is None:
-                conn.execute(
-                    """
-                    INSERT INTO execution_alert_instances (
-                        alert_instance_id, trigger_code, severity, state, source_layer, scope_type, bot_id, symbol,
-                        opened_at, last_seen_at, acked_at, suppressed_until, cooldown_until, resolved_at, expires_at,
-                        source_refs_json, evidence_json, summary_text, created_at, updated_at
-                    ) VALUES (
-                        :alert_instance_id, :trigger_code, :severity, :state, :source_layer, :scope_type, :bot_id, :symbol,
-                        :opened_at, :last_seen_at, :acked_at, :suppressed_until, :cooldown_until, :resolved_at, :expires_at,
-                        :source_refs_json, :evidence_json, :summary_text, :created_at, :updated_at
-                    )
-                    """,
-                    payload,
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE execution_alert_instances
-                    SET severity = :severity,
-                        state = :state,
-                        source_layer = :source_layer,
-                        opened_at = :opened_at,
-                        last_seen_at = :last_seen_at,
-                        acked_at = :acked_at,
-                        suppressed_until = :suppressed_until,
-                        cooldown_until = :cooldown_until,
-                        resolved_at = :resolved_at,
-                        expires_at = :expires_at,
-                        source_refs_json = :source_refs_json,
-                        evidence_json = :evidence_json,
-                        summary_text = :summary_text,
-                        updated_at = :updated_at
-                    WHERE alert_instance_id = :alert_instance_id
-                    """,
-                    payload,
-                )
-        return self.find_execution_alert_instance(
-            trigger_code=trigger_code_n,
-            scope_type=scope_type_n,
-            bot_id=bot_id_n,
-            symbol=symbol_n,
-        ) or {}
-
-    def insert_execution_alert_event(
-        self,
-        *,
-        alert_instance_id: str,
-        event_type: str,
-        previous_state: str | None = None,
-        next_state: str | None = None,
-        payload: dict[str, Any] | None = None,
-        actor: str | None = None,
-        occurred_at: str | None = None,
-    ) -> dict[str, Any]:
-        row = {
-            "transition_id": str(uuid4()),
-            "alert_instance_id": str(alert_instance_id or ""),
-            "event_type": normalize_alert_event_type(event_type),
-            "previous_state": normalize_alert_state(previous_state) if str(previous_state or "").strip() else None,
-            "next_state": normalize_alert_state(next_state) if str(next_state or "").strip() else None,
-            "occurred_at": str(occurred_at or utc_now_iso()),
-            "payload_json": json.dumps(payload or {}, ensure_ascii=True, sort_keys=True),
-            "actor": str(actor or "").strip() or None,
-            "created_at": utc_now_iso(),
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO execution_alert_events (
-                    transition_id, alert_instance_id, event_type, previous_state, next_state, occurred_at, payload_json, actor, created_at
-                ) VALUES (
-                    :transition_id, :alert_instance_id, :event_type, :previous_state, :next_state, :occurred_at, :payload_json, :actor, :created_at
-                )
-                """,
-                row,
-            )
-        return {
-            "transition_id": row["transition_id"],
-            "alert_instance_id": row["alert_instance_id"],
-            "event_type": row["event_type"],
-            "previous_state": row["previous_state"],
-            "next_state": row["next_state"],
-            "occurred_at": row["occurred_at"],
-            "payload": payload or {},
-            "actor": row["actor"],
-            "created_at": row["created_at"],
-        }
-
-    def list_execution_alert_instances(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        trigger_code: str | None = None,
-        states: list[str] | None = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_alert_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        if trigger_code:
-            clauses.append("trigger_code = ?")
-            params.append(normalize_alert_trigger_code(trigger_code))
-        states_n = [normalize_alert_state(value) for value in (states or []) if str(value or "").strip()]
-        if states_n:
-            placeholders = ", ".join(["?"] * len(states_n))
-            clauses.append(f"state IN ({placeholders})")
-            params.extend(states_n)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM execution_alert_instances
-                WHERE {' AND '.join(clauses)}
-                ORDER BY updated_at DESC, alert_instance_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        items = [self._execution_alert_instance_from_row(row) for row in rows]
-        return sorted(
-            items,
-            key=lambda row: (
-                -alert_severity_rank(row.get("severity")),
-                0 if alert_state_active(row.get("state")) else 1,
-                -int(datetime.fromisoformat(str(row.get("updated_at") or utc_now_iso())).timestamp()) if str(row.get("updated_at") or "").strip() else 0,
-            ),
-        )
-
-    def list_execution_alert_events(
-        self,
-        *,
-        alert_instance_id: str | None = None,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if alert_instance_id:
-            clauses.append("alert_instance_id = ?")
-            params.append(str(alert_instance_id))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM execution_alert_events
-                WHERE {' AND '.join(clauses)}
-                ORDER BY occurred_at DESC, transition_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        return [self._execution_alert_event_from_row(row) for row in rows]
-
-    @staticmethod
-    def _canary_json_load(value: Any, default: Any) -> Any:
-        try:
-            payload = json.loads(str(value or ""))
-        except Exception:
-            payload = default
-        return payload if isinstance(payload, type(default)) else default
-
-    def _canary_run_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "run_id": str(row["run_id"] or ""),
-            "scope_type": str(row["scope_type"] or ""),
-            "scope_key": canary_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]),
-            "bot_id": str(row["bot_id"] or "") if row["bot_id"] is not None else None,
-            "symbol": str(row["symbol"] or "") if row["symbol"] is not None else None,
-            "phase": str(row["phase"] or ""),
-            "canary_allowed_bool": bool(row["canary_allowed_bool"]),
-            "hold_required_bool": bool(row["hold_required_bool"]),
-            "rollback_recommended_bool": bool(row["rollback_recommended_bool"]),
-            "promotion_allowed_bool": bool(row["promotion_allowed_bool"]),
-            "started_at": str(row["started_at"] or "") if row["started_at"] is not None else None,
-            "running_started_at": str(row["running_started_at"] or "") if row["running_started_at"] is not None else None,
-            "last_evaluated_at": str(row["last_evaluated_at"] or "") if row["last_evaluated_at"] is not None else None,
-            "ended_at": str(row["ended_at"] or "") if row["ended_at"] is not None else None,
-            "last_gate_evaluation_id": str(row["last_gate_evaluation_id"] or "") if row["last_gate_evaluation_id"] is not None else None,
-            "blocking_sources": self._canary_json_load(row["blocking_sources_json"], []),
-            "gating_reasons": self._canary_json_load(row["gating_reasons_json"], []),
-            "advisory_warnings": self._canary_json_load(row["advisory_warnings_json"], []),
-            "upstream_refs": self._canary_json_load(row["upstream_refs_json"], {}),
-            "summary_text": str(row["summary_text"] or ""),
-            "raw_run": self._canary_json_load(row["raw_run_json"], {}),
-            "created_at": str(row["created_at"] or ""),
-            "updated_at": str(row["updated_at"] or ""),
-        }
-
-    def _canary_gate_evaluation_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
-        raw = self._canary_json_load(row["raw_evaluation_json"], {})
-        if not isinstance(raw, dict):
-            raw = {}
-        raw.setdefault("evaluation_id", str(row["evaluation_id"] or ""))
-        raw.setdefault("run_id", str(row["run_id"] or "") if row["run_id"] is not None else None)
-        raw.setdefault("scope_type", str(row["scope_type"] or ""))
-        raw.setdefault("scope_key", canary_scope_key(row["scope_type"], bot_id=row["bot_id"], symbol=row["symbol"]))
-        raw.setdefault("bot_id", str(row["bot_id"] or "") if row["bot_id"] is not None else None)
-        raw.setdefault("symbol", str(row["symbol"] or "") if row["symbol"] is not None else None)
-        raw.setdefault("phase", str(row["phase"] or ""))
-        raw.setdefault("canary_allowed_bool", bool(row["canary_allowed_bool"]))
-        raw.setdefault("hold_required_bool", bool(row["hold_required_bool"]))
-        raw.setdefault("rollback_recommended_bool", bool(row["rollback_recommended_bool"]))
-        raw.setdefault("promotion_allowed_bool", bool(row["promotion_allowed_bool"]))
-        raw.setdefault("blocking_sources", self._canary_json_load(row["blocking_sources_json"], []))
-        raw.setdefault("gating_reasons", self._canary_json_load(row["gating_reasons_json"], []))
-        raw.setdefault("advisory_warnings", self._canary_json_load(row["advisory_warnings_json"], []))
-        raw.setdefault("upstream_refs", self._canary_json_load(row["upstream_refs_json"], {}))
-        raw.setdefault("evaluated_at", str(row["evaluated_at"] or ""))
-        raw.setdefault("created_at", str(row["created_at"] or ""))
-        return raw
-
-    @staticmethod
-    def _canary_run_event_from_row(row: sqlite3.Row) -> dict[str, Any]:
-        try:
-            payload = json.loads(str(row["payload_json"] or "{}"))
-        except Exception:
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        return {
-            "event_id": str(row["event_id"] or ""),
-            "run_id": str(row["run_id"] or ""),
-            "event_type": str(row["event_type"] or ""),
-            "previous_phase": str(row["previous_phase"] or "") if row["previous_phase"] is not None else None,
-            "next_phase": str(row["next_phase"] or "") if row["next_phase"] is not None else None,
-            "occurred_at": str(row["occurred_at"] or ""),
-            "payload": payload,
-            "actor": str(row["actor"] or "") if row["actor"] is not None else None,
-            "created_at": str(row["created_at"] or ""),
-        }
-
-    @staticmethod
-    def _canary_phase_snapshot_from_row(row: sqlite3.Row) -> dict[str, Any]:
-        try:
-            payload = json.loads(str(row["snapshot_json"] or "{}"))
-        except Exception:
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        payload.setdefault("phase_snapshot_id", str(row["phase_snapshot_id"] or ""))
-        payload.setdefault("run_id", str(row["run_id"] or ""))
-        payload.setdefault("phase", str(row["phase"] or ""))
-        payload.setdefault("gate_evaluation_id", str(row["gate_evaluation_id"] or "") if row["gate_evaluation_id"] is not None else None)
-        payload.setdefault("created_at", str(row["created_at"] or ""))
-        return payload
-
-    def upsert_canary_run(
-        self,
-        *,
-        run_id: str | None = None,
-        scope_type: str,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        phase: str,
-        canary_allowed_bool: bool,
-        hold_required_bool: bool,
-        rollback_recommended_bool: bool,
-        promotion_allowed_bool: bool,
-        started_at: str | None = None,
-        running_started_at: str | None = None,
-        last_evaluated_at: str | None = None,
-        ended_at: str | None = None,
-        last_gate_evaluation_id: str | None = None,
-        blocking_sources: list[str] | None = None,
-        gating_reasons: list[dict[str, Any]] | None = None,
-        advisory_warnings: list[dict[str, Any]] | None = None,
-        upstream_refs: dict[str, Any] | None = None,
-        summary_text: str | None = None,
-        raw_run: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        run_id_n = str(run_id or uuid4())
-        now_iso = utc_now_iso()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT created_at FROM canary_runs WHERE run_id = ? LIMIT 1",
-                (run_id_n,),
-            ).fetchone()
-            payload = {
-                "run_id": run_id_n,
-                "scope_type": normalize_canary_scope_type(scope_type),
-                "bot_id": self._normalize_safety_bot_id(bot_id),
-                "symbol": self._normalize_safety_symbol(symbol),
-                "phase": normalize_canary_phase(phase),
-                "canary_allowed_bool": 1 if bool(canary_allowed_bool) else 0,
-                "hold_required_bool": 1 if bool(hold_required_bool) else 0,
-                "rollback_recommended_bool": 1 if bool(rollback_recommended_bool) else 0,
-                "promotion_allowed_bool": 1 if bool(promotion_allowed_bool) else 0,
-                "started_at": str(started_at or "") or None,
-                "running_started_at": str(running_started_at or "") or None,
-                "last_evaluated_at": str(last_evaluated_at or "") or None,
-                "ended_at": str(ended_at or "") or None,
-                "last_gate_evaluation_id": str(last_gate_evaluation_id or "") or None,
-                "blocking_sources_json": json.dumps(list(blocking_sources or []), ensure_ascii=True, sort_keys=True),
-                "gating_reasons_json": json.dumps(list(gating_reasons or []), ensure_ascii=True, sort_keys=True),
-                "advisory_warnings_json": json.dumps(list(advisory_warnings or []), ensure_ascii=True, sort_keys=True),
-                "upstream_refs_json": json.dumps(upstream_refs or {}, ensure_ascii=True, sort_keys=True),
-                "summary_text": str(summary_text or ""),
-                "raw_run_json": json.dumps(raw_run or {}, ensure_ascii=True, sort_keys=True),
-                "created_at": str(row["created_at"]) if row is not None else now_iso,
-                "updated_at": now_iso,
-            }
-            if row is None:
-                conn.execute(
-                    """
-                    INSERT INTO canary_runs (
-                        run_id, scope_type, bot_id, symbol, phase, canary_allowed_bool, hold_required_bool,
-                        rollback_recommended_bool, promotion_allowed_bool, started_at, running_started_at,
-                        last_evaluated_at, ended_at, last_gate_evaluation_id, blocking_sources_json,
-                        gating_reasons_json, advisory_warnings_json, upstream_refs_json, summary_text,
-                        raw_run_json, created_at, updated_at
-                    ) VALUES (
-                        :run_id, :scope_type, :bot_id, :symbol, :phase, :canary_allowed_bool, :hold_required_bool,
-                        :rollback_recommended_bool, :promotion_allowed_bool, :started_at, :running_started_at,
-                        :last_evaluated_at, :ended_at, :last_gate_evaluation_id, :blocking_sources_json,
-                        :gating_reasons_json, :advisory_warnings_json, :upstream_refs_json, :summary_text,
-                        :raw_run_json, :created_at, :updated_at
-                    )
-                    """,
-                    payload,
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE canary_runs
-                    SET scope_type = :scope_type,
-                        bot_id = :bot_id,
-                        symbol = :symbol,
-                        phase = :phase,
-                        canary_allowed_bool = :canary_allowed_bool,
-                        hold_required_bool = :hold_required_bool,
-                        rollback_recommended_bool = :rollback_recommended_bool,
-                        promotion_allowed_bool = :promotion_allowed_bool,
-                        started_at = :started_at,
-                        running_started_at = :running_started_at,
-                        last_evaluated_at = :last_evaluated_at,
-                        ended_at = :ended_at,
-                        last_gate_evaluation_id = :last_gate_evaluation_id,
-                        blocking_sources_json = :blocking_sources_json,
-                        gating_reasons_json = :gating_reasons_json,
-                        advisory_warnings_json = :advisory_warnings_json,
-                        upstream_refs_json = :upstream_refs_json,
-                        summary_text = :summary_text,
-                        raw_run_json = :raw_run_json,
-                        updated_at = :updated_at
-                    WHERE run_id = :run_id
-                    """,
-                    payload,
-                )
-        return self.get_canary_run(run_id_n) or {}
-
-    def get_canary_run(self, run_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM canary_runs WHERE run_id = ? LIMIT 1",
-                (str(run_id or ""),),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._canary_run_from_row(row)
-
-    def list_canary_runs(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_canary_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM canary_runs
-                WHERE {' AND '.join(clauses)}
-                ORDER BY updated_at DESC, run_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        return [self._canary_run_from_row(row) for row in rows]
-
-    def latest_canary_run(
-        self,
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> dict[str, Any] | None:
-        items = self.list_canary_runs(scope_type=scope_type, bot_id=bot_id, symbol=symbol, limit=1)
-        return items[0] if items else None
-
-    def insert_canary_gate_evaluation(self, evaluation: dict[str, Any]) -> dict[str, Any]:
-        evaluation_id = str(uuid4())
-        created_at = utc_now_iso()
-        row = {
-            "evaluation_id": evaluation_id,
-            "run_id": str(evaluation.get("run_id") or "") or None,
-            "scope_type": normalize_canary_scope_type(evaluation.get("scope_type")),
-            "bot_id": self._normalize_safety_bot_id(evaluation.get("bot_id")),
-            "symbol": self._normalize_safety_symbol(evaluation.get("symbol")),
-            "phase": normalize_canary_phase(evaluation.get("phase")),
-            "canary_allowed_bool": 1 if bool(evaluation.get("canary_allowed_bool", False)) else 0,
-            "hold_required_bool": 1 if bool(evaluation.get("hold_required_bool", False)) else 0,
-            "rollback_recommended_bool": 1 if bool(evaluation.get("rollback_recommended_bool", False)) else 0,
-            "promotion_allowed_bool": 1 if bool(evaluation.get("promotion_allowed_bool", False)) else 0,
-            "blocking_sources_json": json.dumps(list(evaluation.get("blocking_sources") or []), ensure_ascii=True, sort_keys=True),
-            "gating_reasons_json": json.dumps(list(evaluation.get("gating_reasons") or []), ensure_ascii=True, sort_keys=True),
-            "advisory_warnings_json": json.dumps(list(evaluation.get("advisory_warnings") or []), ensure_ascii=True, sort_keys=True),
-            "upstream_refs_json": json.dumps(evaluation.get("upstream_refs") or {}, ensure_ascii=True, sort_keys=True),
-            "raw_evaluation_json": json.dumps(evaluation, ensure_ascii=True, sort_keys=True),
-            "evaluated_at": str(evaluation.get("evaluated_at") or created_at),
-            "created_at": created_at,
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO canary_gate_evaluations (
-                    evaluation_id, run_id, scope_type, bot_id, symbol, phase, canary_allowed_bool,
-                    hold_required_bool, rollback_recommended_bool, promotion_allowed_bool,
-                    blocking_sources_json, gating_reasons_json, advisory_warnings_json,
-                    upstream_refs_json, raw_evaluation_json, evaluated_at, created_at
-                ) VALUES (
-                    :evaluation_id, :run_id, :scope_type, :bot_id, :symbol, :phase, :canary_allowed_bool,
-                    :hold_required_bool, :rollback_recommended_bool, :promotion_allowed_bool,
-                    :blocking_sources_json, :gating_reasons_json, :advisory_warnings_json,
-                    :upstream_refs_json, :raw_evaluation_json, :evaluated_at, :created_at
-                )
-                """,
-                row,
-            )
-        return self.get_canary_gate_evaluation(evaluation_id) or {}
-
-    def get_canary_gate_evaluation(self, evaluation_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM canary_gate_evaluations WHERE evaluation_id = ? LIMIT 1",
-                (str(evaluation_id or ""),),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._canary_gate_evaluation_from_row(row)
-
-    def list_canary_gate_evaluations(
-        self,
-        *,
-        run_id: str | None = None,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        clauses = ["1 = 1"]
-        params: list[Any] = []
-        if run_id:
-            clauses.append("run_id = ?")
-            params.append(str(run_id))
-        if scope_type:
-            clauses.append("scope_type = ?")
-            params.append(normalize_canary_scope_type(scope_type))
-        if bot_id:
-            clauses.append("bot_id = ?")
-            params.append(self._normalize_safety_bot_id(bot_id))
-        if symbol:
-            clauses.append("symbol = ?")
-            params.append(self._normalize_safety_symbol(symbol))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM canary_gate_evaluations
-                WHERE {' AND '.join(clauses)}
-                ORDER BY evaluated_at DESC, evaluation_id DESC
-                LIMIT ?
-                """,
-                tuple([*params, max(1, int(limit))]),
-            ).fetchall()
-        return [self._canary_gate_evaluation_from_row(row) for row in rows]
-
-    def insert_canary_phase_snapshot(
-        self,
-        *,
-        run_id: str,
-        phase: str,
-        gate_evaluation_id: str | None = None,
-        snapshot: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        row = {
-            "phase_snapshot_id": str(uuid4()),
-            "run_id": str(run_id or ""),
-            "phase": normalize_canary_phase(phase),
-            "gate_evaluation_id": str(gate_evaluation_id or "") or None,
-            "snapshot_json": json.dumps(snapshot or {}, ensure_ascii=True, sort_keys=True),
-            "created_at": utc_now_iso(),
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO canary_phase_snapshots (
-                    phase_snapshot_id, run_id, phase, gate_evaluation_id, snapshot_json, created_at
-                ) VALUES (
-                    :phase_snapshot_id, :run_id, :phase, :gate_evaluation_id, :snapshot_json, :created_at
-                )
-                """,
-                row,
-            )
-        return {
-            **(snapshot or {}),
-            "phase_snapshot_id": row["phase_snapshot_id"],
-            "run_id": row["run_id"],
-            "phase": row["phase"],
-            "gate_evaluation_id": row["gate_evaluation_id"],
-            "created_at": row["created_at"],
-        }
-
-    def list_canary_phase_snapshots(self, *, run_id: str, limit: int = 100) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM canary_phase_snapshots
-                WHERE run_id = ?
-                ORDER BY created_at DESC, phase_snapshot_id DESC
-                LIMIT ?
-                """,
-                (str(run_id or ""), max(1, int(limit))),
-            ).fetchall()
-        return [self._canary_phase_snapshot_from_row(row) for row in rows]
-
-    def insert_canary_run_event(
-        self,
-        *,
-        run_id: str,
-        event_type: str,
-        previous_phase: str | None = None,
-        next_phase: str | None = None,
-        payload: dict[str, Any] | None = None,
-        actor: str | None = None,
-        occurred_at: str | None = None,
-    ) -> dict[str, Any]:
-        row = {
-            "event_id": str(uuid4()),
-            "run_id": str(run_id or ""),
-            "event_type": normalize_canary_event_type(event_type),
-            "previous_phase": normalize_canary_phase(previous_phase) if str(previous_phase or "").strip() else None,
-            "next_phase": normalize_canary_phase(next_phase) if str(next_phase or "").strip() else None,
-            "occurred_at": str(occurred_at or utc_now_iso()),
-            "payload_json": json.dumps(payload or {}, ensure_ascii=True, sort_keys=True),
-            "actor": str(actor or "").strip() or None,
-            "created_at": utc_now_iso(),
-        }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO canary_run_events (
-                    event_id, run_id, event_type, previous_phase, next_phase, occurred_at,
-                    payload_json, actor, created_at
-                ) VALUES (
-                    :event_id, :run_id, :event_type, :previous_phase, :next_phase, :occurred_at,
-                    :payload_json, :actor, :created_at
-                )
-                """,
-                row,
-            )
-        return {
-            "event_id": row["event_id"],
-            "run_id": row["run_id"],
-            "event_type": row["event_type"],
-            "previous_phase": row["previous_phase"],
-            "next_phase": row["next_phase"],
-            "occurred_at": row["occurred_at"],
-            "payload": payload or {},
-            "actor": row["actor"],
-            "created_at": row["created_at"],
-        }
-
-    def list_canary_run_events(self, *, run_id: str, limit: int = 100) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM canary_run_events
-                WHERE run_id = ?
-                ORDER BY occurred_at DESC, event_id DESC
-                LIMIT ?
-                """,
-                (str(run_id or ""), max(1, int(limit))),
-            ).fetchall()
-        return [self._canary_run_event_from_row(row) for row in rows]
-
     def _ensure_defaults(self) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
-        self._ensure_default_alert_catalog()
         self._ensure_default_strategy()
         self._ensure_knowledge_strategies_registry()
         self._ensure_strategy_registry_invariants()
         self._ensure_default_bots()
         self._ensure_seed_backtest()
         self._sync_backtest_runs_catalog()
+        try:
+            self.reporting_bridge.refresh_materialized_views(self.load_runs())
+        except Exception:
+            pass
         self.add_log(
             event_type="health",
             severity="info",
@@ -4670,9 +2590,6 @@ class ConsoleStore:
 
     def _ensure_default_bot_state(self) -> None:
         self.policy_state.ensure_default_bot_state()
-
-    def _ensure_default_alert_catalog(self) -> None:
-        self.sync_execution_alert_catalog(default_alert_catalog_entries())
 
     def _write_default_strategy_pack(self) -> Path:
         target = UPLOADS_DIR / f"{DEFAULT_STRATEGY_ID}_{DEFAULT_STRATEGY_VERSION}.zip"
@@ -8808,3647 +6725,6 @@ class RuntimeBridge:
         return canceled
 
     @staticmethod
-    def _runtime_bot_scope(state: dict[str, Any] | None) -> str | None:
-        bot_id = str((state or {}).get("active_bot_id") or (state or {}).get("bot_id") or "").strip()
-        return bot_id or None
-
-    @staticmethod
-    def _safety_scope_from_context(*, bot_id: str | None = None, symbol: str | None = None) -> tuple[str, str | None, str | None]:
-        bot_id_n = str(bot_id or "").strip() or None
-        symbol_n = str(symbol or "").strip().upper() or None
-        if bot_id_n and symbol_n:
-            return "BOT_SYMBOL", bot_id_n, symbol_n
-        if bot_id_n:
-            return "BOT", bot_id_n, None
-        if symbol_n:
-            return "SYMBOL", None, symbol_n
-        return "GLOBAL", None, None
-
-    def _operational_safety_policy(self) -> dict[str, Any]:
-        payload = load_execution_safety_policy()
-        root = payload.get("operational_safety") if isinstance(payload.get("operational_safety"), dict) else {}
-        return {**DEFAULT_OPERATIONAL_SAFETY_POLICY, **root}
-
-    def _list_relevant_safety_breakers(
-        self,
-        *,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> list[dict[str, Any]]:
-        now_dt = utc_now()
-        rows = store.list_safety_breakers(limit=500)
-        active: list[dict[str, Any]] = []
-        for row in rows:
-            if not safety_scope_matches(
-                row_scope_type=row.get("scope_type"),
-                row_bot_id=row.get("bot_id"),
-                row_symbol=row.get("symbol"),
-                bot_id=bot_id,
-                symbol=symbol,
-            ):
-                continue
-            state_n = normalize_safety_breaker_state(row.get("state"))
-            if state_n == "COOLDOWN":
-                cooldown_until_dt = _parse_iso_datetime_utc(str(row.get("cooldown_until") or ""))
-                if isinstance(cooldown_until_dt, datetime) and cooldown_until_dt <= now_dt:
-                    row = store.upsert_safety_breaker(
-                        breaker_code=str(row.get("breaker_code") or "SAFETY_POLICY_VIOLATION"),
-                        scope_type=str(row.get("scope_type") or "GLOBAL"),
-                        state="CLOSED",
-                        bot_id=str(row.get("bot_id") or "") or None,
-                        symbol=str(row.get("symbol") or "") or None,
-                        blocking_bool=False,
-                        trigger_count_window=int(row.get("trigger_count_window") or 0),
-                        opened_at=str(row.get("opened_at") or "") or None,
-                        cooldown_until=None,
-                        last_trigger_at=utc_now_iso(),
-                        trigger_reason={
-                            **(row.get("trigger_reason") if isinstance(row.get("trigger_reason"), dict) else {}),
-                            "resolved_at": utc_now_iso(),
-                            "resolution_reason": "cooldown_expired",
-                        },
-                    )
-                    state_n = "CLOSED"
-            if state_n != "CLOSED":
-                active.append(row)
-        return active
-
-    def _count_recent_safety_events(
-        self,
-        *,
-        trigger_code: str,
-        window_sec: int,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> tuple[int, list[dict[str, Any]]]:
-        now_dt = utc_now()
-        rows = store.list_safety_guardrail_events(limit=500)
-        matched: list[dict[str, Any]] = []
-        for row in rows:
-            if normalize_safety_trigger_code(row.get("trigger_code")) != normalize_safety_trigger_code(trigger_code):
-                continue
-            if not safety_scope_matches(
-                row_scope_type=row.get("scope_type"),
-                row_bot_id=row.get("bot_id"),
-                row_symbol=row.get("symbol"),
-                bot_id=bot_id,
-                symbol=symbol,
-            ):
-                continue
-            event_dt = _parse_iso_datetime_utc(str(row.get("event_time") or ""))
-            if not isinstance(event_dt, datetime):
-                continue
-            if (now_dt - event_dt).total_seconds() > max(1, int(window_sec)):
-                continue
-            matched.append(row)
-        return len(matched), matched
-
-    def _upsert_operational_breaker(
-        self,
-        *,
-        breaker_code: str,
-        severity: str,
-        action_taken: str,
-        blocking_bool: bool,
-        scope_type: str,
-        bot_id: str | None,
-        symbol: str | None,
-        state: str,
-        evidence: dict[str, Any],
-        trigger_count_window: int = 1,
-        cooldown_until: str | None = None,
-    ) -> tuple[dict[str, Any], bool]:
-        existing_rows = store.list_safety_breakers(
-            scope_type=scope_type,
-            bot_id=bot_id,
-            symbol=symbol,
-            breaker_code=breaker_code,
-            limit=1,
-        )
-        existing = existing_rows[0] if existing_rows else None
-        normalized_state = normalize_safety_breaker_state(state)
-        changed = (
-            existing is None
-            or normalize_safety_breaker_state(existing.get("state")) != normalized_state
-            or bool(existing.get("blocking_bool")) != bool(blocking_bool)
-            or str(existing.get("cooldown_until") or "") != str(cooldown_until or "")
-            or int(existing.get("trigger_count_window") or 0) != int(trigger_count_window)
-        )
-        opened_at = str(existing.get("opened_at") or "") if isinstance(existing, dict) else ""
-        if normalized_state in {"OPEN", "COOLDOWN", "MANUAL_LOCK"} and not opened_at:
-            opened_at = utc_now_iso()
-        breaker = store.upsert_safety_breaker(
-            breaker_code=breaker_code,
-            scope_type=scope_type,
-            state=normalized_state,
-            bot_id=bot_id,
-            symbol=symbol,
-            blocking_bool=blocking_bool,
-            trigger_count_window=trigger_count_window,
-            opened_at=opened_at or None,
-            cooldown_until=cooldown_until,
-            last_trigger_at=utc_now_iso(),
-            trigger_reason={
-                "severity": normalize_safety_event_severity(severity),
-                "action_taken": normalize_safety_breaker_action(action_taken),
-                **(evidence if isinstance(evidence, dict) else {}),
-            },
-        )
-        if changed and normalized_state != "CLOSED":
-            store.insert_safety_guardrail_event(
-                scope_type=scope_type,
-                bot_id=bot_id,
-                symbol=symbol,
-                trigger_code=breaker_code,
-                severity=severity,
-                evidence=evidence,
-                action_taken=action_taken,
-                blocking_bool=blocking_bool,
-            )
-        return breaker, changed
-
-    def _close_operational_breaker(self, breaker: dict[str, Any], *, resolution_reason: str) -> dict[str, Any]:
-        return store.upsert_safety_breaker(
-            breaker_code=str(breaker.get("breaker_code") or "SAFETY_POLICY_VIOLATION"),
-            scope_type=str(breaker.get("scope_type") or "GLOBAL"),
-            state="CLOSED",
-            bot_id=str(breaker.get("bot_id") or "") or None,
-            symbol=str(breaker.get("symbol") or "") or None,
-            blocking_bool=False,
-            trigger_count_window=int(breaker.get("trigger_count_window") or 0),
-            opened_at=str(breaker.get("opened_at") or "") or None,
-            cooldown_until=None,
-            last_trigger_at=utc_now_iso(),
-            trigger_reason={
-                **(breaker.get("trigger_reason") if isinstance(breaker.get("trigger_reason"), dict) else {}),
-                "resolved_at": utc_now_iso(),
-                "resolution_reason": resolution_reason,
-            },
-        )
-
-    @staticmethod
-    def _safety_global_state_from_breakers(rows: list[dict[str, Any]]) -> str:
-        if any(normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK" for row in rows):
-            return "MANUAL_LOCK"
-        if any(
-            normalize_safety_breaker_state(row.get("state")) == "OPEN" and safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
-            for row in rows
-        ):
-            return "OPEN"
-        if any(
-            normalize_safety_breaker_state(row.get("state")) == "COOLDOWN" and safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
-            for row in rows
-        ):
-            return "COOLDOWN"
-        if rows:
-            return "WARN"
-        return "CLOSED"
-
-    def operational_safety_summary(
-        self,
-        *,
-        state: dict[str, Any] | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            state_n = dict(state or {})
-            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
-            symbol_n = str(symbol or "").strip().upper() or None
-            breakers = self._list_relevant_safety_breakers(bot_id=bot_id_n, symbol=symbol_n)
-            blocking_breakers = [
-                row for row in breakers if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
-            ]
-            manual_locks = [
-                row for row in breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
-            ]
-            recent_events = store.list_safety_guardrail_events(limit=50)
-            relevant_events = [
-                row
-                for row in recent_events
-                if safety_scope_matches(
-                    row_scope_type=row.get("scope_type"),
-                    row_bot_id=row.get("bot_id"),
-                    row_symbol=row.get("symbol"),
-                    bot_id=bot_id_n,
-                    symbol=symbol_n,
-                )
-            ]
-            return {
-                "evaluated_at": utc_now_iso(),
-                "policy_source": str(load_execution_safety_policy().get("source") or "default_fail_closed_operational_safety"),
-                "scope": {"bot_id": bot_id_n, "symbol": symbol_n},
-                "global_state": RuntimeBridge._safety_global_state_from_breakers(breakers),
-                "blocking_bool": bool(blocking_breakers),
-                "breakers_open_count": len(breakers),
-                "breakers_blocking_count": len(blocking_breakers),
-                "manual_lock_count": len(manual_locks),
-                "breakers": breakers,
-                "blocking_scopes": [
-                    {
-                        "breaker_code": str(row.get("breaker_code") or ""),
-                        "scope_type": str(row.get("scope_type") or ""),
-                        "bot_id": row.get("bot_id"),
-                        "symbol": row.get("symbol"),
-                        "state": str(row.get("state") or ""),
-                    }
-                    for row in blocking_breakers
-                ],
-                "events": relevant_events[:20],
-                "runtime_unknown_timeout_active": bool(state_n.get("runtime_unknown_timeout_active", False)),
-                "runtime_unknown_timeout_since": str(state_n.get("runtime_unknown_timeout_since") or ""),
-            }
-
-    def _live_health_policy(self) -> dict[str, Any]:
-        payload = load_execution_safety_policy()
-        policy = payload.get("live_health_summary") if isinstance(payload.get("live_health_summary"), dict) else {}
-        return {
-            **DEFAULT_LIVE_HEALTH_POLICY,
-            **policy,
-        }
-
-    def _live_signals_policy(self) -> dict[str, Any]:
-        payload = load_execution_safety_policy()
-        policy = payload.get("live_signals") if isinstance(payload.get("live_signals"), dict) else {}
-        merged = {
-            **DEFAULT_LIVE_SIGNALS_POLICY,
-            **policy,
-        }
-        merged["schema_version"] = max(1, _as_int(merged.get("schema_version"), LIVE_SIGNAL_SCHEMA_VERSION))
-        merged["payload_sections"] = [
-            str(value or "").strip()
-            for value in (merged.get("payload_sections") if isinstance(merged.get("payload_sections"), list) else DEFAULT_LIVE_SIGNALS_POLICY["payload_sections"])
-            if str(value or "").strip()
-        ]
-        merged["risk_observed_only"] = bool(merged.get("risk_observed_only", True))
-        return merged
-
-    def _alerting_policy(self) -> dict[str, Any]:
-        payload = load_execution_safety_policy()
-        policy = payload.get("alerting") if isinstance(payload.get("alerting"), dict) else {}
-        merged = {
-            **DEFAULT_ALERTING_POLICY,
-            **policy,
-        }
-        merged["severity_rank"] = normalize_alert_severity_precedence(merged.get("severity_rank"))
-        merged["severity_source_precedence"] = normalize_alert_source_precedence(merged.get("severity_source_precedence"))
-        # Current storage model keeps one canonical alert instance per trigger+scope.
-        # Reappearance after EXPIRED therefore reopens the same instance explicitly.
-        merged["expired_reopens_same_instance"] = True
-        return merged
-
-    def _canary_policy(self) -> dict[str, Any]:
-        payload = load_execution_safety_policy()
-        policy = payload.get("canary_live_controller") if isinstance(payload.get("canary_live_controller"), dict) else {}
-        merged = {
-            **DEFAULT_CANARY_LIVE_CONTROLLER_POLICY,
-            **policy,
-        }
-        merged["allow_health_states"] = [
-            str(value or "").strip().upper()
-            for value in (merged.get("allow_health_states") if isinstance(merged.get("allow_health_states"), list) else DEFAULT_CANARY_LIVE_CONTROLLER_POLICY["allow_health_states"])
-            if str(value or "").strip()
-        ]
-        merged["promotion_health_states"] = [
-            str(value or "").strip().upper()
-            for value in (merged.get("promotion_health_states") if isinstance(merged.get("promotion_health_states"), list) else DEFAULT_CANARY_LIVE_CONTROLLER_POLICY["promotion_health_states"])
-            if str(value or "").strip()
-        ]
-        merged["critical_alert_blocking_states"] = [
-            normalize_alert_state(value)
-            for value in (
-                merged.get("critical_alert_blocking_states")
-                if isinstance(merged.get("critical_alert_blocking_states"), list)
-                else DEFAULT_CANARY_LIVE_CONTROLLER_POLICY["critical_alert_blocking_states"]
-            )
-            if str(value or "").strip()
-        ]
-        merged["min_health_score_ready"] = max(0, min(100, _as_int(merged.get("min_health_score_ready"), 70)))
-        merged["min_health_score_promotion"] = max(0, min(100, _as_int(merged.get("min_health_score_promotion"), 90)))
-        merged["max_blocking_critical_alerts"] = max(0, _as_int(merged.get("max_blocking_critical_alerts"), 0))
-        merged["armed_to_running_min_sec"] = max(0, _as_int(merged.get("armed_to_running_min_sec"), 0))
-        merged["promotion_stability_sec"] = max(
-            merged["armed_to_running_min_sec"],
-            _as_int(merged.get("promotion_stability_sec"), 300),
-        )
-        merged["count_suppressed_critical_alerts_as_blocking"] = bool(merged.get("count_suppressed_critical_alerts_as_blocking", False))
-        merged["require_preflight_pass"] = bool(merged.get("require_preflight_pass", True))
-        merged["require_reconciliation_clean"] = bool(merged.get("require_reconciliation_clean", True))
-        merged["require_operational_safety_clear"] = bool(merged.get("require_operational_safety_clear", True))
-        merged["require_health_non_blocking"] = bool(merged.get("require_health_non_blocking", True))
-        merged["fail_closed_on_missing_surfaces"] = bool(merged.get("fail_closed_on_missing_surfaces", True))
-        merged["rollback_recommend_on_hard_block"] = bool(merged.get("rollback_recommend_on_hard_block", True))
-        merged["rollback_execution_supported"] = bool(merged.get("rollback_execution_supported", False))
-        merged["rollback_requires_canonical_confirmation"] = True
-        return merged
-
-    @staticmethod
-    def _live_signal_severity_from_status(value: Any) -> str:
-        normalized = normalize_live_signal_source_status(value)
-        if normalized == "CRITICAL":
-            return "CRITICAL"
-        if normalized in {"WARN", "MISSING"}:
-            return "WARN"
-        return "INFO"
-
-    @staticmethod
-    def _live_signal_source_type_for_snapshot(snapshot_type: str) -> str:
-        mapping = {
-            "EXECUTION": "EXECUTION",
-            "FILLS": "FILL",
-            "STREAM": "STREAM",
-            "RECONCILIATION": "RECONCILIATION",
-            "PREFLIGHT": "PREFLIGHT",
-            "RATE_LIMIT": "RATE_LIMIT",
-            "RISK": "RISK",
-        }
-        return normalize_live_signal_source_type(mapping.get(normalize_live_signal_snapshot_type(snapshot_type), "EXECUTION"))
-
-    @staticmethod
-    def _live_signal_scope_matches(order: Order, *, symbol: str | None = None) -> bool:
-        symbol_n = str(symbol or "").strip().upper()
-        if symbol_n and str(order.symbol or "").strip().upper() != symbol_n:
-            return False
-        return True
-
-    @staticmethod
-    def _event_time_iso_from_dt(value: datetime | None) -> str:
-        return value.isoformat() if isinstance(value, datetime) else ""
-
-    def build_live_signal_snapshot(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        persist: bool = False,
-    ) -> dict[str, Any]:
-        with self._lock:
-            now_dt = utc_now()
-            now_iso = now_dt.isoformat()
-            state_n = dict(state or {})
-            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
-            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
-            scope_type, scope_bot_id, scope_symbol = self._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-            scope_key = live_signal_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol)
-
-            signals_policy = self._live_signals_policy()
-            health_policy = self._live_health_policy()
-            ops_policy = self._operational_safety_policy()
-            schema_version = max(1, _as_int(signals_policy.get("schema_version"), LIVE_SIGNAL_SCHEMA_VERSION))
-            window_ms = max(1000, _as_int(signals_policy.get("default_window_ms"), 300000))
-            risk_observed_only = bool(signals_policy.get("risk_observed_only", True))
-
-            runtime_snapshot = _runtime_contract_snapshot(state_n, target_mode="live")
-            exec_snapshot = self.execution_metrics_snapshot()
-            safety_summary = self.operational_safety_summary(state=state_n, bot_id=scope_bot_id, symbol=scope_symbol)
-            reconcile = dict(self._last_reconcile) if isinstance(self._last_reconcile, dict) else {}
-
-            orders = [
-                order
-                for order in self._oms.orders.values()
-                if RuntimeBridge._live_signal_scope_matches(order, symbol=scope_symbol)
-            ]
-            terminal_statuses = {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.STALE, OrderStatus.REJECTED}
-            open_orders = [order for order in orders if order.status in {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}]
-
-            def _age_ms_from_dt(value: datetime | None) -> int | None:
-                if not isinstance(value, datetime):
-                    return None
-                return max(0, int((now_dt - value).total_seconds() * 1000.0))
-
-            def _timestamp_ms_from_dt(value: datetime | None) -> int | None:
-                if not isinstance(value, datetime):
-                    return None
-                return int(value.timestamp() * 1000.0)
-
-            def _timestamp_ms_from_iso(value: Any) -> int | None:
-                text = str(value or "").strip()
-                if not text:
-                    return None
-                if text.endswith("Z"):
-                    text = f"{text[:-1]}+00:00"
-                try:
-                    parsed = datetime.fromisoformat(text)
-                except Exception:
-                    return None
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return int(parsed.timestamp() * 1000.0)
-
-            recent_orders = [
-                order
-                for order in orders
-                if (_age_ms_from_dt(order.created_at) or 999999999) <= window_ms
-                or (_age_ms_from_dt(order.updated_at) or 999999999) <= window_ms
-            ]
-            latest_order_dt = max((order.updated_at for order in orders), default=None)
-            latest_order_age_ms = _age_ms_from_dt(latest_order_dt)
-
-            relevant_breakers = list(safety_summary.get("breakers") or [])
-            rate_limit_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "TOO_MANY_REQUESTS_PRESSURE"]
-            rate_limit_ban_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "HTTP_418_BAN_RISK"]
-            manual_review_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "RECONCILIATION_MANUAL_REVIEW_BLOCKING"]
-            execution_cancel_fail_breakers = [row for row in relevant_breakers if str(row.get("breaker_code") or "") == "EXCESSIVE_CANCEL_FAILS"]
-            rate_limit_window_count = max((int(row.get("trigger_count_window") or 0) for row in rate_limit_breakers), default=0)
-            cancel_fail_window_count = max((int(row.get("trigger_count_window") or 0) for row in execution_cancel_fail_breakers), default=0)
-            ban_active = any(normalize_safety_breaker_state(row.get("state")) in {"OPEN", "COOLDOWN", "MANUAL_LOCK"} for row in rate_limit_ban_breakers)
-            retry_after_active = any(normalize_safety_breaker_state(row.get("state")) == "COOLDOWN" for row in rate_limit_breakers)
-
-            latest_rate_limit_event_at = ""
-            for row in rate_limit_breakers + rate_limit_ban_breakers:
-                candidate = str(row.get("last_trigger_at") or row.get("updated_at") or "")
-                if candidate and candidate > latest_rate_limit_event_at:
-                    latest_rate_limit_event_at = candidate
-            rate_limit_age_ms = (_runtime_ts_age_sec(latest_rate_limit_event_at, now=now_dt) * 1000) if latest_rate_limit_event_at else None
-
-            fills_recent = [order for order in recent_orders if float(order.filled_qty) > 0.0]
-            fills_partial_recent = [order for order in fills_recent if order.status == OrderStatus.PARTIALLY_FILLED]
-            fills_final_recent = [order for order in fills_recent if order.status == OrderStatus.FILLED]
-            latest_fill_dt = max((order.updated_at for order in orders if float(order.filled_qty) > 0.0), default=None)
-            latest_fill_age_ms = _age_ms_from_dt(latest_fill_dt)
-
-            heartbeat_age_ms = (_runtime_ts_age_sec(str(runtime_snapshot.get("runtime_heartbeat_at") or ""), now=now_dt) * 1000) if str(runtime_snapshot.get("runtime_heartbeat_at") or "").strip() else None
-            reconcile_age_ms = (_runtime_ts_age_sec(str(runtime_snapshot.get("runtime_last_reconcile_at") or ""), now=now_dt) * 1000) if str(runtime_snapshot.get("runtime_last_reconcile_at") or "").strip() else None
-            stream_connected = bool(runtime_snapshot.get("runtime_loop_alive", False))
-            stream_terminated = "eventstreamterminated" in str(runtime_snapshot.get("runtime_exchange_reason") or "").strip().lower()
-            stream_warn_ms = max(0, _as_int(ops_policy.get("guardrail_stream_gap_warn_ms"), 5000))
-            stream_critical_ms = max(stream_warn_ms, _as_int(ops_policy.get("guardrail_stream_gap_critical_ms"), 10000))
-
-            preflight_ts = (
-                str(state_n.get("runtime_last_safety_eval_at") or "").strip()
-                or str(runtime_snapshot.get("runtime_last_reconcile_at") or "").strip()
-                or str(runtime_snapshot.get("runtime_heartbeat_at") or "").strip()
-            )
-            preflight_age_sec = _runtime_ts_age_sec(preflight_ts, now=now_dt)
-            preflight_age_ms = (preflight_age_sec * 1000) if preflight_age_sec is not None else None
-            stale_sec = max(0, _as_int(health_policy.get("preflight_stale_sec"), 300))
-            expired_sec = max(stale_sec, _as_int(health_policy.get("preflight_expired_sec"), 600))
-            gates_payload = evaluate_gates("live", force_exchange_check=True, runtime_state=state_n)
-            can_live, live_reason = live_can_be_enabled(gates_payload)
-            if preflight_age_sec is None:
-                preflight_status = "MISSING"
-            elif preflight_age_sec > expired_sec:
-                preflight_status = "EXPIRED"
-            elif not can_live:
-                preflight_status = "FAIL"
-            elif preflight_age_sec > stale_sec:
-                preflight_status = "STALE"
-            else:
-                preflight_status = "PASS"
-            preflight_time_to_expiry_ms = (
-                max(0, (expired_sec * 1000) - int(preflight_age_ms or 0))
-                if preflight_age_ms is not None
-                else None
-            )
-
-            unknown_timeout_active = bool(state_n.get("runtime_unknown_timeout_active", False))
-            unknown_timeout_since = str(state_n.get("runtime_unknown_timeout_since") or "")
-            unknown_timeout_age_ms = (
-                _runtime_ts_age_sec(unknown_timeout_since, now=now_dt) * 1000
-                if unknown_timeout_active and unknown_timeout_since
-                else None
-            )
-
-            open_order_pressure_count = max(
-                int(reconcile.get("remote_open_orders_count") or 0),
-                int(reconcile.get("local_open_orders_count") or 0),
-            )
-            reconciliation_open_cases_count = int(reconcile.get("desync_count") or 0) + len(manual_review_breakers)
-
-            positions = self.positions()
-            if scope_symbol:
-                positions = [row for row in positions if str(row.get("symbol") or "").strip().upper() == scope_symbol]
-            risk_daily_loss_value = _as_float(state_n.get("daily_loss"), 0.0)
-            risk_max_dd_value = _as_float(state_n.get("max_dd"), 0.0)
-            risk_equity_value = _as_float(state_n.get("equity"), 0.0)
-
-            snapshots: list[dict[str, Any]] = []
-
-            execution_status = "WARN" if unknown_timeout_active else "OK"
-            execution_payload = build_live_signal_payload(
-                snapshot_type="EXECUTION",
-                numeric_metrics={
-                    "execution_submit_total_window": len([order for order in orders if (_age_ms_from_dt(order.created_at) or 999999999) <= window_ms]),
-                    "execution_reject_total_window": len([order for order in orders if order.status == OrderStatus.REJECTED and (_age_ms_from_dt(order.updated_at) or 999999999) <= window_ms]),
-                    "execution_cancel_fail_total_window": cancel_fail_window_count,
-                    "execution_unknown_timeout_active_count": 1 if unknown_timeout_active else 0,
-                    "execution_open_orders_count": len(open_orders),
-                    "execution_terminal_orders_recent_count": len([order for order in recent_orders if order.status in terminal_statuses]),
-                    "execution_pending_orders_recent_count": len([order for order in recent_orders if order.status in {OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}]),
-                },
-                state_values={
-                    "runtime_last_remote_submit_error": str(state_n.get("runtime_last_remote_submit_error") or ""),
-                    "runtime_last_remote_submit_reason": str(state_n.get("runtime_last_remote_submit_reason") or ""),
-                    "runtime_last_signal_action": str(state_n.get("runtime_last_signal_action") or ""),
-                    "runtime_last_signal_symbol": str(state_n.get("runtime_last_signal_symbol") or ""),
-                    "runtime_last_signal_side": str(state_n.get("runtime_last_signal_side") or ""),
-                    "runtime_unknown_timeout_active": unknown_timeout_active,
-                },
-                timestamps_ms={
-                    "latest_order_updated_at_ms": _timestamp_ms_from_dt(latest_order_dt),
-                    "runtime_last_remote_submit_at_ms": _timestamp_ms_from_iso(state_n.get("runtime_last_remote_submit_at")),
-                    "runtime_unknown_timeout_since_ms": _timestamp_ms_from_iso(unknown_timeout_since),
-                },
-                refs={
-                    "scope_key": scope_key,
-                    "source_table": "runtime_bridge.oms",
-                    "source_module": "RuntimeBridge.execution_metrics_snapshot",
-                },
-            )
-            snapshots.append(
-                build_live_signal_snapshot(
-                    scope_type=scope_type,
-                    bot_id=scope_bot_id,
-                    symbol=scope_symbol,
-                    snapshot_type="EXECUTION",
-                    collected_at=now_iso,
-                    window_ms=window_ms,
-                    source_module="RuntimeBridge.execution_metrics_snapshot",
-                    freshness_ms=latest_order_age_ms,
-                    payload=execution_payload,
-                    schema_version=schema_version,
-                    source_status=execution_status,
-                )
-            )
-
-            fills_payload = build_live_signal_payload(
-                snapshot_type="FILLS",
-                numeric_metrics={
-                    "fills_recent_count": len(fills_recent),
-                    "fills_partial_recent_count": len(fills_partial_recent),
-                    "fills_final_recent_count": len(fills_final_recent),
-                    "fills_commission_observed_recent_count": 0,
-                    "fills_last_event_age_ms": latest_fill_age_ms,
-                    "fills_count_runtime_total": int(exec_snapshot.get("fills_count_runtime") or 0),
-                    "fills_notional_runtime_usd_total": round(_as_float(exec_snapshot.get("fills_notional_runtime_usd"), 0.0), 6),
-                },
-                state_values={
-                    "commission_observed_supported": False,
-                    "runtime_cost_proxy_available": bool(_as_int(exec_snapshot.get("fills_count_runtime"), 0) > 0),
-                    "fills_runtime_costs_source": "runtime_costs_proxy",
-                },
-                timestamps_ms={
-                    "last_fill_updated_at_ms": _timestamp_ms_from_dt(latest_fill_dt),
-                },
-                refs={
-                    "scope_key": scope_key,
-                    "source_module": "RuntimeBridge.oms/runtime_costs",
-                },
-            )
-            snapshots.append(
-                build_live_signal_snapshot(
-                    scope_type=scope_type,
-                    bot_id=scope_bot_id,
-                    symbol=scope_symbol,
-                    snapshot_type="FILLS",
-                    collected_at=now_iso,
-                    window_ms=window_ms,
-                    source_module="RuntimeBridge.oms",
-                    freshness_ms=latest_fill_age_ms,
-                    payload=fills_payload,
-                    schema_version=schema_version,
-                    source_status="OK",
-                )
-            )
-
-            stream_status = "OK"
-            if stream_terminated or not stream_connected or (heartbeat_age_ms is not None and heartbeat_age_ms > stream_critical_ms):
-                stream_status = "CRITICAL"
-            elif heartbeat_age_ms is not None and heartbeat_age_ms > stream_warn_ms:
-                stream_status = "WARN"
-            stream_payload = build_live_signal_payload(
-                snapshot_type="STREAM",
-                numeric_metrics={
-                    "stream_gap_ms": heartbeat_age_ms,
-                    "stream_last_event_age_ms": heartbeat_age_ms,
-                    "stream_reconnect_count_window": 0,
-                },
-                state_values={
-                    "stream_connected_bool": stream_connected,
-                    "stream_terminated_bool": stream_terminated,
-                    "stream_reconnect_count_observed": False,
-                    "runtime_exchange_reason": str(runtime_snapshot.get("runtime_exchange_reason") or ""),
-                },
-                timestamps_ms={
-                    "stream_last_event_at_ms": _timestamp_ms_from_iso(runtime_snapshot.get("runtime_heartbeat_at")),
-                },
-                refs={
-                    "scope_key": scope_key,
-                    "stream_gap_warn_ms": stream_warn_ms,
-                    "stream_gap_critical_ms": stream_critical_ms,
-                    "source_module": "runtime_contract_snapshot",
-                },
-            )
-            snapshots.append(
-                build_live_signal_snapshot(
-                    scope_type=scope_type,
-                    bot_id=scope_bot_id,
-                    symbol=scope_symbol,
-                    snapshot_type="STREAM",
-                    collected_at=now_iso,
-                    window_ms=window_ms,
-                    source_module="_runtime_contract_snapshot",
-                    freshness_ms=heartbeat_age_ms,
-                    payload=stream_payload,
-                    schema_version=schema_version,
-                    source_status=stream_status,
-                )
-            )
-
-            reconciliation_status = "WARN" if (int(reconcile.get("desync_count") or 0) > 0 or len(manual_review_breakers) > 0 or not bool(reconcile.get("source_ok", False))) else "OK"
-            reconciliation_payload = build_live_signal_payload(
-                snapshot_type="RECONCILIATION",
-                numeric_metrics={
-                    "reconciliation_last_run_age_ms": reconcile_age_ms,
-                    "reconciliation_open_cases_count": reconciliation_open_cases_count,
-                    "reconciliation_desync_count": int(reconcile.get("desync_count") or 0),
-                    "reconciliation_manual_review_count": len(manual_review_breakers),
-                },
-                state_values={
-                    "reconciliation_source": str(reconcile.get("source") or ""),
-                    "reconciliation_source_ok": bool(reconcile.get("source_ok", False)),
-                    "reconciliation_source_reason": str(reconcile.get("source_reason") or ""),
-                },
-                timestamps_ms={
-                    "reconciliation_last_run_at_ms": _timestamp_ms_from_iso(runtime_snapshot.get("runtime_last_reconcile_at")),
-                },
-                refs={
-                    "scope_key": scope_key,
-                    "source_module": "RuntimeBridge._last_reconcile",
-                },
-            )
-            snapshots.append(
-                build_live_signal_snapshot(
-                    scope_type=scope_type,
-                    bot_id=scope_bot_id,
-                    symbol=scope_symbol,
-                    snapshot_type="RECONCILIATION",
-                    collected_at=now_iso,
-                    window_ms=window_ms,
-                    source_module="RuntimeBridge._last_reconcile",
-                    freshness_ms=reconcile_age_ms,
-                    payload=reconciliation_payload,
-                    schema_version=schema_version,
-                    source_status=reconciliation_status,
-                )
-            )
-
-            preflight_status_signal = "MISSING" if preflight_status == "MISSING" else ("WARN" if preflight_status in {"FAIL", "EXPIRED", "STALE"} else "OK")
-            preflight_payload = build_live_signal_payload(
-                snapshot_type="PREFLIGHT",
-                numeric_metrics={
-                    "preflight_last_run_age_ms": preflight_age_ms,
-                    "preflight_time_to_expiry_ms": preflight_time_to_expiry_ms,
-                    "preflight_attestation_age_ms": None,
-                },
-                state_values={
-                    "preflight_last_status_observed": preflight_status,
-                    "preflight_last_reason_observed": str(live_reason or ""),
-                    "preflight_attestation_supported": False,
-                },
-                timestamps_ms={
-                    "preflight_last_run_at_ms": _timestamp_ms_from_iso(preflight_ts),
-                },
-                refs={
-                    "scope_key": scope_key,
-                    "preflight_stale_threshold_ms": stale_sec * 1000,
-                    "preflight_expired_threshold_ms": expired_sec * 1000,
-                    "source_module": "evaluate_gates/live_can_be_enabled",
-                },
-            )
-            snapshots.append(
-                build_live_signal_snapshot(
-                    scope_type=scope_type,
-                    bot_id=scope_bot_id,
-                    symbol=scope_symbol,
-                    snapshot_type="PREFLIGHT",
-                    collected_at=now_iso,
-                    window_ms=window_ms,
-                    source_module="evaluate_gates/live_can_be_enabled",
-                    freshness_ms=preflight_age_ms,
-                    payload=preflight_payload,
-                    schema_version=schema_version,
-                    source_status=preflight_status_signal,
-                )
-            )
-
-            rate_limit_status = "CRITICAL" if ban_active else ("WARN" if rate_limit_window_count > 0 or retry_after_active else "OK")
-            rate_limit_payload = build_live_signal_payload(
-                snapshot_type="RATE_LIMIT",
-                numeric_metrics={
-                    "rate_limit_429_count_window": rate_limit_window_count,
-                    "open_order_pressure_count": open_order_pressure_count,
-                    "rate_limit_hits_cumulative": int(exec_snapshot.get("rate_limit_hits") or 0),
-                    "last_rate_limit_event_age_ms": rate_limit_age_ms,
-                },
-                state_values={
-                    "rate_limit_418_active_bool": ban_active,
-                    "retry_after_active_bool": retry_after_active,
-                },
-                timestamps_ms={
-                    "last_rate_limit_event_at_ms": _timestamp_ms_from_iso(latest_rate_limit_event_at),
-                },
-                refs={
-                    "scope_key": scope_key,
-                    "guardrail_http_429_threshold": int(ops_policy.get("guardrail_http_429_threshold", 3)),
-                    "source_module": "operational_safety_summary/execution_metrics_snapshot",
-                },
-            )
-            snapshots.append(
-                build_live_signal_snapshot(
-                    scope_type=scope_type,
-                    bot_id=scope_bot_id,
-                    symbol=scope_symbol,
-                    snapshot_type="RATE_LIMIT",
-                    collected_at=now_iso,
-                    window_ms=window_ms,
-                    source_module="RuntimeBridge.operational_safety_summary",
-                    freshness_ms=rate_limit_age_ms,
-                    payload=rate_limit_payload,
-                    schema_version=schema_version,
-                    source_status=rate_limit_status,
-                )
-            )
-
-            risk_payload = build_live_signal_payload(
-                snapshot_type="RISK",
-                numeric_metrics={
-                    "risk_open_positions_count": len(positions),
-                    "risk_daily_loss_value": round(risk_daily_loss_value, 6),
-                    "risk_max_drawdown_value": round(risk_max_dd_value, 6),
-                    "risk_equity_value": round(risk_equity_value, 6),
-                },
-                state_values={
-                    "runtime_risk_allow_new_positions": bool(state_n.get("runtime_risk_allow_new_positions", True)),
-                    "runtime_risk_reason": str(state_n.get("runtime_risk_reason") or ""),
-                },
-                timestamps_ms={
-                    "runtime_last_event_at_ms": _timestamp_ms_from_iso(runtime_snapshot.get("runtime_heartbeat_at")),
-                },
-                refs={
-                    "scope_key": scope_key,
-                    "source_module": "runtime_state",
-                    "risk_observed_only": risk_observed_only,
-                },
-            )
-            snapshots.append(
-                build_live_signal_snapshot(
-                    scope_type=scope_type,
-                    bot_id=scope_bot_id,
-                    symbol=scope_symbol,
-                    snapshot_type="RISK",
-                    collected_at=now_iso,
-                    window_ms=window_ms,
-                    source_module="runtime_state",
-                    freshness_ms=heartbeat_age_ms,
-                    payload=risk_payload,
-                    schema_version=schema_version,
-                    source_status="OK",
-                )
-            )
-
-            persisted_snapshots: list[dict[str, Any]] = []
-            persisted_events: list[dict[str, Any]] = []
-            if persist:
-                for snapshot in snapshots:
-                    stored_snapshot = store.insert_live_signal_snapshot(snapshot)
-                    persisted_snapshots.append(stored_snapshot)
-                    observed_payload = live_signal_snapshot_payload(stored_snapshot)
-                    event = build_live_signal_event(
-                        source_type=self._live_signal_source_type_for_snapshot(str(stored_snapshot.get("snapshot_type") or "")),
-                        event_code=f"{str(stored_snapshot.get('snapshot_type') or 'SIGNAL').upper()}_SNAPSHOT_COLLECTED",
-                        scope_type=str(stored_snapshot.get("scope_type") or "GLOBAL"),
-                        bot_id=stored_snapshot.get("bot_id"),
-                        symbol=stored_snapshot.get("symbol"),
-                        event_time=str(stored_snapshot.get("collected_at") or now_iso),
-                        severity_observed=self._live_signal_severity_from_status(stored_snapshot.get("source_status")),
-                        observed_value={
-                            "schema_version": stored_snapshot.get("schema_version"),
-                            "snapshot_type": str(stored_snapshot.get("snapshot_type") or ""),
-                            "source_status": str(stored_snapshot.get("source_status") or ""),
-                            "freshness_ms": stored_snapshot.get("freshness_ms"),
-                            "window_ms": stored_snapshot.get("window_ms"),
-                        },
-                        raw_payload=observed_payload,
-                    )
-                    persisted_events.append(store.insert_live_signal_event(event))
-            else:
-                persisted_snapshots = [dict(snapshot) for snapshot in snapshots]
-
-            return {
-                "schema_version": schema_version,
-                "scope": {
-                    "scope_type": scope_type,
-                    "scope_key": scope_key,
-                    "bot_id": scope_bot_id,
-                    "symbol": scope_symbol,
-                },
-                "collected_at": now_iso,
-                "window_ms": window_ms,
-                "policy_source": str(load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml"),
-                "items": persisted_snapshots,
-                "events": persisted_events,
-            }
-
-    def build_live_health_summary(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        persist: bool = False,
-    ) -> dict[str, Any]:
-        with self._lock:
-            now_dt = utc_now()
-            now_iso = now_dt.isoformat()
-            state_n = dict(state or {})
-            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
-            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
-            health_policy = self._live_health_policy()
-            ops_policy = self._operational_safety_policy()
-            runtime_snapshot = _runtime_contract_snapshot(state_n, target_mode="live")
-            telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
-            gates_payload = evaluate_gates("live", force_exchange_check=True, runtime_state=state_n)
-            can_live, live_reason = live_can_be_enabled(gates_payload)
-            safety_summary = self.operational_safety_summary(state=state_n, bot_id=bot_id_n, symbol=symbol_n)
-            if not bot_id_n and not symbol_n:
-                all_breakers = store.list_safety_breakers(limit=500)
-                all_blocking_breakers = [
-                    row for row in all_breakers if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
-                ]
-                all_manual_locks = [
-                    row for row in all_breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
-                ]
-                safety_summary = {
-                    **dict(safety_summary),
-                    "global_state": RuntimeBridge._safety_global_state_from_breakers(all_breakers),
-                    "blocking_bool": bool(all_blocking_breakers),
-                    "breakers_open_count": len(all_breakers),
-                    "breakers_blocking_count": len(all_blocking_breakers),
-                    "manual_lock_count": len(all_manual_locks),
-                    "breakers": all_breakers,
-                    "blocking_scopes": [
-                        {
-                            "breaker_code": str(row.get("breaker_code") or ""),
-                            "scope_type": str(row.get("scope_type") or ""),
-                            "bot_id": row.get("bot_id"),
-                            "symbol": row.get("symbol"),
-                            "state": str(row.get("state") or ""),
-                        }
-                        for row in all_blocking_breakers
-                    ],
-                    "events": store.list_safety_guardrail_events(limit=50)[:20],
-                }
-            reconcile = dict(self._last_reconcile) if isinstance(self._last_reconcile, dict) else {}
-            manual_actions = store.list_safety_manual_actions(limit=100)
-
-            stale_sec = int(health_policy.get("preflight_stale_sec", 300))
-            expired_sec = int(health_policy.get("preflight_expired_sec", 600))
-            emergency_window_sec = int(health_policy.get("recent_emergency_action_window_sec", 300))
-            heartbeat_warn_ms = int(ops_policy.get("guardrail_stream_gap_warn_ms", 5000))
-            heartbeat_critical_ms = int(ops_policy.get("guardrail_stream_gap_critical_ms", 10000))
-            unknown_hard_sec = int(ops_policy.get("guardrail_unknown_timeout_hard_sec", 30))
-            open_orders_warn_count = int(ops_policy.get("guardrail_open_orders_warn_count", 10))
-
-            preflight_ts = (
-                str(state_n.get("runtime_last_safety_eval_at") or "").strip()
-                or str(runtime_snapshot.get("runtime_exchange_verified_at") or "").strip()
-                or str(runtime_snapshot.get("runtime_last_reconcile_at") or "").strip()
-                or str(runtime_snapshot.get("runtime_heartbeat_at") or "").strip()
-            )
-            preflight_age_sec = _runtime_ts_age_sec(preflight_ts, now=now_dt)
-            heartbeat_age_sec = runtime_snapshot.get("heartbeat_age_sec")
-            heartbeat_age_ms = int(float(heartbeat_age_sec or 0) * 1000)
-            exchange_reason = str(runtime_snapshot.get("runtime_exchange_reason") or "")
-            unknown_timeout_active = bool(state_n.get("runtime_unknown_timeout_active", False))
-            unknown_timeout_since = str(state_n.get("runtime_unknown_timeout_since") or "")
-            unknown_timeout_age_sec = _runtime_ts_age_sec(unknown_timeout_since, now=now_dt) if unknown_timeout_active else None
-            remote_open_orders_count = int(reconcile.get("remote_open_orders_count") or 0)
-
-            gates_by_id = {
-                str(row.get("id") or ""): dict(row)
-                for row in gates_payload.get("gates", [])
-                if isinstance(row, dict)
-            }
-            failed_required_gates = [
-                gate_id
-                for gate_id in [
-                    "G1_CONFIG_VALID",
-                    "G2_AUTH_READY",
-                    "G3_BACKEND_HEALTH",
-                    "G5_STRATEGY_PRINCIPAL_SET",
-                    "G6_RISK_LIMITS_SET",
-                    "G4_EXCHANGE_CONNECTOR_READY",
-                    "G7_ORDER_SIM_OR_PAPER_OK",
-                    "G9_RUNTIME_ENGINE_REAL",
-                    "G10_STORAGE_PERSISTENCE",
-                ]
-                if str((gates_by_id.get(gate_id) or {}).get("status") or "") != "PASS"
-            ]
-
-            active_breakers = [
-                row
-                for row in (safety_summary.get("breakers") if isinstance(safety_summary.get("breakers"), list) else [])
-                if normalize_safety_breaker_state(row.get("state")) != "CLOSED"
-            ]
-            blocking_breakers = [
-                row
-                for row in active_breakers
-                if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))
-            ]
-            manual_locks = [
-                row for row in active_breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
-            ]
-
-            summary_reasons: list[dict[str, Any]] = []
-            scoped_reason_rows: dict[str, list[dict[str, Any]]] = {}
-            recommended_actions = {
-                str(action)
-                for action in (safety_summary.get("recommended_actions") if isinstance(safety_summary.get("recommended_actions"), list) else [])
-                if str(action).strip()
-            }
-
-            def _add_scoped_row(row: dict[str, Any]) -> None:
-                key = health_scope_key(row.get("scope_type"), row.get("bot_id"), row.get("symbol"))
-                scoped_reason_rows.setdefault(key, []).append(row)
-
-            def _add_reason(
-                *,
-                reason_code: str,
-                severity: str | None = None,
-                scope_type: str = "GLOBAL",
-                bot_id: str | None = None,
-                symbol: str | None = None,
-                blocking_bool: bool | None = None,
-                scope_blocking_bool: bool | None = None,
-                evidence: dict[str, Any] | None = None,
-                action: str | None = None,
-            ) -> None:
-                row = build_health_reason(
-                    reason_code=reason_code,
-                    severity=severity,
-                    scope_type=scope_type,
-                    bot_id=bot_id,
-                    symbol=symbol,
-                    blocking_bool=blocking_bool,
-                    evidence=evidence,
-                )
-                summary_reasons.append(row)
-                if action:
-                    recommended_actions.add(str(action))
-                if scope_blocking_bool is not None and normalize_health_scope_type(scope_type) != "GLOBAL":
-                    scoped_row = dict(row)
-                    scoped_row["blocking_bool"] = bool(scope_blocking_bool)
-                    _add_scoped_row(scoped_row)
-
-            def _collapse_reasons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-                merged: dict[tuple[str, str, str | None, str | None], dict[str, Any]] = {}
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    key = (
-                        normalize_health_reason_code(row.get("reason_code")),
-                        normalize_health_scope_type(row.get("scope_type")),
-                        str(row.get("bot_id") or "").strip() or None,
-                        str(row.get("symbol") or "").strip().upper() or None,
-                    )
-                    current = merged.get(key)
-                    if current is None:
-                        merged[key] = dict(row)
-                        continue
-                    current["blocking_bool"] = bool(current.get("blocking_bool", False)) or bool(row.get("blocking_bool", False))
-                    if int(row.get("penalty") or 0) > int(current.get("penalty") or 0):
-                        current["penalty"] = int(row.get("penalty") or 0)
-                    if int(row.get("priority_rank") or 99) < int(current.get("priority_rank") or 99):
-                        current["priority"] = row.get("priority")
-                        current["priority_rank"] = row.get("priority_rank")
-                    if health_severity_rank(row.get("severity")) > health_severity_rank(current.get("severity")):
-                        current["severity"] = row.get("severity")
-                    evidence = current.get("evidence") if isinstance(current.get("evidence"), dict) else {}
-                    if isinstance(row.get("evidence"), dict):
-                        evidence = {**evidence, **row["evidence"]}
-                    current["evidence"] = evidence
-                return list(merged.values())
-
-            if preflight_age_sec is None or preflight_age_sec > expired_sec:
-                _add_reason(
-                    reason_code="PREFLIGHT_EXPIRED",
-                    severity="CRITICAL",
-                    blocking_bool=True,
-                    evidence={
-                        "preflight_evaluated_at": preflight_ts,
-                        "preflight_age_sec": preflight_age_sec,
-                        "expired_threshold_sec": expired_sec,
-                    },
-                    action="RUN_LIVE_PREFLIGHT",
-                )
-            elif preflight_age_sec > stale_sec:
-                _add_reason(
-                    reason_code="PREFLIGHT_STALE",
-                    severity="WARN",
-                    blocking_bool=False,
-                    evidence={
-                        "preflight_evaluated_at": preflight_ts,
-                        "preflight_age_sec": preflight_age_sec,
-                        "stale_threshold_sec": stale_sec,
-                    },
-                    action="RUN_LIVE_PREFLIGHT",
-                )
-
-            if not can_live and not (preflight_age_sec is None or preflight_age_sec > expired_sec):
-                _add_reason(
-                    reason_code="PREFLIGHT_FAIL",
-                    severity="CRITICAL",
-                    blocking_bool=True,
-                    evidence={
-                        "reason": str(live_reason or ""),
-                        "gates_overall_status": str(gates_payload.get("overall_status") or ""),
-                        "failed_required_gates": failed_required_gates,
-                    },
-                    action="RUN_LIVE_PREFLIGHT",
-                )
-
-            if int(reconcile.get("desync_count") or 0) > 0 or any(str(row.get("breaker_code") or "") == "RECONCILIATION_DESYNC_BLOCKING" for row in blocking_breakers):
-                _add_reason(
-                    reason_code="RECONCILIATION_DESYNC",
-                    severity="CRITICAL",
-                    scope_type="GLOBAL",
-                    blocking_bool=True,
-                    evidence={
-                        "desync_count": int(reconcile.get("desync_count") or 0),
-                        "missing_local": reconcile.get("missing_local"),
-                        "missing_exchange": reconcile.get("missing_exchange"),
-                        "qty_mismatches": reconcile.get("qty_mismatches"),
-                    },
-                    action="RUN_RECONCILIATION",
-                )
-
-            if any(str(row.get("breaker_code") or "") == "RECONCILIATION_MANUAL_REVIEW_BLOCKING" for row in active_breakers):
-                _add_reason(
-                    reason_code="RECONCILIATION_MANUAL_REVIEW",
-                    severity="CRITICAL",
-                    blocking_bool=True,
-                    evidence={"active_breaker_codes": [str(row.get("breaker_code") or "") for row in active_breakers]},
-                    action="REQUIRE_MANUAL_REVIEW",
-                )
-
-            generic_blocking_breakers = [
-                row
-                for row in blocking_breakers
-                if normalize_safety_breaker_state(row.get("state")) != "MANUAL_LOCK"
-                if str(row.get("breaker_code") or "") not in {
-                    "RECONCILIATION_MANUAL_REVIEW_BLOCKING",
-                    "TOO_MANY_REQUESTS_PRESSURE",
-                    "TOO_MANY_OPEN_ORDERS",
-                }
-            ]
-            if generic_blocking_breakers:
-                _add_reason(
-                    reason_code="BREAKER_OPEN",
-                    severity="CRITICAL",
-                    blocking_bool=True,
-                    evidence={
-                        "blocking_breakers": [
-                            {
-                                "breaker_code": str(row.get("breaker_code") or ""),
-                                "scope_type": str(row.get("scope_type") or ""),
-                                "bot_id": row.get("bot_id"),
-                                "symbol": row.get("symbol"),
-                                "state": str(row.get("state") or ""),
-                            }
-                            for row in generic_blocking_breakers
-                        ]
-                    },
-                    action="RUN_RECONCILIATION",
-                )
-
-            if exchange_reason and "eventstreamterminated" in exchange_reason.lower():
-                _add_reason(
-                    reason_code="STREAM_TERMINATED",
-                    severity="CRITICAL",
-                    blocking_bool=True,
-                    evidence={"exchange_reason": exchange_reason},
-                    action="RESTORE_STREAM",
-                )
-            elif any(str(row.get("breaker_code") or "") == "STREAM_TERMINATED" for row in blocking_breakers):
-                _add_reason(
-                    reason_code="STREAM_TERMINATED",
-                    severity="CRITICAL",
-                    blocking_bool=True,
-                    evidence={"blocking_breakers": [str(row.get("breaker_code") or "") for row in blocking_breakers]},
-                    action="RESTORE_STREAM",
-                )
-
-            if heartbeat_age_ms >= heartbeat_warn_ms:
-                _add_reason(
-                    reason_code="STREAM_HEALTH_DEGRADED",
-                    severity="CRITICAL" if heartbeat_age_ms >= heartbeat_critical_ms else "WARN",
-                    blocking_bool=False,
-                    evidence={
-                        "heartbeat_age_ms": heartbeat_age_ms,
-                        "warn_threshold_ms": heartbeat_warn_ms,
-                        "critical_threshold_ms": heartbeat_critical_ms,
-                    },
-                    action="RESTORE_STREAM",
-                )
-
-            if unknown_timeout_active and (unknown_timeout_age_sec or 0) >= unknown_hard_sec:
-                _add_reason(
-                    reason_code="UNKNOWN_TIMEOUT_STUCK",
-                    severity="CRITICAL",
-                    blocking_bool=True,
-                    evidence={
-                        "unknown_timeout_since": unknown_timeout_since,
-                        "unknown_timeout_age_sec": unknown_timeout_age_sec,
-                        "hard_deadline_sec": unknown_hard_sec,
-                    },
-                    action="RUN_RECONCILIATION",
-                )
-
-            active_breaker_codes = {str(row.get("breaker_code") or "") for row in active_breakers}
-            if "TOO_MANY_REQUESTS_PRESSURE" in active_breaker_codes:
-                _add_reason(
-                    reason_code="RATE_LIMIT_PRESSURE",
-                    severity="WARN",
-                    scope_type="GLOBAL",
-                    blocking_bool=False,
-                    evidence={"blocking_breakers": [str(row.get("breaker_code") or "") for row in active_breakers]},
-                    action="BACKOFF_REQUESTS",
-                )
-
-            if "HTTP_418_BAN_RISK" in active_breaker_codes:
-                _add_reason(
-                    reason_code="HTTP_418_BAN_RISK",
-                    severity="WARN",
-                    scope_type="GLOBAL",
-                    blocking_bool=False,
-                    evidence={"blocking_breakers": [str(row.get("breaker_code") or "") for row in active_breakers]},
-                    action="BACKOFF_REQUESTS",
-                )
-
-            if remote_open_orders_count >= open_orders_warn_count or "TOO_MANY_OPEN_ORDERS" in active_breaker_codes:
-                _add_reason(
-                    reason_code="OPEN_ORDER_PRESSURE",
-                    severity="WARN",
-                    blocking_bool=False,
-                    evidence={"remote_open_orders_count": remote_open_orders_count, "warn_threshold": open_orders_warn_count},
-                    action="RUN_RECONCILIATION",
-                )
-
-            stale_components = [
-                key
-                for key in ["heartbeat_fresh", "reconciliation_fresh", "exchange_check_fresh"]
-                if not bool((runtime_snapshot.get("checks") if isinstance(runtime_snapshot.get("checks"), dict) else {}).get(key, False))
-            ]
-            if stale_components:
-                _add_reason(
-                    reason_code="SNAPSHOT_STALE",
-                    severity="INFO",
-                    blocking_bool=False,
-                    evidence={"stale_components": stale_components},
-                    action="REFRESH_RUNTIME_SNAPSHOTS",
-                )
-
-            recent_emergency_actions = [
-                row
-                for row in manual_actions
-                if str(row.get("action_type") or "") == "EMERGENCY_CANCEL_SYMBOL"
-                and ((_runtime_ts_age_sec(str(row.get("applied_at") or row.get("requested_at") or ""), now=now_dt) or 999999) <= emergency_window_sec)
-            ]
-            if recent_emergency_actions:
-                _add_reason(
-                    reason_code="EMERGENCY_ACTION_ACTIVE",
-                    severity="WARN",
-                    blocking_bool=False,
-                    evidence={"recent_emergency_actions": recent_emergency_actions[:5]},
-                    action="ACK_ALERT",
-                )
-
-            for row in manual_locks:
-                scope_type_row = str(row.get("scope_type") or "GLOBAL")
-                bot_row = str(row.get("bot_id") or "").strip() or None
-                symbol_row = str(row.get("symbol") or "").strip().upper() or None
-                if normalize_safety_scope_type(scope_type_row) == "GLOBAL":
-                    _add_reason(
-                        reason_code="MANUAL_LOCK_ACTIVE",
-                        severity="CRITICAL",
-                        scope_type="GLOBAL",
-                        blocking_bool=True,
-                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
-                        action="MANUAL_UNFREEZE",
-                    )
-                    _add_reason(
-                        reason_code="FREEZE_GLOBAL_ACTIVE",
-                        severity="CRITICAL",
-                        scope_type="GLOBAL",
-                        blocking_bool=True,
-                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
-                        action="MANUAL_UNFREEZE",
-                    )
-                elif normalize_safety_scope_type(scope_type_row) == "BOT":
-                    _add_reason(
-                        reason_code="FREEZE_BOT_ACTIVE",
-                        severity="WARN",
-                        scope_type=scope_type_row,
-                        bot_id=bot_row,
-                        symbol=symbol_row,
-                        blocking_bool=False,
-                        scope_blocking_bool=True,
-                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
-                        action="MANUAL_UNFREEZE",
-                    )
-                else:
-                    _add_reason(
-                        reason_code="FREEZE_SYMBOL_ACTIVE",
-                        severity="WARN",
-                        scope_type=scope_type_row,
-                        bot_id=bot_row,
-                        symbol=symbol_row,
-                        blocking_bool=False,
-                        scope_blocking_bool=True,
-                        evidence={"breaker_code": str(row.get("breaker_code") or ""), "scope_type": scope_type_row},
-                        action="MANUAL_UNFREEZE",
-                    )
-
-            for row in active_breakers:
-                scope_type_row = str(row.get("scope_type") or "GLOBAL")
-                if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK":
-                    continue
-                breaker_code = str(row.get("breaker_code") or "")
-                bot_row = str(row.get("bot_id") or "").strip() or None
-                symbol_row = str(row.get("symbol") or "").strip().upper() or None
-                if breaker_code == "TOO_MANY_REQUESTS_PRESSURE":
-                    _add_reason(
-                        reason_code="RATE_LIMIT_PRESSURE",
-                        severity="WARN",
-                        scope_type=scope_type_row,
-                        bot_id=bot_row,
-                        symbol=symbol_row,
-                        blocking_bool=False,
-                        scope_blocking_bool=safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool")),
-                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_count_window": row.get("trigger_count_window")},
-                        action="BACKOFF_REQUESTS",
-                    )
-                elif breaker_code == "TOO_MANY_OPEN_ORDERS":
-                    _add_reason(
-                        reason_code="OPEN_ORDER_PRESSURE",
-                        severity="WARN",
-                        scope_type=scope_type_row,
-                        bot_id=bot_row,
-                        symbol=symbol_row,
-                        blocking_bool=False,
-                        scope_blocking_bool=safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool")),
-                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_count_window": row.get("trigger_count_window")},
-                        action="RUN_RECONCILIATION",
-                    )
-                elif breaker_code == "HTTP_418_BAN_RISK":
-                    _add_reason(
-                        reason_code="HTTP_418_BAN_RISK",
-                        severity="WARN",
-                        scope_type=scope_type_row,
-                        bot_id=bot_row,
-                        symbol=symbol_row,
-                        blocking_bool=normalize_safety_scope_type(scope_type_row) == "GLOBAL",
-                        scope_blocking_bool=safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool")),
-                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_count_window": row.get("trigger_count_window")},
-                        action="BACKOFF_REQUESTS",
-                    )
-                elif breaker_code == "SAFETY_POLICY_VIOLATION" and normalize_safety_scope_type(scope_type_row) == "GLOBAL":
-                    _add_reason(
-                        reason_code="SAFETY_POLICY_VIOLATION",
-                        severity="CRITICAL",
-                        blocking_bool=True,
-                        evidence={"breaker_state": str(row.get("state") or ""), "trigger_reason": row.get("trigger_reason")},
-                        action="REQUIRE_MANUAL_ACK",
-                    )
-
-            summary_reasons = _collapse_reasons(summary_reasons)
-            scope_contexts: dict[str, dict[str, Any]] = {
-                "GLOBAL": {"scope_type": "GLOBAL", "bot_id": None, "symbol": None}
-            }
-            for row in active_breakers:
-                key = health_scope_key(row.get("scope_type"), row.get("bot_id"), row.get("symbol"))
-                scope_contexts[key] = {
-                    "scope_type": normalize_health_scope_type(row.get("scope_type")),
-                    "bot_id": str(row.get("bot_id") or "").strip() or None,
-                    "symbol": str(row.get("symbol") or "").strip().upper() or None,
-                }
-            for row in recent_emergency_actions:
-                key = health_scope_key("SYMBOL", symbol=row.get("symbol"))
-                scope_contexts[key] = {
-                    "scope_type": "SYMBOL",
-                    "bot_id": None,
-                    "symbol": str(row.get("symbol") or "").strip().upper() or None,
-                }
-
-            component_status = {
-                "preflight": {
-                    "status": "PASS" if can_live else "FAIL",
-                    "reason": str(live_reason or ""),
-                    "gates_overall_status": str(gates_payload.get("overall_status") or ""),
-                    "failed_required_gates": failed_required_gates,
-                    "evaluated_at": preflight_ts,
-                    "age_sec": preflight_age_sec,
-                },
-                "reconciliation": {
-                    "status": "DESYNC" if int(reconcile.get("desync_count") or 0) > 0 else "CLEAN",
-                    "desync_count": int(reconcile.get("desync_count") or 0),
-                    "source_ok": bool(reconcile.get("source_ok", False)),
-                    "source": str(reconcile.get("source") or ""),
-                    "source_reason": str(reconcile.get("source_reason") or ""),
-                    "missing_local": reconcile.get("missing_local"),
-                    "missing_exchange": reconcile.get("missing_exchange"),
-                    "qty_mismatches": reconcile.get("qty_mismatches"),
-                },
-                "operational_safety": {
-                    "state": str(safety_summary.get("global_state") or "CLOSED"),
-                    "blocking_bool": bool(safety_summary.get("blocking_bool", False)),
-                    "breakers_open_count": int(safety_summary.get("breakers_open_count") or 0),
-                    "breakers_blocking_count": int(safety_summary.get("breakers_blocking_count") or 0),
-                    "manual_lock_count": int(safety_summary.get("manual_lock_count") or 0),
-                },
-                "stream": {
-                    "exchange_reason": exchange_reason,
-                    "heartbeat_age_ms": heartbeat_age_ms,
-                    "heartbeat_warn_ms": heartbeat_warn_ms,
-                    "heartbeat_critical_ms": heartbeat_critical_ms,
-                    "runtime_loop_alive": bool(runtime_snapshot.get("runtime_loop_alive", False)),
-                    "executor_connected": bool(runtime_snapshot.get("executor_connected", False)),
-                },
-                "runtime": {
-                    "ready_for_live": bool(runtime_snapshot.get("ready_for_live", False)),
-                    "telemetry_ok": bool(telemetry_guard.get("ok", False)),
-                    "telemetry_fail_closed": bool(telemetry_guard.get("fail_closed", True)),
-                    "telemetry_reason": str(telemetry_guard.get("reason") or ""),
-                    "unknown_timeout_active": unknown_timeout_active,
-                    "unknown_timeout_age_sec": unknown_timeout_age_sec,
-                    "remote_open_orders_count": remote_open_orders_count,
-                },
-            }
-            raw_signals = self.build_live_signal_snapshot(
-                state=state_n,
-                settings=settings,
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-                persist=False,
-            )
-            component_status["live_signals"] = {
-                "schema_version": int(raw_signals.get("schema_version") or LIVE_SIGNAL_SCHEMA_VERSION),
-                "scope": raw_signals.get("scope") if isinstance(raw_signals.get("scope"), dict) else {},
-                "collected_at": str(raw_signals.get("collected_at") or ""),
-                "window_ms": int(raw_signals.get("window_ms") or 0),
-                "snapshot_types": [str(row.get("snapshot_type") or "") for row in raw_signals.get("items") if isinstance(row, dict)],
-            }
-
-            freshness = {
-                "preflight_evaluated_at": preflight_ts,
-                "preflight_age_sec": preflight_age_sec,
-                "preflight_stale_threshold_sec": stale_sec,
-                "preflight_expired_threshold_sec": expired_sec,
-                "live_signals_collected_at": str(raw_signals.get("collected_at") or ""),
-                "runtime_last_safety_eval_at": str(state_n.get("runtime_last_safety_eval_at") or ""),
-                "heartbeat_age_sec": runtime_snapshot.get("heartbeat_age_sec"),
-                "reconciliation_age_sec": runtime_snapshot.get("reconciliation_age_sec"),
-                "exchange_check_age_sec": runtime_snapshot.get("exchange_check_age_sec"),
-                "stale_components": stale_components,
-            }
-
-            scope_status: list[dict[str, Any]] = []
-            for context in scope_contexts.values():
-                scope_rows = [
-                    row
-                    for row in summary_reasons
-                    if health_scope_matches(
-                        row_scope_type=row.get("scope_type"),
-                        row_bot_id=row.get("bot_id"),
-                        row_symbol=row.get("symbol"),
-                        bot_id=context.get("bot_id"),
-                        symbol=context.get("symbol"),
-                    )
-                ]
-                scope_rows.extend(scoped_reason_rows.get(health_scope_key(context.get("scope_type"), context.get("bot_id"), context.get("symbol")), []))
-                scope_rows = _collapse_reasons(scope_rows)
-                scope_status.append(
-                    finalize_health_scope(
-                        scope_type=str(context.get("scope_type") or "GLOBAL"),
-                        bot_id=context.get("bot_id"),
-                        symbol=context.get("symbol"),
-                        reasons=scope_rows,
-                        freshness=freshness,
-                        recommended_actions=sorted(recommended_actions),
-                        component_status=component_status,
-                        evaluated_at=now_iso,
-                    )
-                )
-
-            summary = finalize_live_health_summary(
-                evaluated_at=now_iso,
-                reasons=summary_reasons,
-                component_status=component_status,
-                freshness=freshness,
-                recommended_actions=sorted(recommended_actions),
-                scope_status=scope_status,
-            )
-            summary["component_status"]["runtime_snapshot"] = runtime_snapshot
-            summary["component_status"]["operational_safety_summary"] = safety_summary
-            summary["component_status"]["reconciliation_raw"] = reconcile
-            summary["can_enable_live_mode"] = bool(can_live) and str(summary.get("state") or "") not in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}
-            summary["can_start_live"] = bool(can_live) and str(summary.get("state") or "") not in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}
-            summary["can_submit_order_by_scope"]["GLOBAL"] = bool(summary.get("state") not in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"})
-            if persist:
-                summary = store.insert_health_summary_snapshot(summary)
-            return summary
-
-    @staticmethod
-    def _alert_parse_iso(value: Any) -> datetime | None:
-        text = str(value or "").strip()
-        if not text:
-            return None
-        try:
-            return datetime.fromisoformat(text)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _alert_iso_after(base_dt: datetime, seconds: Any) -> str:
-        return (base_dt + timedelta(seconds=max(0, int(_as_int(seconds, 0))))).isoformat()
-
-    @staticmethod
-    def _alert_signal_item(raw_signals: dict[str, Any], snapshot_type: str) -> dict[str, Any]:
-        for row in raw_signals.get("items") if isinstance(raw_signals.get("items"), list) else []:
-            if isinstance(row, dict) and str(row.get("snapshot_type") or "").upper() == str(snapshot_type).upper():
-                return row
-        return {}
-
-    @staticmethod
-    def _alert_health_scope(
-        summary: dict[str, Any],
-        *,
-        scope_type: str,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> dict[str, Any]:
-        if normalize_alert_scope_type(scope_type) == "GLOBAL":
-            return dict(summary or {})
-        for row in summary.get("scope_status") if isinstance(summary.get("scope_status"), list) else []:
-            if not isinstance(row, dict):
-                continue
-            if str(row.get("scope_type") or "").upper() != normalize_alert_scope_type(scope_type):
-                continue
-            if str(row.get("bot_id") or "").strip() != str(bot_id or "").strip():
-                continue
-            if str(row.get("symbol") or "").strip().upper() != str(symbol or "").strip().upper():
-                continue
-            return dict(row)
-        return dict(summary or {})
-
-    def _collect_execution_alert_conditions(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        persist_sources: bool = False,
-    ) -> dict[str, Any]:
-        with self._lock:
-            store.sync_execution_alert_catalog(default_alert_catalog_entries())
-            now_dt = utc_now()
-            now_iso = now_dt.isoformat()
-            ops_policy = self._operational_safety_policy()
-            health_policy = self._live_health_policy()
-            alert_policy = self._alerting_policy()
-            state_n = dict(state or {})
-            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
-            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
-            scope_type, scope_bot_id, scope_symbol = self._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-            raw_scope_key = alert_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol)
-
-            raw_signals = self.build_live_signal_snapshot(
-                state=state_n,
-                settings=settings,
-                bot_id=scope_bot_id,
-                symbol=scope_symbol,
-                persist=persist_sources,
-            )
-            health_summary = self.build_live_health_summary(
-                state=state_n,
-                settings=settings,
-                bot_id=scope_bot_id,
-                symbol=scope_symbol,
-                persist=persist_sources,
-            )
-            safety_summary = self.operational_safety_summary(state=state_n, bot_id=scope_bot_id, symbol=scope_symbol)
-            manual_actions = store.list_safety_manual_actions(bot_id=scope_bot_id, symbol=scope_symbol, limit=100)
-            health_scope = self._alert_health_scope(
-                health_summary,
-                scope_type=scope_type,
-                bot_id=scope_bot_id,
-                symbol=scope_symbol,
-            )
-            health_reason_items = {
-                str(row.get("reason_code") or ""): dict(row)
-                for row in (health_scope.get("reason_items") if isinstance(health_scope.get("reason_items"), list) else [])
-                if isinstance(row, dict)
-            }
-            conditions: list[dict[str, Any]] = []
-
-            def _signal_ref(row: dict[str, Any], snapshot_type: str) -> dict[str, Any]:
-                return {
-                    "type": "live_signal_snapshot",
-                    "signal_snapshot_id": str(row.get("signal_snapshot_id") or ""),
-                    "snapshot_type": str(snapshot_type or ""),
-                    "collected_at": str(row.get("collected_at") or raw_signals.get("collected_at") or ""),
-                    "source_status": str(row.get("source_status") or ""),
-                }
-
-            def _add_condition(
-                trigger_code: str,
-                *,
-                severity: str | None = None,
-                source_layer: str | None = None,
-                evidence: dict[str, Any] | None = None,
-                primary_refs: list[dict[str, Any]] | None = None,
-            ) -> None:
-                entry = alert_catalog_entry(trigger_code)
-                layer = normalize_alert_source_layer(source_layer or entry.get("source_layer"))
-                severity_rank = normalize_alert_severity_precedence(alert_policy.get("severity_rank"))
-                severity_source_precedence = normalize_alert_source_precedence(alert_policy.get("severity_source_precedence"))
-                selected_candidate = choose_alert_severity_candidate(
-                    {
-                        "severity": entry.get("default_severity"),
-                        "source_layer": entry.get("source_layer"),
-                    },
-                    {
-                        "severity": severity,
-                        "source_layer": layer,
-                    },
-                    source_precedence=severity_source_precedence,
-                    severity_precedence=severity_rank,
-                )
-                selected_severity = selected_candidate["severity"]
-                refs = [dict(row) for row in (primary_refs or []) if isinstance(row, dict)]
-                source_refs = {
-                    "source_layer": layer,
-                    "scope_key": raw_scope_key,
-                    "primary": refs,
-                    "severity_rank": severity_rank,
-                    "severity_source_precedence": severity_source_precedence,
-                    "severity_selected_from_layer": selected_candidate["source_layer"],
-                    "severity_selection_mode": "severity_then_source_layer_precedence",
-                }
-                if layer == "RAW":
-                    source_refs["raw_collected_at"] = str(raw_signals.get("collected_at") or "")
-                elif layer == "HEALTH":
-                    source_refs["health_snapshot_id"] = str(health_summary.get("snapshot_id") or "")
-                    source_refs["health_evaluated_at"] = str(health_summary.get("last_evaluated_at") or "")
-                elif layer == "SAFETY":
-                    source_refs["safety_evaluated_at"] = str(safety_summary.get("evaluated_at") or "")
-                evidence_n = evidence if isinstance(evidence, dict) else {}
-                conditions.append(
-                    {
-                        "trigger_code": normalize_alert_trigger_code(trigger_code),
-                        "severity": selected_severity,
-                        "source_layer": layer,
-                        "scope_type": scope_type,
-                        "scope_key": raw_scope_key,
-                        "bot_id": scope_bot_id,
-                        "symbol": scope_symbol,
-                        "source_refs": source_refs,
-                        "evidence": evidence_n,
-                        "summary_text": alert_summary_text(
-                            trigger_code,
-                            scope_type=scope_type,
-                            bot_id=scope_bot_id,
-                            symbol=scope_symbol,
-                            evidence=evidence_n,
-                        ),
-                    }
-                )
-
-            stream_item = self._alert_signal_item(raw_signals, "STREAM")
-            if stream_item:
-                stream_metrics = live_signal_numeric_metrics(stream_item)
-                stream_states = live_signal_state_values(stream_item)
-                stream_refs = live_signal_refs(stream_item)
-                stream_gap_ms = _as_int(stream_metrics.get("stream_gap_ms"), 0)
-                stream_warn_ms = _as_int(stream_refs.get("stream_gap_warn_ms"), _as_int(ops_policy.get("guardrail_stream_gap_warn_ms"), 5000))
-                stream_critical_ms = _as_int(stream_refs.get("stream_gap_critical_ms"), _as_int(ops_policy.get("guardrail_stream_gap_critical_ms"), 10000))
-                primary_ref = _signal_ref(stream_item, "STREAM")
-                if bool(stream_states.get("stream_terminated_bool", False)):
-                    _add_condition(
-                        "STREAM_TERMINATED",
-                        severity="CRITICAL",
-                        source_layer="RAW",
-                        evidence={
-                            "event_code": "STREAM_TERMINATED",
-                            "stream_gap_ms": stream_gap_ms,
-                            "stream_last_event_age_ms": stream_metrics.get("stream_last_event_age_ms"),
-                            "runtime_exchange_reason": str(stream_states.get("runtime_exchange_reason") or ""),
-                        },
-                        primary_refs=[primary_ref],
-                    )
-                elif str(stream_item.get("source_status") or "").upper() == "CRITICAL" or stream_gap_ms >= stream_critical_ms:
-                    _add_condition(
-                        "STREAM_GAP_CRITICAL",
-                        severity="CRITICAL",
-                        source_layer="RAW",
-                        evidence={
-                            "event_code": "STREAM_GAP_CRITICAL",
-                            "stream_gap_ms": stream_gap_ms,
-                            "warn_threshold_ms": stream_warn_ms,
-                            "critical_threshold_ms": stream_critical_ms,
-                        },
-                        primary_refs=[primary_ref],
-                    )
-                elif str(stream_item.get("source_status") or "").upper() == "WARN" or stream_gap_ms >= stream_warn_ms:
-                    _add_condition(
-                        "STREAM_GAP_WARN",
-                        severity="WARN",
-                        source_layer="RAW",
-                        evidence={
-                            "event_code": "STREAM_GAP_WARN",
-                            "stream_gap_ms": stream_gap_ms,
-                            "warn_threshold_ms": stream_warn_ms,
-                            "critical_threshold_ms": stream_critical_ms,
-                        },
-                        primary_refs=[primary_ref],
-                    )
-
-            rate_item = self._alert_signal_item(raw_signals, "RATE_LIMIT")
-            if rate_item:
-                rate_metrics = live_signal_numeric_metrics(rate_item)
-                rate_states = live_signal_state_values(rate_item)
-                rate_refs = live_signal_refs(rate_item)
-                threshold_429 = _as_int(rate_refs.get("guardrail_http_429_threshold"), _as_int(ops_policy.get("guardrail_http_429_threshold"), 3))
-                open_order_warn = _as_int(ops_policy.get("guardrail_open_orders_warn_count"), 10)
-                primary_ref = _signal_ref(rate_item, "RATE_LIMIT")
-                if bool(rate_states.get("rate_limit_418_active_bool", False)):
-                    _add_condition(
-                        "HTTP_418_RISK_ACTIVE",
-                        severity="CRITICAL",
-                        source_layer="RAW",
-                        evidence={
-                            "event_code": "HTTP_418_RISK_ACTIVE",
-                            "rate_limit_429_count_window": _as_int(rate_metrics.get("rate_limit_429_count_window"), 0),
-                            "last_rate_limit_event_age_ms": _as_int(rate_metrics.get("last_rate_limit_event_age_ms"), 0),
-                        },
-                        primary_refs=[primary_ref],
-                    )
-                if _as_int(rate_metrics.get("rate_limit_429_count_window"), 0) >= threshold_429:
-                    _add_condition(
-                        "RATE_LIMIT_PRESSURE_HIGH",
-                        severity="WARN",
-                        source_layer="RAW",
-                        evidence={
-                            "event_code": "RATE_LIMIT_PRESSURE_HIGH",
-                            "rate_limit_429_count_window": _as_int(rate_metrics.get("rate_limit_429_count_window"), 0),
-                            "threshold": threshold_429,
-                            "retry_after_active_bool": bool(rate_states.get("retry_after_active_bool", False)),
-                        },
-                        primary_refs=[primary_ref],
-                    )
-                if _as_int(rate_metrics.get("open_order_pressure_count"), 0) >= open_order_warn:
-                    _add_condition(
-                        "OPEN_ORDER_PRESSURE_HIGH",
-                        severity="WARN",
-                        source_layer="RAW",
-                        evidence={
-                            "event_code": "OPEN_ORDER_PRESSURE_HIGH",
-                            "open_order_pressure_count": _as_int(rate_metrics.get("open_order_pressure_count"), 0),
-                            "warn_threshold": open_order_warn,
-                        },
-                        primary_refs=[primary_ref],
-                    )
-
-            for reason_code, trigger_code in {
-                "PREFLIGHT_EXPIRED": "PREFLIGHT_EXPIRED",
-                "PREFLIGHT_FAIL": "PREFLIGHT_FAIL",
-                "RECONCILIATION_DESYNC": "RECONCILIATION_DESYNC_OPEN",
-                "RECONCILIATION_MANUAL_REVIEW": "RECONCILIATION_MANUAL_REVIEW_OPEN",
-                "UNKNOWN_TIMEOUT_STUCK": "UNKNOWN_TIMEOUT_STUCK",
-            }.items():
-                reason_item = health_reason_items.get(reason_code)
-                if not reason_item:
-                    continue
-                _add_condition(
-                    trigger_code,
-                    severity=str(reason_item.get("severity") or health_scope.get("severity") or "WARN"),
-                    source_layer="HEALTH",
-                    evidence={
-                        "reason_code": reason_code,
-                        "health_state": str(health_scope.get("state") or health_summary.get("state") or ""),
-                        "health_severity": str(health_scope.get("severity") or health_summary.get("severity") or ""),
-                        "blocking_bool": bool(reason_item.get("blocking_bool", False)),
-                        "evidence": reason_item.get("evidence") if isinstance(reason_item.get("evidence"), dict) else {},
-                    },
-                    primary_refs=[
-                        {
-                            "type": "health_summary_snapshot",
-                            "snapshot_id": str(health_summary.get("snapshot_id") or ""),
-                            "evaluated_at": str(health_summary.get("last_evaluated_at") or ""),
-                            "reason_code": reason_code,
-                            "scope_type": str(health_scope.get("scope_type") or scope_type),
-                        }
-                    ],
-                )
-
-            safety_breakers = [row for row in safety_summary.get("breakers") if isinstance(row, dict)] if isinstance(safety_summary.get("breakers"), list) else []
-            manual_locks = [row for row in safety_breakers if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"]
-            blocking_breakers = [row for row in safety_breakers if safety_breaker_blocks_live(row.get("state"), row.get("blocking_bool"))]
-            if blocking_breakers:
-                breaker_refs = [
-                    {
-                        "type": "safety_breaker",
-                        "breaker_id": str(row.get("breaker_id") or ""),
-                        "breaker_code": str(row.get("breaker_code") or ""),
-                        "state": str(row.get("state") or ""),
-                        "scope_type": str(row.get("scope_type") or ""),
-                    }
-                    for row in blocking_breakers
-                ]
-                _add_condition(
-                    "BREAKER_OPEN_BLOCKING",
-                    severity="CRITICAL",
-                    source_layer="SAFETY",
-                    evidence={"breaker_code": "BREAKER_OPEN_BLOCKING", "blocking_breakers": breaker_refs},
-                    primary_refs=breaker_refs,
-                )
-            if manual_locks:
-                lock_refs = [
-                    {
-                        "type": "safety_breaker",
-                        "breaker_id": str(row.get("breaker_id") or ""),
-                        "breaker_code": str(row.get("breaker_code") or ""),
-                        "state": str(row.get("state") or ""),
-                        "scope_type": str(row.get("scope_type") or ""),
-                    }
-                    for row in manual_locks
-                ]
-                _add_condition(
-                    "MANUAL_LOCK_ACTIVE",
-                    severity="CRITICAL",
-                    source_layer="SAFETY",
-                    evidence={"breaker_code": "MANUAL_LOCK_ACTIVE", "manual_locks": lock_refs},
-                    primary_refs=lock_refs,
-                )
-                if any(normalize_safety_scope_type(row.get("scope_type")) == "GLOBAL" for row in manual_locks):
-                    _add_condition(
-                        "FREEZE_GLOBAL_ACTIVE",
-                        severity="CRITICAL",
-                        source_layer="SAFETY",
-                        evidence={"breaker_code": "FREEZE_GLOBAL_ACTIVE", "manual_locks": lock_refs},
-                        primary_refs=lock_refs,
-                    )
-                if any(normalize_safety_scope_type(row.get("scope_type")) == "BOT" for row in manual_locks):
-                    _add_condition(
-                        "FREEZE_BOT_ACTIVE",
-                        severity="WARN",
-                        source_layer="SAFETY",
-                        evidence={"breaker_code": "FREEZE_BOT_ACTIVE", "manual_locks": lock_refs},
-                        primary_refs=lock_refs,
-                    )
-                if any(normalize_safety_scope_type(row.get("scope_type")) in {"SYMBOL", "BOT_SYMBOL"} for row in manual_locks):
-                    _add_condition(
-                        "FREEZE_SYMBOL_ACTIVE",
-                        severity="WARN",
-                        source_layer="SAFETY",
-                        evidence={"breaker_code": "FREEZE_SYMBOL_ACTIVE", "manual_locks": lock_refs},
-                        primary_refs=lock_refs,
-                    )
-
-            recent_emergency_window_sec = max(0, _as_int(health_policy.get("recent_emergency_action_window_sec"), 300))
-            recent_emergency_actions = [
-                row
-                for row in manual_actions
-                if str(row.get("action_type") or "") == "EMERGENCY_CANCEL_SYMBOL"
-                and ((_runtime_ts_age_sec(str(row.get("applied_at") or row.get("requested_at") or ""), now=now_dt) or 999999) <= recent_emergency_window_sec)
-            ]
-            if recent_emergency_actions:
-                action_refs = [
-                    {
-                        "type": "safety_manual_action",
-                        "manual_action_id": str(row.get("manual_action_id") or ""),
-                        "action_type": str(row.get("action_type") or ""),
-                        "requested_at": str(row.get("requested_at") or ""),
-                        "applied_at": str(row.get("applied_at") or ""),
-                    }
-                    for row in recent_emergency_actions
-                ]
-                _add_condition(
-                    "EMERGENCY_ACTION_ACTIVE",
-                    severity="WARN",
-                    source_layer="SAFETY",
-                    evidence={"action_type": "EMERGENCY_CANCEL_SYMBOL", "recent_actions": action_refs},
-                    primary_refs=action_refs,
-                )
-
-            return {
-                "evaluated_at": now_iso,
-                "scope": {
-                    "scope_type": scope_type,
-                    "scope_key": raw_scope_key,
-                    "bot_id": scope_bot_id,
-                    "symbol": scope_symbol,
-                },
-                "raw_signals": raw_signals,
-                "health_summary": health_summary,
-                "health_scope": health_scope,
-                "safety_summary": safety_summary,
-                "conditions": conditions,
-            }
-
-    def _sync_execution_alert_condition(
-        self,
-        condition: dict[str, Any],
-        *,
-        policy: dict[str, Any],
-        actor: str = "system",
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        now_dt = utc_now()
-        now_iso = now_dt.isoformat()
-        trigger_code = str(condition.get("trigger_code") or "")
-        scope_type = str(condition.get("scope_type") or "GLOBAL")
-        bot_id = str(condition.get("bot_id") or "").strip() or None
-        symbol = str(condition.get("symbol") or "").strip().upper() or None
-        existing = store.find_execution_alert_instance(
-            trigger_code=trigger_code,
-            scope_type=scope_type,
-            bot_id=bot_id,
-            symbol=symbol,
-        )
-        severity = str(condition.get("severity") or "WARN")
-        source_layer = str(condition.get("source_layer") or "RAW")
-        source_refs = condition.get("source_refs") if isinstance(condition.get("source_refs"), dict) else {}
-        evidence = condition.get("evidence") if isinstance(condition.get("evidence"), dict) else {}
-        summary_text = str(condition.get("summary_text") or "")
-        cooldown_sec = max(0, _as_int(policy.get("default_cooldown_sec"), 300))
-        previous_state = str(existing.get("state") or "") if isinstance(existing, dict) else None
-
-        if not existing:
-            instance = store.upsert_execution_alert_instance(
-                trigger_code=trigger_code,
-                severity=severity,
-                state="OPEN",
-                source_layer=source_layer,
-                scope_type=scope_type,
-                bot_id=bot_id,
-                symbol=symbol,
-                opened_at=now_iso,
-                last_seen_at=now_iso,
-                source_refs=source_refs,
-                evidence=evidence,
-                summary_text=summary_text,
-            )
-            event = store.insert_execution_alert_event(
-                alert_instance_id=str(instance.get("alert_instance_id") or ""),
-                event_type="OPENED",
-                previous_state=None,
-                next_state="OPEN",
-                payload={"source_refs": source_refs, "evidence": evidence},
-                actor=actor,
-                occurred_at=now_iso,
-            )
-            return instance, event
-
-        current_state = normalize_alert_state(existing.get("state"))
-        suppressed_until_dt = self._alert_parse_iso(existing.get("suppressed_until"))
-        cooldown_until_dt = self._alert_parse_iso(existing.get("cooldown_until"))
-        expired_reopens_same_instance = bool(policy.get("expired_reopens_same_instance", True))
-        state_after = current_state
-        event_type: str | None = None
-        opened_at = str(existing.get("opened_at") or "") or now_iso
-        acked_at = existing.get("acked_at")
-        suppressed_until = existing.get("suppressed_until")
-        cooldown_until = existing.get("cooldown_until")
-        resolved_at = existing.get("resolved_at")
-        expires_at = existing.get("expires_at")
-
-        if current_state == "SUPPRESSED" and suppressed_until_dt and suppressed_until_dt > now_dt:
-            state_after = "SUPPRESSED"
-        elif current_state == "ACKED":
-            state_after = "ACKED"
-        elif current_state == "SUPPRESSED":
-            state_after = "OPEN"
-            event_type = "REOPENED"
-            opened_at = now_iso
-            acked_at = None
-            suppressed_until = None
-            resolved_at = None
-            expires_at = None
-        elif current_state == "EXPIRED":
-            # Explicit policy: after EXPIRED, this repo reopens the same instance
-            # instead of creating a new competing instance for the same trigger+scope.
-            if not expired_reopens_same_instance:
-                raise RuntimeError("expired_reopens_same_instance=false is not supported by the current alert storage model")
-            state_after = "OPEN"
-            event_type = "REOPENED"
-            cooldown_until = None
-            opened_at = now_iso
-            acked_at = None
-            suppressed_until = None
-            resolved_at = None
-            expires_at = None
-        elif current_state in {"RESOLVED", "COOLDOWN"}:
-            if bool(policy.get("reopen_on_active_condition", True)) and cooldown_until_dt and cooldown_until_dt > now_dt:
-                state_after = "COOLDOWN"
-                if current_state != "COOLDOWN":
-                    event_type = "COOLDOWN_STARTED"
-                cooldown_until = str(existing.get("cooldown_until") or self._alert_iso_after(now_dt, cooldown_sec))
-            else:
-                state_after = "OPEN"
-                event_type = "REOPENED"
-                cooldown_until = None
-            opened_at = now_iso
-            acked_at = None
-            suppressed_until = None
-            resolved_at = None
-            expires_at = None
-        else:
-            state_after = "OPEN"
-
-        instance = store.upsert_execution_alert_instance(
-            trigger_code=trigger_code,
-            severity=severity,
-            state=state_after,
-            source_layer=source_layer,
-            scope_type=scope_type,
-            bot_id=bot_id,
-            symbol=symbol,
-            opened_at=opened_at,
-            last_seen_at=now_iso,
-            acked_at=acked_at,
-            suppressed_until=suppressed_until,
-            cooldown_until=cooldown_until,
-            resolved_at=resolved_at,
-            expires_at=expires_at,
-            source_refs=source_refs,
-            evidence=evidence,
-            summary_text=summary_text,
-        )
-        if event_type:
-            event = store.insert_execution_alert_event(
-                alert_instance_id=str(instance.get("alert_instance_id") or ""),
-                event_type=event_type,
-                previous_state=previous_state,
-                next_state=state_after,
-                payload={"source_refs": source_refs, "evidence": evidence},
-                actor=actor,
-                occurred_at=now_iso,
-            )
-            return instance, event
-        return instance, None
-
-    def _sweep_inactive_execution_alerts(
-        self,
-        *,
-        scope_type: str,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        active_keys: set[tuple[str, str, str | None, str | None]],
-        policy: dict[str, Any],
-        actor: str = "system",
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        now_dt = utc_now()
-        now_iso = now_dt.isoformat()
-        cooldown_sec = max(0, _as_int(policy.get("default_cooldown_sec"), 300))
-        resolved_ttl_sec = max(cooldown_sec, _as_int(policy.get("resolved_ttl_sec"), 3600))
-        updated_rows: list[dict[str, Any]] = []
-        transitions: list[dict[str, Any]] = []
-        scope_rows = store.list_execution_alert_instances(
-            scope_type=scope_type,
-            bot_id=bot_id,
-            symbol=symbol,
-            limit=250,
-        )
-        for row in scope_rows:
-            row_key = (
-                str(row.get("trigger_code") or ""),
-                str(row.get("scope_type") or "GLOBAL"),
-                str(row.get("bot_id") or "").strip() or None,
-                str(row.get("symbol") or "").strip().upper() or None,
-            )
-            if row_key in active_keys:
-                continue
-            state_before = normalize_alert_state(row.get("state"))
-            if state_before in {"OPEN", "ACKED", "SUPPRESSED", "COOLDOWN"}:
-                resolved = store.upsert_execution_alert_instance(
-                    trigger_code=str(row.get("trigger_code") or ""),
-                    severity=str(row.get("severity") or "WARN"),
-                    state="RESOLVED",
-                    source_layer=str(row.get("source_layer") or "RAW"),
-                    scope_type=str(row.get("scope_type") or "GLOBAL"),
-                    bot_id=str(row.get("bot_id") or "").strip() or None,
-                    symbol=str(row.get("symbol") or "").strip().upper() or None,
-                    opened_at=str(row.get("opened_at") or "") or None,
-                    last_seen_at=str(row.get("last_seen_at") or "") or now_iso,
-                    acked_at=str(row.get("acked_at") or "") or None,
-                    suppressed_until=None,
-                    cooldown_until=self._alert_iso_after(now_dt, cooldown_sec),
-                    resolved_at=now_iso,
-                    expires_at=None,
-                    source_refs=row.get("source_refs") if isinstance(row.get("source_refs"), dict) else {},
-                    evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
-                    summary_text=str(row.get("summary_text") or ""),
-                )
-                updated_rows.append(resolved)
-                transitions.append(
-                    store.insert_execution_alert_event(
-                        alert_instance_id=str(resolved.get("alert_instance_id") or ""),
-                        event_type="RESOLVED",
-                        previous_state=state_before,
-                        next_state="RESOLVED",
-                        payload={"reason": "condition_inactive"},
-                        actor=actor,
-                        occurred_at=now_iso,
-                    )
-                )
-            elif state_before == "RESOLVED":
-                resolved_at_dt = self._alert_parse_iso(row.get("resolved_at"))
-                if resolved_at_dt and (now_dt - resolved_at_dt).total_seconds() >= resolved_ttl_sec:
-                    expired = store.upsert_execution_alert_instance(
-                        trigger_code=str(row.get("trigger_code") or ""),
-                        severity=str(row.get("severity") or "WARN"),
-                        state="EXPIRED",
-                        source_layer=str(row.get("source_layer") or "RAW"),
-                        scope_type=str(row.get("scope_type") or "GLOBAL"),
-                        bot_id=str(row.get("bot_id") or "").strip() or None,
-                        symbol=str(row.get("symbol") or "").strip().upper() or None,
-                        opened_at=str(row.get("opened_at") or "") or None,
-                        last_seen_at=str(row.get("last_seen_at") or "") or now_iso,
-                        acked_at=str(row.get("acked_at") or "") or None,
-                        suppressed_until=None,
-                        cooldown_until=str(row.get("cooldown_until") or "") or None,
-                        resolved_at=str(row.get("resolved_at") or "") or None,
-                        expires_at=now_iso,
-                        source_refs=row.get("source_refs") if isinstance(row.get("source_refs"), dict) else {},
-                        evidence=row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
-                        summary_text=str(row.get("summary_text") or ""),
-                    )
-                    updated_rows.append(expired)
-                    transitions.append(
-                        store.insert_execution_alert_event(
-                            alert_instance_id=str(expired.get("alert_instance_id") or ""),
-                            event_type="EXPIRED",
-                            previous_state="RESOLVED",
-                            next_state="EXPIRED",
-                            payload={
-                                "reason": "resolved_retention_elapsed_without_new_observation",
-                                "resolved_ttl_sec": resolved_ttl_sec,
-                                "semantics": "lifecycle_retention_only",
-                            },
-                            actor=actor,
-                            occurred_at=now_iso,
-                        )
-                    )
-        return updated_rows, transitions
-
-    def evaluate_execution_alerts(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        persist: bool = True,
-    ) -> dict[str, Any]:
-        with self._lock:
-            policy = self._alerting_policy()
-            store.sync_execution_alert_catalog(default_alert_catalog_entries())
-            payload = self._collect_execution_alert_conditions(
-                state=state,
-                settings=settings,
-                bot_id=bot_id,
-                symbol=symbol,
-                persist_sources=persist,
-            )
-            scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
-            scope_type = str(scope.get("scope_type") or "GLOBAL")
-            scope_bot_id = str(scope.get("bot_id") or "").strip() or None
-            scope_symbol = str(scope.get("symbol") or "").strip().upper() or None
-            conditions = [row for row in payload.get("conditions") if isinstance(row, dict)] if isinstance(payload.get("conditions"), list) else []
-            active_keys: set[tuple[str, str, str | None, str | None]] = set()
-            transitions: list[dict[str, Any]] = []
-            touched_ids: set[str] = set()
-            for condition in conditions:
-                key = (
-                    str(condition.get("trigger_code") or ""),
-                    str(condition.get("scope_type") or "GLOBAL"),
-                    str(condition.get("bot_id") or "").strip() or None,
-                    str(condition.get("symbol") or "").strip().upper() or None,
-                )
-                active_keys.add(key)
-                instance, event = self._sync_execution_alert_condition(condition, policy=policy, actor="system")
-                if isinstance(instance, dict):
-                    touched_ids.add(str(instance.get("alert_instance_id") or ""))
-                if isinstance(event, dict):
-                    transitions.append(event)
-
-            inactive_rows, inactive_events = self._sweep_inactive_execution_alerts(
-                scope_type=scope_type,
-                bot_id=scope_bot_id,
-                symbol=scope_symbol,
-                active_keys=active_keys,
-                policy=policy,
-                actor="system",
-            )
-            for row in inactive_rows:
-                if isinstance(row, dict):
-                    touched_ids.add(str(row.get("alert_instance_id") or ""))
-            transitions.extend(inactive_events)
-
-            items = store.list_execution_alert_instances(
-                scope_type=scope_type,
-                bot_id=scope_bot_id,
-                symbol=scope_symbol,
-                limit=250,
-            )
-            return {
-                "evaluated_at": str(payload.get("evaluated_at") or utc_now_iso()),
-                "scope": scope,
-                "policy_source": str(load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml"),
-                "upstream_refs": {
-                    "raw_signal_snapshot_ids": [
-                        str(row.get("signal_snapshot_id") or "")
-                        for row in payload.get("raw_signals", {}).get("items", [])
-                        if isinstance(row, dict) and str(row.get("signal_snapshot_id") or "").strip()
-                    ]
-                    if isinstance(payload.get("raw_signals"), dict)
-                    else [],
-                    "health_snapshot_id": str(payload.get("health_summary", {}).get("snapshot_id") or "")
-                    if isinstance(payload.get("health_summary"), dict)
-                    else "",
-                    "safety_evaluated_at": str(payload.get("safety_summary", {}).get("evaluated_at") or "")
-                    if isinstance(payload.get("safety_summary"), dict)
-                    else "",
-                },
-                "conditions": conditions,
-                "items": items,
-                "open_items": [row for row in items if alert_state_active(row.get("state"))],
-                "transitions": transitions,
-                "touched_alert_instance_ids": [value for value in touched_ids if value],
-            }
-
-    def ack_execution_alert(
-        self,
-        *,
-        alert_instance_id: str,
-        requested_by: str,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            instance = store.get_execution_alert_instance(alert_instance_id)
-            if not instance:
-                raise KeyError(alert_instance_id)
-            now_iso = utc_now_iso()
-            state_before = normalize_alert_state(instance.get("state"))
-            if state_before == "ACKED":
-                return {"alert": instance, "transition": None}
-            updated = store.upsert_execution_alert_instance(
-                trigger_code=str(instance.get("trigger_code") or ""),
-                severity=str(instance.get("severity") or "WARN"),
-                state="ACKED",
-                source_layer=str(instance.get("source_layer") or "RAW"),
-                scope_type=str(instance.get("scope_type") or "GLOBAL"),
-                bot_id=str(instance.get("bot_id") or "").strip() or None,
-                symbol=str(instance.get("symbol") or "").strip().upper() or None,
-                opened_at=str(instance.get("opened_at") or "") or None,
-                last_seen_at=str(instance.get("last_seen_at") or "") or now_iso,
-                acked_at=now_iso,
-                suppressed_until=str(instance.get("suppressed_until") or "") or None,
-                cooldown_until=str(instance.get("cooldown_until") or "") or None,
-                resolved_at=str(instance.get("resolved_at") or "") or None,
-                expires_at=str(instance.get("expires_at") or "") or None,
-                source_refs=instance.get("source_refs") if isinstance(instance.get("source_refs"), dict) else {},
-                evidence=instance.get("evidence") if isinstance(instance.get("evidence"), dict) else {},
-                summary_text=str(instance.get("summary_text") or ""),
-            )
-            event = store.insert_execution_alert_event(
-                alert_instance_id=str(updated.get("alert_instance_id") or ""),
-                event_type="ACKED",
-                previous_state=state_before,
-                next_state="ACKED",
-                payload={"audit_note": str(audit_note or "")},
-                actor=str(requested_by or "admin"),
-                occurred_at=now_iso,
-            )
-            return {"alert": updated, "transition": event}
-
-    def suppress_execution_alert(
-        self,
-        *,
-        alert_instance_id: str,
-        requested_by: str,
-        duration_sec: int | None = None,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            policy = self._alerting_policy()
-            instance = store.get_execution_alert_instance(alert_instance_id)
-            if not instance:
-                raise KeyError(alert_instance_id)
-            now_dt = utc_now()
-            now_iso = now_dt.isoformat()
-            suppression_sec = max(1, _as_int(duration_sec, _as_int(policy.get("default_suppression_sec"), 900)))
-            updated = store.upsert_execution_alert_instance(
-                trigger_code=str(instance.get("trigger_code") or ""),
-                severity=str(instance.get("severity") or "WARN"),
-                state="SUPPRESSED",
-                source_layer=str(instance.get("source_layer") or "RAW"),
-                scope_type=str(instance.get("scope_type") or "GLOBAL"),
-                bot_id=str(instance.get("bot_id") or "").strip() or None,
-                symbol=str(instance.get("symbol") or "").strip().upper() or None,
-                opened_at=str(instance.get("opened_at") or "") or None,
-                last_seen_at=str(instance.get("last_seen_at") or "") or now_iso,
-                acked_at=str(instance.get("acked_at") or "") or None,
-                suppressed_until=self._alert_iso_after(now_dt, suppression_sec),
-                cooldown_until=str(instance.get("cooldown_until") or "") or None,
-                resolved_at=str(instance.get("resolved_at") or "") or None,
-                expires_at=str(instance.get("expires_at") or "") or None,
-                source_refs=instance.get("source_refs") if isinstance(instance.get("source_refs"), dict) else {},
-                evidence=instance.get("evidence") if isinstance(instance.get("evidence"), dict) else {},
-                summary_text=str(instance.get("summary_text") or ""),
-            )
-            event = store.insert_execution_alert_event(
-                alert_instance_id=str(updated.get("alert_instance_id") or ""),
-                event_type="SUPPRESSED",
-                previous_state=str(instance.get("state") or ""),
-                next_state="SUPPRESSED",
-                payload={"audit_note": str(audit_note or ""), "duration_sec": suppression_sec},
-                actor=str(requested_by or "admin"),
-                occurred_at=now_iso,
-            )
-            return {"alert": updated, "transition": event}
-
-    def resolve_execution_alert(
-        self,
-        *,
-        alert_instance_id: str,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        requested_by: str,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            policy = self._alerting_policy()
-            instance = store.get_execution_alert_instance(alert_instance_id)
-            if not instance:
-                raise KeyError(alert_instance_id)
-            now_dt = utc_now()
-            now_iso = now_dt.isoformat()
-            condition_payload = self._collect_execution_alert_conditions(
-                state=state,
-                settings=settings,
-                bot_id=str(instance.get("bot_id") or "").strip() or None,
-                symbol=str(instance.get("symbol") or "").strip().upper() or None,
-                persist_sources=False,
-            )
-            active_condition = next(
-                (
-                    row
-                    for row in (condition_payload.get("conditions") if isinstance(condition_payload.get("conditions"), list) else [])
-                    if isinstance(row, dict)
-                    and str(row.get("trigger_code") or "") == str(instance.get("trigger_code") or "")
-                    and str(row.get("scope_type") or "") == str(instance.get("scope_type") or "")
-                    and (str(row.get("bot_id") or "").strip() or None) == (str(instance.get("bot_id") or "").strip() or None)
-                    and (str(row.get("symbol") or "").strip().upper() or None) == (str(instance.get("symbol") or "").strip().upper() or None)
-                ),
-                None,
-            )
-            if bool(policy.get("manual_resolve_requires_inactive", True)) and isinstance(active_condition, dict):
-                severity_rank = normalize_alert_severity_precedence(policy.get("severity_rank"))
-                severity_source_precedence = normalize_alert_source_precedence(policy.get("severity_source_precedence"))
-                current = store.upsert_execution_alert_instance(
-                    trigger_code=str(instance.get("trigger_code") or ""),
-                    severity=choose_alert_severity_with_precedence(
-                        {
-                            "severity": instance.get("severity"),
-                            "source_layer": instance.get("source_layer"),
-                        },
-                        {
-                            "severity": active_condition.get("severity"),
-                            "source_layer": active_condition.get("source_layer"),
-                        },
-                        source_precedence=severity_source_precedence,
-                        severity_precedence=severity_rank,
-                    ),
-                    state=str(instance.get("state") or "OPEN"),
-                    source_layer=str(active_condition.get("source_layer") or instance.get("source_layer") or "RAW"),
-                    scope_type=str(instance.get("scope_type") or "GLOBAL"),
-                    bot_id=str(instance.get("bot_id") or "").strip() or None,
-                    symbol=str(instance.get("symbol") or "").strip().upper() or None,
-                    opened_at=str(instance.get("opened_at") or "") or None,
-                    last_seen_at=now_iso,
-                    acked_at=str(instance.get("acked_at") or "") or None,
-                    suppressed_until=str(instance.get("suppressed_until") or "") or None,
-                    cooldown_until=str(instance.get("cooldown_until") or "") or None,
-                    resolved_at=str(instance.get("resolved_at") or "") or None,
-                    expires_at=str(instance.get("expires_at") or "") or None,
-                    source_refs=active_condition.get("source_refs") if isinstance(active_condition.get("source_refs"), dict) else {},
-                    evidence=active_condition.get("evidence") if isinstance(active_condition.get("evidence"), dict) else {},
-                    summary_text=str(active_condition.get("summary_text") or instance.get("summary_text") or ""),
-                )
-                event = store.insert_execution_alert_event(
-                    alert_instance_id=str(current.get("alert_instance_id") or ""),
-                    event_type="RESOLVE_REJECTED",
-                    previous_state=str(current.get("state") or ""),
-                    next_state=str(current.get("state") or ""),
-                    payload={
-                        "audit_note": str(audit_note or ""),
-                        "reason": "condition_still_active",
-                        "source_refs": active_condition.get("source_refs") if isinstance(active_condition.get("source_refs"), dict) else {},
-                    },
-                    actor=str(requested_by or "admin"),
-                    occurred_at=now_iso,
-                )
-                return {"ok": False, "reason": "condition_still_active", "alert": current, "transition": event}
-
-            cooldown_sec = max(0, _as_int(policy.get("default_cooldown_sec"), 300))
-            updated = store.upsert_execution_alert_instance(
-                trigger_code=str(instance.get("trigger_code") or ""),
-                severity=str(instance.get("severity") or "WARN"),
-                state="RESOLVED",
-                source_layer=str(instance.get("source_layer") or "RAW"),
-                scope_type=str(instance.get("scope_type") or "GLOBAL"),
-                bot_id=str(instance.get("bot_id") or "").strip() or None,
-                symbol=str(instance.get("symbol") or "").strip().upper() or None,
-                opened_at=str(instance.get("opened_at") or "") or None,
-                last_seen_at=str(instance.get("last_seen_at") or "") or now_iso,
-                acked_at=str(instance.get("acked_at") or "") or None,
-                suppressed_until=None,
-                cooldown_until=self._alert_iso_after(now_dt, cooldown_sec),
-                resolved_at=now_iso,
-                expires_at=None,
-                source_refs=instance.get("source_refs") if isinstance(instance.get("source_refs"), dict) else {},
-                evidence=instance.get("evidence") if isinstance(instance.get("evidence"), dict) else {},
-                summary_text=str(instance.get("summary_text") or ""),
-            )
-            event = store.insert_execution_alert_event(
-                alert_instance_id=str(updated.get("alert_instance_id") or ""),
-                event_type="RESOLVED",
-                previous_state=str(instance.get("state") or ""),
-                next_state="RESOLVED",
-                payload={"audit_note": str(audit_note or ""), "manual": True},
-                actor=str(requested_by or "admin"),
-                occurred_at=now_iso,
-            )
-            return {"ok": True, "alert": updated, "transition": event}
-
-    def _collect_canary_surfaces(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        persist_sources: bool = False,
-        refresh_alerts: bool = False,
-    ) -> dict[str, Any]:
-        state_n = dict(state or {})
-        bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
-        symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
-        scope_type, scope_bot_id, scope_symbol = self._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-        raw_signals = self.build_live_signal_snapshot(
-            state=state_n,
-            settings=settings,
-            bot_id=scope_bot_id,
-            symbol=scope_symbol,
-            persist=persist_sources,
-        )
-        health_summary = self.build_live_health_summary(
-            state=state_n,
-            settings=settings,
-            bot_id=scope_bot_id,
-            symbol=scope_symbol,
-            persist=persist_sources,
-        )
-        safety_summary = self.operational_safety_summary(
-            state=state_n,
-            bot_id=scope_bot_id,
-            symbol=scope_symbol,
-        )
-        if refresh_alerts:
-            alerts_payload = self.evaluate_execution_alerts(
-                state=state_n,
-                settings=settings,
-                bot_id=scope_bot_id,
-                symbol=scope_symbol,
-                persist=persist_sources,
-            )
-        else:
-            items = store.list_execution_alert_instances(
-                scope_type=scope_type,
-                bot_id=scope_bot_id,
-                symbol=scope_symbol,
-                limit=250,
-            )
-            alerts_payload = {
-                "evaluated_at": utc_now_iso(),
-                "scope": {
-                    "scope_type": scope_type,
-                    "scope_key": canary_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol),
-                    "bot_id": scope_bot_id,
-                    "symbol": scope_symbol,
-                },
-                "items": items,
-                "open_items": [row for row in items if alert_state_active(row.get("state"))],
-                "transitions": [],
-                "touched_alert_instance_ids": [],
-            }
-        return {
-            "scope": {
-                "scope_type": scope_type,
-                "scope_key": canary_scope_key(scope_type, bot_id=scope_bot_id, symbol=scope_symbol),
-                "bot_id": scope_bot_id,
-                "symbol": scope_symbol,
-            },
-            "raw_signals": raw_signals,
-            "health_summary": health_summary,
-            "safety_summary": safety_summary,
-            "alerts_payload": alerts_payload,
-        }
-
-    def build_execution_canary_gate_evaluation(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        run: dict[str, Any] | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        persist: bool = False,
-        refresh_alerts: bool = False,
-    ) -> dict[str, Any]:
-        with self._lock:
-            surfaces = self._collect_canary_surfaces(
-                state=state,
-                settings=settings,
-                bot_id=bot_id or (str((run or {}).get("bot_id") or "").strip() or None),
-                symbol=symbol or (str((run or {}).get("symbol") or "").strip().upper() or None),
-                persist_sources=persist,
-                refresh_alerts=refresh_alerts,
-            )
-            evaluation = finalize_canary_gate_evaluation(
-                policy=self._canary_policy(),
-                scope=surfaces["scope"],
-                raw_signals=surfaces["raw_signals"],
-                health_summary=surfaces["health_summary"],
-                safety_summary=surfaces["safety_summary"],
-                open_alerts=[row for row in (surfaces["alerts_payload"].get("open_items") or []) if isinstance(row, dict)],
-                evaluated_at=utc_now_iso(),
-                run=run,
-            )
-            evaluation["policy_source"] = str(load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml")
-            evaluation["rollback_execution_supported"] = bool(self._canary_policy().get("rollback_execution_supported", False))
-            evaluation["upstream_refs"] = {
-                "raw_signal_snapshot_ids": [
-                    str(row.get("signal_snapshot_id") or "")
-                    for row in (surfaces["raw_signals"].get("items") if isinstance(surfaces["raw_signals"].get("items"), list) else [])
-                    if isinstance(row, dict) and str(row.get("signal_snapshot_id") or "").strip()
-                ],
-                "health_snapshot_id": str(surfaces["health_summary"].get("snapshot_id") or ""),
-                "safety_evaluated_at": str(surfaces["safety_summary"].get("evaluated_at") or ""),
-                "alert_instance_ids": [
-                    str(row.get("alert_instance_id") or "")
-                    for row in (surfaces["alerts_payload"].get("open_items") if isinstance(surfaces["alerts_payload"].get("open_items"), list) else [])
-                    if isinstance(row, dict) and str(row.get("alert_instance_id") or "").strip()
-                ],
-            }
-            if persist:
-                evaluation = store.insert_canary_gate_evaluation(evaluation)
-            return evaluation
-
-    def _persist_canary_run_update(
-        self,
-        *,
-        run: dict[str, Any] | None,
-        phase: str,
-        evaluation: dict[str, Any],
-        actor: str,
-        event_type: str,
-        reason: str | None = None,
-        started_at: str | None = None,
-        running_started_at: str | None = None,
-        ended_at: str | None = None,
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        run_n = dict(run or {})
-        previous_phase = normalize_canary_phase(run_n.get("phase")) if run_n else None
-        raw_run = dict(run_n.get("raw_run") or {})
-        raw_run["last_gate_evaluation"] = evaluation
-        if reason:
-            raw_run["last_transition_reason"] = reason
-        updated = store.upsert_canary_run(
-            run_id=str(run_n.get("run_id") or "") or None,
-            scope_type=str(evaluation.get("scope_type") or "GLOBAL"),
-            bot_id=str(evaluation.get("bot_id") or "").strip() or None,
-            symbol=str(evaluation.get("symbol") or "").strip().upper() or None,
-            phase=phase,
-            canary_allowed_bool=bool(evaluation.get("canary_allowed_bool", False)),
-            hold_required_bool=bool(evaluation.get("hold_required_bool", False)),
-            rollback_recommended_bool=bool(evaluation.get("rollback_recommended_bool", False)),
-            promotion_allowed_bool=bool(evaluation.get("promotion_allowed_bool", False)),
-            started_at=started_at or run_n.get("started_at"),
-            running_started_at=running_started_at if running_started_at is not None else run_n.get("running_started_at"),
-            last_evaluated_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
-            ended_at=ended_at if ended_at is not None else run_n.get("ended_at"),
-            last_gate_evaluation_id=str(evaluation.get("evaluation_id") or "") or None,
-            blocking_sources=list(evaluation.get("blocking_sources") or []),
-            gating_reasons=list(evaluation.get("gating_reasons") or []),
-            advisory_warnings=list(evaluation.get("advisory_warnings") or []),
-            upstream_refs=evaluation.get("upstream_refs") if isinstance(evaluation.get("upstream_refs"), dict) else {},
-            summary_text=str(reason or (list(evaluation.get("blocking_sources") or [])[:1] or [phase])[0]),
-            raw_run=raw_run,
-        )
-        event = store.insert_canary_run_event(
-            run_id=str(updated.get("run_id") or ""),
-            event_type=event_type,
-            previous_phase=previous_phase,
-            next_phase=phase,
-            payload={
-                "reason": str(reason or ""),
-                "evaluation_id": str(evaluation.get("evaluation_id") or ""),
-                "blocking_sources": list(evaluation.get("blocking_sources") or []),
-                "gating_reasons": list(evaluation.get("gating_reasons") or []),
-            },
-            actor=actor,
-            occurred_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
-        )
-        snapshot = store.insert_canary_phase_snapshot(
-            run_id=str(updated.get("run_id") or ""),
-            phase=phase,
-            gate_evaluation_id=str(evaluation.get("evaluation_id") or "") or None,
-            snapshot={"run": updated, "evaluation": evaluation, "reason": str(reason or "")},
-        )
-        return updated, event, snapshot
-
-    @staticmethod
-    def _resolve_canary_scope(
-        *,
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> tuple[str, str | None, str | None]:
-        bot_id_n = str(bot_id or "").strip() or None
-        symbol_n = str(symbol or "").strip().upper() or None
-        if bot_id_n or symbol_n:
-            return RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-        scope_type_n = normalize_canary_scope_type(scope_type)
-        if scope_type_n == "BOT":
-            raise ValueError("bot_id is required for BOT canary scope")
-        if scope_type_n == "SYMBOL":
-            raise ValueError("symbol is required for SYMBOL canary scope")
-        if scope_type_n == "BOT_SYMBOL":
-            raise ValueError("bot_id and symbol are required for BOT_SYMBOL canary scope")
-        return "GLOBAL", None, None
-
-    def _canary_run_detail(self, run: dict[str, Any] | None, *, evaluation: dict[str, Any] | None = None) -> dict[str, Any]:
-        run_n = dict(run or {})
-        run_id = str(run_n.get("run_id") or "")
-        history = {
-            "events": store.list_canary_run_events(run_id=run_id, limit=100) if run_id else [],
-            "phase_snapshots": store.list_canary_phase_snapshots(run_id=run_id, limit=100) if run_id else [],
-            "gate_evaluations": store.list_canary_gate_evaluations(run_id=run_id, limit=100) if run_id else [],
-        }
-        latest_evaluation = (
-            dict(evaluation or {})
-            or (history["gate_evaluations"][0] if history["gate_evaluations"] else {})
-        )
-        return {
-            "run": run_n,
-            "latest_evaluation": latest_evaluation,
-            **history,
-        }
-
-    def execution_canary_status(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            scope_type_n, bot_id_n, symbol_n = self._resolve_canary_scope(
-                scope_type=scope_type,
-                bot_id=bot_id,
-                symbol=symbol,
-            )
-            latest_run = store.latest_canary_run(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n)
-            evaluation = self.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=latest_run,
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-                persist=False,
-                refresh_alerts=False,
-            )
-            return {
-                "scope": {
-                    "scope_type": scope_type_n,
-                    "scope_key": canary_scope_key(scope_type_n, bot_id=bot_id_n, symbol=symbol_n),
-                    "bot_id": bot_id_n,
-                    "symbol": symbol_n,
-                },
-                "policy": self._canary_policy(),
-                "policy_source": str(evaluation.get("policy_source") or load_execution_safety_policy().get("source") or "config/policies/execution_safety.yaml"),
-                "latest_run": latest_run or {},
-                "current_evaluation": evaluation,
-                "open_runs": [
-                    row
-                    for row in store.list_canary_runs(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n, limit=20)
-                    if not canary_phase_is_terminal(row.get("phase"))
-                ],
-                "history": self._canary_run_detail(latest_run, evaluation=evaluation) if latest_run else {"events": [], "phase_snapshots": [], "gate_evaluations": []},
-                "rollback_execution_supported": bool(self._canary_policy().get("rollback_execution_supported", False)),
-            }
-
-    def start_canary_run(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        scope_type: str | None = None,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        actor: str = "system",
-        note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            scope_type_n, bot_id_n, symbol_n = self._resolve_canary_scope(
-                scope_type=scope_type,
-                bot_id=bot_id,
-                symbol=symbol,
-            )
-            existing = store.latest_canary_run(scope_type=scope_type_n, bot_id=bot_id_n, symbol=symbol_n)
-            if existing and not canary_phase_is_terminal(existing.get("phase")):
-                return {
-                    "ok": True,
-                    "action": "existing_run_reused",
-                    "reason": "canary_run_already_active",
-                    **self._canary_run_detail(
-                        existing,
-                        evaluation=self.build_execution_canary_gate_evaluation(
-                            state=state,
-                            settings=settings,
-                            run=existing,
-                            bot_id=bot_id_n,
-                            symbol=symbol_n,
-                            persist=False,
-                            refresh_alerts=False,
-                        ),
-                    ),
-                }
-            evaluation = self.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=None,
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-                persist=False,
-                refresh_alerts=False,
-            )
-            phase = "ARMED" if bool(evaluation.get("canary_allowed_bool", False)) and not bool(evaluation.get("hold_required_bool", False)) else "HOLD"
-            reason = str(note or "")
-            if not reason:
-                gating = evaluation.get("gating_reasons") if isinstance(evaluation.get("gating_reasons"), list) else []
-                reason = str((gating[0] or {}).get("reason_code") or "") if gating else ""
-            reason = reason or ("canary_start_allowed" if phase == "ARMED" else "canary_start_blocked")
-            started_at = str(evaluation.get("evaluated_at") or utc_now_iso())
-            bootstrap_run = store.upsert_canary_run(
-                run_id=None,
-                scope_type=scope_type_n,
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-                phase=phase,
-                canary_allowed_bool=bool(evaluation.get("canary_allowed_bool", False)),
-                hold_required_bool=bool(evaluation.get("hold_required_bool", False)),
-                rollback_recommended_bool=bool(evaluation.get("rollback_recommended_bool", False)),
-                promotion_allowed_bool=bool(evaluation.get("promotion_allowed_bool", False)),
-                started_at=started_at,
-                running_started_at=None,
-                last_evaluated_at=str(evaluation.get("evaluated_at") or started_at),
-                ended_at=None,
-                last_gate_evaluation_id=None,
-                blocking_sources=list(evaluation.get("blocking_sources") or []),
-                gating_reasons=list(evaluation.get("gating_reasons") or []),
-                advisory_warnings=list(evaluation.get("advisory_warnings") or []),
-                upstream_refs=evaluation.get("upstream_refs") if isinstance(evaluation.get("upstream_refs"), dict) else {},
-                summary_text=reason,
-                raw_run={"last_transition_reason": reason},
-            )
-            evaluation = store.insert_canary_gate_evaluation(
-                {
-                    **evaluation,
-                    "run_id": str(bootstrap_run.get("run_id") or ""),
-                    "phase": phase,
-                }
-            )
-            run, event, snapshot = self._persist_canary_run_update(
-                run=bootstrap_run,
-                phase=phase,
-                evaluation=evaluation,
-                actor=actor,
-                event_type="STARTED" if phase == "ARMED" else "HELD",
-                reason=reason,
-                started_at=started_at,
-                running_started_at=None,
-                ended_at=None,
-            )
-            return {
-                "ok": phase == "ARMED",
-                "action": "start",
-                "reason": reason,
-                "run": run,
-                "event": event,
-                "phase_snapshot": snapshot,
-                "latest_evaluation": evaluation,
-            }
-
-    def evaluate_canary_run(
-        self,
-        *,
-        run_id: str,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        actor: str = "system",
-    ) -> dict[str, Any]:
-        with self._lock:
-            run = store.get_canary_run(run_id)
-            if not run:
-                raise KeyError(run_id)
-            evaluation = self.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=run,
-                bot_id=str(run.get("bot_id") or "").strip() or None,
-                symbol=str(run.get("symbol") or "").strip().upper() or None,
-                persist=True,
-                refresh_alerts=False,
-            )
-            next_phase, meta = decide_canary_phase_transition(
-                policy=self._canary_policy(),
-                run=run,
-                evaluation=evaluation,
-                now_iso=str(evaluation.get("evaluated_at") or utc_now_iso()),
-            )
-            event_type = "EVALUATED"
-            if next_phase != normalize_canary_phase(run.get("phase")):
-                if next_phase == "HOLD":
-                    event_type = "HELD"
-                elif next_phase == "ROLLBACK_RECOMMENDED":
-                    event_type = "ROLLBACK_RECOMMENDED"
-                elif next_phase == "FAILED":
-                    event_type = "FAILED"
-                else:
-                    event_type = "PHASE_CHANGED"
-            updated, event, snapshot = self._persist_canary_run_update(
-                run=run,
-                phase=next_phase,
-                evaluation=evaluation,
-                actor=actor,
-                event_type=event_type,
-                reason=str(meta.get("reason") or "evaluated"),
-                started_at=run.get("started_at"),
-                running_started_at=meta.get("running_started_at"),
-                ended_at=meta.get("ended_at"),
-            )
-            return {
-                "ok": True,
-                "action": "evaluate",
-                "reason": str(meta.get("reason") or "evaluated"),
-                "run": updated,
-                "event": event,
-                "phase_snapshot": snapshot,
-                "latest_evaluation": evaluation,
-            }
-
-    def hold_canary_run(
-        self,
-        *,
-        run_id: str,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        actor: str = "system",
-        reason: str | None = None,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            run = store.get_canary_run(run_id)
-            if not run:
-                raise KeyError(run_id)
-            evaluation = self.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=run,
-                bot_id=str(run.get("bot_id") or "").strip() or None,
-                symbol=str(run.get("symbol") or "").strip().upper() or None,
-                persist=True,
-                refresh_alerts=False,
-            )
-            updated, event, snapshot = self._persist_canary_run_update(
-                run=run,
-                phase="HOLD",
-                evaluation=evaluation,
-                actor=actor,
-                event_type="HELD",
-                reason=str(reason or audit_note or "manual_hold"),
-                started_at=run.get("started_at"),
-                running_started_at=run.get("running_started_at"),
-                ended_at=None,
-            )
-            return {
-                "ok": True,
-                "action": "hold",
-                "reason": str(reason or audit_note or "manual_hold"),
-                "run": updated,
-                "event": event,
-                "phase_snapshot": snapshot,
-                "latest_evaluation": evaluation,
-            }
-
-    def resume_canary_run(
-        self,
-        *,
-        run_id: str,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        actor: str = "system",
-        reason: str | None = None,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            run = store.get_canary_run(run_id)
-            if not run:
-                raise KeyError(run_id)
-            if normalize_canary_phase(run.get("phase")) != "HOLD":
-                raise ValueError("Canary resume is only valid from HOLD")
-            evaluation = self.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=run,
-                bot_id=str(run.get("bot_id") or "").strip() or None,
-                symbol=str(run.get("symbol") or "").strip().upper() or None,
-                persist=True,
-                refresh_alerts=False,
-            )
-            next_phase, meta = decide_canary_phase_transition(
-                policy=self._canary_policy(),
-                run=run,
-                evaluation=evaluation,
-                now_iso=str(evaluation.get("evaluated_at") or utc_now_iso()),
-            )
-            updated, event, snapshot = self._persist_canary_run_update(
-                run=run,
-                phase=next_phase,
-                evaluation=evaluation,
-                actor=actor,
-                event_type="RESUMED" if next_phase != "HOLD" else "HELD",
-                reason=str(reason or audit_note or meta.get("reason") or "resume_evaluated"),
-                started_at=run.get("started_at"),
-                running_started_at="" if next_phase == "ARMED" else meta.get("running_started_at"),
-                ended_at=meta.get("ended_at"),
-            )
-            return {
-                "ok": next_phase != "HOLD",
-                "action": "resume",
-                "reason": str(reason or audit_note or meta.get("reason") or "resume_evaluated"),
-                "run": updated,
-                "event": event,
-                "phase_snapshot": snapshot,
-                "latest_evaluation": evaluation,
-            }
-
-    def abort_canary_run(
-        self,
-        *,
-        run_id: str,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        actor: str = "system",
-        reason: str | None = None,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            run = store.get_canary_run(run_id)
-            if not run:
-                raise KeyError(run_id)
-            evaluation = self.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=run,
-                bot_id=str(run.get("bot_id") or "").strip() or None,
-                symbol=str(run.get("symbol") or "").strip().upper() or None,
-                persist=True,
-                refresh_alerts=False,
-            )
-            updated, event, snapshot = self._persist_canary_run_update(
-                run=run,
-                phase="ABORTED",
-                evaluation=evaluation,
-                actor=actor,
-                event_type="ABORTED",
-                reason=str(reason or audit_note or "manual_abort"),
-                started_at=run.get("started_at"),
-                running_started_at=run.get("running_started_at"),
-                ended_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
-            )
-            return {
-                "ok": True,
-                "action": "abort",
-                "reason": str(reason or audit_note or "manual_abort"),
-                "run": updated,
-                "event": event,
-                "phase_snapshot": snapshot,
-                "latest_evaluation": evaluation,
-            }
-
-    def rollback_canary_run(
-        self,
-        *,
-        run_id: str,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        actor: str = "system",
-        reason: str | None = None,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        with self._lock:
-            run = store.get_canary_run(run_id)
-            if not run:
-                raise KeyError(run_id)
-            evaluation = self.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=run,
-                bot_id=str(run.get("bot_id") or "").strip() or None,
-                symbol=str(run.get("symbol") or "").strip().upper() or None,
-                persist=True,
-                refresh_alerts=False,
-            )
-            policy = self._canary_policy()
-            evaluation_for_rollback = dict(evaluation)
-            evaluation_for_rollback["rollback_recommended_bool"] = True
-            rollback_supported = bool(policy.get("rollback_execution_supported", False))
-            rollback_requires_confirmation = True
-            rollback_confirmation_ref = {}
-            rollback_confirmed = False
-            evaluation_for_rollback["rollback_confirmation"] = {
-                "required": rollback_requires_confirmation,
-                "confirmed": rollback_confirmed,
-                "source_ref": rollback_confirmation_ref,
-            }
-            if (not rollback_supported) or (not rollback_confirmed):
-                rollback_reason = "rollback_execution_not_supported"
-                if rollback_supported and rollback_requires_confirmation and not rollback_confirmed:
-                    rollback_reason = "rollback_confirmation_missing"
-                updated, event, snapshot = self._persist_canary_run_update(
-                    run=run,
-                    phase="ROLLBACK_RECOMMENDED",
-                    evaluation=evaluation_for_rollback,
-                    actor=actor,
-                    event_type="ROLLBACK_REQUESTED",
-                    reason=str(reason or audit_note or rollback_reason),
-                    started_at=run.get("started_at"),
-                    running_started_at=run.get("running_started_at"),
-                    ended_at=None,
-                )
-                return {
-                    "ok": False,
-                    "action": "rollback_recommended",
-                    "manual_action_required": True,
-                    "reason": str(reason or audit_note or rollback_reason),
-                    "run": updated,
-                    "event": event,
-                    "phase_snapshot": snapshot,
-                    "latest_evaluation": evaluation_for_rollback,
-                    "rollback_execution_supported": rollback_supported,
-                    "rollback_confirmation_required": rollback_requires_confirmation,
-                }
-            updated, event, snapshot = self._persist_canary_run_update(
-                run=run,
-                phase="ROLLED_BACK",
-                evaluation=evaluation_for_rollback,
-                actor=actor,
-                event_type="ROLLED_BACK",
-                reason=str(reason or audit_note or "rollback_executed"),
-                started_at=run.get("started_at"),
-                running_started_at=run.get("running_started_at"),
-                ended_at=str(evaluation.get("evaluated_at") or utc_now_iso()),
-            )
-            return {
-                "ok": True,
-                "action": "rollback",
-                "manual_action_required": False,
-                "reason": str(reason or audit_note or "rollback_executed"),
-                "run": updated,
-                "event": event,
-                "phase_snapshot": snapshot,
-                "latest_evaluation": evaluation_for_rollback,
-                "rollback_execution_supported": True,
-            }
-
-    def evaluate_operational_safety(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        trigger: str | None = None,
-        force_reconcile: bool = False,
-        prestart_required: bool = False,
-    ) -> dict[str, Any]:
-        with self._lock:
-            ops = self._operational_safety_policy()
-            state_n = dict(state or {})
-            mode_n = str(state_n.get("mode") or self._active_mode or "paper").strip().lower()
-            bot_id_n = str(bot_id or self._runtime_bot_scope(state_n) or "").strip() or None
-            symbol_n = str(symbol or state_n.get("runtime_last_signal_symbol") or "").strip().upper() or None
-            running = bool(state_n.get("running")) and not bool(state_n.get("killed"))
-            now_dt = utc_now()
-            now_iso = now_dt.isoformat()
-            if force_reconcile and mode_n in {"testnet", "live"}:
-                try:
-                    self._reconcile(mode=mode_n)
-                except Exception:
-                    pass
-
-            issues: list[dict[str, Any]] = []
-            manual_trigger = normalize_safety_trigger_code(trigger) if str(trigger or "").strip() else ""
-            heartbeat_age_sec = _runtime_ts_age_sec(str(state_n.get("runtime_heartbeat_at") or ""), now=now_dt)
-            heartbeat_age_ms = int((heartbeat_age_sec or 0) * 1000)
-            exchange_reason = str(state_n.get("runtime_exchange_reason") or "")
-            reconcile = dict(self._last_reconcile) if isinstance(self._last_reconcile, dict) else {}
-            remote_open_orders_count = int(reconcile.get("remote_open_orders_count") or 0)
-            missing_local = reconcile.get("missing_local") if isinstance(reconcile.get("missing_local"), list) else []
-
-            if running and mode_n in {"testnet", "live"}:
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                if manual_trigger == "STREAM_TERMINATED" or "eventstreamterminated" in exchange_reason.lower():
-                    issues.append(
-                        {
-                            "trigger_code": "STREAM_TERMINATED",
-                            "severity": "CRITICAL",
-                            "scope_type": scope_type,
-                            "bot_id": issue_bot_id,
-                            "symbol": issue_symbol,
-                            "blocking_bool": True,
-                            "action_taken": "FORCE_RECONCILE",
-                            "state": "OPEN",
-                            "evidence": {"exchange_reason": exchange_reason, "mode": mode_n},
-                        }
-                    )
-                elif heartbeat_age_ms >= int(ops.get("guardrail_stream_gap_critical_ms", 10000)):
-                    issues.append(
-                        {
-                            "trigger_code": "STREAM_HEALTH_DEGRADED",
-                            "severity": "CRITICAL",
-                            "scope_type": scope_type,
-                            "bot_id": issue_bot_id,
-                            "symbol": issue_symbol,
-                            "blocking_bool": True,
-                            "action_taken": "FORCE_RECONCILE",
-                            "state": "OPEN",
-                            "evidence": {"heartbeat_age_ms": heartbeat_age_ms, "mode": mode_n},
-                        }
-                    )
-                elif heartbeat_age_ms >= int(ops.get("guardrail_stream_gap_warn_ms", 5000)):
-                    issues.append(
-                        {
-                            "trigger_code": "STREAM_HEALTH_DEGRADED",
-                            "severity": "WARN",
-                            "scope_type": scope_type,
-                            "bot_id": issue_bot_id,
-                            "symbol": issue_symbol,
-                            "blocking_bool": False,
-                            "action_taken": "WARN_ONLY",
-                            "state": "OPEN",
-                            "evidence": {"heartbeat_age_ms": heartbeat_age_ms, "mode": mode_n},
-                        }
-                    )
-
-            if int(reconcile.get("desync_count") or 0) > 0:
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "RECONCILIATION_DESYNC_BLOCKING",
-                        "severity": "CRITICAL",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": True,
-                        "action_taken": "BLOCK_NEW_SUBMITS",
-                        "state": "OPEN",
-                        "evidence": {
-                            "desync_count": int(reconcile.get("desync_count") or 0),
-                            "missing_local": missing_local,
-                            "missing_exchange": reconcile.get("missing_exchange"),
-                            "qty_mismatches": reconcile.get("qty_mismatches"),
-                        },
-                    }
-                )
-
-            if missing_local:
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "REMOTE_OPEN_ORDER_WITHOUT_LOCAL_REPRESENTATION",
-                        "severity": "CRITICAL",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": True,
-                        "action_taken": "FORCE_RECONCILE",
-                        "state": "OPEN",
-                        "evidence": {"missing_local": missing_local, "source": reconcile.get("source")},
-                    }
-                )
-
-            if bool(state_n.get("runtime_unknown_timeout_active", False)):
-                unknown_age_sec = _runtime_ts_age_sec(str(state_n.get("runtime_unknown_timeout_since") or ""), now=now_dt) or 0
-                if unknown_age_sec >= int(ops.get("guardrail_unknown_timeout_hard_sec", 30)):
-                    scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                    issues.append(
-                        {
-                            "trigger_code": "UNKNOWN_TIMEOUT_STUCK",
-                            "severity": "CRITICAL",
-                            "scope_type": scope_type,
-                            "bot_id": issue_bot_id,
-                            "symbol": issue_symbol,
-                            "blocking_bool": True,
-                            "action_taken": "BLOCK_NEW_SUBMITS",
-                            "state": "OPEN",
-                            "evidence": {
-                                "unknown_timeout_since": str(state_n.get("runtime_unknown_timeout_since") or ""),
-                                "unknown_timeout_age_sec": int(unknown_age_sec),
-                            },
-                        }
-                    )
-
-            rate_limit_count, rate_limit_events = self._count_recent_safety_events(
-                trigger_code="TOO_MANY_REQUESTS_PRESSURE",
-                window_sec=int(ops.get("guardrail_http_429_window_sec", 60)),
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-            )
-            if rate_limit_count >= int(ops.get("guardrail_http_429_threshold", 3)):
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "TOO_MANY_REQUESTS_PRESSURE",
-                        "severity": "WARN",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": True,
-                        "action_taken": "BLOCK_NEW_SUBMITS",
-                        "state": "COOLDOWN",
-                        "cooldown_until": (now_dt + timedelta(seconds=int(ops.get("guardrail_cooldown_sec", 120)))).isoformat(),
-                        "trigger_count_window": int(rate_limit_count),
-                        "evidence": {
-                            "window_sec": int(ops.get("guardrail_http_429_window_sec", 60)),
-                            "rate_limit_hits": int(rate_limit_count),
-                            "events": rate_limit_events[:5],
-                        },
-                    }
-                )
-
-            ban_count, ban_events = self._count_recent_safety_events(
-                trigger_code="HTTP_418_BAN_RISK",
-                window_sec=int(ops.get("guardrail_http_429_window_sec", 60)),
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-            )
-            if ban_count > 0 and bool(ops.get("guardrail_http_418_blocks_live", True)):
-                issues.append(
-                    {
-                        "trigger_code": "HTTP_418_BAN_RISK",
-                        "severity": "CRITICAL",
-                        "scope_type": "GLOBAL",
-                        "bot_id": None,
-                        "symbol": None,
-                        "blocking_bool": True,
-                        "action_taken": "FREEZE_GLOBAL",
-                        "state": "OPEN",
-                        "trigger_count_window": int(ban_count),
-                        "evidence": {"recent_ban_events": ban_events[:5]},
-                    }
-                )
-
-            if remote_open_orders_count >= int(ops.get("guardrail_open_orders_block_count", 20)):
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "TOO_MANY_OPEN_ORDERS",
-                        "severity": "CRITICAL",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": True,
-                        "action_taken": "BLOCK_NEW_SUBMITS",
-                        "state": "OPEN",
-                        "evidence": {"open_orders_count": remote_open_orders_count},
-                    }
-                )
-            elif remote_open_orders_count >= int(ops.get("guardrail_open_orders_warn_count", 10)):
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "TOO_MANY_OPEN_ORDERS",
-                        "severity": "WARN",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": False,
-                        "action_taken": "WARN_ONLY",
-                        "state": "OPEN",
-                        "evidence": {"open_orders_count": remote_open_orders_count},
-                    }
-                )
-
-            reject_count, reject_events = self._count_recent_safety_events(
-                trigger_code="EXCESSIVE_REJECTS",
-                window_sec=int(ops.get("guardrail_reject_window_sec", 300)),
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-            )
-            if reject_count >= int(ops.get("guardrail_reject_threshold", 5)):
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "EXCESSIVE_REJECTS",
-                        "severity": "CRITICAL",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": True,
-                        "action_taken": "BLOCK_NEW_SUBMITS",
-                        "state": "OPEN",
-                        "trigger_count_window": int(reject_count),
-                        "evidence": {"recent_reject_events": reject_events[:5]},
-                    }
-                )
-
-            cancel_fail_count, cancel_fail_events = self._count_recent_safety_events(
-                trigger_code="EXCESSIVE_CANCEL_FAILS",
-                window_sec=int(ops.get("guardrail_cancel_fail_window_sec", 300)),
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-            )
-            if cancel_fail_count >= int(ops.get("guardrail_cancel_fail_threshold", 3)):
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "EXCESSIVE_CANCEL_FAILS",
-                        "severity": "CRITICAL",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": True,
-                        "action_taken": "BLOCK_NEW_SUBMITS",
-                        "state": "OPEN",
-                        "trigger_count_window": int(cancel_fail_count),
-                        "evidence": {"recent_cancel_fail_events": cancel_fail_events[:5]},
-                    }
-                )
-
-            stp_count, stp_events = self._count_recent_safety_events(
-                trigger_code="STP_EXPIRED_CLUSTER",
-                window_sec=int(ops.get("guardrail_stp_expired_window_sec", 300)),
-                bot_id=bot_id_n,
-                symbol=symbol_n,
-            )
-            if stp_count >= int(ops.get("guardrail_stp_expired_threshold", 5)):
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": "STP_EXPIRED_CLUSTER",
-                        "severity": "WARN",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": False,
-                        "action_taken": "REQUIRE_MANUAL_ACK",
-                        "state": "OPEN",
-                        "trigger_count_window": int(stp_count),
-                        "evidence": {"recent_stp_events": stp_events[:5]},
-                    }
-                )
-
-            if prestart_required and mode_n == "live":
-                gates_payload = evaluate_gates("live", force_exchange_check=True, runtime_state=state_n)
-                can_live, reason = live_can_be_enabled(gates_payload)
-                if not can_live:
-                    issues.append(
-                        {
-                            "trigger_code": "PRESTART_GUARDRAIL_FAIL",
-                            "severity": "CRITICAL",
-                            "scope_type": "GLOBAL",
-                            "bot_id": None,
-                            "symbol": None,
-                            "blocking_bool": True,
-                            "action_taken": "BLOCK_NEW_SUBMITS",
-                            "state": "OPEN",
-                            "evidence": {
-                                "mode": mode_n,
-                                "reason": str(reason or "live_gates_fail"),
-                                "gates_overall_status": str(gates_payload.get("overall_status") or ""),
-                            },
-                        }
-                    )
-
-            if manual_trigger in {"STREAM_TERMINATED", "RECONCILIATION_MANUAL_REVIEW_BLOCKING", "SAFETY_POLICY_VIOLATION"}:
-                scope_type, issue_bot_id, issue_symbol = RuntimeBridge._safety_scope_from_context(bot_id=bot_id_n, symbol=symbol_n)
-                issues.append(
-                    {
-                        "trigger_code": manual_trigger,
-                        "severity": "CRITICAL",
-                        "scope_type": scope_type,
-                        "bot_id": issue_bot_id,
-                        "symbol": issue_symbol,
-                        "blocking_bool": True,
-                        "action_taken": "REQUIRE_MANUAL_ACK" if manual_trigger != "STREAM_TERMINATED" else "FORCE_RECONCILE",
-                        "state": "OPEN",
-                        "evidence": {"manual_trigger": manual_trigger, "requested_at": now_iso},
-                    }
-                )
-
-            current_breakers = store.list_safety_breakers(limit=500)
-            active_keys: set[tuple[str, str, str, str]] = set()
-            applied_actions: list[str] = []
-            for issue in issues:
-                key = (
-                    normalize_safety_trigger_code(issue.get("trigger_code")),
-                    normalize_safety_scope_type(issue.get("scope_type")),
-                    str(issue.get("bot_id") or ""),
-                    str(issue.get("symbol") or ""),
-                )
-                active_keys.add(key)
-                breaker, changed = self._upsert_operational_breaker(
-                    breaker_code=str(issue.get("trigger_code") or "SAFETY_POLICY_VIOLATION"),
-                    severity=str(issue.get("severity") or "WARN"),
-                    action_taken=str(issue.get("action_taken") or "WARN_ONLY"),
-                    blocking_bool=bool(issue.get("blocking_bool", False)),
-                    scope_type=str(issue.get("scope_type") or "GLOBAL"),
-                    bot_id=str(issue.get("bot_id") or "") or None,
-                    symbol=str(issue.get("symbol") or "") or None,
-                    state=str(issue.get("state") or "OPEN"),
-                    evidence=issue.get("evidence") if isinstance(issue.get("evidence"), dict) else {},
-                    trigger_count_window=int(issue.get("trigger_count_window") or 1),
-                    cooldown_until=str(issue.get("cooldown_until") or "") or None,
-                )
-                if changed:
-                    applied_actions.append(f"{breaker.get('breaker_code')}:{breaker.get('scope_type')}:{breaker.get('state')}")
-
-            for breaker in current_breakers:
-                key = (
-                    normalize_safety_trigger_code(breaker.get("breaker_code")),
-                    normalize_safety_scope_type(breaker.get("scope_type")),
-                    str(breaker.get("bot_id") or ""),
-                    str(breaker.get("symbol") or ""),
-                )
-                state_n_breaker = normalize_safety_breaker_state(breaker.get("state"))
-                if state_n_breaker == "MANUAL_LOCK":
-                    continue
-                if key in active_keys:
-                    continue
-                if state_n_breaker == "COOLDOWN":
-                    cooldown_until_dt = _parse_iso_datetime_utc(str(breaker.get("cooldown_until") or ""))
-                    if isinstance(cooldown_until_dt, datetime) and cooldown_until_dt > now_dt:
-                        continue
-                if state_n_breaker != "CLOSED":
-                    self._close_operational_breaker(breaker, resolution_reason="condition_cleared")
-
-            summary = self.operational_safety_summary(state=state_n, bot_id=bot_id_n, symbol=symbol_n)
-            summary["recommended_actions"] = sorted(
-                {str(issue.get("action_taken") or "WARN_ONLY") for issue in issues if str(issue.get("action_taken") or "").strip()}
-            )
-            summary["applied_actions"] = applied_actions
-            summary["issues_detected"] = issues
-            return summary
-
-    def live_operational_safety_gate(
-        self,
-        *,
-        state: dict[str, Any],
-        settings: dict[str, Any],
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        prestart_required: bool = False,
-        force_reconcile: bool = False,
-    ) -> tuple[bool, str, dict[str, Any]]:
-        summary = self.evaluate_operational_safety(
-            state=state,
-            settings=settings,
-            bot_id=bot_id,
-            symbol=symbol,
-            force_reconcile=force_reconcile,
-            prestart_required=prestart_required,
-        )
-        if bool(summary.get("blocking_bool", False)):
-            blockers = summary.get("blocking_scopes") if isinstance(summary.get("blocking_scopes"), list) else []
-            reason = "Operational safety blocked"
-            if blockers:
-                labels = [f"{row.get('breaker_code')}:{row.get('scope_type')}:{row.get('state')}" for row in blockers]
-                reason = f"{reason}: {', '.join(labels[:5])}"
-            return False, reason, summary
-        return True, "", summary
-
-    def freeze_symbol(self, *, symbol: str, requested_by: str, audit_note: str | None = None) -> dict[str, Any]:
-        symbol_n = str(symbol or "").strip().upper()
-        breaker = store.upsert_safety_breaker(
-            breaker_code="SAFETY_POLICY_VIOLATION",
-            scope_type="SYMBOL",
-            state="MANUAL_LOCK",
-            symbol=symbol_n,
-            blocking_bool=True,
-            trigger_count_window=1,
-            opened_at=utc_now_iso(),
-            last_trigger_at=utc_now_iso(),
-            trigger_reason={"manual_action": "FREEZE_SYMBOL", "requested_by": requested_by, "audit_note": audit_note or ""},
-        )
-        action = store.insert_safety_manual_action(
-            action_type="FREEZE_SYMBOL",
-            scope_type="SYMBOL",
-            symbol=symbol_n,
-            requested_by=requested_by,
-            result={"ok": True, "breaker": breaker},
-            audit_note=audit_note,
-        )
-        return {"ok": True, "breaker": breaker, "manual_action": action}
-
-    def freeze_bot(self, *, bot_id: str, requested_by: str, audit_note: str | None = None) -> dict[str, Any]:
-        bot_id_n = str(bot_id or "").strip()
-        breaker = store.upsert_safety_breaker(
-            breaker_code="SAFETY_POLICY_VIOLATION",
-            scope_type="BOT",
-            state="MANUAL_LOCK",
-            bot_id=bot_id_n,
-            blocking_bool=True,
-            trigger_count_window=1,
-            opened_at=utc_now_iso(),
-            last_trigger_at=utc_now_iso(),
-            trigger_reason={"manual_action": "FREEZE_BOT", "requested_by": requested_by, "audit_note": audit_note or ""},
-        )
-        action = store.insert_safety_manual_action(
-            action_type="FREEZE_BOT",
-            scope_type="BOT",
-            bot_id=bot_id_n,
-            requested_by=requested_by,
-            result={"ok": True, "breaker": breaker},
-            audit_note=audit_note,
-        )
-        return {"ok": True, "breaker": breaker, "manual_action": action}
-
-    def freeze_global(self, *, requested_by: str, audit_note: str | None = None) -> dict[str, Any]:
-        breaker = store.upsert_safety_breaker(
-            breaker_code="SAFETY_POLICY_VIOLATION",
-            scope_type="GLOBAL",
-            state="MANUAL_LOCK",
-            blocking_bool=True,
-            trigger_count_window=1,
-            opened_at=utc_now_iso(),
-            last_trigger_at=utc_now_iso(),
-            trigger_reason={"manual_action": "FREEZE_GLOBAL", "requested_by": requested_by, "audit_note": audit_note or ""},
-        )
-        action = store.insert_safety_manual_action(
-            action_type="FREEZE_GLOBAL",
-            scope_type="GLOBAL",
-            requested_by=requested_by,
-            result={"ok": True, "breaker": breaker},
-            audit_note=audit_note,
-        )
-        return {"ok": True, "breaker": breaker, "manual_action": action}
-
-    def unfreeze_operational_safety(
-        self,
-        *,
-        scope_type: str,
-        requested_by: str,
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        scope_type_n = normalize_safety_scope_type(scope_type)
-        rows = store.list_safety_breakers(limit=500)
-        cleared: list[dict[str, Any]] = []
-        for row in rows:
-            if normalize_safety_breaker_state(row.get("state")) != "MANUAL_LOCK":
-                continue
-            if normalize_safety_scope_type(row.get("scope_type")) != scope_type_n:
-                continue
-            if scope_type_n in {"BOT", "BOT_SYMBOL"} and str(row.get("bot_id") or "") != str(bot_id or ""):
-                continue
-            if scope_type_n in {"SYMBOL", "BOT_SYMBOL"} and str(row.get("symbol") or "").upper() != str(symbol or "").upper():
-                continue
-            cleared.append(self._close_operational_breaker(row, resolution_reason="manual_unfreeze"))
-        action = store.insert_safety_manual_action(
-            action_type="UNFREEZE",
-            scope_type=scope_type_n,
-            bot_id=str(bot_id or "").strip() or None,
-            symbol=str(symbol or "").strip().upper() or None,
-            requested_by=requested_by,
-            result={"ok": True, "cleared_breakers": cleared},
-            audit_note=audit_note,
-        )
-        return {"ok": True, "cleared_breakers": cleared, "manual_action": action}
-
-    def ack_operational_safety_event(
-        self,
-        *,
-        safety_event_id: str,
-        requested_by: str,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        rows = store.list_safety_guardrail_events(limit=500)
-        event = next((row for row in rows if str(row.get("safety_event_id") or "") == str(safety_event_id or "")), None)
-        action = store.insert_safety_manual_action(
-            action_type="ACK_ALERT",
-            scope_type=str(event.get("scope_type") or "GLOBAL") if isinstance(event, dict) else "GLOBAL",
-            bot_id=(str(event.get("bot_id") or "").strip() or None) if isinstance(event, dict) else None,
-            symbol=(str(event.get("symbol") or "").strip().upper() or None) if isinstance(event, dict) else None,
-            requested_by=requested_by,
-            result={"ok": bool(event), "safety_event_id": safety_event_id, "event": event or {}},
-            audit_note=audit_note,
-        )
-        return {"ok": bool(event), "event": event or {}, "manual_action": action}
-
-    def emergency_cancel_symbol(
-        self,
-        *,
-        symbol: str,
-        requested_by: str,
-        audit_note: str | None = None,
-    ) -> dict[str, Any]:
-        policy = self._operational_safety_policy()
-        symbol_n = str(symbol or "").strip().upper()
-        mode_n = str(store.load_bot_state().get("mode") or self._active_mode or "paper").strip().lower()
-        if not bool(policy.get("guardrail_emergency_cancel_enabled", True)):
-            result = {"ok": False, "reason": "emergency_cancel_disabled"}
-        elif mode_n not in {"testnet", "live"}:
-            result = {"ok": False, "reason": "mode_not_exchange", "mode": mode_n}
-        else:
-            creds = load_exchange_credentials(mode_n)
-            if not bool(creds.get("has_keys", False)):
-                result = {"ok": False, "reason": "missing_keys", "mode": mode_n}
-            else:
-                request_ok, result_payload = _binance_signed_request(
-                    method="DELETE",
-                    base_url=str(creds.get("base_url") or ""),
-                    path="/api/v3/openOrders",
-                    api_key=str(creds.get("api_key") or ""),
-                    api_secret=str(creds.get("api_secret") or ""),
-                    params={"symbol": symbol_n},
-                    timeout_sec=_exchange_timeout_seconds(),
-                )
-                payload = result_payload.get("payload")
-                if not request_ok:
-                    status_code = int(_as_int(result_payload.get("status_code"), 0))
-                    error_type, detail = _classify_exchange_error(status_code, payload)
-                    store.insert_safety_guardrail_event(
-                        scope_type="SYMBOL",
-                        symbol=symbol_n,
-                        trigger_code="EXCESSIVE_CANCEL_FAILS",
-                        severity="WARN",
-                        evidence={
-                            "mode": mode_n,
-                            "status_code": status_code,
-                            "error_type": error_type,
-                            "detail": detail,
-                            "payload": payload if isinstance(payload, dict) else {"raw": str(payload)},
-                        },
-                        action_taken="EMERGENCY_CANCEL_SYMBOL",
-                        blocking_bool=False,
-                    )
-                    result = {"ok": False, "reason": detail, "error_type": error_type, "payload": payload}
-                else:
-                    result = {
-                        "ok": True,
-                        "mode": mode_n,
-                        "symbol": symbol_n,
-                        "canceled_count": len(payload) if isinstance(payload, list) else 0,
-                        "payload": payload,
-                    }
-                    try:
-                        self._reconcile(mode=mode_n)
-                    except Exception:
-                        pass
-        action = store.insert_safety_manual_action(
-            action_type="EMERGENCY_CANCEL_SYMBOL",
-            scope_type="SYMBOL",
-            symbol=symbol_n,
-            requested_by=requested_by,
-            result=result,
-            audit_note=audit_note,
-        )
-        return {"ok": bool(result.get("ok", False)), "result": result, "manual_action": action}
-
-    @staticmethod
     def _exchange_side_to_runtime(value: Any) -> Side:
         side_text = str(value or "").strip().upper()
         if side_text == "SELL":
@@ -12625,53 +6901,13 @@ class RuntimeBridge:
         positions.sort(key=lambda row: str(row.get("symbol") or ""))
         return positions
 
-    @staticmethod
-    def _parse_exchange_account_surface_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        balances = payload.get("balances") if isinstance(payload.get("balances"), list) else []
-        permissions_raw = payload.get("permissions") if isinstance(payload.get("permissions"), list) else []
-        permissions = [str(row).strip().upper() for row in permissions_raw if str(row).strip()]
-        nonzero_balances: list[dict[str, Any]] = []
-        for row in balances:
-            if not isinstance(row, dict):
-                continue
-            asset = str(row.get("asset") or "").strip().upper()
-            free_qty = max(0.0, _as_float(row.get("free"), 0.0))
-            locked_qty = max(0.0, _as_float(row.get("locked"), 0.0))
-            total_qty = free_qty + locked_qty
-            if not asset or total_qty <= 0.0:
-                continue
-            nonzero_balances.append(
-                {
-                    "asset": asset,
-                    "free_qty": round(free_qty, 8),
-                    "locked_qty": round(locked_qty, 8),
-                    "total_qty": round(total_qty, 8),
-                }
-            )
-        nonzero_balances.sort(key=lambda row: str(row.get("asset") or ""))
-        can_trade = bool(payload.get("canTrade", True))
-        can_withdraw = bool(payload.get("canWithdraw", True))
-        can_deposit = bool(payload.get("canDeposit", True))
-        update_time_ms = _as_int(payload.get("updateTime"), 0)
-        return {
-            "balances": nonzero_balances,
-            "positions": RuntimeBridge._parse_exchange_account_positions_payload(payload),
-            "balances_count": len(nonzero_balances),
-            "permissions": permissions,
-            "can_trade": can_trade,
-            "can_withdraw": can_withdraw,
-            "can_deposit": can_deposit,
-            "update_time_ms": update_time_ms,
-            "source_type": "GET /api/v3/account",
-        }
-
-    def _fetch_exchange_account_surface(self, *, mode: str) -> tuple[dict[str, Any], str, bool, str]:
+    def _fetch_exchange_account_positions(self, *, mode: str) -> tuple[list[dict[str, Any]], str, bool, str]:
         mode_n = str(mode or "").strip().lower()
         if mode_n not in {"testnet", "live"}:
-            return {}, "exchange_api_skip_mode", False, f"Modo no soportado para exchange account: {mode_n or 'unknown'}"
+            return [], "exchange_api_skip_mode", False, f"Modo no soportado para exchange account: {mode_n or 'unknown'}"
         creds = load_exchange_credentials(mode_n)
         if not bool(creds.get("has_keys", False)):
-            return {}, "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para account snapshot."
+            return [], "exchange_api_missing_keys", False, "Credenciales de exchange faltantes para account snapshot."
         timeout_sec = _exchange_timeout_seconds()
         try:
             request_ok, result = _binance_signed_request(
@@ -12685,17 +6921,13 @@ class RuntimeBridge:
             )
             payload = result.get("payload")
             if request_ok and isinstance(payload, dict):
-                return RuntimeBridge._parse_exchange_account_surface_payload(payload), "exchange_api", True, ""
+                return RuntimeBridge._parse_exchange_account_positions_payload(payload), "exchange_api", True, ""
             status_code = int(_as_int(result.get("status_code"), 0))
             category, detail = _classify_exchange_error(status_code, payload)
             reason = detail if detail else f"Exchange account failed ({category})"
-            return {}, "exchange_api_error", False, reason
+            return [], "exchange_api_error", False, reason
         except Exception as exc:
-            return {}, "exchange_api_exception", False, str(exc)
-
-    def _fetch_exchange_account_positions(self, *, mode: str) -> tuple[list[dict[str, Any]], str, bool, str]:
-        surface, source, ok, reason = self._fetch_exchange_account_surface(mode=mode)
-        return list(surface.get("positions") or []), source, ok, reason
+            return [], "exchange_api_exception", False, str(exc)
 
     def _fetch_exchange_order_status(
         self,
@@ -13078,24 +7310,6 @@ class RuntimeBridge:
                 "signal_side": signal_side,
             }
 
-        safety_summary = self.operational_safety_summary(
-            state=state,
-            bot_id=self._runtime_bot_scope(state),
-            symbol=signal_symbol or None,
-        )
-        if bool(safety_summary.get("blocking_bool", False)):
-            return {
-                "submitted": False,
-                "reason": "operational_safety_blocked",
-                "error": "Operational safety breaker open",
-                "safety_summary": safety_summary,
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
-            }
-
         last_submit_at_raw = str(state.get("runtime_last_remote_submit_at") or "").strip()
         if last_submit_at_raw:
             try:
@@ -13221,28 +7435,10 @@ class RuntimeBridge:
         )
         if not submitted:
             self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-            error_type = str(payload.get("error_type") or "")
-            if error_type not in {"unknown_timeout", "rate_limit", "rate_limit_ban"}:
-                store.insert_safety_guardrail_event(
-                    scope_type="SYMBOL",
-                    symbol=symbol,
-                    trigger_code="EXCESSIVE_REJECTS",
-                    severity="WARN",
-                    evidence={
-                        "mode": mode_n,
-                        "client_order_id": client_order_id,
-                        "error": str(payload.get("error") or ""),
-                        "error_type": error_type,
-                        "status_code": int(_as_int(payload.get("status_code"), 0)),
-                    },
-                    action_taken="WARN_ONLY",
-                    blocking_bool=False,
-                )
             return {
                 "submitted": False,
                 "reason": "submit_failed",
                 "error": str(payload.get("error") or ""),
-                "error_type": error_type,
                 "client_order_id": client_order_id,
                 "signal_action": signal_action,
                 "signal_reason": signal_reason,
@@ -13348,37 +7544,8 @@ class RuntimeBridge:
                     canceled_remote += 1
                     continue
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-                store.insert_safety_guardrail_event(
-                    scope_type="SYMBOL",
-                    symbol=symbol,
-                    trigger_code="EXCESSIVE_CANCEL_FAILS",
-                    severity="WARN",
-                    evidence={
-                        "mode": mode_n,
-                        "status_code": int(_as_int(result.get("status_code"), 0)),
-                        "payload": payload_raw if isinstance(payload_raw, dict) else {"raw": str(payload_raw)},
-                        "client_order_id": client_order_id,
-                        "exchange_order_id": exchange_order_id,
-                    },
-                    action_taken="WARN_ONLY",
-                    blocking_bool=False,
-                )
             except Exception:
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-                store.insert_safety_guardrail_event(
-                    scope_type="SYMBOL",
-                    symbol=symbol,
-                    trigger_code="EXCESSIVE_CANCEL_FAILS",
-                    severity="WARN",
-                    evidence={
-                        "mode": mode_n,
-                        "client_order_id": client_order_id,
-                        "exchange_order_id": exchange_order_id,
-                        "error": "cancel_exception",
-                    },
-                    action_taken="WARN_ONLY",
-                    blocking_bool=False,
-                )
         self._last_reconcile["cancel_source"] = source
         self._last_reconcile["cancel_source_reason"] = source_reason
         return canceled_remote
@@ -13472,8 +7639,6 @@ class RuntimeBridge:
             "missing_local": list(report.missing_local),
             "missing_exchange": list(report.missing_exchange),
             "qty_mismatches": list(report.qty_mismatches),
-            "remote_open_orders_count": int(len(exchange_orders)),
-            "local_open_orders_count": int(len(self._oms.open_orders())),
             "source": source,
             "source_ok": bool(source_ok),
             "source_reason": source_reason,
@@ -13546,20 +7711,9 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
-                changed = self._set_state_value(state, "runtime_operational_safety_ok", False) or changed
-                changed = self._set_state_value(state, "runtime_operational_safety_status", "INACTIVE") or changed
-                changed = self._set_state_value(state, "runtime_last_safety_eval_at", now_iso) or changed
-                changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
-                changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
                 changed = self._set_state_value(state, "runtime_exchange_connector_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_order_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_exchange_reason", "") or changed
-                changed = self._set_state_value(state, "runtime_account_surface_ok", False) or changed
-                changed = self._set_state_value(state, "runtime_account_surface_verified_at", "") or changed
-                changed = self._set_state_value(state, "runtime_account_surface_reason", "") or changed
-                changed = self._set_state_value(state, "runtime_account_can_trade", False) or changed
-                changed = self._set_state_value(state, "runtime_account_permissions", []) or changed
-                changed = self._set_state_value(state, "runtime_account_balances_count", 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
@@ -13595,17 +7749,6 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_loop_alive", False) or changed
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_reconciliation_ok", False) or changed
-                changed = self._set_state_value(state, "runtime_operational_safety_ok", False) or changed
-                changed = self._set_state_value(state, "runtime_operational_safety_status", "EXCHANGE_NOT_READY") or changed
-                changed = self._set_state_value(state, "runtime_last_safety_eval_at", now_iso) or changed
-                changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
-                changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
-                changed = self._set_state_value(state, "runtime_account_surface_ok", False) or changed
-                changed = self._set_state_value(state, "runtime_account_surface_verified_at", "") or changed
-                changed = self._set_state_value(state, "runtime_account_surface_reason", "") or changed
-                changed = self._set_state_value(state, "runtime_account_can_trade", False) or changed
-                changed = self._set_state_value(state, "runtime_account_permissions", []) or changed
-                changed = self._set_state_value(state, "runtime_account_balances_count", 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
@@ -13651,32 +7794,14 @@ class RuntimeBridge:
             changed = self._set_state_value(state, "runtime_heartbeat_at", now_iso) or changed
             changed = self._set_state_value(state, "runtime_last_reconcile_at", now_iso) or changed
             if active_mode in {"testnet", "live"}:
-                account_surface, account_source, account_ok, account_reason = self._fetch_exchange_account_surface(
+                account_positions, account_source, account_ok, account_reason = self._fetch_exchange_account_positions(
                     mode=active_mode
                 )
-                account_positions = list(account_surface.get("positions") or [])
-                account_permissions = [str(row) for row in (account_surface.get("permissions") or []) if str(row).strip()]
-                account_can_trade = bool(account_surface.get("can_trade", False))
-                account_balances_count = int(_as_int(account_surface.get("balances_count"), 0))
                 if account_ok:
                     self._remote_positions = account_positions
                 else:
                     self._remote_positions = []
                     self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-                changed = self._set_state_value(state, "runtime_account_surface_ok", bool(account_ok)) or changed
-                changed = self._set_state_value(
-                    state,
-                    "runtime_account_surface_verified_at",
-                    now_iso if bool(account_ok) else "",
-                ) or changed
-                changed = self._set_state_value(
-                    state,
-                    "runtime_account_surface_reason",
-                    str(account_reason or account_source),
-                ) or changed
-                changed = self._set_state_value(state, "runtime_account_can_trade", bool(account_can_trade if account_ok else False)) or changed
-                changed = self._set_state_value(state, "runtime_account_permissions", account_permissions if account_ok else []) or changed
-                changed = self._set_state_value(state, "runtime_account_balances_count", account_balances_count if account_ok else 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", bool(account_ok)) or changed
                 changed = self._set_state_value(
                     state,
@@ -13690,12 +7815,6 @@ class RuntimeBridge:
                 ) or changed
             else:
                 self._remote_positions = []
-                changed = self._set_state_value(state, "runtime_account_surface_ok", False) or changed
-                changed = self._set_state_value(state, "runtime_account_surface_verified_at", "") or changed
-                changed = self._set_state_value(state, "runtime_account_surface_reason", "") or changed
-                changed = self._set_state_value(state, "runtime_account_can_trade", False) or changed
-                changed = self._set_state_value(state, "runtime_account_permissions", []) or changed
-                changed = self._set_state_value(state, "runtime_account_balances_count", 0) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_ok", False) or changed
                 changed = self._set_state_value(state, "runtime_account_positions_verified_at", "") or changed
                 changed = self._set_state_value(state, "runtime_account_positions_reason", "") or changed
@@ -13755,20 +7874,6 @@ class RuntimeBridge:
                 changed = self._set_state_value(state, "runtime_executor_connected", False) or changed
                 changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
                 self._stats["api_errors"] = self._stats.get("api_errors", 0) + 1
-            if bool(state.get("runtime_unknown_timeout_active", False)) and reconciliation_ok:
-                if int(reconcile.get("remote_open_orders_count") or 0) == 0 and int(reconcile.get("local_open_orders_count") or 0) == 0:
-                    changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
-                    changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
-            safety_summary = self.evaluate_operational_safety(
-                state=state,
-                settings=settings,
-                bot_id=self._runtime_bot_scope(state),
-                force_reconcile=False,
-                prestart_required=False,
-            )
-            changed = self._set_state_value(state, "runtime_operational_safety_ok", not bool(safety_summary.get("blocking_bool", False))) or changed
-            changed = self._set_state_value(state, "runtime_operational_safety_status", str(safety_summary.get("global_state") or "CLOSED")) or changed
-            changed = self._set_state_value(state, "runtime_last_safety_eval_at", str(safety_summary.get("evaluated_at") or now_iso)) or changed
             if active_mode in {"testnet", "live"} and not bool(decision.kill) and bool(state.get("running")) and not bool(state.get("killed")):
                 submit_result = self._maybe_submit_exchange_seed_order(
                     state=state,
@@ -13779,7 +7884,6 @@ class RuntimeBridge:
                 )
                 submit_reason = str(submit_result.get("reason") or "")
                 submit_error = str(submit_result.get("error") or "")
-                submit_error_type = str(submit_result.get("error_type") or "")
                 submit_client_order_id = str(submit_result.get("client_order_id") or "")
                 signal_action = str(submit_result.get("signal_action") or "")
                 signal_reason = str(submit_result.get("signal_reason") or "")
@@ -13801,14 +7905,8 @@ class RuntimeBridge:
                 if bool(submit_result.get("submitted", False)):
                     changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
                     changed = self._set_state_value(state, "runtime_last_remote_submit_error", "") or changed
-                    changed = self._set_state_value(state, "runtime_unknown_timeout_active", False) or changed
-                    changed = self._set_state_value(state, "runtime_unknown_timeout_since", "") or changed
                 else:
                     changed = self._set_state_value(state, "runtime_last_remote_submit_error", submit_error) or changed
-                    if submit_error_type == "unknown_timeout":
-                        changed = self._set_state_value(state, "runtime_unknown_timeout_active", True) or changed
-                        if not str(state.get("runtime_unknown_timeout_since") or "").strip():
-                            changed = self._set_state_value(state, "runtime_unknown_timeout_since", now_iso) or changed
             self._append_execution_point(settings=settings, mode=active_mode)
             return changed
 
@@ -13887,7 +7985,6 @@ class RuntimeBridge:
                 "forecast_band": forecast_band,
                 "gate_checklist": gate_checklist,
                 "reconciliation": dict(self._last_reconcile),
-                "operational_safety": self.operational_safety_summary(state=state),
             }
 
     def execution_metrics_snapshot(self) -> dict[str, Any]:
@@ -14539,22 +8636,11 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
     loop_alive = bool(snapshot.get("runtime_loop_alive", False))
     executor_connected = bool(snapshot.get("runtime_executor_connected", False))
     reconciliation_ok = bool(snapshot.get("runtime_reconciliation_ok", False))
-    operational_safety_ok = bool(snapshot.get("runtime_operational_safety_ok", False))
-    operational_safety_status = str(snapshot.get("runtime_operational_safety_status") or "")
     exchange_connector_ok = bool(snapshot.get("runtime_exchange_connector_ok", False))
     exchange_order_ok = bool(snapshot.get("runtime_exchange_order_ok", False))
     exchange_mode = str(snapshot.get("runtime_exchange_mode") or "").strip().lower()
     exchange_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_exchange_verified_at") or ""), now=now_dt)
     exchange_required = mode_n in {"testnet", "live"}
-    account_surface_ok = bool(snapshot.get("runtime_account_surface_ok", False))
-    account_surface_reason = str(snapshot.get("runtime_account_surface_reason") or "")
-    account_surface_verified_at = str(snapshot.get("runtime_account_surface_verified_at") or "")
-    account_surface_age_sec = _runtime_ts_age_sec(account_surface_verified_at, now=now_dt)
-    account_can_trade = bool(snapshot.get("runtime_account_can_trade", False))
-    account_permissions = snapshot.get("runtime_account_permissions")
-    if not isinstance(account_permissions, list):
-        account_permissions = []
-    account_balances_count = int(_as_int(snapshot.get("runtime_account_balances_count"), 0))
     heartbeat_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_heartbeat_at") or ""), now=now_dt)
     reconcile_age_sec = _runtime_ts_age_sec(str(snapshot.get("runtime_last_reconcile_at") or ""), now=now_dt)
 
@@ -14571,10 +8657,6 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
         "exchange_check_fresh": (not exchange_required)
         or (exchange_age_sec is not None and exchange_age_sec <= int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC)),
         "exchange_mode_match": (not exchange_required) or exchange_mode == mode_n,
-        "account_surface_ok": (not exchange_required) or account_surface_ok,
-        "account_surface_fresh": (not exchange_required)
-        or (account_surface_age_sec is not None and account_surface_age_sec <= int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC)),
-        "account_can_trade": (not exchange_required) or account_can_trade,
     }
     missing_checks = [key for key, ok in checks.items() if not bool(ok)]
     ready_for_live = len(missing_checks) == 0
@@ -14587,25 +8669,15 @@ def _runtime_contract_snapshot(state: dict[str, Any] | None, *, target_mode: str
         "runtime_loop_alive": loop_alive,
         "executor_connected": executor_connected,
         "reconciliation_ok": reconciliation_ok,
-        "operational_safety_ok": operational_safety_ok,
         "runtime_exchange_connector_ok": exchange_connector_ok,
         "runtime_exchange_order_ok": exchange_order_ok,
         "runtime_exchange_mode": exchange_mode,
         "runtime_exchange_verified_at": str(snapshot.get("runtime_exchange_verified_at") or ""),
         "runtime_exchange_reason": str(snapshot.get("runtime_exchange_reason") or ""),
-        "runtime_account_surface_ok": account_surface_ok,
-        "runtime_account_surface_verified_at": account_surface_verified_at,
-        "runtime_account_surface_reason": account_surface_reason,
-        "runtime_account_surface_age_sec": account_surface_age_sec,
-        "runtime_account_can_trade": account_can_trade,
-        "runtime_account_permissions": account_permissions,
-        "runtime_account_balances_count": account_balances_count,
         "exchange_check_age_sec": exchange_age_sec,
         "exchange_check_max_age_sec": int(RUNTIME_EXCHANGE_CHECK_MAX_AGE_SEC),
         "runtime_heartbeat_at": str(snapshot.get("runtime_heartbeat_at") or ""),
         "runtime_last_reconcile_at": str(snapshot.get("runtime_last_reconcile_at") or ""),
-        "runtime_operational_safety_status": operational_safety_status,
-        "runtime_last_safety_eval_at": str(snapshot.get("runtime_last_safety_eval_at") or ""),
         "heartbeat_age_sec": heartbeat_age_sec,
         "heartbeat_max_age_sec": int(RUNTIME_HEARTBEAT_MAX_AGE_SEC),
         "reconciliation_age_sec": reconcile_age_sec,
@@ -14659,22 +8731,11 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_loop_alive", False)
     runtime_state.setdefault("runtime_executor_connected", False)
     runtime_state.setdefault("runtime_reconciliation_ok", False)
-    runtime_state.setdefault("runtime_operational_safety_ok", False)
-    runtime_state.setdefault("runtime_operational_safety_status", "")
-    runtime_state.setdefault("runtime_last_safety_eval_at", "")
-    runtime_state.setdefault("runtime_unknown_timeout_active", False)
-    runtime_state.setdefault("runtime_unknown_timeout_since", "")
     runtime_state.setdefault("runtime_exchange_connector_ok", False)
     runtime_state.setdefault("runtime_exchange_order_ok", False)
     runtime_state.setdefault("runtime_exchange_mode", "")
     runtime_state.setdefault("runtime_exchange_verified_at", "")
     runtime_state.setdefault("runtime_exchange_reason", "")
-    runtime_state.setdefault("runtime_account_surface_ok", False)
-    runtime_state.setdefault("runtime_account_surface_verified_at", "")
-    runtime_state.setdefault("runtime_account_surface_reason", "")
-    runtime_state.setdefault("runtime_account_can_trade", False)
-    runtime_state.setdefault("runtime_account_permissions", [])
-    runtime_state.setdefault("runtime_account_balances_count", 0)
     runtime_state.setdefault("runtime_account_positions_ok", False)
     runtime_state.setdefault("runtime_account_positions_verified_at", "")
     runtime_state.setdefault("runtime_account_positions_reason", "")
@@ -15006,13 +9067,584 @@ def live_can_be_enabled(gates_payload: dict[str, Any]) -> tuple[bool, str]:
     return True, "All live gates are PASS"
 
 
+def _live_preflight_policy() -> dict[str, Any]:
+    defaults = {
+        "freshness_hard_max_sec": 600,
+        "attestation_max_age_days": 30,
+        "drift_pass_max_ms": 1500,
+        "drift_warn_max_ms": 4000,
+        "recv_window_warn_ms": 5000,
+        "recv_window_fail_ms": 60000,
+    }
+    payload = store.execution_reality.safety_policy().get("live_preflight")
+    cfg = payload if isinstance(payload, dict) else {}
+    merged = {**defaults, **cfg}
+    merged["freshness_hard_max_sec"] = max(60, int(_as_int(merged.get("freshness_hard_max_sec"), 600)))
+    merged["attestation_max_age_days"] = max(1, int(_as_int(merged.get("attestation_max_age_days"), 30)))
+    merged["drift_pass_max_ms"] = max(0, int(_as_int(merged.get("drift_pass_max_ms"), 1500)))
+    merged["drift_warn_max_ms"] = max(merged["drift_pass_max_ms"], int(_as_int(merged.get("drift_warn_max_ms"), 4000)))
+    merged["recv_window_warn_ms"] = max(0, int(_as_int(merged.get("recv_window_warn_ms"), 5000)))
+    merged["recv_window_fail_ms"] = max(merged["recv_window_warn_ms"], int(_as_int(merged.get("recv_window_fail_ms"), 60000)))
+    return merged
+
+
+def _live_preflight_default_symbol(mode: str) -> str:
+    normalized_mode = str(mode or "live").strip().lower()
+    candidates = [
+        os.getenv("BINANCE_TESTNET_TEST_SYMBOL") if normalized_mode == "testnet" else os.getenv("BINANCE_LIVE_PREFLIGHT_SYMBOL"),
+        os.getenv("BINANCE_LIVE_PREFLIGHT_SYMBOL") if normalized_mode == "testnet" else os.getenv("BINANCE_TESTNET_TEST_SYMBOL"),
+        "BTCUSDT",
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip().upper()
+        if text:
+            return text
+    return "BTCUSDT"
+
+
+def _live_preflight_default_quote_qty(mode: str) -> float:
+    normalized_mode = str(mode or "live").strip().lower()
+    candidates = [
+        os.getenv("BINANCE_TESTNET_TEST_QUOTE_QTY") if normalized_mode == "testnet" else os.getenv("BINANCE_LIVE_PREFLIGHT_QUOTE_QTY"),
+        os.getenv("BINANCE_LIVE_PREFLIGHT_QUOTE_QTY") if normalized_mode == "testnet" else os.getenv("BINANCE_TESTNET_TEST_QUOTE_QTY"),
+        "15",
+    ]
+    for candidate in candidates:
+        try:
+            value = float(candidate)
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return 15.0
+
+
+def _live_preflight_candidate(mode: str, requested: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = requested if isinstance(requested, dict) else {}
+    normalized_mode = "testnet" if str(body.get("mode") or mode or "live").strip().lower() == "testnet" else "live"
+    symbol = str(body.get("symbol") or _live_preflight_default_symbol(normalized_mode)).strip().upper()
+    side = str(body.get("side") or "BUY").strip().upper()
+    quantity = body.get("quantity")
+    quote_order_qty = body.get("quote_order_qty")
+    if quantity is None and quote_order_qty is None:
+        quote_order_qty = _live_preflight_default_quote_qty(normalized_mode)
+    return {
+        "family": "spot",
+        "environment": normalized_mode,
+        "mode": normalized_mode,
+        "symbol": symbol,
+        "side": side if side in {"BUY", "SELL"} else "BUY",
+        "order_type": "MARKET",
+        "quantity": None if quantity is None else float(quantity),
+        "quote_quantity": None if quote_order_qty is None else float(quote_order_qty),
+    }
+
+
+def _live_preflight_runtime_quote(mode: str, symbol: str) -> dict[str, Any] | None:
+    quote = store.execution_reality._quote_snapshot("spot", mode, symbol)  # type: ignore[attr-defined]
+    if not isinstance(quote, dict):
+        return None
+    if quote.get("quote_ts_ms") is None:
+        return None
+    return {
+        "bid": quote.get("bid"),
+        "ask": quote.get("ask"),
+        "mark_price": quote.get("mark_price"),
+        "quote_ts_ms": quote.get("quote_ts_ms"),
+        "orderbook_ts_ms": quote.get("orderbook_ts_ms"),
+        "source": quote.get("source"),
+    }
+
+
+def _parse_utc_ts(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _live_preflight_gate(mode: str = "live") -> dict[str, Any]:
+    normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+    latest = store.live_preflight.latest_run(mode=normalized_mode)
+    if latest is None:
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": "live_preflight_missing",
+            "latest": None,
+            "fresh": False,
+        }
+    status = str(latest.get("overall_status") or "").upper()
+    if status != "PASS":
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": f"live_preflight_status_{status.lower() or 'fail'}",
+            "latest": latest,
+            "fresh": False,
+        }
+    expires_at = _parse_utc_ts(latest.get("expires_at"))
+    now_dt = datetime.now(timezone.utc)
+    if expires_at is None or expires_at <= now_dt:
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": "live_preflight_expired",
+            "latest": latest,
+            "fresh": False,
+        }
+    return {
+        "ok": True,
+        "mode": normalized_mode,
+        "reason": "live_preflight_pass",
+        "latest": latest,
+        "fresh": True,
+    }
+
+
+def _live_reconciliation_gate(*, bot_id: str | None = None) -> dict[str, Any]:
+    return store.execution_reality.live_reconciliation_gate(
+        environment="live",
+        bot_id=str(bot_id or "").strip() or None,
+        trigger="PRESTART_LIVE",
+        run_required=True,
+    )
+
+
+def latest_live_preflight_payload(mode: str = "live", *, limit: int = 10) -> dict[str, Any]:
+    normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+    policy = _live_preflight_policy()
+    latest_attestation = store.live_preflight.latest_attestation(mode=normalized_mode)
+    return {
+        "mode": normalized_mode,
+        "policy": copy.deepcopy(policy),
+        "latest": store.live_preflight.latest_run(mode=normalized_mode),
+        "recent_runs": store.live_preflight.list_runs(mode=normalized_mode, limit=max(1, int(limit))),
+        "latest_attestation": latest_attestation,
+        "attestation_status": attestation_status(
+            latest_attestation,
+            max_age_days=int(policy.get("attestation_max_age_days", 30)),
+        ),
+        "live_enablement_gate": _live_preflight_gate(normalized_mode),
+    }
+
+
+def build_live_preflight(
+    payload: dict[str, Any] | None = None,
+    *,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    requested = payload if isinstance(payload, dict) else {}
+    policy = _live_preflight_policy()
+    candidate = _live_preflight_candidate(str(requested.get("mode") or "live"), requested)
+    mode = str(candidate.get("mode") or "live")
+    symbol = str(candidate.get("symbol") or "")
+    evaluated_dt = datetime.now(timezone.utc)
+    evaluated_at = evaluated_dt.isoformat()
+    freshness_seconds = int(policy.get("freshness_hard_max_sec", 600))
+    expires_at = (evaluated_dt + timedelta(seconds=freshness_seconds)).isoformat()
+    settings = store.load_settings()
+    state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    runtime_snapshot = _runtime_contract_snapshot(state)
+    telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+    diagnostics: list[dict[str, Any]] = []
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    checks: dict[str, Any] = {}
+    source_versions = {
+        "execution_policy_hash": store.execution_reality.policy_hash(),
+        "binance_live_runtime_hash": store.execution_reality.binance_live_runtime_hash(),
+        "runtime_contract_version": RUNTIME_CONTRACT_VERSION,
+        "mode_taxonomy": list(GLOBAL_RUNTIME_MODES),
+    }
+
+    def _push_check(name: str, status: str, detail: str, **extra: Any) -> None:
+        checks[name] = {"status": status, "detail": detail, **extra}
+        if status == "FAIL":
+            blocking_reasons.append(name)
+        elif status == "WARN":
+            warnings.append(name)
+
+    creds = load_exchange_credentials(mode)
+    runtime_engine = _runtime_engine_from_state(state)
+    runtime_real_required = runtime_engine == RUNTIME_ENGINE_REAL
+    credentials_ok = bool(creds.get("has_keys")) and str(creds.get("exchange") or "").strip().lower() == "binance"
+    mode_ok = mode in {"live", "testnet"}
+    if credentials_ok and mode_ok and runtime_real_required:
+        _push_check(
+            "credentials_mode",
+            "PASS",
+            "Credenciales, exchange y runtime real disponibles para preflight final.",
+            exchange=creds.get("exchange"),
+            mode=mode,
+            runtime_engine=runtime_engine,
+            key_source=creds.get("key_source"),
+        )
+    else:
+        detail_parts = []
+        if not credentials_ok:
+            detail_parts.append("credenciales_binance_missing")
+        if not mode_ok:
+            detail_parts.append("mode_invalid")
+        if not runtime_real_required:
+            detail_parts.append("runtime_engine_not_real")
+        _push_check(
+            "credentials_mode",
+            "FAIL",
+            ", ".join(detail_parts) or "Preflight live requiere exchange/binance, modo live|testnet y runtime real.",
+            exchange=creds.get("exchange"),
+            mode=mode,
+            runtime_engine=runtime_engine,
+            key_source=creds.get("key_source"),
+            missing_env_vars=list(creds.get("missing_env_vars") or []),
+        )
+
+    timeout_sec = _exchange_timeout_seconds()
+    drift_ms: int | None = None
+    recv_window_ms = int(store.execution_reality._exchange_adapter_recv_window_ms())  # type: ignore[attr-defined]
+    time_status = "FAIL"
+    time_detail = "No se pudo validar server time."
+    time_url = f"{str(creds.get('base_url') or '').rstrip('/')}/api/v3/time"
+    if credentials_ok:
+        local_before = int(time.time() * 1000)
+        try:
+            response = requests.get(time_url, timeout=timeout_sec)
+            local_after = int(time.time() * 1000)
+            payload_json = _parse_json_response(response)
+            if response.ok and isinstance(payload_json, dict) and payload_json.get("serverTime") is not None:
+                server_time_ms = int(payload_json.get("serverTime"))
+                local_mid = int((local_before + local_after) / 2)
+                drift_ms = int(server_time_ms - local_mid)
+                abs_drift_ms = abs(drift_ms)
+                if abs_drift_ms <= int(policy.get("drift_pass_max_ms", 1500)):
+                    time_status = "PASS"
+                    time_detail = f"Drift {drift_ms} ms dentro del umbral PASS."
+                elif abs_drift_ms <= int(policy.get("drift_warn_max_ms", 4000)):
+                    time_status = "WARN"
+                    time_detail = f"Drift {drift_ms} ms en zona WARN."
+                else:
+                    time_status = "FAIL"
+                    time_detail = f"Drift {drift_ms} ms excede el umbral FAIL."
+            else:
+                time_detail = f"Server time no disponible ({response.status_code})."
+        except Exception as exc:
+            time_detail = f"Server time request failed: {exc}"
+    if recv_window_ms > int(policy.get("recv_window_fail_ms", 60000)):
+        time_status = "FAIL"
+        time_detail = f"{time_detail} recvWindow={recv_window_ms} supera el maximo permitido."
+    elif recv_window_ms > int(policy.get("recv_window_warn_ms", 5000)) and time_status == "PASS":
+        time_status = "WARN"
+        time_detail = f"{time_detail} recvWindow={recv_window_ms} supera la recomendacion operativa."
+    _push_check(
+        "timing_security",
+        time_status,
+        time_detail,
+        drift_ms=drift_ms,
+        recv_window_ms=recv_window_ms,
+        time_url=time_url,
+    )
+
+    diagnose_payload = diagnose_exchange(mode, force_refresh=True)
+    diagnostics.extend(
+        {"source": "diagnose_exchange", "message": str(item)}
+        for item in (diagnose_payload.get("diagnostics") or [])
+        if str(item).strip()
+    )
+    if bool(diagnose_payload.get("connector_ok")) and bool(diagnose_payload.get("order_ok")):
+        _push_check(
+            "exchange_diagnose",
+            "PASS",
+            "Diagnose exchange confirma conector y order/test.",
+            connector_ok=True,
+            order_ok=True,
+        )
+    else:
+        _push_check(
+            "exchange_diagnose",
+            "FAIL",
+            str(diagnose_payload.get("last_error") or diagnose_payload.get("order_reason") or diagnose_payload.get("connector_reason") or "Diagnose exchange failed."),
+            connector_ok=bool(diagnose_payload.get("connector_ok")),
+            order_ok=bool(diagnose_payload.get("order_ok")),
+        )
+
+    gates_payload = evaluate_gates(mode, runtime_state=state, force_exchange_check=True)
+    if mode == "live":
+        live_allowed, live_reason = live_can_be_enabled(gates_payload)
+        _push_check(
+            "live_gates",
+            "PASS" if live_allowed else "FAIL",
+            "Gates LIVE en PASS." if live_allowed else f"Gates LIVE bloquean: {live_reason}",
+            overall_status=gates_payload.get("overall_status"),
+            required_ids=[row.get("id") for row in (gates_payload.get("gates") or []) if isinstance(row, dict)],
+        )
+    else:
+        _push_check(
+            "live_gates",
+            "PASS" if str(gates_payload.get("overall_status") or "").upper() == "PASS" else "WARN",
+            f"Gates {mode.upper()} = {gates_payload.get('overall_status')}.",
+            overall_status=gates_payload.get("overall_status"),
+        )
+
+    latest_att = store.live_preflight.latest_attestation(mode=mode)
+    att_status = attestation_status(latest_att, max_age_days=int(policy.get("attestation_max_age_days", 30)))
+    _push_check(
+        "manual_attestation",
+        str(att_status.get("status") or "FAIL"),
+        str(att_status.get("reason") or "manual_attestation_missing"),
+        attestation=copy.deepcopy(latest_att),
+        verified_by=(latest_att or {}).get("verified_by"),
+        verified_at=att_status.get("verified_at"),
+        expires_at=att_status.get("expires_at"),
+        actor=actor,
+    )
+
+    account_payload = store.execution_reality.fetch_account_balances(
+        family="spot",
+        environment=mode,
+        omit_zero_balances=False,
+    )
+    account = account_payload.get("account") if isinstance(account_payload.get("account"), dict) else {}
+    permissions = [str(item).upper() for item in (account.get("permissions") or []) if str(item).strip()]
+    account_type = str(account.get("accountType") or "").upper()
+    can_trade = bool(account.get("canTrade"))
+    balances = account_payload.get("balances") if isinstance(account_payload.get("balances"), list) else []
+    balances_parseable = isinstance(balances, list)
+    non_zero_balances = [
+        row
+        for row in balances
+        if isinstance(row, dict)
+        and (abs(_as_float(row.get("free"), 0.0)) > 0.0 or abs(_as_float(row.get("locked"), 0.0)) > 0.0)
+    ]
+    account_status = "PASS"
+    account_messages: list[str] = []
+    if not bool(account_payload.get("ok")):
+        account_status = "FAIL"
+        account_messages.append(str(((account_payload.get("remote_source") or {}).get("reason")) or "account_request_failed"))
+    if not can_trade:
+        account_status = "FAIL"
+        account_messages.append("canTrade=false")
+    if not balances_parseable:
+        account_status = "FAIL"
+        account_messages.append("balances_unparseable")
+    if "SPOT" not in permissions:
+        account_status = "FAIL"
+        account_messages.append("SPOT permission missing")
+    if account_type and account_type != "SPOT":
+        account_status = "FAIL"
+        account_messages.append(f"accountType={account_type}")
+    elif not account_type and account_status == "PASS":
+        account_status = "WARN"
+        account_messages.append("accountType missing")
+    if non_zero_balances and account_status == "PASS":
+        account_messages.append(f"holdings relevantes detectados: {len(non_zero_balances)}")
+    _push_check(
+        "account_readiness",
+        account_status,
+        "; ".join(account_messages) if account_messages else "Cuenta SPOT lista para preflight final.",
+        can_trade=can_trade,
+        can_withdraw=account.get("canWithdraw"),
+        permissions=permissions,
+        account_type=account_type or None,
+        balances_count=len(balances),
+        non_zero_balances_count=len(non_zero_balances),
+        remote_source=copy.deepcopy(account_payload.get("remote_source") or {}),
+    )
+
+    exchange_info_payload = store.execution_reality.fetch_exchange_info(family="spot", environment=mode)
+    exchange_info = exchange_info_payload.get("exchange_info") if isinstance(exchange_info_payload.get("exchange_info"), dict) else {}
+    symbols = exchange_info.get("symbols") if isinstance(exchange_info.get("symbols"), list) else []
+    symbol_row = next((row for row in symbols if isinstance(row, dict) and str(row.get("symbol") or "").upper() == symbol), None)
+    filter_rules = store.execution_reality.filter_rules(family="spot", symbol=symbol, environment=mode)
+    filter_summary = filter_rules.get("filter_summary") if isinstance(filter_rules.get("filter_summary"), dict) else {}
+    required_filter_keys = ["price_filter", "lot_size"]
+    missing_filters = [key for key in required_filter_keys if not isinstance(filter_summary.get(key), dict)]
+    if not isinstance(filter_summary.get("min_notional"), dict) and not isinstance(filter_summary.get("notional"), dict):
+        missing_filters.append("min_notional_or_notional")
+    exchange_rules_status = "PASS"
+    exchange_rules_messages: list[str] = []
+    if not bool(exchange_info_payload.get("ok")):
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(str(((exchange_info_payload.get("remote_source") or {}).get("reason")) or "exchange_info_request_failed"))
+    if symbol_row is None:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append("symbol_missing_in_exchange_info")
+    elif str(symbol_row.get("status") or "").upper() != "TRADING":
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"symbol_status={symbol_row.get('status')}")
+    freshness_status = str(filter_rules.get("freshness_status") or "").lower()
+    if freshness_status in {"missing", "block"}:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"exchange_filters_{freshness_status}")
+    if missing_filters:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"missing_filters:{','.join(sorted(missing_filters))}")
+    if isinstance(filter_summary.get("market_lot_size"), dict):
+        pass
+    else:
+        exchange_rules_messages.append("market_lot_size_not_present")
+        if exchange_rules_status == "PASS":
+            exchange_rules_status = "WARN"
+    _push_check(
+        "symbol_filters",
+        exchange_rules_status,
+        "; ".join(exchange_rules_messages) if exchange_rules_messages else "Símbolo y filtros oficiales disponibles.",
+        symbol_status=(symbol_row or {}).get("status"),
+        filter_source=filter_rules.get("filter_source"),
+        freshness_status=filter_rules.get("freshness_status"),
+        snapshot_timestamp=filter_rules.get("snapshot_timestamp"),
+        remote_source=copy.deepcopy(exchange_info_payload.get("remote_source") or {}),
+        missing_filters=missing_filters,
+    )
+
+    market_snapshot = _live_preflight_runtime_quote(mode, symbol)
+    preflight_request = {**candidate}
+    if market_snapshot is not None:
+        preflight_request["market_snapshot"] = market_snapshot
+    preflight_payload = store.execution_reality.preflight(preflight_request)
+    preflight_status = "PASS" if bool(preflight_payload.get("allowed")) else "FAIL"
+    preflight_detail = "Preflight execution reality PASS."
+    if not bool(preflight_payload.get("allowed")):
+        preflight_detail = ", ".join(str(item) for item in (preflight_payload.get("blocking_reasons") or []) if str(item).strip()) or "execution_preflight_failed"
+    elif preflight_payload.get("warnings"):
+        preflight_status = "WARN"
+        preflight_detail = ", ".join(str(item) for item in (preflight_payload.get("warnings") or []) if str(item).strip()) or "execution_preflight_warn"
+    _push_check(
+        "execution_preflight",
+        preflight_status,
+        preflight_detail,
+        filter_validation=copy.deepcopy(preflight_payload.get("filter_validation") or {}),
+        snapshot_source=copy.deepcopy(preflight_payload.get("snapshot_source") or {}),
+        fail_closed=bool(preflight_payload.get("fail_closed")),
+    )
+
+    normalized_preview = preflight_payload.get("normalized_order_preview") if isinstance(preflight_payload.get("normalized_order_preview"), dict) else {}
+    order_test_payload: dict[str, Any]
+    if bool(preflight_payload.get("allowed")) and account_status != "FAIL" and exchange_rules_status != "FAIL":
+        order_test_payload = store.execution_reality.test_order_contract(
+            family="spot",
+            environment=mode,
+            preview=normalized_preview,
+            client_order_id=f"live-preflight-{int(time.time())}",
+        )
+        order_test_status = "PASS" if bool(order_test_payload.get("ok")) else "FAIL"
+        order_test_detail = "order/test OK." if bool(order_test_payload.get("ok")) else str(((order_test_payload.get("remote_source") or {}).get("reason")) or "order_test_failed")
+    else:
+        order_test_payload = {
+            "ok": False,
+            "supported": True,
+            "remote_source": {"reason": "skipped_due_to_precheck_failure"},
+        }
+        order_test_status = "FAIL"
+        order_test_detail = "order/test omitido por fallos previos de preflight."
+    _push_check(
+        "order_test",
+        order_test_status,
+        order_test_detail,
+        remote_source=copy.deepcopy(order_test_payload.get("remote_source") or {}),
+        supported=bool(order_test_payload.get("supported", True)),
+    )
+
+    open_orders_count = 0
+    open_orders_status = "PASS"
+    open_orders_messages: list[str] = []
+    if credentials_ok:
+        ok_open, open_meta = _binance_signed_request(
+            method="GET",
+            base_url=str(creds.get("base_url") or ""),
+            path="/api/v3/openOrders",
+            api_key=str(creds.get("api_key") or ""),
+            api_secret=str(creds.get("api_secret") or ""),
+            params={},
+            timeout_sec=timeout_sec,
+        )
+        if ok_open:
+            payload_rows = open_meta.get("payload") if isinstance(open_meta.get("payload"), list) else []
+            open_orders_count = len(payload_rows)
+            if open_orders_count > 0:
+                open_orders_status = "WARN"
+                open_orders_messages.append(f"open_orders_present={open_orders_count}")
+        else:
+            open_orders_status = "WARN"
+            open_orders_messages.append(str(open_meta.get("reason") or "open_orders_probe_failed"))
+    if non_zero_balances:
+        open_orders_status = "WARN" if open_orders_status == "PASS" else open_orders_status
+        open_orders_messages.append(f"non_zero_holdings={len(non_zero_balances)}")
+    _push_check(
+        "operational_state",
+        open_orders_status,
+        "; ".join(open_orders_messages) if open_orders_messages else "Sin órdenes abiertas remotas y holdings parseables.",
+        open_orders_count=open_orders_count,
+        non_zero_balances_count=len(non_zero_balances),
+    )
+
+    overall_status = "FAIL" if any(item.get("status") == "FAIL" for item in checks.values()) else "WARN" if any(item.get("status") == "WARN" for item in checks.values()) else "PASS"
+    stored = store.live_preflight.insert_run(
+        {
+            "mode": mode,
+            "exchange": "binance",
+            "market_type": "spot",
+            "symbol": symbol,
+            "side": candidate.get("side"),
+            "quantity": candidate.get("quantity"),
+            "quote_order_qty": candidate.get("quote_quantity"),
+            "evaluated_at": evaluated_at,
+            "expires_at": expires_at,
+            "overall_status": overall_status,
+            "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "checks": checks,
+            "source_versions": source_versions,
+            "diagnostics": diagnostics,
+            "manual_attestations": {
+                "latest": latest_att,
+                "status": att_status,
+            },
+            "freshness_seconds": freshness_seconds,
+            "runtime_context": {
+                "runtime_engine": runtime_engine,
+                "runtime_snapshot": runtime_snapshot,
+                "telemetry_guard": telemetry_guard,
+                "gates_overall": gates_payload.get("overall_status"),
+                "mode_before_run": state.get("mode"),
+            },
+            "exchange_context": {
+                "base_url": creds.get("base_url"),
+                "ws_url": creds.get("ws_url"),
+                "key_source": creds.get("key_source"),
+                "account_type": account_type or None,
+                "permissions": permissions,
+                "can_trade": can_trade,
+                "can_withdraw": account.get("canWithdraw"),
+                "symbol_status": (symbol_row or {}).get("status"),
+                "filter_source": filter_rules.get("filter_source"),
+                "exchange_info_remote_source": copy.deepcopy(exchange_info_payload.get("remote_source") or {}),
+                "account_remote_source": copy.deepcopy(account_payload.get("remote_source") or {}),
+                "order_test_remote_source": copy.deepcopy(order_test_payload.get("remote_source") or {}),
+                "open_orders_count": open_orders_count,
+            },
+        }
+    )
+    return {
+        "ok": overall_status == "PASS",
+        "run": stored,
+        "policy": copy.deepcopy(policy),
+        "latest_attestation": latest_att,
+        "attestation_status": att_status,
+        "live_enablement_gate": _live_preflight_gate(mode),
+    }
+
+
 def build_status_payload() -> dict[str, Any]:
     settings = store.load_settings()
     state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
     runtime_snapshot = _runtime_contract_snapshot(state)
     telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
-    operational_safety = runtime_bridge.operational_safety_summary(state=state)
-    live_health_summary = runtime_bridge.build_live_health_summary(state=state, settings=settings, persist=False)
     runtime_engine = str(runtime_snapshot.get("runtime_engine") or _runtime_engine_from_state(state))
     runtime_real = runtime_engine == RUNTIME_ENGINE_REAL
     runtime_mode = "real" if runtime_real else "simulado"
@@ -15036,15 +9668,6 @@ def build_status_payload() -> dict[str, Any]:
             "telemetry_ok": bool(telemetry_guard.get("ok", False)),
             "telemetry_fail_closed": bool(telemetry_guard.get("fail_closed", True)),
             "telemetry_reason": str(telemetry_guard.get("reason") or ""),
-            "account_surface": {
-                "ok": bool(runtime_snapshot.get("runtime_account_surface_ok", False)),
-                "verified_at": str(runtime_snapshot.get("runtime_account_surface_verified_at") or ""),
-                "age_sec": runtime_snapshot.get("runtime_account_surface_age_sec"),
-                "reason": str(runtime_snapshot.get("runtime_account_surface_reason") or ""),
-                "can_trade": bool(runtime_snapshot.get("runtime_account_can_trade", False)),
-                "permissions": list(runtime_snapshot.get("runtime_account_permissions") or []),
-                "balances_count": int(_as_int(runtime_snapshot.get("runtime_account_balances_count"), 0)),
-            },
             "warning": None if runtime_real else "Runtime simulado: no se envian ordenes reales al exchange.",
         },
         "runtime_engine": runtime_engine,
@@ -15071,232 +9694,8 @@ def build_status_payload() -> dict[str, Any]:
             "rate_limits_5m": int(execution_snapshot.get("rate_limit_hits", 0)),
             "errors_24h": int(execution_snapshot.get("api_errors", 0)),
         },
-        "operational_safety": operational_safety,
-        "live_health_summary": live_health_summary,
         "gates_overall": gates["overall_status"],
         "positions": runtime_positions,
-    }
-
-
-def _rollout_stage_readiness_row(
-    *,
-    stage_id: str,
-    ready: bool,
-    reasons: list[str],
-    warnings: list[str] | None = None,
-    blocking_sources: list[str] | None = None,
-    source_refs: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    warnings_n = [str(row) for row in (warnings or []) if str(row).strip()]
-    reasons_n = [str(row) for row in reasons if str(row).strip()]
-    blocking_n = [str(row) for row in (blocking_sources or []) if str(row).strip()]
-    status = "READY" if bool(ready) else ("BLOCKED" if reasons_n or blocking_n else "PENDING")
-    return {
-        "stage": stage_id,
-        "ready_bool": bool(ready),
-        "status": status,
-        "reasons": reasons_n,
-        "warnings": warnings_n,
-        "blocking_sources": blocking_n,
-        "source_refs": dict(source_refs or {}),
-        "evaluated_at": utc_now_iso(),
-    }
-
-
-def build_rollout_readiness_by_stage() -> dict[str, Any]:
-    settings = store.load_settings()
-    state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-    rollout_state = rollout_manager.status()
-    runtime_snapshot_live = _runtime_contract_snapshot(state, target_mode="live")
-    runtime_snapshot_testnet = _runtime_contract_snapshot(state, target_mode="testnet")
-    live_health_summary = runtime_bridge.build_live_health_summary(state=state, settings=settings, persist=False)
-    operational_safety = runtime_bridge.operational_safety_summary(state=state)
-    canary_status = runtime_bridge.execution_canary_status(state=state, settings=settings)
-    canary_eval = canary_status.get("current_evaluation") if isinstance(canary_status.get("current_evaluation"), dict) else {}
-    latest_canary_run = canary_status.get("latest_run") if isinstance(canary_status.get("latest_run"), dict) else {}
-    open_alerts = store.list_execution_alert_instances(limit=250)
-    open_critical_alert_ids = [
-        str(row.get("alert_instance_id") or "")
-        for row in open_alerts
-        if isinstance(row, dict)
-        and alert_state_active(row.get("state"))
-        and str(row.get("severity") or "").strip().upper() == "CRITICAL"
-        and str(row.get("alert_instance_id") or "").strip()
-    ]
-    offline_gates = rollout_state.get("offline_gates") if isinstance(rollout_state.get("offline_gates"), dict) else {}
-    phase_evals = rollout_state.get("phase_evaluations") if isinstance(rollout_state.get("phase_evaluations"), dict) else {}
-    paper_eval = phase_evals.get("paper_soak") if isinstance(phase_evals.get("paper_soak"), dict) else {}
-    testnet_eval = phase_evals.get("testnet_soak") if isinstance(phase_evals.get("testnet_soak"), dict) else {}
-    live_mode_warning = []
-    if str(state.get("mode") or "").strip().lower() != "live":
-        live_mode_warning.append("runtime_mode_actual_no_es_live")
-    if str(runtime_snapshot_live.get("runtime_exchange_mode") or "").strip().lower() == "testnet":
-        live_mode_warning.append("spot_testnet_no_equivale_live")
-
-    paper_ready = bool(offline_gates.get("passed", False)) or bool(paper_eval.get("passed", False))
-    paper_reasons = []
-    if not paper_ready:
-        failed_ids = offline_gates.get("failed_ids") if isinstance(offline_gates.get("failed_ids"), list) else []
-        paper_reasons = [str(row) for row in failed_ids if str(row).strip()] or ["offline_rollout_gates_not_ready"]
-
-    testnet_missing = [str(row) for row in (runtime_snapshot_testnet.get("missing_checks") or []) if str(row).strip()]
-    testnet_eval_present = bool(testnet_eval)
-    testnet_soak_passed = bool(testnet_eval.get("passed", False))
-    testnet_contract_ready = bool(runtime_snapshot_testnet.get("ready_for_live", False))
-    testnet_ready = paper_ready and testnet_contract_ready and (not testnet_eval_present or testnet_soak_passed)
-    testnet_reasons = []
-    if not paper_ready:
-        testnet_reasons.append("paper_stage_not_ready")
-    if not testnet_contract_ready:
-        testnet_reasons.extend(testnet_missing)
-    if testnet_eval_present and not testnet_soak_passed:
-        testnet_reasons.append("testnet_soak_not_passed")
-    if isinstance(testnet_eval.get("failed_ids"), list):
-        testnet_reasons.extend(str(row) for row in testnet_eval.get("failed_ids") if str(row).strip())
-
-    canary_ready = bool(canary_eval.get("canary_allowed_bool", False)) and not bool(canary_eval.get("hold_required_bool", False))
-    canary_reasons = [str(row) for row in (canary_eval.get("gating_reasons") or []) if str(row).strip()]
-    canary_blocking_sources = [str(row) for row in (canary_eval.get("blocking_sources") or []) if str(row).strip()]
-    canary_warnings = [str(row) for row in (canary_eval.get("advisory_warnings") or []) if str(row).strip()]
-
-    latest_phase = normalize_canary_phase(latest_canary_run.get("phase")) if latest_canary_run else ""
-    live_serio_ready = (
-        bool(runtime_snapshot_live.get("ready_for_live", False))
-        and bool(canary_eval.get("promotion_allowed_bool", False))
-        and latest_phase == "PASSED"
-        and not bool(live_health_summary.get("blocking_bool", False))
-        and not bool(operational_safety.get("blocking_bool", False))
-    )
-    live_serio_reasons: list[str] = []
-    if not bool(runtime_snapshot_live.get("ready_for_live", False)):
-        live_serio_reasons.extend(str(row) for row in (runtime_snapshot_live.get("missing_checks") or []) if str(row).strip())
-    if latest_phase != "PASSED":
-        live_serio_reasons.append("canary_not_passed")
-    if not bool(canary_eval.get("promotion_allowed_bool", False)):
-        live_serio_reasons.extend(str(row) for row in (canary_eval.get("gating_reasons") or []) if str(row).strip())
-    if bool(live_health_summary.get("blocking_bool", False)):
-        live_serio_reasons.extend(str(row) for row in (live_health_summary.get("hard_blockers") or []) if str(row).strip())
-    if bool(operational_safety.get("blocking_bool", False)):
-        live_serio_reasons.append(str(operational_safety.get("top_priority_reason_code") or "operational_safety_blocked"))
-
-    return {
-        "evaluated_at": utc_now_iso(),
-        "items": [
-            _rollout_stage_readiness_row(
-                stage_id="PAPER",
-                ready=paper_ready,
-                reasons=paper_reasons,
-                source_refs={
-                    "offline_gates_passed": bool(offline_gates.get("passed", False)),
-                    "paper_soak_passed": bool(paper_eval.get("passed", False)),
-                },
-            ),
-            _rollout_stage_readiness_row(
-                stage_id="TESTNET",
-                ready=testnet_ready,
-                reasons=testnet_reasons,
-                source_refs={
-                    "runtime_contract_mode": "testnet",
-                    "runtime_contract_missing_checks": testnet_missing,
-                    "account_surface_ok": bool(runtime_snapshot_testnet.get("runtime_account_surface_ok", False)),
-                    "account_surface_reason": str(runtime_snapshot_testnet.get("runtime_account_surface_reason") or ""),
-                    "testnet_soak_passed": bool(testnet_eval.get("passed", False)),
-                },
-            ),
-            _rollout_stage_readiness_row(
-                stage_id="CANARY",
-                ready=canary_ready,
-                reasons=canary_reasons,
-                warnings=canary_warnings,
-                blocking_sources=canary_blocking_sources,
-                source_refs={
-                    "canary_run_id": str(latest_canary_run.get("run_id") or ""),
-                    "canary_phase": latest_phase,
-                    "canary_allowed_bool": bool(canary_eval.get("canary_allowed_bool", False)),
-                    "hold_required_bool": bool(canary_eval.get("hold_required_bool", False)),
-                },
-            ),
-            _rollout_stage_readiness_row(
-                stage_id="LIVE_SERIO",
-                ready=live_serio_ready,
-                reasons=live_serio_reasons,
-                warnings=live_mode_warning,
-                blocking_sources=[str(row) for row in (canary_eval.get("blocking_sources") or []) if str(row).strip()],
-                source_refs={
-                    "runtime_contract_mode": "live",
-                    "canary_phase": latest_phase,
-                    "promotion_allowed_bool": bool(canary_eval.get("promotion_allowed_bool", False)),
-                    "health_state": str(live_health_summary.get("state") or ""),
-                    "operational_safety_state": str(operational_safety.get("global_state") or ""),
-                    "account_surface_ok": bool(runtime_snapshot_live.get("runtime_account_surface_ok", False)),
-                    "account_surface_reason": str(runtime_snapshot_live.get("runtime_account_surface_reason") or ""),
-                    "open_critical_alert_instance_ids": open_critical_alert_ids,
-                },
-            ),
-        ],
-    }
-
-
-def build_rollout_shadow_status() -> dict[str, Any]:
-    settings_payload = store.load_settings()
-    rollout_state = rollout_manager.status()
-    runtime_state = _sync_runtime_state(store.load_bot_state(), settings=settings_payload, persist=True)
-    runtime_snapshot_live = _runtime_contract_snapshot(runtime_state, target_mode="live")
-    telemetry_guard = _runtime_telemetry_guard(runtime_snapshot_live)
-
-    current_state = str(rollout_state.get("state") or "IDLE")
-    current_phase = str(rollout_state.get("current_phase") or "")
-    routing = rollout_state.get("routing") if isinstance(rollout_state.get("routing"), dict) else {}
-    telemetry = rollout_state.get("live_signal_telemetry") if isinstance(rollout_state.get("live_signal_telemetry"), dict) else {}
-    recent = telemetry.get("recent") if isinstance(telemetry.get("recent"), list) else []
-    recent_shadow_events = [
-        row for row in recent if isinstance(row, dict) and str(row.get("phase") or "").strip().lower() == "shadow"
-    ]
-    phases = telemetry.get("phases") if isinstance(telemetry.get("phases"), dict) else {}
-    phase_shadow = phases.get("shadow") if isinstance(phases.get("shadow"), dict) else {}
-
-    reasons: list[str] = []
-    if current_state != "LIVE_SHADOW":
-        reasons.append("rollout_not_in_live_shadow")
-    if current_phase != "shadow":
-        reasons.append("shadow_phase_not_active")
-    if not bool(routing.get("shadow_only", False)):
-        reasons.append("routing_not_shadow_only")
-    if not bool(telemetry_guard.get("ok", False)):
-        reasons.append("runtime_telemetry_not_real")
-    if not bool(runtime_snapshot_live.get("ready_for_live", False)):
-        reasons.append("runtime_contract_not_ready")
-
-    return {
-        "evaluated_at": utc_now_iso(),
-        "active": current_state == "LIVE_SHADOW",
-        "operational": len(reasons) == 0,
-        "state": current_state,
-        "current_phase": current_phase,
-        "routing": routing,
-        "reasons": reasons,
-        "runtime_contract": {
-            "mode": str(runtime_snapshot_live.get("mode") or ""),
-            "runtime_engine": str(runtime_snapshot_live.get("runtime_engine") or ""),
-            "telemetry_source": str(runtime_snapshot_live.get("telemetry_source") or ""),
-            "ready_for_live": bool(runtime_snapshot_live.get("ready_for_live", False)),
-            "missing_checks": [str(row) for row in (runtime_snapshot_live.get("missing_checks") or []) if str(row).strip()],
-            "account_surface_ok": bool(runtime_snapshot_live.get("runtime_account_surface_ok", False)),
-            "account_surface_reason": str(runtime_snapshot_live.get("runtime_account_surface_reason") or ""),
-            "exchange_mode": str(runtime_snapshot_live.get("runtime_exchange_mode") or ""),
-        },
-        "telemetry_guard": telemetry_guard,
-        "shadow_events_count": int(phase_shadow.get("events") or len(recent_shadow_events)),
-        "last_shadow_event": phase_shadow.get("last") if isinstance(phase_shadow.get("last"), dict) else None,
-        "recent_shadow_events": recent_shadow_events[-20:],
-        "source_refs": {
-            "rollout_id": str(rollout_state.get("rollout_id") or ""),
-            "runtime_contract_mode": str(runtime_snapshot_live.get("mode") or ""),
-            "runtime_contract_version": str(runtime_snapshot_live.get("contract_version") or ""),
-            "runtime_telemetry_source": str(runtime_snapshot_live.get("telemetry_source") or ""),
-            "runtime_exchange_mode": str(runtime_snapshot_live.get("runtime_exchange_mode") or ""),
-            "account_surface_ok": bool(runtime_snapshot_live.get("runtime_account_surface_ok", False)),
-        },
     }
 
 
@@ -15440,6 +9839,8 @@ def build_operational_alerts_payload() -> dict[str, Any]:
             "slippage_p95_warn_bps": OPS_ALERT_SLIPPAGE_P95_WARN_BPS,
             "api_errors_warn": OPS_ALERT_API_ERRORS_WARN,
             "breaker_window_hours": OPS_ALERT_BREAKER_WINDOW_HOURS,
+            "breaker_unknown_ratio_warn": BREAKER_EVENTS_UNKNOWN_RATIO_WARN,
+            "breaker_min_events_warn": BREAKER_EVENTS_UNKNOWN_MIN_EVENTS,
         },
         "signals": {
             "drift": drift_payload,
@@ -15538,6 +9939,46 @@ def parse_strategy_yaml_upload(payload: bytes) -> dict[str, Any]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="RTLAB API", version=APP_VERSION)
+
+    @app.on_event("startup")
+    async def instrument_registry_startup_sync() -> None:
+        try:
+            store.instrument_registry_startup_sync = store.instrument_registry.sync_on_startup()
+        except Exception as exc:
+            store.instrument_registry_startup_sync = {
+                "ok": False,
+                "startup": True,
+                "skipped": False,
+                "reason": "startup_sync_failed",
+                "error": str(exc),
+            }
+            store.add_log(
+                event_type="instrument_registry",
+                severity="warn",
+                module="instruments",
+                message="Instrument registry startup sync failed",
+                related_ids=[],
+                payload={"error": str(exc)},
+            )
+
+    @app.on_event("startup")
+    async def execution_live_orders_startup_recovery() -> None:
+        try:
+            store.execution_live_orders_startup_recovery = store.execution_reality.recover_live_orders_on_startup()
+        except Exception as exc:
+            store.execution_live_orders_startup_recovery = {
+                "ok": False,
+                "reason": "startup_recovery_failed",
+                "error": str(exc),
+            }
+            store.add_log(
+                event_type="execution_recovery",
+                severity="warn",
+                module="execution",
+                message="Live order startup recovery failed",
+                related_ids=[],
+                payload={"error": str(exc)},
+            )
 
     @app.middleware("http")
     async def api_rate_limit_middleware(request: Request, call_next):
@@ -15672,6 +10113,727 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/data/status")
     def data_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return DataCatalog(USER_DATA_DIR).status()
+
+    @app.get("/api/v1/instruments/registry/summary")
+    def instruments_registry_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_registry.registry_summary()
+
+    @app.get("/api/v1/instruments/registry/snapshots")
+    def instruments_registry_snapshots(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            items = store.instrument_registry.db.list_snapshots(
+                family=family,
+                environment=environment,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "items": items,
+            "policy_source": store.instrument_registry.policy_source(),
+        }
+
+    @app.post("/api/v1/instruments/registry/sync")
+    def instruments_registry_sync(
+        body: InstrumentRegistrySyncBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            payload = store.instrument_registry.sync(
+                family=body.family,
+                environment=body.environment,
+                startup=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="instrument_registry",
+            severity="info",
+            module="instruments",
+            message="Instrument registry sync requested",
+            related_ids=[],
+            payload={"family": body.family, "environment": body.environment, "ok": payload.get("ok")},
+        )
+        return payload
+
+    @app.get("/api/v1/instruments/universes")
+    def instruments_universes(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_universes.summary()
+
+    @app.get("/api/v1/account/capabilities/summary")
+    def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_registry.capabilities_summary()
+
+    @app.post("/api/v1/execution/preflight")
+    def execution_preflight(
+        body: ExecutionPreflightBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.preflight(body.model_dump())
+
+    @app.get("/api/v1/execution/filter-rules")
+    def execution_filter_rules(
+        family: str = Query(...),
+        symbol: str = Query(...),
+        environment: str = Query(default="live"),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.filter_rules(
+                family=family,
+                symbol=symbol,
+                environment=environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/orders")
+    def execution_create_order(
+        body: ExecutionPreflightBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.create_order(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/orders")
+    def execution_list_orders(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.list_orders(
+                family=family,
+                environment=environment,
+                symbol=symbol,
+                status=status,
+                strategy_id=strategy_id,
+                bot_id=bot_id,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/orders/{execution_order_id}")
+    def execution_order_detail(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.order_detail(execution_order_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return payload
+
+    @app.get("/api/v1/execution/live-orders")
+    def execution_live_orders(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_live_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/live-orders/unresolved")
+    def execution_live_orders_unresolved(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.unresolved_live_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+        )
+
+    @app.get("/api/v1/execution/live-orders/{execution_order_id}")
+    def execution_live_order_detail(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.order_detail(execution_order_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return payload
+
+    @app.get("/api/v1/execution/live-orders/timeline/{execution_order_id}")
+    def execution_live_order_timeline(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        order = store.execution_reality.db.order_by_id(execution_order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return {
+            "execution_order_id": execution_order_id,
+            "timeline": store.execution_reality.live_order_timeline(execution_order_id),
+        }
+
+    @app.post("/api/v1/execution/live-orders/reconcile")
+    def execution_live_orders_reconcile(
+        body: ExecutionLiveOrdersReconcileBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconcile_live_orders(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/summary")
+    def execution_reconciliation_summary(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconciliation_summary(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            execution_order_id=execution_order_id,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases")
+    def execution_reconciliation_cases(
+        final_status: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        blocking_only: bool = Query(default=False),
+        active_only: bool = Query(default=False),
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_reconciliation_cases_payload(
+            final_status=final_status,
+            severity=severity,
+            blocking_only=blocking_only,
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            active_only=active_only,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases/open")
+    def execution_reconciliation_cases_open(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.open_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            limit=limit,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases/{reconciliation_case_id}")
+    def execution_reconciliation_case_detail(
+        reconciliation_case_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.reconciliation_case_detail(reconciliation_case_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="reconciliation_case_not_found")
+        return payload
+
+    @app.post("/api/v1/execution/reconciliation/run")
+    def execution_reconciliation_run(
+        body: ExecutionReconciliationRunBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.post("/api/v1/execution/reconciliation/run/by-order/{execution_order_id}")
+    def execution_reconciliation_run_by_order(
+        execution_order_id: str,
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        trigger: str = Query(default="MANUAL"),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            bot_id=bot_id,
+            trigger=trigger,
+        )
+
+    @app.post("/api/v1/execution/reconciliation/run/by-symbol/{symbol}")
+    def execution_reconciliation_run_by_symbol(
+        symbol: str,
+        environment: str | None = Query(default="live"),
+        family: str | None = Query(default="spot"),
+        bot_id: str | None = Query(default=None),
+        trigger: str = Query(default="MANUAL"),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            trigger=trigger,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/desync")
+    def execution_reconciliation_desync(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.desync_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=limit,
+        )
+
+    @app.get("/api/v1/execution/live-fills")
+    def execution_live_fills(
+        execution_order_id: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        reconciliation_status: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_live_fills(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            reconciliation_status=reconciliation_status,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/live-fills/discrepancies")
+    def execution_live_fills_discrepancies(
+        execution_order_id: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.live_fill_discrepancies(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/execution/live-fills/by-order/{execution_order_id}")
+    def execution_live_fills_by_order(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        order = store.execution_reality.db.order_by_id(execution_order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return {
+            "execution_order_id": execution_order_id,
+            "order": store.execution_reality._live_order_summary_row(order),
+            "fills": store.execution_reality.list_live_fills(execution_order_id=execution_order_id, limit=500, offset=0)["items"],
+        }
+
+    @app.get("/api/v1/execution/live-fills/{execution_fill_id}")
+    def execution_live_fill_detail(
+        execution_fill_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.live_fill_detail(execution_fill_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_fill_not_found")
+        return payload
+
+    @app.post("/api/v1/execution/live-fills/reconcile")
+    def execution_live_fills_reconcile(
+        body: ExecutionLiveFillsReconcileBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconcile_live_fills(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.post("/api/v1/execution/orders/{execution_order_id}/cancel")
+    def execution_cancel_order(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.cancel_order(execution_order_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/orders/cancel-all")
+    def execution_cancel_all(
+        body: ExecutionCancelAllBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.cancel_all(
+                family=body.family,
+                environment=body.environment,
+                symbol=body.symbol,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/kill-switch/status")
+    def execution_kill_switch_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.kill_switch_status()
+
+    @app.post("/api/v1/execution/kill-switch/trip")
+    def execution_kill_switch_trip(
+        body: ExecutionKillSwitchTripBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.trip_kill_switch(
+            trigger_type=body.trigger_type,
+            severity=body.severity,
+            family=body.family,
+            symbol=body.symbol,
+            reason=body.reason,
+        )
+
+    @app.post("/api/v1/execution/kill-switch/reset")
+    def execution_kill_switch_reset(
+        body: ExecutionKillSwitchResetBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reset_kill_switch(reason=body.reason)
+
+    @app.get("/api/v1/execution/reconcile/summary")
+    def execution_reconcile_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.reconcile_orders()
+
+    @app.get("/api/v1/execution/live-safety/summary")
+    def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.live_safety_summary()
+
+    @app.get("/api/v1/execution/market-streams/summary")
+    def execution_market_streams_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.market_streams_summary()
+
+    @app.post("/api/v1/execution/market-streams/start")
+    def execution_market_streams_start(
+        body: ExecutionMarketStreamStartBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.start_market_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+                symbols=body.symbols,
+                transport_mode=body.transport_mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/market-streams/stop")
+    def execution_market_streams_stop(
+        body: ExecutionMarketStreamStopBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.stop_market_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/user-streams/summary")
+    def execution_user_streams_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.user_streams_summary()
+
+    @app.post("/api/v1/execution/user-streams/start")
+    def execution_user_streams_start(
+        body: ExecutionUserStreamStartBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.start_user_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+                user_stream_mode=body.user_stream_mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/user-streams/stop")
+    def execution_user_streams_stop(
+        body: ExecutionUserStreamStopBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.stop_user_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/validation/summary")
+    def validation_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.validation.summary()
+
+    @app.get("/api/v1/validation/runs")
+    def validation_runs(
+        stage: str | None = Query(default=None),
+        result: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.validation.runs(limit=limit, offset=offset, stage=stage, result=result)
+
+    @app.get("/api/v1/validation/runs/{validation_run_id}")
+    def validation_run_detail(
+        validation_run_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.validation.run_detail(validation_run_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="validation_run_not_found")
+        return payload
+
+    @app.post("/api/v1/validation/evaluate")
+    def validation_evaluate(
+        body: ValidationEvaluateBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.validation.evaluate(
+            stage=body.stage,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.get("/api/v1/validation/readiness")
+    def validation_readiness(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.validation.readiness()
+
+    def _refresh_reporting_views() -> None:
+        try:
+            store.reporting_bridge.refresh_materialized_views(store.load_runs())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/reporting/performance/summary")
+    def reporting_performance_summary(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.performance_summary(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/performance/daily")
+    def reporting_performance_daily(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.daily_series(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/performance/monthly")
+    def reporting_performance_monthly(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.monthly_series(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/costs/breakdown")
+    def reporting_costs_breakdown(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.costs_breakdown(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/trades")
+    def reporting_trades(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.trades(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post("/api/v1/reporting/exports/xlsx")
+    def reporting_export_xlsx(
+        body: ReportingExportBody,
+        user: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.create_export(
+            export_type="xlsx",
+            generated_by=str(user.get("username") or "system"),
+            report_scope=body.report_scope,
+            strategy_id=body.strategy_id,
+            bot_id=body.bot_id,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.post("/api/v1/reporting/exports/pdf")
+    def reporting_export_pdf(
+        body: ReportingExportBody,
+        user: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.create_export(
+            export_type="pdf",
+            generated_by=str(user.get("username") or "system"),
+            report_scope=body.report_scope,
+            strategy_id=body.strategy_id,
+            bot_id=body.bot_id,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.get("/api/v1/reporting/exports")
+    def reporting_exports(
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return {
+            "items": store.reporting_bridge.db.list_exports(limit=limit),
+            "policy_source": store.reporting_bridge.policy_source(),
+        }
 
     @app.get("/api/v1/strategies")
     def list_strategies(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:
@@ -16873,7 +12035,6 @@ def create_app() -> FastAPI:
     def rollout_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         state = rollout_manager.status()
         settings_payload = store.load_settings()
-        readiness_by_stage = build_rollout_readiness_by_stage()
         return {
             **state,
             "config": settings_payload.get("rollout", RolloutManager.default_rollout_config()),
@@ -16881,12 +12042,7 @@ def create_app() -> FastAPI:
             "live_stable_100_requires_approve": bool(
                 (settings_payload.get("rollout") or {}).get("require_manual_approval_for_live", True)
             ),
-            "readiness_by_stage": readiness_by_stage,
         }
-
-    @app.get("/api/v1/rollout/shadow/status")
-    def rollout_shadow_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        return build_rollout_shadow_status()
 
     @app.post("/api/v1/rollout/blending/preview")
     def rollout_blending_preview(body: RolloutBlendPreviewBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -16897,8 +12053,6 @@ def create_app() -> FastAPI:
                 candidate_signal=body.candidate_signal,
                 symbol=body.symbol,
                 timeframe=body.timeframe,
-                source_refs={"actor": user.get("username", "admin"), "source_kind": "preview_api"},
-                source_label="preview_api",
                 record_telemetry=bool(body.record_telemetry),
             )
         except ValueError as exc:
@@ -16920,55 +12074,6 @@ def create_app() -> FastAPI:
             },
         )
         return {"ok": True, **result}
-
-    @app.post("/api/v1/rollout/shadow/signal")
-    def rollout_shadow_signal(body: RolloutShadowSignalBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        shadow_status = build_rollout_shadow_status()
-        if not bool(shadow_status.get("active", False)):
-            raise HTTPException(status_code=400, detail="Rollout shadow requiere estado LIVE_SHADOW activo.")
-        if not bool(shadow_status.get("operational", False)):
-            reasons = [str(row) for row in (shadow_status.get("reasons") or []) if str(row).strip()]
-            detail = ", ".join(reasons) if reasons else "shadow_not_operational"
-            raise HTTPException(status_code=400, detail=f"Rollout shadow no operativo: {detail}")
-
-        merged_source_refs = {
-            **(shadow_status.get("source_refs") if isinstance(shadow_status.get("source_refs"), dict) else {}),
-            **(body.source_refs if isinstance(body.source_refs, dict) else {}),
-            "actor": user.get("username", "admin"),
-            "source_kind": "rollout_shadow_runtime",
-        }
-        try:
-            result = rollout_manager.route_live_signal(
-                settings=store.load_settings(),
-                baseline_signal=body.baseline_signal,
-                candidate_signal=body.candidate_signal,
-                symbol=body.symbol,
-                timeframe=body.timeframe,
-                source_refs=merged_source_refs,
-                source_label="rollout_shadow_runtime",
-                note=body.note,
-                record_telemetry=True,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        event = result.get("event", {}) if isinstance(result, dict) else {}
-        store.add_log(
-            event_type="rollout_shadow_signal",
-            severity="info",
-            module="rollout",
-            message=f"Shadow signal routed ({event.get('phase', '-')})",
-            related_ids=[str((result.get("state") or {}).get("rollout_id") or "")] if isinstance(result.get("state"), dict) else [],
-            payload={
-                "symbol": body.symbol or "",
-                "timeframe": body.timeframe or "",
-                "event": event,
-                "actor": user.get("username", "admin"),
-                "source_refs": merged_source_refs,
-                "note": body.note or "",
-            },
-        )
-        return {"ok": True, **result, "shadow_status": build_rollout_shadow_status()}
 
     @app.post("/api/v1/rollout/start")
     def rollout_start(body: RolloutStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -18753,638 +13858,6 @@ def create_app() -> FastAPI:
     def execution_metrics(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return build_execution_metrics_payload()
 
-    @app.get("/api/v1/execution/signals/summary")
-    def execution_signals_summary(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        return runtime_bridge.build_live_signal_snapshot(
-            state=state,
-            settings=settings,
-            bot_id=str(bot_id or "").strip() or None,
-            symbol=str(symbol or "").strip().upper() or None,
-            persist=False,
-        )
-
-    @app.get("/api/v1/execution/signals/scopes")
-    def execution_signals_scopes(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = Query(default=250, ge=1, le=500),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        rows = store.list_live_signal_snapshots(
-            bot_id=str(bot_id or "").strip() or None,
-            symbol=str(symbol or "").strip().upper() or None,
-            limit=limit,
-        )
-        if not rows:
-            settings = store.load_settings()
-            state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-            current = runtime_bridge.build_live_signal_snapshot(
-                state=state,
-                settings=settings,
-                bot_id=str(bot_id or "").strip() or None,
-                symbol=str(symbol or "").strip().upper() or None,
-                persist=False,
-            )
-            return {"items": [current]}
-
-        grouped: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            scope_key = str(row.get("scope_key") or "GLOBAL")
-            bucket = grouped.setdefault(
-                scope_key,
-                {
-                    "scope": {
-                        "scope_type": str(row.get("scope_type") or "GLOBAL"),
-                        "scope_key": scope_key,
-                        "bot_id": row.get("bot_id"),
-                        "symbol": row.get("symbol"),
-                    },
-                    "collected_at": str(row.get("collected_at") or ""),
-                    "items": [],
-                },
-            )
-            existing_types = {str(item.get("snapshot_type") or "") for item in bucket["items"]}
-            if str(row.get("snapshot_type") or "") not in existing_types:
-                bucket["items"].append(row)
-            if str(row.get("collected_at") or "") > str(bucket.get("collected_at") or ""):
-                bucket["collected_at"] = str(row.get("collected_at") or "")
-        return {"items": list(grouped.values())}
-
-    @app.get("/api/v1/execution/signals/history")
-    def execution_signals_history(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = Query(default=100, ge=1, le=500),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        scope_bot = str(bot_id or "").strip() or None
-        scope_symbol = str(symbol or "").strip().upper() or None
-        return {
-            "snapshots": store.list_live_signal_snapshots(bot_id=scope_bot, symbol=scope_symbol, limit=limit),
-            "events": store.list_live_signal_events(bot_id=scope_bot, symbol=scope_symbol, limit=limit),
-        }
-
-    @app.post("/api/v1/execution/signals/snapshot")
-    def execution_signals_snapshot(
-        body: LiveSignalsSnapshotBody | None = None,
-        _: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        return runtime_bridge.build_live_signal_snapshot(
-            state=state,
-            settings=settings,
-            bot_id=str((body.bot_id if body else "") or "").strip() or None,
-            symbol=str((body.symbol if body else "") or "").strip().upper() or None,
-            persist=True,
-        )
-
-    @app.get("/api/v1/execution/health/summary")
-    def execution_health_summary(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        return runtime_bridge.build_live_health_summary(
-            state=state,
-            settings=settings,
-            bot_id=str(bot_id or "").strip() or None,
-            symbol=str(symbol or "").strip().upper() or None,
-            persist=False,
-        )
-
-    @app.get("/api/v1/execution/health/scopes")
-    def execution_health_scopes(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        summary = runtime_bridge.build_live_health_summary(
-            state=state,
-            settings=settings,
-            bot_id=str(bot_id or "").strip() or None,
-            symbol=str(symbol or "").strip().upper() or None,
-            persist=False,
-        )
-        return {
-            "evaluated_at": str(summary.get("last_evaluated_at") or ""),
-            "global_state": str(summary.get("state") or "DEGRADED"),
-            "items": list(summary.get("scope_status") or []),
-        }
-
-    @app.get("/api/v1/execution/health/history")
-    def execution_health_history(
-        limit: int = Query(default=50, ge=1, le=250),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        return {"items": store.list_health_summary_snapshots(limit=limit)}
-
-    @app.post("/api/v1/execution/health/evaluate")
-    def execution_health_evaluate(
-        body: HealthEvaluateBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        summary = runtime_bridge.build_live_health_summary(
-            state=state,
-            settings=settings,
-            bot_id=str((body.bot_id if body else "") or "").strip() or None,
-            symbol=str((body.symbol if body else "") or "").strip().upper() or None,
-            persist=True,
-        )
-        store.insert_safety_manual_action(
-            action_type="ACK_ALERT",
-            scope_type="GLOBAL",
-            requested_by=str(user.get("username") or "admin"),
-            result={"ok": True, "action": "health_evaluate", "summary_snapshot_id": summary.get("snapshot_id")},
-            audit_note="manual_live_health_evaluate",
-        )
-        return summary
-
-    @app.get("/api/v1/execution/safety/summary")
-    def execution_safety_summary(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        return runtime_bridge.operational_safety_summary(state=state, bot_id=bot_id, symbol=symbol)
-
-    @app.get("/api/v1/execution/safety/breakers")
-    def execution_safety_breakers(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        return {
-            "items": runtime_bridge._list_relevant_safety_breakers(
-                bot_id=str(bot_id or "").strip() or None,
-                symbol=str(symbol or "").strip().upper() or None,
-            )
-        }
-
-    @app.get("/api/v1/execution/safety/events")
-    def execution_safety_events(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = Query(default=100, ge=1, le=250),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        rows = store.list_safety_guardrail_events(limit=limit)
-        filtered = [
-            row
-            for row in rows
-            if safety_scope_matches(
-                row_scope_type=row.get("scope_type"),
-                row_bot_id=row.get("bot_id"),
-                row_symbol=row.get("symbol"),
-                bot_id=str(bot_id or "").strip() or None,
-                symbol=str(symbol or "").strip().upper() or None,
-            )
-        ]
-        return {"items": filtered}
-
-    @app.get("/api/v1/execution/safety/locks")
-    def execution_safety_locks(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        scope_bot = str(bot_id or "").strip() or None
-        scope_symbol = str(symbol or "").strip().upper() or None
-        breakers = [
-            row
-            for row in runtime_bridge._list_relevant_safety_breakers(bot_id=scope_bot, symbol=scope_symbol)
-            if normalize_safety_breaker_state(row.get("state")) == "MANUAL_LOCK"
-        ]
-        actions = store.list_safety_manual_actions(bot_id=scope_bot, symbol=scope_symbol, limit=100)
-        return {"manual_locks": breakers, "manual_actions": actions}
-
-    @app.post("/api/v1/execution/safety/evaluate")
-    def execution_safety_evaluate(body: SafetyEvaluateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        payload = runtime_bridge.evaluate_operational_safety(
-            state=state,
-            settings=settings,
-            bot_id=str(body.bot_id or "").strip() or None,
-            symbol=str(body.symbol or "").strip().upper() or None,
-            trigger=str(body.trigger or "").strip() or None,
-            force_reconcile=True,
-            prestart_required=str(state.get("mode") or "").strip().lower() == "live",
-        )
-        store.insert_safety_manual_action(
-            action_type="ACK_ALERT",
-            scope_type="GLOBAL",
-            requested_by=str(user.get("username") or "admin"),
-            result={"ok": True, "action": "evaluate", "summary": payload},
-            audit_note="manual_operational_safety_evaluate",
-        )
-        return payload
-
-    @app.post("/api/v1/execution/safety/freeze/symbol/{symbol}")
-    def execution_safety_freeze_symbol(
-        symbol: str,
-        body: SafetyFreezeBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        return runtime_bridge.freeze_symbol(
-            symbol=symbol,
-            requested_by=str(user.get("username") or "admin"),
-            audit_note=body.audit_note if body else None,
-        )
-
-    @app.post("/api/v1/execution/safety/freeze/bot/{bot_id}")
-    def execution_safety_freeze_bot(
-        bot_id: str,
-        body: SafetyFreezeBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        return runtime_bridge.freeze_bot(
-            bot_id=bot_id,
-            requested_by=str(user.get("username") or "admin"),
-            audit_note=body.audit_note if body else None,
-        )
-
-    @app.post("/api/v1/execution/safety/freeze/global")
-    def execution_safety_freeze_global(
-        body: SafetyFreezeBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        return runtime_bridge.freeze_global(
-            requested_by=str(user.get("username") or "admin"),
-            audit_note=body.audit_note if body else None,
-        )
-
-    @app.post("/api/v1/execution/safety/unfreeze")
-    def execution_safety_unfreeze(
-        body: SafetyUnfreezeBody,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        return runtime_bridge.unfreeze_operational_safety(
-            scope_type=body.scope_type,
-            bot_id=str(body.bot_id or "").strip() or None,
-            symbol=str(body.symbol or "").strip().upper() or None,
-            requested_by=str(user.get("username") or "admin"),
-            audit_note=body.audit_note,
-        )
-
-    @app.post("/api/v1/execution/safety/emergency-cancel/{symbol}")
-    def execution_safety_emergency_cancel(
-        symbol: str,
-        body: SafetyFreezeBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        return runtime_bridge.emergency_cancel_symbol(
-            symbol=symbol,
-            requested_by=str(user.get("username") or "admin"),
-            audit_note=body.audit_note if body else None,
-        )
-
-    @app.post("/api/v1/execution/safety/ack/{safety_event_id}")
-    def execution_safety_ack(
-        safety_event_id: str,
-        body: SafetyAckBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        return runtime_bridge.ack_operational_safety_event(
-            safety_event_id=safety_event_id,
-            requested_by=str(user.get("username") or "admin"),
-            audit_note=body.audit_note if body else None,
-        )
-
-    @app.get("/api/v1/execution/alerts/catalog")
-    def execution_alerts_catalog(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        store.sync_execution_alert_catalog(default_alert_catalog_entries())
-        return {"items": store.list_execution_alert_catalog(limit=500)}
-
-    @app.get("/api/v1/execution/alerts")
-    def execution_alerts(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        state: str | None = None,
-        trigger_code: str | None = None,
-        limit: int = Query(default=100, ge=1, le=500),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        states = [str(state).strip().upper()] if str(state or "").strip() else None
-        return {
-            "items": store.list_execution_alert_instances(
-                bot_id=str(bot_id or "").strip() or None,
-                symbol=str(symbol or "").strip().upper() or None,
-                trigger_code=str(trigger_code or "").strip() or None,
-                states=states,
-                limit=limit,
-            )
-        }
-
-    @app.get("/api/v1/execution/alerts/open")
-    def execution_alerts_open(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = Query(default=100, ge=1, le=500),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        return {
-            "items": store.list_execution_alert_instances(
-                bot_id=str(bot_id or "").strip() or None,
-                symbol=str(symbol or "").strip().upper() or None,
-                states=["OPEN", "ACKED", "SUPPRESSED", "COOLDOWN"],
-                limit=limit,
-            )
-        }
-
-    @app.get("/api/v1/execution/alerts/history")
-    def execution_alerts_history(
-        bot_id: str | None = None,
-        symbol: str | None = None,
-        limit: int = Query(default=100, ge=1, le=500),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        scope_bot = str(bot_id or "").strip() or None
-        scope_symbol = str(symbol or "").strip().upper() or None
-        items = store.list_execution_alert_instances(bot_id=scope_bot, symbol=scope_symbol, limit=limit)
-        allowed_ids = {str(row.get("alert_instance_id") or "") for row in items if isinstance(row, dict)}
-        events = [
-            row
-            for row in store.list_execution_alert_events(limit=max(limit * 3, 100))
-            if not allowed_ids or str(row.get("alert_instance_id") or "") in allowed_ids
-        ][:limit]
-        return {
-            "items": items,
-            "events": events,
-        }
-
-    @app.post("/api/v1/execution/alerts/evaluate")
-    def execution_alerts_evaluate(
-        body: AlertEvaluateBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        payload = runtime_bridge.evaluate_execution_alerts(
-            state=state,
-            settings=settings,
-            bot_id=str((body.bot_id if body else "") or "").strip() or None,
-            symbol=str((body.symbol if body else "") or "").strip().upper() or None,
-            persist=True,
-        )
-        return payload
-
-    @app.get("/api/v1/execution/alerts/{alert_instance_id}")
-    def execution_alerts_detail(
-        alert_instance_id: str,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        alert = store.get_execution_alert_instance(alert_instance_id)
-        if not alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
-        history = store.list_execution_alert_events(alert_instance_id=alert_instance_id, limit=250)
-        return {"alert": alert, "history": history}
-
-    @app.post("/api/v1/execution/alerts/{alert_instance_id}/ack")
-    def execution_alerts_ack(
-        alert_instance_id: str,
-        body: AlertLifecycleBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        try:
-            return runtime_bridge.ack_execution_alert(
-                alert_instance_id=alert_instance_id,
-                requested_by=str(user.get("username") or "admin"),
-                audit_note=body.audit_note if body else None,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Alert not found")
-
-    @app.post("/api/v1/execution/alerts/{alert_instance_id}/suppress")
-    def execution_alerts_suppress(
-        alert_instance_id: str,
-        body: AlertSuppressBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        try:
-            return runtime_bridge.suppress_execution_alert(
-                alert_instance_id=alert_instance_id,
-                requested_by=str(user.get("username") or "admin"),
-                duration_sec=body.duration_sec if body else None,
-                audit_note=body.audit_note if body else None,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Alert not found")
-
-    @app.post("/api/v1/execution/alerts/{alert_instance_id}/resolve")
-    def execution_alerts_resolve(
-        alert_instance_id: str,
-        body: AlertLifecycleBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        try:
-            return runtime_bridge.resolve_execution_alert(
-                alert_instance_id=alert_instance_id,
-                state=state,
-                settings=settings,
-                requested_by=str(user.get("username") or "admin"),
-                audit_note=body.audit_note if body else None,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Alert not found")
-
-    @app.get("/api/v1/execution/canary/status")
-    def execution_canary_status(
-        scope_type: str | None = Query(default=None),
-        bot_id: str | None = Query(default=None),
-        symbol: str | None = Query(default=None),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        try:
-            return runtime_bridge.execution_canary_status(
-                state=state,
-                settings=settings,
-                scope_type=str(scope_type or "").strip() or None,
-                bot_id=str(bot_id or "").strip() or None,
-                symbol=str(symbol or "").strip().upper() or None,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-    @app.get("/api/v1/execution/canary/runs")
-    def execution_canary_runs(
-        scope_type: str | None = Query(default=None),
-        bot_id: str | None = Query(default=None),
-        symbol: str | None = Query(default=None),
-        limit: int = Query(default=100, ge=1, le=500),
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        scope_type_n = str(scope_type or "").strip() or None
-        return {
-            "items": store.list_canary_runs(
-                scope_type=scope_type_n,
-                bot_id=str(bot_id or "").strip() or None,
-                symbol=str(symbol or "").strip().upper() or None,
-                limit=limit,
-            )
-        }
-
-    @app.get("/api/v1/execution/canary/runs/{run_id}")
-    def execution_canary_run_detail(
-        run_id: str,
-        _: dict[str, str] = Depends(current_user),
-    ) -> dict[str, Any]:
-        run = store.get_canary_run(run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Canary run not found")
-        return runtime_bridge._canary_run_detail(run)
-
-    @app.post("/api/v1/execution/canary/evaluate")
-    def execution_canary_evaluate(
-        body: CanaryEvaluateBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        run_id = str((body.run_id if body else "") or "").strip() or None
-        if run_id:
-            try:
-                return runtime_bridge.evaluate_canary_run(
-                    run_id=run_id,
-                    state=state,
-                    settings=settings,
-                    actor=str(user.get("username") or "admin"),
-                )
-            except KeyError:
-                raise HTTPException(status_code=404, detail="Canary run not found")
-        try:
-            return runtime_bridge.build_execution_canary_gate_evaluation(
-                state=state,
-                settings=settings,
-                run=None,
-                bot_id=str((body.bot_id if body else "") or "").strip() or None,
-                symbol=str((body.symbol if body else "") or "").strip().upper() or None,
-                persist=bool(body.persist if body else True),
-                refresh_alerts=False,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-    @app.post("/api/v1/execution/canary/start")
-    def execution_canary_start(
-        body: CanaryStartBody,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        try:
-            return runtime_bridge.start_canary_run(
-                state=state,
-                settings=settings,
-                scope_type=body.scope_type,
-                bot_id=str(body.bot_id or "").strip() or None,
-                symbol=str(body.symbol or "").strip().upper() or None,
-                actor=str(user.get("username") or "admin"),
-                note=body.note,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-    @app.post("/api/v1/execution/canary/{run_id}/hold")
-    def execution_canary_hold(
-        run_id: str,
-        body: CanaryActionBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        try:
-            return runtime_bridge.hold_canary_run(
-                run_id=run_id,
-                state=state,
-                settings=settings,
-                actor=str(user.get("username") or "admin"),
-                reason=body.reason if body else None,
-                audit_note=body.audit_note if body else None,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Canary run not found")
-
-    @app.post("/api/v1/execution/canary/{run_id}/resume")
-    def execution_canary_resume(
-        run_id: str,
-        body: CanaryActionBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        try:
-            return runtime_bridge.resume_canary_run(
-                run_id=run_id,
-                state=state,
-                settings=settings,
-                actor=str(user.get("username") or "admin"),
-                reason=body.reason if body else None,
-                audit_note=body.audit_note if body else None,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Canary run not found")
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
-
-    @app.post("/api/v1/execution/canary/{run_id}/abort")
-    def execution_canary_abort(
-        run_id: str,
-        body: CanaryActionBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        try:
-            return runtime_bridge.abort_canary_run(
-                run_id=run_id,
-                state=state,
-                settings=settings,
-                actor=str(user.get("username") or "admin"),
-                reason=body.reason if body else None,
-                audit_note=body.audit_note if body else None,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Canary run not found")
-
-    @app.post("/api/v1/execution/canary/{run_id}/rollback")
-    def execution_canary_rollback(
-        run_id: str,
-        body: CanaryActionBody | None = None,
-        user: dict[str, str] = Depends(require_admin),
-    ) -> dict[str, Any]:
-        settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
-        try:
-            return runtime_bridge.rollback_canary_run(
-                run_id=run_id,
-                state=state,
-                settings=settings,
-                actor=str(user.get("username") or "admin"),
-                reason=body.reason if body else None,
-                audit_note=body.audit_note if body else None,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Canary run not found")
-
     @app.get("/api/v1/settings")
     def settings(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         current = store.load_settings()
@@ -19492,6 +13965,45 @@ def create_app() -> FastAPI:
         payload = diagnose_exchange(selected_mode, force_refresh=force)
         return payload
 
+    @app.get("/api/v1/exchange/live-preflight")
+    def exchange_live_preflight(
+        mode: str = Query(default="live"),
+        limit: int = Query(default=10, ge=1, le=50),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+        return latest_live_preflight_payload(normalized_mode, limit=limit)
+
+    @app.post("/api/v1/exchange/live-preflight/run")
+    def exchange_live_preflight_run(
+        body: LivePreflightRunBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return build_live_preflight(body.model_dump(), actor=user.get("username"))
+
+    @app.post("/api/v1/exchange/live-preflight/attest")
+    def exchange_live_preflight_attest(
+        body: LivePreflightAttestBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        mode = "testnet" if str(body.mode or "").strip().lower() == "testnet" else "live"
+        store.live_preflight.insert_attestation(
+            {
+                "mode": mode,
+                "exchange": "binance",
+                "market_type": "spot",
+                "created_at": utc_now_iso(),
+                "verified_by": user.get("username", "admin"),
+                "verified_at": utc_now_iso(),
+                "note": body.note,
+                "manual_permissions_verified": body.manual_permissions_verified,
+                "trade_enabled_verified": body.trade_enabled_verified,
+                "withdraw_disabled_verified": body.withdraw_disabled_verified,
+                "ip_restriction_verified": body.ip_restriction_verified,
+            }
+        )
+        return latest_live_preflight_payload(mode)
+
     @app.get("/api/v1/diagnostics/breaker-events")
     def diagnostics_breaker_events(
         window_hours: int = Query(default=BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS, ge=1, le=168),
@@ -19504,8 +14016,7 @@ def create_app() -> FastAPI:
     def bot_mode(body: BotModeBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         mode = body.mode
         if mode == "live":
-            current_state = store.load_bot_state()
-            runtime_engine = _runtime_engine_from_state(current_state)
+            runtime_engine = _runtime_engine_from_state(store.load_bot_state())
             if runtime_engine != RUNTIME_ENGINE_REAL:
                 raise HTTPException(
                     status_code=400,
@@ -19517,37 +14028,17 @@ def create_app() -> FastAPI:
             allowed, reason = live_can_be_enabled(gates_payload)
             if not allowed:
                 raise HTTPException(status_code=400, detail=f"LIVE blocked by gates: {reason}")
-            preview_state = dict(current_state)
-            preview_state["mode"] = "live"
-            preview_state["runtime_engine"] = runtime_engine
-            safety_ok, safety_reason, _summary = runtime_bridge.live_operational_safety_gate(
-                state=preview_state,
-                settings=store.load_settings(),
-                bot_id=str(preview_state.get("active_bot_id") or "") or None,
-                prestart_required=True,
-                force_reconcile=True,
-            )
-            if not safety_ok:
-                health_summary = runtime_bridge.build_live_health_summary(
-                    state=preview_state,
-                    settings=store.load_settings(),
-                    bot_id=str(preview_state.get("active_bot_id") or "") or None,
-                    persist=True,
-                )
+            preflight_gate = _live_preflight_gate("live")
+            if not bool(preflight_gate.get("ok")):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"LIVE blocked by operational safety: {safety_reason}. health={health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
+                    detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
                 )
-            health_summary = runtime_bridge.build_live_health_summary(
-                state=preview_state,
-                settings=store.load_settings(),
-                bot_id=str(preview_state.get("active_bot_id") or "") or None,
-                persist=True,
-            )
-            if str(health_summary.get("state") or "") in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}:
+            reconcile_gate = _live_reconciliation_gate()
+            if not bool(reconcile_gate.get("ok")):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"LIVE blocked by health summary: {health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
+                    detail=f"LIVE blocked by reconciliation: {reconcile_gate.get('reason')}",
                 )
         state = store.load_bot_state()
         state["mode"] = mode
@@ -19569,7 +14060,19 @@ def create_app() -> FastAPI:
     def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
-        settings = store.load_settings()
+        if str(state.get("mode") or "").strip().lower() == "live":
+            preflight_gate = _live_preflight_gate("live")
+            if not bool(preflight_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
+                )
+            reconcile_gate = _live_reconciliation_gate(bot_id=bot_id)
+            if not bool(reconcile_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by reconciliation: {reconcile_gate.get('reason')}",
+                )
         # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
         strategy_name: str | None = None
         active_bot_id = str(bot_id or "").strip() or None
@@ -19580,40 +14083,6 @@ def create_app() -> FastAPI:
                 pool = bot_row.get("pool_strategy_ids") or []
                 if pool:
                     strategy_name = str(pool[0])
-        if str(state.get("mode") or "").strip().lower() == "live":
-            gates_payload = evaluate_gates("live")
-            allowed, reason = live_can_be_enabled(gates_payload)
-            if not allowed:
-                raise HTTPException(status_code=400, detail=f"LIVE blocked by gates: {reason}")
-            safety_ok, safety_reason, _summary = runtime_bridge.live_operational_safety_gate(
-                state=state,
-                settings=settings,
-                bot_id=active_bot_id,
-                prestart_required=True,
-                force_reconcile=True,
-            )
-            if not safety_ok:
-                health_summary = runtime_bridge.build_live_health_summary(
-                    state=state,
-                    settings=settings,
-                    bot_id=active_bot_id,
-                    persist=True,
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"LIVE blocked by operational safety: {safety_reason}. health={health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
-                )
-            health_summary = runtime_bridge.build_live_health_summary(
-                state=state,
-                settings=settings,
-                bot_id=active_bot_id,
-                persist=True,
-            )
-            if str(health_summary.get("state") or "") in {"BLOCKED", "MANUAL_REVIEW_REQUIRED"}:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"LIVE blocked by health summary: {health_summary.get('top_priority_reason_code') or health_summary.get('state')}",
-                )
         if not strategy_name:
             principal = store.registry.get_principal(state["mode"])
             if not principal:
@@ -19626,7 +14095,7 @@ def create_app() -> FastAPI:
         state["killed"] = False
         state["bot_status"] = "RUNNING"
         store.save_bot_state(state)
-        state = _sync_runtime_state(state, settings=settings, event="start", persist=True)
+        state = _sync_runtime_state(state, settings=store.load_settings(), event="start", persist=True)
         store.add_log(
             event_type="status",
             severity="info",

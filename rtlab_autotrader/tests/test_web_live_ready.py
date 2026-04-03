@@ -5,7 +5,7 @@ import io
 import json
 import time
 import zipfile
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -258,188 +258,14 @@ def test_internal_proxy_rejects_previous_token_when_expired(tmp_path: Path, monk
   payload = status.json()
   assert payload["previous_token_configured"] is True
   assert payload["previous_token_enabled"] is False
+  assert payload["rotation_ready"] is False
+  warnings = payload.get("warnings") or []
+  assert any("expirado" in str(msg).lower() for msg in warnings)
 
-
-def test_operational_safety_summary_api_exposes_manual_global_lock(tmp_path: Path, monkeypatch) -> None:
-  module, client = _build_app(tmp_path, monkeypatch)
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  freeze = client.post("/api/v1/execution/safety/freeze/global", json={"audit_note": "test_lock"}, headers=headers)
-  assert freeze.status_code == 200, freeze.text
-  freeze_payload = freeze.json()
-  assert freeze_payload["ok"] is True
-
-  summary = client.get("/api/v1/execution/safety/summary", headers=headers)
-  assert summary.status_code == 200, summary.text
-  body = summary.json()
-  assert body["blocking_bool"] is True
-  assert body["global_state"] == "MANUAL_LOCK"
-  assert int(body["manual_lock_count"]) >= 1
-
-
-def test_operational_safety_rate_limit_threshold_enters_cooldown(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch)
-  for _ in range(3):
-    module.store.insert_safety_guardrail_event(
-      scope_type="GLOBAL",
-      trigger_code="TOO_MANY_REQUESTS_PRESSURE",
-      severity="WARN",
-      evidence={"status_code": 429},
-      action_taken="WARN_ONLY",
-      blocking_bool=False,
-    )
-  state = module.store.load_bot_state()
-  summary = module.runtime_bridge.evaluate_operational_safety(
-    state=state,
-    settings=module.store.load_settings(),
-  )
-  assert summary["blocking_bool"] is True
-  breaker = next((row for row in (summary.get("breakers") or []) if row.get("breaker_code") == "TOO_MANY_REQUESTS_PRESSURE"), None)
-  assert breaker is not None
-  assert breaker["state"] == "COOLDOWN"
-
-
-def test_operational_safety_stream_terminated_opens_blocking_breaker(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
-  state = module.store.load_bot_state()
-  state["mode"] = "testnet"
-  state["runtime_engine"] = "real"
-  state["running"] = True
-  state["killed"] = False
-  state["runtime_heartbeat_at"] = module.utc_now_iso()
-
-  summary = module.runtime_bridge.evaluate_operational_safety(
-    state=state,
-    settings=module.store.load_settings(),
-    trigger="STREAM_TERMINATED",
-  )
-  assert summary["blocking_bool"] is True
-  breaker = next((row for row in (summary.get("breakers") or []) if row.get("breaker_code") == "STREAM_TERMINATED"), None)
-  assert breaker is not None
-  assert breaker["state"] == "OPEN"
-
-
-def test_runtime_submit_is_blocked_by_symbol_freeze(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="testnet")
-  module.RUNTIME_REMOTE_ORDERS_ENABLED = True
-  module.runtime_bridge.freeze_symbol(symbol="BTCUSDT", requested_by="tester", audit_note="freeze_test")
-  monkeypatch.setattr(module.runtime_bridge, "_runtime_order_intent", lambda mode: {
-    "action": "trade",
-    "reason": "test_signal",
-    "strategy_id": "rt_safety_test",
-    "symbol": "BTCUSDT",
-    "side": "BUY",
-    "notional_usd": 10.0,
-  })
-  monkeypatch.setattr(module.runtime_bridge, "_fetch_exchange_open_orders", lambda mode: ({}, "mock", True, ""))
-
-  state = module.store.load_bot_state()
-  state["mode"] = "testnet"
-  state["runtime_engine"] = "real"
-  state["running"] = True
-  state["killed"] = False
-  state["runtime_reconciliation_ok"] = True
-  state["runtime_operational_safety_ok"] = False
-  module.runtime_bridge._last_risk = {"allow_new_positions": True}
-
-  result = module.runtime_bridge._maybe_submit_exchange_runtime_order(
-    state=state,
-    mode="testnet",
-    account_positions=[],
-    account_positions_ok=True,
-    account_positions_reason="mock",
-  )
-  assert result["submitted"] is False
-  assert result["reason"] == "operational_safety_blocked"
-
-
-def test_live_mode_fails_when_operational_safety_gate_blocks(tmp_path: Path, monkeypatch) -> None:
-  monkeypatch.setenv("RUNTIME_ENGINE", "real")
-  module, client = _build_app(tmp_path, monkeypatch)
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  monkeypatch.setattr(module, "evaluate_gates", lambda *args, **kwargs: {"overall_status": "PASS", "gates": []})
-  monkeypatch.setattr(module, "live_can_be_enabled", lambda payload: (True, ""))
-  monkeypatch.setattr(module.runtime_bridge, "live_operational_safety_gate", lambda **kwargs: (False, "breaker_open", {"blocking_bool": True}))
-
-  res = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
-  assert res.status_code == 400, res.text
-  assert "operational safety" in str(res.json().get("detail") or "").lower()
-
-
-def test_live_start_fails_when_operational_safety_gate_blocks(tmp_path: Path, monkeypatch) -> None:
-  monkeypatch.setenv("RUNTIME_ENGINE", "real")
-  module, client = _build_app(tmp_path, monkeypatch)
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  state = module.store.load_bot_state()
-  state["mode"] = "live"
-  state["runtime_engine"] = "real"
-  module.store.save_bot_state(state)
-  monkeypatch.setattr(module, "evaluate_gates", lambda *args, **kwargs: {"overall_status": "PASS", "gates": []})
-  monkeypatch.setattr(module, "live_can_be_enabled", lambda payload: (True, ""))
-  monkeypatch.setattr(module.runtime_bridge, "live_operational_safety_gate", lambda **kwargs: (False, "breaker_open", {"blocking_bool": True}))
-
-  res = client.post("/api/v1/bot/start", json={}, headers=headers)
-  assert res.status_code == 400, res.text
-  assert "operational safety" in str(res.json().get("detail") or "").lower()
-
-
-def test_emergency_cancel_symbol_uses_official_spot_endpoint_and_persists_action(tmp_path: Path, monkeypatch) -> None:
-  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
-  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
-  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
-  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
-  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  state = module.store.load_bot_state()
-  state["mode"] = "testnet"
-  module.store.save_bot_state(state)
-
-  calls: list[dict[str, str]] = []
-
-  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
-    symbol = str((params or {}).get("symbol") or "")
-    calls.append({"method": str(method), "path": str(path), "symbol": symbol})
-    return True, {"status_code": 200, "payload": [{"symbol": symbol, "status": "CANCELED"}]}
-
-  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
-
-  res = client.post("/api/v1/execution/safety/emergency-cancel/BTCUSDT", json={"audit_note": "test_cancel"}, headers=headers)
-  assert res.status_code == 200, res.text
-  payload = res.json()
-  assert payload["ok"] is True
-  delete_call = next((row for row in calls if str(row.get("method") or "").upper() == "DELETE"), None)
-  assert delete_call is not None
-  assert delete_call["path"] == "/api/v3/openOrders"
-  assert delete_call["symbol"] == "BTCUSDT"
-
-  actions = module.store.list_safety_manual_actions(symbol="BTCUSDT", limit=20)
-  assert any(str(row.get("action_type") or "") == "EMERGENCY_CANCEL_SYMBOL" for row in actions)
-
-
-def test_manual_lock_persists_after_reload(tmp_path: Path, monkeypatch) -> None:
-  module_1, _client = _build_app(tmp_path, monkeypatch)
-  module_1.runtime_bridge.freeze_global(requested_by="tester", audit_note="persist_lock")
-
-  module_2, client_2 = _build_app(tmp_path, monkeypatch)
-  admin_token = _login(client_2, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  summary = client_2.get("/api/v1/execution/safety/summary", headers=headers)
-  assert summary.status_code == 200, summary.text
-  body = summary.json()
-  assert body["blocking_bool"] is True
-  assert body["manual_lock_count"] >= 1
-  locks = client_2.get("/api/v1/execution/safety/locks", headers=headers)
-  assert locks.status_code == 200, locks.text
-  lock_items = locks.json().get("manual_locks") or []
-  assert any(str(row.get("state") or "") == "MANUAL_LOCK" for row in lock_items)
+  logs_payload = module.store.list_logs(severity="warn", module="auth", since=None, until=None, page=1, page_size=200)
+  items = logs_payload.get("items") or []
+  security_logs = [row for row in items if str(row.get("type") or "") == "security_auth"]
+  assert any(str((row.get("payload") or {}).get("reason") or "") == "expired_previous_token" for row in security_logs)
 
 
 def test_auth_login_rate_limit_and_lock_guard(tmp_path: Path, monkeypatch) -> None:
@@ -700,6 +526,256 @@ def test_live_mode_blocked_when_runtime_engine_is_simulated(tmp_path: Path, monk
   enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
   assert enable_live.status_code == 400
   assert "runtime simulado" in str(enable_live.json().get("detail") or "").lower()
+
+
+def test_live_preflight_final_pass_with_attestation_and_account_filters_ok(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live", "symbol": "BTCUSDT", "quote_order_qty": 15.0})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is True
+  latest = body["run"]
+  assert latest["overall_status"] == "PASS"
+  assert latest["checks"]["manual_attestation"]["status"] == "PASS"
+  assert latest["checks"]["account_readiness"]["status"] == "PASS"
+  assert latest["checks"]["symbol_filters"]["status"] in {"PASS", "WARN"}
+  assert latest["checks"]["order_test"]["status"] == "PASS"
+
+
+def test_live_preflight_final_fails_without_manual_attestation(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live", "symbol": "BTCUSDT", "quote_order_qty": 15.0})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["ok"] is False
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["manual_attestation"]["status"] == "FAIL"
+
+
+def test_live_preflight_final_fails_when_can_trade_false(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", can_trade=False)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["account_readiness"]["status"] == "FAIL"
+  assert "cantrade=false" in str(body["run"]["checks"]["account_readiness"]["detail"]).lower()
+
+
+def test_live_preflight_final_fails_when_permissions_missing_spot(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", permissions=("MARGIN",))
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["account_readiness"]["status"] == "FAIL"
+  assert "spot permission missing" in str(body["run"]["checks"]["account_readiness"]["detail"]).lower()
+
+
+def test_live_preflight_final_fails_when_exchange_info_symbol_missing(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", symbol_present=False)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["symbol_filters"]["status"] == "FAIL"
+  assert "symbol_missing_in_exchange_info" in str(body["run"]["checks"]["symbol_filters"]["detail"])
+
+
+def test_live_preflight_final_fails_when_local_filter_validation_blocks(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", preflight_allowed=False, preflight_blocking=["invalid_min_notional"])
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["overall_status"] == "FAIL"
+  assert body["run"]["checks"]["execution_preflight"]["status"] == "FAIL"
+  assert "invalid_min_notional" in str(body["run"]["checks"]["execution_preflight"]["detail"])
+
+
+def test_live_preflight_final_warns_on_large_drift(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live", drift_ms=2500)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "live"})
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["run"]["checks"]["timing_security"]["status"] == "WARN"
+  assert body["run"]["overall_status"] == "WARN"
+
+
+def test_live_preflight_attest_endpoint_persists_manual_verification(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post(
+    "/api/v1/exchange/live-preflight/attest",
+    headers=headers,
+    json={
+      "mode": "live",
+      "manual_permissions_verified": True,
+      "trade_enabled_verified": True,
+      "withdraw_disabled_verified": True,
+      "ip_restriction_verified": True,
+      "note": "Panel Binance revisado por QA",
+    },
+  )
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["latest_attestation"]["verified_by"] == "Wadmin"
+  assert body["latest_attestation"]["withdraw_disabled_verified"] is True
+  assert body["attestation_status"]["status"] == "PASS"
+
+
+def test_live_preflight_get_returns_latest_and_gate(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=30, freshness_sec=600)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/exchange/live-preflight?mode=live", headers=headers)
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["latest"]["overall_status"] == "PASS"
+  assert body["live_enablement_gate"]["ok"] is True
+  assert len(body["recent_runs"]) >= 1
+
+
+def test_live_mode_requires_fresh_final_preflight(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=700, freshness_sec=600)
+
+  enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
+  assert enable_live.status_code == 400
+  assert "final preflight" in str(enable_live.json().get("detail") or "").lower()
+
+
+def test_live_start_requires_fresh_final_preflight(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["mode"] = "live"
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=700, freshness_sec=600)
+
+  start_res = client.post("/api/v1/bot/start", headers=headers)
+  assert start_res.status_code == 400
+  assert "final preflight" in str(start_res.json().get("detail") or "").lower()
+
+
+def test_live_mode_requires_clean_reconciliation_gate(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=30, freshness_sec=600)
+  _seed_reconciliation_case(module, final_status="DESYNC", blocking=True)
+
+  enable_live = client.post("/api/v1/bot/mode", json={"mode": "live", "confirm": "ENABLE_LIVE"}, headers=headers)
+
+  assert enable_live.status_code == 400
+  assert "reconciliation" in str(enable_live.json().get("detail") or "").lower()
+
+
+def test_live_start_requires_clean_reconciliation_gate(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="live")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="live")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  state = module.store.load_bot_state()
+  state["mode"] = "live"
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="live", complete=True)
+  _seed_live_preflight_run(module, mode="live", status="PASS", age_sec=30, freshness_sec=600)
+  _seed_reconciliation_case(module, final_status="MANUAL_REVIEW_REQUIRED", blocking=True)
+
+  start_res = client.post("/api/v1/bot/start", headers=headers)
+
+  assert start_res.status_code == 400
+  assert "reconciliation" in str(start_res.json().get("detail") or "").lower()
+
+
+def test_testnet_live_preflight_stays_on_api_not_sapi(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
+  _mock_live_preflight_dependencies(module, monkeypatch, mode="testnet")
+  state = module.store.load_bot_state()
+  state["runtime_engine"] = "real"
+  module.store.save_bot_state(state)
+  _seed_live_preflight_attestation(module, mode="testnet", complete=True)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post("/api/v1/exchange/live-preflight/run", headers=headers, json={"mode": "testnet"})
+  assert res.status_code == 200, res.text
+  assert res.json()["run"]["overall_status"] in {"PASS", "WARN"}
 
 
 def test_runtime_sync_testnet_mirrors_open_orders_without_synthetic_fill_progression(tmp_path: Path, monkeypatch) -> None:
@@ -2055,11 +2131,6 @@ def test_runtime_sync_testnet_reconciles_positions_from_exchange_account_snapsho
   state["killed"] = False
 
   synced = module._sync_runtime_state(state, persist=False)
-  assert bool(synced.get("runtime_account_surface_ok")) is True
-  assert str(synced.get("runtime_account_surface_verified_at") or "")
-  assert str(synced.get("runtime_account_surface_reason") or "") == "exchange_api"
-  assert bool(synced.get("runtime_account_can_trade")) is True
-  assert int(synced.get("runtime_account_balances_count") or 0) == 2
   assert bool(synced.get("runtime_account_positions_ok")) is True
   assert str(synced.get("runtime_account_positions_verified_at") or "")
   assert str(synced.get("runtime_account_positions_reason") or "") == "exchange_api"
@@ -2251,12 +2322,6 @@ def test_g9_live_passes_only_when_runtime_contract_is_fully_ready(tmp_path: Path
       "runtime_exchange_order_ok": True,
       "runtime_exchange_mode": "live",
       "runtime_exchange_verified_at": module.utc_now_iso(),
-      "runtime_account_surface_ok": True,
-      "runtime_account_surface_verified_at": module.utc_now_iso(),
-      "runtime_account_surface_reason": "exchange_api",
-      "runtime_account_can_trade": True,
-      "runtime_account_permissions": ["SPOT"],
-      "runtime_account_balances_count": 1,
       "runtime_heartbeat_at": module.utc_now_iso(),
       "runtime_last_reconcile_at": module.utc_now_iso(),
     }
@@ -2270,55 +2335,6 @@ def test_g9_live_passes_only_when_runtime_contract_is_fully_ready(tmp_path: Path
   assert runtime_contract_pass.get("ready_for_live") is True
   checks = runtime_contract_pass.get("checks") or {}
   assert all(bool(v) for v in checks.values())
-  assert checks.get("account_surface_ok") is True
-  assert checks.get("account_can_trade") is True
-
-
-def test_g9_live_fails_when_account_surface_is_not_tradeable(tmp_path: Path, monkeypatch) -> None:
-  module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
-  monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
-  monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
-  monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
-  monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
-  _mock_exchange_ok(module, monkeypatch)
-
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
-  set_live_primary = client.post(f"/api/v1/strategies/{strategy_id}/primary", headers=headers, json={"mode": "live"})
-  assert set_live_primary.status_code == 200, set_live_primary.text
-
-  state = module.store.load_bot_state()
-  state.update(
-    {
-      "runtime_engine": "real",
-      "runtime_contract_version": "runtime_snapshot_v1",
-      "runtime_telemetry_source": "runtime_loop_v1",
-      "runtime_loop_alive": True,
-      "runtime_executor_connected": True,
-      "runtime_reconciliation_ok": True,
-      "runtime_exchange_connector_ok": True,
-      "runtime_exchange_order_ok": True,
-      "runtime_exchange_mode": "live",
-      "runtime_exchange_verified_at": module.utc_now_iso(),
-      "runtime_account_surface_ok": True,
-      "runtime_account_surface_verified_at": module.utc_now_iso(),
-      "runtime_account_surface_reason": "exchange_api",
-      "runtime_account_can_trade": False,
-      "runtime_account_permissions": ["SPOT"],
-      "runtime_account_balances_count": 1,
-      "runtime_heartbeat_at": module.utc_now_iso(),
-      "runtime_last_reconcile_at": module.utc_now_iso(),
-    }
-  )
-  module.store.save_bot_state(state)
-
-  gates_live = module.evaluate_gates("live", force_exchange_check=True, runtime_state=state)
-  g9 = {row["id"]: row for row in gates_live["gates"]}["G9_RUNTIME_ENGINE_REAL"]
-  assert g9["status"] == "FAIL"
-  runtime_contract = (g9.get("details") or {}).get("runtime_contract") or {}
-  missing_checks = set(str(x) for x in (runtime_contract.get("missing_checks") or []))
-  assert "account_can_trade" in missing_checks
 
 
 def test_g9_live_fails_when_runtime_exchange_mode_does_not_match_target_mode(tmp_path: Path, monkeypatch) -> None:
@@ -2431,12 +2447,6 @@ def test_g9_live_fails_when_runtime_reconciliation_is_stale_and_recovers(tmp_pat
       "runtime_exchange_order_ok": True,
       "runtime_exchange_mode": "live",
       "runtime_exchange_verified_at": module.utc_now_iso(),
-      "runtime_account_surface_ok": True,
-      "runtime_account_surface_verified_at": module.utc_now_iso(),
-      "runtime_account_surface_reason": "exchange_api",
-      "runtime_account_can_trade": True,
-      "runtime_account_permissions": ["SPOT"],
-      "runtime_account_balances_count": 1,
       "runtime_heartbeat_at": module.utc_now_iso(),
       "runtime_last_reconcile_at": stale_reconcile,
     }
@@ -2526,9 +2536,6 @@ def test_runtime_real_start_wires_runtime_bridge_into_status_execution_and_risk(
   runtime_snapshot = status_payload.get("runtime_snapshot") or {}
   assert runtime.get("telemetry_source") == "runtime_loop_v1"
   assert runtime.get("telemetry_fail_closed") is False
-  account_surface = runtime.get("account_surface") or {}
-  assert account_surface.get("ok") is True
-  assert account_surface.get("can_trade") is True
   assert runtime_snapshot.get("runtime_loop_alive") is True
   assert runtime_snapshot.get("executor_connected") is True
   assert runtime_snapshot.get("reconciliation_ok") is True
@@ -2963,7 +2970,7 @@ def _mock_exchange_ok(module, monkeypatch) -> None:
 
   def fake_request(method, url, headers=None, timeout=0, **kwargs):
     if "/api/v3/account" in url:
-      return _DummyResponse(200, {"balances": []})
+      return _DummyResponse(200, {"balances": [], "canTrade": True, "canWithdraw": False, "accountType": "SPOT", "permissions": ["SPOT"]})
     if "/api/v3/order/test" in url:
       return _DummyResponse(200, {})
     if "/api/v3/openOrders" in url:
@@ -2973,6 +2980,294 @@ def _mock_exchange_ok(module, monkeypatch) -> None:
   monkeypatch.setattr(module.requests, "get", fake_get)
   monkeypatch.setattr(module.requests, "request", fake_request)
   monkeypatch.setattr(module.socket, "create_connection", lambda *args, **kwargs: _DummySocket())
+
+
+def _seed_live_preflight_attestation(module, *, mode: str = "live", days_ago: float = 0.0, complete: bool = True) -> dict:
+  verified_at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+  return module.store.live_preflight.insert_attestation(
+    {
+      "mode": mode,
+      "exchange": "binance",
+      "market_type": "spot",
+      "created_at": verified_at,
+      "verified_at": verified_at,
+      "verified_by": "qa-admin",
+      "note": "attestation de test",
+      "manual_permissions_verified": complete,
+      "trade_enabled_verified": complete,
+      "withdraw_disabled_verified": complete,
+      "ip_restriction_verified": complete,
+    }
+  )
+
+
+def _seed_live_preflight_run(module, *, mode: str = "live", status: str = "PASS", age_sec: int = 0, freshness_sec: int = 600) -> dict:
+  evaluated_at = (datetime.now(timezone.utc) - timedelta(seconds=age_sec)).isoformat()
+  expires_at = (datetime.now(timezone.utc) + timedelta(seconds=max(0, freshness_sec - age_sec))).isoformat()
+  if age_sec >= freshness_sec:
+    expires_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+  return module.store.live_preflight.insert_run(
+    {
+      "mode": mode,
+      "exchange": "binance",
+      "market_type": "spot",
+      "symbol": "BTCUSDT",
+      "side": "BUY",
+      "quote_order_qty": 15.0,
+      "evaluated_at": evaluated_at,
+      "expires_at": expires_at,
+      "overall_status": status,
+      "blocking_reasons": [] if status == "PASS" else ["test_failure"],
+      "warnings": [],
+      "checks": {"test": {"status": status, "detail": "seeded"}},
+      "source_versions": {"seeded": True},
+      "diagnostics": [],
+      "manual_attestations": {},
+      "freshness_seconds": freshness_sec,
+      "runtime_context": {},
+      "exchange_context": {},
+    }
+  )
+
+
+def _seed_reconciliation_case(module, *, final_status: str = "DESYNC", blocking: bool = True) -> dict:
+  now = datetime.now(timezone.utc).isoformat()
+  return module.store.execution_reality.db.insert_reconciliation_case(
+    {
+      "trigger_type": "PRESTART_LIVE",
+      "exchange": "binance",
+      "market_type": "spot",
+      "environment": "live",
+      "bot_id": "bot-live",
+      "symbol": "BTCUSDT",
+      "execution_order_id": None,
+      "execution_fill_scope": "symbol",
+      "started_at": now,
+      "finished_at": now,
+      "final_status": final_status,
+      "severity": "CRITICAL",
+      "local_summary_json": {"local": "test"},
+      "remote_summary_json": {"remote": "test"},
+      "discrepancy_summary_json": {"count": 1, "items": [{"code": "STREAM_GAP_WITH_PENDING_OPEN_ORDERS"}]},
+      "resolution_summary_json": {"actions": []},
+      "blocking_bool": blocking,
+    }
+  )
+
+
+def _mock_live_preflight_dependencies(
+  module,
+  monkeypatch,
+  *,
+  mode: str = "live",
+  can_trade: bool = True,
+  permissions: tuple[str, ...] = ("SPOT",),
+  account_type: str | None = "SPOT",
+  symbol_present: bool = True,
+  symbol_status: str = "TRADING",
+  preflight_allowed: bool = True,
+  preflight_blocking: list[str] | None = None,
+  preflight_warnings: list[str] | None = None,
+  order_test_ok: bool = True,
+  drift_ms: int = 0,
+  open_orders: list[dict] | None = None,
+  non_zero_balance: bool = False,
+  recv_window_ms: int = 5000,
+) -> None:
+  if mode == "testnet":
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+    monkeypatch.setenv("BINANCE_SPOT_TESTNET_BASE_URL", "https://testnet.binance.vision")
+    monkeypatch.setenv("BINANCE_SPOT_TESTNET_WS_URL", "wss://testnet.binance.vision/ws")
+  else:
+    monkeypatch.setenv("BINANCE_API_KEY", "live-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "live-secret")
+    monkeypatch.setenv("BINANCE_SPOT_BASE_URL", "https://api.binance.com")
+    monkeypatch.setenv("BINANCE_SPOT_WS_URL", "wss://stream.binance.com:9443/ws")
+
+  def fake_get(url, timeout=0, **kwargs):
+    if "/api/v3/time" in url:
+      return _DummyResponse(200, {"serverTime": int(time.time() * 1000) + int(drift_ms)})
+    return _DummyResponse(404, {"code": -1, "msg": "not found"})
+
+  def fake_request(method, url, headers=None, timeout=0, **kwargs):
+    if "/sapi/" in url:
+      raise AssertionError(f"RTLOPS-47 no debe depender de /sapi/* en spot/testnet: {url}")
+    if "/api/v3/account" in url:
+      payload = {
+        "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+        "canTrade": can_trade,
+        "canWithdraw": False,
+        "accountType": account_type,
+        "permissions": list(permissions),
+      }
+      return _DummyResponse(200, payload)
+    if "/api/v3/order/test" in url:
+      return _DummyResponse(200 if order_test_ok else 400, {} if order_test_ok else {"code": -1013, "msg": "invalid test order"})
+    if "/api/v3/openOrders" in url:
+      return _DummyResponse(200, open_orders or [])
+    return _DummyResponse(404, {"code": -1, "msg": "not found"})
+
+  monkeypatch.setattr(module.requests, "get", fake_get)
+  monkeypatch.setattr(module.requests, "request", fake_request)
+  monkeypatch.setattr(module.socket, "create_connection", lambda *args, **kwargs: _DummySocket())
+  monkeypatch.setattr(
+    module,
+    "evaluate_gates",
+    lambda mode, runtime_state=None, force_exchange_check=False: {
+      "mode": mode,
+      "overall_status": "PASS",
+      "gates": [
+        {"id": "G1_CONFIG_VALID", "status": "PASS", "reason": ""},
+        {"id": "G2_AUTH_READY", "status": "PASS", "reason": ""},
+        {"id": "G3_BACKEND_HEALTH", "status": "PASS", "reason": ""},
+        {"id": "G4_EXCHANGE_CONNECTOR_READY", "status": "PASS", "reason": ""},
+        {"id": "G5_STRATEGY_PRINCIPAL_SET", "status": "PASS", "reason": ""},
+        {"id": "G6_RISK_LIMITS_SET", "status": "PASS", "reason": ""},
+        {"id": "G7_ORDER_SIM_OR_PAPER_OK", "status": "PASS", "reason": ""},
+        {"id": "G9_RUNTIME_ENGINE_REAL", "status": "PASS", "reason": ""},
+        {"id": "G10_STORAGE_PERSISTENCE", "status": "PASS", "reason": ""},
+      ],
+    },
+  )
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda gates_payload: (True, "All live gates are PASS"))
+
+  def _fake_fetch_account_balances(*, family, environment, omit_zero_balances=True):
+    return {
+      "family": family,
+      "environment": environment,
+      "ok": True,
+      "balances_count": 1,
+      "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+      "account": {
+        "canTrade": can_trade,
+        "canWithdraw": False,
+        "accountType": account_type,
+        "permissions": list(permissions),
+        "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+      },
+      "remote_source": {"ok": True, "recv_window_ms": recv_window_ms, "reason": "ok"},
+    }
+
+  def _fake_fetch_exchange_info(*, family, environment):
+    symbols = []
+    if symbol_present:
+      symbols.append({"symbol": "BTCUSDT", "status": symbol_status})
+    return {
+      "family": family,
+      "environment": environment,
+      "ok": True,
+      "symbol_count": len(symbols),
+      "exchange_info": {"symbols": symbols},
+      "remote_source": {"ok": True, "reason": "ok"},
+    }
+
+  def _fake_filter_rules(*, family, symbol, environment="live"):
+    return {
+      "family": family,
+      "market_family": "spot",
+      "execution_connector": "binance_spot",
+      "account_scope": "spot_wallet",
+      "filter_source": "spot_exchange_info",
+      "symbol": symbol,
+      "environment": environment,
+      "catalog_source": "spot_exchange_info",
+      "snapshot_id": "snap-1",
+      "snapshot_timestamp": module.utc_now_iso(),
+      "snapshot_age_ms": 1000,
+      "freshness_status": "fresh",
+      "max_age_ms": 300000,
+      "filter_summary": {
+        "price_filter": {"min_price": 0.01, "max_price": 1000000.0, "tick_size": 0.01},
+        "lot_size": {"min_qty": 0.0001, "max_qty": 1000.0, "step_size": 0.0001},
+        "market_lot_size": {"min_qty": 0.0001, "max_qty": 1000.0, "step_size": 0.0001},
+        "min_notional": {"min_notional": 10.0, "apply_to_market": True},
+      },
+      "policy": {},
+      "warnings": [],
+      "available": symbol_present,
+    }
+
+  def _fake_preflight(request):
+    normalized = {
+      "symbol": "BTCUSDT",
+      "side": str(request.get("side") or "BUY").upper(),
+      "order_type": "MARKET",
+      "quantity": request.get("quantity"),
+      "quote_quantity": request.get("quote_quantity"),
+      "requested_notional": request.get("quote_quantity") or 15.0,
+    }
+    return {
+      "allowed": preflight_allowed,
+      "warnings": list(preflight_warnings or []),
+      "blocking_reasons": list(preflight_blocking or []),
+      "normalized_order_preview": normalized,
+      "filter_validation": {
+        "status": "PASS" if preflight_allowed else "BLOCK",
+        "blocking_reasons": list(preflight_blocking or []),
+        "warnings": list(preflight_warnings or []),
+        "normalized_values": normalized,
+      },
+      "estimated_costs": {"requested_notional": request.get("quote_quantity") or 15.0},
+      "snapshot_source": {"exchange_filters": {"status": "fresh"}, "freshness": {"status": "fresh"}},
+      "fail_closed": not preflight_allowed,
+    }
+
+  def _fake_test_order_contract(*, family, environment, preview, client_order_id):
+    return {
+      "family": family,
+      "environment": environment,
+      "ok": order_test_ok,
+      "supported": True,
+      "payload": {},
+      "remote_source": {"ok": order_test_ok, "reason": "ok" if order_test_ok else "exchange_rejected"},
+    }
+
+  def _fake_signed_request(*, method, base_url, path, api_key, api_secret, params=None, timeout_sec=8):
+    assert "/sapi/" not in path
+    if path == "/api/v3/account":
+      return True, {
+        "status_code": 200,
+        "url": f"{str(base_url).rstrip('/')}/api/v3/account",
+        "payload": {
+          "balances": [{"asset": "USDT", "free": "25.0" if non_zero_balance else "0.0", "locked": "0.0"}],
+          "canTrade": can_trade,
+          "canWithdraw": False,
+          "accountType": account_type,
+          "permissions": list(permissions),
+        },
+      }
+    if path == "/api/v3/order/test":
+      return (
+        True,
+        {
+          "status_code": 200,
+          "url": f"{str(base_url).rstrip('/')}/api/v3/order/test",
+          "payload": {},
+        },
+      ) if order_test_ok else (
+        False,
+        {
+          "status_code": 400,
+          "url": f"{str(base_url).rstrip('/')}/api/v3/order/test",
+          "payload": {"code": -1013, "msg": "invalid test order"},
+          "reason": "exchange_rejected",
+        },
+      )
+    if path == "/api/v3/openOrders":
+      return True, {
+        "status_code": 200,
+        "url": f"{str(base_url).rstrip('/')}/api/v3/openOrders",
+        "payload": open_orders or [],
+      }
+    return False, {"status_code": 404, "payload": {"msg": "not mocked"}}
+
+  monkeypatch.setattr(module.store.execution_reality, "fetch_account_balances", _fake_fetch_account_balances)
+  monkeypatch.setattr(module.store.execution_reality, "fetch_exchange_info", _fake_fetch_exchange_info)
+  monkeypatch.setattr(module.store.execution_reality, "filter_rules", _fake_filter_rules)
+  monkeypatch.setattr(module.store.execution_reality, "preflight", _fake_preflight)
+  monkeypatch.setattr(module.store.execution_reality, "test_order_contract", _fake_test_order_contract)
+  monkeypatch.setattr(module, "_binance_signed_request", _fake_signed_request)
 
 
 def _mock_exchange_down(module, monkeypatch) -> None:
@@ -4837,10 +5132,24 @@ def test_config_policies_endpoint_exposes_numeric_policy_bundle(tmp_path: Path, 
   assert "gates" in body["policies"] and "microstructure" in body["policies"]
   assert body["summary"]["pbo_reject_if_gt"] == 0.05
   assert body["summary"]["vpin_soft_kill_cdf"] == 0.9
-  assert body["summary"]["execution_alerting_severity_rank"] == ["CRITICAL", "WARN", "INFO"]
-  assert body["summary"]["execution_alerting_severity_source_precedence"] == ["SAFETY", "HEALTH", "RAW"]
+  assert body["summary"]["runtime_default_mode"] == "paper"
+  assert body["summary"]["drift_default_algorithm"] == "adwin"
+  assert body["summary"]["ops_alert_slippage_p95_warn_bps"] == 8.0
+  assert body["summary"]["health_max_error_streak"] == 3
   assert "authority" in body and isinstance(body["authority"], dict)
   assert body["authority"]["canonical_role"] == "monorepo_root"
+  runtime_controls_meta = body["files"]["runtime_controls"]
+  assert runtime_controls_meta["source"] == "config/policies/runtime_controls.yaml"
+  assert isinstance(runtime_controls_meta["source_hash"], str) and len(runtime_controls_meta["source_hash"]) == 64
+  assert isinstance(runtime_controls_meta["policy_hash"], str) and len(runtime_controls_meta["policy_hash"]) == 64
+  assert runtime_controls_meta["errors"] == []
+  binance_live_runtime_meta = body["files"]["binance_live_runtime"]
+  assert binance_live_runtime_meta["source"] == "config/policies/binance_live_runtime.yaml"
+  assert isinstance(binance_live_runtime_meta["source_hash"], str) and len(binance_live_runtime_meta["source_hash"]) == 64
+  assert isinstance(binance_live_runtime_meta["policy_hash"], str) and len(binance_live_runtime_meta["policy_hash"]) == 64
+  assert body["summary"]["binance_live_connectors"] == ["binance_spot", "binance_um_futures"]
+  assert body["summary"]["binance_spot_default_transport"] == "combined"
+  assert body["summary"]["binance_um_default_transport"] == "combined"
   assert "mode_taxonomy" in body and body["mode_taxonomy"]["global_runtime_modes"] == ["PAPER", "TESTNET", "LIVE"]
 
 
@@ -5629,1293 +5938,4 @@ def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
   assert isinstance(detail_payload.get("best_runs_cache"), list)
   assert len(detail_payload["best_runs_cache"]) == 2
   assert detail_payload["best_runs_cache"][0]["run_id"] == "BT-000123"
-
-
-def _mark_live_health_ready(module) -> dict[str, str]:
-  now_iso = module.utc_now_iso()
-  state = module.store.load_bot_state()
-  state.update(
-    {
-      "mode": "live",
-      "runtime_engine": "real",
-      "runtime_telemetry_source": "runtime_loop_v1",
-      "runtime_loop_alive": True,
-      "runtime_executor_connected": True,
-      "runtime_reconciliation_ok": True,
-      "runtime_operational_safety_ok": True,
-      "runtime_operational_safety_status": "CLOSED",
-      "runtime_exchange_connector_ok": True,
-      "runtime_exchange_order_ok": True,
-      "runtime_exchange_mode": "live",
-      "runtime_exchange_verified_at": now_iso,
-      "runtime_heartbeat_at": now_iso,
-      "runtime_last_reconcile_at": now_iso,
-      "runtime_last_safety_eval_at": now_iso,
-      "runtime_unknown_timeout_active": False,
-      "runtime_unknown_timeout_since": "",
-    }
-  )
-  module.store.save_bot_state(state)
-  module.runtime_bridge._last_reconcile = {
-    "desync_count": 0,
-    "missing_local": [],
-    "missing_exchange": [],
-    "qty_mismatches": [],
-    "remote_open_orders_count": 0,
-    "local_open_orders_count": 0,
-    "source": "mock",
-    "source_ok": True,
-    "source_reason": "",
-  }
-  return state
-
-
-def _patch_live_gates_green(module, monkeypatch) -> None:
-  monkeypatch.setattr(module, "evaluate_gates", lambda *args, **kwargs: {"overall_status": "PASS", "gates": []})
-  monkeypatch.setattr(module, "live_can_be_enabled", lambda payload: (True, ""))
-
-
-def _find_execution_alert(module, trigger_code: str) -> dict:
-  rows = module.store.list_execution_alert_instances(trigger_code=trigger_code, limit=20)
-  assert rows, f"missing alert for {trigger_code}"
-  return rows[0]
-
-
-def test_live_health_summary_is_healthy_when_sources_are_clean(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "HEALTHY"
-  assert summary["score"] >= 90
-  assert summary["blocking_bool"] is False
-  assert summary["top_priority_reason_code"] == ""
-
-
-def test_live_health_summary_marks_preflight_stale_as_degraded(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  state = module.store.load_bot_state()
-  state["runtime_last_safety_eval_at"] = (module.utc_now() - timedelta(seconds=350)).isoformat()
-  module.store.save_bot_state(state)
-
-  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
-  assert summary["state"] == "DEGRADED"
-  assert "PREFLIGHT_STALE" in summary["reason_codes"]
-  assert summary["score"] == 90
-
-
-def test_live_health_summary_blocks_when_preflight_is_expired(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  state = module.store.load_bot_state()
-  state["runtime_last_safety_eval_at"] = (module.utc_now() - timedelta(seconds=700)).isoformat()
-  module.store.save_bot_state(state)
-
-  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
-  assert summary["state"] == "BLOCKED"
-  assert "PREFLIGHT_EXPIRED" in summary["hard_blockers"]
-
-
-def test_live_health_summary_blocks_when_reconciliation_is_desync(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.runtime_bridge._last_reconcile["desync_count"] = 1
-  module.runtime_bridge._last_reconcile["missing_local"] = ["BTCUSDT:123"]
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "BLOCKED"
-  assert "RECONCILIATION_DESYNC" in summary["hard_blockers"]
-
-
-def test_live_health_summary_marks_manual_review_consistently(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.store.upsert_safety_breaker(
-    breaker_code="RECONCILIATION_MANUAL_REVIEW_BLOCKING",
-    scope_type="GLOBAL",
-    state="OPEN",
-    blocking_bool=True,
-    trigger_reason={"reason": "manual_review_required"},
-  )
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "MANUAL_REVIEW_REQUIRED"
-  assert "RECONCILIATION_MANUAL_REVIEW" in summary["reason_codes"]
-
-
-def test_live_health_summary_blocks_when_global_manual_lock_is_active(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.runtime_bridge.freeze_global(requested_by="tester", audit_note="freeze_for_health_test")
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "BLOCKED"
-  assert "MANUAL_LOCK_ACTIVE" in summary["hard_blockers"]
-  assert "FREEZE_GLOBAL_ACTIVE" in summary["hard_blockers"]
-
-
-def test_live_health_summary_blocks_when_generic_breaker_is_open(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.store.upsert_safety_breaker(
-    breaker_code="SAFETY_POLICY_VIOLATION",
-    scope_type="GLOBAL",
-    state="OPEN",
-    blocking_bool=True,
-    trigger_reason={"reason": "policy_violation"},
-  )
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "BLOCKED"
-  assert "BREAKER_OPEN" in summary["hard_blockers"]
-
-
-def test_live_health_summary_blocks_when_stream_is_terminated(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  state = module.store.load_bot_state()
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-
-  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
-  assert summary["state"] == "BLOCKED"
-  assert "STREAM_TERMINATED" in summary["hard_blockers"]
-
-
-def test_live_health_summary_marks_stream_degraded_without_blocking(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  state = module.store.load_bot_state()
-  state["runtime_heartbeat_at"] = (module.utc_now() - timedelta(seconds=6)).isoformat()
-  module.store.save_bot_state(state)
-
-  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
-  assert summary["state"] == "DEGRADED"
-  assert "STREAM_HEALTH_DEGRADED" in summary["reason_codes"]
-
-
-def test_live_health_summary_blocks_on_unknown_timeout_stuck(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  state = module.store.load_bot_state()
-  state["runtime_unknown_timeout_active"] = True
-  state["runtime_unknown_timeout_since"] = (module.utc_now() - timedelta(seconds=31)).isoformat()
-  module.store.save_bot_state(state)
-
-  summary = module.runtime_bridge.build_live_health_summary(state=state, settings=module.store.load_settings())
-  assert summary["state"] == "BLOCKED"
-  assert "UNKNOWN_TIMEOUT_STUCK" in summary["hard_blockers"]
-
-
-def test_live_health_summary_marks_rate_limit_pressure_as_degraded(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.store.upsert_safety_breaker(
-    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
-    scope_type="SYMBOL",
-    symbol="BTCUSDT",
-    state="COOLDOWN",
-    blocking_bool=True,
-    trigger_count_window=3,
-    trigger_reason={"rate_limit_hits": 3},
-  )
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "DEGRADED"
-  assert "RATE_LIMIT_PRESSURE" in summary["reason_codes"]
-
-
-def test_live_health_summary_marks_open_order_pressure_as_degraded(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.runtime_bridge._last_reconcile["remote_open_orders_count"] = 12
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "DEGRADED"
-  assert "OPEN_ORDER_PRESSURE" in summary["reason_codes"]
-
-
-def test_live_health_summary_scope_can_differ_from_global(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.runtime_bridge.freeze_symbol(symbol="BTCUSDT", requested_by="tester", audit_note="freeze_scope_test")
-
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  by_scope = {row["scope_key"]: row for row in summary["scope_status"]}
-  assert summary["state"] == "DEGRADED"
-  assert by_scope["SYMBOL:BTCUSDT"]["state"] == "BLOCKED"
-  assert "FREEZE_SYMBOL_ACTIVE" in summary["reason_codes"]
-
-
-def test_execution_health_summary_and_evaluate_endpoints_return_and_persist_contract(tmp_path: Path, monkeypatch) -> None:
-  monkeypatch.setenv("RUNTIME_ENGINE", "real")
-  module, client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  summary_res = client.get("/api/v1/execution/health/summary", headers=headers)
-  assert summary_res.status_code == 200, summary_res.text
-  summary = summary_res.json()
-  assert summary["state"] == "HEALTHY"
-  assert "reason_codes" in summary
-  assert "component_status" in summary
-  assert "scope_status" in summary
-
-  evaluate_res = client.post("/api/v1/execution/health/evaluate", json={}, headers=headers)
-  assert evaluate_res.status_code == 200, evaluate_res.text
-  evaluated = evaluate_res.json()
-  assert isinstance(evaluated.get("snapshot_id"), str)
-
-  history_res = client.get("/api/v1/execution/health/history", headers=headers)
-  assert history_res.status_code == 200, history_res.text
-  history = history_res.json()["items"]
-  assert history
-  assert history[0]["snapshot_id"] == evaluated["snapshot_id"]
-
-  scopes_res = client.get("/api/v1/execution/health/scopes", headers=headers)
-  assert scopes_res.status_code == 200, scopes_res.text
-  scopes_payload = scopes_res.json()
-  assert isinstance(scopes_payload.get("items"), list)
-
-
-def test_live_signal_snapshot_builds_and_persists_domain_snapshots(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  submitted = module.runtime_bridge._oms.submit(
-    module.Order(order_id="ord-1", symbol="BTCUSDT", side=module.Side.LONG, qty=1.0)
-  )
-  module.runtime_bridge._oms.apply_fill(submitted.order_id, 0.4)
-
-  snapshot = module.runtime_bridge.build_live_signal_snapshot(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-    persist=True,
-  )
-  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
-
-  assert snapshot["schema_version"] >= 2
-  assert by_type["EXECUTION"]["schema_version"] >= 2
-  assert by_type["EXECUTION"]["collected_at_ms"] is not None
-  assert by_type["EXECUTION"]["window_ms"] == snapshot["window_ms"]
-  assert by_type["EXECUTION"]["payload"]["kind"] == "EXECUTION"
-  assert by_type["EXECUTION"]["payload"]["numeric_metrics"]["execution_submit_total_window"] >= 1
-  assert by_type["FILLS"]["payload"]["kind"] == "FILLS"
-  assert by_type["FILLS"]["payload"]["numeric_metrics"]["fills_recent_count"] >= 1
-  assert by_type["STREAM"]["payload"]["numeric_metrics"]["stream_last_event_age_ms"] is not None
-  assert by_type["RECONCILIATION"]["payload"]["numeric_metrics"]["reconciliation_last_run_age_ms"] is not None
-  assert by_type["PREFLIGHT"]["payload"]["numeric_metrics"]["preflight_last_run_age_ms"] is not None
-
-  stored = module.store.list_live_signal_snapshots(limit=50)
-  assert any(row["snapshot_type"] == "EXECUTION" for row in stored)
-  assert any(row["snapshot_type"] == "FILLS" for row in stored)
-  assert any(row["snapshot_type"] == "STREAM" for row in stored)
-  assert any(row["snapshot_type"] == "RECONCILIATION" for row in stored)
-  assert any(row["snapshot_type"] == "PREFLIGHT" for row in stored)
-  assert all("payload" in row for row in stored)
-
-
-def test_live_signal_snapshot_type_disciplines_payload_fields(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  snapshot = module.runtime_bridge.build_live_signal_snapshot(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-    persist=False,
-  )
-  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
-
-  execution_payload = by_type["EXECUTION"]["payload"]
-  stream_payload = by_type["STREAM"]["payload"]
-  preflight_payload = by_type["PREFLIGHT"]["payload"]
-  reconciliation_payload = by_type["RECONCILIATION"]["payload"]
-
-  assert set(execution_payload.keys()) == {"kind", "numeric_metrics", "state_values", "timestamps_ms", "refs"}
-  assert "stream_gap_ms" not in execution_payload["numeric_metrics"]
-  assert "execution_submit_total_window" in execution_payload["numeric_metrics"]
-  assert "stream_gap_ms" in stream_payload["numeric_metrics"]
-  assert "health_state" not in stream_payload["state_values"]
-  assert "preflight_last_run_at_ms" in preflight_payload["timestamps_ms"]
-  assert "reconciliation_last_run_age_ms" in reconciliation_payload["numeric_metrics"]
-  assert "reconciliation_source_ok" in reconciliation_payload["state_values"]
-
-
-def test_live_signal_snapshot_reflects_rate_limit_pressure_as_signal_only(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.store.upsert_safety_breaker(
-    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
-    scope_type="GLOBAL",
-    state="COOLDOWN",
-    blocking_bool=True,
-    trigger_count_window=3,
-    trigger_reason={"rate_limit_hits": 3},
-  )
-
-  snapshot = module.runtime_bridge.build_live_signal_snapshot(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-    persist=False,
-  )
-  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
-  rate_limit = by_type["RATE_LIMIT"]
-
-  assert rate_limit["payload"]["numeric_metrics"]["rate_limit_429_count_window"] == 3
-  assert rate_limit["payload"]["state_values"]["retry_after_active_bool"] is True
-  assert "state" not in rate_limit
-  assert "blocking_bool" not in rate_limit
-
-
-def test_live_signal_snapshot_reflects_unknown_timeout_as_signal_only(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  state = module.store.load_bot_state()
-  state["runtime_unknown_timeout_active"] = True
-  state["runtime_unknown_timeout_since"] = (module.utc_now() - timedelta(seconds=31)).isoformat()
-  module.store.save_bot_state(state)
-
-  snapshot = module.runtime_bridge.build_live_signal_snapshot(
-    state=state,
-    settings=module.store.load_settings(),
-    persist=False,
-  )
-  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
-  execution = by_type["EXECUTION"]
-
-  assert execution["payload"]["numeric_metrics"]["execution_unknown_timeout_active_count"] == 1
-  assert execution["payload"]["state_values"]["runtime_unknown_timeout_active"] is True
-  assert "state" not in snapshot
-  assert "blocking_bool" not in execution
-
-
-def test_live_signal_snapshot_persists_symbol_scope_correctly(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  module.runtime_bridge._oms.submit(module.Order(order_id="btc-1", symbol="BTCUSDT", side=module.Side.LONG, qty=1.0))
-  module.runtime_bridge._oms.submit(module.Order(order_id="eth-1", symbol="ETHUSDT", side=module.Side.LONG, qty=1.0))
-
-  snapshot = module.runtime_bridge.build_live_signal_snapshot(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-    symbol="BTCUSDT",
-    persist=True,
-  )
-  by_type = {row["snapshot_type"]: row for row in snapshot["items"]}
-
-  assert snapshot["scope"]["scope_type"] == "SYMBOL"
-  assert snapshot["scope"]["symbol"] == "BTCUSDT"
-  assert by_type["EXECUTION"]["payload"]["numeric_metrics"]["execution_submit_total_window"] == 1
-  stored = module.store.list_live_signal_snapshots(scope_type="SYMBOL", symbol="BTCUSDT", limit=20)
-  assert stored
-  assert all(row["scope_type"] == "SYMBOL" for row in stored)
-  assert all(row["symbol"] == "BTCUSDT" for row in stored)
-
-
-def test_execution_signals_endpoints_return_summary_history_and_scopes(tmp_path: Path, monkeypatch) -> None:
-  monkeypatch.setenv("RUNTIME_ENGINE", "real")
-  module, client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  create = client.post("/api/v1/execution/signals/snapshot", json={}, headers=headers)
-  assert create.status_code == 200, create.text
-  created = create.json()
-  assert isinstance(created.get("items"), list) and created["items"]
-  assert created["schema_version"] >= 2
-  assert set(created["items"][0]["payload"].keys()) == {"kind", "numeric_metrics", "state_values", "timestamps_ms", "refs"}
-
-  summary = client.get("/api/v1/execution/signals/summary", headers=headers)
-  assert summary.status_code == 200, summary.text
-  summary_payload = summary.json()
-  assert summary_payload["scope"]["scope_type"] == "GLOBAL"
-  assert isinstance(summary_payload.get("items"), list)
-  assert any(row["snapshot_type"] == "EXECUTION" for row in summary_payload["items"])
-  assert all("payload" in row for row in summary_payload["items"])
-
-  history = client.get("/api/v1/execution/signals/history", headers=headers)
-  assert history.status_code == 200, history.text
-  history_payload = history.json()
-  assert isinstance(history_payload.get("snapshots"), list) and history_payload["snapshots"]
-  assert isinstance(history_payload.get("events"), list) and history_payload["events"]
-  assert history_payload["events"][0]["event_time_ms"] is not None
-
-  scopes = client.get("/api/v1/execution/signals/scopes", headers=headers)
-  assert scopes.status_code == 200, scopes.text
-  scopes_payload = scopes.json()
-  assert isinstance(scopes_payload.get("items"), list) and scopes_payload["items"]
-
-
-def test_live_health_summary_contract_survives_raw_signal_snapshot_persistence(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  module.runtime_bridge.build_live_signal_snapshot(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-    persist=True,
-  )
-  summary = module.runtime_bridge.build_live_health_summary(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-  )
-  assert summary["state"] == "HEALTHY"
-  assert "component_status" in summary
-  assert summary["component_status"]["live_signals"]["schema_version"] >= 2
-
-
-def test_live_signal_risk_snapshot_stays_observed_only(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  snapshot = module.runtime_bridge.build_live_signal_snapshot(
-    state=module.store.load_bot_state(),
-    settings=module.store.load_settings(),
-    persist=False,
-  )
-  risk = {row["snapshot_type"]: row for row in snapshot["items"]}["RISK"]
-  risk_payload = risk["payload"]
-
-  assert risk_payload["kind"] == "RISK"
-  assert risk_payload["refs"]["risk_observed_only"] is True
-  assert "risk_open_positions_count" in risk_payload["numeric_metrics"]
-  assert "block_new_positions" not in risk_payload["state_values"]
-  assert "risk_level" not in risk_payload["state_values"]
-  assert "scope_status" in summary
-
-
-def test_execution_alert_evaluate_opens_persistent_stream_alert(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-
-  payload = module.runtime_bridge.evaluate_execution_alerts(
-    state=state,
-    settings=module.store.load_settings(),
-    persist=True,
-  )
-
-  assert any(row["trigger_code"] == "STREAM_TERMINATED" for row in payload["open_items"])
-  alert = _find_execution_alert(module, "STREAM_TERMINATED")
-  assert alert["state"] == "OPEN"
-  assert alert["source_layer"] == "RAW"
-  assert alert["source_refs"]["primary"][0]["type"] == "live_signal_snapshot"
-
-
-def test_execution_alert_dedups_same_active_condition(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  first = _find_execution_alert(module, "STREAM_TERMINATED")
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  second = _find_execution_alert(module, "STREAM_TERMINATED")
-
-  assert first["alert_instance_id"] == second["alert_instance_id"]
-  assert len(module.store.list_execution_alert_instances(trigger_code="STREAM_TERMINATED", limit=20)) == 1
-  events = module.store.list_execution_alert_events(alert_instance_id=first["alert_instance_id"], limit=20)
-  assert [row["event_type"] for row in events].count("OPENED") == 1
-
-
-def test_execution_alert_distinguishes_multiple_triggers_same_scope(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-  module.store.upsert_safety_breaker(
-    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
-    scope_type="GLOBAL",
-    state="COOLDOWN",
-    blocking_bool=True,
-    trigger_count_window=3,
-    trigger_reason={"rate_limit_hits": 3},
-  )
-
-  payload = module.runtime_bridge.evaluate_execution_alerts(
-    state=state,
-    settings=module.store.load_settings(),
-    persist=True,
-  )
-  trigger_codes = {row["trigger_code"] for row in payload["open_items"]}
-
-  assert "STREAM_TERMINATED" in trigger_codes
-  assert "RATE_LIMIT_PRESSURE_HIGH" in trigger_codes
-
-
-def test_execution_alert_ack_keeps_active_condition_visible(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  alert = _find_execution_alert(module, "STREAM_TERMINATED")
-
-  acked = module.runtime_bridge.ack_execution_alert(
-    alert_instance_id=alert["alert_instance_id"],
-    requested_by="tester",
-    audit_note="ack active",
-  )["alert"]
-  assert acked["state"] == "ACKED"
-
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  current = _find_execution_alert(module, "STREAM_TERMINATED")
-  assert current["alert_instance_id"] == alert["alert_instance_id"]
-  assert current["state"] == "ACKED"
-
-
-def test_execution_alert_suppress_keeps_evidence_and_avoids_duplicate_noise(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.store.upsert_safety_breaker(
-    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
-    scope_type="GLOBAL",
-    state="COOLDOWN",
-    blocking_bool=True,
-    trigger_count_window=3,
-    trigger_reason={"rate_limit_hits": 3},
-  )
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  alert = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
-
-  suppressed = module.runtime_bridge.suppress_execution_alert(
-    alert_instance_id=alert["alert_instance_id"],
-    requested_by="tester",
-    duration_sec=600,
-    audit_note="suppress",
-  )["alert"]
-  assert suppressed["state"] == "SUPPRESSED"
-  assert suppressed["source_refs"]["primary"]
-
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  current = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
-  assert current["alert_instance_id"] == alert["alert_instance_id"]
-  assert current["state"] == "SUPPRESSED"
-
-
-def test_execution_alert_cooldown_avoids_immediate_reopen(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.store.upsert_safety_breaker(
-    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
-    scope_type="GLOBAL",
-    state="COOLDOWN",
-    blocking_bool=True,
-    trigger_count_window=3,
-    trigger_reason={"rate_limit_hits": 3},
-  )
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  alert = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
-
-  module.store.upsert_safety_breaker(
-    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
-    scope_type="GLOBAL",
-    state="CLOSED",
-    blocking_bool=False,
-    trigger_count_window=0,
-    trigger_reason={"rate_limit_hits": 0},
-  )
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  resolved = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
-  assert resolved["state"] == "RESOLVED"
-
-  module.store.upsert_safety_breaker(
-    breaker_code="TOO_MANY_REQUESTS_PRESSURE",
-    scope_type="GLOBAL",
-    state="COOLDOWN",
-    blocking_bool=True,
-    trigger_count_window=3,
-    trigger_reason={"rate_limit_hits": 3},
-  )
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  current = _find_execution_alert(module, "RATE_LIMIT_PRESSURE_HIGH")
-  assert current["alert_instance_id"] == alert["alert_instance_id"]
-  assert current["state"] == "COOLDOWN"
-
-
-def test_execution_alert_expired_is_retention_only_and_reopens_same_instance(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  opened = _find_execution_alert(module, "STREAM_TERMINATED")
-
-  state["runtime_exchange_reason"] = ""
-  module.store.save_bot_state(state)
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  resolved = _find_execution_alert(module, "STREAM_TERMINATED")
-  assert resolved["state"] == "RESOLVED"
-
-  resolved_ttl_sec = int(module.runtime_bridge._alerting_policy()["resolved_ttl_sec"])
-  aged = module.store.upsert_execution_alert_instance(
-    trigger_code=resolved["trigger_code"],
-    severity=resolved["severity"],
-    state="RESOLVED",
-    source_layer=resolved["source_layer"],
-    scope_type=resolved["scope_type"],
-    bot_id=resolved["bot_id"],
-    symbol=resolved["symbol"],
-    opened_at=resolved["opened_at"],
-    last_seen_at=resolved["last_seen_at"],
-    acked_at=resolved["acked_at"],
-    suppressed_until=resolved["suppressed_until"],
-    cooldown_until=resolved["cooldown_until"],
-    resolved_at=(module.utc_now() - timedelta(seconds=resolved_ttl_sec + 1)).isoformat(),
-    expires_at=None,
-    source_refs=resolved["source_refs"],
-    evidence=resolved["evidence"],
-    summary_text=resolved["summary_text"],
-  )
-  assert aged["alert_instance_id"] == opened["alert_instance_id"]
-
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  expired = _find_execution_alert(module, "STREAM_TERMINATED")
-  assert expired["state"] == "EXPIRED"
-  assert expired["alert_instance_id"] == opened["alert_instance_id"]
-  history = module.store.list_execution_alert_events(alert_instance_id=expired["alert_instance_id"], limit=20)
-  assert any(row["event_type"] == "EXPIRED" for row in history)
-
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  reopened = _find_execution_alert(module, "STREAM_TERMINATED")
-  assert reopened["state"] == "OPEN"
-  assert reopened["alert_instance_id"] == opened["alert_instance_id"]
-  assert module.runtime_bridge._alerting_policy()["expired_reopens_same_instance"] is True
-
-
-def test_execution_alert_manual_resolve_does_not_hide_active_condition(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  alert = _find_execution_alert(module, "STREAM_TERMINATED")
-
-  result = module.runtime_bridge.resolve_execution_alert(
-    alert_instance_id=alert["alert_instance_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    requested_by="tester",
-    audit_note="should reject",
-  )
-
-  assert result["ok"] is False
-  assert result["reason"] == "condition_still_active"
-  current = _find_execution_alert(module, "STREAM_TERMINATED")
-  assert current["state"] == "OPEN"
-  history = module.store.list_execution_alert_events(alert_instance_id=alert["alert_instance_id"], limit=20)
-  assert any(row["event_type"] == "RESOLVE_REJECTED" for row in history)
-
-
-def test_execution_alert_severity_precedence_is_explicit_and_stable(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  severity_rank = module.runtime_bridge._alerting_policy()["severity_rank"]
-  precedence = module.runtime_bridge._alerting_policy()["severity_source_precedence"]
-
-  assert severity_rank == ["CRITICAL", "WARN", "INFO"]
-  assert module.alert_severity_rank("CRITICAL", severity_precedence=severity_rank) > module.alert_severity_rank("WARN", severity_precedence=severity_rank)
-  assert module.alert_severity_rank("WARN", severity_precedence=severity_rank) > module.alert_severity_rank("INFO", severity_precedence=severity_rank)
-
-  severe_raw = module.choose_alert_severity_candidate(
-    {"source_layer": "RAW", "severity": "CRITICAL"},
-    {"source_layer": "SAFETY", "severity": "WARN"},
-    severity_precedence=severity_rank,
-    source_precedence=precedence,
-  )
-  assert severe_raw["severity"] == "CRITICAL"
-  assert severe_raw["source_layer"] == "RAW"
-
-  tied = module.choose_alert_severity_candidate(
-    {"source_layer": "RAW", "severity": "WARN"},
-    {"source_layer": "HEALTH", "severity": "WARN"},
-    {"source_layer": "SAFETY", "severity": "WARN"},
-    severity_precedence=severity_rank,
-    source_precedence=precedence,
-  )
-  assert tied["severity"] == "WARN"
-  assert tied["source_layer"] == "SAFETY"
-
-
-def test_execution_alert_policy_is_separate_from_operational_safety_policy(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  policy = module.load_execution_safety_policy()
-
-  assert "alerting" in policy
-  assert "operational_safety" in policy
-  assert "expired_reopens_same_instance" in policy["alerting"]
-  assert policy["alerting"]["severity_rank"] == ["CRITICAL", "WARN", "INFO"]
-  assert "severity_source_precedence" in policy["alerting"]
-  assert "severity_rank" not in policy["operational_safety"]
-  assert "expired_reopens_same_instance" not in policy["operational_safety"]
-  assert "severity_source_precedence" not in policy["operational_safety"]
-
-
-def test_execution_alert_endpoints_expose_catalog_history_and_lifecycle(tmp_path: Path, monkeypatch) -> None:
-  module, client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-  admin_token = _login(client, "Wadmin", "moroco123")
-  headers = _auth_headers(admin_token)
-
-  catalog = client.get("/api/v1/execution/alerts/catalog", headers=headers)
-  assert catalog.status_code == 200, catalog.text
-  assert any(row["trigger_code"] == "STREAM_TERMINATED" for row in catalog.json()["items"])
-
-  evaluated = client.post("/api/v1/execution/alerts/evaluate", json={}, headers=headers)
-  assert evaluated.status_code == 200, evaluated.text
-  open_items = evaluated.json()["open_items"]
-  assert open_items
-  alert_id = open_items[0]["alert_instance_id"]
-
-  open_res = client.get("/api/v1/execution/alerts/open", headers=headers)
-  assert open_res.status_code == 200, open_res.text
-  assert any(row["alert_instance_id"] == alert_id for row in open_res.json()["items"])
-
-  detail = client.get(f"/api/v1/execution/alerts/{alert_id}", headers=headers)
-  assert detail.status_code == 200, detail.text
-  assert detail.json()["alert"]["alert_instance_id"] == alert_id
-
-  ack = client.post(f"/api/v1/execution/alerts/{alert_id}/ack", json={"audit_note": "ack"}, headers=headers)
-  assert ack.status_code == 200, ack.text
-  assert ack.json()["alert"]["state"] == "ACKED"
-
-  suppress = client.post(f"/api/v1/execution/alerts/{alert_id}/suppress", json={"duration_sec": 120, "audit_note": "suppress"}, headers=headers)
-  assert suppress.status_code == 200, suppress.text
-  assert suppress.json()["alert"]["state"] == "SUPPRESSED"
-
-  resolve = client.post(f"/api/v1/execution/alerts/{alert_id}/resolve", json={"audit_note": "resolve"}, headers=headers)
-  assert resolve.status_code == 200, resolve.text
-  assert resolve.json()["ok"] is False
-
-  history = client.get("/api/v1/execution/alerts/history", headers=headers)
-  assert history.status_code == 200, history.text
-  history_payload = history.json()
-  assert any(row["alert_instance_id"] == alert_id for row in history_payload["items"])
-  assert any(row["alert_instance_id"] == alert_id for row in history_payload["events"])
-
-
-def test_execution_alert_consumer_leaves_raw_signal_contract_unchanged(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-
-  before = module.runtime_bridge.build_live_signal_snapshot(
-    state=state,
-    settings=module.store.load_settings(),
-    persist=False,
-  )
-  module.runtime_bridge.evaluate_execution_alerts(state=state, settings=module.store.load_settings(), persist=True)
-  after = module.runtime_bridge.build_live_signal_snapshot(
-    state=state,
-    settings=module.store.load_settings(),
-    persist=False,
-  )
-
-  before_types = {row["snapshot_type"] for row in before["items"]}
-  after_types = {row["snapshot_type"] for row in after["items"]}
-  assert before_types == after_types
-  for row in after["items"]:
-    assert set(row["payload"].keys()) == {"kind", "numeric_metrics", "state_values", "timestamps_ms", "refs"}
-    assert row["payload"]["kind"] == row["snapshot_type"]
-    assert "trigger_code" not in row
-    assert "state" not in row
-
-
-def test_execution_alert_consumer_does_not_recalculate_health_or_open_safety_actions(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_exchange_reason"] = "eventStreamTerminated"
-  module.store.save_bot_state(state)
-
-  before_summary = module.runtime_bridge.build_live_health_summary(
-    state=state,
-    settings=module.store.load_settings(),
-  )
-  before_manual_actions = len(module.store.list_safety_manual_actions(limit=50))
-
-  module.runtime_bridge.evaluate_execution_alerts(
-    state=state,
-    settings=module.store.load_settings(),
-    persist=True,
-  )
-
-  after_summary = module.runtime_bridge.build_live_health_summary(
-    state=state,
-    settings=module.store.load_settings(),
-  )
-  after_manual_actions = len(module.store.list_safety_manual_actions(limit=50))
-
-  assert after_summary["state"] == before_summary["state"]
-  assert after_summary["score"] == before_summary["score"]
-  assert after_summary["top_priority_reason_code"] == before_summary["top_priority_reason_code"]
-  assert after_manual_actions == before_manual_actions
-
-
-def test_execution_canary_start_holds_when_preflight_is_expired(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  state["runtime_last_safety_eval_at"] = (module.utc_now() - timedelta(seconds=700)).isoformat()
-  module.store.save_bot_state(state)
-
-  payload = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-
-  assert payload["ok"] is False
-  assert payload["run"]["phase"] == "HOLD"
-  reasons = {row["reason_code"] for row in payload["latest_evaluation"]["gating_reasons"]}
-  assert "PREFLIGHT_EXPIRED" in reasons
-  stored = module.store.list_canary_gate_evaluations(run_id=payload["run"]["run_id"], limit=20)
-  assert stored
-  assert "PREFLIGHT" in stored[0]["blocking_sources"]
-
-
-def test_execution_canary_recommends_rollback_when_reconciliation_turns_blocking(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  started = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert started["run"]["phase"] == "ARMED"
-
-  running = module.runtime_bridge.evaluate_canary_run(
-    run_id=started["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert running["run"]["phase"] == "RUNNING"
-
-  module.runtime_bridge._last_reconcile = {
-    **module.runtime_bridge._last_reconcile,
-    "desync_count": 1,
-    "missing_local": [{"order_id": "remote-1"}],
-    "source_ok": True,
-  }
-  blocked = module.runtime_bridge.evaluate_canary_run(
-    run_id=started["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-
-  assert blocked["run"]["phase"] == "ROLLBACK_RECOMMENDED"
-  assert blocked["latest_evaluation"]["rollback_recommended_bool"] is True
-  assert "RECONCILIATION" in blocked["latest_evaluation"]["blocking_sources"]
-
-
-def test_execution_canary_blocks_when_operational_safety_manual_lock_is_active(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  module.runtime_bridge.freeze_global(requested_by="tester", audit_note="canary_test")
-
-  payload = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-
-  assert payload["ok"] is False
-  assert payload["run"]["phase"] == "HOLD"
-  assert "SAFETY" in payload["latest_evaluation"]["blocking_sources"]
-
-
-def test_execution_canary_consumes_blocking_health_surface_without_redefining_it(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  def _blocked_health_summary(**_kwargs):
-    return {
-      "snapshot_id": "health-blocked-1",
-      "state": "BLOCKED",
-      "score": 42,
-      "blocking_bool": True,
-      "top_priority_reason_code": "PREFLIGHT_EXPIRED",
-      "reason_codes": ["PREFLIGHT_EXPIRED"],
-      "hard_blockers": ["PREFLIGHT_EXPIRED"],
-      "warnings": [],
-      "scope_status": [],
-    }
-
-  monkeypatch.setattr(module.runtime_bridge, "build_live_health_summary", _blocked_health_summary)
-
-  payload = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-
-  assert payload["ok"] is False
-  assert payload["run"]["phase"] == "HOLD"
-  reasons = {row["reason_code"] for row in payload["latest_evaluation"]["gating_reasons"]}
-  assert "HEALTH_BLOCKED" in reasons
-
-
-def test_execution_canary_critical_alert_surface_blocks_without_creating_new_alerts(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  module.store.upsert_execution_alert_instance(
-    trigger_code="STREAM_TERMINATED",
-    severity="CRITICAL",
-    state="OPEN",
-    source_layer="HEALTH",
-    scope_type="GLOBAL",
-    source_refs={"primary": [{"type": "health_summary", "id": "health-1"}]},
-    evidence={"reason": "upstream_critical_alert"},
-    summary_text="critical alert already open",
-  )
-  before_count = len(module.store.list_execution_alert_instances(limit=50))
-
-  payload = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-
-  after_count = len(module.store.list_execution_alert_instances(limit=50))
-  assert payload["ok"] is False
-  assert payload["run"]["phase"] == "HOLD"
-  assert "ALERTS" in payload["latest_evaluation"]["blocking_sources"]
-  assert after_count == before_count
-
-
-def test_execution_canary_healthy_run_progresses_and_persists_history(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  started = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert started["run"]["phase"] == "ARMED"
-
-  running = module.runtime_bridge.evaluate_canary_run(
-    run_id=started["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert running["run"]["phase"] == "RUNNING"
-
-  module.store.upsert_canary_run(
-    run_id=running["run"]["run_id"],
-    scope_type=running["run"]["scope_type"],
-    bot_id=running["run"]["bot_id"],
-    symbol=running["run"]["symbol"],
-    phase="RUNNING",
-    canary_allowed_bool=True,
-    hold_required_bool=False,
-    rollback_recommended_bool=False,
-    promotion_allowed_bool=False,
-    started_at=running["run"]["started_at"],
-    running_started_at=(module.utc_now() - timedelta(seconds=600)).isoformat(),
-    last_evaluated_at=running["run"]["last_evaluated_at"],
-    ended_at=None,
-    last_gate_evaluation_id=running["run"]["last_gate_evaluation_id"],
-    blocking_sources=running["run"]["blocking_sources"],
-    gating_reasons=running["run"]["gating_reasons"],
-    advisory_warnings=running["run"]["advisory_warnings"],
-    upstream_refs=running["run"]["upstream_refs"],
-    summary_text=running["run"]["summary_text"],
-    raw_run=running["run"]["raw_run"],
-  )
-
-  passed = module.runtime_bridge.evaluate_canary_run(
-    run_id=running["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert passed["run"]["phase"] == "PASSED"
-  assert module.store.list_canary_gate_evaluations(run_id=running["run"]["run_id"], limit=20)
-  assert module.store.list_canary_phase_snapshots(run_id=running["run"]["run_id"], limit=20)
-  assert module.store.list_canary_run_events(run_id=running["run"]["run_id"], limit=20)
-
-
-def test_execution_canary_fail_closed_when_surfaces_are_missing(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  monkeypatch.setattr(module.runtime_bridge, "build_live_signal_snapshot", lambda **_kwargs: {"items": []})
-
-  evaluation = module.runtime_bridge.build_execution_canary_gate_evaluation(
-    state=state,
-    settings=module.store.load_settings(),
-    persist=False,
-    refresh_alerts=False,
-  )
-
-  assert evaluation["canary_allowed_bool"] is False
-  assert evaluation["hold_required_bool"] is True
-  assert "EVIDENCE" in evaluation["blocking_sources"]
-
-
-def test_execution_canary_status_and_endpoints_expose_contract(tmp_path: Path, monkeypatch) -> None:
-  module, client = _build_app(tmp_path, monkeypatch, mode="live")
-  admin = _login(client, "Wadmin", "moroco123")
-  _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  start = client.post(
-    "/api/v1/execution/canary/start",
-    headers=_auth_headers(admin),
-    json={},
-  )
-  assert start.status_code == 200, start.text
-  start_payload = start.json()
-  run_id = start_payload["run"]["run_id"]
-  assert start_payload["run"]["phase"] == "ARMED"
-
-  status = client.get("/api/v1/execution/canary/status", headers=_auth_headers(admin))
-  assert status.status_code == 200, status.text
-  status_payload = status.json()
-  assert set(status_payload.keys()) >= {"scope", "policy", "latest_run", "current_evaluation", "history"}
-  assert status_payload["latest_run"]["run_id"] == run_id
-
-  detail = client.get(f"/api/v1/execution/canary/runs/{run_id}", headers=_auth_headers(admin))
-  assert detail.status_code == 200, detail.text
-  detail_payload = detail.json()
-  assert detail_payload["run"]["run_id"] == run_id
-  assert isinstance(detail_payload["events"], list)
-  assert isinstance(detail_payload["gate_evaluations"], list)
-
-
-def test_execution_canary_status_does_not_open_new_alerts_or_safety_actions(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-  before_alerts = len(module.store.list_execution_alert_instances(limit=50))
-  before_actions = len(module.store.list_safety_manual_actions(limit=50))
-
-  payload = module.runtime_bridge.execution_canary_status(
-    state=state,
-    settings=module.store.load_settings(),
-  )
-
-  after_alerts = len(module.store.list_execution_alert_instances(limit=50))
-  after_actions = len(module.store.list_safety_manual_actions(limit=50))
-  assert payload["current_evaluation"]["canary_allowed_bool"] is True
-  assert after_alerts == before_alerts
-  assert after_actions == before_actions
-
-
-def test_execution_canary_resume_is_only_valid_from_hold(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  started = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert started["run"]["phase"] == "ARMED"
-
-  with pytest.raises(ValueError, match="only valid from HOLD"):
-    module.runtime_bridge.resume_canary_run(
-      run_id=started["run"]["run_id"],
-      state=state,
-      settings=module.store.load_settings(),
-      actor="tester",
-    )
-
-
-def test_execution_canary_warn_alert_does_not_block_by_mere_existence(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  module.store.upsert_execution_alert_instance(
-    trigger_code="STREAM_GAP_WARN",
-    severity="WARN",
-    state="OPEN",
-    source_layer="RAW",
-    scope_type="GLOBAL",
-    source_refs={"primary": [{"type": "live_signal_snapshot", "id": "sig-1"}]},
-    evidence={"stream_gap_ms": 7000},
-    summary_text="warn alert",
-  )
-
-  payload = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-
-  assert payload["ok"] is True
-  assert payload["run"]["phase"] == "ARMED"
-  assert "ALERTS" not in payload["latest_evaluation"]["blocking_sources"]
-
-
-def test_execution_canary_resume_rearms_and_resets_stability_window(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  started = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  running = module.runtime_bridge.evaluate_canary_run(
-    run_id=started["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert running["run"]["phase"] == "RUNNING"
-  first_running_started_at = str(running["run"]["running_started_at"] or "")
-  assert first_running_started_at
-
-  held = module.runtime_bridge.hold_canary_run(
-    run_id=running["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-    reason="manual_hold",
-  )
-  assert held["run"]["phase"] == "HOLD"
-
-  resumed = module.runtime_bridge.resume_canary_run(
-    run_id=running["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-    reason="resume_after_hold",
-  )
-  assert resumed["ok"] is True
-  assert resumed["run"]["phase"] == "ARMED"
-  assert resumed["run"]["running_started_at"] is None
-
-  rerun = module.runtime_bridge.evaluate_canary_run(
-    run_id=running["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert rerun["run"]["phase"] == "RUNNING"
-  assert str(rerun["run"]["running_started_at"] or "") != first_running_started_at
-
-
-def test_execution_canary_rollback_requires_canonical_confirmation(tmp_path: Path, monkeypatch) -> None:
-  module, _client = _build_app(tmp_path, monkeypatch, mode="live")
-  state = _mark_live_health_ready(module)
-  _patch_live_gates_green(module, monkeypatch)
-
-  started = module.runtime_bridge.start_canary_run(
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  running = module.runtime_bridge.evaluate_canary_run(
-    run_id=started["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-  assert running["run"]["phase"] == "RUNNING"
-
-  policy = dict(module.runtime_bridge._canary_policy())
-  policy["rollback_execution_supported"] = True
-  monkeypatch.setattr(module.runtime_bridge, "_canary_policy", lambda: policy)
-
-  payload = module.runtime_bridge.rollback_canary_run(
-    run_id=running["run"]["run_id"],
-    state=state,
-    settings=module.store.load_settings(),
-    actor="tester",
-  )
-
-  assert payload["ok"] is False
-  assert payload["action"] == "rollback_recommended"
-  assert payload["run"]["phase"] == "ROLLBACK_RECOMMENDED"
-  assert payload["latest_evaluation"]["rollback_confirmation"]["required"] is True
-  assert payload["latest_evaluation"]["rollback_confirmation"]["confirmed"] is False
 

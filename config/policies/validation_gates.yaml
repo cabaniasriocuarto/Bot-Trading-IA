@@ -1,0 +1,136 @@
+validation_gates:
+  stages:
+    paper:
+      min_orders: 30
+      min_trading_days: 3
+      max_unresolved_reconcile_rate_pct: 2.0
+      max_reject_rate_pct: 5.0
+      max_cost_mismatch_rate_pct: 5.0
+      min_fill_coverage_pct: 95.0
+      min_cost_materialization_coverage_pct: 95.0
+      min_cancel_success_rate_pct: 90.0
+      max_gross_net_inconsistency_rate_pct: 5.0
+    testnet:
+      min_orders: 20
+      min_trading_days: 2
+      max_unresolved_reconcile_rate_pct: 2.0
+      max_reject_rate_pct: 5.0
+      max_cost_mismatch_rate_pct: 5.0
+      min_fill_coverage_pct: 95.0
+      min_cost_materialization_coverage_pct: 90.0
+      min_cancel_success_rate_pct: 90.0
+      max_gross_net_inconsistency_rate_pct: 5.0
+      require_real_user_data_stream_or_explicit_degraded_mode: true
+    canary:
+      min_orders: 10
+      min_runtime_hours: 8
+      max_unresolved_reconcile_rate_pct: 1.0
+      max_reject_rate_pct: 3.0
+      max_cost_mismatch_rate_pct: 3.0
+      min_fill_coverage_pct: 100.0
+      min_cost_materialization_coverage_pct: 95.0
+      min_cancel_success_rate_pct: 95.0
+      max_gross_net_inconsistency_rate_pct: 3.0
+      max_kill_switch_trips: 0
+      max_margin_guard_blocks: 0
+  blocks:
+    block_if_kill_switch_active: true
+    block_if_fee_source_missing_in_live_like_modes: true
+    block_if_snapshot_stale: true
+    block_if_policy_missing: true
+    allow_manual_override: false
+  promotion:
+    order: ["PAPER", "TESTNET", "CANARY", "LIVE_SERIO"]
+    auto_activate_live_serio: false
+    live_like_stages: ["TESTNET", "CANARY", "LIVE_SERIO"]
+  environments:
+    paper:
+      mode: paper
+      environment: paper
+      preconditions:
+        - execution policies loaded
+        - execution stack healthy enough to submit paper orders
+      control_metrics:
+        - total_orders
+        - trading_days
+        - unresolved_reconcile_rate_pct
+        - reject_rate_pct
+        - cost_mismatch_rate_pct
+        - fill_coverage_pct
+        - cost_materialization_coverage_pct
+        - cancel_success_rate_pct
+        - gross_net_inconsistency_rate_pct
+      exit_criteria:
+        - gates PASS before TESTNET
+      blocking_causes:
+        - validation_policy_missing
+        - explicit stage gate failure
+      warnings:
+        - PAPER validates wiring and accounting, not live market behavior
+    testnet:
+      mode: testnet
+      environment: testnet
+      preconditions:
+        - paper PASS
+        - testnet environment supported for the selected family
+      control_metrics:
+        - total_orders
+        - trading_days
+        - unresolved_reconcile_rate_pct
+        - reject_rate_pct
+        - cost_mismatch_rate_pct
+        - fill_coverage_pct
+        - cost_materialization_coverage_pct
+        - cancel_success_rate_pct
+        - degraded_mode_seen
+      exit_criteria:
+        - gates PASS before CANARY
+      blocking_causes:
+        - unsupported family/environment
+        - stale snapshots
+        - missing fee/cost evidence in live-like validation
+      warnings:
+        - Spot Testnet is not equivalent to live
+        - Spot Testnet may reset balances and orders
+        - Futures Testnet uses separate base URLs/endpoints
+    canary:
+      mode: live
+      environment: live
+      preconditions:
+        - testnet PASS
+        - kill switch operational
+        - live safety summary without blocking guards
+      control_metrics:
+        - total_orders
+        - runtime_hours
+        - unresolved_reconcile_rate_pct
+        - reject_rate_pct
+        - cost_mismatch_rate_pct
+        - fill_coverage_pct
+        - cost_materialization_coverage_pct
+        - cancel_success_rate_pct
+        - gross_net_inconsistency_rate_pct
+        - kill_switch_trip_count
+        - margin_guard_block_count
+      exit_criteria:
+        - gates PASS before LIVE_SERIO readiness
+      blocking_causes:
+        - any live safety blocker
+        - any kill switch trip
+        - margin guard block
+      warnings:
+        - Canary uses a controlled live slice, not full live serio
+        - Do not auto-promote to live serio from this block
+    live_serio:
+      mode: live
+      environment: live
+      preconditions:
+        - canary PASS
+      control_metrics:
+        - readiness only
+      exit_criteria:
+        - not activated automatically in RTLOPS-36
+      blocking_causes:
+        - any previous stage not PASS
+      warnings:
+        - LIVE_SERIO is destination only in this block

@@ -1,12 +1,12 @@
 # Runbook: Final live release gate
 
-Fecha: 2026-04-01
+Fecha: 2026-04-02
 
 ## Contexto de este gate
 
-- este artefacto se integra en `Ruta A`;
-- `Ruta A` acepta el core live actual como base parcialmente absorbida y documentada;
-- este bloque no reabre la recuperacion de cohorte de `RTLOPS-23/44/46/47/48/49/50`;
+- este artefacto hoy se usa sobre `feature/live-core-coupled-recovery`;
+- `Carril 1` ya recupero materialmente la cohorte tecnica acoplada `RTLOPS-44/45/46/47/48/49/50/23`;
+- este bloque no reabre esa cohorte: la toma como base tecnica ya recuperada en esta rama;
 - este gate no convierte por si mismo al repo en `LIVE: GO`;
 - el uso correcto es decidir `GO`, `GO con restricciones` o `NO GO` con evidencia fresca y humana sobre el entorno objetivo.
 
@@ -14,9 +14,19 @@ Fecha: 2026-04-01
 
 - decision actual: `NO GO`
 - motivo:
-  - `RTLOPS-35` ya queda integrado en repo como smoke Playwright chica y util, pero no se revalida localmente en este entorno porque faltan `node` y `npm`;
-  - el core live sigue parcialmente absorbido/documentado en `docs/truth`;
-  - habilitar `LIVE_SERIO` sigue requiriendo reevaluacion fresca del entorno objetivo y aprobacion humana explicita.
+  - la rama ya quedo validada localmente para release path con:
+    - `npm run lint` -> PASS
+    - `npm run build` -> PASS
+    - `npm run test:playwright` -> PASS (`3 passed`)
+  - el core live acoplado ya no es el blocker principal en esta rama;
+  - el gate remoto ya fue ejecutado con auth real en staging y hoy devuelve:
+    - `GET /api/v1/gates` -> `overall_status = WARN`, `mode = paper`
+    - `GET /api/v1/rollout/status` -> `state = IDLE`
+    - `GET /api/v1/validation/readiness` -> `live_serio_ready = false`
+    - `GET /api/v1/execution/live-safety/summary` -> `overall_status = BLOCK`, `live_parity_base_ready = false`
+    - `GET /api/v1/execution/reconcile/summary` -> `ack_missing = 0`, `unresolved_count = 0`
+    - `GET /api/v1/execution/market-streams/summary` -> `live_blocked = false`, `running_sessions = 0`
+  - por eso `LIVE_SERIO` sigue en `NO GO` aunque auth y deploy remoto ya no sean el blocker.
 
 ## Alcance real de la decision
 
@@ -28,7 +38,8 @@ Fecha: 2026-04-01
   - runbooks/rollback de `RTLOPS-37`
   - gates y contratos backend ya presentes en `RTLOPS-51/52/54/29/30`
 - mantiene como limitacion explicita:
-  - el drift documentado del core live `RTLOPS-23/44/46/47/48/49/50`.
+  - aun falta gate final contra el entorno objetivo;
+  - `LIVE` sigue fail-closed hasta reevaluacion fresca y aprobacion humana.
 
 ## Matriz de evidencia util
 
@@ -58,11 +69,10 @@ Fecha: 2026-04-01
 ### 4) Reconciliation
 
 - estado actual en repo:
-  - existe reconciliacion operativa y blocker semantico;
-  - el engine formal sigue parcialmente absorbido/documentado
+  - existe reconciliacion operativa y engine formal recuperado en esta rama
 - lectura correcta:
   - usarlo como gate real;
-  - no declararlo reconciliacion totalmente recuperada.
+  - no declararlo `PASS` hasta snapshot fresco del entorno objetivo.
 
 ### 5) Health / alerts / safety
 
@@ -101,12 +111,12 @@ Fecha: 2026-04-01
   - `tests/playwright/live-smoke.spec.ts`
 - cobertura integrada:
   - login -> `Ejecucion`
-  - visibilidad de `Checklist Live Ready`, `Health Summary`, `Operational Safety`
-  - visibilidad de `Freeze global`, `Unfreeze global`, `Emergency cancel`, `Health evaluate`
+  - visibilidad de `Checklist Live Ready`, `Preflight LIVE Final`, `Reconciliation`
+  - visibilidad de `Refrescar panel`, `Modo seguro ON`, `Cerrar posiciones`, `Kill switch`
   - navegacion a `Alertas y Logs`
-- limitacion honesta:
-  - en este bloque no se ejecuto porque el entorno actual no tiene `node` ni `npm`
-  - hasta revalidarlo, cuenta como capa integrada en repo pero no como evidencia fresca de paso.
+- validacion local fresca:
+  - `npm run test:playwright` -> PASS (`3 passed`)
+  - cuenta como evidencia local de release path en esta rama
 
 ### 10) Runbooks / incidentes
 
@@ -120,38 +130,60 @@ Fecha: 2026-04-01
 
 ## Blockers duros para pasar a LIVE
 
-- no hay revalidacion fresca de `RTLOPS-35` en este entorno;
-- no hay reevaluacion fresca del entorno objetivo para:
-  - `preflight`
-  - `G9_RUNTIME_ENGINE_REAL`
-  - `account surface`
-  - `reconciliation`
-  - `health`
-  - `safety`
-  - `alerts`
-  - `canary`
-- el core live sigue parcialmente absorbido/documentado y no se reconcilia en este bloque.
+- el snapshot remoto autenticado actual sigue mostrando:
+  - `gates.overall_status = WARN`
+  - `validation/readiness.live_serio_ready = false`
+  - `execution/live-safety.overall_status = BLOCK`
+  - `execution/live-safety.live_parity_base_ready = false`
+- el detalle actual del bloqueo en staging ya no es deploy/auth ni policies ausentes:
+  - `gates` queda en `WARN` por:
+    - `G8_OBSERVABILITY_OK = WARN` (`Telegram disabled`)
+    - `G9_RUNTIME_ENGINE_REAL = WARN` con `mode = paper` y runtime incompleto para no-live
+  - `validation/readiness` sigue en `false` porque no existen runs `PASS` persistidos para `paper -> testnet -> canary`
+  - `execution/live-safety` hoy bloquea por:
+    - `stale_quote_blocker`
+    - `stale_orderbook_blocker`
+    - `snapshot_freshness_blocker`
+    - `exchange_filters_blocker`
+    - `margin_level_blocker`
+- el snapshot remoto autenticado actual no bloquea por reconciliacion ni por market streams:
+  - `execution/reconcile/summary.unresolved_count = 0`
+  - `execution/reconcile/summary.ack_missing = 0`
+  - `execution/market-streams/summary.live_blocked = false`
+  - `execution/market-streams/summary.running_sessions = 0`
+- no hay aprobacion humana explicita posterior a esta evidencia.
 
 ## Que habilitaria pasar de `NO GO` a decision operable
 
-- correr `RTLOPS-35` en una maquina con `node` y `npm` disponibles;
-- archivar resultado real de la smoke;
-- ejecutar este gate en el entorno objetivo con snapshots frescos de:
-  - `GET /api/v1/gates`
-  - `GET /api/v1/rollout/status`
-  - `GET /api/v1/execution/health/summary`
-  - `GET /api/v1/execution/safety/summary`
-  - `GET /api/v1/execution/alerts/open`
-  - `GET /api/v1/execution/canary/status`
+- no falta ya auth ni refresh de staging para este gate:
+  - el backend staging correcto ya esta desplegado
+  - las surfaces remotas ya existen y fueron leidas autenticadas
+- tampoco faltan ya policies base del runtime:
+  - staging vuelve a cargar `config/policies/validation_gates.yaml`
+  - staging vuelve a cargar `config/policies/instrument_registry.yaml`
+- para pasar de `NO GO` a decision operable hace falta que el entorno objetivo deje de mostrar:
+  - `gates.overall_status = WARN`
+  - `validation/readiness.live_serio_ready = false`
+  - `execution/live-safety.overall_status = BLOCK`
+  - `execution/live-safety.live_parity_base_ready = false`
+- hoy eso implica, concretamente:
+  - disponer market data live real para evitar `stale_quote_blocker` y `stale_orderbook_blocker`
+  - obtener snapshots frescos/exchange filters validos; en este staging el registry sigue chocando contra `451` en endpoints publicos de Binance
+  - tener margin visibility valida si `margin/usdm_futures/coinm_futures` siguen habilitados en policy
+  - conseguir runs `PASS` persistidos para `paper`, `testnet` y `canary`
+- si se reevalua otro entorno objetivo distinto de este staging:
+  - repetir el mismo set de snapshots autenticados
+  - no extrapolar `PASS` desde un entorno a otro
 - obtener aprobacion humana explicita antes de habilitar `LIVE_SERIO`.
 
 ## Proximo paso operativo exacto
 
-- revalidar la smoke Playwright de `RTLOPS-35` en un entorno con `node` y `npm`;
-- ejecutar este gate en el entorno objetivo inmediatamente antes de cualquier promocion live;
-- si alguna surface falla o queda stale:
-  - no habilitar live
-  - pasar a `HOLD`, `freeze` o `rollout/rollback` segun corresponda.
+- conservar `feature/live-core-coupled-recovery` y el Draft PR `#13` contra `rtlops-sync-release-live-unification`;
+- usar la evidencia remota autenticada ya capturada para decidir el estado de revision del PR;
+- si se pasa el PR a `Ready for review`, hacerlo manteniendo `LIVE = NO GO`;
+- antes de cualquier promocion live real:
+  - reevaluar el gate en el entorno objetivo inmediato
+  - no habilitar live si reaparecen `WARN`, `BLOCK` o `live_serio_ready = false`.
 
 ## Referencias relacionadas
 

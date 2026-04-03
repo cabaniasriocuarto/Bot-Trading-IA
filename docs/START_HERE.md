@@ -26,11 +26,20 @@ Este archivo centraliza la documentacion vigente del proyecto.
 ## Estado operativo actual
 - `NO-LIVE`: GO (staging/testnet/paper).
 - `LIVE`: NO GO.
-- Condicion para LIVE bajo `Ruta A`:
-  - aceptar explicitamente que el core live de esta base sigue parcialmente absorbido/documentado y no se reabre en este bloque;
-  - revalidar `RTLOPS-35` en un entorno con `node` y `npm`;
-  - ejecutar `RTLOPS-38` mediante `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
-  - y recien despues aprobacion humana sobre el entorno objetivo.
+- Estado del core live en esta rama:
+  - `Carril 1` ya recupero materialmente la cohorte tecnica acoplada `RTLOPS-44/45/46/47/48/49/50/23`;
+  - el blocker principal ya no es ausencia de `execution/reality` ni de sus runtimes/modulos satelite.
+- Condicion para LIVE en esta base:
+  - la validacion local de release/UI en esta rama ya paso:
+    - `npm run lint`
+    - `npm run build`
+    - `npm run test:playwright`
+  - la branch `feature/live-core-coupled-recovery` ya esta pusheada y el Draft PR `#13` ya existe contra `rtlops-sync-release-live-unification`;
+  - el gate remoto ya fue ejecutado autenticado sobre staging y hoy sigue en `NO GO` por resultado del propio gate:
+    - `gates.overall_status = WARN`
+    - `validation/readiness.live_serio_ready = false`
+    - `execution/live-safety.overall_status = BLOCK`
+  - y recien despues de resolver ese estado en el entorno objetivo corresponde aprobacion humana sobre el entorno objetivo.
 
 ## Ambientes online de prueba (staging)
 - Frontend (Vercel staging): `https://bot-trading-ia-staging.vercel.app`

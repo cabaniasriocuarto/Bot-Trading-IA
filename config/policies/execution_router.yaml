@@ -1,0 +1,20 @@
+execution_router:
+  families_enabled:
+    spot: true
+    margin: true
+    usdm_futures: true
+    coinm_futures: true
+  first_iteration_supported_order_types:
+    spot: ["MARKET", "LIMIT"]
+    margin: ["MARKET", "LIMIT"]
+    usdm_futures: ["MARKET", "LIMIT"]
+    coinm_futures: ["MARKET", "LIMIT"]
+  time_in_force_allowed:
+    spot: ["GTC", "IOC", "FOK"]
+    margin: ["GTC", "IOC", "FOK"]
+    usdm_futures: ["GTC", "IOC", "FOK", "GTX"]
+    coinm_futures: ["GTC", "IOC", "FOK", "GTX"]
+  prefer_cancel_replace_spot: true
+  enable_batch_orders_usdm: false
+  enable_batch_orders_coinm: false
+  conditional_orders_phase1: false

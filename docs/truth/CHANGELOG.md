@@ -1,5 +1,150 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-02
+
+### Hotfix de staging: policies empaquetadas en Railway
+- `rtlab_autotrader/docker/Dockerfile` ahora copia `config/` a `/app/config` dentro del contenedor
+- efecto real en staging despues del redeploy:
+  - `validation/readiness.policy_source = config/policies/validation_gates.yaml`
+  - `instruments/registry.policy_source = config/policies/instrument_registry.yaml`
+  - `execution_policy_loaded = true`
+  - `capabilities_known = true`
+  - desaparece el fail-closed por policies ausentes en runtime
+- blockers remotos que siguen abiertos despues del hotfix:
+  - `gates.overall_status = WARN` por `mode = paper` y `G8/G9`
+  - `validation/readiness.live_serio_ready = false` porque no hay runs `PASS` persistidos para `paper -> testnet -> canary`
+  - `execution/live-safety.overall_status = BLOCK` por:
+    - `stale_quote_blocker`
+    - `stale_orderbook_blocker`
+    - `snapshot_freshness_blocker`
+    - `exchange_filters_blocker`
+    - `margin_level_blocker`
+  - el registry ya intenta refrescar snapshots, pero en este staging recibe `451` contra varios `exchangeInfo` publicos de Binance
+
+### Auditoria final del gate remoto autenticado
+- Railway staging ya quedo alineado con esta rama:
+  - proyecto `Bot-Trading-IA`
+  - environment `staging`
+  - servicio `Bot-Trading-IA`
+  - deploy activo `SUCCESS`
+  - las surfaces nuevas del gate ya no devuelven `404`
+- se resolvio el bloqueo de auth operativo para consultar staging:
+  - flujo oficial `POST /api/v1/auth/login`
+  - acceso autenticado real a:
+    - `GET /api/v1/gates`
+    - `GET /api/v1/rollout/status`
+    - `GET /api/v1/validation/readiness`
+    - `GET /api/v1/execution/live-safety/summary`
+    - `GET /api/v1/execution/reconcile/summary`
+    - `GET /api/v1/execution/market-streams/summary`
+- snapshots remotos autenticados vigentes:
+  - `gates.overall_status = WARN`
+  - `rollout/status.state = IDLE`
+  - `validation/readiness.live_serio_ready = false`
+  - `execution/live-safety.overall_status = BLOCK`
+  - `execution/live-safety.live_parity_base_ready = false`
+  - `execution/reconcile/summary.ack_missing = 0`
+  - `execution/reconcile/summary.unresolved_count = 0`
+  - `execution/market-streams/summary.live_blocked = false`
+  - `execution/market-streams/summary.running_sessions = 0`
+- decision vigente despues de esta auditoria:
+  - `LIVE` sigue en `NO GO`
+  - ya no por falta de deploy, auth o snapshots remotos
+  - sino por el contenido mismo del gate autenticado y por la aprobacion humana pendiente
+- impacto sobre el PR `#13`:
+  - el release path ya no esta bloqueado por infraestructura remota
+  - el estado de revision del PR puede decidirse por separado de `LIVE`
+  - si se pasa a `Ready for review`, debe mantenerse `LIVE = NO GO`
+
+### Microbloque QA backend + release gate
+- `config/policies` recupera alias backward-compatible en `summary` para:
+  - `execution_alerting_severity_rank`
+  - `execution_alerting_severity_source_precedence`
+  - sin remover el shape canonico actual `ops_alert_*`
+- `readiness_by_stage` queda fijado como surface canonica en `GET /api/v1/validation/readiness`;
+  - `GET /api/v1/rollout/status` conserva estado/config/telemetry de rollout y no vuelve a publicar ese bloque
+- `test_backend_qa_live.py` y `test_rollout_safe_update.py` se alinean con las surfaces publicas reales de esta rama:
+  - `gates`
+  - `rollout/status`
+  - `validation/readiness`
+  - `execution/live-safety/summary`
+  - `execution/reconcile/summary`
+  - `execution/market-streams/summary`
+- `docs/runbooks/LIVE_RELEASE_GATE.md` se alinea con la realidad actual:
+  - el push y el Draft PR ya ocurrieron
+  - la probe de safety del gate en esta rama es `GET /api/v1/execution/live-safety/summary`
+  - las probes activas del gate dejan de apuntar a surfaces no expuestas por esta rama (`health`, `alerts`, `canary`, `rollout/shadow`)
+- `docs/START_HERE.md`, `docs/truth/SOURCE_OF_TRUTH.md` y `docs/truth/NEXT_STEPS.md` dejan de listar `push + Draft PR` como pasos pendientes de este release path
+- decision vigente tras este microbloque:
+  - `LIVE` sigue en `NO GO`
+  - ahora por falta de snapshots frescos completos del entorno objetivo y aprobacion humana explicita, no por drift local del contrato QA backend
+
+### Carril 2 - cierre local del release path
+- Housekeeping seguro del bloque:
+  - se borraron temporales/basura locales `ds}`, `erswalte...` y `tatus --short`
+  - `rtlab_autotrader/.tmp/` queda ahora ignorado via `rtlab_autotrader/.gitignore`
+- Revalidacion local final del dashboard/release path:
+  - `rtlab_dashboard/tests/playwright/live-smoke.spec.ts` se ajusto al contrato UI real vigente
+  - `npm run lint` en `rtlab_dashboard` -> PASS
+  - `npm run build` en `rtlab_dashboard` -> PASS
+  - `npm run test:playwright` en `rtlab_dashboard` -> PASS (`3 passed`)
+- Documentacion alineada con el estado real de esta rama:
+  - `docs/runbooks/LIVE_RELEASE_GATE.md`
+  - `docs/START_HERE.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Decision honesta vigente despues de esta revalidacion local:
+  - `LIVE` sigue en `NO GO`
+  - ya no por falta de `node/npm` ni por ausencia del core live acoplado en esta rama
+  - sino por falta de snapshots frescos del entorno objetivo y aprobacion humana explicita
+
+### Carril 1 - cohorte tecnica acoplada del core live
+- Recuperacion material integrada en esta rama para:
+  - `RTLOPS-44`
+  - `RTLOPS-45`
+  - `RTLOPS-46`
+  - `RTLOPS-47`
+  - `RTLOPS-48`
+  - `RTLOPS-49`
+  - `RTLOPS-50`
+  - `RTLOPS-23`
+- Paquete tecnico recuperado:
+  - `execution/reality.py`
+  - `binance_adapter.py`
+  - `live_user_stream_runtime.py`
+  - `live_market_runtime.py`
+  - `filter_prevalidator.py`
+  - `live_preflight.py`
+  - `live_order_state.py`
+  - `live_fill_state.py`
+  - `reconciliation_engine.py`
+  - wiring asociado en `web/app.py`
+- Satelites imprescindibles agregados para dejar la cohorte autoconsistente:
+  - `execution/__init__.py`
+  - `instruments/__init__.py`
+  - `reporting/service.py`
+  - `runtime_controls.py`
+  - `universe/service.py`
+  - `validation/service.py`
+  - root + compat de:
+    - `execution_router.yaml`
+    - `runtime_controls.yaml`
+    - `instrument_registry.yaml`
+    - `universes.yaml`
+    - `cost_stack.yaml`
+    - `reporting_exports.yaml`
+    - `validation_gates.yaml`
+- Validacion real corrida en este bloque:
+  - `py_compile` sobre modulos Python tocados -> PASS
+  - `uv run pytest tests/test_policy_paths.py tests/test_execution_reality.py tests/test_web_execution_reality_api.py` -> PASS (`91 passed`)
+  - `uv run pytest tests/test_web_live_ready.py -k "preflight or reconciliation or pending_cancel or partially_filled or expired_in_match or fills_recent or filled_qty or runtime_sync_testnet or live_mode_requires_clean_reconciliation_gate or live_start_requires_clean_reconciliation_gate"` -> PASS (`34 passed`, `93 deselected`)
+  - `npm run lint` en `rtlab_dashboard` -> PASS
+  - `npm run build` en `rtlab_dashboard` -> PASS
+- Limites honestos:
+  - no se corrio Playwright en este bloque;
+  - no se tocaron Binance Catalog, Vercel ni un cost bridge/reporting mas amplio que el estrictamente necesario para esta cohorte;
+  - la decision `LIVE` sigue en `NO GO` hasta el gate final de release sobre esta misma base.
+
 ## 2026-04-01
 
 ### Ruta A - sync selectivo de RTLOPS-35 y RTLOPS-38

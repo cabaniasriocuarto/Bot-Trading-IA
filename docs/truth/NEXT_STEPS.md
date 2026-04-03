@@ -1,6 +1,6 @@
 ﻿# NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-01
+Fecha: 2026-04-02
 
 ## Programa LIVE Spot actual
 - [x] `RTLOPS-36` validacion `paper -> testnet -> canary`
@@ -28,19 +28,15 @@ Fecha: 2026-04-01
     - `account_surface_ok`
     - `account_surface_fresh`
     - `account_can_trade`
-  - `GET /api/v1/rollout/status` expone `readiness_by_stage` consumiendo surfaces canonicas de:
-    - runtime contract real/testnet-live
-    - canary controller
-    - health summary
-    - operational safety
-    - alertas persistentes
+  - la surface canonica de readiness por etapa en esta rama es:
+    - `GET /api/v1/validation/readiness`
+  - `GET /api/v1/rollout/status` conserva estado/config/telemetry de rollout y ya no se usa como source de `readiness_by_stage`
   - `TESTNET` deja de quedar `READY` solo porque un soak previo paso; si el runtime contract actual no esta listo, falla cerrado.
 - [x] `RTLOPS-52` `Shadow Mode operativo`
   - `LIVE_SHADOW` deja de depender solo del preview manual;
-  - nuevo status operativo fail-closed:
-    - `GET /api/v1/rollout/shadow/status`
-  - nueva ingest de decisiones auditables:
-    - `POST /api/v1/rollout/shadow/signal`
+  - nota de rama actual:
+    - no aparece hoy una route publica dedicada `GET /api/v1/rollout/shadow/status` ni `POST /api/v1/rollout/shadow/signal` expuesta por `app.py`;
+    - la trazabilidad visible vigente queda en `GET /api/v1/rollout/status` y `POST /api/v1/rollout/blending/preview`
   - reutiliza rollout manager + runtime contract live + `runtime_telemetry_guard`;
   - endurecimiento final chico:
     - rechaza `baseline_signal` / `candidate_signal` vacios o sin `action` reconocible ni score numerico explicito;
@@ -56,11 +52,12 @@ Fecha: 2026-04-01
   - surfaces cubiertas por la capa QA:
     - `G9_RUNTIME_ENGINE_REAL`
     - `config/policies`
-    - `execution/health/summary`
-    - `execution/alerts/open` + `history`
-    - `execution/canary/status`
-    - `rollout/shadow/status`
-    - `rollout/status` con `readiness_by_stage`
+    - `gates`
+    - `rollout/status`
+    - `validation/readiness`
+    - `execution/live-safety/summary`
+    - `execution/reconcile/summary`
+    - `execution/market-streams/summary`
   - Playwright queda diferido con justificacion honesta:
     - el repo actual muestra base real de `Vitest` en `rtlab_dashboard`, pero no una base Playwright ya integrada y chica para sumarla en este bloque sin expandir alcance;
   - la relacion `RTLOPS-51` / `RTLOPS-54` sigue como sync administrativo pendiente en Linear UI, no bloqueante para este cierre tecnico.
@@ -85,56 +82,90 @@ Fecha: 2026-04-01
     - script `npm run test:playwright`
     - dependencia/lockfile `@playwright/test`
   - no reabre backend ni recuperacion de core live;
-  - validacion local pendiente en este entorno porque faltan `node` y `npm`.
+  - validacion local fresca en esta rama:
+    - `npm run lint` -> PASS
+    - `npm run build` -> PASS
+    - `npm run test:playwright` -> PASS (`3 passed`)
 - [x] `RTLOPS-38` `Final live release gate`
   - integrado selectivamente bajo `Ruta A` con:
     - `docs/runbooks/LIVE_RELEASE_GATE.md`
   - el gate queda presente como capa final util;
-  - la decision vigente del gate en esta base sigue siendo `NO GO` hasta revalidacion Playwright + snapshots frescos del entorno objetivo.
-
-## Drift confirmado en esta base antes de seguir con UI/release
-- [ ] `RTLOPS-23` `Reconciliation Engine formal`
-  - absorbido parcial en `app.py` + `execution/reconciliation.py`;
-  - faltan `reconciliation_engine.py` y storage persistente del cierre fuente `aa2ebd4`;
-  - el commit fuente no es ancestro de esta rama.
-- [ ] `RTLOPS-47` `Live Preflight final`
-  - absorbido parcial por freshness/expiry y hard blocks actuales;
-  - faltan `live_preflight.py` y attestation manual persistida del cierre fuente `1335857`;
-  - la base actual expone `preflight_attestation_supported = false`.
-- [ ] `RTLOPS-48` `State machine formal de orden live`
-  - absorbido parcial por reconciliacion de `openOrders`, idempotencia y `unknown_timeout`;
-  - faltan `live_order_state.py` y journal append-only del cierre fuente `a320f7d`.
-- [ ] `RTLOPS-49` `Exchange adapter live hardening`
-  - absorbido parcial por signed REST live embebido en `app.py`;
-  - no existe `binance_adapter.py` ni el cierre fuente `27a2367` como ancestro.
-- [ ] `RTLOPS-50` `Persistencia canonica de fills/eventos live`
-  - absorbido parcial por métricas runtime y actualización de `filled_qty`;
-  - faltan `live_fill_state.py`, reconciliación con `myTrades` y storage canónico del cierre fuente `3f1f36b`.
-- [ ] `RTLOPS-44` `Market WebSocket Runtime live`
-  - no absorbido en esta base;
-  - faltan `live_market_runtime.py`, `binance_live_runtime.yaml` y endpoints `/api/v1/execution/market-streams/*` del cierre fuente `8f615bc`.
-- [ ] `RTLOPS-46` `Exchange filters pre-validator hardening`
-  - no absorbido en esta base;
-  - falta `filter_prevalidator.py` y la policy explícita del cierre fuente `4785d86`.
-- [ ] `RTLOPS-45` `Private user/account/order streams live`
-  - pendiente de revalidacion puntual;
-  - no se auditó con el mismo rigor en este bloque y no debe tratarse como claim fuerte de integración local.
+  - staging ya fue validado con auth real y snapshots remotos utiles;
+  - la decision vigente del gate en esta base sigue siendo `NO GO` por el contenido de esos snapshots + aprobacion humana explicita pendiente:
+    - `gates.overall_status = WARN`
+    - `validation/readiness.live_serio_ready = false`
+    - `execution/live-safety.overall_status = BLOCK`
+    - `execution/live-safety.live_parity_base_ready = false`
+  - hotfix posterior confirmado:
+    - staging ya carga `config/policies/validation_gates.yaml` e `instrument_registry.yaml`;
+    - el bloqueo restante paso a ser operativo:
+      - market data live ausente
+      - snapshots/exchange filters sin refresco valido
+      - margin visibility ausente
+      - cadena `paper -> testnet -> canary` sin runs `PASS`
+- [x] `Carril 1` `Cohorte tecnica acoplada del core live`
+  - recuperacion material integrada en esta rama para:
+    - `RTLOPS-44`
+    - `RTLOPS-45`
+    - `RTLOPS-46`
+    - `RTLOPS-47`
+    - `RTLOPS-48`
+    - `RTLOPS-49`
+    - `RTLOPS-50`
+    - `RTLOPS-23`
+  - nucleo recuperado:
+    - `execution/reality.py`
+    - `binance_adapter.py`
+    - `live_user_stream_runtime.py`
+    - `live_market_runtime.py`
+    - `filter_prevalidator.py`
+    - `live_preflight.py`
+    - `live_order_state.py`
+    - `live_fill_state.py`
+    - `reconciliation_engine.py`
+    - wiring en `web/app.py`
+  - satelites imprescindibles incorporados:
+    - `execution/__init__.py`
+    - `instruments/__init__.py`
+    - `runtime_controls.py`
+    - `reporting/service.py`
+    - `universe/service.py`
+    - `validation/service.py`
+    - policy bundle minimo real:
+      - `execution_router.yaml`
+      - `runtime_controls.yaml`
+      - `instrument_registry.yaml`
+      - `universes.yaml`
+      - `cost_stack.yaml`
+      - `reporting_exports.yaml`
+      - `validation_gates.yaml`
+  - validacion real corrida:
+    - `py_compile` de modulos Python tocados -> PASS
+    - `uv run pytest tests/test_policy_paths.py tests/test_execution_reality.py tests/test_web_execution_reality_api.py` -> PASS (`91 passed`)
+    - `uv run pytest tests/test_web_live_ready.py -k "preflight or reconciliation or pending_cancel or partially_filled or expired_in_match or fills_recent or filled_qty or runtime_sync_testnet or live_mode_requires_clean_reconciliation_gate or live_start_requires_clean_reconciliation_gate"` -> PASS (`34 passed`, `93 deselected`)
+    - `npm run lint` en `rtlab_dashboard` -> PASS
+    - `npm run build` en `rtlab_dashboard` -> PASS
+  - limite honesto:
+    - la revalidacion Playwright se resolvio despues en `Carril 2` y hoy ya pasa en esta rama;
+    - no se amplio el alcance a Binance Catalog, Vercel ni cost bridge amplio.
 
 ## Siguiente bloque exacto en esta base
-- [ ] Revalidacion operativa de `Ruta A`
-  - correr `RTLOPS-35` en una maquina con `node` y `npm`;
-  - ejecutar `npm run test:playwright` en `rtlab_dashboard`;
-  - si el entorno lo permite, correr tambien `lint` o build minimo del dashboard para confirmar que la capa UI/playwright no quedo rota;
-  - archivar el resultado real de la smoke.
-- [ ] Ejecucion del gate final en entorno objetivo
-  - usar `docs/runbooks/LIVE_RELEASE_GATE.md`;
-  - reevaluar `gates`, `rollout/status`, `health`, `safety`, `alerts` y `canary` con snapshots frescos antes de cualquier promocion live.
+- [ ] Carril 2 / release path sobre esta misma rama
+  - conservar la branch ya pusheada `feature/live-core-coupled-recovery` y el Draft PR `#13` ya abierto contra `rtlops-sync-release-live-unification`;
+  - usar la evidencia autenticada ya capturada de `gates`, `rollout/status`, `validation/readiness`, `live-safety`, `reconcile` y `market-streams` para decidir el estado de revision del PR;
+  - si se pasa el PR a `Ready for review`, hacerlo manteniendo `LIVE = NO GO`;
+  - antes de cualquier promocion live real, repetir el mismo gate autenticado sobre el entorno objetivo inmediato y exigir que desaparezcan `WARN`, `BLOCK` y `live_serio_ready = false`;
+  - el siguiente cuello operativo concreto ya no es deploy/auth:
+    - destrabar los `451` de Binance sobre `exchangeInfo` desde el staging objetivo o mover el gate a un entorno con acceso real
+    - disponer market data live real
+    - disponer margin visibility si siguen habilitadas familias `margin/usdm_futures/coinm_futures`
+    - conseguir runs `PASS` persistidos para `paper`, `testnet` y `canary`
 
-## Pendiente fuera de Ruta A
-- [ ] Recuperacion / reconciliacion del core live (`RTLOPS-23/44/46/47/48/49/50`)
-  - queda deliberadamente fuera de este bloque;
-  - sigue documentado como drift real de esta base;
-  - solo debe reabrirse en una linea separada si se decide priorizar reconciliacion arquitectonica por encima del release/UI path.
+## Pendiente fuera de Carril 1
+- [ ] Revalidacion final de `Ruta A`
+  - `RTLOPS-35` y `RTLOPS-38` ya quedaron validados localmente en esta rama;
+  - staging/auth/snapshots ya quedaron revalidados sobre el backend remoto correcto;
+  - lo pendiente ya no es deploy ni acceso sino la decision operativa frente al gate autenticado en `NO GO`.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.
@@ -165,7 +196,7 @@ Fecha: 2026-04-01
   - `RTLOPS-52` = shadow operativo sobre `LIVE_SHADOW`, auditable y fail-closed, sin duplicar execution
   - `RTLOPS-53` = backend QA live con gates reproducibles sobre surfaces canonicas ya cerradas
   - `RTLOPS-54` = orquestacion canary backend-first sobre surfaces canonicas ya cerradas
-  - `RTLOPS-23/44/46/47/48/49/50` siguen con drift de integracion confirmado en esta rama y no deben tratarse como `[x]` locales solo por `Done` en Linear
+  - la cohorte `RTLOPS-23/44/45/46/47/48/49/50` ya quedo recuperada materialmente en `feature/live-core-coupled-recovery`
   - reapertura tras `EXPIRED` = misma instancia, explicitada en runtime/docs/tests
   - precedence de alerting ya endurecida tambien en config:
     - `severity_rank = [CRITICAL, WARN, INFO]`

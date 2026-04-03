@@ -49,151 +49,343 @@ export interface ExchangeDiagnoseResponse {
   checks: Record<string, unknown>;
 }
 
-export interface OperationalSafetyBreaker {
-  breaker_id: string;
-  breaker_code: string;
-  scope_type: string;
-  bot_id?: string | null;
-  symbol?: string | null;
-  state: "CLOSED" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
-  opened_at?: string | null;
-  cooldown_until?: string | null;
-  last_trigger_at?: string | null;
-  trigger_count_window: number;
-  trigger_reason: Record<string, unknown>;
-  blocking_bool: boolean;
-  created_at: string;
-  updated_at: string;
+export interface ExecutionMarketStreamSession {
+  execution_connector: string;
+  market_family: string;
+  repo_family: string;
+  environment: "live" | "testnet";
+  connected: boolean;
+  running: boolean;
+  degraded_mode: boolean;
+  block_live: boolean;
+  reason: string;
+  transport_mode: "combined" | "raw" | string;
+  symbols_subscribed: string[];
+  stale_ms: number | null;
+  stream_lag_estimate_ms: number | null;
+  reconnect_count: number;
+  last_message_at?: string | null;
+  last_disconnect_reason?: string | null;
 }
 
-export interface OperationalSafetyEvent {
-  safety_event_id: string;
-  event_time: string;
-  scope_type: string;
+export interface ExecutionMarketStreamsSummary {
+  policy_loaded: boolean;
+  policy_hash: string;
+  policy_source: Record<string, unknown>;
+  runtime_guardrails: Record<string, unknown>;
+  family_split: Record<string, unknown>;
+  sessions: ExecutionMarketStreamSession[];
+  running_sessions: number;
+  live_sessions: number;
+  live_blocked: boolean;
+  live_degraded: boolean;
+}
+
+export interface ExecutionLiveOrder {
+  execution_order_id: string;
+  local_order_id: string;
+  exchange_order_id?: string | null;
+  symbol: string;
+  side?: string | null;
+  order_type?: string | null;
+  requested_qty?: number | null;
+  requested_quote_order_qty?: number | null;
+  client_order_id: string;
+  current_local_state: string;
+  last_exchange_order_status?: string | null;
+  last_execution_type?: string | null;
+  executed_qty?: number | null;
+  cum_quote_qty?: number | null;
+  avg_fill_price?: number | null;
+  filled_pct?: number | null;
+  reconciliation_status?: string | null;
+  unresolved_reason?: string | null;
+  terminal: boolean;
+  submitted_at?: string | null;
+  last_event_at?: string | null;
+  timeline_size?: number | null;
+}
+
+export interface ExecutionLiveOrderEvent {
+  event_id: string;
+  execution_order_id: string;
+  source_type: string;
+  source_seq: number;
+  local_state_before?: string | null;
+  local_state_after: string;
+  exchange_order_status?: string | null;
+  execution_type?: string | null;
+  event_time_exchange?: string | null;
+  event_time_local: string;
+  delta_filled_qty?: number | null;
+  cumulative_filled_qty?: number | null;
+  cumulative_quote_qty?: number | null;
+  price?: number | null;
+  reject_reason?: string | null;
+  expiry_reason?: string | null;
+  notes?: string | null;
+  applied_bool: boolean;
+  raw_payload_json: Record<string, unknown>;
+}
+
+export interface ExecutionLiveFill {
+  execution_fill_id: string;
+  fill_id: string;
+  execution_order_id: string;
+  local_order_id?: string | null;
+  exchange?: string | null;
+  market_type?: string | null;
+  environment?: string | null;
+  symbol: string;
+  family: string;
+  side?: string | null;
+  client_order_id?: string | null;
+  exchange_order_id?: string | null;
+  trade_id?: string | null;
+  execution_id?: string | null;
+  fill_time: string;
+  event_time_exchange?: string | null;
+  event_time_local?: string | null;
+  qty?: number | null;
+  price?: number | null;
+  quote_qty?: number | null;
+  commission?: number | null;
+  commission_asset?: string | null;
+  maker?: boolean | null;
+  maker_bool?: boolean | null;
+  raw_source_type?: string | null;
+  reconciliation_status?: string | null;
+  reconciled?: boolean;
+  discrepancies?: Record<string, unknown>;
+  fill_notional?: number | null;
+  raw_fill_json?: Record<string, unknown>;
+}
+
+export interface ExecutionLiveOrdersResponse {
+  items: ExecutionLiveOrder[];
+  count: number;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionLiveOrdersUnresolvedResponse {
+  count: number;
+  items: ExecutionLiveOrder[];
+  soft_deadline_sec: number;
+  hard_deadline_sec: number;
+}
+
+export interface ExecutionLiveOrderDetailResponse {
+  order: ExecutionLiveOrder;
+  current_local_state: string;
+  last_exchange_order_status?: string | null;
+  last_execution_type?: string | null;
+  terminal: boolean;
+  unresolved_reason?: string | null;
+  timeline: ExecutionLiveOrderEvent[];
+  fills: ExecutionLiveFill[];
+  fill_discrepancies?: Array<Record<string, unknown>>;
+  reconcile_events: Array<Record<string, unknown>>;
+  remote_source?: Record<string, unknown> | null;
+}
+
+export interface ExecutionLiveOrdersReconcileResponse {
+  reconciliation_run: Record<string, unknown>;
+  processed_orders: number;
+  items: Array<Record<string, unknown>>;
+  unresolved: ExecutionLiveOrdersUnresolvedResponse;
+}
+
+export interface ExecutionLiveFillsResponse {
+  items: ExecutionLiveFill[];
+  count: number;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionLiveFillDetailResponse {
+  fill: ExecutionLiveFill;
+  order?: ExecutionLiveOrder | null;
+  timeline: ExecutionLiveOrderEvent[];
+  discrepancy_events: Array<Record<string, unknown>>;
+}
+
+export interface ExecutionLiveFillsByOrderResponse {
+  execution_order_id: string;
+  order?: ExecutionLiveOrder | null;
+  fills: ExecutionLiveFill[];
+}
+
+export interface ExecutionLiveFillDiscrepanciesResponse {
+  count: number;
+  items: ExecutionLiveFill[];
+  events: Array<Record<string, unknown>>;
+}
+
+export interface ExecutionLiveFillsReconcileResponse {
+  processed_orders: number;
+  items: Array<Record<string, unknown>>;
+  unlinked_mytrades: Array<Record<string, unknown>>;
+  discrepancies: ExecutionLiveFillDiscrepanciesResponse;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionReconciliationCase {
+  reconciliation_case_id: string;
+  trigger_type: string;
+  trigger?: string;
+  exchange: string;
+  market_type: string;
+  environment: string;
   bot_id?: string | null;
   symbol?: string | null;
-  trigger_code: string;
+  execution_order_id?: string | null;
+  execution_fill_scope?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  final_status: "CLEAN" | "RESOLVED" | "DESYNC" | "MANUAL_REVIEW_REQUIRED" | "FAILED" | string;
   severity: "INFO" | "WARN" | "CRITICAL" | string;
-  evidence: Record<string, unknown>;
-  action_taken?: string | null;
   blocking_bool: boolean;
-  created_at: string;
+  discrepancy_count?: number;
+  discrepancies?: Array<Record<string, unknown>>;
+  local_summary_json?: Record<string, unknown>;
+  remote_summary_json?: Record<string, unknown>;
+  discrepancy_summary_json?: Record<string, unknown>;
+  resolution_summary_json?: Record<string, unknown>;
+  scope?: Record<string, unknown>;
 }
 
-export interface OperationalSafetySummaryResponse {
+export interface ExecutionReconciliationCasesResponse {
+  items: ExecutionReconciliationCase[];
+  count: number;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionReconciliationCaseDetailResponse {
+  case: ExecutionReconciliationCase;
+  events: Array<{
+    case_event_id: string;
+    reconciliation_case_id: string;
+    event_time: string;
+    source_type: string;
+    message: string;
+    payload_json?: Record<string, unknown>;
+    decision_json?: Record<string, unknown>;
+    applied_bool: boolean;
+  }>;
+  snapshots: Array<{
+    snapshot_id: string;
+    reconciliation_case_id: string;
+    snapshot_type: string;
+    symbol?: string | null;
+    execution_order_id?: string | null;
+    captured_at: string;
+    payload_json?: Record<string, unknown>;
+    source_freshness_ms?: number | null;
+  }>;
+}
+
+export interface ExecutionReconciliationSummary {
+  overall_status: "OK" | "WARN" | "BLOCK" | string;
+  open_cases_count: number;
+  desync_count: number;
+  manual_review_count: number;
+  blocking_cases_count: number;
+  last_run?: ExecutionReconciliationCase | null;
+  open_cases: ExecutionReconciliationCase[];
+  desync_cases: ExecutionReconciliationCase[];
+  policy: Record<string, unknown>;
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutionReconciliationRunResponse {
+  reconciliation_run: Record<string, unknown>;
+  processed_orders: number;
+  generated_cases: number;
+  items: ExecutionReconciliationCase[];
+  open_cases: ExecutionReconciliationCase[];
+  blocking_cases: ExecutionReconciliationCase[];
+  summary: ExecutionReconciliationSummary;
+  filters: Record<string, unknown>;
+}
+
+export type LivePreflightStatus = "PASS" | "WARN" | "FAIL";
+
+export type LivePreflightCheck = {
+  status: LivePreflightStatus;
+  detail?: string;
+  [key: string]: unknown;
+};
+
+export interface LivePreflightRun {
+  preflight_id: string;
+  mode: "live" | "testnet";
+  exchange: string;
+  market_type: string;
+  symbol?: string | null;
+  side?: string | null;
+  quantity?: number | null;
+  quote_order_qty?: number | null;
   evaluated_at: string;
-  policy_source: string;
-  scope: {
-    bot_id?: string | null;
-    symbol?: string | null;
-  };
-  global_state: "CLOSED" | "WARN" | "OPEN" | "COOLDOWN" | "MANUAL_LOCK" | string;
-  blocking_bool: boolean;
-  breakers_open_count: number;
-  breakers_blocking_count: number;
-  manual_lock_count: number;
-  breakers: OperationalSafetyBreaker[];
-  blocking_scopes: Array<{
-    breaker_code: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    state: string;
-  }>;
-  events: OperationalSafetyEvent[];
-  runtime_unknown_timeout_active: boolean;
-  runtime_unknown_timeout_since?: string | null;
-  recommended_actions?: string[];
-  applied_actions?: string[];
-}
-
-export interface OperationalSafetyLocksResponse {
-  manual_locks: OperationalSafetyBreaker[];
-  manual_actions: Array<{
-    manual_action_id: string;
-    action_type: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    requested_by: string;
-    requested_at: string;
-    applied_at?: string | null;
-    result: Record<string, unknown>;
-    audit_note?: string | null;
-  }>;
-}
-
-export interface LiveHealthReason {
-  reason_code: string;
-  priority: "P1" | "P2" | "P3" | string;
-  priority_rank: number;
-  severity: "INFO" | "WARN" | "CRITICAL" | string;
-  blocking_bool: boolean;
-  scope_type: string;
-  bot_id?: string | null;
-  symbol?: string | null;
-  evidence: Record<string, unknown>;
-  penalty: number;
-}
-
-export interface LiveHealthScopeSummary {
-  scope_key: string;
-  scope_type: string;
-  bot_id?: string | null;
-  symbol?: string | null;
-  state: "HEALTHY" | "DEGRADED" | "BLOCKED" | "MANUAL_REVIEW_REQUIRED" | string;
-  score: number;
-  severity: "INFO" | "WARN" | "CRITICAL" | string;
-  blocking_bool: boolean;
-  top_priority_reason_code: string;
-  reason_codes: string[];
-  hard_blockers: string[];
+  expires_at?: string | null;
+  overall_status: LivePreflightStatus;
+  freshness_seconds: number;
+  blocking_reasons: string[];
   warnings: string[];
-  reason_items: LiveHealthReason[];
-  score_penalties: Array<{
-    reason_code: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    penalty: number;
-  }>;
-  freshness: Record<string, unknown>;
-  recommended_actions: string[];
-  component_status: Record<string, unknown>;
-  can_submit_order: boolean;
-  evaluated_at: string;
+  checks: Record<string, LivePreflightCheck>;
+  source_versions: Record<string, unknown>;
+  diagnostics: Array<Record<string, unknown>>;
+  manual_attestations: Record<string, unknown>;
+  runtime_context: Record<string, unknown>;
+  exchange_context: Record<string, unknown>;
 }
 
-export interface LiveHealthSummaryResponse {
-  state: "HEALTHY" | "DEGRADED" | "BLOCKED" | "MANUAL_REVIEW_REQUIRED" | string;
-  score: number;
-  severity: "INFO" | "WARN" | "CRITICAL" | string;
-  global_state: string;
-  global_score: number;
-  global_severity: string;
-  blocking_bool: boolean;
-  top_priority_reason_code: string;
-  reason_codes: string[];
-  hard_blockers: string[];
-  warnings: string[];
-  reason_items: LiveHealthReason[];
-  score_penalties: Array<{
-    reason_code: string;
-    scope_type: string;
-    bot_id?: string | null;
-    symbol?: string | null;
-    penalty: number;
-  }>;
-  component_status: Record<string, unknown>;
-  scope_status: LiveHealthScopeSummary[];
-  freshness: Record<string, unknown>;
-  recommended_actions: string[];
-  can_enable_live_mode: boolean;
-  can_start_live: boolean;
-  can_submit_order_by_scope: Record<string, boolean>;
-  last_evaluated_at: string;
-  snapshot_id?: string;
-  persisted_at?: string;
+export interface LivePreflightAttestation {
+  attestation_id: string;
+  mode: "live" | "testnet";
+  exchange: string;
+  market_type: string;
+  created_at: string;
+  verified_by: string;
+  verified_at: string;
+  note?: string | null;
+  manual_permissions_verified: boolean;
+  trade_enabled_verified: boolean;
+  withdraw_disabled_verified: boolean;
+  ip_restriction_verified: boolean;
+}
+
+export interface LivePreflightAttestationStatus {
+  status: LivePreflightStatus;
+  reason: string;
+  age_days?: number | null;
+  expires_at?: string | null;
+  verified_at?: string | null;
+}
+
+export interface LivePreflightGate {
+  ok: boolean;
+  mode: "live" | "testnet";
+  reason: string;
+  latest?: LivePreflightRun | null;
+  fresh: boolean;
+}
+
+export interface LivePreflightPayload {
+  mode: "live" | "testnet";
+  policy: Record<string, unknown>;
+  latest: LivePreflightRun | null;
+  recent_runs: LivePreflightRun[];
+  latest_attestation: LivePreflightAttestation | null;
+  attestation_status: LivePreflightAttestationStatus | null;
+  live_enablement_gate: LivePreflightGate;
+}
+
+export interface LivePreflightRunResponse {
+  ok: boolean;
+  run: LivePreflightRun;
+  policy: Record<string, unknown>;
+  latest_attestation: LivePreflightAttestation | null;
+  attestation_status: LivePreflightAttestationStatus | null;
+  live_enablement_gate: LivePreflightGate;
 }
 
 export interface StrategyManifest {
@@ -1356,4 +1548,122 @@ export interface RunValidatePromotionResponse {
     state?: Record<string, unknown>;
     next_step?: string;
   };
+}
+
+export interface ReportingPerformanceBlock {
+  gross_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  net_pnl: number;
+  trade_count: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  expectancy: number | null;
+  max_drawdown: number | null;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingPerformanceSummaryResponse {
+  today: ReportingPerformanceBlock;
+  week: ReportingPerformanceBlock;
+  month: ReportingPerformanceBlock;
+  ytd: ReportingPerformanceBlock;
+  all_time: ReportingPerformanceBlock;
+}
+
+export interface ReportingPerformanceSeriesPoint {
+  bucket: string;
+  gross_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  net_pnl: number;
+  trade_count: number;
+}
+
+export interface ReportingPerformanceSeriesResponse {
+  items: ReportingPerformanceSeriesPoint[];
+  count: number;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingCostsBreakdownResponse {
+  exchange_fee_estimated: number;
+  exchange_fee_realized: number;
+  spread_estimated: number;
+  spread_realized: number;
+  slippage_estimated: number;
+  slippage_realized: number;
+  funding_realized: number;
+  borrow_interest_realized: number;
+  rebates_or_discounts: number;
+  gross_pnl: number;
+  net_pnl: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  total_cost_pct_of_gross_pnl: number;
+  alert_status: string;
+  freshness_status: string;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingTradeCostRow {
+  trade_cost_id: string;
+  trade_ref: string;
+  run_id?: string | null;
+  venue: string;
+  family: string;
+  environment: string;
+  symbol: string;
+  strategy_id?: string | null;
+  bot_id?: string | null;
+  executed_at: string;
+  exchange_fee_estimated: number;
+  exchange_fee_realized?: number | null;
+  fee_asset?: string | null;
+  spread_estimated: number;
+  spread_realized?: number | null;
+  slippage_estimated: number;
+  slippage_realized?: number | null;
+  funding_estimated: number;
+  funding_realized?: number | null;
+  borrow_interest_estimated: number;
+  borrow_interest_realized?: number | null;
+  rebates_or_discounts: number;
+  total_cost_estimated: number;
+  total_cost_realized: number;
+  gross_pnl: number;
+  net_pnl: number;
+  cost_source: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+}
+
+export interface ReportingTradesResponse {
+  items: ReportingTradeCostRow[];
+  count: number;
+  limit: number;
+  offset: number;
+  policy_source: Record<string, unknown>;
+}
+
+export interface ReportingExportManifest {
+  export_id: string;
+  export_type: "xlsx" | "pdf" | string;
+  report_scope: "summary" | "daily" | "monthly" | "trades" | "costs" | "full" | string;
+  generated_at: string;
+  generated_by: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  row_count: number;
+  artifact_path: string;
+  source_snapshot_ids: string[];
+  success: boolean;
+  error_message?: string | null;
+  provenance: Record<string, unknown>;
+}
+
+export interface ReportingExportsResponse {
+  items: ReportingExportManifest[];
+  policy_source: Record<string, unknown>;
 }

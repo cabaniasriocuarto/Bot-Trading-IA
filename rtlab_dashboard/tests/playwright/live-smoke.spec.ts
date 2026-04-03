@@ -18,16 +18,16 @@ async function loginToExecution(page: Page) {
 test("login y carga de ejecucion operatoria", async ({ page }) => {
   await loginToExecution(page);
   await expect(page.getByRole("heading", { name: "Checklist Live Ready" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Health Summary" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Operational Safety" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Preflight LIVE Final" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Reconciliation" })).toBeVisible();
 });
 
 test("expone controles operatorios sin ejecutar side effects", async ({ page }) => {
   await loginToExecution(page);
-  await expect(page.getByRole("button", { name: /^Freeze global$/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Unfreeze global$/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Emergency cancel$/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Health evaluate$/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Refrescar panel$/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Modo seguro ON$/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Cerrar posiciones$/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Kill switch$/ })).toBeVisible();
 });
 
 test("permite navegar a alertas y logs como flujo de consulta", async ({ page }) => {

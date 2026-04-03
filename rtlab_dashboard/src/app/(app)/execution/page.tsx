@@ -9,22 +9,31 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api";
 import type {
   BotDecisionLogResponse,
   BotInstance,
+  ExecutionLiveFillDiscrepanciesResponse,
+  ExecutionLiveFillsReconcileResponse,
+  ExecutionLiveFillsResponse,
+  ExecutionReconciliationCaseDetailResponse,
+  ExecutionReconciliationCasesResponse,
+  ExecutionReconciliationRunResponse,
+  ExecutionReconciliationSummary,
   BotPolicyStateResponse,
   BotStatusResponse,
+  ExecutionLiveOrderDetailResponse,
+  ExecutionLiveOrdersReconcileResponse,
+  ExecutionLiveOrdersResponse,
+  ExecutionLiveOrdersUnresolvedResponse,
+  ExecutionMarketStreamsSummary,
   ExchangeDiagnoseResponse,
   ExecutionStats,
   HealthResponse,
-  LiveHealthScopeSummary,
-  LiveHealthSummaryResponse,
+  LivePreflightPayload,
+  LivePreflightRunResponse,
   LogEvent,
-  OperationalSafetyBreaker,
-  OperationalSafetyEvent,
-  OperationalSafetyLocksResponse,
-  OperationalSafetySummaryResponse,
   SettingsResponse,
   Strategy,
   TradingMode,
@@ -74,13 +83,25 @@ export default function ExecutionPage() {
   const [gates, setGates] = useState<GatesResponse | null>(null);
   const [rollout, setRollout] = useState<RolloutStatusLite | null>(null);
   const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
+  const [marketStreams, setMarketStreams] = useState<ExecutionMarketStreamsSummary | null>(null);
+  const [livePreflight, setLivePreflight] = useState<LivePreflightPayload | null>(null);
+  const [liveOrders, setLiveOrders] = useState<ExecutionLiveOrdersResponse | null>(null);
+  const [liveOrdersUnresolved, setLiveOrdersUnresolved] = useState<ExecutionLiveOrdersUnresolvedResponse | null>(null);
+  const [liveFills, setLiveFills] = useState<ExecutionLiveFillsResponse | null>(null);
+  const [liveFillDiscrepancies, setLiveFillDiscrepancies] = useState<ExecutionLiveFillDiscrepanciesResponse | null>(null);
+  const [reconciliationSummary, setReconciliationSummary] = useState<ExecutionReconciliationSummary | null>(null);
+  const [reconciliationCases, setReconciliationCases] = useState<ExecutionReconciliationCasesResponse | null>(null);
+  const [selectedLiveOrderId, setSelectedLiveOrderId] = useState("");
+  const [selectedLiveOrderDetail, setSelectedLiveOrderDetail] = useState<ExecutionLiveOrderDetailResponse | null>(null);
+  const [selectedReconciliationCaseId, setSelectedReconciliationCaseId] = useState("");
+  const [selectedReconciliationCaseDetail, setSelectedReconciliationCaseDetail] = useState<ExecutionReconciliationCaseDetailResponse | null>(null);
+  const [livePreflightBusy, setLivePreflightBusy] = useState(false);
+  const [livePreflightAttestBusy, setLivePreflightAttestBusy] = useState(false);
+  const [liveOrdersBusy, setLiveOrdersBusy] = useState(false);
+  const [liveFillsBusy, setLiveFillsBusy] = useState(false);
+  const [reconciliationBusy, setReconciliationBusy] = useState(false);
+  const [livePreflightNote, setLivePreflightNote] = useState("");
   const [exchangeDiagError, setExchangeDiagError] = useState("");
-  const [liveHealthSummary, setLiveHealthSummary] = useState<LiveHealthSummaryResponse | null>(null);
-  const [liveHealthScopes, setLiveHealthScopes] = useState<LiveHealthScopeSummary[]>([]);
-  const [safetySummary, setSafetySummary] = useState<OperationalSafetySummaryResponse | null>(null);
-  const [safetyBreakers, setSafetyBreakers] = useState<OperationalSafetyBreaker[]>([]);
-  const [safetyEvents, setSafetyEvents] = useState<OperationalSafetyEvent[]>([]);
-  const [safetyLocks, setSafetyLocks] = useState<OperationalSafetyLocksResponse | null>(null);
   const [panelLoading, setPanelLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -125,12 +146,14 @@ export default function ExecutionPage() {
       rolloutPayload,
       botsPayload,
       strategiesPayload,
-      liveHealthSummaryPayload,
-      liveHealthScopesPayload,
-      safetySummaryPayload,
-      safetyBreakersPayload,
-      safetyEventsPayload,
-      safetyLocksPayload,
+      marketStreamsPayload,
+      livePreflightPayload,
+      liveOrdersPayload,
+      liveOrdersUnresolvedPayload,
+      liveFillsPayload,
+      liveFillDiscrepanciesPayload,
+      reconciliationSummaryPayload,
+      reconciliationCasesPayload,
     ] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
@@ -139,12 +162,14 @@ export default function ExecutionPage() {
       apiGet<RolloutStatusLite>("/api/v1/rollout/status"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
-      apiGet<LiveHealthSummaryResponse>("/api/v1/execution/health/summary").catch(() => null as LiveHealthSummaryResponse | null),
-      apiGet<{ items: LiveHealthScopeSummary[] }>("/api/v1/execution/health/scopes").catch(() => ({ items: [] as LiveHealthScopeSummary[] })),
-      apiGet<OperationalSafetySummaryResponse>("/api/v1/execution/safety/summary").catch(() => null as OperationalSafetySummaryResponse | null),
-      apiGet<{ items: OperationalSafetyBreaker[] }>("/api/v1/execution/safety/breakers").catch(() => ({ items: [] as OperationalSafetyBreaker[] })),
-      apiGet<{ items: OperationalSafetyEvent[] }>("/api/v1/execution/safety/events?limit=20").catch(() => ({ items: [] as OperationalSafetyEvent[] })),
-      apiGet<OperationalSafetyLocksResponse>("/api/v1/execution/safety/locks").catch(() => ({ manual_locks: [], manual_actions: [] } as OperationalSafetyLocksResponse)),
+      apiGet<ExecutionMarketStreamsSummary>("/api/v1/execution/market-streams/summary").catch(() => null as ExecutionMarketStreamsSummary | null),
+      apiGet<LivePreflightPayload>("/api/v1/exchange/live-preflight?mode=live").catch(() => null as LivePreflightPayload | null),
+      apiGet<ExecutionLiveOrdersResponse>("/api/v1/execution/live-orders?environment=live&limit=25").catch(() => null as ExecutionLiveOrdersResponse | null),
+      apiGet<ExecutionLiveOrdersUnresolvedResponse>("/api/v1/execution/live-orders/unresolved?environment=live").catch(() => null as ExecutionLiveOrdersUnresolvedResponse | null),
+      apiGet<ExecutionLiveFillsResponse>("/api/v1/execution/live-fills?environment=live&limit=25").catch(() => null as ExecutionLiveFillsResponse | null),
+      apiGet<ExecutionLiveFillDiscrepanciesResponse>("/api/v1/execution/live-fills/discrepancies?environment=live").catch(() => null as ExecutionLiveFillDiscrepanciesResponse | null),
+      apiGet<ExecutionReconciliationSummary>("/api/v1/execution/reconciliation/summary?environment=live").catch(() => null as ExecutionReconciliationSummary | null),
+      apiGet<ExecutionReconciliationCasesResponse>("/api/v1/execution/reconciliation/cases/open?environment=live&limit=25").catch(() => null as ExecutionReconciliationCasesResponse | null),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
@@ -152,12 +177,14 @@ export default function ExecutionPage() {
     setGates(gatesPayload);
     setRollout(rolloutPayload);
     setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
-    setLiveHealthSummary(liveHealthSummaryPayload);
-    setLiveHealthScopes(Array.isArray(liveHealthScopesPayload?.items) ? liveHealthScopesPayload.items : []);
-    setSafetySummary(safetySummaryPayload);
-    setSafetyBreakers(Array.isArray(safetyBreakersPayload?.items) ? safetyBreakersPayload.items : []);
-    setSafetyEvents(Array.isArray(safetyEventsPayload?.items) ? safetyEventsPayload.items : []);
-    setSafetyLocks(safetyLocksPayload);
+    setMarketStreams(marketStreamsPayload);
+    setLivePreflight(livePreflightPayload);
+    setLiveOrders(liveOrdersPayload);
+    setLiveOrdersUnresolved(liveOrdersUnresolvedPayload);
+    setLiveFills(liveFillsPayload);
+    setLiveFillDiscrepancies(liveFillDiscrepanciesPayload);
+    setReconciliationSummary(reconciliationSummaryPayload);
+    setReconciliationCases(reconciliationCasesPayload);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
     const rows = Array.isArray(strategiesPayload) ? strategiesPayload : [];
@@ -193,81 +220,6 @@ export default function ExecutionPage() {
       setRefreshing(false);
     }
   }, [loadExecutionMetrics, loadTradingPanel]);
-
-  const runSafetyAction = useCallback(
-    async (actionKey: string, runner: () => Promise<unknown>) => {
-      setActionLoading(actionKey);
-      setControlError("");
-      setMessage("");
-      try {
-        await runner();
-        await loadTradingPanel(false);
-        setMessage("Operational Safety actualizado.");
-      } catch (err) {
-        setControlError(err instanceof Error ? err.message : "No se pudo ejecutar la accion de safety.");
-      } finally {
-        setActionLoading(null);
-      }
-    },
-    [loadTradingPanel],
-  );
-
-  const runSafetyEvaluate = useCallback(() => {
-    return runSafetyAction("safety-evaluate", async () => {
-      await apiPost("/api/v1/execution/safety/evaluate", {});
-    });
-  }, [runSafetyAction]);
-
-  const runHealthEvaluate = useCallback(() => {
-    return runSafetyAction("health-evaluate", async () => {
-      await apiPost("/api/v1/execution/health/evaluate", {});
-    });
-  }, [runSafetyAction]);
-
-  const freezeGlobal = useCallback(() => {
-    return runSafetyAction("safety-freeze-global", async () => {
-      await apiPost("/api/v1/execution/safety/freeze/global", { audit_note: "freeze_global_from_execution_page" });
-    });
-  }, [runSafetyAction]);
-
-  const freezeBot = useCallback(() => {
-    const botId = selectedExecutionBotId || window.prompt("Bot ID a freeze", "") || "";
-    if (!botId.trim()) return Promise.resolve();
-    return runSafetyAction("safety-freeze-bot", async () => {
-      await apiPost(`/api/v1/execution/safety/freeze/bot/${encodeURIComponent(botId.trim())}`, {
-        audit_note: "freeze_bot_from_execution_page",
-      });
-    });
-  }, [runSafetyAction, selectedExecutionBotId]);
-
-  const freezeSymbol = useCallback(() => {
-    const symbol = window.prompt("Symbol a freeze (ej: BTCUSDT)", "") || "";
-    if (!symbol.trim()) return Promise.resolve();
-    return runSafetyAction("safety-freeze-symbol", async () => {
-      await apiPost(`/api/v1/execution/safety/freeze/symbol/${encodeURIComponent(symbol.trim().toUpperCase())}`, {
-        audit_note: "freeze_symbol_from_execution_page",
-      });
-    });
-  }, [runSafetyAction]);
-
-  const unfreezeGlobal = useCallback(() => {
-    return runSafetyAction("safety-unfreeze-global", async () => {
-      await apiPost("/api/v1/execution/safety/unfreeze", {
-        scope_type: "GLOBAL",
-        audit_note: "unfreeze_global_from_execution_page",
-      });
-    });
-  }, [runSafetyAction]);
-
-  const emergencyCancelSymbol = useCallback(() => {
-    const symbol = window.prompt("Symbol para emergency cancel (ej: BTCUSDT)", "") || "";
-    if (!symbol.trim()) return Promise.resolve();
-    return runSafetyAction("safety-emergency-cancel", async () => {
-      await apiPost(`/api/v1/execution/safety/emergency-cancel/${encodeURIComponent(symbol.trim().toUpperCase())}`, {
-        audit_note: "emergency_cancel_from_execution_page",
-      });
-    });
-  }, [runSafetyAction]);
 
   useEffect(() => {
     const load = async () => {
@@ -323,6 +275,69 @@ export default function ExecutionPage() {
       if (timer) clearTimeout(timer);
     };
   }, [isPageVisible, loadExecutionMetrics, loadTradingPanel]);
+
+  useEffect(() => {
+    const firstId = liveOrders?.items?.[0]?.execution_order_id || "";
+    if (!selectedLiveOrderId && firstId) {
+      setSelectedLiveOrderId(firstId);
+    } else if (selectedLiveOrderId && !(liveOrders?.items || []).some((row) => row.execution_order_id === selectedLiveOrderId)) {
+      setSelectedLiveOrderId(firstId);
+    }
+  }, [liveOrders, selectedLiveOrderId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadLiveOrderDetail = async () => {
+      if (!selectedLiveOrderId) {
+        setSelectedLiveOrderDetail(null);
+        return;
+      }
+      try {
+        const payload = await apiGet<ExecutionLiveOrderDetailResponse>(`/api/v1/execution/live-orders/${encodeURIComponent(selectedLiveOrderId)}`);
+        if (!cancelled) setSelectedLiveOrderDetail(payload);
+      } catch {
+        if (!cancelled) setSelectedLiveOrderDetail(null);
+      }
+    };
+    void loadLiveOrderDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLiveOrderId, liveOrders]);
+
+  useEffect(() => {
+    const firstId = reconciliationCases?.items?.[0]?.reconciliation_case_id || "";
+    if (!selectedReconciliationCaseId && firstId) {
+      setSelectedReconciliationCaseId(firstId);
+    } else if (
+      selectedReconciliationCaseId &&
+      !(reconciliationCases?.items || []).some((row) => row.reconciliation_case_id === selectedReconciliationCaseId)
+    ) {
+      setSelectedReconciliationCaseId(firstId);
+    }
+  }, [reconciliationCases, selectedReconciliationCaseId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadReconciliationCaseDetail = async () => {
+      if (!selectedReconciliationCaseId) {
+        setSelectedReconciliationCaseDetail(null);
+        return;
+      }
+      try {
+        const payload = await apiGet<ExecutionReconciliationCaseDetailResponse>(
+          `/api/v1/execution/reconciliation/cases/${encodeURIComponent(selectedReconciliationCaseId)}`,
+        );
+        if (!cancelled) setSelectedReconciliationCaseDetail(payload);
+      } catch {
+        if (!cancelled) setSelectedReconciliationCaseDetail(null);
+      }
+    };
+    void loadReconciliationCaseDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedReconciliationCaseId, reconciliationCases]);
 
   const latencySeries = useMemo(
     () =>
@@ -382,6 +397,59 @@ export default function ExecutionPage() {
     };
   });
 
+  const livePreflightLatest = livePreflight?.latest || null;
+  const livePreflightGate = livePreflight?.live_enablement_gate || null;
+  const livePreflightAttestationStatus = livePreflight?.attestation_status || null;
+  const livePreflightAttestation = livePreflight?.latest_attestation || null;
+  const livePreflightChecks = livePreflightLatest?.checks ? Object.entries(livePreflightLatest.checks) : [];
+  const livePreflightRecentRuns = livePreflight?.recent_runs?.slice(0, 5) || [];
+  const livePreflightStatus: "pass" | "fail" | "warn" | "pending" =
+    !livePreflightLatest
+      ? "pending"
+      : livePreflightGate?.ok
+        ? "pass"
+        : livePreflightLatest.overall_status === "WARN"
+          ? "warn"
+          : "fail";
+  const livePreflightHelp = !livePreflightLatest
+    ? "Todavia no hay una corrida persistida del preflight LIVE final."
+    : livePreflightGate?.ok
+      ? `Preflight PASS y fresco hasta ${formatDateTime(livePreflightLatest.expires_at)}.`
+      : livePreflightGate?.reason === "live_preflight_expired"
+        ? `El ultimo preflight vencio en ${formatDateTime(livePreflightLatest.expires_at)}.`
+        : livePreflightLatest.blocking_reasons?.length
+          ? `Bloqueos: ${livePreflightLatest.blocking_reasons.join(", ")}.`
+          : `Estado ${livePreflightLatest.overall_status}.`;
+  const manualPermsStatus: "pass" | "fail" | "warn" | "pending" | "manual" = !livePreflightAttestationStatus
+    ? "manual"
+    : livePreflightAttestationStatus.status === "PASS"
+      ? "pass"
+      : "fail";
+  const manualPermsHelp = livePreflightAttestationStatus
+    ? livePreflightAttestationStatus.status === "PASS"
+      ? `Attestation vigente hasta ${formatDateTime(livePreflightAttestationStatus.expires_at)} por ${livePreflightAttestation?.verified_by || "admin"}.`
+      : `Attestation manual requerida: ${livePreflightAttestationStatus.reason}.`
+    : "Chequeo manual en el panel del exchange. Requisito obligatorio antes de LIVE.";
+  const liveOrdersRows = liveOrders?.items || [];
+  const liveOrdersUnresolvedCount = liveOrdersUnresolved?.count ?? 0;
+  const liveOrdersSoftDeadlineSec = liveOrdersUnresolved?.soft_deadline_sec ?? 5;
+  const liveOrdersHardDeadlineSec = liveOrdersUnresolved?.hard_deadline_sec ?? 30;
+  const liveFillsRows = liveFills?.items || [];
+  const liveFillDiscrepancyCount = liveFillDiscrepancies?.count ?? 0;
+  const selectedLiveOrder = selectedLiveOrderDetail?.order || liveOrdersRows.find((row) => row.execution_order_id === selectedLiveOrderId) || null;
+  const selectedLiveOrderTimeline = selectedLiveOrderDetail?.timeline || [];
+  const reconciliationCasesRows = reconciliationCases?.items || [];
+  const reconciliationOpenCount = reconciliationSummary?.open_cases_count ?? reconciliationCasesRows.length;
+  const reconciliationDesyncCount = reconciliationSummary?.desync_count ?? 0;
+  const reconciliationManualCount = reconciliationSummary?.manual_review_count ?? 0;
+  const reconciliationBlockingCount = reconciliationSummary?.blocking_cases_count ?? 0;
+  const selectedReconciliationCase =
+    selectedReconciliationCaseDetail?.case ||
+    reconciliationCasesRows.find((row) => row.reconciliation_case_id === selectedReconciliationCaseId) ||
+    null;
+  const selectedReconciliationEvents = selectedReconciliationCaseDetail?.events || [];
+  const selectedReconciliationSnapshots = selectedReconciliationCaseDetail?.snapshots || [];
+
   const liveReadyItems = [
     {
       key: "keys",
@@ -395,8 +463,8 @@ export default function ExecutionPage() {
     {
       key: "perms",
       label: "Permisos minimos (Read + Trade, sin Withdraw)",
-      status: "manual",
-      help: "Chequeo manual en el panel del exchange. Requisito obligatorio antes de LIVE.",
+      status: manualPermsStatus,
+      help: manualPermsHelp,
     },
     {
       key: "connector",
@@ -416,6 +484,12 @@ export default function ExecutionPage() {
         gates?.overall_status === "PASS"
           ? "Los gates LIVE estan en PASS."
           : "Revisa Settings > Rollout / Gates y corrige FAIL antes de pasar a LIVE.",
+    },
+    {
+      key: "preflight",
+      label: "Preflight LIVE final",
+      status: livePreflightStatus,
+      help: livePreflightHelp,
     },
     {
       key: "approve",
@@ -440,22 +514,13 @@ export default function ExecutionPage() {
     modeDraft === "LIVE" &&
     liveReadyItems.find((row) => row.key === "keys")?.status === "pass" &&
     liveReadyItems.find((row) => row.key === "connector")?.status === "pass" &&
-    liveReadyItems.find((row) => row.key === "gates")?.status === "pass";
+    liveReadyItems.find((row) => row.key === "gates")?.status === "pass" &&
+    liveReadyItems.find((row) => row.key === "preflight")?.status === "pass";
   const liveBlockingItems = liveReadyItems
-    .filter((row) => ["keys", "connector", "gates"].includes(String(row.key)))
+    .filter((row) => ["keys", "connector", "gates", "preflight"].includes(String(row.key)))
     .filter((row) => row.status !== "pass");
   const liveBotsBlocked = liveBlockingItems.length > 0;
   const liveBotsBlockedReason = liveBlockingItems.map((row) => row.label).join(", ");
-  const healthState = String(liveHealthSummary?.state || "DEGRADED");
-  const healthVariant =
-    healthState === "HEALTHY" ? "success" : healthState === "DEGRADED" ? "warn" : "danger";
-  const degradedComponents = Object.entries((liveHealthSummary?.component_status || {}) as Record<string, unknown>)
-    .filter(([, value]) => {
-      if (!value || typeof value !== "object") return false;
-      const status = String((value as Record<string, unknown>).status || "");
-      return ["FAIL", "DESYNC", "OPEN", "COOLDOWN", "WARN"].includes(status);
-    })
-    .map(([key]) => key);
 
   const primaryByMode = useMemo(() => {
     const findPrimary = (mode: "paper" | "testnet" | "live") =>
@@ -672,6 +737,129 @@ export default function ExecutionPage() {
       setControlError(err instanceof Error ? err.message : "No se pudo cambiar el modo operativo.");
     } finally {
       setModeBusy(false);
+    }
+  };
+
+  const runLivePreflight = async () => {
+    if (role !== "admin") return;
+    setLivePreflightBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<LivePreflightRunResponse>("/api/v1/exchange/live-preflight/run", {
+        mode: "live",
+      });
+      setMessage(
+        payload.ok
+          ? "Preflight LIVE final en PASS."
+          : `Preflight LIVE final ${payload.run?.overall_status || "FAIL"}: ${payload.run?.blocking_reasons?.join(", ") || "revisar checks"}.`,
+      );
+      await refreshAll(true);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo ejecutar el preflight LIVE final.");
+    } finally {
+      setLivePreflightBusy(false);
+    }
+  };
+
+  const saveLivePreflightAttestation = async () => {
+    if (role !== "admin") return;
+    setLivePreflightAttestBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      await apiPost("/api/v1/exchange/live-preflight/attest", {
+        mode: "live",
+        manual_permissions_verified: true,
+        trade_enabled_verified: true,
+        withdraw_disabled_verified: true,
+        ip_restriction_verified: true,
+        note: livePreflightNote.trim(),
+      });
+      setMessage("Attestation manual LIVE guardada.");
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo guardar la attestation manual.");
+    } finally {
+      setLivePreflightAttestBusy(false);
+    }
+  };
+
+  const runLiveOrdersReconcile = async (executionOrderId?: string) => {
+    if (role !== "admin") return;
+    setLiveOrdersBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<ExecutionLiveOrdersReconcileResponse>("/api/v1/execution/live-orders/reconcile", {
+        execution_order_id: executionOrderId || undefined,
+        environment: "live",
+        trigger: executionOrderId ? "MANUAL" : "STREAM_GAP",
+      });
+      const unresolved = payload?.unresolved?.count ?? 0;
+      setMessage(
+        executionOrderId
+          ? `Reconciliacion manual ejecutada para ${executionOrderId}. Ordenes ambiguas restantes: ${unresolved}.`
+          : `Reconciliacion manual ejecutada. Ordenes ambiguas restantes: ${unresolved}.`,
+      );
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo reconciliar el journal live.");
+    } finally {
+      setLiveOrdersBusy(false);
+    }
+  };
+
+  const runLiveFillsReconcile = async (executionOrderId?: string) => {
+    if (role !== "admin") return;
+    setLiveFillsBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<ExecutionLiveFillsReconcileResponse>("/api/v1/execution/live-fills/reconcile", {
+        execution_order_id: executionOrderId || undefined,
+        environment: "live",
+        symbol: selectedLiveOrder?.symbol || undefined,
+        trigger: executionOrderId ? "MANUAL" : "RECOVERY",
+      });
+      const discrepancies = payload?.discrepancies?.count ?? 0;
+      setMessage(
+        executionOrderId
+          ? `Reconciliacion de fills ejecutada para ${executionOrderId}. Discrepancias abiertas: ${discrepancies}.`
+          : `Reconciliacion de fills ejecutada. Discrepancias abiertas: ${discrepancies}.`,
+      );
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo reconciliar fills live.");
+    } finally {
+      setLiveFillsBusy(false);
+    }
+  };
+
+  const runReconciliationEngine = async (params?: { executionOrderId?: string; symbol?: string; trigger?: string }) => {
+    if (role !== "admin") return;
+    setReconciliationBusy(true);
+    setControlError("");
+    setMessage("");
+    try {
+      const payload = await apiPost<ExecutionReconciliationRunResponse>("/api/v1/execution/reconciliation/run", {
+        environment: "live",
+        family: "spot",
+        execution_order_id: params?.executionOrderId,
+        symbol: params?.symbol,
+        trigger: params?.trigger || (params?.executionOrderId ? "MANUAL" : "PRESTART_LIVE"),
+      });
+      const blocking = payload?.summary?.blocking_cases_count ?? 0;
+      setMessage(
+        params?.executionOrderId
+          ? `Reconciliation ejecutada para ${params.executionOrderId}. Casos bloqueantes abiertos: ${blocking}.`
+          : `Reconciliation ejecutada. Casos bloqueantes abiertos: ${blocking}.`,
+      );
+      await refreshAll(false);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "No se pudo ejecutar el reconciliation engine.");
+    } finally {
+      setReconciliationBusy(false);
     }
   };
 
@@ -1203,9 +1391,673 @@ export default function ExecutionPage() {
             )}
           </CardContent>
         </Card>
+
+        <Card>
+          <CardTitle>Preflight LIVE Final</CardTitle>
+          <CardDescription>
+            Artefacto canonico y persistido para habilitar LIVE en forma fail-closed. No reemplaza los gates: los aterriza con cuenta, filtros, orden de prueba y attestation manual.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={preflightBadgeVariant(livePreflightLatest?.overall_status)}>
+                {livePreflightLatest ? `Overall ${livePreflightLatest.overall_status}` : "Sin corrida"}
+              </Badge>
+              <Badge variant={livePreflightGate?.ok ? "success" : "danger"}>
+                {livePreflightGate?.ok ? "PASS fresco" : "Bloquea LIVE"}
+              </Badge>
+              <Badge variant={livePreflightAttestationStatus?.status === "PASS" ? "success" : "warn"}>
+                {livePreflightAttestationStatus?.status === "PASS" ? "Attestation vigente" : "Attestation requerida"}
+              </Badge>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Metric title="Ultima corrida" value={formatDateTime(livePreflightLatest?.evaluated_at)} compact />
+              <Metric title="Vence" value={formatDateTime(livePreflightLatest?.expires_at)} compact />
+              <Metric title="Freshness (s)" value={String(livePreflightLatest?.freshness_seconds ?? 0)} compact />
+              <Metric title="Bloqueos" value={String(livePreflightLatest?.blocking_reasons?.length ?? 0)} compact />
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+              <p className="font-semibold text-slate-100">Estado operativo</p>
+              <p className="mt-2">
+                {livePreflightHelp}
+              </p>
+              {livePreflightGate?.reason ? (
+                <p className="mt-2 text-slate-400">gate: {livePreflightGate.reason}</p>
+              ) : null}
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold text-slate-100">Attestation manual admin</p>
+                {livePreflightAttestation ? (
+                  <Badge variant="info">
+                    {livePreflightAttestation.verified_by} · {formatDateTime(livePreflightAttestation.verified_at)}
+                  </Badge>
+                ) : (
+                  <Badge variant="warn">pendiente</Badge>
+                )}
+              </div>
+              <p className="mt-2">
+                Verifiqué en panel del exchange: Read + Trade OK, Withdraw OFF, IP restriction OK.
+              </p>
+              <Textarea
+                value={livePreflightNote}
+                onChange={(e) => setLivePreflightNote(e.target.value)}
+                className="mt-3 min-h-[88px] text-xs"
+                placeholder="Nota operativa de attestation (opcional, pero recomendable)."
+                disabled={role !== "admin" || livePreflightAttestBusy}
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={role !== "admin" || livePreflightAttestBusy}
+                  onClick={() => {
+                    void saveLivePreflightAttestation();
+                  }}
+                >
+                  {livePreflightAttestBusy ? "Guardando..." : "Guardar attestation manual"}
+                </Button>
+                <Button
+                  disabled={role !== "admin" || livePreflightBusy}
+                  onClick={() => {
+                    void runLivePreflight();
+                  }}
+                >
+                  {livePreflightBusy ? "Ejecutando..." : "Ejecutar preflight"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Subchecks de la ultima corrida</p>
+              {livePreflightChecks.length ? (
+                livePreflightChecks.map(([key, row]) => (
+                  <div key={key} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-slate-100">{key}</p>
+                        <p className="mt-1 text-xs text-slate-400">{String(row.detail || "-")}</p>
+                      </div>
+                      <Badge variant={preflightBadgeVariant(String(row.status || "FAIL"))}>{String(row.status || "FAIL")}</Badge>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                  Sin corrida persistida todavia.
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Historial reciente</p>
+              {livePreflightRecentRuns.length ? (
+                livePreflightRecentRuns.map((row) => (
+                  <div key={row.preflight_id} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-100">{formatDateTime(row.evaluated_at)}</span>
+                        <Badge variant={preflightBadgeVariant(row.overall_status)}>{row.overall_status}</Badge>
+                      </div>
+                      <span className="text-slate-400">vence {formatDateTime(row.expires_at)}</span>
+                    </div>
+                    <p className="mt-2 text-slate-400">
+                      bloqueos: {row.blocking_reasons.length ? row.blocking_reasons.join(", ") : "ninguno"}
+                      {row.warnings.length ? ` · warnings: ${row.warnings.join(", ")}` : ""}
+                    </p>
+                  </div>
+                ))
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardTitle>Reconciliation</CardTitle>
+          <CardDescription>
+            Engine persistente para conciliar journal local, openOrders, query order, myTrades y salud del stream antes de operar LIVE.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <Metric title="Estado global" value={reconciliationSummary?.overall_status || "OK"} compact />
+              <Metric title="Casos abiertos" value={String(reconciliationOpenCount)} compact />
+              <Metric title="DESYNC" value={String(reconciliationDesyncCount)} compact />
+              <Metric title="Manual review" value={String(reconciliationManualCount)} compact />
+              <Metric title="Bloqueantes" value={String(reconciliationBlockingCount)} compact />
+              <Metric title="Ultimo run" value={formatDateTime(reconciliationSummary?.last_run?.started_at)} compact />
+            </div>
+
+            {reconciliationBlockingCount > 0 ? (
+              <div className="rounded-lg border border-rose-700/60 bg-rose-950/30 p-3 text-xs text-rose-100">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">DESYNC bloqueante</p>
+                    <p className="mt-1 text-rose-200">
+                      Hay {reconciliationBlockingCount} caso(s) bloqueantes. LIVE debe fallar cerrado hasta que el engine los deje en CLEAN o RESOLVED.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={role !== "admin" || reconciliationBusy}
+                    onClick={() => {
+                      void runReconciliationEngine({ trigger: "MANUAL" });
+                    }}
+                  >
+                    {reconciliationBusy ? "Reconciliando..." : "Reconciliar ahora"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+                No hay casos bloqueantes abiertos. El resumen igualmente sigue visible para startup reconcile, pre-start live y auditoria manual.
+              </div>
+            )}
+
+            {reconciliationCasesRows.length ? (
+              <div className="rounded-lg border border-slate-800">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Scope</TH>
+                      <TH>Simbolo</TH>
+                      <TH>Orden</TH>
+                      <TH>Trigger</TH>
+                      <TH>Status</TH>
+                      <TH>Severity</TH>
+                      <TH>Bloquea</TH>
+                      <TH>Resumen</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {reconciliationCasesRows.map((row) => {
+                      const selected = row.reconciliation_case_id === selectedReconciliationCaseId;
+                      const discrepancy = row.discrepancies?.[0] as Record<string, unknown> | undefined;
+                      return (
+                        <TR
+                          key={row.reconciliation_case_id}
+                          className={selected ? "bg-slate-900/70" : undefined}
+                          onClick={() => {
+                            setSelectedReconciliationCaseId(row.reconciliation_case_id);
+                          }}
+                        >
+                          <TD>{row.execution_order_id ? "order" : row.symbol ? "symbol" : "global"}</TD>
+                          <TD>{row.symbol || "-"}</TD>
+                          <TD className="max-w-[180px] truncate" title={row.execution_order_id || "-"}>
+                            {row.execution_order_id || "-"}
+                          </TD>
+                          <TD>{row.trigger || row.trigger_type}</TD>
+                          <TD>
+                            <Badge variant={reconciliationCaseStatusVariant(row.final_status)}>{row.final_status}</Badge>
+                          </TD>
+                          <TD>
+                            <Badge variant={reconciliationCaseSeverityVariant(row.severity)}>{row.severity}</Badge>
+                          </TD>
+                          <TD>{row.blocking_bool ? <Badge variant="danger">si</Badge> : <Badge variant="neutral">no</Badge>}</TD>
+                          <TD className="max-w-[280px] truncate" title={String(discrepancy?.code || "")}>
+                            {String(discrepancy?.code || row.discrepancy_count || "sin discrepancias")}
+                          </TD>
+                        </TR>
+                      );
+                    })}
+                  </TBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                Sin casos abiertos actualmente. Los runs manuales, de startup o pre-start live persistiran evidencia cuando corresponda.
+              </div>
+            )}
+
+            <div className="grid gap-3 xl:grid-cols-[1.15fr_0.85fr]">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-100">Detalle del case</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Evidencia local/remota, discrepancias detectadas y resolucion aplicada o pendiente.
+                    </p>
+                  </div>
+                  {selectedReconciliationCase ? (
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || reconciliationBusy}
+                      onClick={() => {
+                        void runReconciliationEngine({
+                          executionOrderId: selectedReconciliationCase.execution_order_id || undefined,
+                          symbol: selectedReconciliationCase.symbol || undefined,
+                          trigger: "MANUAL",
+                        });
+                      }}
+                    >
+                      {reconciliationBusy ? "Reconciliando..." : "Reconciliar scope"}
+                    </Button>
+                  ) : null}
+                </div>
+
+                {selectedReconciliationCase ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <Metric title="Status" value={selectedReconciliationCase.final_status} compact />
+                      <Metric title="Severity" value={selectedReconciliationCase.severity} compact />
+                      <Metric title="Discrepancias" value={String(selectedReconciliationCase.discrepancy_count ?? 0)} compact />
+                      <Metric title="Bloquea" value={selectedReconciliationCase.blocking_bool ? "si" : "no"} compact />
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                      <p>trigger: {selectedReconciliationCase.trigger || selectedReconciliationCase.trigger_type}</p>
+                      <p>symbol: {selectedReconciliationCase.symbol || "-"}</p>
+                      <p>execution_order_id: {selectedReconciliationCase.execution_order_id || "-"}</p>
+                      <p>started_at: {formatDateTime(selectedReconciliationCase.started_at)}</p>
+                      <p>finished_at: {formatDateTime(selectedReconciliationCase.finished_at)}</p>
+                    </div>
+                    <div className="space-y-2">
+                      {selectedReconciliationCase.discrepancies?.length ? (
+                        selectedReconciliationCase.discrepancies.map((row, idx) => (
+                          <div key={`${selectedReconciliationCase.reconciliation_case_id}-disc-${idx}`} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant={reconciliationCaseSeverityVariant(String(row.severity || selectedReconciliationCase.severity))}>
+                                {String(row.code || "DISCREPANCY")}
+                              </Badge>
+                              <span className="text-slate-400">{String(row.entity_scope || "scope")}</span>
+                            </div>
+                            <p className="mt-2 text-slate-400">
+                              proposed_action: {String(row.proposed_action || "-")} · final_action: {String(row.final_action || "-")}
+                            </p>
+                            <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">{truncateJson(row)}</pre>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                          Sin discrepancias detalladas para este case.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                    Selecciona un case para ver snapshots, discrepancias y resolucion.
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                  <p className="text-sm font-semibold text-slate-100">Eventos del case</p>
+                  <div className="mt-3 space-y-2">
+                    {selectedReconciliationEvents.length ? (
+                      selectedReconciliationEvents.map((event) => (
+                        <div key={event.case_event_id} className="rounded border border-slate-800 bg-slate-900/50 p-2 text-xs text-slate-300">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="info">{event.source_type}</Badge>
+                              <span className="font-semibold text-slate-100">{event.message}</span>
+                            </div>
+                            <span className="text-slate-400">{formatDateTime(event.event_time)}</span>
+                          </div>
+                          {event.decision_json && Object.keys(event.decision_json).length ? (
+                            <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">{truncateJson(event.decision_json)}</pre>
+                          ) : null}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                        Sin eventos cargados para este case.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                  <p className="text-sm font-semibold text-slate-100">Snapshots</p>
+                  <div className="mt-3 space-y-2">
+                    {selectedReconciliationSnapshots.length ? (
+                      selectedReconciliationSnapshots.map((snapshot) => (
+                        <div key={snapshot.snapshot_id} className="rounded border border-slate-800 bg-slate-900/50 p-2 text-xs text-slate-300">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="neutral">{snapshot.snapshot_type}</Badge>
+                              <span>{snapshot.symbol || "-"}</span>
+                            </div>
+                            <span className="text-slate-400">
+                              {formatDateTime(snapshot.captured_at)}
+                              {snapshot.source_freshness_ms != null ? ` · ${snapshot.source_freshness_ms} ms` : ""}
+                            </span>
+                          </div>
+                          <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">{truncateJson(snapshot.payload_json)}</pre>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                        Sin snapshots cargados para este case.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardTitle>Ordenes Live</CardTitle>
+          <CardDescription>
+            Maquina de estados canonica para Spot live. Journal append-only, recovery por startup y reconciliacion manual/REST cuando el stream deja estados ambiguos.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <Metric title="Ordenes visibles" value={String(liveOrders?.count ?? 0)} compact />
+              <Metric title="Fills visibles" value={String(liveFills?.count ?? 0)} compact />
+              <Metric title="Ambiguas" value={String(liveOrdersUnresolvedCount)} compact />
+              <Metric title="Discrepancias fills" value={String(liveFillDiscrepancyCount)} compact />
+              <Metric title="Soft deadline (s)" value={String(liveOrdersSoftDeadlineSec)} compact />
+              <Metric title="Hard deadline (s)" value={String(liveOrdersHardDeadlineSec)} compact />
+            </div>
+
+            {liveOrdersUnresolvedCount > 0 ? (
+              <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-3 text-xs text-amber-100">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">Ordenes ambiguas / requieren reconciliacion</p>
+                    <p className="mt-1 text-amber-200">
+                      Hay {liveOrdersUnresolvedCount} orden(es) en UNKNOWN_PENDING_RECONCILIATION o MANUAL_REVIEW_REQUIRED. LIVE debe operar fail-closed hasta resolverlas.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={role !== "admin" || liveOrdersBusy}
+                    onClick={() => {
+                      void runLiveOrdersReconcile();
+                    }}
+                  >
+                    {liveOrdersBusy ? "Reconciliando..." : "Reconciliar ahora"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+                Sin ordenes ambiguas por encima del hard deadline. El runtime sigue reconciliando por startup, timeout unknown y comando manual.
+              </div>
+            )}
+
+            {liveFillDiscrepancyCount > 0 ? (
+              <div className="rounded-lg border border-rose-700/60 bg-rose-950/30 p-3 text-xs text-rose-100">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">Discrepancias de fills</p>
+                    <p className="mt-1 text-rose-200">
+                      Hay {liveFillDiscrepancyCount} fill(s) con mismatch WS vs myTrades, o trades remotos no linkeados a orden local. No se borra evidencia: se reconcilia y queda trazabilidad.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={role !== "admin" || liveFillsBusy}
+                    onClick={() => {
+                      void runLiveFillsReconcile();
+                    }}
+                  >
+                    {liveFillsBusy ? "Reconciliando fills..." : "Reconciliar fills"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {liveOrdersRows.length ? (
+              <div className="rounded-lg border border-slate-800">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Hora</TH>
+                      <TH>Simbolo</TH>
+                      <TH>Lado</TH>
+                      <TH>Tipo</TH>
+                      <TH>Qty / QuoteQty</TH>
+                      <TH>clientOrderId</TH>
+                      <TH>exchangeOrderId</TH>
+                      <TH>Estado local</TH>
+                      <TH>Estado exchange</TH>
+                      <TH>Filled %</TH>
+                      <TH>Avg fill</TH>
+                      <TH>Health</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {liveOrdersRows.map((row) => {
+                      const selected = row.execution_order_id === selectedLiveOrderId;
+                      return (
+                        <TR
+                          key={row.execution_order_id}
+                          className={selected ? "bg-slate-900/70" : undefined}
+                          onClick={() => {
+                            setSelectedLiveOrderId(row.execution_order_id);
+                          }}
+                        >
+                          <TD>{formatDateTime(row.last_event_at || row.submitted_at)}</TD>
+                          <TD>{row.symbol}</TD>
+                          <TD>{row.side || "-"}</TD>
+                          <TD>{row.order_type || "-"}</TD>
+                          <TD>
+                            {row.requested_qty != null ? fmtNum(row.requested_qty) : "-"}
+                            {row.requested_quote_order_qty != null ? ` / ${fmtNum(row.requested_quote_order_qty)}` : ""}
+                          </TD>
+                          <TD className="max-w-[180px] truncate" title={row.client_order_id || "-"}>
+                            {row.client_order_id || "-"}
+                          </TD>
+                          <TD>{row.exchange_order_id || "-"}</TD>
+                          <TD>
+                            <Badge variant={localOrderStateVariant(row.current_local_state)}>{row.current_local_state}</Badge>
+                          </TD>
+                          <TD>
+                            <Badge variant={exchangeOrderStatusVariant(row.last_exchange_order_status)}>{row.last_exchange_order_status || "-"}</Badge>
+                          </TD>
+                          <TD>{row.filled_pct != null ? `${row.filled_pct.toFixed(2)}%` : "-"}</TD>
+                          <TD>{row.avg_fill_price != null ? fmtNum(row.avg_fill_price) : "-"}</TD>
+                          <TD>
+                            <div className="flex flex-col gap-1">
+                              <Badge variant={reconcileStatusVariant(row.reconciliation_status)}>{row.reconciliation_status || "PENDING"}</Badge>
+                              {row.unresolved_reason ? <span className="text-[11px] text-amber-300">{row.unresolved_reason}</span> : null}
+                            </div>
+                          </TD>
+                        </TR>
+                      );
+                    })}
+                  </TBody>
+                </Table>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                Sin ordenes live persistidas todavia. Este panel se llena con submit REST, executionReport, reconciliacion y recovery.
+              </div>
+            )}
+
+            {liveFillsRows.length ? (
+              <div className="rounded-lg border border-slate-800">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Hora</TH>
+                      <TH>Simbolo</TH>
+                      <TH>Lado</TH>
+                      <TH>Qty</TH>
+                      <TH>Precio</TH>
+                      <TH>Quote</TH>
+                      <TH>Comision</TH>
+                      <TH>Asset fee</TH>
+                      <TH>Maker</TH>
+                      <TH>Order IDs</TH>
+                      <TH>Source</TH>
+                      <TH>Reconcile</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {liveFillsRows.map((row) => (
+                      <TR key={row.execution_fill_id}>
+                        <TD>{formatDateTime(row.event_time_exchange || row.fill_time)}</TD>
+                        <TD>{row.symbol}</TD>
+                        <TD>{row.side || "-"}</TD>
+                        <TD>{row.qty != null ? fmtNum(row.qty) : "-"}</TD>
+                        <TD>{row.price != null ? fmtNum(row.price) : "-"}</TD>
+                        <TD>{row.quote_qty != null ? fmtNum(row.quote_qty) : row.fill_notional != null ? fmtNum(row.fill_notional) : "-"}</TD>
+                        <TD>{row.commission != null ? fmtNum(row.commission) : "-"}</TD>
+                        <TD>{row.commission_asset || "-"}</TD>
+                        <TD>{row.maker_bool == null ? "-" : row.maker_bool ? "maker" : "taker"}</TD>
+                        <TD className="max-w-[200px] truncate" title={`${row.client_order_id || "-"} | ${row.exchange_order_id || "-"}`}>
+                          {(row.client_order_id || "-") + " / " + (row.exchange_order_id || "-")}
+                        </TD>
+                        <TD>{row.raw_source_type || "-"}</TD>
+                        <TD>
+                          <div className="flex flex-col gap-1">
+                            <Badge variant={reconcileStatusVariant(row.reconciliation_status)}>{row.reconciliation_status || "PENDING"}</Badge>
+                            {row.discrepancies && Object.keys(row.discrepancies).length ? <span className="text-[11px] text-rose-300">mismatch</span> : null}
+                          </div>
+                        </TD>
+                      </TR>
+                    ))}
+                  </TBody>
+                </Table>
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 xl:grid-cols-[1.1fr_0.9fr]">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-100">Detalle de orden</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Timeline auditable con precedencia WS &gt; reconcile/query &gt; REST response inicial.
+                    </p>
+                  </div>
+                  {selectedLiveOrder ? (
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || liveOrdersBusy}
+                      onClick={() => {
+                        void runLiveOrdersReconcile(selectedLiveOrder.execution_order_id);
+                      }}
+                    >
+                      {liveOrdersBusy ? "Reconciliando..." : "Reconciliar orden"}
+                    </Button>
+                  ) : null}
+                </div>
+
+                {selectedLiveOrder ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <Metric title="Estado local" value={selectedLiveOrder.current_local_state || "-"} compact />
+                      <Metric title="Estado exchange" value={selectedLiveOrder.last_exchange_order_status || "-"} compact />
+                      <Metric title="Execution type" value={selectedLiveOrder.last_execution_type || "-"} compact />
+                      <Metric title="Terminal" value={selectedLiveOrder.terminal ? "si" : "no"} compact />
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <p>clientOrderId: {selectedLiveOrder.client_order_id || "-"}</p>
+                        <p>exchangeOrderId: {selectedLiveOrder.exchange_order_id || "-"}</p>
+                        <p>qty: {selectedLiveOrder.requested_qty != null ? fmtNum(selectedLiveOrder.requested_qty) : "-"}</p>
+                        <p>quoteQty: {selectedLiveOrder.requested_quote_order_qty != null ? fmtNum(selectedLiveOrder.requested_quote_order_qty) : "-"}</p>
+                        <p>filled: {selectedLiveOrder.executed_qty != null ? fmtNum(selectedLiveOrder.executed_qty) : "-"}</p>
+                        <p>avg fill: {selectedLiveOrder.avg_fill_price != null ? fmtNum(selectedLiveOrder.avg_fill_price) : "-"}</p>
+                      </div>
+                      {selectedLiveOrderDetail?.unresolved_reason ? (
+                        <p className="mt-2 text-amber-300">unresolved_reason: {selectedLiveOrderDetail.unresolved_reason}</p>
+                      ) : null}
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold text-slate-100">Fills asociados</p>
+                        <Button
+                          variant="outline"
+                          disabled={role !== "admin" || liveFillsBusy}
+                          onClick={() => {
+                            void runLiveFillsReconcile(selectedLiveOrder.execution_order_id);
+                          }}
+                        >
+                          {liveFillsBusy ? "Reconciliando fills..." : "Reconciliar fills orden"}
+                        </Button>
+                      </div>
+                      {selectedLiveOrderDetail?.fills?.length ? (
+                        <div className="space-y-2">
+                          {selectedLiveOrderDetail.fills.map((fill) => (
+                            <div key={fill.execution_fill_id} className="rounded border border-slate-800 bg-slate-950/50 p-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge variant="info">{fill.raw_source_type || "-"}</Badge>
+                                  <Badge variant={reconcileStatusVariant(fill.reconciliation_status)}>{fill.reconciliation_status || "PENDING"}</Badge>
+                                </div>
+                                <span className="text-slate-400">{formatDateTime(fill.event_time_exchange || fill.fill_time)}</span>
+                              </div>
+                              <p className="mt-2 text-slate-300">
+                                qty {fill.qty != null ? fmtNum(fill.qty) : "-"} · price {fill.price != null ? fmtNum(fill.price) : "-"} · quote {fill.quote_qty != null ? fmtNum(fill.quote_qty) : "-"}
+                              </p>
+                              <p className="mt-1 text-slate-400">
+                                fee {fill.commission != null ? fmtNum(fill.commission) : "-"} {fill.commission_asset || ""}
+                                {fill.trade_id ? ` · tradeId ${fill.trade_id}` : ""}
+                                {fill.execution_id ? ` · execId ${fill.execution_id}` : ""}
+                              </p>
+                              {fill.discrepancies && Object.keys(fill.discrepancies).length ? (
+                                <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-rose-300">
+                                  {truncateJson(fill.discrepancies)}
+                                </pre>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-400">Sin fills persistidos asociados todavia.</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      {selectedLiveOrderTimeline.length ? (
+                        selectedLiveOrderTimeline.map((event) => (
+                          <div key={event.event_id} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="info">{event.source_type}</Badge>
+                                <Badge variant={localOrderStateVariant(event.local_state_after)}>{event.local_state_after}</Badge>
+                                {event.execution_type ? <Badge variant={exchangeOrderStatusVariant(event.execution_type)}>{event.execution_type}</Badge> : null}
+                              </div>
+                              <span className="text-slate-400">{formatDateTime(event.event_time_exchange || event.event_time_local)}</span>
+                            </div>
+                            <p className="mt-2 text-slate-400">
+                              {event.local_state_before ? `${event.local_state_before} -> ${event.local_state_after}` : event.local_state_after}
+                              {event.exchange_order_status ? ` · X=${event.exchange_order_status}` : ""}
+                              {event.reject_reason ? ` · reject=${event.reject_reason}` : ""}
+                              {event.expiry_reason ? ` · expiry=${event.expiry_reason}` : ""}
+                            </p>
+                            {event.raw_payload_json && Object.keys(event.raw_payload_json).length ? (
+                              <pre className="mt-2 overflow-x-auto rounded bg-slate-950/60 p-2 text-[11px] text-slate-400">
+                                {truncateJson(event.raw_payload_json)}
+                              </pre>
+                            ) : null}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                          Sin timeline cargado para esta orden.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-400">
+                    Selecciona una orden para ver journal, payloads y reconciliacion.
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <p className="text-sm font-semibold text-slate-100">Reglas operativas RTLOPS-48</p>
+                <div className="mt-3 space-y-2 text-xs text-slate-300">
+                  <p>Estados canónicos: INTENT_CREATED, PRECHECK_PASSED, SUBMITTING, UNKNOWN_PENDING_RECONCILIATION, ACKED, WORKING, PARTIALLY_FILLED, FILLED, CANCEL_REQUESTED, CANCELED, REJECTED, EXPIRED, EXPIRED_STP, RECOVERED_OPEN, RECOVERED_TERMINAL, MANUAL_REVIEW_REQUIRED.</p>
+                  <p>Autoridad: executionReport en tiempo real &gt; query/openOrders de reconciliación &gt; respuesta REST inicial.</p>
+                  <p>Fail-closed: UNKNOWN_PENDING_RECONCILIATION o MANUAL_REVIEW_REQUIRED por encima de {liveOrdersHardDeadlineSec}s bloquea nuevos submits live del mismo bot+símbolo.</p>
+                  <p>Dedup: WS por executionId cuando existe; si no, fallback robusto por clientOrderId + executionType + status + transactionTime + cumulativeFilledQty.</p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-2">
+      <section className="grid gap-4 xl:grid-cols-3">
         <Card>
           <CardTitle>Estado de conectores</CardTitle>
           <CardDescription>
@@ -1257,6 +2109,61 @@ export default function ExecutionPage() {
                 </div>
               </div>
             ) : null}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardTitle>Runtime WebSocket de mercado</CardTitle>
+          <CardDescription>
+            Estado live/testnet de streams publicos Binance por familia. Este bloque no cubre user data privado.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Metric title="Policy cargada" value={marketStreams?.policy_loaded ? "si" : "no"} compact />
+              <Metric title="Sesiones activas" value={String(marketStreams?.running_sessions ?? 0)} compact />
+              <Metric title="Live degradado" value={marketStreams?.live_degraded ? "si" : "no"} compact />
+              <Metric title="Live bloqueado" value={marketStreams?.live_blocked ? "si" : "no"} compact />
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+              <p className="font-semibold text-slate-100">Separacion canonica</p>
+              <div className="mt-2 grid gap-2">
+                <p>binance_spot: spot / spot_wallet / spot_costs</p>
+                <p>binance_um_futures: um_futures / futures_wallet / um_futures_costs</p>
+              </div>
+            </div>
+            {marketStreams?.sessions?.length ? (
+              <div className="space-y-2">
+                {marketStreams.sessions.map((row) => (
+                  <div key={`${row.execution_connector}-${row.environment}`} className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-100">{row.execution_connector}</span>
+                        <Badge variant={row.environment === "live" ? "danger" : "info"}>{row.environment}</Badge>
+                      </div>
+                      <Badge variant={row.block_live ? "danger" : row.degraded_mode ? "warn" : row.connected ? "success" : "neutral"}>
+                        {row.block_live ? "BLOCK" : row.degraded_mode ? "WARN" : row.connected ? "OK" : "IDLE"}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <p>familia: {row.market_family} / repo: {row.repo_family}</p>
+                      <p>transport: {row.transport_mode}</p>
+                      <p>simbolos: {row.symbols_subscribed?.join(", ") || "-"}</p>
+                      <p>reconnects: {row.reconnect_count}</p>
+                      <p>stale_ms: {row.stale_ms ?? "-"}</p>
+                      <p>lag_ms: {row.stream_lag_estimate_ms ?? "-"}</p>
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      razon: {row.reason || "-"}
+                      {row.last_disconnect_reason ? ` · ultimo disconnect: ${row.last_disconnect_reason}` : ""}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+                Sin sesiones activas. El runtime exige arranque explicito y sigue fail-closed.
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -1500,295 +2407,6 @@ export default function ExecutionPage() {
       ) : null}
 
       <Card>
-        <CardTitle className="flex items-center justify-between gap-3">
-          <span>Health Summary</span>
-          <Badge variant={healthVariant as "neutral" | "success" | "warn" | "danger"}>{healthState}</Badge>
-        </CardTitle>
-        <CardDescription>
-          Superficie canónica de lectura para LIVE. Consolida preflight, reconciliation, operational safety y runtime en un solo contrato backend-first.
-        </CardDescription>
-        <CardContent className="space-y-4">
-          {(healthState === "BLOCKED" || healthState === "MANUAL_REVIEW_REQUIRED") ? (
-            <div className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-100">
-              {healthState === "BLOCKED" ? "El sistema está bloqueado para LIVE." : "El sistema requiere manual review antes de seguir operando."}
-              {liveHealthSummary?.top_priority_reason_code ? ` Top reason: ${liveHealthSummary.top_priority_reason_code}.` : ""}
-            </div>
-          ) : null}
-
-          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-            <Metric label="Estado global" value={healthState} compact />
-            <Metric label="Score" value={String(liveHealthSummary?.score ?? "--")} compact />
-            <Metric label="Severidad" value={String(liveHealthSummary?.severity || "--")} compact />
-            <Metric label="Hard blockers" value={String(liveHealthSummary?.hard_blockers.length ?? 0)} compact />
-            <Metric label="Top reason" value={String(liveHealthSummary?.top_priority_reason_code || "--")} compact />
-            <Metric label="Ultima evaluacion" value={liveHealthSummary?.last_evaluated_at ? new Date(liveHealthSummary.last_evaluated_at).toLocaleTimeString() : "--"} compact />
-          </section>
-
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-            <ActionButton
-              label={actionLoading === "health-evaluate" ? "Evaluando..." : "Health evaluate"}
-              help="Recalcula y persiste el summary canónico de salud live."
-              onClick={() => void runHealthEvaluate()}
-              disabled={actionLoading !== null}
-            />
-            <ActionButton
-              label={actionLoading === "safety-evaluate" ? "Evaluando..." : "Safety evaluate"}
-              help="Reevalúa guardrails/breakers y refresca la base de health."
-              onClick={() => void runSafetyEvaluate()}
-              disabled={actionLoading !== null}
-              variant="secondary"
-            />
-            <Metric label="Enable live" value={liveHealthSummary?.can_enable_live_mode ? "SI" : "NO"} compact />
-            <Metric label="Start live" value={liveHealthSummary?.can_start_live ? "SI" : "NO"} compact />
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-              <p className="text-sm font-semibold text-slate-100">Top reasons / acciones</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {(liveHealthSummary?.reason_codes || []).slice(0, 6).map((code) => (
-                  <Badge key={`health-reason-${code}`} variant={liveHealthSummary?.hard_blockers.includes(code) ? "danger" : "warn"}>
-                    {code}
-                  </Badge>
-                ))}
-                {!liveHealthSummary?.reason_codes?.length ? <span className="text-xs text-slate-500">Sin reasons activos.</span> : null}
-              </div>
-              <p className="mt-3 text-xs text-slate-400">
-                Recommended actions: {(liveHealthSummary?.recommended_actions || []).length ? liveHealthSummary?.recommended_actions.join(", ") : "none"}
-              </p>
-            </div>
-
-            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-              <p className="text-sm font-semibold text-slate-100">Degraded visibility</p>
-              <div className="mt-3 space-y-2 text-xs text-slate-300">
-                <p>Componentes degradados: {degradedComponents.length ? degradedComponents.join(", ") : "ninguno"}</p>
-                <p>Freshness preflight: {String((liveHealthSummary?.freshness || {})["preflight_age_sec"] ?? "--")}s</p>
-                <p>Freshness heartbeat: {String((liveHealthSummary?.freshness || {})["heartbeat_age_sec"] ?? "--")}s</p>
-                <p>Freshness reconcile: {String((liveHealthSummary?.freshness || {})["reconciliation_age_sec"] ?? "--")}s</p>
-                <p>Scopes afectados: {liveHealthScopes.filter((row) => row.state !== "HEALTHY").length}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-            <p className="mb-3 text-sm font-semibold text-slate-100">Health por scope</p>
-            <div className="max-h-72 overflow-auto">
-              <Table>
-                <THead>
-                  <TR>
-                    <TH>Scope</TH>
-                    <TH>State</TH>
-                    <TH>Score</TH>
-                    <TH>Severidad</TH>
-                    <TH>Top reason</TH>
-                    <TH>Blockers</TH>
-                    <TH>Freshness</TH>
-                  </TR>
-                </THead>
-                <TBody>
-                  {liveHealthScopes.length ? (
-                    liveHealthScopes.map((row) => (
-                      <TR key={row.scope_key}>
-                        <TD>{row.scope_key}</TD>
-                        <TD>
-                          <Badge variant={row.state === "HEALTHY" ? "success" : row.state === "DEGRADED" ? "warn" : "danger"}>
-                            {row.state}
-                          </Badge>
-                        </TD>
-                        <TD>{row.score}</TD>
-                        <TD>{row.severity}</TD>
-                        <TD>{row.top_priority_reason_code || "--"}</TD>
-                        <TD>{row.hard_blockers.length}</TD>
-                        <TD>{String((row.freshness || {})["preflight_age_sec"] ?? "--")}s</TD>
-                      </TR>
-                    ))
-                  ) : (
-                    <TR>
-                      <TD colSpan={7} className="text-slate-400">
-                        Sin scopes evaluados.
-                      </TD>
-                    </TR>
-                  )}
-                </TBody>
-              </Table>
-            </div>
-          </div>
-
-          <details className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-100">Detalle explicable</summary>
-            <div className="mt-3 grid gap-4 xl:grid-cols-2">
-              <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Penalties</p>
-                {(liveHealthSummary?.score_penalties || []).length ? (
-                  liveHealthSummary?.score_penalties.map((row, idx) => (
-                    <div key={`score-penalty-${idx}`} className="rounded border border-slate-800 p-2 text-xs text-slate-300">
-                      {row.reason_code} · -{row.penalty}
-                      {row.symbol ? ` · ${row.symbol}` : ""}
-                      {row.bot_id ? ` · ${row.bot_id}` : ""}
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-xs text-slate-500">Sin penalizaciones activas.</p>
-                )}
-              </div>
-              <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Component status</p>
-                {Object.entries((liveHealthSummary?.component_status || {}) as Record<string, unknown>).map(([key, value]) => (
-                  <div key={`component-status-${key}`} className="rounded border border-slate-800 p-2 text-xs text-slate-300">
-                    <p className="font-semibold text-slate-100">{key}</p>
-                    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-[11px] text-slate-400">{JSON.stringify(value, null, 2)}</pre>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </details>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardTitle>Operational Safety</CardTitle>
-        <CardDescription>
-          Guardrails live, breakers persistidos, freezes manuales y acciones de emergencia. Esta capa bloquea submit/start/mode live cuando la base operativa no es confiable.
-        </CardDescription>
-        <CardContent className="space-y-4">
-          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Metric label="Estado global" value={String(safetySummary?.global_state || "CLOSED")} compact />
-            <Metric label="Breakers abiertos" value={String(safetySummary?.breakers_open_count ?? 0)} compact />
-            <Metric label="Breakers bloqueantes" value={String(safetySummary?.breakers_blocking_count ?? 0)} compact />
-            <Metric label="Manual locks" value={String(safetySummary?.manual_lock_count ?? 0)} compact />
-          </section>
-
-          {safetySummary?.blocking_bool ? (
-            <div className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-sm text-rose-100">
-              Hay blockers operativos activos. `LIVE` y nuevos submits quedan fail-closed hasta reconcile/unfreeze/manual review.
-            </div>
-          ) : null}
-
-          <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
-            <ActionButton
-              label={actionLoading === "safety-evaluate" ? "Evaluando..." : "Reconcile manual"}
-              help="Corre una evaluacion operativa y fuerza reconcile inmediato."
-              onClick={() => void runSafetyEvaluate()}
-              disabled={actionLoading !== null}
-            />
-            <ActionButton
-              label={actionLoading === "safety-freeze-symbol" ? "Freezing..." : "Freeze symbol"}
-              help="Abre manual lock por simbolo."
-              onClick={() => void freezeSymbol()}
-              disabled={actionLoading !== null}
-              variant="outline"
-            />
-            <ActionButton
-              label={actionLoading === "safety-freeze-bot" ? "Freezing..." : "Freeze bot"}
-              help="Abre manual lock por bot."
-              onClick={() => void freezeBot()}
-              disabled={actionLoading !== null}
-              variant="outline"
-            />
-            <ActionButton
-              label={actionLoading === "safety-freeze-global" ? "Freezing..." : "Freeze global"}
-              help="Abre manual lock global."
-              onClick={() => void freezeGlobal()}
-              disabled={actionLoading !== null}
-              variant="danger"
-            />
-            <ActionButton
-              label={actionLoading === "safety-unfreeze-global" ? "Limpiando..." : "Unfreeze global"}
-              help="Limpia manual lock global. No borra evidencia historica."
-              onClick={() => void unfreezeGlobal()}
-              disabled={actionLoading !== null}
-              variant="secondary"
-            />
-            <ActionButton
-              label={actionLoading === "safety-emergency-cancel" ? "Cancelando..." : "Emergency cancel"}
-              help="Cancela todas las ordenes abiertas del simbolo via endpoint oficial Spot."
-              onClick={() => void emergencyCancelSymbol()}
-              disabled={actionLoading !== null}
-              variant="danger"
-            />
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-              <p className="text-sm font-semibold text-slate-100">Breakers</p>
-              <div className="mt-3 max-h-72 overflow-auto">
-                <Table>
-                  <THead>
-                    <TR>
-                      <TH>Scope</TH>
-                      <TH>Codigo</TH>
-                      <TH>Estado</TH>
-                      <TH>Bloquea</TH>
-                      <TH>Cooldown</TH>
-                    </TR>
-                  </THead>
-                  <TBody>
-                    {safetyBreakers.length ? (
-                      safetyBreakers.map((row) => (
-                        <TR key={row.breaker_id}>
-                          <TD>{row.scope_type}{row.symbol ? `:${row.symbol}` : row.bot_id ? `:${row.bot_id}` : ""}</TD>
-                          <TD>{row.breaker_code}</TD>
-                          <TD>{row.state}</TD>
-                          <TD>{row.blocking_bool ? "SI" : "NO"}</TD>
-                          <TD>{row.cooldown_until || "--"}</TD>
-                        </TR>
-                      ))
-                    ) : (
-                      <TR>
-                        <TD colSpan={5} className="text-slate-400">
-                          No hay breakers activos persistidos.
-                        </TD>
-                      </TR>
-                    )}
-                  </TBody>
-                </Table>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-              <p className="text-sm font-semibold text-slate-100">Eventos Safety</p>
-              <div className="mt-3 max-h-72 overflow-auto">
-                <Table>
-                  <THead>
-                    <TR>
-                      <TH>Hora</TH>
-                      <TH>Trigger</TH>
-                      <TH>Severity</TH>
-                      <TH>Scope</TH>
-                    </TR>
-                  </THead>
-                  <TBody>
-                    {safetyEvents.length ? (
-                      safetyEvents.map((row) => (
-                        <TR key={row.safety_event_id}>
-                          <TD>{new Date(row.event_time).toLocaleString()}</TD>
-                          <TD>{row.trigger_code}</TD>
-                          <TD>{row.severity}</TD>
-                          <TD>{row.scope_type}{row.symbol ? `:${row.symbol}` : row.bot_id ? `:${row.bot_id}` : ""}</TD>
-                        </TR>
-                      ))
-                    ) : (
-                      <TR>
-                        <TD colSpan={4} className="text-slate-400">
-                          Sin eventos recientes.
-                        </TD>
-                      </TR>
-                    )}
-                  </TBody>
-                </Table>
-              </div>
-            </div>
-          </div>
-
-          {safetyLocks?.manual_locks?.length ? (
-            <div className="rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-100">
-              Manual locks activos: {safetyLocks.manual_locks.map((row) => `${row.scope_type}${row.symbol ? `:${row.symbol}` : row.bot_id ? `:${row.bot_id}` : ""}`).join(", ")}
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      <Card>
         <CardTitle>Ejecucion (Diagnostico)</CardTitle>
         <CardDescription>
           Calidad de fills, spread/slippage, latencia, rate limits y salud operativa del conector. Esta seccion se alimenta con Paper/Testnet/Live.
@@ -1881,6 +2499,72 @@ function modeLabel(mode: TradingMode | string): string {
   if (normalized === "TESTNET") return "Testnet";
   if (normalized === "LIVE") return "Live";
   return normalized;
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) return "-";
+  const dt = new Date(value);
+  return Number.isNaN(dt.getTime()) ? "-" : dt.toLocaleString();
+}
+
+function preflightBadgeVariant(status?: string): "success" | "danger" | "warn" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "PASS") return "success";
+  if (normalized === "WARN") return "warn";
+  if (normalized === "FAIL") return "danger";
+  return "neutral";
+}
+
+function localOrderStateVariant(state?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(state || "").toUpperCase();
+  if (["FILLED", "RECOVERED_TERMINAL"].includes(normalized)) return "success";
+  if (["REJECTED", "EXPIRED", "EXPIRED_STP", "MANUAL_REVIEW_REQUIRED"].includes(normalized)) return "danger";
+  if (["UNKNOWN_PENDING_RECONCILIATION", "CANCEL_REQUESTED", "PARTIALLY_FILLED"].includes(normalized)) return "warn";
+  if (["ACKED", "WORKING", "RECOVERED_OPEN", "PRECHECK_PASSED", "SUBMITTING"].includes(normalized)) return "info";
+  return "neutral";
+}
+
+function exchangeOrderStatusVariant(status?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (["NEW", "PARTIALLY_FILLED", "FILLED"].includes(normalized)) return normalized === "FILLED" ? "success" : normalized === "PARTIALLY_FILLED" ? "warn" : "info";
+  if (["CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "TRADE_PREVENTION"].includes(normalized)) return "danger";
+  if (["TRADE", "REPLACED"].includes(normalized)) return "warn";
+  return "neutral";
+}
+
+function reconcileStatusVariant(status?: string | null): "success" | "danger" | "warn" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (["RESOLVED", "RECONCILED"].includes(normalized)) return "success";
+  if (["UNRESOLVED", "DISCREPANCY"].includes(normalized)) return "danger";
+  if (["PENDING", "WS_ONLY", "REST_BACKFILL", "REST_CREATE_ONLY"].includes(normalized)) return "warn";
+  return "neutral";
+}
+
+function reconciliationCaseStatusVariant(status?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "CLEAN") return "success";
+  if (normalized === "RESOLVED") return "info";
+  if (normalized === "DESYNC") return "danger";
+  if (normalized === "MANUAL_REVIEW_REQUIRED") return "warn";
+  if (normalized === "FAILED") return "danger";
+  return "neutral";
+}
+
+function reconciliationCaseSeverityVariant(severity?: string | null): "success" | "danger" | "warn" | "info" | "neutral" {
+  const normalized = String(severity || "").toUpperCase();
+  if (normalized === "INFO") return "info";
+  if (normalized === "WARN") return "warn";
+  if (normalized === "CRITICAL") return "danger";
+  return "neutral";
+}
+
+function truncateJson(value: unknown): string {
+  try {
+    const rendered = JSON.stringify(value, null, 2);
+    return rendered.length > 1200 ? `${rendered.slice(0, 1200)}\n...` : rendered;
+  } catch {
+    return String(value ?? "");
+  }
 }
 
 function isMissingRouteError(err: unknown) {
