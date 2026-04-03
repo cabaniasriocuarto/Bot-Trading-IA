@@ -3,6 +3,7 @@
 WORKDIR /app
 
 COPY pyproject.toml README.md /app/
+COPY config /app/config
 COPY rtlab_core /app/rtlab_core
 COPY user_data /app/user_data
 COPY scripts /app/scripts

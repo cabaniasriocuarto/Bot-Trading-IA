@@ -90,7 +90,19 @@ Fecha: 2026-04-02
   - integrado selectivamente bajo `Ruta A` con:
     - `docs/runbooks/LIVE_RELEASE_GATE.md`
   - el gate queda presente como capa final util;
-  - la decision vigente del gate en esta base sigue siendo `NO GO` hasta snapshots frescos del entorno objetivo + aprobacion humana explicita.
+  - staging ya fue validado con auth real y snapshots remotos utiles;
+  - la decision vigente del gate en esta base sigue siendo `NO GO` por el contenido de esos snapshots + aprobacion humana explicita pendiente:
+    - `gates.overall_status = WARN`
+    - `validation/readiness.live_serio_ready = false`
+    - `execution/live-safety.overall_status = BLOCK`
+    - `execution/live-safety.live_parity_base_ready = false`
+  - hotfix posterior confirmado:
+    - staging ya carga `config/policies/validation_gates.yaml` e `instrument_registry.yaml`;
+    - el bloqueo restante paso a ser operativo:
+      - market data live ausente
+      - snapshots/exchange filters sin refresco valido
+      - margin visibility ausente
+      - cadena `paper -> testnet -> canary` sin runs `PASS`
 - [x] `Carril 1` `Cohorte tecnica acoplada del core live`
   - recuperacion material integrada en esta rama para:
     - `RTLOPS-44`
@@ -140,15 +152,20 @@ Fecha: 2026-04-02
 ## Siguiente bloque exacto en esta base
 - [ ] Carril 2 / release path sobre esta misma rama
   - conservar la branch ya pusheada `feature/live-core-coupled-recovery` y el Draft PR `#13` ya abierto contra `rtlops-sync-release-live-unification`;
-  - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` sobre preview/staging o entorno objetivo fresco;
-  - archivar snapshots frescos de `gates`, `rollout/status`, `validation/readiness`, `live-safety`, `reconcile` y `market-streams`;
-  - decidir `GO` / `NO GO` con evidencia fresca del entorno objetivo.
+  - usar la evidencia autenticada ya capturada de `gates`, `rollout/status`, `validation/readiness`, `live-safety`, `reconcile` y `market-streams` para decidir el estado de revision del PR;
+  - si se pasa el PR a `Ready for review`, hacerlo manteniendo `LIVE = NO GO`;
+  - antes de cualquier promocion live real, repetir el mismo gate autenticado sobre el entorno objetivo inmediato y exigir que desaparezcan `WARN`, `BLOCK` y `live_serio_ready = false`;
+  - el siguiente cuello operativo concreto ya no es deploy/auth:
+    - destrabar los `451` de Binance sobre `exchangeInfo` desde el staging objetivo o mover el gate a un entorno con acceso real
+    - disponer market data live real
+    - disponer margin visibility si siguen habilitadas familias `margin/usdm_futures/coinm_futures`
+    - conseguir runs `PASS` persistidos para `paper`, `testnet` y `canary`
 
 ## Pendiente fuera de Carril 1
 - [ ] Revalidacion final de `Ruta A`
   - `RTLOPS-35` y `RTLOPS-38` ya quedaron validados localmente en esta rama;
-  - sigue pendiente su uso como release path contra preview/staging o entorno objetivo;
-  - siguen siendo el paso necesario antes de cualquier promocion live.
+  - staging/auth/snapshots ya quedaron revalidados sobre el backend remoto correcto;
+  - lo pendiente ya no es deploy ni acceso sino la decision operativa frente al gate autenticado en `NO GO`.
 ## Follow-up chico abierto
 - [ ] `RTLOPS-61` `Cost source snapshots live por familia`
   - sigue pendiente como linea transversal de costos/reporting fuera del programa canary inmediato.

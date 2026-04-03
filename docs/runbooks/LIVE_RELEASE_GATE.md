@@ -19,7 +19,14 @@ Fecha: 2026-04-02
     - `npm run build` -> PASS
     - `npm run test:playwright` -> PASS (`3 passed`)
   - el core live acoplado ya no es el blocker principal en esta rama;
-  - habilitar `LIVE_SERIO` sigue requiriendo snapshots frescos del entorno objetivo y aprobacion humana explicita.
+  - el gate remoto ya fue ejecutado con auth real en staging y hoy devuelve:
+    - `GET /api/v1/gates` -> `overall_status = WARN`, `mode = paper`
+    - `GET /api/v1/rollout/status` -> `state = IDLE`
+    - `GET /api/v1/validation/readiness` -> `live_serio_ready = false`
+    - `GET /api/v1/execution/live-safety/summary` -> `overall_status = BLOCK`, `live_parity_base_ready = false`
+    - `GET /api/v1/execution/reconcile/summary` -> `ack_missing = 0`, `unresolved_count = 0`
+    - `GET /api/v1/execution/market-streams/summary` -> `live_blocked = false`, `running_sessions = 0`
+  - por eso `LIVE_SERIO` sigue en `NO GO` aunque auth y deploy remoto ya no sean el blocker.
 
 ## Alcance real de la decision
 
@@ -123,39 +130,60 @@ Fecha: 2026-04-02
 
 ## Blockers duros para pasar a LIVE
 
-- no hay reevaluacion fresca del entorno objetivo para:
-  - `preflight`
-  - `G9_RUNTIME_ENGINE_REAL`
-  - `account surface`
-  - `reconciliation`
-  - `validation/readiness`
-  - `live-safety`
-  - `market-streams`
-- no hay aprobacion humana explicita posterior a esa reevaluacion.
+- el snapshot remoto autenticado actual sigue mostrando:
+  - `gates.overall_status = WARN`
+  - `validation/readiness.live_serio_ready = false`
+  - `execution/live-safety.overall_status = BLOCK`
+  - `execution/live-safety.live_parity_base_ready = false`
+- el detalle actual del bloqueo en staging ya no es deploy/auth ni policies ausentes:
+  - `gates` queda en `WARN` por:
+    - `G8_OBSERVABILITY_OK = WARN` (`Telegram disabled`)
+    - `G9_RUNTIME_ENGINE_REAL = WARN` con `mode = paper` y runtime incompleto para no-live
+  - `validation/readiness` sigue en `false` porque no existen runs `PASS` persistidos para `paper -> testnet -> canary`
+  - `execution/live-safety` hoy bloquea por:
+    - `stale_quote_blocker`
+    - `stale_orderbook_blocker`
+    - `snapshot_freshness_blocker`
+    - `exchange_filters_blocker`
+    - `margin_level_blocker`
+- el snapshot remoto autenticado actual no bloquea por reconciliacion ni por market streams:
+  - `execution/reconcile/summary.unresolved_count = 0`
+  - `execution/reconcile/summary.ack_missing = 0`
+  - `execution/market-streams/summary.live_blocked = false`
+  - `execution/market-streams/summary.running_sessions = 0`
+- no hay aprobacion humana explicita posterior a esta evidencia.
 
 ## Que habilitaria pasar de `NO GO` a decision operable
 
-- usar la branch ya pusheada y el Draft PR existente para refrescar el entorno de preview/staging que corresponda;
-- ejecutar este gate en el entorno objetivo con snapshots frescos de:
-  - `GET /api/v1/gates`
-  - `GET /api/v1/rollout/status`
-  - `GET /api/v1/validation/readiness`
-  - `GET /api/v1/execution/live-safety/summary`
-  - `GET /api/v1/execution/reconcile/summary`
-  - `GET /api/v1/execution/market-streams/summary`
-- si el entorno objetivo sigue mostrando `401/403/404` en alguna de esas surfaces:
-  - registrar la evidencia como pendiente por auth/acceso o drift de deployment;
-  - no levantar `NO GO` con snapshots incompletos o inventados.
+- no falta ya auth ni refresh de staging para este gate:
+  - el backend staging correcto ya esta desplegado
+  - las surfaces remotas ya existen y fueron leidas autenticadas
+- tampoco faltan ya policies base del runtime:
+  - staging vuelve a cargar `config/policies/validation_gates.yaml`
+  - staging vuelve a cargar `config/policies/instrument_registry.yaml`
+- para pasar de `NO GO` a decision operable hace falta que el entorno objetivo deje de mostrar:
+  - `gates.overall_status = WARN`
+  - `validation/readiness.live_serio_ready = false`
+  - `execution/live-safety.overall_status = BLOCK`
+  - `execution/live-safety.live_parity_base_ready = false`
+- hoy eso implica, concretamente:
+  - disponer market data live real para evitar `stale_quote_blocker` y `stale_orderbook_blocker`
+  - obtener snapshots frescos/exchange filters validos; en este staging el registry sigue chocando contra `451` en endpoints publicos de Binance
+  - tener margin visibility valida si `margin/usdm_futures/coinm_futures` siguen habilitados en policy
+  - conseguir runs `PASS` persistidos para `paper`, `testnet` y `canary`
+- si se reevalua otro entorno objetivo distinto de este staging:
+  - repetir el mismo set de snapshots autenticados
+  - no extrapolar `PASS` desde un entorno a otro
 - obtener aprobacion humana explicita antes de habilitar `LIVE_SERIO`.
 
 ## Proximo paso operativo exacto
 
 - conservar `feature/live-core-coupled-recovery` y el Draft PR `#13` contra `rtlops-sync-release-live-unification`;
-- dejar que preview/staging refresque sobre esta rama;
-- ejecutar este gate en el entorno objetivo inmediatamente antes de cualquier promocion live;
-- si alguna surface falla o queda stale:
-  - no habilitar live
-  - pasar a `HOLD`, `freeze` o `rollout/rollback` segun corresponda.
+- usar la evidencia remota autenticada ya capturada para decidir el estado de revision del PR;
+- si se pasa el PR a `Ready for review`, hacerlo manteniendo `LIVE = NO GO`;
+- antes de cualquier promocion live real:
+  - reevaluar el gate en el entorno objetivo inmediato
+  - no habilitar live si reaparecen `WARN`, `BLOCK` o `live_serio_ready = false`.
 
 ## Referencias relacionadas
 

@@ -35,8 +35,11 @@ Este archivo centraliza la documentacion vigente del proyecto.
     - `npm run build`
     - `npm run test:playwright`
   - la branch `feature/live-core-coupled-recovery` ya esta pusheada y el Draft PR `#13` ya existe contra `rtlops-sync-release-live-unification`;
-  - ejecutar `docs/runbooks/LIVE_RELEASE_GATE.md` en el entorno objetivo con snapshots frescos;
-  - y recien despues aprobacion humana sobre el entorno objetivo.
+  - el gate remoto ya fue ejecutado autenticado sobre staging y hoy sigue en `NO GO` por resultado del propio gate:
+    - `gates.overall_status = WARN`
+    - `validation/readiness.live_serio_ready = false`
+    - `execution/live-safety.overall_status = BLOCK`
+  - y recien despues de resolver ese estado en el entorno objetivo corresponde aprobacion humana sobre el entorno objetivo.
 
 ## Ambientes online de prueba (staging)
 - Frontend (Vercel staging): `https://bot-trading-ia-staging.vercel.app`

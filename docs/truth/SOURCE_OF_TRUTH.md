@@ -35,7 +35,22 @@ Fecha de actualizacion: 2026-04-02
   - `RTLOPS-38`:
     - `docs/runbooks/LIVE_RELEASE_GATE.md` presente como capa final de decision/gate;
     - el gate queda integrado como artefacto util y alineado con el estado actual de esta rama;
-    - su decision vigente en esta base sigue siendo `NO GO` por falta de snapshots frescos del entorno objetivo y aprobacion humana explicita.
+    - staging remoto ya fue revalidado con auth real y snapshots utiles del gate;
+    - su decision vigente en esta base sigue siendo `NO GO` por el contenido actual del gate autenticado y aprobacion humana explicita pendiente:
+      - `gates.overall_status = WARN`
+      - `validation/readiness.live_serio_ready = false`
+      - `execution/live-safety.overall_status = BLOCK`
+      - `execution/live-safety.live_parity_base_ready = false`
+    - hotfix operativo confirmado en staging:
+      - el contenedor ya vuelve a cargar `config/policies/validation_gates.yaml` e `instrument_registry.yaml`
+      - el bloqueo restante ya no es packaging ni auth
+      - el bloqueo real pasa por:
+        - `stale_quote_blocker`
+        - `stale_orderbook_blocker`
+        - `snapshot_freshness_blocker`
+        - `exchange_filters_blocker`
+        - `margin_level_blocker`
+        - ausencia de runs `PASS` persistidos para `paper -> testnet -> canary`
 - Recuperacion acoplada confirmada en esta base:
   - modulos nucleo presentes y cableados:
     - `rtlab_autotrader/rtlab_core/execution/reality.py`
@@ -105,14 +120,21 @@ Fecha de actualizacion: 2026-04-02
   - `LIVE`: NO GO
   - el blocker principal ya no es ausencia del core live acoplado en esta rama;
   - los bloqueos restantes para `LIVE_SERIO` son:
-    - ejecutar el release gate sobre la branch ya pusheada `feature/live-core-coupled-recovery` y el Draft PR `#13` ya abierto contra `rtlops-sync-release-live-unification`;
-    - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md` con snapshots frescos;
+    - `gates.overall_status = WARN`;
+    - `validation/readiness.live_serio_ready = false`;
+    - `execution/live-safety.overall_status = BLOCK`;
+    - `execution/live-safety.live_parity_base_ready = false`;
+    - en staging hoy eso se traduce en:
+      - market data live ausente (`stale_quote_blocker`, `stale_orderbook_blocker`);
+      - snapshots/exchange filters sin refresco valido; el registry esta recibiendo `451` contra varios `exchangeInfo` publicos de Binance;
+      - margin visibility ausente mientras `margin/usdm_futures/coinm_futures` siguen habilitadas en policy;
+      - no existen runs `PASS` persistidos para `paper`, `testnet` y `canary`;
     - aprobacion humana explicita antes de promocion live.
 - Siguiente bloque tecnico exacto despues de este estado:
   - cierre de `Carril 2` sobre esta rama:
     - conservar el Draft PR `#13` ya abierto contra `rtlops-sync-release-live-unification`;
-    - preview/staging refresh si aplica por integracion Git;
-    - ejecucion de `docs/runbooks/LIVE_RELEASE_GATE.md` con snapshots frescos del entorno objetivo.
+    - usar la evidencia autenticada ya capturada para decidir si el PR pasa a `Ready for review` manteniendo `LIVE = NO GO`;
+    - antes de cualquier promocion live real, repetir `docs/runbooks/LIVE_RELEASE_GATE.md` sobre el entorno objetivo inmediato y exigir que desaparezcan `WARN` / `BLOCK` / `live_serio_ready = false`.
 - Estado administrativo real de Linear al 2026-04-02:
   - los `Done` de `RTLOPS-44`, `RTLOPS-45`, `RTLOPS-46`, `RTLOPS-47`, `RTLOPS-48`, `RTLOPS-49`, `RTLOPS-50` y `RTLOPS-23` ahora coinciden materialmente con esta rama por recuperacion de cohorte;
   - no se tocaron estados ni comentarios en Linear en este bloque;

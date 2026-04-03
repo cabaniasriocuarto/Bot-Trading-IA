@@ -2,6 +2,60 @@
 
 ## 2026-04-02
 
+### Hotfix de staging: policies empaquetadas en Railway
+- `rtlab_autotrader/docker/Dockerfile` ahora copia `config/` a `/app/config` dentro del contenedor
+- efecto real en staging despues del redeploy:
+  - `validation/readiness.policy_source = config/policies/validation_gates.yaml`
+  - `instruments/registry.policy_source = config/policies/instrument_registry.yaml`
+  - `execution_policy_loaded = true`
+  - `capabilities_known = true`
+  - desaparece el fail-closed por policies ausentes en runtime
+- blockers remotos que siguen abiertos despues del hotfix:
+  - `gates.overall_status = WARN` por `mode = paper` y `G8/G9`
+  - `validation/readiness.live_serio_ready = false` porque no hay runs `PASS` persistidos para `paper -> testnet -> canary`
+  - `execution/live-safety.overall_status = BLOCK` por:
+    - `stale_quote_blocker`
+    - `stale_orderbook_blocker`
+    - `snapshot_freshness_blocker`
+    - `exchange_filters_blocker`
+    - `margin_level_blocker`
+  - el registry ya intenta refrescar snapshots, pero en este staging recibe `451` contra varios `exchangeInfo` publicos de Binance
+
+### Auditoria final del gate remoto autenticado
+- Railway staging ya quedo alineado con esta rama:
+  - proyecto `Bot-Trading-IA`
+  - environment `staging`
+  - servicio `Bot-Trading-IA`
+  - deploy activo `SUCCESS`
+  - las surfaces nuevas del gate ya no devuelven `404`
+- se resolvio el bloqueo de auth operativo para consultar staging:
+  - flujo oficial `POST /api/v1/auth/login`
+  - acceso autenticado real a:
+    - `GET /api/v1/gates`
+    - `GET /api/v1/rollout/status`
+    - `GET /api/v1/validation/readiness`
+    - `GET /api/v1/execution/live-safety/summary`
+    - `GET /api/v1/execution/reconcile/summary`
+    - `GET /api/v1/execution/market-streams/summary`
+- snapshots remotos autenticados vigentes:
+  - `gates.overall_status = WARN`
+  - `rollout/status.state = IDLE`
+  - `validation/readiness.live_serio_ready = false`
+  - `execution/live-safety.overall_status = BLOCK`
+  - `execution/live-safety.live_parity_base_ready = false`
+  - `execution/reconcile/summary.ack_missing = 0`
+  - `execution/reconcile/summary.unresolved_count = 0`
+  - `execution/market-streams/summary.live_blocked = false`
+  - `execution/market-streams/summary.running_sessions = 0`
+- decision vigente despues de esta auditoria:
+  - `LIVE` sigue en `NO GO`
+  - ya no por falta de deploy, auth o snapshots remotos
+  - sino por el contenido mismo del gate autenticado y por la aprobacion humana pendiente
+- impacto sobre el PR `#13`:
+  - el release path ya no esta bloqueado por infraestructura remota
+  - el estado de revision del PR puede decidirse por separado de `LIVE`
+  - si se pasa a `Ready for review`, debe mantenerse `LIVE = NO GO`
+
 ### Microbloque QA backend + release gate
 - `config/policies` recupera alias backward-compatible en `summary` para:
   - `execution_alerting_severity_rank`
