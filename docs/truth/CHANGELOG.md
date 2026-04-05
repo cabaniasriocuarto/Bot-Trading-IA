@@ -2,6 +2,33 @@
 
 ## 2026-04-05
 
+### Auditoria de PAPER PASS / opcion B de estrategia de soak
+- Recaptura remota fresca:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `24005110499`
+  - artifact `6278328249`
+- Hallazgo real:
+  - `PAPER` sigue en `HOLD` con `total_orders=0` y `trading_days=1`;
+  - `bot_status=RUNNING`, pero `runtime_engine=simulated`;
+  - el runtime actual de `paper` no entra a la ruta de submit que persiste ordenes al ledger de validation.
+- Trazabilidad real de estrategia en staging:
+  - principal remoto `paper`: `trend_pullback_orderflow_confirm_v1`
+  - bot `BOT-000001` tiene pool:
+    - `trend_pullback_orderflow_v2`
+    - `breakout_volatility_v2`
+    - `defensive_liquidity_v2`
+    - `meanreversion_range_v2`
+    - `trend_pullback_orderflow_confirm_v1`
+    - `trend_scanning_regime_v2`
+  - universo actual del bot: `BTCUSDT`, `ETHUSDT`
+- Decision tecnica de este bloque:
+  - no se cambio producto ni estrategia remota, porque el problema ya no es "cual estrategia" sino "que `paper` no persiste ordenes autonomas al ledger";
+  - cambiar principal/pool ahora seria cosmetico y no resolveria `min_orders`.
+- Recomendacion operativa nueva, no codificada:
+  - candidato de soak cuando exista una ruta autonoma real en `paper`: `trend_scanning_regime_v2`;
+  - si tras 6h sigue en `0` ordenes, mover a esa estrategia;
+  - si tras 24h sigue con `<5` ordenes, ampliar universo a `BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT`.
+
 ### Cierre de `margin_level_blocker` en staging
 - Cambio minimo aplicado en `rtlab_autotrader/rtlab_core/execution/reality.py`:
   - `fetch_account_balances(... family="margin")` ahora persiste `marginLevel` en `self._margin_levels[environment]` via `set_margin_level(...)`;

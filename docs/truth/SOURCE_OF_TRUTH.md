@@ -2,6 +2,61 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Auditoria de PAPER PASS real / estrategia de soak - 2026-04-05
+
+- Rama operativa usada:
+  - `chore/binance-signed-surface-diagnostics`
+- Recaptura remota fresca:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `24005110499`
+  - artifact `6278328249`
+- Estado real confirmado de `PAPER` en staging:
+  - `bot_status=RUNNING`
+  - `mode=paper`
+  - `runtime_engine=simulated`
+  - `orders_before.count=0`
+  - ultimo run `PAPER`: `f8a30b78-efa8-4eb3-ae4c-6996c49acfab`
+  - `result=HOLD`
+  - `total_orders=0`
+  - `trading_days=1`
+- Fuente real de los contadores de validation:
+  - `ValidationService._collect_metrics(...)` cuenta desde ledger operativo:
+    - `orders` via `execution_service.db.list_orders(...)`
+    - `fills` via `execution_service.db.fills_for_order(...)`
+    - `trade_rows` via `reporting_bridge_service.db.trade_rows(...)`
+    - `intents` via `_filter_intents(...)`
+  - `validation_runs` solo persiste el resultado final; no es la fuente de `min_orders` ni de `trading_days`.
+- Estado real de estrategia/pool/universo en staging:
+  - principal remoto efectivo para `paper` en `registry.sqlite3`: `trend_pullback_orderflow_confirm_v1`
+  - bot persistido `BOT-000001`:
+    - `pool_strategy_ids`:
+      - `trend_pullback_orderflow_v2`
+      - `breakout_volatility_v2`
+      - `defensive_liquidity_v2`
+      - `meanreversion_range_v2`
+      - `trend_pullback_orderflow_confirm_v1`
+      - `trend_scanning_regime_v2`
+    - `universe`: `BTCUSDT`, `ETHUSDT`
+    - nota: `Bot base (Opcion B): propone cambios y requiere aprobacion humana.`
+- Hallazgo estructural confirmado:
+  - cambiar solo la estrategia de `paper` no alcanza hoy para generar evidencia de `PAPER=PASS`;
+  - `RuntimeBridge.sync_runtime_state(...)` sale temprano cuando `runtime_engine != real` y deja:
+    - `runtime_loop_alive=false`
+    - `runtime_executor_connected=false`
+    - `runtime_last_signal_strategy_id=""`
+  - la ruta que intenta submit remoto (`_maybe_submit_exchange_runtime_order(...)`) solo corre en `testnet/live`;
+  - en `paper`, `_ensure_seed_order(...)` solo semilla OMS local y no persiste ordenes en el ledger que consume validation.
+- Conclusion operativa cerrada:
+  - el cuello real ya no es la estrategia principal sino la ausencia de una ruta autonoma que persista ordenes `paper` al ledger operativo;
+  - por eso, con el sistema actual, cambiar a una estrategia mas activa para `paper` seria cosmetico si no cambia tambien la forma en que `paper` genera/persiste ordenes.
+- Estrategia de soak recomendada, pero no aplicada aun:
+  - `trend_scanning_regime_v2`
+  - razon: cubre mas regimenes (`trend`, `range`, `high_vol`) que la principal conservadora y deberia dar mas oportunidades cuando exista una ruta real de submit/persistencia `paper`.
+- Criterios operativos recomendados para una futura ejecucion de soak, no codificados hoy en repo:
+  - si `paper` sigue `RUNNING` y `execution/orders?environment=paper` permanece en `0` tras 6 horas con una ruta autonoma real activa, mover `paper` a `trend_scanning_regime_v2`;
+  - si tras 24 horas sigue con menos de `5` ordenes, ampliar universo desde `BTCUSDT,ETHUSDT` a `BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT`;
+  - no bajar thresholds de validation ni forzar `PASS`.
+
 ## Cierre de margin guard en Railway staging - 2026-04-05
 
 - Rama operativa usada:

@@ -2,6 +2,32 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras auditar `PAPER` / opcion B - 2026-04-05
+- [x] Confirmar con evidencia real que `validation` ya no falla por persistencia ni por `margin_guard`.
+- [x] Confirmar que el ultimo cuello de `PAPER` sigue siendo:
+  - `min_orders = 0 < 30`
+  - `trading_days = 1 < 3`
+- [x] Confirmar que el bot en staging esta `RUNNING` pero no genera ordenes persistidas:
+  - `bot_status=RUNNING`
+  - `runtime_engine=simulated`
+  - `runtime_loop_alive=false`
+  - `runtime_last_signal_strategy_id=""`
+  - `execution/orders?environment=paper -> 0`
+- [x] Confirmar que cambiar solo de estrategia no resuelve el contador actual:
+  - el submit autonomo real hoy solo existe en `testnet/live`;
+  - en `paper` el runtime actual no persiste ordenes al ledger que consume validation.
+- [ ] Proximo frente tecnico real:
+  - decidir si se quiere habilitar una ruta autonoma de ordenes `paper` persistidas al ledger;
+  - sin esa ruta, no tiene sentido operativo esperar `PAPER=PASS` solo cambiando estrategia.
+- [ ] Estrategia de soak recomendada para cuando exista esa ruta:
+  - `trend_scanning_regime_v2`
+  - universo recomendado: `BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT`
+  - mantener `trend_pullback_orderflow_confirm_v1` como principal productivo actual fuera del soak.
+- [ ] Recomendacion operativa nueva, no codificada hoy:
+  - si con una ruta autonoma real `paper` sigue en `0` ordenes tras 6 horas, mover a `trend_scanning_regime_v2`;
+  - si tras 24 horas sigue con menos de `5` ordenes, ampliar universo;
+  - no tocar thresholds de validation.
+
 ## Siguiente bloque exacto tras cerrar `margin_level_blocker` - 2026-04-05
 - [x] Confirmar que Binance/auth ya no es el frente:
   - `spot=200`
