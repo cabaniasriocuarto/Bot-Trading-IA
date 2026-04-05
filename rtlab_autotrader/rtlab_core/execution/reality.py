@@ -3459,11 +3459,35 @@ class ExecutionRealityService:
         key = (normalized_family, normalized_environment, canonical_symbol)
         cached = self._quotes.get(key)
         mark_environment = normalized_environment
-        if not isinstance(cached, dict) and normalized_environment == "paper":
-            # Paper runtime consumes live market streams; reuse the live quote cache
-            # when paper has no dedicated snapshot yet.
-            cached = self._quotes.get((normalized_family, "live", canonical_symbol))
-            mark_environment = "live"
+        if normalized_environment == "paper":
+            live_cached = self._quotes.get((normalized_family, "live", canonical_symbol))
+
+            def _snapshot_ts(snapshot: dict[str, Any] | None, field: str) -> int:
+                if not isinstance(snapshot, dict):
+                    return 0
+                try:
+                    return int(snapshot.get(field) or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            if isinstance(live_cached, dict):
+                # Paper runtime consumes live market streams. When paper has no
+                # dedicated snapshot, or its cached snapshot is older than live,
+                # prefer the fresher live market reference.
+                if not isinstance(cached, dict):
+                    cached = live_cached
+                    mark_environment = "live"
+                else:
+                    live_quote_ts = _snapshot_ts(live_cached, "quote_ts_ms")
+                    live_orderbook_ts = _snapshot_ts(live_cached, "orderbook_ts_ms")
+                    paper_quote_ts = _snapshot_ts(cached, "quote_ts_ms")
+                    paper_orderbook_ts = _snapshot_ts(cached, "orderbook_ts_ms")
+                    if (
+                        live_quote_ts > paper_quote_ts
+                        or live_orderbook_ts > paper_orderbook_ts
+                    ):
+                        cached = live_cached
+                        mark_environment = "live"
         if isinstance(cached, dict):
             snapshot = copy.deepcopy(cached)
             if snapshot.get("mark_price") is None:

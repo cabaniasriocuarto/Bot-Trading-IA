@@ -2575,6 +2575,46 @@ def test_execution_metrics_fail_closed_when_telemetry_source_is_synthetic(tmp_pa
   assert float(runtime_costs.get("total_cost_usd") or 0.0) == 0.0
 
 
+def test_paper_simulated_start_persists_runtime_order_in_execution_ledger(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC", "3600")
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  module.store.instrument_registry.sync(startup=False)
+  module.store.reporting_bridge.refresh_materialized_views(module.store.load_runs())
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  module.store.execution_reality.set_market_snapshot(
+    family="spot",
+    environment="paper",
+    symbol="BTCUSDT",
+    bid=50000.0,
+    ask=50001.0,
+  )
+
+  start_res = client.post("/api/v1/bot/start", headers=headers)
+  assert start_res.status_code == 200, start_res.text
+
+  listed_1 = client.get(
+    "/api/v1/execution/orders?family=spot&environment=paper&symbol=BTCUSDT",
+    headers=headers,
+  )
+  assert listed_1.status_code == 200, listed_1.text
+  assert listed_1.json()["count"] >= 1
+
+  status_res = client.get("/api/v1/status", headers=headers)
+  assert status_res.status_code == 200, status_res.text
+  runtime_snapshot = status_res.json().get("runtime_snapshot") or {}
+  assert runtime_snapshot.get("runtime_loop_alive") is False
+  assert runtime_snapshot.get("executor_connected") is False
+
+  listed_2 = client.get(
+    "/api/v1/execution/orders?family=spot&environment=paper&symbol=BTCUSDT",
+    headers=headers,
+  )
+  assert listed_2.status_code == 200, listed_2.text
+  assert listed_2.json()["count"] == listed_1.json()["count"]
+
+
 def test_runtime_stop_and_killswitch_force_runtime_contract_back_to_non_live(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="testnet")
   admin_token = _login(client, "Wadmin", "moroco123")

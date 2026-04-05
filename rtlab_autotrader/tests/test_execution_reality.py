@@ -1799,6 +1799,46 @@ def test_create_market_order_paper_reuses_live_quote_snapshot_when_paper_cache_i
     assert result["blocking_reasons"] == []
 
 
+def test_create_market_order_paper_prefers_fresher_live_quote_snapshot_when_paper_cache_is_stale(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    old_ms = int((datetime.now(timezone.utc) - timedelta(seconds=10)).timestamp() * 1000)
+    fresh_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    service.set_market_snapshot(
+        family="spot",
+        environment="paper",
+        symbol="BTCUSDT",
+        bid=49900.0,
+        ask=49901.0,
+        quote_ts_ms=old_ms,
+        orderbook_ts_ms=old_ms,
+    )
+    service.set_market_snapshot(
+        family="spot",
+        environment="live",
+        symbol="BTCUSDT",
+        bid=50000.0,
+        ask=50001.0,
+        quote_ts_ms=fresh_ms,
+        orderbook_ts_ms=fresh_ms,
+    )
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+        }
+    )
+
+    assert result["order_status"] == "NEW"
+    assert result["execution_order_id"] is not None
+    assert result["blocking_reasons"] == []
+
+
 def test_create_limit_order_paper_requires_explicit_price(tmp_path: Path) -> None:
     service = _build_service(tmp_path, family="spot")
 

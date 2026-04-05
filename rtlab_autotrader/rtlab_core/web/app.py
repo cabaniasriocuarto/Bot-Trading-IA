@@ -7152,6 +7152,131 @@ class RuntimeBridge:
             "notional_usd": notional,
         }
 
+    def _maybe_submit_paper_runtime_order(self, *, state: dict[str, Any]) -> dict[str, Any]:
+        intent = self._runtime_order_intent(mode="paper")
+        signal_strategy_id = str(intent.get("strategy_id") or "")
+        signal_symbol = RuntimeBridge._sanitize_exchange_symbol(intent.get("symbol") or "")
+        signal_side = str(intent.get("side") or "").strip().upper()
+        signal_action = str(intent.get("action") or "flat").strip().lower()
+        signal_reason = str(intent.get("reason") or "").strip()
+        base_result = {
+            "submitted": False,
+            "signal_action": signal_action,
+            "signal_reason": signal_reason,
+            "signal_strategy_id": signal_strategy_id,
+            "signal_symbol": signal_symbol,
+            "signal_side": signal_side,
+        }
+
+        if signal_action != "trade":
+            return {**base_result, "reason": "strategy_signal_flat"}
+        if signal_side not in {"BUY", "SELL"}:
+            return {**base_result, "reason": "strategy_signal_side_missing"}
+        if not bool((self._last_risk or {}).get("allow_new_positions", True)):
+            return {**base_result, "reason": "risk_blocked"}
+
+        family = "spot"
+        symbol = signal_symbol or RuntimeBridge._sanitize_exchange_symbol(RUNTIME_REMOTE_ORDER_SYMBOL) or "BTCUSDT"
+        cooldown_sec = int(RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC)
+
+        open_payload = store.execution_reality.list_orders(
+            family=family,
+            environment="paper",
+            symbol=symbol,
+            status="OPEN",
+            limit=200,
+            offset=0,
+        )
+        open_items = list(open_payload.get("items") or []) if isinstance(open_payload, dict) else []
+        if open_items:
+            for row in open_items[:10]:
+                execution_order_id = str(row.get("execution_order_id") or "").strip()
+                if execution_order_id:
+                    try:
+                        store.execution_reality.order_detail(execution_order_id)
+                    except Exception:
+                        continue
+            open_payload = store.execution_reality.list_orders(
+                family=family,
+                environment="paper",
+                symbol=symbol,
+                status="OPEN",
+                limit=200,
+                offset=0,
+            )
+            open_items = list(open_payload.get("items") or []) if isinstance(open_payload, dict) else []
+            if open_items:
+                return {**base_result, "reason": "open_orders_present", "open_orders": len(open_items)}
+
+        latest_payload = store.execution_reality.list_orders(
+            family=family,
+            environment="paper",
+            symbol=symbol,
+            limit=1,
+            offset=0,
+        )
+        latest_items = list(latest_payload.get("items") or []) if isinstance(latest_payload, dict) else []
+        if latest_items:
+            last_submitted_raw = str(latest_items[0].get("submitted_at") or "").strip()
+            if last_submitted_raw:
+                try:
+                    last_dt = datetime.fromisoformat(
+                        last_submitted_raw.replace("Z", "+00:00") if last_submitted_raw.endswith("Z") else last_submitted_raw
+                    )
+                    age_sec = max(0.0, (utc_now() - last_dt).total_seconds())
+                    if age_sec < float(cooldown_sec):
+                        return {**base_result, "reason": "submit_cooldown_active"}
+                except Exception:
+                    pass
+
+        quote_snapshot = store.execution_reality._quote_snapshot(family, "paper", symbol)  # type: ignore[attr-defined]
+        if not isinstance(quote_snapshot, dict):
+            return {**base_result, "reason": "quote_snapshot_missing"}
+        ask = _as_float(quote_snapshot.get("ask"), 0.0)
+        bid = _as_float(quote_snapshot.get("bid"), 0.0)
+        ref_price = ask if signal_side == "BUY" and ask > 0 else bid if signal_side == "SELL" and bid > 0 else max(ask, bid, 0.0)
+        if ref_price <= 0:
+            return {**base_result, "reason": "quote_snapshot_invalid"}
+
+        notional = max(5.0, float(intent.get("notional_usd") or RUNTIME_REMOTE_ORDER_NOTIONAL_USD))
+        quantity = max(0.000001, round(notional / ref_price, 8))
+        created = store.execution_reality.create_order(
+            {
+                "family": family,
+                "environment": "paper",
+                "mode": "paper",
+                "strategy_id": signal_strategy_id or None,
+                "bot_id": str(state.get("active_bot_id") or "").strip() or None,
+                "symbol": symbol,
+                "side": signal_side,
+                "order_type": "MARKET",
+                "quantity": quantity,
+                "market_snapshot": copy.deepcopy(quote_snapshot),
+            }
+        )
+        execution_order_id = str(created.get("execution_order_id") or "").strip()
+        if not execution_order_id or str(created.get("order_status") or "").upper() == "BLOCKED":
+            blocking_reasons = created.get("blocking_reasons") if isinstance(created.get("blocking_reasons"), list) else []
+            return {
+                **base_result,
+                "reason": "submit_blocked",
+                "error": ", ".join(str(item) for item in blocking_reasons if str(item).strip()) or str(created.get("order_status") or ""),
+            }
+
+        detail = store.execution_reality.order_detail(execution_order_id) or {}
+        detail_order = detail.get("order") if isinstance(detail.get("order"), dict) else {}
+        fills = detail.get("fills") if isinstance(detail.get("fills"), list) else []
+        return {
+            **base_result,
+            "submitted": True,
+            "reason": "submitted",
+            "execution_order_id": execution_order_id,
+            "client_order_id": str(created.get("client_order_id") or ""),
+            "order_status": str((detail_order or created).get("order_status") or ""),
+            "current_local_state": str(detail.get("current_local_state") or (detail_order or created).get("current_local_state") or ""),
+            "fills_count": len(fills),
+        }
+
     def _remember_remote_submit_request(self, client_order_id: str) -> bool:
         text = str(client_order_id or "").strip()
         if not text:
@@ -7688,6 +7813,7 @@ class RuntimeBridge:
             self._active_mode = active_mode
             now_iso = utc_now_iso()
             max_age_for_stale = max(10, _as_int((settings.get("execution") or {}).get("order_timeout_sec"), 45))
+            paper_submit_result: dict[str, Any] | None = None
 
             if event == "kill":
                 self._kill_switch.trigger("admin_killswitch")
@@ -7705,6 +7831,9 @@ class RuntimeBridge:
                 canceled_total = int(canceled_now) + int(canceled_remote)
                 if canceled_total > 0:
                     self._stats["requotes"] = self._stats.get("requotes", 0) + canceled_total
+
+            if runtime_engine != RUNTIME_ENGINE_REAL and running and active_mode == "paper":
+                paper_submit_result = self._maybe_submit_paper_runtime_order(state=state)
 
             if runtime_engine != RUNTIME_ENGINE_REAL or not running:
                 changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
@@ -7735,6 +7864,17 @@ class RuntimeBridge:
                 if runtime_engine != RUNTIME_ENGINE_REAL:
                     self._reset_runtime_costs()
                 self._remote_positions = []
+                if isinstance(paper_submit_result, dict):
+                    changed = self._set_state_value(state, "runtime_last_signal_action", str(paper_submit_result.get("signal_action") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_reason", str(paper_submit_result.get("signal_reason") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_strategy_id", str(paper_submit_result.get("signal_strategy_id") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_symbol", str(paper_submit_result.get("signal_symbol") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_side", str(paper_submit_result.get("signal_side") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_reason", str(paper_submit_result.get("reason") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", str(paper_submit_result.get("error") or "")) or changed
+                    if bool(paper_submit_result.get("submitted")):
+                        changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
+                        changed = self._set_state_value(state, "runtime_last_remote_client_order_id", str(paper_submit_result.get("client_order_id") or "")) or changed
                 self._append_execution_point(settings=settings, mode=active_mode)
                 return changed
 
