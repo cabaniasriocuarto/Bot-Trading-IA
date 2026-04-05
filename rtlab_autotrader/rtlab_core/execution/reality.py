@@ -5542,10 +5542,10 @@ class ExecutionRealityService:
     def _materialize_paper_fill(self, order: dict[str, Any], intent: dict[str, Any] | None) -> dict[str, Any]:
         if _normalize_environment(order.get("environment")) != "paper":
             return {"fills": [], "order": order, "reporting_sync": None}
-        if str(order.get("order_status") or "").upper() in TERMINAL_ORDER_STATUSES:
-            return {"fills": self.db.fills_for_order(str(order.get("execution_order_id"))), "order": order, "reporting_sync": None}
-        if self.db.fills_for_order(str(order.get("execution_order_id"))):
-            return {"fills": self.db.fills_for_order(str(order.get("execution_order_id"))), "order": order, "reporting_sync": None}
+        existing_fills = self.db.fills_for_order(str(order.get("execution_order_id")))
+        if str(order.get("order_status") or "").upper() in TERMINAL_ORDER_STATUSES or existing_fills:
+            reporting_sync = self._sync_fills_to_reporting_bridge(order=order, intent=intent, fills=existing_fills) if existing_fills else None
+            return {"fills": existing_fills, "order": order, "reporting_sync": reporting_sync}
         reference = self._quote_reference_for_order(order, intent)
         side = str((intent or {}).get("side") or "").upper()
         order_type = str((intent or {}).get("order_type") or (order.get("raw_ack_json") if isinstance(order.get("raw_ack_json"), dict) else {}).get("type") or "").upper()

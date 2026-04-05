@@ -3088,6 +3088,40 @@ def test_paper_submit_reconcile_materializes_fill(tmp_path: Path) -> None:
     )
 
 
+def test_paper_reconcile_backfills_existing_reporting_row_with_current_net_pnl(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+            "market_snapshot": _fresh_market_snapshot(),
+        }
+    )
+
+    detail = service.order_detail(str(result["execution_order_id"]))
+    assert detail is not None
+    ledger_rows = service.reporting_bridge_service.db.trade_rows()  # type: ignore[union-attr]
+    assert len(ledger_rows) == 1
+    stale_row = dict(ledger_rows[0])
+    stale_row["net_pnl"] = 0.0
+    service.reporting_bridge_service.db._trade_rows = [stale_row]  # type: ignore[union-attr]
+
+    service.reconcile_orders()
+    refreshed_rows = service.reporting_bridge_service.db.trade_rows()  # type: ignore[union-attr]
+
+    assert len(refreshed_rows) == 1
+    assert refreshed_rows[0]["trade_ref"] == stale_row["trade_ref"]
+    assert refreshed_rows[0]["total_cost_realized"] > 0
+    assert refreshed_rows[0]["net_pnl"] == pytest.approx(
+        float(refreshed_rows[0].get("gross_pnl") or 0.0) - float(refreshed_rows[0].get("total_cost_realized") or 0.0)
+    )
+
+
 def test_kill_switch_trip_reset_blocks_submit_and_auto_cancels_open_orders(tmp_path: Path) -> None:
     service = _build_service(tmp_path, family="spot")
     for side in ("BUY", "SELL"):
