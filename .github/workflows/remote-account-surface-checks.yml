@@ -83,6 +83,10 @@ jobs:
             --warm-runtime
             --warm-symbol "BTCUSDT"
             --warm-wait-sec 6
+            --start-paper-bot
+            --paper-start-wait-sec 20
+            --evaluate-paper
+            --paper-orders-limit 20
           )
 
           if [[ -n "${RTLAB_AUTH_TOKEN:-}" ]]; then

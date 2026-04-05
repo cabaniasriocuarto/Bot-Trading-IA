@@ -352,6 +352,169 @@ def _prewarm_runtime(
     return result
 
 
+def _items_count(payload: dict[str, Any]) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    items = payload.get("items")
+    if isinstance(items, list):
+        return len(items)
+    try:
+        return int(payload.get("count"))
+    except Exception:
+        return None
+
+
+def _paper_ops(
+    *,
+    base_url: str,
+    timeout_sec: float,
+    token: str,
+    start_bot: bool,
+    start_wait_sec: float,
+    evaluate_paper: bool,
+    orders_limit: int,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "requested": bool(start_bot or evaluate_paper),
+        "start_bot_requested": bool(start_bot),
+        "evaluate_paper_requested": bool(evaluate_paper),
+        "status_before": {},
+        "bot_start": {},
+        "orders_before": {},
+        "status_after": {},
+        "orders_after": {},
+        "paper_evaluate": {},
+        "paper_runs": {},
+    }
+
+    status_before, err_status_before, status_code_before = _request_json(
+        base_url=base_url,
+        path="/api/v1/status",
+        timeout_sec=timeout_sec,
+        token=token,
+    )
+    if err_status_before:
+        result["status_before"] = {"ok": False, "status_code": status_code_before, "error": err_status_before}
+    else:
+        result["status_before"] = {
+            "ok": True,
+            "status_code": status_code_before,
+            "mode": status_before.get("mode"),
+            "bot_status": status_before.get("bot_status"),
+            "runtime_engine": status_before.get("runtime_engine"),
+        }
+
+    orders_before, err_orders_before, orders_status_before = _request_json(
+        base_url=base_url,
+        path=f"/api/v1/execution/orders?environment=paper&limit={max(1, int(orders_limit))}",
+        timeout_sec=timeout_sec,
+        token=token,
+    )
+    if err_orders_before:
+        result["orders_before"] = {"ok": False, "status_code": orders_status_before, "error": err_orders_before}
+    else:
+        result["orders_before"] = {
+            "ok": True,
+            "status_code": orders_status_before,
+            "count": _items_count(orders_before),
+            "items": orders_before.get("items"),
+        }
+
+    if start_bot:
+        if isinstance(status_before, dict) and str(status_before.get("bot_status") or "").upper() == "RUNNING":
+            result["bot_start"] = {"ok": True, "status_code": 200, "action": "already_running"}
+        else:
+            start_resp, start_err, start_status = _request_json(
+                method="POST",
+                base_url=base_url,
+                path="/api/v1/bot/start",
+                timeout_sec=timeout_sec,
+                token=token,
+                body={},
+            )
+            result["bot_start"] = {"ok": not bool(start_err), "status_code": start_status}
+            if start_err:
+                result["bot_start"]["error"] = start_err
+            else:
+                result["bot_start"]["payload"] = {
+                    "ok": start_resp.get("ok"),
+                    "state": start_resp.get("state"),
+                    "mode": start_resp.get("mode"),
+                    "strategy": start_resp.get("strategy"),
+                    "bot_id": start_resp.get("bot_id"),
+                }
+        if start_wait_sec > 0:
+            time.sleep(start_wait_sec)
+
+    status_after, err_status_after, status_code_after = _request_json(
+        base_url=base_url,
+        path="/api/v1/status",
+        timeout_sec=timeout_sec,
+        token=token,
+    )
+    if err_status_after:
+        result["status_after"] = {"ok": False, "status_code": status_code_after, "error": err_status_after}
+    else:
+        result["status_after"] = {
+            "ok": True,
+            "status_code": status_code_after,
+            "mode": status_after.get("mode"),
+            "bot_status": status_after.get("bot_status"),
+            "runtime_engine": status_after.get("runtime_engine"),
+        }
+
+    orders_after, err_orders_after, orders_status_after = _request_json(
+        base_url=base_url,
+        path=f"/api/v1/execution/orders?environment=paper&limit={max(1, int(orders_limit))}",
+        timeout_sec=timeout_sec,
+        token=token,
+    )
+    if err_orders_after:
+        result["orders_after"] = {"ok": False, "status_code": orders_status_after, "error": err_orders_after}
+    else:
+        result["orders_after"] = {
+            "ok": True,
+            "status_code": orders_status_after,
+            "count": _items_count(orders_after),
+            "items": orders_after.get("items"),
+        }
+
+    if evaluate_paper:
+        paper_eval, paper_eval_err, paper_eval_status = _request_json(
+            method="POST",
+            base_url=base_url,
+            path="/api/v1/validation/evaluate",
+            timeout_sec=timeout_sec,
+            token=token,
+            body={"stage": "PAPER"},
+        )
+        result["paper_evaluate"] = {"ok": not bool(paper_eval_err), "status_code": paper_eval_status}
+        if paper_eval_err:
+            result["paper_evaluate"]["error"] = paper_eval_err
+        else:
+            result["paper_evaluate"]["payload"] = {
+                "validation_run_id": paper_eval.get("validation_run_id"),
+                "result": paper_eval.get("result"),
+                "blocking_reasons": paper_eval.get("blocking_reasons"),
+                "warnings": paper_eval.get("warnings"),
+            }
+
+        paper_runs, paper_runs_err, paper_runs_status = _request_json(
+            base_url=base_url,
+            path=f"/api/v1/validation/runs?stage=PAPER&limit={max(1, int(orders_limit))}",
+            timeout_sec=timeout_sec,
+            token=token,
+        )
+        result["paper_runs"] = {"ok": not bool(paper_runs_err), "status_code": paper_runs_status}
+        if paper_runs_err:
+            result["paper_runs"]["error"] = paper_runs_err
+        else:
+            result["paper_runs"]["count"] = paper_runs.get("count")
+            result["paper_runs"]["items"] = paper_runs.get("items")
+
+    return result
+
+
 def _build_markdown(report: dict[str, Any]) -> str:
     auth = report.get("auth") if isinstance(report.get("auth"), dict) else {}
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
@@ -360,6 +523,7 @@ def _build_markdown(report: dict[str, Any]) -> str:
     readiness = summary.get("readiness") if isinstance(summary.get("readiness"), dict) else {}
     live_safety = summary.get("live_safety") if isinstance(summary.get("live_safety"), dict) else {}
     gates = summary.get("gates") if isinstance(summary.get("gates"), dict) else {}
+    paper_ops = report.get("paper_ops") if isinstance(report.get("paper_ops"), dict) else {}
 
     lines = [
         "# Remote Account Surface Report",
@@ -447,6 +611,21 @@ def _build_markdown(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Paper Ops",
+            f"- requested: `{paper_ops.get('requested')}`",
+            f"- status_before: `{json.dumps(paper_ops.get('status_before') or {}, ensure_ascii=False)}`",
+            f"- bot_start: `{json.dumps(paper_ops.get('bot_start') or {}, ensure_ascii=False)}`",
+            f"- orders_before_count: `{((paper_ops.get('orders_before') or {}) if isinstance(paper_ops.get('orders_before'), dict) else {}).get('count')}`",
+            f"- status_after: `{json.dumps(paper_ops.get('status_after') or {}, ensure_ascii=False)}`",
+            f"- orders_after_count: `{((paper_ops.get('orders_after') or {}) if isinstance(paper_ops.get('orders_after'), dict) else {}).get('count')}`",
+            f"- paper_evaluate: `{json.dumps(paper_ops.get('paper_evaluate') or {}, ensure_ascii=False)}`",
+            f"- paper_runs_count: `{((paper_ops.get('paper_runs') or {}) if isinstance(paper_ops.get('paper_runs'), dict) else {}).get('count')}`",
+        ]
+    )
+
+    lines.extend(
+        [
+            "",
             "## Live safety",
             f"- overall_status: `{live_safety.get('overall_status')}`",
             f"- margin_guard_status: `{live_safety.get('margin_guard_status')}`",
@@ -497,6 +676,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--warm-symbol", default="BTCUSDT")
     parser.add_argument("--warm-wait-sec", type=float, default=6.0)
+    parser.add_argument("--start-paper-bot", action="store_true", help="Intenta arrancar el bot en modo paper antes de recapturar.")
+    parser.add_argument("--paper-start-wait-sec", type=float, default=20.0)
+    parser.add_argument("--evaluate-paper", action="store_true", help="Ejecuta POST /api/v1/validation/evaluate para PAPER.")
+    parser.add_argument("--paper-orders-limit", type=int, default=20)
     return parser
 
 
@@ -552,6 +735,15 @@ def main() -> int:
                 warm_symbol=str(args.warm_symbol or "BTCUSDT").strip().upper() or "BTCUSDT",
                 warm_wait_sec=max(0.0, float(args.warm_wait_sec)),
             )
+        report["paper_ops"] = _paper_ops(
+            base_url=base_url,
+            timeout_sec=timeout_sec,
+            token=token,
+            start_bot=bool(args.start_paper_bot),
+            start_wait_sec=max(0.0, float(args.paper_start_wait_sec)),
+            evaluate_paper=bool(args.evaluate_paper),
+            orders_limit=max(1, int(args.paper_orders_limit)),
+        )
         capabilities, err_cap, _ = _request_json(
             base_url=base_url,
             path="/api/v1/account/capabilities/summary",
