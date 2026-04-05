@@ -2967,6 +2967,13 @@ class ExecutionRealityService:
             balances = account_payload.get("balances") if isinstance(account_payload.get("balances"), list) else []
         elif normalized_family == "margin":
             balances = account_payload.get("userAssets") if isinstance(account_payload.get("userAssets"), list) else []
+            margin_level = _first_number(account_payload.get("marginLevel"))
+            if margin_level is not None:
+                self.set_margin_level(
+                    environment=normalized_environment,
+                    level=margin_level,
+                    source="binance_margin_account",
+                )
         else:
             balances = account_payload.get("assets") if isinstance(account_payload.get("assets"), list) else []
         return {

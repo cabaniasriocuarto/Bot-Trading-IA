@@ -1357,7 +1357,14 @@ def test_exchange_adapter_fetches_exchange_info_and_balances_for_margin_and_futu
         if url.endswith("/api/v3/time"):
             return _HTTPResponse({"serverTime": int(datetime.now(timezone.utc).timestamp() * 1000)})
         if "/sapi/v1/margin/account?" in url:
-            return _HTTPResponse({"borrowEnabled": True, "tradeEnabled": True, "userAssets": [{"asset": "USDT"}]})
+            return _HTTPResponse(
+                {
+                    "borrowEnabled": True,
+                    "tradeEnabled": True,
+                    "marginLevel": "1.8",
+                    "userAssets": [{"asset": "USDT"}],
+                }
+            )
         if "/fapi/v2/account?" in url:
             return _HTTPResponse({"canTrade": True, "assets": [{"asset": "USDT", "walletBalance": "100.0"}]})
         if url.endswith("/fapi/v1/time"):
@@ -1375,6 +1382,8 @@ def test_exchange_adapter_fetches_exchange_info_and_balances_for_margin_and_futu
     assert margin_info["symbol_count"] == 1
     assert margin_balances["ok"] is True
     assert margin_balances["balances_count"] == 1
+    assert service._margin_levels["live"]["level"] == pytest.approx(1.8)
+    assert service._margin_levels["live"]["source"] == "binance_margin_account"
     assert usdm_balances["ok"] is True
     assert usdm_balances["balances_count"] == 1
 
