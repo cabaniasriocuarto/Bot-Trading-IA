@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -53,14 +54,22 @@ def _resolve_password(*, cli_password: str) -> str:
 
 def _request_json(
     *,
+    method: str = "GET",
     base_url: str,
     path: str,
     timeout_sec: float,
     token: str,
+    body: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str, int]:
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        response = requests.get(f"{base_url}{path}", headers=headers, timeout=timeout_sec)
+        response = requests.request(
+            method=method.upper(),
+            url=f"{base_url}{path}",
+            headers=headers,
+            json=body,
+            timeout=timeout_sec,
+        )
     except Exception as exc:
         return {}, f"request_error: {exc}", 0
     if response.status_code != 200:
@@ -122,6 +131,10 @@ def _capability_row(family_payload: dict[str, Any], environment: str) -> dict[st
         "credentials_present": notes.get("credentials_present"),
         "endpoint": notes.get("endpoint"),
         "credential_envs_tried": notes.get("credential_envs_tried"),
+        "notes_error": notes.get("error"),
+        "exchange_code": notes.get("exchange_code"),
+        "exchange_msg": notes.get("exchange_msg"),
+        "error_category": notes.get("error_category"),
     }
 
 
@@ -155,6 +168,165 @@ def _g9_status(gates_payload: dict[str, Any]) -> dict[str, Any]:
                 "details": row.get("details"),
             }
     return {"status": "UNKNOWN", "reason": "missing", "details": {}}
+
+
+def _market_stream_session_keys(payload: dict[str, Any]) -> set[tuple[str, str]]:
+    rows = payload.get("sessions") if isinstance(payload.get("sessions"), list) else []
+    keys: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        connector = str(row.get("execution_connector") or "").strip()
+        environment = str(row.get("environment") or "").strip()
+        if connector and environment:
+            keys.add((connector, environment))
+    return keys
+
+
+def _prewarm_runtime(
+    *,
+    base_url: str,
+    timeout_sec: float,
+    token: str,
+    warm_symbol: str,
+    warm_wait_sec: float,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "requested": True,
+        "warm_symbol": warm_symbol,
+        "warm_wait_sec": warm_wait_sec,
+        "market_streams_summary_before": {},
+        "market_stream_starts": [],
+        "registry_sync": {},
+        "gates_reevaluate": {},
+        "market_streams_summary_after": {},
+    }
+    summary_before, err_before, status_before = _request_json(
+        base_url=base_url,
+        path="/api/v1/execution/market-streams/summary",
+        timeout_sec=timeout_sec,
+        token=token,
+    )
+    if err_before:
+        result["market_streams_summary_before"] = {"ok": False, "error": err_before, "status_code": status_before}
+        active_sessions: set[tuple[str, str]] = set()
+    else:
+        result["market_streams_summary_before"] = {
+            "ok": True,
+            "status_code": status_before,
+            "running_sessions": summary_before.get("running_sessions"),
+            "sessions": summary_before.get("sessions"),
+        }
+        active_sessions = _market_stream_session_keys(summary_before)
+
+    start_payloads = [
+        {
+            "execution_connector": "binance_spot",
+            "environment": "live",
+            "symbols": [warm_symbol],
+            "transport_mode": "combined",
+        },
+        {
+            "execution_connector": "binance_um_futures",
+            "environment": "live",
+            "symbols": [warm_symbol],
+            "transport_mode": "combined",
+        },
+    ]
+    for payload in start_payloads:
+        key = (str(payload["execution_connector"]), str(payload["environment"]))
+        if key in active_sessions:
+            result["market_stream_starts"].append(
+                {
+                    "execution_connector": payload["execution_connector"],
+                    "environment": payload["environment"],
+                    "ok": True,
+                    "status_code": 200,
+                    "action": "already_running",
+                }
+            )
+            continue
+        start_resp, start_err, start_status = _request_json(
+            method="POST",
+            base_url=base_url,
+            path="/api/v1/execution/market-streams/start",
+            timeout_sec=timeout_sec,
+            token=token,
+            body=payload,
+        )
+        row = {
+            "execution_connector": payload["execution_connector"],
+            "environment": payload["environment"],
+            "status_code": start_status,
+            "ok": not bool(start_err),
+            "action": "started" if not start_err else "failed",
+        }
+        if start_err:
+            row["error"] = start_err
+        else:
+            row["payload"] = {
+                "execution_connector": start_resp.get("execution_connector"),
+                "environment": start_resp.get("environment"),
+                "symbols": start_resp.get("symbols"),
+                "transport_mode": start_resp.get("transport_mode"),
+            }
+        result["market_stream_starts"].append(row)
+
+    sync_resp, sync_err, sync_status = _request_json(
+        method="POST",
+        base_url=base_url,
+        path="/api/v1/instruments/registry/sync",
+        timeout_sec=timeout_sec,
+        token=token,
+        body={"environment": "live"},
+    )
+    result["registry_sync"] = {"ok": not bool(sync_err), "status_code": sync_status}
+    if sync_err:
+        result["registry_sync"]["error"] = sync_err
+    else:
+        result["registry_sync"]["payload"] = {
+            "ok": sync_resp.get("ok"),
+            "results": sync_resp.get("results"),
+            "latest_snapshot_ids": sync_resp.get("latest_snapshot_ids"),
+        }
+
+    gates_resp, gates_err, gates_status = _request_json(
+        method="POST",
+        base_url=base_url,
+        path="/api/v1/gates/reevaluate",
+        timeout_sec=timeout_sec,
+        token=token,
+    )
+    result["gates_reevaluate"] = {"ok": not bool(gates_err), "status_code": gates_status}
+    if gates_err:
+        result["gates_reevaluate"]["error"] = gates_err
+    else:
+        result["gates_reevaluate"]["payload"] = {
+            "overall_status": gates_resp.get("overall_status"),
+            "mode": gates_resp.get("mode"),
+            "g9": _g9_status(gates_resp),
+        }
+
+    if warm_wait_sec > 0:
+        time.sleep(warm_wait_sec)
+
+    summary_after, err_after, status_after = _request_json(
+        base_url=base_url,
+        path="/api/v1/execution/market-streams/summary",
+        timeout_sec=timeout_sec,
+        token=token,
+    )
+    if err_after:
+        result["market_streams_summary_after"] = {"ok": False, "error": err_after, "status_code": status_after}
+    else:
+        result["market_streams_summary_after"] = {
+            "ok": True,
+            "status_code": status_after,
+            "running_sessions": summary_after.get("running_sessions"),
+            "sessions": summary_after.get("sessions"),
+        }
+
+    return result
 
 
 def _build_markdown(report: dict[str, Any]) -> str:
@@ -192,10 +364,44 @@ def _build_markdown(report: dict[str, Any]) -> str:
                 f"- {family}: source=`{row.get('capability_source')}`, "
                 f"trade=`{row.get('can_trade')}`, margin=`{row.get('can_margin')}`, "
                 f"user_data=`{row.get('can_user_data')}`, reason=`{row.get('reason') or ''}`, "
-                f"credentials_present=`{row.get('credentials_present')}`"
+                f"credentials_present=`{row.get('credentials_present')}`, "
+                f"exchange_code=`{row.get('exchange_code')}`, "
+                f"exchange_msg=`{row.get('exchange_msg') or ''}`, "
+                f"error=`{row.get('notes_error') or ''}`"
             )
     else:
         lines.append("- unavailable")
+
+    prewarm = report.get("prewarm") if isinstance(report.get("prewarm"), dict) else {}
+    lines.extend(
+        [
+            "",
+            "## Prewarm",
+            f"- requested: `{prewarm.get('requested')}`",
+            f"- warm_symbol: `{prewarm.get('warm_symbol') or ''}`",
+            f"- warm_wait_sec: `{prewarm.get('warm_wait_sec')}`",
+        ]
+    )
+    starts = prewarm.get("market_stream_starts") if isinstance(prewarm.get("market_stream_starts"), list) else []
+    if starts:
+        for row in starts:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"- stream `{row.get('execution_connector')}`/{row.get('environment')}: "
+                f"action=`{row.get('action')}`, ok=`{row.get('ok')}`, status=`{row.get('status_code')}`, "
+                f"error=`{row.get('error') or ''}`"
+            )
+    else:
+        lines.append("- stream starts: none")
+    registry_sync = prewarm.get("registry_sync") if isinstance(prewarm.get("registry_sync"), dict) else {}
+    lines.append(
+        f"- registry_sync: ok=`{registry_sync.get('ok')}`, status=`{registry_sync.get('status_code')}`, error=`{registry_sync.get('error') or ''}`"
+    )
+    gates_reevaluate = prewarm.get("gates_reevaluate") if isinstance(prewarm.get("gates_reevaluate"), dict) else {}
+    lines.append(
+        f"- gates_reevaluate: ok=`{gates_reevaluate.get('ok')}`, status=`{gates_reevaluate.get('status_code')}`, error=`{gates_reevaluate.get('error') or ''}`"
+    )
 
     lines.extend(
         [
@@ -257,6 +463,13 @@ def _parser() -> argparse.ArgumentParser:
         default="artifacts/remote_account_surface",
         help="Output prefix without extension. Script writes <prefix>_<ts>.json/.md",
     )
+    parser.add_argument(
+        "--warm-runtime",
+        action="store_true",
+        help="Antes de recapturar, inicia streams live, hace registry sync live y reevaluate.",
+    )
+    parser.add_argument("--warm-symbol", default="BTCUSDT")
+    parser.add_argument("--warm-wait-sec", type=float, default=6.0)
     return parser
 
 
@@ -303,6 +516,15 @@ def main() -> int:
     }
 
     if token:
+        report["prewarm"] = {"requested": bool(args.warm_runtime)}
+        if args.warm_runtime:
+            report["prewarm"] = _prewarm_runtime(
+                base_url=base_url,
+                timeout_sec=timeout_sec,
+                token=token,
+                warm_symbol=str(args.warm_symbol or "BTCUSDT").strip().upper() or "BTCUSDT",
+                warm_wait_sec=max(0.0, float(args.warm_wait_sec)),
+            )
         capabilities, err_cap, _ = _request_json(
             base_url=base_url,
             path="/api/v1/account/capabilities/summary",
@@ -355,6 +577,9 @@ def main() -> int:
                 "snapshot_fresh": live_safety.get("snapshot_fresh"),
                 "exchange_filters_fresh": live_safety.get("exchange_filters_fresh"),
                 "live_parity_base_ready": live_safety.get("live_parity_base_ready"),
+                "market_data_guard": live_safety.get("market_data_guard"),
+                "market_stream_runtime": live_safety.get("market_stream_runtime"),
+                "exchange_filters_details": live_safety.get("exchange_filters_details"),
             }
         if err_gates:
             report["endpoint_errors"]["gates"] = err_gates

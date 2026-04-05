@@ -80,6 +80,9 @@ jobs:
             --username "${USERNAME}"
             --timeout-sec "${TIMEOUT_SEC}"
             --report-prefix "${report_prefix}"
+            --warm-runtime
+            --warm-symbol "BTCUSDT"
+            --warm-wait-sec 6
           )
 
           if [[ -n "${RTLAB_AUTH_TOKEN:-}" ]]; then
