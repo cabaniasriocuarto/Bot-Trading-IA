@@ -62,6 +62,14 @@ def _payload_error_fields(payload: Any) -> tuple[int | None, str]:
 def map_exchange_error(status_code: int, payload: Any) -> dict[str, Any]:
     code, message = _payload_error_fields(payload)
     lower = message.lower()
+    if code in {-1011}:
+        return {
+            "reason": "ip_not_whitelisted",
+            "error_category": "auth",
+            "retryable": False,
+            "exchange_code": code,
+            "exchange_msg": message or "ip not whitelisted",
+        }
     if status_code == 451:
         return {
             "reason": "provider_restriction",
@@ -141,6 +149,14 @@ def map_exchange_error(status_code: int, payload: Any) -> dict[str, Any]:
             "retryable": False,
             "exchange_code": code,
             "exchange_msg": message or "insufficient margin",
+        }
+    if code in {-3003}:
+        return {
+            "reason": "margin_account_missing",
+            "error_category": "account_state",
+            "retryable": False,
+            "exchange_code": code,
+            "exchange_msg": message or "margin account missing",
         }
     if code in {-1013} or "filter failure" in lower:
         return {

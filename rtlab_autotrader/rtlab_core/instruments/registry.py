@@ -17,6 +17,7 @@ from urllib.parse import urlencode, urlsplit
 import requests
 import yaml
 
+from rtlab_core.execution.binance_adapter import map_exchange_error
 from rtlab_core.policy_paths import describe_policy_root_resolution
 
 
@@ -1860,15 +1861,50 @@ class BinanceInstrumentRegistryService:
         headers = {"X-MBX-APIKEY": api_key}
         try:
             response = requests.get(url, headers=headers, timeout=timeout)
-            response.raise_for_status()
-            payload = response.json()
+            try:
+                payload = response.json() if getattr(response, "content", b"") else {}
+            except Exception:
+                raw_text = str(getattr(response, "text", "") or "").strip()
+                payload = {"raw": raw_text[:500]} if raw_text else {}
+            status_code = int(response.status_code)
+            raw_exchange_code = payload.get("code") if isinstance(payload, dict) else None
+            raw_exchange_msg = str(payload.get("msg") or "").strip() if isinstance(payload, dict) else ""
+            if 200 <= status_code < 300:
+                return (
+                    payload if isinstance(payload, dict) else {"data": payload},
+                    {
+                        "credentials_present": True,
+                        "credential_envs_tried": env_names,
+                        "endpoint": endpoint_url,
+                        "reason": "ok",
+                        "status_code": status_code,
+                    },
+                )
+            mapped = map_exchange_error(status_code, payload)
+            error_message = raw_exchange_msg or str(payload) or f"HTTP {status_code}"
+            return None, {
+                "credentials_present": True,
+                "credential_envs_tried": env_names,
+                "endpoint": endpoint_url,
+                "status_code": status_code,
+                "reason": str(mapped.get("reason") or "signed_request_failed"),
+                "error_category": mapped.get("error_category"),
+                "exchange_code": mapped.get("exchange_code"),
+                "exchange_msg": mapped.get("exchange_msg"),
+                "raw_exchange_code": raw_exchange_code,
+                "raw_exchange_msg": raw_exchange_msg,
+                "error": error_message,
+            }
+        except requests.RequestException as exc:
             return (
-                payload if isinstance(payload, dict) else {"data": payload},
+                None,
                 {
                     "credentials_present": True,
                     "credential_envs_tried": env_names,
                     "endpoint": endpoint_url,
-                    "reason": "ok",
+                    "reason": "request_exception",
+                    "error_category": "endpoint",
+                    "error": str(exc),
                 },
             )
         except Exception as exc:
