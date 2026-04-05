@@ -2289,3 +2289,13 @@
   - `CANARY=BLOCK`
   - `live_serio_ready` sigue en `false`
 - Se corrigio en la branch diagnostica `scripts/remote_account_surface_report.py` para que el artifact lea `readiness_by_stage` y no siga mostrando `stages={}` cuando la API ya trae las etapas pobladas.
+
+### PAPER PASS real audit (2026-04-05)
+- Se confirmo con repo real + API real que `PAPER` cuenta `orders/fills/trade_rows` desde el ledger operativo de ejecucion/reporting, no desde `validation.sqlite3`.
+- `GET /api/v1/execution/orders` devolvio `0` ordenes y `GET /api/v1/status` mostro el bot en `PAUSED`.
+- Se arranco el bot en `paper` con `POST /api/v1/bot/start`; el estado quedo `RUNNING`, pero en la ventana inmediata de observacion `execution/orders` siguio en `0`.
+- Reevaluacion `PAPER` posterior:
+  - run `fbd9d70e-af25-45c5-8fbe-06ed4ea835bf`
+  - resultado `HOLD`
+  - faltantes exactos: `min_orders=0/30`, `min_trading_days=0/3`
+- No se cambio producto: el siguiente paso real es generar evidencia paper suficiente, no tocar el algoritmo de validacion.

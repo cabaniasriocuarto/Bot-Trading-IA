@@ -942,3 +942,9 @@ Fecha: 2026-04-05
 1. Atacar por que `PAPER` queda en `HOLD` en `validation/evaluate`; ese es ahora el primer cuello exacto de la cadena `paper -> testnet -> canary`.
 2. Con `PAPER` en `PASS`, reevaluar `TESTNET` y luego `CANARY` para ver si la cadena sube honestamente hacia `live_serio_ready`.
 3. Llevar a `main` o reutilizar en la rama operativa el fix no-producto de `scripts/remote_account_surface_report.py`, porque el artifact de `main` hoy sigue ocultando `readiness_by_stage`.
+
+## Siguiente bloque tecnico (actualizado 2, 2026-04-05)
+1. Mantener staging `RUNNING` en `paper` y verificar periodicamente que `execution/orders` y `trade_rows` empiecen a poblarse.
+2. No tocar thresholds de validation: para `PAPER=PASS` hacen falta `>= 30` ordenes y `>= 3` trading days reales.
+3. Cuando exista evidencia suficiente, volver a correr `POST /api/v1/validation/evaluate` para `PAPER`.
+4. Solo despues de `PAPER=PASS`, reevaluar `TESTNET`.

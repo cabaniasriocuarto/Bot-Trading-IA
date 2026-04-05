@@ -2549,3 +2549,31 @@ El proyecto tiene:
 - Hallazgo adicional:
   - el workflow `Remote Account Surface Checks` de `main` seguia mostrando `stages={}` porque el script leia la clave vieja `stages` en vez de `readiness_by_stage`.
   - se corrigio solo el script de reporte en la branch diagnostica, sin tocar backend/producto.
+
+### PAPER PASS real auditado (2026-04-05)
+- `PAPER` sigue en `HOLD`, pero ya no por falta de persistencia sino por falta de evidencia operativa real.
+- Fuente exacta de metricas:
+  - `total_orders` sale de `execution_service.db.list_orders(...)` via `_filter_orders(...)`
+  - `fills` sale de `execution_service.db.fills_for_order(...)`
+  - `trade_rows` sale de `reporting_bridge_service.db.trade_rows(...)` via `_filter_trade_rows(...)`
+  - `trading_days` se calcula sobre timestamps de `orders`, `fills`, `trade_rows` e `intents`
+- La validacion `PAPER` no usa `validation.sqlite3` como fuente primaria de conteo; usa el ledger operativo de ejecucion/reporting y luego persiste el resultado en `validation_runs`.
+- Evidencia remota real:
+  - `GET /api/v1/execution/orders` devolvio `count=0`
+  - `GET /api/v1/status` devolvio `mode=paper`, `bot_status=PAUSED` al inicio del bloque
+  - se ejecuto `POST /api/v1/bot/start` y staging quedo `RUNNING` en `paper`
+  - ~20 segundos despues, `execution/orders` seguia en `0`
+- Diagnostico cerrado:
+  - no hay bug confirmado de conteo
+  - no hay bug confirmado de persistencia
+  - el cuello real actual es que `paper` todavia no genero ordenes/fills/trade_rows suficientes
+- Reevaluacion real despues de arrancar el bot:
+  - `PAPER` siguio en `HOLD`
+  - gates fallidos exactos:
+    - `min_orders`: `0 < 30`
+    - `min_trading_days`: `0 < 3`
+- Camino honesto para `PAPER=PASS`:
+  - mantener el bot `RUNNING` en `paper`
+  - generar/persistir `>= 30` ordenes paper reales
+  - distribuir evidencia en `>= 3` trading days reales
+  - recien despues volver a correr `POST /api/v1/validation/evaluate` para `PAPER`
