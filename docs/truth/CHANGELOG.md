@@ -2299,3 +2299,23 @@
   - resultado `HOLD`
   - faltantes exactos: `min_orders=0/30`, `min_trading_days=0/3`
 - No se cambio producto: el siguiente paso real es generar evidencia paper suficiente, no tocar el algoritmo de validacion.
+
+### Paper quote fallback + recaptura PAPER (2026-04-05)
+- Se aplico el fix minimo de producto `Fix: reuse live quotes for paper preflight` (`bf6756c`) para que `paper` pueda reutilizar quotes `live` cuando el cache `paper` esta vacio.
+- Se agrego una prueba puntual en `test_execution_reality.py` para cubrir ese caso sin `market_snapshot` embebido en el request.
+- Se amplio el tooling remoto con `Ops: capture paper runtime in remote report` (`94fa39b`) para capturar:
+  - estado del bot
+  - conteo de ordenes `paper`
+  - `POST /api/v1/validation/evaluate` para `PAPER`
+  - `validation/runs?stage=PAPER`
+- Se desplego staging con `5f59d7cb-22dd-4c57-af16-c10acdd64453`.
+- Run remoto autoritativo posterior: `23999124367`, artifact `6276604046`.
+- Resultado real:
+  - `bot_status=RUNNING`
+  - `orders_before=0`
+  - `orders_after=0`
+  - nuevo run `PAPER`: `019852c2-791f-4055-a99d-7e57cfc63bc4`
+  - `PAPER` sigue en `HOLD`
+  - `total_orders=0`
+  - `trading_days=1`
+  - siguiente cuello exacto: generar ordenes paper reales persistidas; `min_orders` sigue siendo el faltante dominante.

@@ -2577,3 +2577,33 @@ El proyecto tiene:
   - generar/persistir `>= 30` ordenes paper reales
   - distribuir evidencia en `>= 3` trading days reales
   - recien despues volver a correr `POST /api/v1/validation/evaluate` para `PAPER`
+
+### Ajuste minimo para quotes paper + recaptura operativa (2026-04-05)
+- Se corrigio en `rtlab_autotrader/rtlab_core/execution/reality.py` la lectura de quotes para `paper`: cuando no existe snapshot en `environment="paper"`, `ExecutionRealityService._quote_snapshot(...)` ahora reutiliza el snapshot `live` del mismo `family/symbol`.
+- El cambio fue quirurgico y solo afecta el fallback `paper -> live`; no toca `validation`, `Binance auth`, `futures` ni `margin guard`.
+- Se agrego prueba puntual en `test_execution_reality.py` para cubrir `create_order(...)` en `paper` sin `market_snapshot` embebido pero con quote `live` ya disponible.
+- Se desplego Railway staging con:
+  - deployment `5f59d7cb-22dd-4c57-af16-c10acdd64453`
+  - mensaje `deploy paper quote fallback @ 94fa39b (rtlab_autotrader root)`
+- Se extendio `scripts/remote_account_surface_report.py` solo como tooling operativo para:
+  - verificar `status_before/status_after`
+  - arrancar bot `paper` si hace falta
+  - capturar `execution/orders?environment=paper`
+  - ejecutar `POST /api/v1/validation/evaluate` para `PAPER`
+  - incluir `validation/runs?stage=PAPER`
+- Recaptura remota autoritativa:
+  - workflow run `23999124367`
+  - artifact `6276604046`
+- Estado real observado:
+  - `bot_status` ya estaba `RUNNING`
+  - `orders_before.count = 0`
+  - `orders_after.count = 0`
+  - ultimo run `PAPER` nuevo: `019852c2-791f-4055-a99d-7e57cfc63bc4`
+  - `total_orders = 0`
+  - `trading_days = 1`
+  - `runtime_hours = 0.032327`
+  - `result = HOLD`
+- Con esto queda separado el siguiente cuello exacto:
+  - el conteo/persistencia ya no es el problema central
+  - `PAPER` todavia no genera ordenes reales persistidas suficientes
+  - el faltante inmediato ya no es `min_trading_days = 0`, sino `min_orders = 0 < 30`; `trading_days` subio a `1`, pero sigue por debajo de `3`

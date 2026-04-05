@@ -948,3 +948,12 @@ Fecha: 2026-04-05
 2. No tocar thresholds de validation: para `PAPER=PASS` hacen falta `>= 30` ordenes y `>= 3` trading days reales.
 3. Cuando exista evidencia suficiente, volver a correr `POST /api/v1/validation/evaluate` para `PAPER`.
 4. Solo despues de `PAPER=PASS`, reevaluar `TESTNET`.
+
+## Siguiente bloque tecnico (actualizado 3, 2026-04-05)
+1. Tomar como punto de partida el run `PAPER` `019852c2-791f-4055-a99d-7e57cfc63bc4`: ya hay `trading_days=1`, pero `total_orders` sigue en `0`.
+2. Mantener el bot `RUNNING` en `paper` y monitorear evidencia real de ejecucion:
+   - `GET /api/v1/status`
+   - `GET /api/v1/execution/orders?environment=paper`
+   - `GET /api/v1/validation/runs?stage=PAPER&limit=20`
+3. No tocar thresholds ni forzar `PASS`: el siguiente objetivo honesto es llevar `min_orders` de `0` a `>= 30`.
+4. Cuando `total_orders >= 30` y existan `>= 3` trading days reales, volver a correr `POST /api/v1/validation/evaluate` para `PAPER`.
