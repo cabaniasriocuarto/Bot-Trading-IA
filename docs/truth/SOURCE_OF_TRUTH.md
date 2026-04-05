@@ -1,6 +1,52 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-18
+Fecha de actualizacion: 2026-04-05
+
+## Recaptura remota con prewarm operativo - 2026-04-05
+
+- Rama administrativa usada para esta evidencia:
+  - `chore/remote-account-surface-checks-main`
+- Workflow remoto ejecutado por `workflow_dispatch`:
+  - `Remote Account Surface Checks (GitHub VM)`
+  - run `23991134466`
+  - sha `3e3f0a26b8bc0d5b5b911ffb16a314933ddce0db`
+- Se preservo evidencia util adicional en el artifact:
+  - `notes_error`
+  - `exchange_code`
+  - `exchange_msg`
+  - `error_category`
+- Resultado real de signed account surface en staging:
+  - `spot`: `401 Unauthorized` contra `https://api.binance.com/api/v3/account`
+  - `margin`: `400` contra `https://api.binance.com/sapi/v1/margin/account`
+  - `usdm_futures`: `401 Unauthorized` contra `https://fapi.binance.com/fapi/v2/account`
+  - `coinm_futures`: `401 Unauthorized` contra `https://dapi.binance.com/dapi/v1/account`
+- El runtime live si se calento correctamente antes de la recaptura:
+  - `market_streams_summary_before.running_sessions = 0`
+  - `market_streams_summary_after.running_sessions = 2`
+  - streams arrancados:
+    - `binance_spot/live/BTCUSDT`
+    - `binance_um_futures/live/BTCUSDT`
+- Efecto real del prewarm en `live-safety`:
+  - desaparecen:
+    - `stale_quote_blocker`
+    - `stale_orderbook_blocker`
+  - persisten:
+    - `exchange_filters_blocker`
+    - `margin_level_blocker`
+- Causa confirmada de que `exchange_filters_blocker` siga vivo:
+  - `POST /api/v1/instruments/registry/sync` devolvio `ok=false` para:
+    - `spot`
+    - `margin`
+    - `usdm_futures`
+  - error persistido por el backend remoto:
+    - `database or disk is full`
+  - `coinm_futures` si refresco correctamente (`CAT-000062`) y quedo `fresh`.
+- Estado operativo despues del prewarm:
+  - `live-safety.overall_status = BLOCK`
+  - `gates.overall_status = WARN`
+  - `validation.live_serio_ready = false`
+  - `margin_guard.level = null`
+  - `margin_guard.visible = false`
 
 ## RTLOPS-2 / RTLOPS-1 / RTLOPS-7: autoridad de policies + taxonomia de modos + jerarquia documental - 2026-03-18
 

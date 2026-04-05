@@ -1,6 +1,25 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-18
+Fecha: 2026-04-05
+
+## Siguiente bloque exacto tras la recaptura con prewarm - 2026-04-05
+- [ ] Cerrar el bloqueo operativo de `exchange_filters_blocker` en Railway staging:
+  - revisar storage/DB del backend remoto;
+  - resolver `database or disk is full`;
+  - rerun de `POST /api/v1/instruments/registry/sync` para `spot`, `margin` y `usdm_futures`;
+  - volver a correr `Remote Account Surface Checks (GitHub VM)`.
+- [ ] Conservar y ampliar la evidencia del rechazo firmado:
+  - si sigue haciendo falta, propagar tambien `exchange_code` / `exchange_msg` desde backend cuando Binance los entregue;
+  - no volver a colapsar el detalle a `signed_request_failed` sin el `notes_error`.
+- [ ] Luego de liberar `exchange_filters`, aislar la causa exacta de signed account surface:
+  - `spot` y `usdm_futures` hoy muestran `401 Unauthorized`;
+  - `margin` hoy muestra `400` contra `/sapi/v1/margin/account`;
+  - confirmar si el problema real es permisos, IP restriction, firma o margen no habilitado.
+- [ ] `LIVE GO` sigue bloqueado hasta que desaparezcan:
+  - `exchange_filters_blocker`
+  - `margin_level_blocker`
+  - `G9_RUNTIME_ENGINE_REAL=WARN`
+  - `live_serio_ready=false`
 
 ## Cierre del bloque RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - 2026-03-18
 - [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.

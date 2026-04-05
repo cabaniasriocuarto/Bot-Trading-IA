@@ -1,5 +1,29 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-05
+
+### Recaptura remota con prewarm operativo
+- Workflow remoto ejecutado en `chore/remote-account-surface-checks-main`:
+  - `Remote Account Surface Checks (GitHub VM)`
+  - run `23991134466`
+  - sha `3e3f0a26b8bc0d5b5b911ffb16a314933ddce0db`
+- Cambio administrativo minimo aplicado:
+  - `scripts/remote_account_surface_report.py` ahora preserva `notes_error`, `exchange_code`, `exchange_msg` y `error_category` cuando vienen en `account/capabilities/summary`.
+  - el mismo script hace prewarm operativo antes de la recaptura:
+    - inicia market streams live (`binance_spot`, `binance_um_futures`)
+    - ejecuta `POST /api/v1/instruments/registry/sync` para `environment=live`
+    - ejecuta `POST /api/v1/gates/reevaluate`
+- Hallazgos reales del rerun:
+  - `stale_quote_blocker` desaparece
+  - `stale_orderbook_blocker` desaparece
+  - `exchange_filters_blocker` persiste porque `registry sync` falla en Railway staging con `database or disk is full` para `spot`, `margin` y `usdm_futures`
+  - `margin_level_blocker` persiste
+  - signed account surface deja evidencia util visible:
+    - `spot`: `401 Unauthorized`
+    - `margin`: `400`
+    - `usdm_futures`: `401 Unauthorized`
+    - `coinm_futures`: `401 Unauthorized`
+
 ## 2026-03-18
 
 ### RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - micro-hardening final frontend de authority/runtime
