@@ -2534,3 +2534,18 @@ El proyecto tiene:
   - preflight live final OK
   - reconciliacion final OK
 - No se aplico cambio de codigo en este bloque porque `paper/WARN/false` sigue siendo el comportamiento seguro y coherente con el estado operativo real del entorno.
+
+### Validation persistence auditada y ejercida (2026-04-05)
+- La persistencia de validation no estaba rota; el problema real era que staging no tenia corridas ejecutadas en `validation_runs`.
+- Evidencia operativa real:
+  - `GET /api/v1/validation/runs?limit=20` devolvia `count=0` antes de ejecutar etapas.
+  - La unica ruta que crea corridas es `POST /api/v1/validation/evaluate`, que llama `ValidationService.evaluate(...)` y persiste via `ValidationDB.insert_run(...)`.
+- Se ejecutaron manualmente etapas reales con admin auth en Railway staging:
+  - `PAPER` -> `HOLD`
+  - `TESTNET` -> `BLOCK`
+  - `CANARY` -> `BLOCK`
+- Luego de esas ejecuciones, `validation/readiness` quedo poblado en API con `readiness_by_stage` y `validation_runs` paso a `count=3`.
+- `live_serio_ready` siguio en `false` porque la cadena no es `PASS`; el primer cuello real ahora es `PAPER=HOLD`, no un bug de storage.
+- Hallazgo adicional:
+  - el workflow `Remote Account Surface Checks` de `main` seguia mostrando `stages={}` porque el script leia la clave vieja `stages` en vez de `readiness_by_stage`.
+  - se corrigio solo el script de reporte en la branch diagnostica, sin tocar backend/producto.

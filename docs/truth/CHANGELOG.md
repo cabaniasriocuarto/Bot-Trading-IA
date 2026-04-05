@@ -2279,3 +2279,13 @@
   - `live_serio_ready=false` porque no existen runs `PASS` persistidos en `paper -> testnet -> canary`
   - `G9=WARN` porque el runtime contract sigue incompleto en no-live
   - `mode=paper` porque Railway staging sigue con `MODE=paper` y el backend conserva ese fallback fail-closed
+
+### Validation persistence + readiness reporting (2026-04-05)
+- Se confirmo que `validation_runs` estaba vacio en staging porque nunca se habian ejecutado etapas reales de `validation/evaluate`, no por un bug de persistencia.
+- Se ejecutaron manualmente `PAPER`, `TESTNET` y `CANARY` contra Railway staging y quedaron persistidas las 3 corridas.
+- Resultado real:
+  - `PAPER=HOLD`
+  - `TESTNET=BLOCK`
+  - `CANARY=BLOCK`
+  - `live_serio_ready` sigue en `false`
+- Se corrigio en la branch diagnostica `scripts/remote_account_surface_report.py` para que el artifact lea `readiness_by_stage` y no siga mostrando `stages={}` cuando la API ya trae las etapas pobladas.

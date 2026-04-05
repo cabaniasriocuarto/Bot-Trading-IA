@@ -142,19 +142,39 @@ def _capability_row(family_payload: dict[str, Any], environment: str) -> dict[st
 
 
 def _readiness_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    items = payload.get("stages") if isinstance(payload.get("stages"), list) else []
     by_stage: dict[str, Any] = {}
-    for row in items:
-        if not isinstance(row, dict):
-            continue
-        stage = str(row.get("stage") or "").strip().lower()
-        if not stage:
-            continue
-        by_stage[stage] = {
-            "ready": row.get("ready"),
-            "latest_result": row.get("latest_result"),
-            "reason": row.get("reason"),
-        }
+    payload_by_stage = payload.get("readiness_by_stage")
+    if isinstance(payload_by_stage, dict):
+        for stage, row in payload_by_stage.items():
+            if not isinstance(row, dict):
+                continue
+            stage_name = str(stage or "").strip().lower()
+            if not stage_name:
+                continue
+            by_stage[stage_name] = {
+                "ready": row.get("ready"),
+                "latest_result": row.get("latest_result"),
+                "reason": row.get("reason"),
+                "blocking_reasons": row.get("blocking_reasons"),
+                "warnings": row.get("warnings"),
+                "validation_run_id": row.get("validation_run_id"),
+            }
+    else:
+        items = payload.get("stages") if isinstance(payload.get("stages"), list) else []
+        for row in items:
+            if not isinstance(row, dict):
+                continue
+            stage = str(row.get("stage") or "").strip().lower()
+            if not stage:
+                continue
+            by_stage[stage] = {
+                "ready": row.get("ready"),
+                "latest_result": row.get("latest_result"),
+                "reason": row.get("reason"),
+                "blocking_reasons": row.get("blocking_reasons"),
+                "warnings": row.get("warnings"),
+                "validation_run_id": row.get("validation_run_id"),
+            }
     return {
         "live_serio_ready": payload.get("live_serio_ready"),
         "stages": by_stage,

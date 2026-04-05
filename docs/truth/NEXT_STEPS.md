@@ -937,3 +937,8 @@ Fecha: 2026-04-05
    - `heartbeat_fresh`
    - `reconciliation_fresh`
 4. Recién despues de eso reevaluar un cambio de `MODE` o un `POST /api/v1/bot/mode` fuera de `paper`.
+
+## Siguiente bloque tecnico (actualizado 2026-04-05)
+1. Atacar por que `PAPER` queda en `HOLD` en `validation/evaluate`; ese es ahora el primer cuello exacto de la cadena `paper -> testnet -> canary`.
+2. Con `PAPER` en `PASS`, reevaluar `TESTNET` y luego `CANARY` para ver si la cadena sube honestamente hacia `live_serio_ready`.
+3. Llevar a `main` o reutilizar en la rama operativa el fix no-producto de `scripts/remote_account_surface_report.py`, porque el artifact de `main` hoy sigue ocultando `readiness_by_stage`.
