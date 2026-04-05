@@ -2,6 +2,74 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Deploy diagnostico a Railway staging + recaptura remota - 2026-04-05
+
+- Rama operativa usada para este bloque:
+  - `chore/binance-signed-surface-diagnostics`
+- Acceso real verificado:
+  - Railway MCP: no disponible en esta sesion;
+  - Railway CLI: autenticado y operativo;
+  - GitHub CLI (`gh`): autenticado y operativo.
+- Servicio Railway staging actualizado:
+  - proyecto: `Bot-Trading-IA`
+  - entorno: `staging`
+  - servicio: `Bot-Trading-IA`
+  - deploy CLI exitoso: `27054657-d579-4299-a733-d2f84834605f`
+  - mensaje de deploy: `deploy chore/binance-signed-surface-diagnostics @ dccea88 (rtlab_autotrader root)`
+- Aclaracion importante de wiring:
+  - staging quedo corriendo el backend diagnostico por deploy CLI exitoso;
+  - en este bloque no se cambio la branch Git conectada del servicio desde Railway web.
+- Recaptura remota posterior al deploy:
+  - workflow: `Remote Account Surface Checks (GitHub VM)`
+  - run: `23993209086`
+  - artifact: `6274774688`
+  - sha del workflow: `dccea88a9d6dcd40964e41cbb08de235d6662394`
+- Resultado real de `account/capabilities/summary` con el backend parcheado ya activo:
+  - `spot`:
+    - `status_code=401`
+    - `exchange_code=-2015`
+    - `exchange_msg="Invalid API-key, IP, or permissions for action."`
+    - `error_category="auth"`
+  - `margin`:
+    - `status_code=400`
+    - `exchange_code=-2015`
+    - `exchange_msg="Invalid API-key, IP, or permissions for action."`
+    - `error_category="auth"`
+  - `usdm_futures`:
+    - `status_code=401`
+    - `exchange_code=-2015`
+    - `exchange_msg="Invalid API-key, IP, or permissions for action"`
+    - `error_category="auth"`
+  - `coinm_futures`:
+    - `status_code=401`
+    - `exchange_code=-2015`
+    - `exchange_msg="Invalid API-key, IP, or permissions for action, request ip: 34.178.20.104"`
+    - `error_category="auth"`
+- Conclusiones operativas cerradas por esta evidencia:
+  - el rechazo ya no apunta principalmente a `timestamp` (`-1021`) ni a `invalid signature` (`-1022`);
+  - tampoco aparecio `margin_account_missing` (`-3003`);
+  - el frente restante queda concentrado en autenticacion Binance:
+    - API key / permisos insuficientes / IP allowlist.
+- Estado real de los otros endpoints en el mismo artifact:
+  - `validation/readiness`:
+    - `live_serio_ready=false`
+  - `execution/live-safety/summary`:
+    - `overall_status=BLOCK`
+    - unico blocker restante: `margin_level_blocker`
+    - `snapshot_fresh=true`
+    - `exchange_filters_fresh=true`
+    - `quote_stale=false`
+    - `orderbook_stale=false`
+  - `gates`:
+    - `overall_status=WARN`
+    - `mode=paper`
+    - `G9_RUNTIME_ENGINE_REAL=WARN`
+- Hallazgo estructural sobre `registry.sqlite3`:
+  - `rtlab_core/instruments/registry.py` guarda snapshots y capability snapshots en SQLite como append-only;
+  - persiste `raw_payload_json` completo en `instrument_catalog_snapshots` y tambien `raw_payload_json` por item en `instrument_catalog_snapshot_items`;
+  - no se encontro logica de `DELETE`, `prune`, `VACUUM` ni housekeeping automatico para esta DB;
+  - el archivo es regenerable via `instrument registry sync`, pero borrarlo implica perder historial local de snapshots/capabilities del registry.
+
 ## Diagnostico Binance signed surface / margin visibility - 2026-04-05
 
 - Rama de trabajo para este bloque:

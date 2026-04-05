@@ -2,6 +2,29 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras desplegar el backend diagnostico a Railway staging - 2026-04-05
+- [x] Verificar acceso real a Railway:
+  - Railway MCP no estuvo disponible;
+  - Railway CLI si estuvo autenticado y operativo.
+- [x] Desplegar `chore/binance-signed-surface-diagnostics` al servicio staging correcto:
+  - servicio `Bot-Trading-IA`
+  - deployment `27054657-d579-4299-a733-d2f84834605f`
+- [x] Volver a correr `Remote Account Surface Checks (GitHub VM)` contra Railway staging ya parcheado:
+  - run `23993209086`
+  - artifact `6274774688`
+- [x] Cerrar el `code/msg` real por familia:
+  - `spot` -> `-2015` / `Invalid API-key, IP, or permissions for action.`
+  - `margin` -> `-2015` / `Invalid API-key, IP, or permissions for action.`
+  - `usdm_futures` -> `-2015` / `Invalid API-key, IP, or permissions for action`
+  - `coinm_futures` -> `-2015` / `Invalid API-key, IP, or permissions for action, request ip: 34.178.20.104`
+- [ ] Siguiente paso tecnico real:
+  - revisar en Binance / Railway staging el par efectivo de credenciales y permisos live;
+  - validar IP allowlist para la IP expuesta por Binance (`34.178.20.104`);
+  - confirmar si el mismo par spot se esta reutilizando en futures por fallback o si existen `BINANCE_USDM_*` / `BINANCE_COINM_*` dedicadas cargadas.
+- [ ] Siguiente paso operativo para `registry.sqlite3`:
+  - elegir una politica de retencion/housekeeping explicita antes de que el volumen vuelva a crecer sin control;
+  - no borrar historial del registry sin una decision consciente sobre trade-off de trazabilidad.
+
 ## Siguiente bloque exacto tras el diagnostico Binance - 2026-04-05
 - [x] Mapear por codigo las signed surfaces live:
   - `spot` -> `GET /api/v3/account`

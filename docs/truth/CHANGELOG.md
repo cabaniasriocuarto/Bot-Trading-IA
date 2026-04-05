@@ -2,6 +2,27 @@
 
 ## 2026-04-05
 
+### Deploy diagnostico a Railway staging + cierre de causa Binance
+- Se verifico acceso real a Railway CLI y se desplego `chore/binance-signed-surface-diagnostics` al servicio `Bot-Trading-IA` en `staging` mediante deploy CLI exitoso:
+  - deployment `27054657-d579-4299-a733-d2f84834605f`
+  - mensaje: `deploy chore/binance-signed-surface-diagnostics @ dccea88 (rtlab_autotrader root)`
+- Se confirmo que el intento previo fallaba por raiz de deploy incorrecta (`docker/Dockerfile` inexistente en el root del monorepo); el deploy correcto sale desde `rtlab_autotrader/`.
+- Recaptura remota posterior al deploy:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `23993209086`
+  - artifact `6274774688`
+- El artifact nuevo ya expone el rechazo real de Binance por familia:
+  - `spot`: `401`, `-2015`, `Invalid API-key, IP, or permissions for action.`
+  - `margin`: `400`, `-2015`, `Invalid API-key, IP, or permissions for action.`
+  - `usdm_futures`: `401`, `-2015`, `Invalid API-key, IP, or permissions for action`
+  - `coinm_futures`: `401`, `-2015`, `Invalid API-key, IP, or permissions for action, request ip: 34.178.20.104`
+- Cierre tecnico del frente Binance en este bloque:
+  - la evidencia ya no apunta a `-1021`, `-1022` ni `-3003`;
+  - el bloqueo restante queda concentrado en autenticacion/permisos/IP de Binance.
+- Hallazgo de persistencia para seguimiento:
+  - `registry.sqlite3` sigue siendo append-only sin retencion ni housekeeping automatico;
+  - guarda `raw_payload_json` por snapshot y tambien por item, lo que explica el crecimiento sostenido del volumen en staging.
+
 ### Diagnostico Binance signed surface / margin visibility
 - Cambio minimo de producto aplicado para no perder evidencia util de Binance:
   - `rtlab_autotrader/rtlab_core/instruments/registry.py` deja de colapsar toda respuesta no-2xx a `signed_request_failed` sin contexto;
