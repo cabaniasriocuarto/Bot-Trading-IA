@@ -1778,6 +1778,27 @@ def test_create_market_order_paper_persists_intent_before_submit_and_estimated_c
     assert intent["preflight_status"] == "submitted"
 
 
+def test_create_market_order_paper_reuses_live_quote_snapshot_when_paper_cache_is_empty(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, family="spot")
+    service.set_market_snapshot(family="spot", environment="live", symbol="BTCUSDT", bid=50000.0, ask=50001.0)
+
+    result = service.create_order(
+        {
+            "family": "spot",
+            "environment": "paper",
+            "mode": "paper",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "quantity": 0.01,
+        }
+    )
+
+    assert result["order_status"] == "NEW"
+    assert result["execution_order_id"] is not None
+    assert result["blocking_reasons"] == []
+
+
 def test_create_limit_order_paper_requires_explicit_price(tmp_path: Path) -> None:
     service = _build_service(tmp_path, family="spot")
 

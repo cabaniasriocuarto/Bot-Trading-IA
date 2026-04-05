@@ -3440,6 +3440,9 @@ class ExecutionRealityService:
         symbol: str,
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        normalized_family = _normalize_family(family)
+        normalized_environment = _normalize_environment(environment)
+        canonical_symbol = _canonical_symbol(symbol)
         payload = body if isinstance(body, dict) else {}
         if payload:
             snapshot = {
@@ -3451,19 +3454,33 @@ class ExecutionRealityService:
                 "source": str(payload.get("source") or "request"),
                 "updated_at": utc_now_iso(),
             }
-            self._quotes[(_normalize_family(family), _normalize_environment(environment), _canonical_symbol(symbol))] = snapshot
+            self._quotes[(normalized_family, normalized_environment, canonical_symbol)] = snapshot
             return snapshot
-        key = (_normalize_family(family), _normalize_environment(environment), _canonical_symbol(symbol))
+        key = (normalized_family, normalized_environment, canonical_symbol)
         cached = self._quotes.get(key)
+        mark_environment = normalized_environment
+        if not isinstance(cached, dict) and normalized_environment == "paper":
+            # Paper runtime consumes live market streams; reuse the live quote cache
+            # when paper has no dedicated snapshot yet.
+            cached = self._quotes.get((normalized_family, "live", canonical_symbol))
+            mark_environment = "live"
         if isinstance(cached, dict):
             snapshot = copy.deepcopy(cached)
             if snapshot.get("mark_price") is None:
-                snapshot["mark_price"] = self._mark_price_snapshot(family=family, environment=environment, symbol=symbol)
+                snapshot["mark_price"] = self._mark_price_snapshot(
+                    family=family,
+                    environment=mark_environment,
+                    symbol=symbol,
+                )
             return snapshot
         return {
             "bid": None,
             "ask": None,
-            "mark_price": self._mark_price_snapshot(family=family, environment=environment, symbol=symbol),
+            "mark_price": self._mark_price_snapshot(
+                family=family,
+                environment="live" if normalized_environment == "paper" else normalized_environment,
+                symbol=symbol,
+            ),
             "quote_ts_ms": None,
             "orderbook_ts_ms": None,
             "source": "missing",
