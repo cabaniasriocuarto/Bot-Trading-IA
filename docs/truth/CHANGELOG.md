@@ -2,6 +2,33 @@
 
 ## 2026-04-05
 
+### Cierre de `margin_level_blocker` en staging
+- Cambio minimo aplicado en `rtlab_autotrader/rtlab_core/execution/reality.py`:
+  - `fetch_account_balances(... family="margin")` ahora persiste `marginLevel` en `self._margin_levels[environment]` via `set_margin_level(...)`;
+  - `live_safety_summary()` refresca `margin/account` cuando el nivel live sigue vacio antes de evaluar `margin_guard`.
+- Validacion local:
+  - `rtlab_autotrader/tests/test_execution_reality.py -k "fetches_exchange_info_and_balances_for_margin_and_futures or live_safety_summary_refreshes_margin_level_from_margin_account"` -> OK
+  - `rtlab_autotrader/tests/test_web_execution_reality_api.py -k "test_execution_live_safety_summary_endpoint_reports_preflight_state or test_execution_live_safety_summary_endpoint_reports_final_guardrails"` -> OK
+- Trazabilidad Git:
+  - commit `21394e6b17d4a5d8f5a0a167bc4d2ebe818847b5` `Fix: propagate margin level from margin account`
+  - commit `fb41d9b52f8c54e013aec116d669c7d5d0d0c756` `Fix: refresh margin guard from margin account`
+- Deploy real a Railway staging:
+  - deployment `7c5cf593-1d94-4c89-bd46-f147059fb9c9`
+  - mensaje `deploy margin guard refresh @ fb41d9b (rtlab_autotrader root)`
+- Recaptura remota final:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `23996415594`
+  - artifact `6275802498`
+- Resultado real:
+  - `margin=200`
+  - `margin_guard.level=999.0`
+  - `margin_guard.visible=true`
+  - `margin_guard.status=OK`
+  - `margin_level_blocker` desaparece
+  - `live_safety.overall_status=OK`
+  - `gates.overall_status` sigue `WARN`
+  - `live_serio_ready` sigue `false`
+
 ### Deploy diagnostico a Railway staging + cierre de causa Binance
 - Se verifico acceso real a Railway CLI y se desplego `chore/binance-signed-surface-diagnostics` al servicio `Bot-Trading-IA` en `staging` mediante deploy CLI exitoso:
   - deployment `27054657-d579-4299-a733-d2f84834605f`

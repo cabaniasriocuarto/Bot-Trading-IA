@@ -2,6 +2,61 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Cierre de margin guard en Railway staging - 2026-04-05
+
+- Rama operativa usada:
+  - `chore/binance-signed-surface-diagnostics`
+- Cambio minimo aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/execution/reality.py`
+  - `fetch_account_balances(... family="margin")` ahora persiste `marginLevel` en `self._margin_levels[environment]` via `set_margin_level(...)` cuando el payload lo trae;
+  - `live_safety_summary()` ahora refresca una vez desde `margin/account` si el nivel live sigue vacio antes de evaluar `margin_guard`.
+- Validacion local del cambio:
+  - tests puntuales `test_execution_reality.py`: OK
+  - tests puntuales `test_web_execution_reality_api.py`: OK
+- Deploy real a Railway staging:
+  - servicio: `Bot-Trading-IA`
+  - deployment activo: `7c5cf593-1d94-4c89-bd46-f147059fb9c9`
+  - mensaje: `deploy margin guard refresh @ fb41d9b (rtlab_autotrader root)`
+- Primer rerun post-deploy:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `23996374455`
+  - artifact `6275788779`
+  - resultado: no concluyente por indisponibilidad transitoria (`502`) inmediatamente despues del deploy.
+- Rerun de verificacion ya con el servicio estabilizado:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `23996415594`
+  - artifact `6275802498`
+  - sha del workflow: `fb41d9b52f8c54e013aec116d669c7d5d0d0c756`
+- Resultado real de la recaptura final:
+  - `account/capabilities/summary`:
+    - `spot=200`
+    - `margin=200`
+    - `usdm_futures=200`
+    - `coinm_futures=200`
+  - `execution/live-safety/summary`:
+    - `overall_status=OK`
+    - `margin_guard.status=OK`
+    - `margin_guard.level=999.0`
+    - `margin_guard.source=binance_margin_account`
+    - `margin_guard.visible=true`
+    - `safety_blockers=[]`
+    - `snapshot_fresh=true`
+    - `exchange_filters_fresh=true`
+  - `validation/readiness`:
+    - `live_serio_ready=false`
+  - `gates`:
+    - `overall_status=WARN`
+    - `mode=paper`
+    - `G9_RUNTIME_ENGINE_REAL=WARN`
+- Conclusiones operativas cerradas por esta evidencia:
+  - el frente `margin_level_blocker` quedo resuelto en staging;
+  - el frente Binance/auth ya estaba resuelto y se mantuvo sano en la recaptura final;
+  - el bloqueo restante para `LIVE GO` ya no pasa por market data, exchange filters ni margin visibility;
+  - lo que queda abierto es:
+    - `live_serio_ready=false`
+    - `G9_RUNTIME_ENGINE_REAL=WARN`
+    - modo runtime todavia en `paper`.
+
 ## Deploy diagnostico a Railway staging + recaptura remota - 2026-04-05
 
 - Rama operativa usada para este bloque:

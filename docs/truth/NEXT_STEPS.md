@@ -2,6 +2,32 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras cerrar `margin_level_blocker` - 2026-04-05
+- [x] Confirmar que Binance/auth ya no es el frente:
+  - `spot=200`
+  - `margin=200`
+  - `usdm_futures=200`
+  - `coinm_futures=200`
+- [x] Confirmar que `margin_guard` ya no queda vacio en staging:
+  - `margin_guard.level=999.0`
+  - `margin_guard.visible=true`
+  - `margin_guard.status=OK`
+  - `margin_level_blocker` ausente
+- [x] Confirmar que `live_safety` ya no bloquea:
+  - `overall_status=OK`
+- [ ] Proximo frente tecnico real:
+  - `validation/readiness` sigue con `live_serio_ready=false`
+  - `paper/testnet/canary/live_serio` siguen sin runs persistidos
+  - `gates.overall_status` sigue `WARN`
+  - `G9_RUNTIME_ENGINE_REAL` sigue `WARN`
+  - `mode=paper`
+- [ ] Siguiente paso recomendado:
+  - atacar runtime real / validation persistence, no Binance ni margin visibility
+  - recapturar despues:
+    - `GET /api/v1/validation/readiness`
+    - `GET /api/v1/execution/live-safety/summary`
+    - `GET /api/v1/gates`
+
 ## Siguiente bloque exacto tras desplegar el backend diagnostico a Railway staging - 2026-04-05
 - [x] Verificar acceso real a Railway:
   - Railway MCP no estuvo disponible;
