@@ -2,6 +2,71 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Diagnostico Binance signed surface / margin visibility - 2026-04-05
+
+- Rama de trabajo para este bloque:
+  - `chore/binance-signed-surface-diagnostics`
+- Objetivo del bloque:
+  - aislar la causa real de los `401/400` de signed surfaces;
+  - dejar listo el siguiente rerun con evidencia Binance mas cerrada;
+  - no tocar Railway ni frontend.
+- Mapa real por familia en backend:
+  - `spot`:
+    - endpoint firmado: `GET /api/v3/account`
+    - credenciales: `BINANCE_API_KEY` / `BINANCE_API_SECRET`
+  - `margin`:
+    - endpoint firmado: `GET /sapi/v1/margin/account`
+    - credenciales: `BINANCE_API_KEY` / `BINANCE_API_SECRET`
+  - `usdm_futures`:
+    - endpoint firmado: `GET /fapi/v2/account`
+    - credenciales en orden de fallback:
+      - `BINANCE_USDM_API_KEY` / `BINANCE_USDM_API_SECRET`
+      - `BINANCE_FUTURES_API_KEY` / `BINANCE_FUTURES_API_SECRET`
+      - `BINANCE_API_KEY` / `BINANCE_API_SECRET`
+  - `coinm_futures`:
+    - endpoint firmado: `GET /dapi/v1/account`
+    - credenciales en orden de fallback:
+      - `BINANCE_COINM_API_KEY` / `BINANCE_COINM_API_SECRET`
+      - `BINANCE_FUTURES_API_KEY` / `BINANCE_FUTURES_API_SECRET`
+      - `BINANCE_API_KEY` / `BINANCE_API_SECRET`
+- Conclusiones tecnicas confirmadas por repo:
+  - las credenciales dedicadas futures no son obligatorias por codigo hoy;
+  - el fallback al par spot es intencional en la implementacion actual;
+  - `account/capabilities/summary` seguia perdiendo el payload real del exchange porque `registry._request_signed_json(...)` hacia `raise_for_status()` y guardaba solo `str(exc)`.
+- Cambio minimo aplicado en codigo:
+  - `registry._request_signed_json(...)` ahora preserva en `notes`:
+    - `status_code`
+    - `exchange_code`
+    - `exchange_msg`
+    - `raw_exchange_code`
+    - `raw_exchange_msg`
+    - `error_category`
+  - el `reason` deja de quedar forzado al generico `signed_request_failed` cuando existe clasificacion util.
+  - `scripts/remote_account_surface_report.py` ahora muestra esos campos adicionales.
+- Micro-hardening de clasificacion Binance:
+  - `-1011` se clasifica como `ip_not_whitelisted`
+  - `-3003` se clasifica como `margin_account_missing`
+- Evidencia operativa real al rerun remoto de esta rama:
+  - workflow:
+    - `Remote Account Surface Checks (GitHub VM)`
+    - run `23992323732`
+    - sha `e33d51fada7ebddad9727376e31ef3c13c7c1a66`
+  - el artifact remoto siguio mostrando:
+    - `spot`: `401 Unauthorized`
+    - `margin`: `400`
+    - `usdm_futures`: `401 Unauthorized`
+    - `coinm_futures`: `401 Unauthorized`
+  - pero `exchange_code`, `exchange_msg`, `raw_exchange_code`, `raw_exchange_msg` y `error_category` siguieron en `null`.
+- Interpretacion honesta del rerun:
+  - eso no invalida el parche;
+  - simplemente confirma que Railway staging todavia corre el backend anterior y no esta usando este cambio de `registry.py`;
+  - por lo tanto, el siguiente rerun con evidencia cerrada requiere desplegar este backend diagnostico antes de volver a leer `account/capabilities/summary`.
+- Ranking actual de causas mas probables por familia:
+  - `spot`: rechazo de autenticacion (`API key / permisos / IP`) > timestamp > firma
+  - `margin`: cuenta margin no habilitada/no creada (`-3003`) o rechazo de autenticacion (`-2015` / `-1099`) > timestamp/firma
+  - `usdm_futures`: rechazo de autenticacion del par efectivo usado > falta de credenciales dedicadas futures > timestamp/firma
+  - `coinm_futures`: rechazo de autenticacion del par efectivo usado > falta de credenciales dedicadas futures > timestamp/firma
+
 ## Saneamiento operativo de Railway staging - 2026-04-05
 
 - Rama administrativa usada para esta evidencia:

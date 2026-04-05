@@ -2,6 +2,24 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras el diagnostico Binance - 2026-04-05
+- [x] Mapear por codigo las signed surfaces live:
+  - `spot` -> `GET /api/v3/account`
+  - `margin` -> `GET /sapi/v1/margin/account`
+  - `usdm_futures` -> `GET /fapi/v2/account`
+  - `coinm_futures` -> `GET /dapi/v1/account`
+- [x] Confirmar que el fallback de credenciales futures es intencional hoy:
+  - `BINANCE_USDM_*` -> `BINANCE_FUTURES_*` -> `BINANCE_API_*`
+  - `BINANCE_COINM_*` -> `BINANCE_FUTURES_*` -> `BINANCE_API_*`
+- [x] Dejar listo el backend para preservar `exchange_code/msg` reales en capability snapshots.
+- [ ] Desplegar este backend diagnostico al entorno que se vaya a recapturar:
+  - mientras Railway staging siga corriendo el backend anterior, el artifact remoto va a seguir mostrando el wrapper viejo sin `exchange_code/msg`.
+- [ ] Apenas el backend diagnostico este desplegado, volver a correr `Remote Account Surface Checks (GitHub VM)` y cerrar la clasificacion por familia:
+  - `spot`: confirmar si Binance devuelve `-2015`, `-1002`, `-1011`, `-1021` o `-1022`
+  - `margin`: confirmar si devuelve `-3003`, `-2015`, `-1099`, `-1021` o `-1022`
+  - `usdm_futures`: confirmar si el rechazo viene del par efectivo de credenciales o de permisos/IP
+  - `coinm_futures`: confirmar si el rechazo viene del par efectivo de credenciales o de permisos/IP
+
 ## Siguiente bloque exacto tras sanear Railway staging - 2026-04-05
 - [x] Cerrar el bloqueo operativo de storage en Railway staging:
   - el volumen persistente estaba lleno por `registry.sqlite3`;

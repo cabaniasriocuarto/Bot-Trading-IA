@@ -2,6 +2,26 @@
 
 ## 2026-04-05
 
+### Diagnostico Binance signed surface / margin visibility
+- Cambio minimo de producto aplicado para no perder evidencia util de Binance:
+  - `rtlab_autotrader/rtlab_core/instruments/registry.py` deja de colapsar toda respuesta no-2xx a `signed_request_failed` sin contexto;
+  - ahora preserva `status_code`, `exchange_code`, `exchange_msg`, `raw_exchange_code`, `raw_exchange_msg` y `error_category` cuando el exchange los entrega.
+- Clasificacion minima ampliada en `rtlab_autotrader/rtlab_core/execution/binance_adapter.py`:
+  - `-1011` -> `ip_not_whitelisted`
+  - `-3003` -> `margin_account_missing`
+- `scripts/remote_account_surface_report.py` ahora muestra esos campos en el artifact remoto.
+- Validacion local:
+  - nuevo test `rtlab_autotrader/tests/test_instrument_registry_signed_surface.py`
+  - cubre:
+    - preservacion de `-2015` (`auth_rejected`)
+    - preservacion de `-3003` (`margin_account_missing`)
+- Hallazgo operativo importante:
+  - el rerun remoto de la rama diagnostica (`23992323732`) siguio mostrando `exchange_code/msg = null`;
+  - conclusion: Railway staging todavia no esta corriendo este backend parcheado, asi que la evidencia remota sigue saliendo del backend viejo.
+- Hallazgo de wiring/credenciales:
+  - por codigo, `BINANCE_USDM_*` y `BINANCE_COINM_*` no son obligatorias hoy;
+  - existe fallback intencional a `BINANCE_FUTURES_*` y luego a `BINANCE_API_*`.
+
 ### Saneamiento operativo de Railway staging
 - Diagnostico real cerrado en Railway staging:
   - el volumen persistente estaba correctamente montado en `/app/user_data`;
