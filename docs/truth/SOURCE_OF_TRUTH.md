@@ -2,6 +2,68 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Auditoria de conectividad + cierre del cuello de persistencia paper - 2026-04-05
+
+- Rama operativa usada:
+  - `chore/binance-signed-surface-diagnostics`
+- GitHub real en esta sesion:
+  - `gh auth status`: OK para `cabaniasriocuarto`
+  - remoto correcto: `https://github.com/cabaniasriocuarto/Bot-Trading-IA.git`
+  - acceso real a Actions y artifacts: OK
+- Railway real en esta sesion:
+  - Railway MCP: no disponible
+  - Railway CLI: no operativo por `Unauthorized`
+  - no hay `RAILWAY_TOKEN` util en env
+  - evidencia publica accesible:
+    - `GET https://bot-trading-ia-staging.up.railway.app/api/v1/health` -> `200`
+    - storage reportado como persistente (`persistent_storage=true`)
+  - limitacion:
+    - sin auth Railway no se pudo confirmar deployment activo por CLI ni auditar variables por nombre
+- Vercel real en esta sesion:
+  - MCP disponible
+  - equipo: `Ranquel Tech Lab`
+  - proyecto `bot-trading-ia-staging` sigue conectado al repo, pero sus previews recientes de `chore/binance-signed-surface-diagnostics` quedaron `CANCELED`
+  - proyecto `bot-trading-ia-staging-2` tambien esta conectado al repo y sus previews recientes de la misma branch quedaron `READY`
+  - conclusion operativa:
+    - hay al menos un proyecto Vercel viejo/desalineado que todavia puede meter ruido
+- Linear MCP:
+  - no disponible en esta sesion (`unknown MCP server 'linear'`)
+- Cambio minimo no-producto aplicado para cerrar diagnostico:
+  - `scripts/remote_account_surface_report.py` ahora preserva en `paper_ops.status_before/status_after`:
+    - `runtime_last_signal_*`
+    - `runtime_last_remote_submit_*`
+    - `runtime_loop_alive`
+    - `executor_connected`
+    - `telemetry_source`
+    - `missing_checks`
+- Recaptura remota autoritativa con ese patch:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `24007691135`
+  - artifact `6279073351`
+  - sha del workflow: `217474a05dfaf4211e8275255efb20e1a884cb59`
+- Estado real de `PAPER` en ese artifact:
+  - `orders_before.count = 0`
+  - `orders_after.count = 1`
+  - ultimo run `PAPER`: `f2fc0bf4-6eac-47f1-a0fd-f148135f0961`
+  - `total_orders = 1`
+  - `total_fills = 1`
+  - `trading_days = 1`
+  - `result = BLOCK`
+  - `blocking_reasons_json = ["max_gross_net_inconsistency_rate"]`
+- Estado real del runtime paper expuesto por `/api/v1/status` dentro del mismo artifact:
+  - `bot_status = RUNNING`
+  - `runtime_engine = simulated`
+  - `runtime_loop_alive = false`
+  - `executor_connected = false`
+  - `runtime_last_signal_* = null`
+  - `runtime_last_remote_submit_* = null`
+- Conclusiones operativas cerradas por esta evidencia:
+  - el cuello anterior de `PAPER` ya no es "no persiste ordenes";
+  - staging ya dejo al menos una orden `paper` persistida en el ledger operativo que consume validation;
+  - el frente actual pasa a ser consistencia de trade rows / costos en validation:
+    - `max_gross_net_inconsistency_rate`
+  - `min_orders` y `min_trading_days` siguen por debajo del umbral (`1 < 30`, `1 < 3`), pero ya no explican por si solos el resultado actual.
+
 ## Auditoria de PAPER PASS real / estrategia de soak - 2026-04-05
 
 - Rama operativa usada:

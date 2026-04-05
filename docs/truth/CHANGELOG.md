@@ -2,6 +2,39 @@
 
 ## 2026-04-05
 
+### Auditoria de conectividad e integraciones + cierre de persistencia paper
+- GitHub real en esta sesion:
+  - `gh auth status` OK
+  - Actions y artifacts accesibles
+- Railway real en esta sesion:
+  - Railway MCP no disponible
+  - Railway CLI sin auth (`Unauthorized`)
+  - `/api/v1/health` publico del backend staging responde `200`
+  - no se pudo confirmar deployment activo ni variables por CLI
+- Vercel real en esta sesion:
+  - `bot-trading-ia-staging` sigue conectado al repo pero sus previews recientes de la branch quedaron `CANCELED`
+  - `bot-trading-ia-staging-2` tambien esta conectado al repo y sus previews recientes quedaron `READY`
+  - conclusion: sigue existiendo al menos un proyecto Vercel viejo/desalineado que puede meter ruido
+- Cambio minimo no-producto:
+  - commit `217474a05dfaf4211e8275255efb20e1a884cb59` `Ops: capture paper runtime submit diagnostics`
+  - `scripts/remote_account_surface_report.py` ahora preserva `runtime_last_signal_*`, `runtime_last_remote_submit_*`, `runtime_loop_alive`, `executor_connected`, `telemetry_source` y `missing_checks`
+- Recaptura remota autoritativa:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `24007691135`
+  - artifact `6279073351`
+- Resultado real:
+  - `orders_before.count = 0`
+  - `orders_after.count = 1`
+  - nuevo run `PAPER`: `f2fc0bf4-6eac-47f1-a0fd-f148135f0961`
+  - `total_orders = 1`
+  - `total_fills = 1`
+  - `trading_days = 1`
+  - `result = BLOCK`
+  - blocker exacto nuevo: `max_gross_net_inconsistency_rate`
+- Cierre de este bloque:
+  - la persistencia paper en staging ya quedo demostrada
+  - el cuello actual ya no es "no hay ordenes en el ledger", sino la consistencia `gross/net/cost` de la evidencia `paper`
+
 ### Auditoria de PAPER PASS / opcion B de estrategia de soak
 - Recaptura remota fresca:
   - workflow `Remote Account Surface Checks (GitHub VM)`

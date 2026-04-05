@@ -2,6 +2,36 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras auditar conectividad y cerrar persistencia paper - 2026-04-05
+- [x] Confirmar conectividad real de GitHub:
+  - `gh auth status` OK
+  - Actions y artifacts accesibles
+- [x] Confirmar limitacion real de Railway en esta sesion:
+  - Railway MCP no disponible
+  - Railway CLI `Unauthorized`
+  - `/api/v1/health` publico del backend staging responde `200`
+- [x] Confirmar estado real de Vercel:
+  - `bot-trading-ia-staging` sigue conectado al repo pero con previews recientes `CANCELED`
+  - `bot-trading-ia-staging-2` tambien esta conectado al repo y con previews recientes `READY`
+  - conclusion: hay un proyecto Vercel viejo/desalineado que todavia puede meter ruido
+- [x] Confirmar que el cuello anterior de `PAPER` ya no es "no persiste ordenes":
+  - run remoto `24007691135`
+  - artifact `6279073351`
+  - `orders_after.count = 1`
+  - ultimo run `PAPER` `f2fc0bf4-6eac-47f1-a0fd-f148135f0961`
+  - `total_orders = 1`
+  - `total_fills = 1`
+  - `trading_days = 1`
+- [ ] Proximo frente tecnico real:
+  - aislar por que el ultimo `PAPER` queda `BLOCK` por `max_gross_net_inconsistency_rate`
+  - contrastar `execution/orders`, `fills` y `trade_rows` del mismo `execution_order_id`
+  - verificar si `net_pnl` no esta absorbiendo `total_cost_realized` en trade rows paper
+- [ ] No tocar todavia:
+  - thresholds de validation
+  - `mode`
+  - `runtime_engine`
+  - estrategia de soak
+
 ## Siguiente bloque exacto tras auditar `PAPER` / opcion B - 2026-04-05
 - [x] Confirmar con evidencia real que `validation` ya no falla por persistencia ni por `margin_guard`.
 - [x] Confirmar que el ultimo cuello de `PAPER` sigue siendo:
