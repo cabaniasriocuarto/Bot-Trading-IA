@@ -2271,3 +2271,11 @@
 - `backtests/page.tsx`: overlays/equity/drawdown ahora muestran ejes con nombre (`Paso / muestra`, `Equity neta`, `Drawdown`).
 - `test_web_live_ready.py`: nuevas validaciones para `run -> bot` persistente aun si cambia el pool del bot, y forwarding de `bot_id` en mass/beast.
 - Limpieza local conservadora: eliminados solo `tmp/`, `tmp_test_ud/`, runs `synthetic_seeded` no versionados y metadata vacia de `mass_backtests/`.
+
+### Readiness / Gates / Runtime mode audit (2026-04-05)
+- Se audito con repo real + Railway staging + workflow remoto `23997020429` por que el entorno sigue en `live_serio_ready=false`, `G9_RUNTIME_ENGINE_REAL=WARN` y `mode=paper`.
+- No se cambio producto: el resultado fue confirmar que el estado actual es coherente con las policies y con el runtime state real del entorno.
+- Hallazgos cerrados:
+  - `live_serio_ready=false` porque no existen runs `PASS` persistidos en `paper -> testnet -> canary`
+  - `G9=WARN` porque el runtime contract sigue incompleto en no-live
+  - `mode=paper` porque Railway staging sigue con `MODE=paper` y el backend conserva ese fallback fail-closed

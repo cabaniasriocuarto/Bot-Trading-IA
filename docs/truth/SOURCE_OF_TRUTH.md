@@ -2519,3 +2519,18 @@ El proyecto tiene:
   - proponer limpieza
   - borrar/mover solo lo claramente obsoleto, redundante o enga?oso
   - no tocar artefactos actuales/ambiguos solo por estar viejos o ser locales
+
+### Readiness / Gates / Runtime mode auditado (2026-04-05)
+- `validation/readiness.live_serio_ready=false` sigue siendo correcto por diseno actual.
+- La logica real en `rtlab_autotrader/rtlab_core/validation/service.py` exige cadena `PASS` persistida en `paper -> testnet -> canary`; `LIVE_SERIO` solo queda `ready=true` si esa cadena ya paso.
+- La recaptura remota `23997020429` confirmo `stages={}` y `latest_result=None` para `paper`, `testnet`, `canary` y `live_serio`; por eso no corresponde forzar `live_serio_ready=true`.
+- `gates.G9_RUNTIME_ENGINE_REAL=WARN` tambien es correcto por diseno actual cuando el modo no es `live` y el runtime contract sigue incompleto.
+- La evidencia remota del mismo run mostro faltantes exactos en `G9`: `engine_real`, `telemetry_real`, `runtime_loop_alive`, `executor_connected`, `reconciliation_ok`, `heartbeat_fresh`, `reconciliation_fresh`.
+- `mode=paper` no es un bug del endpoint: hoy Railway staging expone `MODE=paper`, `LIVE_TRADING_ENABLED=false`, y el backend cae a `paper` tanto por policy (`config/policies/runtime_controls.yaml`) como por fallback de `bot_state`.
+- El endpoint `POST /api/v1/bot/mode` no permite pasar a `live` mientras no se cumplan simultaneamente:
+  - `RUNTIME_ENGINE=real`
+  - confirm explicito `ENABLE_LIVE`
+  - `evaluate_gates("live")` en `PASS`
+  - preflight live final OK
+  - reconciliacion final OK
+- No se aplico cambio de codigo en este bloque porque `paper/WARN/false` sigue siendo el comportamiento seguro y coherente con el estado operativo real del entorno.

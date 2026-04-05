@@ -924,3 +924,16 @@ Fecha: 2026-04-05
 - [ ] Validar en deploy visible que la rama con `beast/status` corregido este realmente desplegada y deje de mostrar `Modo Bestia deshabilitado` falso.
 - [ ] Completar export consolidado de conocimiento por lote de bots (no solo export JSON por bot individual).
 - [ ] Seguir con simplificacion UX: agrupar acciones masivas/edicion de pool para reducir ruido por fila en `Strategies`.
+
+## Siguiente bloque tecnico (2026-04-05)
+1. No tocar `mode`, `G9` ni `live_serio_ready` por config manual hasta que exista evidencia real de runtime `real` y validaciones persistidas.
+2. Ejecutar y persistir corridas de validacion reales para `paper -> testnet -> canary`, porque sin esa cadena `PASS` `validation/readiness` no puede subir honestamente a `live_serio_ready=true`.
+3. Auditar el runtime contract v1 en staging para cerrar los checks hoy faltantes en `G9`:
+   - `engine_real`
+   - `telemetry_real`
+   - `runtime_loop_alive`
+   - `executor_connected`
+   - `reconciliation_ok`
+   - `heartbeat_fresh`
+   - `reconciliation_fresh`
+4. Recién despues de eso reevaluar un cambio de `MODE` o un `POST /api/v1/bot/mode` fuera de `paper`.
