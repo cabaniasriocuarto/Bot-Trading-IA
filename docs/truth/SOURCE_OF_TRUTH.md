@@ -2,6 +2,48 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Validation accounting paper: inconsistencia gross/net/cost aislada y corregida localmente - 2026-04-05
+
+- Rama operativa usada:
+  - `chore/binance-signed-surface-diagnostics`
+- Evidencia remota autoritativa de partida:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `24007691135`
+  - artifact `6279073351`
+- Hallazgo real confirmado:
+  - `PAPER` ya no falla por `orders=0`;
+  - la primera orden paper persistida queda en el ledger con:
+    - `orders_after.count = 1`
+    - `total_orders = 1`
+    - `total_fills = 1`
+    - `trading_days = 1`
+    - `result = BLOCK`
+    - `blocking_reasons_json = ["max_gross_net_inconsistency_rate"]`
+- Causa exacta aislada por repo:
+  - `ValidationService._gross_net_inconsistency_rate(...)` exige:
+    - `net_pnl == gross_pnl - total_cost_realized`
+  - `ExecutionRealityService._reporting_rows_from_live_fills(...)` materializaba trade rows desde fills de ejecucion;
+  - para fills paper de entrada sin `net_pnl` explicito:
+    - `gross_pnl` quedaba en `0.0`
+    - `net_pnl` tambien quedaba en `0.0`
+    - `total_cost_realized` quedaba `> 0`
+  - eso producia inconsistencia al `100%` aun cuando la orden/fill estaban bien persistidos.
+- Cambio minimo aplicado en producto:
+  - `rtlab_autotrader/rtlab_core/execution/reality.py`
+  - en `_reporting_rows_from_live_fills(...)`:
+    - `gross_pnl` ahora se resuelve primero
+    - `total_cost_realized` se calcula una vez
+    - `net_pnl` usa `fill.net_pnl` si existe; si no, deriva a `gross_pnl - total_cost_realized`
+- Validacion local cerrada:
+  - `rtlab_autotrader/tests/test_execution_reality.py -k "paper_submit_reconcile_materializes_fill or reconcile_futures_rest_fallback_materializes_funding_and_net_pnl"` -> OK
+  - la prueba paper ahora confirma:
+    - `ledger_rows[0]["total_cost_realized"] > 0`
+    - `ledger_rows[0]["net_pnl"] == gross_pnl - total_cost_realized`
+- Limitacion operativa actual:
+  - Railway CLI sigue `Unauthorized` en esta sesion
+  - no hay `RAILWAY_TOKEN` / `RAILWAY_API_TOKEN`
+  - por eso el fix no pudo redeployarse ni reevaluarse todavia en staging desde esta sesion
+
 ## Auditoria de conectividad + cierre del cuello de persistencia paper - 2026-04-05
 
 - Rama operativa usada:

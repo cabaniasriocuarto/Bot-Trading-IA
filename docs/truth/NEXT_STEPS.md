@@ -2,6 +2,25 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras corregir localmente `gross/net/cost` de PAPER - 2026-04-05
+- [x] Aislar el nuevo blocker real de `PAPER`:
+  - `max_gross_net_inconsistency_rate`
+- [x] Confirmar que el problema no estaba en `orders=0` sino en validation accounting:
+  - `orders_after.count = 1`
+  - `total_orders = 1`
+  - `total_fills = 1`
+- [x] Corregir localmente la materializacion del trade row:
+  - si el fill no trae `net_pnl`, usar `gross_pnl - total_cost_realized`
+- [x] Validar el fix local con tests puntuales
+- [ ] Proximo paso operativo exacto:
+  - recuperar auth real de Railway CLI o disponer `RAILWAY_TOKEN`
+  - desplegar `chore/binance-signed-surface-diagnostics` con este fix
+  - volver a correr `POST /api/v1/validation/evaluate` para `PAPER`
+  - verificar si desaparece `max_gross_net_inconsistency_rate`
+- [ ] Si ese blocker desaparece, el siguiente faltante honesto deberia volver a ser de volumen/tiempo:
+  - `min_orders >= 30`
+  - `min_trading_days >= 3`
+
 ## Siguiente bloque exacto tras auditar conectividad y cerrar persistencia paper - 2026-04-05
 - [x] Confirmar conectividad real de GitHub:
   - `gh auth status` OK

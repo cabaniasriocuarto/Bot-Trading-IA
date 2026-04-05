@@ -5121,6 +5121,22 @@ class ExecutionRealityService:
             quote_qty = _first_number(fill.get("quote_qty"))
             if quote_qty is None:
                 quote_qty = _safe_float(fill.get("price"), 0.0) * _safe_float(fill.get("qty"), 0.0)
+            gross_pnl = _first_number(fill.get("gross_pnl"))
+            if gross_pnl is None:
+                gross_pnl = 0.0
+            total_cost_realized = sum(
+                _safe_float(value, 0.0)
+                for value in (
+                    _first_number(fill.get("commission")),
+                    _first_number(fill.get("spread_realized")),
+                    _first_number(fill.get("slippage_realized")),
+                    _first_number(fill.get("funding_component")),
+                    _first_number(fill.get("borrow_interest_component")),
+                )
+                if value is not None
+            )
+            provided_net_pnl = _first_number(fill.get("net_pnl"))
+            net_pnl = _safe_float(provided_net_pnl if provided_net_pnl is not None else (gross_pnl - total_cost_realized), 0.0)
             rows.append(
                 {
                     "trade_cost_id": f"TCL-{hashlib.sha256(str(fill.get('execution_fill_id')).encode('utf-8')).hexdigest()[:16].upper()}",
@@ -5146,19 +5162,9 @@ class ExecutionRealityService:
                     "borrow_interest_realized": _first_number(fill.get("borrow_interest_component")),
                     "rebates_or_discounts": 0.0,
                     "total_cost_estimated": 0.0,
-                    "total_cost_realized": sum(
-                        _safe_float(value, 0.0)
-                        for value in (
-                            _first_number(fill.get("commission")),
-                            _first_number(fill.get("spread_realized")),
-                            _first_number(fill.get("slippage_realized")),
-                            _first_number(fill.get("funding_component")),
-                            _first_number(fill.get("borrow_interest_component")),
-                        )
-                        if value is not None
-                    ),
-                    "gross_pnl": _safe_float(fill.get("gross_pnl"), 0.0),
-                    "net_pnl": _safe_float(fill.get("net_pnl"), 0.0),
+                    "total_cost_realized": total_cost_realized,
+                    "gross_pnl": gross_pnl,
+                    "net_pnl": net_pnl,
                     "cost_source": {
                         **(_json_loads(fill.get("cost_source_json"), {}) if isinstance(fill, dict) else {}),
                         "execution_policy_hash": execution_policy_hash,

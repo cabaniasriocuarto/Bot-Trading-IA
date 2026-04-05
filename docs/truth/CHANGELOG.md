@@ -2,6 +2,29 @@
 
 ## 2026-04-05
 
+### Validation accounting paper: fix local de `gross/net/cost`
+- Hallazgo real de partida:
+  - run remoto `24007691135`
+  - artifact `6279073351`
+  - `PAPER` ya persiste una orden (`total_orders=1`, `total_fills=1`) pero queda `BLOCK` por `max_gross_net_inconsistency_rate`
+- Causa exacta cerrada por repo:
+  - `ValidationService._gross_net_inconsistency_rate(...)` compara `net_pnl` contra `gross_pnl - total_cost_realized`
+  - `ExecutionRealityService._reporting_rows_from_live_fills(...)` dejaba `net_pnl=0.0` cuando el fill no traia `net_pnl`, aun si `total_cost_realized > 0`
+  - para un fill paper de entrada eso genera inconsistencia artificial al `100%`
+- Cambio minimo aplicado:
+  - `rtlab_autotrader/rtlab_core/execution/reality.py`
+  - fallback nuevo:
+    - si el fill no trae `net_pnl`, el trade row usa `gross_pnl - total_cost_realized`
+- Cobertura puntual agregada:
+  - `rtlab_autotrader/tests/test_execution_reality.py`
+  - el caso paper ahora verifica que el trade row materializado cumple:
+    - `net_pnl == gross_pnl - total_cost_realized`
+- Validacion local:
+  - `pytest rtlab_autotrader/tests/test_execution_reality.py -k "paper_submit_reconcile_materializes_fill or reconcile_futures_rest_fallback_materializes_funding_and_net_pnl"` -> OK
+  - `py_compile rtlab_autotrader/rtlab_core/execution/reality.py` -> OK
+- Limitacion de este bloque:
+  - Railway CLI siguio sin auth real, asi que no hubo redeploy ni reevaluacion remota desde esta sesion
+
 ### Auditoria de conectividad e integraciones + cierre de persistencia paper
 - GitHub real en esta sesion:
   - `gh auth status` OK

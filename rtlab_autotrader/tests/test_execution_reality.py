@@ -3082,6 +3082,10 @@ def test_paper_submit_reconcile_materializes_fill(tmp_path: Path) -> None:
     assert len(detail["fills"]) == 1
     assert detail["realized_costs"]["cost_classification"] == "mixed"
     assert ledger_rows
+    assert ledger_rows[0]["total_cost_realized"] > 0
+    assert ledger_rows[0]["net_pnl"] == pytest.approx(
+        float(ledger_rows[0].get("gross_pnl") or 0.0) - float(ledger_rows[0].get("total_cost_realized") or 0.0)
+    )
 
 
 def test_kill_switch_trip_reset_blocks_submit_and_auto_cancels_open_orders(tmp_path: Path) -> None:
