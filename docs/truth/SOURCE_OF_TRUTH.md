@@ -2662,3 +2662,26 @@ El proyecto tiene:
   - el conteo/persistencia ya no es el problema central
   - `PAPER` todavia no genera ordenes reales persistidas suficientes
   - el faltante inmediato ya no es `min_trading_days = 0`, sino `min_orders = 0 < 30`; `trading_days` subio a `1`, pero sigue por debajo de `3`
+
+### Persistencia paper autonoma: submit path corregido localmente, pendiente redeploy real (2026-04-05)
+- Se confirmo con repo real y reproduccion local que la via autonoma de `paper` si genera señal `trade`, pero la orden quedaba bloqueada por `quote_stale` antes de entrar al ledger operativo.
+- Causa exacta cerrada:
+  - `RuntimeBridge._maybe_submit_paper_runtime_order(...)` construia una snapshot paper al inicio del submit
+  - `ExecutionRealityService.preflight(...)` tardaba mas de `quote_stale_block_ms=3000`
+  - cuando llegaba al chequeo de frescura, la misma snapshot del ciclo ya habia envejecido y el submit terminaba en `BLOCKED`
+- Fix aplicado en la branch diagnostica:
+  - `app.py`: `RuntimeBridge._paper_runtime_quote_snapshot(...)` ahora rehidrata quote paper desde `market_streams_summary()` live y la persiste como snapshot paper del ciclo
+  - `reality.py`: para `mode="paper"` con `market_snapshot` request-scoped, la frescura se mide contra el inicio del preflight, no contra el final del pipeline interno
+  - `test_web_live_ready.py`: la prueba ahora reproduce el caso real de staging (`best_quotes` live + submit paper) y confirma orden persistida en `execution/orders`
+- Validacion local cerrada:
+  - `runtime_last_remote_submit_reason = submitted`
+  - `execution/orders?family=spot&environment=paper&symbol=BTCUSDT` devuelve `count >= 1`
+- Limitacion operativa actual:
+  - no se pudo forzar redeploy desde Codex porque Railway CLI quedo `Unauthorized` (`invalid_grant`) y ya no habia `RAILWAY_TOKEN` util en esta sesion
+  - por eso staging no quedo confirmado en el nuevo SHA
+- Evidencia remota posterior sin redeploy forzado:
+  - workflow `24007134706`, artifact `6278905457`
+  - `orders_before.count = 0`
+  - `orders_after.count = 0`
+  - `PAPER` sigue en `HOLD`
+  - esto es consistente con un staging todavia sin el fix desplegado

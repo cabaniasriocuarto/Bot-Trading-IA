@@ -983,3 +983,15 @@ Fecha: 2026-04-05
    - `GET /api/v1/validation/runs?stage=PAPER&limit=20`
 3. No tocar thresholds ni forzar `PASS`: el siguiente objetivo honesto es llevar `min_orders` de `0` a `>= 30`.
 4. Cuando `total_orders >= 30` y existan `>= 3` trading days reales, volver a correr `POST /api/v1/validation/evaluate` para `PAPER`.
+
+## Siguiente bloque tecnico (actualizado 4, 2026-04-05)
+1. Hacer redeploy manual de Railway staging con el SHA `03dbe62` de `chore/binance-signed-surface-diagnostics`.
+2. Confirmar en staging que el fix de persistencia paper quedo corriendo:
+   - reiniciar `paper`
+   - verificar `execution/orders?environment=paper`
+   - verificar que aparezca al menos una orden persistida
+3. Volver a correr `Remote Account Surface Checks (GitHub VM)` y comparar:
+   - `orders_before.count`
+   - `orders_after.count`
+   - ultimo `validation_run` de `PAPER`
+4. Solo si la persistencia ya funciona pero la actividad sigue baja, reevaluar recien ahi una `paper_soak_strategy` mas activa con trazabilidad explicita.

@@ -2346,3 +2346,20 @@
   - `total_orders=0`
   - `trading_days=1`
   - siguiente cuello exacto: generar ordenes paper reales persistidas; `min_orders` sigue siendo el faltante dominante.
+
+### Paper order persistence path fix (2026-04-05)
+- Commit `03dbe62` (`Fix: persist paper orders from runtime quotes`).
+- Hallazgo cerrado:
+  - la ruta autonoma paper si entraba en submit, pero `ExecutionRealityService.preflight(...)` consumia mas de `3s` y volvía stale la snapshot del mismo ciclo
+  - el resultado era `runtime_last_remote_submit_reason=submit_blocked` con `runtime_last_remote_submit_error=quote_stale`
+- Cambios aplicados:
+  - `rtlab_core/web/app.py`: `RuntimeBridge._paper_runtime_quote_snapshot(...)` toma `best_quotes` live del runtime summary y las persiste como snapshot paper del ciclo
+  - `rtlab_core/execution/reality.py`: el preflight paper mide la frescura del `market_snapshot` request-scoped contra el inicio del preflight
+  - `tests/test_web_live_ready.py`: cobertura puntual del caso real `live summary -> start paper -> execution/orders >= 1`
+- Validacion local:
+  - `pytest` puntual OK
+  - reproduccion local OK: submit reason `submitted`, `execution/orders` count `1`
+- Estado remoto:
+  - push OK a `origin/chore/binance-signed-surface-diagnostics`
+  - Railway CLI quedo desautenticado (`invalid_grant`), sin `RAILWAY_TOKEN`, por lo que no se pudo forzar redeploy desde esta sesion
+  - recaptura remota `24007134706` / artifact `6278905457` todavia muestra `orders_after=0`
