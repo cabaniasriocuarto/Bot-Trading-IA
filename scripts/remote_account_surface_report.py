@@ -364,6 +364,30 @@ def _items_count(payload: dict[str, Any]) -> int | None:
         return None
 
 
+def _paper_status_summary(payload: dict[str, Any], *, status_code: int) -> dict[str, Any]:
+    runtime_snapshot = payload.get("runtime_snapshot") if isinstance(payload.get("runtime_snapshot"), dict) else {}
+    missing_checks = runtime_snapshot.get("missing_checks")
+    return {
+        "ok": True,
+        "status_code": status_code,
+        "mode": payload.get("mode"),
+        "bot_status": payload.get("bot_status"),
+        "runtime_engine": payload.get("runtime_engine"),
+        "runtime_last_signal_strategy_id": runtime_snapshot.get("runtime_last_signal_strategy_id"),
+        "runtime_last_signal_reason": runtime_snapshot.get("runtime_last_signal_reason"),
+        "runtime_last_signal_symbol": runtime_snapshot.get("runtime_last_signal_symbol"),
+        "runtime_last_signal_side": runtime_snapshot.get("runtime_last_signal_side"),
+        "runtime_last_remote_submit_reason": runtime_snapshot.get("runtime_last_remote_submit_reason"),
+        "runtime_last_remote_submit_error": runtime_snapshot.get("runtime_last_remote_submit_error"),
+        "runtime_last_remote_client_order_id": runtime_snapshot.get("runtime_last_remote_client_order_id"),
+        "runtime_loop_alive": runtime_snapshot.get("runtime_loop_alive"),
+        "executor_connected": runtime_snapshot.get("executor_connected"),
+        "telemetry_source": runtime_snapshot.get("telemetry_source"),
+        "ready_for_live": runtime_snapshot.get("ready_for_live"),
+        "missing_checks": missing_checks if isinstance(missing_checks, list) else [],
+    }
+
+
 def _paper_ops(
     *,
     base_url: str,
@@ -398,13 +422,7 @@ def _paper_ops(
     if err_status_before:
         result["status_before"] = {"ok": False, "status_code": status_code_before, "error": err_status_before}
     else:
-        result["status_before"] = {
-            "ok": True,
-            "status_code": status_code_before,
-            "mode": status_before.get("mode"),
-            "bot_status": status_before.get("bot_status"),
-            "runtime_engine": status_before.get("runtime_engine"),
-        }
+        result["status_before"] = _paper_status_summary(status_before, status_code=status_code_before)
 
     orders_before, err_orders_before, orders_status_before = _request_json(
         base_url=base_url,
@@ -496,13 +514,7 @@ def _paper_ops(
     if err_status_after:
         result["status_after"] = {"ok": False, "status_code": status_code_after, "error": err_status_after}
     else:
-        result["status_after"] = {
-            "ok": True,
-            "status_code": status_code_after,
-            "mode": status_after.get("mode"),
-            "bot_status": status_after.get("bot_status"),
-            "runtime_engine": status_after.get("runtime_engine"),
-        }
+        result["status_after"] = _paper_status_summary(status_after, status_code=status_code_after)
 
     orders_after, err_orders_after, orders_status_after = _request_json(
         base_url=base_url,
