@@ -370,6 +370,7 @@ def _paper_ops(
     timeout_sec: float,
     token: str,
     start_bot: bool,
+    restart_paper_bot: bool,
     start_wait_sec: float,
     evaluate_paper: bool,
     orders_limit: int,
@@ -377,6 +378,7 @@ def _paper_ops(
     result: dict[str, Any] = {
         "requested": bool(start_bot or evaluate_paper),
         "start_bot_requested": bool(start_bot),
+        "restart_paper_bot_requested": bool(restart_paper_bot),
         "evaluate_paper_requested": bool(evaluate_paper),
         "status_before": {},
         "bot_start": {},
@@ -422,7 +424,46 @@ def _paper_ops(
 
     if start_bot:
         if isinstance(status_before, dict) and str(status_before.get("bot_status") or "").upper() == "RUNNING":
-            result["bot_start"] = {"ok": True, "status_code": 200, "action": "already_running"}
+            if restart_paper_bot:
+                stop_resp, stop_err, stop_status = _request_json(
+                    method="POST",
+                    base_url=base_url,
+                    path="/api/v1/bot/stop",
+                    timeout_sec=timeout_sec,
+                    token=token,
+                    body={},
+                )
+                result["bot_start"] = {"ok": not bool(stop_err), "status_code": stop_status, "action": "restarting"}
+                if stop_err:
+                    result["bot_start"]["error"] = stop_err
+                else:
+                    result["bot_start"]["stop_payload"] = {
+                        "ok": stop_resp.get("ok"),
+                        "state": stop_resp.get("state"),
+                    }
+                    time.sleep(2.0)
+                    start_resp, start_err, start_status = _request_json(
+                        method="POST",
+                        base_url=base_url,
+                        path="/api/v1/bot/start",
+                        timeout_sec=timeout_sec,
+                        token=token,
+                        body={},
+                    )
+                    result["bot_start"]["ok"] = not bool(start_err)
+                    result["bot_start"]["status_code"] = start_status
+                    if start_err:
+                        result["bot_start"]["error"] = start_err
+                    else:
+                        result["bot_start"]["payload"] = {
+                            "ok": start_resp.get("ok"),
+                            "state": start_resp.get("state"),
+                            "mode": start_resp.get("mode"),
+                            "strategy": start_resp.get("strategy"),
+                            "bot_id": start_resp.get("bot_id"),
+                        }
+            else:
+                result["bot_start"] = {"ok": True, "status_code": 200, "action": "already_running"}
         else:
             start_resp, start_err, start_status = _request_json(
                 method="POST",
@@ -677,6 +718,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--warm-symbol", default="BTCUSDT")
     parser.add_argument("--warm-wait-sec", type=float, default=6.0)
     parser.add_argument("--start-paper-bot", action="store_true", help="Intenta arrancar el bot en modo paper antes de recapturar.")
+    parser.add_argument("--restart-paper-bot", action="store_true", help="Si PAPER ya esta RUNNING, fuerza stop/start despues del prewarm.")
     parser.add_argument("--paper-start-wait-sec", type=float, default=20.0)
     parser.add_argument("--evaluate-paper", action="store_true", help="Ejecuta POST /api/v1/validation/evaluate para PAPER.")
     parser.add_argument("--paper-orders-limit", type=int, default=20)
@@ -740,6 +782,7 @@ def main() -> int:
             timeout_sec=timeout_sec,
             token=token,
             start_bot=bool(args.start_paper_bot),
+            restart_paper_bot=bool(args.restart_paper_bot),
             start_wait_sec=max(0.0, float(args.paper_start_wait_sec)),
             evaluate_paper=bool(args.evaluate_paper),
             orders_limit=max(1, int(args.paper_orders_limit)),

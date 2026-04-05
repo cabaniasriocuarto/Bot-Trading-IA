@@ -84,6 +84,7 @@ jobs:
             --warm-symbol "BTCUSDT"
             --warm-wait-sec 6
             --start-paper-bot
+            --restart-paper-bot
             --paper-start-wait-sec 20
             --evaluate-paper
             --paper-orders-limit 20
