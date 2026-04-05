@@ -2583,13 +2583,24 @@ def test_paper_simulated_start_persists_runtime_order_in_execution_ledger(tmp_pa
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
-  module.store.execution_reality.set_market_snapshot(
-    family="spot",
-    environment="paper",
-    symbol="BTCUSDT",
-    bid=50000.0,
-    ask=50001.0,
-  )
+  module.store.execution_reality.market_streams_summary = lambda: {
+    "sessions": [
+      {
+        "repo_family": "spot",
+        "environment": "live",
+        "running": True,
+        "connected": True,
+        "execution_connector": "binance_spot",
+        "best_quotes": {
+          "BTCUSDT": {
+            "bid": 50000.0,
+            "ask": 50001.0,
+            "event_time_ms": None,
+          }
+        },
+      }
+    ]
+  }
 
   start_res = client.post("/api/v1/bot/start", headers=headers)
   assert start_res.status_code == 200, start_res.text
@@ -2600,6 +2611,11 @@ def test_paper_simulated_start_persists_runtime_order_in_execution_ledger(tmp_pa
   )
   assert listed_1.status_code == 200, listed_1.text
   assert listed_1.json()["count"] >= 1
+
+  state_after_start = module.store.load_bot_state()
+  assert str(state_after_start.get("runtime_last_remote_submit_reason") or "") == "submitted"
+  assert str(state_after_start.get("runtime_last_remote_submit_error") or "") == ""
+  assert str(state_after_start.get("runtime_last_remote_client_order_id") or "").strip() != ""
 
   status_res = client.get("/api/v1/status", headers=headers)
   assert status_res.status_code == 200, status_res.text

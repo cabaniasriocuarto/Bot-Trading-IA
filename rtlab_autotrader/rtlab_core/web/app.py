@@ -7152,6 +7152,55 @@ class RuntimeBridge:
             "notional_usd": notional,
         }
 
+    def _paper_runtime_quote_snapshot(self, *, family: str, symbol: str) -> dict[str, Any]:
+        quote_snapshot = store.execution_reality._quote_snapshot(family, "paper", symbol)  # type: ignore[attr-defined]
+        runtime_summary = store.execution_reality.market_streams_summary()
+        sessions = runtime_summary.get("sessions") if isinstance(runtime_summary.get("sessions"), list) else []
+        now_ms = int(time.time() * 1000)
+        normalized_family = str(family or "").strip().lower()
+        canonical_symbol = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        fresh_runtime_snapshot: dict[str, Any] | None = None
+
+        for row in sessions:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("environment") or "").strip().lower() != "live":
+                continue
+            if str(row.get("repo_family") or "").strip().lower() != normalized_family:
+                continue
+            if not bool(row.get("running")) or not bool(row.get("connected")):
+                continue
+            best_quotes = row.get("best_quotes") if isinstance(row.get("best_quotes"), dict) else {}
+            best_quote = best_quotes.get(canonical_symbol) if isinstance(best_quotes.get(canonical_symbol), dict) else {}
+            bid = _as_float(best_quote.get("bid"), 0.0)
+            ask = _as_float(best_quote.get("ask"), 0.0)
+            if bid <= 0.0 and ask <= 0.0:
+                continue
+            quote_ts_ms = _as_int(best_quote.get("event_time_ms"), 0) or now_ms
+            fresh_runtime_snapshot = {
+                "bid": bid if bid > 0.0 else None,
+                "ask": ask if ask > 0.0 else None,
+                "quote_ts_ms": quote_ts_ms,
+                "orderbook_ts_ms": quote_ts_ms,
+                "source": f"runtime_summary:{row.get('execution_connector') or 'unknown'}",
+                "updated_at": utc_now_iso(),
+            }
+            store.execution_reality.set_market_snapshot(
+                family=family,
+                environment="paper",
+                symbol=canonical_symbol,
+                bid=fresh_runtime_snapshot.get("bid"),
+                ask=fresh_runtime_snapshot.get("ask"),
+                quote_ts_ms=quote_ts_ms,
+                orderbook_ts_ms=quote_ts_ms,
+                source=str(fresh_runtime_snapshot.get("source") or "runtime_summary"),
+            )
+            break
+
+        if isinstance(fresh_runtime_snapshot, dict):
+            return fresh_runtime_snapshot
+        return quote_snapshot if isinstance(quote_snapshot, dict) else {}
+
     def _maybe_submit_paper_runtime_order(self, *, state: dict[str, Any]) -> dict[str, Any]:
         intent = self._runtime_order_intent(mode="paper")
         signal_strategy_id = str(intent.get("strategy_id") or "")
@@ -7229,7 +7278,7 @@ class RuntimeBridge:
                 except Exception:
                     pass
 
-        quote_snapshot = store.execution_reality._quote_snapshot(family, "paper", symbol)  # type: ignore[attr-defined]
+        quote_snapshot = self._paper_runtime_quote_snapshot(family=family, symbol=symbol)
         if not isinstance(quote_snapshot, dict):
             return {**base_result, "reason": "quote_snapshot_missing"}
         ask = _as_float(quote_snapshot.get("ask"), 0.0)

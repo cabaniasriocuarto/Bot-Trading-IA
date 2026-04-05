@@ -6201,6 +6201,7 @@ class ExecutionRealityService:
         environment = _normalize_environment(request.get("environment"))
         mode = _normalize_mode(request.get("mode"), environment)
         symbol = _canonical_symbol(request.get("symbol"))
+        preflight_started_ms = int(time.time() * 1000)
         warnings: list[str] = []
         blocking: list[str] = []
         fail_closed = False
@@ -6218,11 +6219,12 @@ class ExecutionRealityService:
 
         capability = self._capability_snapshot(family, environment) if family else None
         latest_snapshot = self._latest_snapshot(family, environment) if family else None
+        request_market_snapshot = request.get("market_snapshot") if isinstance(request.get("market_snapshot"), dict) else None
         quote = self._quote_snapshot(
             family,
             environment,
             symbol,
-            request.get("market_snapshot") if isinstance(request.get("market_snapshot"), dict) else None,
+            request_market_snapshot,
         )
 
         if instrument is None:
@@ -6343,7 +6345,14 @@ class ExecutionRealityService:
         if quote_ts_ms is None:
             blocking.append("quote_snapshot_missing")
         else:
-            age_ms = max(0, int(time.time() * 1000) - int(quote_ts_ms))
+            quote_age_reference_ms = int(time.time() * 1000)
+            if mode == "paper" and isinstance(request_market_snapshot, dict):
+                # Paper submits carry a request-scoped quote snapshot for the
+                # current cycle. Measure freshness against preflight start so
+                # local prechecks do not consume the full stale budget before
+                # the simulated order hits the paper ledger.
+                quote_age_reference_ms = preflight_started_ms
+            age_ms = max(0, quote_age_reference_ms - int(quote_ts_ms))
             if age_ms >= int(preflight_cfg.get("quote_stale_block_ms") or 0):
                 blocking.append("quote_stale")
                 if mode == "live":
@@ -6351,7 +6360,10 @@ class ExecutionRealityService:
 
         orderbook_ts_ms = quote.get("orderbook_ts_ms")
         if orderbook_ts_ms is not None:
-            ob_age_ms = max(0, int(time.time() * 1000) - int(orderbook_ts_ms))
+            orderbook_age_reference_ms = int(time.time() * 1000)
+            if mode == "paper" and isinstance(request_market_snapshot, dict):
+                orderbook_age_reference_ms = preflight_started_ms
+            ob_age_ms = max(0, orderbook_age_reference_ms - int(orderbook_ts_ms))
             if ob_age_ms >= int(preflight_cfg.get("orderbook_stale_block_ms") or 0):
                 blocking.append("orderbook_stale")
                 if mode == "live":
