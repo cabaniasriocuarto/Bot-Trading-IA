@@ -2837,3 +2837,31 @@ El proyecto tiene:
   - `orders_after.count = 0`
   - `PAPER` sigue en `HOLD`
   - esto es consistente con un staging todavia sin el fix desplegado
+
+### Backfill contable paper historico cerrado (2026-04-05)
+- El blocker `max_gross_net_inconsistency_rate` ya no venia de la fila nueva post-fix, sino de una fila paper historica previa:
+  - `PFILL-8782AFD5A76A815B`
+  - antes del backfill: `gross_pnl = 0.0`, `net_pnl = 0.0`, `total_cost_realized = 1.11e-06`
+- Diagnostico exacto de repo:
+  - `validation` calcula `gross_net_inconsistency_rate_pct` a partir de `trade_rows`
+  - `5d1b94e` corrigio solo la materializacion nueva
+  - las filas paper viejas necesitaban re-sincronizacion explicita desde `fills` ya persistidos
+- Fix minimo aplicado:
+  - commit `300e455` `Fix: backfill paper reporting rows during reconcile`
+  - `ExecutionRealityService._materialize_paper_fill(...)` ahora re-sincroniza fills paper ya existentes con `reporting_bridge` cuando la orden ya es terminal o ya tiene fills persistidos
+- Deploy real:
+  - Railway staging `a19ebf8b-e6d5-4c55-9134-8e1f59406b33`
+  - mensaje `deploy paper reporting backfill @ 300e455 (rtlab_autotrader root)`
+- Verificacion real post-deploy:
+  - se ejecuto `GET /api/v1/execution/orders/9e57de30-9ff4-4f12-9f72-a0fd0b4b9534`
+  - se ejecuto `GET /api/v1/execution/reconcile/summary`
+  - se corrio `POST /api/v1/validation/evaluate` para `PAPER`
+- Resultado cerrado:
+  - nuevo run `PAPER`: `203d31be-ec3b-4bf0-bed1-3491e46d22a7`
+  - `gross_net_inconsistency_rate_pct = 0.0`
+  - `blocking_reasons_json = []`
+  - `PAPER` mejora de `BLOCK` a `HOLD`
+  - faltantes honestos restantes: `min_orders = 2 < 30`, `min_trading_days = 1 < 3`
+- Confirmacion de ledger:
+  - `PFILL-8782AFD5A76A815B` quedo corregida a `net_pnl = -1.11e-06`, `total_cost_realized = 1.11e-06`
+  - `PFILL-1D333DAA1C39BE37` sigue consistente con los mismos valores contables relativos

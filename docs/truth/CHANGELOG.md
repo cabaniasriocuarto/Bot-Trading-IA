@@ -2444,3 +2444,20 @@
   - push OK a `origin/chore/binance-signed-surface-diagnostics`
   - Railway CLI quedo desautenticado (`invalid_grant`), sin `RAILWAY_TOKEN`, por lo que no se pudo forzar redeploy desde esta sesion
   - recaptura remota `24007134706` / artifact `6278905457` todavia muestra `orders_after=0`
+
+### Paper validation accounting backfill (2026-04-05)
+- Commit `300e455` (`Fix: backfill paper reporting rows during reconcile`).
+- Hallazgo cerrado:
+  - el blocker `max_gross_net_inconsistency_rate` ya no venia de la fila nueva post-fix, sino de la fila paper historica `PFILL-8782AFD5A76A815B`
+  - `validation/evaluate` por si solo no re-materializaba esa fila vieja
+- Cambio aplicado:
+  - `ExecutionRealityService._materialize_paper_fill(...)` ahora vuelve a sincronizar fills paper ya existentes con `reporting_bridge` cuando la orden ya es terminal o ya tiene fills persistidos
+- Deploy real:
+  - Railway staging `a19ebf8b-e6d5-4c55-9134-8e1f59406b33`
+  - mensaje `deploy paper reporting backfill @ 300e455 (rtlab_autotrader root)`
+- Resultado real post-reconcile + reevaluate:
+  - run `PAPER` `203d31be-ec3b-4bf0-bed1-3491e46d22a7`
+  - `gross_net_inconsistency_rate_pct = 0.0`
+  - `blocking_reasons_json = []`
+  - `PAPER` pasa de `BLOCK` a `HOLD`
+  - el frente restante vuelve a ser puramente operativo: `min_orders = 2 < 30`, `min_trading_days = 1 < 3`

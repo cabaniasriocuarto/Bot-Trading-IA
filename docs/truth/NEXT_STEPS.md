@@ -1071,3 +1071,13 @@ Fecha: 2026-04-05
    - `orders_after.count`
    - ultimo `validation_run` de `PAPER`
 4. Solo si la persistencia ya funciona pero la actividad sigue baja, reevaluar recien ahi una `paper_soak_strategy` mas activa con trazabilidad explicita.
+
+## Siguiente bloque tecnico (actualizado 5, 2026-04-05)
+1. Tomar como baseline el run `PAPER` `203d31be-ec3b-4bf0-bed1-3491e46d22a7`: el blocker contable `max_gross_net_inconsistency_rate` ya quedo resuelto (`0.0%`).
+2. No tocar thresholds, estrategia, `mode` ni `runtime_engine`: el frente restante vuelve a ser evidencia operativa real.
+3. Mantener staging corriendo en `paper` y monitorear:
+   - `GET /api/v1/status`
+   - `GET /api/v1/execution/orders?environment=paper`
+   - `GET /api/v1/validation/runs?limit=20`
+4. Cuando `PAPER` llegue a `>= 30` ordenes y `>= 3` trading days, volver a correr `POST /api/v1/validation/evaluate` para `PAPER`.
+5. Recién despues de `PAPER=PASS`, reevaluar `TESTNET` y luego `CANARY`.
