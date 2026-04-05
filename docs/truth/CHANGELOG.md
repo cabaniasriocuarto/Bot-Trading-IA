@@ -2,6 +2,41 @@
 
 ## 2026-04-05
 
+### Monitor externo de `PAPER` via GitHub Actions
+- Se agrego `scripts/paper_validation_monitor.py` para monitoreo operativo externo de `PAPER`:
+  - consulta `health`, `status`, `execution/orders`, `validation/runs`, `validation/readiness`
+  - auto-start del bot si no esta `RUNNING`
+  - reevaluacion condicional de `PAPER` solo con evidencia nueva o antiguedad configurable
+  - artifact JSON/Markdown + state JSON para diff simple contra la observacion previa
+  - fail claro si:
+    - bot no esta `RUNNING`
+    - `mode != paper`
+    - `PAPER` vuelve a `BLOCK`
+    - reaparecen blockers
+    - no hay crecimiento de ordenes por `>= 6h`
+    - falla un endpoint o falla la reevaluacion
+- Se agrego workflow dedicado `.github/workflows/paper-validation-monitor.yml`:
+  - `schedule`: `7,37 * * * *`
+  - `workflow_dispatch`
+  - parametros visibles:
+    - `reevaluate_max_age_hours=6`
+    - `stagnant_warn_after_hours=3`
+    - `stagnant_fail_after_hours=6`
+    - `orders_limit=200`
+- Como GitHub no permite despachar desde CLI un workflow nuevo que no existe en default branch, se agrego un puente temporal en `.github/workflows/remote-account-surface-checks.yml` con `run_paper_monitor=true`.
+- Validacion real cerrada:
+  - workflow run `24012069225`
+  - artifact `paper-validation-monitor-24012069225` (`6280300229`)
+  - artifact `paper-validation-monitor-state` (`6280300269`)
+  - resultado:
+    - `bot_status=RUNNING`
+    - `orders_endpoint_count=2`
+    - `latest_result=HOLD`
+    - `blocking_reasons_json=[]`
+    - `should_reevaluate=false`
+    - `failures_count=0`
+    - `warnings_count=0`
+
 ### Validation accounting paper: deploy real del fix `5d1b94e`
 - Railway auth se recupero en esta sesion:
   - `railway whoami` -> OK

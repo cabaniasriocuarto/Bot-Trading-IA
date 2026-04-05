@@ -2,6 +2,30 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras validar el monitor externo de PAPER - 2026-04-05
+- [x] Implementar monitor externo de `PAPER` via GitHub Actions:
+  - script `scripts/paper_validation_monitor.py`
+  - workflow `.github/workflows/paper-validation-monitor.yml`
+  - puente temporal sobre `remote-account-surface-checks.yml`
+- [x] Validar el monitor con infraestructura real:
+  - workflow run `24012069225`
+  - artifact `6280300229`
+  - state artifact `6280300269`
+- [x] Confirmar que el estado honesto actual sigue siendo:
+  - `PAPER = HOLD`
+  - `total_orders = 2`
+  - `total_fills = 2`
+  - `trading_days = 1`
+  - `blocking_reasons_json = []`
+- [ ] Siguiente paso operativo exacto:
+  - mantener staging corriendo en `paper`
+  - seguir usando el puente/manual dispatch mientras el workflow dedicado no viva en default branch
+  - cuando sea aceptable tocar la branch por defecto, llevar `.github/workflows/paper-validation-monitor.yml` a default branch para activar el cron real cada `30` minutos
+- [ ] Siguiente objetivo de producto, ya separado del monitoreo:
+  - dejar que `PAPER` acumule evidencia honesta hasta `>= 30` ordenes y `>= 3` trading days
+  - luego reevaluar `PAPER`
+  - recien despues, si `PAPER = PASS`, avanzar a `TESTNET`
+
 ## Siguiente bloque exacto tras desplegar `5d1b94e` y recapturar PAPER - 2026-04-05
 - [x] Recuperar auth real de Railway en esta sesion
 - [x] Confirmar proyecto/env/servicio correctos:

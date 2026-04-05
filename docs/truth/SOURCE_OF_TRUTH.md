@@ -2,6 +2,73 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Monitor externo de PAPER via GitHub Actions validado en rama operativa - 2026-04-05
+
+- Rama operativa usada:
+  - `chore/binance-signed-surface-diagnostics`
+- Objetivo de este bloque:
+  - automatizar seguimiento operativo externo de `PAPER` sin tocar backend principal, sin tocar thresholds, sin tocar estrategia, sin tocar `mode` ni `runtime_engine`
+- Implementacion real preparada:
+  - script nuevo `scripts/paper_validation_monitor.py`
+  - workflow nuevo `.github/workflows/paper-validation-monitor.yml`
+  - puente temporal en `.github/workflows/remote-account-surface-checks.yml` para poder validar el monitor desde GitHub Actions sin tocar `main`
+- Criterios operativos explicitamente configurados:
+  - `cadence_minutes = 30`
+  - cron del workflow dedicado: `7,37 * * * *`
+  - `reevaluate_max_age_hours = 6`
+  - `stagnant_warn_after_hours = 3`
+  - `stagnant_fail_after_hours = 6`
+  - `orders_limit = 200`
+  - `bot_start_wait_sec = 20`
+- El monitor consulta como minimo:
+  - `GET /api/v1/health`
+  - `GET /api/v1/status`
+  - `GET /api/v1/execution/orders?environment=paper`
+  - `GET /api/v1/validation/runs?limit=20`
+  - `GET /api/v1/validation/readiness`
+- El monitor solo reevalua `PAPER` si:
+  - falta el ultimo run `PAPER`
+  - o `orders_endpoint_count > latest_run.total_orders`
+  - o la antiguedad del ultimo run `PAPER` es `>= 6h`
+- El monitor falla de forma explicita si:
+  - `health/status` fallan
+  - el bot no queda `RUNNING`
+  - `mode != paper`
+  - `PAPER` vuelve a `BLOCK`
+  - reaparecen `blocking_reasons_json`
+  - la reevaluacion falla
+  - no hay crecimiento de ordenes durante `>= 6h`
+- Validacion real cerrada en GitHub Actions:
+  - workflow usado: `Remote Account Surface Checks (GitHub VM)` con `run_paper_monitor=true`
+  - run `24012069225`
+  - artifacts:
+    - `paper-validation-monitor-24012069225` (`6280300229`)
+    - `paper-validation-monitor-state` (`6280300269`)
+- Estado real capturado por el artifact validado:
+  - `auth_ok = true`
+  - `health_ok = true`
+  - `mode = paper`
+  - `bot_status = RUNNING`
+  - `runtime_engine = simulated`
+  - `orders_endpoint_count = 2`
+  - `latest_result = HOLD`
+  - `validation_run_id = 203d31be-ec3b-4bf0-bed1-3491e46d22a7`
+  - `latest_total_orders = 2`
+  - `latest_total_fills = 2`
+  - `trading_days = 1`
+  - `blocking_reasons_json = []`
+  - `should_reevaluate = false`
+  - `failures_count = 0`
+  - `warnings_count = 0`
+- Limitacion real importante:
+  - el workflow dedicado `paper-validation-monitor.yml` queda listo, pero su cron no puede quedar activo mientras el archivo no exista en la branch por defecto
+  - como en este bloque no se toca `main`, la validacion real se resolvio mediante el puente sobre el workflow ya activo en default branch
+- Conclusiones operativas cerradas por esta evidencia:
+  - el cuello actual ya no es `orders=0`
+  - `PAPER` sigue honestamente en `HOLD`
+  - el monitoreo externo auditable ya quedo implementado y validado
+  - para activar el cron nativo del workflow dedicado hara falta llevar ese archivo a la branch por defecto en un bloque posterior
+
 ## Validation accounting paper: deploy real del fix y reduccion parcial del blocker - 2026-04-05
 
 - Rama operativa usada:
