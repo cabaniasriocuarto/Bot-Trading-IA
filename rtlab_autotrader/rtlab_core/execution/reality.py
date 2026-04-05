@@ -3732,6 +3732,16 @@ class ExecutionRealityService:
         self._margin_levels[str(environment)] = payload
         return payload
 
+    def _refresh_margin_level_from_account(self, *, environment: str) -> dict[str, Any] | None:
+        try:
+            return self.fetch_account_balances(
+                family="margin",
+                environment=environment,
+                omit_zero_balances=False,
+            )
+        except Exception:
+            return None
+
     def bootstrap_summary(self) -> dict[str, Any]:
         safety = self.safety_policy()
         router = self.router_policy()
@@ -8819,6 +8829,10 @@ class ExecutionRealityService:
         )
         exchange_filter_details = [self._exchange_filter_freshness(family, "live") | {"family": family} for family in supported_families]
         exchange_filters_fresh = bool(supported_families) and all(str(item.get("status") or "") == "fresh" for item in exchange_filter_details)
+        current_margin_level = self._margin_levels.get("live")
+        if any(family in {"margin", "usdm_futures", "coinm_futures"} for family in supported_families):
+            if not isinstance(current_margin_level, dict) or _first_number(current_margin_level.get("level")) is None:
+                self._refresh_margin_level_from_account(environment="live")
         margin_state = self._margin_guard_state(supported_families=supported_families)
         market_runtime = self.market_streams_summary()
         market_runtime_sessions = market_runtime.get("sessions") if isinstance(market_runtime.get("sessions"), list) else []

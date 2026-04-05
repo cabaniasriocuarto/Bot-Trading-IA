@@ -1388,6 +1388,44 @@ def test_exchange_adapter_fetches_exchange_info_and_balances_for_margin_and_futu
     assert usdm_balances["balances_count"] == 1
 
 
+def test_live_safety_summary_refreshes_margin_level_from_margin_account(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _build_service(
+        tmp_path,
+        family="margin",
+        capability_snapshot=_capability_snapshot(can_trade=True, can_margin=True),
+        instrument_row=_instrument_row(family="margin"),
+    )
+    monkeypatch.setenv("BINANCE_API_KEY", "spot-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "spot-secret")
+
+    def _fake_request(method: str, url: str, headers=None, timeout=None, params=None):  # noqa: ANN001
+        if url.endswith("/api/v3/time"):
+            return _HTTPResponse({"serverTime": int(datetime.now(timezone.utc).timestamp() * 1000)})
+        if "/sapi/v1/margin/account?" in url:
+            return _HTTPResponse(
+                {
+                    "borrowEnabled": True,
+                    "tradeEnabled": True,
+                    "marginLevel": "2.5",
+                    "userAssets": [{"asset": "USDT"}],
+                }
+            )
+        raise AssertionError(f"Unexpected adapter URL: {url}")
+
+    monkeypatch.setattr("rtlab_core.execution.binance_adapter.requests.request", _fake_request)
+    service._fee_source_state = lambda family, environment: {  # type: ignore[method-assign]
+        "available": True,
+        "fresh": True,
+        "latest": {"family": family, "environment": environment},
+    }
+
+    summary = service.live_safety_summary()
+
+    assert summary["margin_guard"]["level"] == pytest.approx(2.5)
+    assert summary["margin_guard"]["source"] == "binance_margin_account"
+    assert "margin_level_blocker" not in summary["safety_blockers"]
+
+
 def test_preflight_blocks_when_execution_policy_is_missing(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     root_policies, _ = _prepare_execution_policy_repo(
