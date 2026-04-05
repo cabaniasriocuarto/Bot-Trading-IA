@@ -2,6 +2,33 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras desplegar `5d1b94e` y recapturar PAPER - 2026-04-05
+- [x] Recuperar auth real de Railway en esta sesion
+- [x] Confirmar proyecto/env/servicio correctos:
+  - `Bot-Trading-IA`
+  - `staging`
+  - `Bot-Trading-IA`
+- [x] Desplegar el fix contable paper:
+  - deployment `d7edc046-8e45-4e78-ad35-c9fe6008c358`
+- [x] Reevaluar `PAPER` mediante recaptura remota autoritativa:
+  - run `24008513472`
+  - artifact `6279303777`
+- [x] Confirmar efecto real del fix:
+  - `gross_net_inconsistency_rate_pct` baja de `100.0` a `50.0`
+  - la fila nueva del ledger ya queda correcta
+- [ ] Siguiente paso tecnico exacto:
+  - inspeccionar y corregir la evidencia historica paper previa al fix que todavia entra en validation;
+  - elegir una via minima y auditable:
+    - backfill/reconciliacion de `trade_cost_ledger` para rows paper inconsistentes
+    - o regeneracion correctiva equivalente desde fills/ordenes ya persistidos
+  - luego volver a correr `POST /api/v1/validation/evaluate` para `PAPER`
+  - verificar si `max_gross_net_inconsistency_rate` desaparece por completo
+- [ ] No tocar todavia:
+  - thresholds
+  - estrategia
+  - `mode`
+  - `runtime_engine`
+
 ## Siguiente bloque exacto tras corregir localmente `gross/net/cost` de PAPER - 2026-04-05
 - [x] Aislar el nuevo blocker real de `PAPER`:
   - `max_gross_net_inconsistency_rate`

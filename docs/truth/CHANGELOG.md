@@ -2,6 +2,31 @@
 
 ## 2026-04-05
 
+### Validation accounting paper: deploy real del fix `5d1b94e`
+- Railway auth se recupero en esta sesion:
+  - `railway whoami` -> OK
+  - proyecto `Bot-Trading-IA`, entorno `staging`, servicio `Bot-Trading-IA`
+- Deploy real aplicado:
+  - deployment `d7edc046-8e45-4e78-ad35-c9fe6008c358`
+  - mensaje `deploy validation accounting fix @ 5d1b94e (rtlab_autotrader root)`
+- Recaptura remota posterior:
+  - workflow run `24008513472`
+  - artifact `6279303777`
+- Resultado real:
+  - `PAPER` sigue `BLOCK`
+  - blocker: `max_gross_net_inconsistency_rate`
+  - la metrica mejora de `100.0%` a `50.0%`
+  - `total_orders` sube a `2`
+  - `total_fills` sube a `2`
+- Evidencia directa en Railway:
+  - la fila nueva de `trade_cost_ledger` ya materializa correctamente:
+    - `gross_pnl = 0.0`
+    - `net_pnl = -1.11e-06`
+    - `total_cost_realized = 1.11e-06`
+- Cierre tecnico de este bloque:
+  - el fix no era erroneo ni insuficiente como deploy;
+  - el residuo actual apunta a evidencia historica paper previa al fix, no al trade row nuevo.
+
 ### Validation accounting paper: fix local de `gross/net/cost`
 - Hallazgo real de partida:
   - run remoto `24007691135`

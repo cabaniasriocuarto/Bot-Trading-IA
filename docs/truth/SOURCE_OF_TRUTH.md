@@ -2,6 +2,54 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Validation accounting paper: deploy real del fix y reduccion parcial del blocker - 2026-04-05
+
+- Rama operativa usada:
+  - `chore/binance-signed-surface-diagnostics`
+- Conectividad real recuperada en este bloque:
+  - Railway CLI volvio a autenticar correctamente (`whoami` OK para `cabaniasriocuarto@gmail.com`)
+  - proyecto confirmado: `Bot-Trading-IA`
+  - entorno confirmado: `staging`
+  - servicio confirmado: `Bot-Trading-IA`
+- Deploy real aplicado a staging:
+  - deployment `d7edc046-8e45-4e78-ad35-c9fe6008c358`
+  - mensaje CLI: `deploy validation accounting fix @ 5d1b94e (rtlab_autotrader root)`
+- Recaptura remota autoritativa post-deploy:
+  - workflow `Remote Account Surface Checks (GitHub VM)`
+  - run `24008513472`
+  - artifact `6279303777`
+- Resultado real de `PAPER` post-deploy:
+  - `paper.latest_result = BLOCK`
+  - `validation_run_id = 2aa5622b-0dc4-4fbe-a346-c2a140311eae`
+  - `total_orders = 2`
+  - `total_fills = 2`
+  - `trading_days = 1`
+  - `gross_pnl = 0.0`
+  - `net_pnl = -1.11e-06`
+  - `total_cost_realized = 2.22e-06`
+  - blocker vigente:
+    - `max_gross_net_inconsistency_rate`
+  - metrica observada:
+    - `gross_net_inconsistency_rate_pct = 50.0`
+- Evidencia directa adicional en Railway staging:
+  - `trade_cost_ledger` ya contiene una fila paper nueva correctamente materializada:
+    - `trade_ref = PFILL-1D333DAA1C39BE37`
+    - `gross_pnl = 0.0`
+    - `net_pnl = -1.11e-06`
+    - `total_cost_realized = 1.11e-06`
+    - `executed_at = 2026-04-05T19:14:21.501802+00:00`
+- Conclusiones operativas cerradas por esta evidencia:
+  - el fix `5d1b94e` si quedo desplegado y si empezo a corregir la materializacion contable paper;
+  - el blocker no desaparecio porque la ventana validada todavia incluye evidencia previa inconsistente;
+  - el comportamiento observado (`100% -> 50%`) es compatible con:
+    - una fila historica previa al fix todavia inconsistente
+    - una fila nueva post-fix ya consistente
+- Frente real siguiente:
+  - ya no es redeployar el mismo fix;
+  - hay que decidir un cierre quirurgico para la evidencia historica paper:
+    - backfill/reconciliacion de trade rows paper previos
+    - o una materializacion correctiva equivalente, sin tocar thresholds.
+
 ## Validation accounting paper: inconsistencia gross/net/cost aislada y corregida localmente - 2026-04-05
 
 - Rama operativa usada:
