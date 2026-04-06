@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import subprocess
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -5842,6 +5843,67 @@ def test_research_beast_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
   resume = client.post("/api/v1/research/beast/resume", headers=headers, json={})
   assert resume.status_code == 200, resume.text
   assert resume.json()["ok"] is True
+
+
+def test_data_bootstrap_crypto_binance_public_runs_downloader_and_updates_catalog(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  captured: dict[str, object] = {}
+
+  def _fake_run(cmd, **kwargs):
+    captured["cmd"] = list(cmd)
+    captured["cwd"] = kwargs.get("cwd")
+    captured["timeout"] = kwargs.get("timeout")
+    _seed_local_backtest_dataset(Path(module.USER_DATA_DIR), "crypto", "BTCUSDT", source="binance_public")
+    return subprocess.CompletedProcess(cmd, 0, stdout="[crypto] BTCUSDT ok", stderr="")
+
+  monkeypatch.setattr(module.subprocess, "run", _fake_run)
+
+  res = client.post(
+    "/api/v1/data/bootstrap/crypto-binance-public",
+    headers=headers,
+    json={
+      "symbols": ["BTCUSDT"],
+      "start_month": "2024-01",
+      "end_month": "2024-03",
+    },
+  )
+  assert res.status_code == 200, res.text
+  payload = res.json()
+  assert payload["ok"] is True
+  assert payload["provider"] == "binance_public"
+  assert payload["symbols"] == ["BTCUSDT"]
+  assert payload["bootstrapped"][0]["dataset_1m_present"] is True
+  assert payload["data_status"]["available_count"] >= 1
+
+  cmd = captured["cmd"]
+  assert isinstance(cmd, list)
+  assert "--user-data-dir" in cmd
+  assert str(Path(module.USER_DATA_DIR)) in cmd
+  assert "--symbols" in cmd
+  assert "BTCUSDT" in cmd
+  assert "--start-month" in cmd and "2024-01" in cmd
+  assert "--end-month" in cmd and "2024-03" in cmd
+
+
+def test_data_bootstrap_crypto_binance_public_rejects_invalid_months(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.post(
+    "/api/v1/data/bootstrap/crypto-binance-public",
+    headers=headers,
+    json={
+      "symbols": ["BTCUSDT"],
+      "start_month": "2024-13",
+      "end_month": "2024-03",
+    },
+  )
+  assert res.status_code == 400, res.text
+  assert "start_month" in str((res.json() or {}).get("detail") or "")
 
 
 def test_research_beast_start_rejects_missing_dataset(tmp_path: Path, monkeypatch) -> None:

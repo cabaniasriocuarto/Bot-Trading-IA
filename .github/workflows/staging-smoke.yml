@@ -35,6 +35,26 @@ on:
         required: true
         default: true
         type: boolean
+      include_beast_probe:
+        description: Run authenticated Beast/data runtime probe
+        required: true
+        default: true
+        type: boolean
+      bootstrap_dataset:
+        description: Bootstrap crypto public dataset before Beast probe
+        required: true
+        default: false
+        type: boolean
+      bootstrap_start_month:
+        description: Bootstrap start month (YYYY-MM)
+        required: false
+        default: 2024-01
+        type: string
+      bootstrap_end_month:
+        description: Bootstrap end month (YYYY-MM)
+        required: false
+        default: 2024-12
+        type: string
 
 jobs:
   smoke:
@@ -118,6 +138,44 @@ jobs:
 
           "${cmd[@]}" | tee artifacts/staging_smoke_stdout.log
 
+      - name: Run Beast runtime probe
+        if: ${{ github.event_name == 'schedule' || inputs.include_beast_probe }}
+        env:
+          BACKEND_BASE_URL: ${{ github.event_name == 'schedule' && 'https://bot-trading-ia-staging.up.railway.app' || inputs.backend_base_url }}
+          USERNAME: ${{ github.event_name == 'schedule' && 'Wadmin' || inputs.username }}
+          TIMEOUT_SEC: ${{ github.event_name == 'schedule' && 20 || inputs.timeout_sec }}
+          BOOTSTRAP_DATASET: ${{ github.event_name == 'schedule' && 'false' || inputs.bootstrap_dataset }}
+          BOOTSTRAP_START_MONTH: ${{ github.event_name == 'schedule' && '2024-01' || inputs.bootstrap_start_month }}
+          BOOTSTRAP_END_MONTH: ${{ github.event_name == 'schedule' && '2024-12' || inputs.bootstrap_end_month }}
+          RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          report_prefix="artifacts/beast_runtime_status_gha_${GITHUB_RUN_ID}"
+          export RTLAB_ADMIN_PASSWORD="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+
+          cmd=(
+            python scripts/beast_runtime_status_report.py
+            --base-url "${BACKEND_BASE_URL}"
+            --username "${USERNAME}"
+            --market crypto
+            --symbol BTCUSDT
+            --timeframe 5m
+            --timeout-sec "${TIMEOUT_SEC}"
+            --report-prefix "${report_prefix}"
+            --no-strict
+          )
+
+          if [[ "${BOOTSTRAP_DATASET}" == "true" ]]; then
+            cmd+=(--bootstrap-crypto-public --bootstrap-start-month "${BOOTSTRAP_START_MONTH}" --bootstrap-end-month "${BOOTSTRAP_END_MONTH}")
+          fi
+
+          if [[ -n "${RTLAB_STAGING_AUTH_TOKEN:-}" ]]; then
+            cmd+=(--auth-token "${RTLAB_STAGING_AUTH_TOKEN}")
+          fi
+
+          "${cmd[@]}" | tee artifacts/beast_runtime_stdout.log
+
       - name: Build summary
         if: always()
         run: |
@@ -134,6 +192,17 @@ jobs:
           else
             echo "No staging-smoke report generated." >> "${GITHUB_STEP_SUMMARY}"
           fi
+          latest_beast_md="$(ls -1t artifacts/beast_runtime_status_gha_${GITHUB_RUN_ID}_*.md 2>/dev/null | head -n 1 || true)"
+          if [[ -n "${latest_beast_md}" && -f "${latest_beast_md}" ]]; then
+            {
+              echo
+              echo "## Beast Runtime"
+              echo
+              grep -E "^- user_data_dir:|^- bootstrap_attempted:|^- bootstrap_ok:|^- policy_state:|^- policy_source_root:|^- data_root:|^- exact_dataset_present:|^- overall_pass:" "${latest_beast_md}" || true
+              echo
+              echo "Report file: ${latest_beast_md}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
       - name: Upload artifacts
         if: always()
@@ -144,4 +213,7 @@ jobs:
             artifacts/staging_smoke_gha_${{ github.run_id }}_*.md
             artifacts/staging_smoke_gha_${{ github.run_id }}_*.json
             artifacts/staging_smoke_stdout.log
+            artifacts/beast_runtime_status_gha_${{ github.run_id }}_*.md
+            artifacts/beast_runtime_status_gha_${{ github.run_id }}_*.json
+            artifacts/beast_runtime_stdout.log
           if-no-files-found: warn
