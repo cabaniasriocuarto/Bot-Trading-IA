@@ -1,5 +1,21 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-06
+
+### Railway staging: auto-deploy reproducible desde GitHub/main
+- Diagnostico real de infraestructura:
+  - en `staging`, Railway quedo con `rootDirectory=null` y `dockerfilePath=docker/Dockerfile`.
+  - los auto-deploys por GitHub de `main` fallaban porque el repo root no tenia `docker/Dockerfile`.
+  - los deploys manuales por CLI seguian funcionando cuando se usaba `railway up rtlab_autotrader --path-as-root`, porque ahi el source directory pasaba a ser `rtlab_autotrader/` y `docker/Dockerfile` si existia dentro de esa raiz.
+- Solucion automatica dejada por codigo:
+  - nuevo `railway.json` en la raiz del repo con:
+    - `builder=DOCKERFILE`
+    - `dockerfilePath=docker/Dockerfile`
+    - `watchPatterns` limitados al backend/config
+  - nuevo `docker/Dockerfile` en la raiz del repo, compatible con build context repo root
+- Objetivo:
+  - que Railway pueda auto-desplegar desde GitHub/main aun con `rootDirectory=null`;
+  - dejar el deploy backend reproducible sin depender del control de UI de `Root Directory`.
 ## 2026-04-05
 
 ### PR 2 documental preparado desde rama limpia
