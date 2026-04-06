@@ -1,0 +1,248 @@
+name: Paper Validation Monitor (GitHub VM)
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Backend base URL override
+        required: false
+        default: https://bot-trading-ia-staging.up.railway.app
+        type: string
+      username:
+        description: Admin username override
+        required: false
+        default: Wadmin
+        type: string
+      timeout_sec:
+        description: HTTP timeout seconds
+        required: false
+        default: 20
+        type: number
+      orders_limit:
+        description: Max orders fetched from /execution/orders
+        required: false
+        default: 200
+        type: number
+      reevaluate_max_age_hours:
+        description: Reevaluate PAPER if latest run is older than this many hours
+        required: false
+        default: 6
+        type: number
+      stagnant_warn_after_hours:
+        description: Warn if orders do not grow for this many hours
+        required: false
+        default: 3
+        type: number
+      stagnant_fail_after_hours:
+        description: Fail if orders do not grow for this many hours
+        required: false
+        default: 6
+        type: number
+      bot_start_wait_sec:
+        description: Wait after auto-start before reading status again
+        required: false
+        default: 20
+        type: number
+
+jobs:
+  monitor-paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+
+    env:
+      INPUT_BASE_URL: ${{ inputs.base_url }}
+      INPUT_USERNAME: ${{ inputs.username }}
+      INPUT_TIMEOUT_SEC: ${{ inputs.timeout_sec }}
+      INPUT_ORDERS_LIMIT: ${{ inputs.orders_limit }}
+      INPUT_REEVALUATE_MAX_AGE_HOURS: ${{ inputs.reevaluate_max_age_hours }}
+      INPUT_STAGNANT_WARN_AFTER_HOURS: ${{ inputs.stagnant_warn_after_hours }}
+      INPUT_STAGNANT_FAIL_AFTER_HOURS: ${{ inputs.stagnant_fail_after_hours }}
+      INPUT_BOT_START_WAIT_SEC: ${{ inputs.bot_start_wait_sec }}
+      RTLAB_ADMIN_USERNAME: ${{ secrets.RTLAB_ADMIN_USERNAME }}
+      RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_ADMIN_PASSWORD }}
+      RTLAB_AUTH_TOKEN: ${{ secrets.RTLAB_AUTH_TOKEN }}
+      RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+      RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Resolve monitor configuration
+        run: |
+          set -euo pipefail
+          base_url="${INPUT_BASE_URL:-https://bot-trading-ia-staging.up.railway.app}"
+          username="${INPUT_USERNAME:-${RTLAB_ADMIN_USERNAME:-Wadmin}}"
+          timeout_sec="${INPUT_TIMEOUT_SEC:-20}"
+          orders_limit="${INPUT_ORDERS_LIMIT:-200}"
+          reevaluate_max_age_hours="${INPUT_REEVALUATE_MAX_AGE_HOURS:-6}"
+          stagnant_warn_after_hours="${INPUT_STAGNANT_WARN_AFTER_HOURS:-3}"
+          stagnant_fail_after_hours="${INPUT_STAGNANT_FAIL_AFTER_HOURS:-6}"
+          bot_start_wait_sec="${INPUT_BOT_START_WAIT_SEC:-20}"
+          auth_token="${RTLAB_STAGING_AUTH_TOKEN:-${RTLAB_AUTH_TOKEN:-}}"
+          admin_password="${RTLAB_STAGING_ADMIN_PASSWORD:-${RTLAB_ADMIN_PASSWORD:-}}"
+
+          if [[ -z "${base_url}" ]]; then
+            echo "Missing backend base URL." >&2
+            exit 1
+          fi
+          if [[ -z "${username}" ]]; then
+            echo "Missing admin username." >&2
+            exit 1
+          fi
+          if [[ -z "${auth_token}" && -z "${admin_password}" ]]; then
+            echo "Missing auth secret: define RTLAB_STAGING_AUTH_TOKEN/RTLAB_STAGING_ADMIN_PASSWORD or generic RTLAB_AUTH_TOKEN/RTLAB_ADMIN_PASSWORD." >&2
+            exit 1
+          fi
+
+          echo "BASE_URL=${base_url}" >> "${GITHUB_ENV}"
+          echo "USERNAME=${username}" >> "${GITHUB_ENV}"
+          echo "TIMEOUT_SEC=${timeout_sec}" >> "${GITHUB_ENV}"
+          echo "ORDERS_LIMIT=${orders_limit}" >> "${GITHUB_ENV}"
+          echo "REEVALUATE_MAX_AGE_HOURS=${reevaluate_max_age_hours}" >> "${GITHUB_ENV}"
+          echo "STAGNANT_WARN_AFTER_HOURS=${stagnant_warn_after_hours}" >> "${GITHUB_ENV}"
+          echo "STAGNANT_FAIL_AFTER_HOURS=${stagnant_fail_after_hours}" >> "${GITHUB_ENV}"
+          echo "BOT_START_WAIT_SEC=${bot_start_wait_sec}" >> "${GITHUB_ENV}"
+          echo "SELECTED_AUTH_TOKEN=${auth_token}" >> "${GITHUB_ENV}"
+          echo "SELECTED_ADMIN_PASSWORD=${admin_password}" >> "${GITHUB_ENV}"
+
+      - name: Download previous monitor state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous_state
+          python - <<'PY'
+          import io
+          import os
+          import zipfile
+          import requests
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          branch = os.environ["GITHUB_REF_NAME"]
+          current_run_id = int(os.environ["GITHUB_RUN_ID"])
+          token = os.environ["GH_TOKEN"]
+          workflow_file = "paper-validation-monitor.yml"
+          state_name = "paper-validation-monitor-state"
+          session = requests.Session()
+          session.headers.update(
+              {
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              }
+          )
+          runs_url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/runs"
+          runs_resp = session.get(runs_url, params={"branch": branch, "status": "success", "per_page": 20}, timeout=30)
+          runs_resp.raise_for_status()
+          workflow_runs = (runs_resp.json() or {}).get("workflow_runs") or []
+          for run in workflow_runs:
+              run_id = int(run.get("id") or 0)
+              if run_id == current_run_id:
+                  continue
+              artifacts_url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts"
+              artifacts_resp = session.get(artifacts_url, timeout=30)
+              artifacts_resp.raise_for_status()
+              artifacts = (artifacts_resp.json() or {}).get("artifacts") or []
+              artifact = next((item for item in artifacts if item.get("name") == state_name and not item.get("expired")), None)
+              if artifact is None:
+                  continue
+              download_resp = session.get(str(artifact.get("archive_download_url") or ""), timeout=60)
+              download_resp.raise_for_status()
+              with zipfile.ZipFile(io.BytesIO(download_resp.content)) as zipped:
+                  zipped.extractall("previous_state")
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+                  fh.write(f"PREVIOUS_MONITOR_RUN_ID={run_id}\n")
+              break
+          PY
+
+      - name: Resolve previous report path
+        run: |
+          set -euo pipefail
+          previous_json="$(find previous_state -type f -name '*.json' | head -n 1 || true)"
+          echo "PREVIOUS_REPORT_JSON=${previous_json}" >> "${GITHUB_ENV}"
+
+      - name: Run paper validation monitor
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          report_prefix="artifacts/paper_validation_monitor_gha_${GITHUB_RUN_ID}"
+          export RTLAB_PASSWORD="${SELECTED_ADMIN_PASSWORD:-}"
+
+          cmd=(
+            python scripts/paper_validation_monitor.py
+            --base-url "${BASE_URL}"
+            --username "${USERNAME}"
+            --timeout-sec "${TIMEOUT_SEC}"
+            --report-prefix "${report_prefix}"
+            --state-path "artifacts/paper_validation_monitor_state.json"
+            --orders-limit "${ORDERS_LIMIT}"
+            --cadence-minutes 30
+            --auto-start-bot
+            --bot-start-wait-sec "${BOT_START_WAIT_SEC}"
+            --reevaluate-max-age-hours "${REEVALUATE_MAX_AGE_HOURS}"
+            --stagnant-warn-after-hours "${STAGNANT_WARN_AFTER_HOURS}"
+            --stagnant-fail-after-hours "${STAGNANT_FAIL_AFTER_HOURS}"
+          )
+
+          if [[ -n "${PREVIOUS_REPORT_JSON:-}" && -f "${PREVIOUS_REPORT_JSON}" ]]; then
+            cmd+=(--previous-report-json "${PREVIOUS_REPORT_JSON}")
+          fi
+
+          if [[ -n "${SELECTED_AUTH_TOKEN:-}" ]]; then
+            cmd+=(--auth-token "${SELECTED_AUTH_TOKEN}")
+          fi
+
+          "${cmd[@]}" | tee artifacts/paper_validation_monitor_stdout.log
+
+      - name: Build summary
+        if: always()
+        run: |
+          set -euo pipefail
+          latest_md="$(ls -1t artifacts/paper_validation_monitor_gha_${GITHUB_RUN_ID}_*.md 2>/dev/null | head -n 1 || true)"
+          if [[ -n "${latest_md}" && -f "${latest_md}" ]]; then
+            {
+              echo "## Paper Validation Monitor"
+              echo
+              grep -E "^- auth_ok:|^- health_ok:|^- mode:|^- bot_status:|^- orders_endpoint_count:|^- latest_result:|^- validation_run_id:|^- latest_total_orders:|^- latest_total_fills:|^- trading_days:|^- should_reevaluate:|^- ok:|^- failures_count:|^- warnings_count:" "${latest_md}" || true
+              echo
+              echo "Previous monitor run: ${PREVIOUS_MONITOR_RUN_ID:-none}"
+              echo "Report file: ${latest_md}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "No paper-validation-monitor report generated." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload run artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-validation-monitor-${{ github.run_id }}
+          path: |
+            artifacts/paper_validation_monitor_gha_${{ github.run_id }}_*.md
+            artifacts/paper_validation_monitor_gha_${{ github.run_id }}_*.json
+            artifacts/paper_validation_monitor_stdout.log
+          if-no-files-found: warn
+
+      - name: Upload state artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-validation-monitor-state
+          path: artifacts/paper_validation_monitor_state.json
+          if-no-files-found: warn
