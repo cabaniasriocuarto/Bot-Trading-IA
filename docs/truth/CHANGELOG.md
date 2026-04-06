@@ -2219,6 +2219,12 @@
 
 ## 2026-04-06
 
+### Paridad frontend ↔ staging API en Backtests
+- Se audito Vercel real y se confirmo que `bot-trading-ia-csud` apunta a `production`, no a `staging`.
+- Se confirmo que `bot-trading-ia-staging-2` es la superficie correcta para validar la paridad con Railway staging.
+- `Backtests` ahora muestra el backend objetivo del frontend (`NEXT_PUBLIC_BACKEND_URL`) para evitar leer production como si fuera staging.
+- `scripts/staging_smoke_report.py` y `.github/workflows/staging-smoke.yml` pasan a usar `bot-trading-ia-staging-2` como frontend staging por defecto.
+
 ### Beast staging E2E
 - Se agrego sonda reutilizable de test E2E para Beast en staging:
   - `scripts/beast_staging_e2e_report.py`

@@ -13,7 +13,7 @@ on:
       frontend_login_url:
         description: Frontend staging login URL
         required: true
-        default: https://bot-trading-ia-staging.vercel.app/login
+        default: https://bot-trading-ia-staging-2.vercel.app/login
         type: string
       username:
         description: Admin username
@@ -115,7 +115,7 @@ jobs:
       - name: Run staging smoke
         env:
           BACKEND_BASE_URL: ${{ github.event_name == 'schedule' && 'https://bot-trading-ia-staging.up.railway.app' || inputs.backend_base_url }}
-          FRONTEND_LOGIN_URL: ${{ github.event_name == 'schedule' && 'https://bot-trading-ia-staging.vercel.app/login' || inputs.frontend_login_url }}
+          FRONTEND_LOGIN_URL: ${{ github.event_name == 'schedule' && 'https://bot-trading-ia-staging-2.vercel.app/login' || inputs.frontend_login_url }}
           USERNAME: ${{ github.event_name == 'schedule' && 'Wadmin' || inputs.username }}
           TIMEOUT_SEC: ${{ github.event_name == 'schedule' && 20 || inputs.timeout_sec }}
           REQUIRE_AUTH: ${{ github.event_name == 'schedule' && 'true' || inputs.require_auth_checks }}
