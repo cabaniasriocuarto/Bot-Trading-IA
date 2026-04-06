@@ -2,6 +2,23 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras mergear PR 1 runtime - 2026-04-05
+- [x] Resolver el status viejo de Vercel que bloqueaba `#15`.
+- [x] Sacar `#15` de draft y mergearlo a `main` con `Squash and merge`.
+- [x] Dejar el monitor de `PAPER` ya presente en default branch.
+- [x] Crear una rama limpia para PR 2 documental:
+  - `integration/product-inputs-and-truth-main`
+- [ ] Abrir y revisar el PR 2 con:
+  - `docs/product/inputs/*`
+  - `docs/truth/*` minimas asociadas
+  - estructura lista para sync administrativo a Linear
+- [ ] Una vez mergeado el PR 2:
+  - hacer el sync administrativo real a Linear cuando la integracion este disponible
+  - elegir un dominio para implementacion backend-first
+  - preferencia actual:
+    - `Capital & Allocation Control`
+    - empezando por `Treasury snapshot consolidado por cuenta y venue`
+
 ## Siguiente bloque exacto tras preparar PR 1 runtime live/paper hardening - 2026-04-05
 - [x] Crear rama limpia desde `origin/main` para integrar solo runtime validado.
 - [x] Dejar afuera:

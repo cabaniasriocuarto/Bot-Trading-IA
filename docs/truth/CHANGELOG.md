@@ -2,6 +2,21 @@
 
 ## 2026-04-05
 
+### PR 2 documental preparado desde rama limpia
+- Se creo la rama limpia `integration/product-inputs-and-truth-main` desde `main` ya actualizado con el merge del PR runtime.
+- Se portan solo:
+  - `docs/product/inputs/*`
+  - `docs/truth/*` minimas asociadas
+- Se introducen los 3 inputs canonicos de producto:
+  - `2026-04-ui-trades-console.md`
+  - `2026-04-capital-allocation-control.md`
+  - `2026-04-runtime-incidents-ops.md`
+- Este PR 2 deja lista la estructura para Linear, pero no hace sync real si la integracion no esta disponible.
+- Queda explicitamente afuera:
+  - implementacion de `Capital & Allocation Control`
+  - implementacion grande de `UI / Trades Console`
+  - implementacion grande de `Runtime Incidents / Logs / Alerts / Ops`
+
 ### PR 1 runtime live/paper hardening preparado desde rama limpia
 - Se creo la rama limpia `integration/runtime-live-paper-hardening-main` desde `origin/main`.
 - Se porto un paquete coherente de runtime validado sin mezclar:
