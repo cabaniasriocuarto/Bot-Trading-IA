@@ -2,6 +2,41 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras intentar sync a Linear del dominio Capital & Allocation Control - 2026-04-05
+- [x] Auditar tooling real de esta sesion:
+  - `gh auth status` OK
+  - `Linear MCP` no disponible
+  - `linear` CLI local no disponible
+- [x] Dejar modelado local listo para sync administrativo en:
+  - `docs/product/inputs/2026-04-capital-allocation-control.md`
+- [x] Asentar en `docs/truth`:
+  - padre
+  - sub-issues
+  - dependencias
+  - clasificacion local del dominio
+- [ ] Sync administrativo pendiente cuando Linear este disponible:
+  - crear o alinear el padre:
+    - `Capital & Allocation Control`
+  - crear o alinear las sub-issues:
+    - `Treasury snapshot consolidado por cuenta y venue`
+    - `Portfolio budget engine por bot / estrategia / simbolo`
+    - `Position sizer real`
+    - `Exchange rule validator Binance`
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+    - `QA + docs/truth del bloque`
+  - cargar dependencias segun el orden backend-first ya asentado en repo/docs
+- [ ] Siguiente bloque tecnico recomendado una vez hecho el sync administrativo:
+  - empezar implementacion backend-first por:
+    - `Treasury snapshot consolidado por cuenta y venue`
+  - luego:
+    - `Exchange rule validator Binance`
+    - `Position sizer real`
+    - `Portfolio budget engine por bot / estrategia / simbolo`
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+    - `QA + docs/truth del bloque`
+
 ## Siguiente bloque exacto tras separar inputs de producto en 3 dominios - 2026-04-05
 - [x] Separar el material mezclado en 3 inputs canonicos dentro de `docs/product/inputs/`
 - [x] Dejar cada input con estructura homogenea y sugerencia de parent/sub-issues

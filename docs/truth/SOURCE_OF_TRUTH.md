@@ -2,6 +2,87 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Intento real de sync a Linear y alineacion del dominio Capital & Allocation Control - 2026-04-05
+
+- Worktree operativa usada:
+  - `Bot-Trading-IA-binance-diag`
+- Rama usada:
+  - `chore/product-inputs-structuring`
+- Estado real de tooling para este bloque:
+  - `gh auth status`: OK
+  - `Linear MCP`: no disponible
+    - error real:
+      - `unknown MCP server 'linear'`
+  - `linear` CLI local:
+    - no disponible en esta sesion
+- Conclusion operativa honesta:
+  - no hubo sync real a Linear en esta sesion;
+  - el trabajo real quedo hecho en repo/docs;
+  - sync administrativo pendiente.
+- Dominio alineado localmente:
+  - padre:
+    - `Capital & Allocation Control`
+  - sub-issues canonicas:
+    - `Treasury snapshot consolidado por cuenta y venue`
+    - `Portfolio budget engine por bot / estrategia / simbolo`
+    - `Position sizer real`
+    - `Exchange rule validator Binance`
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+    - `QA + docs/truth del bloque`
+- Clasificacion local por evidencia de repo:
+  - `Treasury snapshot consolidado por cuenta y venue`:
+    - parcial
+    - evidencia:
+      - `GET /api/v1/portfolio`
+      - `rtlab_dashboard/src/app/(app)/portfolio/page.tsx`
+  - `Portfolio budget engine por bot / estrategia / simbolo`:
+    - pendiente
+    - evidencia:
+      - solo existe precursor parcial de `capital_pct` en `rollout.manager`, no un budget engine operativo del dominio
+  - `Position sizer real`:
+    - parcial
+    - evidencia:
+      - `rtlab_core/risk/risk_engine.py` (`position_size(...)`)
+  - `Exchange rule validator Binance`:
+    - parcial
+    - evidencia:
+      - `rtlab_core/execution/filter_prevalidator.py`
+      - `GET /api/v1/execution/filter-rules`
+  - `Capital reservation ledger`:
+    - pendiente
+    - evidencia:
+      - no existe modelado canonico del ledger de reserva como producto
+  - `Frontend operativo Capital & Allocation`:
+    - parcial
+    - evidencia:
+      - `rtlab_dashboard/src/app/(app)/portfolio/page.tsx`
+      - `rtlab_dashboard/src/app/(app)/risk/page.tsx`
+  - `QA + docs/truth del bloque`:
+    - parcial
+    - evidencia:
+      - input canonico y `docs/truth` ya existen, pero no el bloque completo de QA del dominio
+- Dependencias y orden backend-first recomendados:
+  1. `Treasury snapshot consolidado por cuenta y venue`
+  2. `Exchange rule validator Binance`
+  3. `Position sizer real`
+  4. `Portfolio budget engine por bot / estrategia / simbolo`
+  5. `Capital reservation ledger`
+  6. `Frontend operativo Capital & Allocation`
+  7. `QA + docs/truth del bloque`
+- Motivo del orden:
+  - `treasury snapshot` fija la base semantica de capital disponible/reservado/consumido;
+  - `exchange rule validator` y `position sizer` ya tienen piezas reales en repo y son la frontera backend mas limpia para canonizar;
+  - `budget engine` y `reservation ledger` deben apoyarse en esa base y no al reves;
+  - el frontend debe quedar al final del minimo backend canonico para no inventar semantica en UI.
+- Resultado de este bloque:
+  - `docs/product/inputs/2026-04-capital-allocation-control.md` ya contiene el modelado listo para sync administrativo con:
+    - alcance
+    - tipo
+    - dependencias
+    - criterio de aceptacion
+    - clasificacion local
+
 ## Estructuracion canonica de inputs de producto en 3 dominios - 2026-04-05
 
 - Worktree operativa usada para este bloque:

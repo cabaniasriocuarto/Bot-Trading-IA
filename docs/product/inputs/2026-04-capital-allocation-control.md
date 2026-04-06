@@ -179,13 +179,222 @@ Padre sugerido:
 
 Sub-issues sugeridas:
 
-- `treasury snapshot consolidado`
-- `budget engine`
-- `position sizer`
-- `exchange rule validator`
-- `reservation ledger`
-- `frontend operativo de capital`
-- `QA / docs / validacion del bloque`
+- `Treasury snapshot consolidado por cuenta y venue`
+- `Portfolio budget engine por bot / estrategia / simbolo`
+- `Position sizer real`
+- `Exchange rule validator Binance`
+- `Capital reservation ledger`
+- `Frontend operativo Capital & Allocation`
+- `QA + docs/truth del bloque`
+
+## Modelado detallado listo para sync administrativo
+
+### Padre
+
+- `Capital & Allocation Control`
+  - objetivo:
+    - separar capital disponible, capital reservado, exposure y sizing ejecutable en un dominio backend-first y fail-closed
+  - estado local:
+    - listo para sync administrativo a Linear
+  - estado en Linear:
+    - pendiente de crear o alinear en esta sesion porque `Linear MCP` no esta disponible
+
+### Sub-issue 1
+
+- `Treasury snapshot consolidado por cuenta y venue`
+  - tipo:
+    - backend
+  - estado local:
+    - parcial
+  - evidencia actual:
+    - `GET /api/v1/portfolio`
+    - `rtlab_dashboard/src/app/(app)/portfolio/page.tsx`
+  - alcance:
+    - contrato canonico de capital por cuenta, venue, ambiente y timestamp
+    - separar `available`, `reserved`, `consumed`, `equity`, `exposure`
+  - dependencias:
+    - ninguna dentro de este padre
+  - bloquea:
+    - `Portfolio budget engine por bot / estrategia / simbolo`
+    - `Position sizer real`
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+  - criterio de aceptacion:
+    - snapshot unico y auditable por cuenta/venue
+    - freshness/source visibles
+    - fail-closed si falta snapshot fresco en live-like
+
+### Sub-issue 2
+
+- `Portfolio budget engine por bot / estrategia / simbolo`
+  - tipo:
+    - backend
+  - estado local:
+    - pendiente
+  - evidencia actual:
+    - existe precursor parcial en `rollout.manager` por `capital_pct`, pero no hay budget engine operativo por bot/estrategia/simbolo
+  - alcance:
+    - asignar presupuesto operativo por bot, estrategia, simbolo y ambiente
+    - exponer budget restante y budget consumido
+  - dependencias:
+    - `Treasury snapshot consolidado por cuenta y venue`
+  - bloquea:
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+  - criterio de aceptacion:
+    - output determinista y auditable
+    - budget visible coincide con budget ejecutable
+    - fail-closed si falta snapshot o policy base
+
+### Sub-issue 3
+
+- `Position sizer real`
+  - tipo:
+    - backend
+  - estado local:
+    - parcial
+  - evidencia actual:
+    - `rtlab_core/risk/risk_engine.py` (`position_size(...)`)
+  - alcance:
+    - sizing reusable para pre-trade y UI
+    - entradas minimas: equity, budget, stop distance, confidence, exchange constraints
+  - dependencias:
+    - `Treasury snapshot consolidado por cuenta y venue`
+    - `Exchange rule validator Binance`
+  - bloquea:
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+  - criterio de aceptacion:
+    - misma entrada => mismo sizing
+    - explicacion numerica de sizing sugerido y sizing aplicado
+    - no devuelve sizing operativo si faltan datos criticos
+
+### Sub-issue 4
+
+- `Exchange rule validator Binance`
+  - tipo:
+    - backend
+  - estado local:
+    - parcial
+  - evidencia actual:
+    - `rtlab_core/execution/filter_prevalidator.py`
+    - `GET /api/v1/execution/filter-rules`
+  - alcance:
+    - canonizar tick/step/notional/min/max/alignment como contrato reutilizable
+    - razon canonica de rechazo pre-trade
+  - dependencias:
+    - depende de instrument registry / exchange filters como dependencia externa
+  - bloquea:
+    - `Position sizer real`
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+  - criterio de aceptacion:
+    - normalized preview consistente
+    - reject reason canonico por regla exchange
+    - fail-closed si falta filter source fresca
+
+### Sub-issue 5
+
+- `Capital reservation ledger`
+  - tipo:
+    - backend
+  - estado local:
+    - pendiente
+  - evidencia actual:
+    - no existe modelado explicito de producto
+  - alcance:
+    - reservar capital al crear intent/open order
+    - liberar o convertir reserva en consumo segun cancel/fill/reconcile
+  - dependencias:
+    - `Treasury snapshot consolidado por cuenta y venue`
+    - `Portfolio budget engine por bot / estrategia / simbolo`
+    - `Position sizer real`
+  - bloquea:
+    - `Frontend operativo Capital & Allocation`
+  - criterio de aceptacion:
+    - ledger auditable
+    - reservas consistentes con ordenes abiertas
+    - release/consume consistente en cancel/fill
+
+### Sub-issue 6
+
+- `Frontend operativo Capital & Allocation`
+  - tipo:
+    - frontend/BFF
+  - estado local:
+    - parcial
+  - evidencia actual:
+    - `rtlab_dashboard/src/app/(app)/portfolio/page.tsx`
+    - `rtlab_dashboard/src/app/(app)/risk/page.tsx`
+  - alcance:
+    - vista operativa de capital, exposure, budget, sizing y rechazos pre-trade
+  - dependencias:
+    - `Treasury snapshot consolidado por cuenta y venue`
+    - `Portfolio budget engine por bot / estrategia / simbolo`
+    - `Position sizer real`
+    - `Exchange rule validator Binance`
+    - `Capital reservation ledger`
+  - bloquea:
+    - ninguna tecnica dura; si bloquea la salida UX operativa
+  - criterio de aceptacion:
+    - lectura clara de `available/reserved/consumed`
+    - rechazos y budgets visibles sin reconstruccion manual
+    - no expone acciones cosmeticas sin backend canonico
+
+### Sub-issue 7
+
+- `QA + docs/truth del bloque`
+  - tipo:
+    - mixto
+  - estado local:
+    - parcial
+  - evidencia actual:
+    - existe `docs/product/inputs/2026-04-capital-allocation-control.md`
+    - existen tests parciales en risk/preflight, no del dominio completo
+  - alcance:
+    - cobertura minima de contratos, fail-closed y trazabilidad documental
+  - dependencias:
+    - depende del cierre minimo de las sub-issues 1 a 6
+  - bloquea:
+    - cierre operativo del dominio
+  - criterio de aceptacion:
+    - tests de contrato y fail-closed
+    - `docs/truth` actualizadas
+    - runbook/criterio de validacion del bloque asentado
+
+## Auditoria local del dominio antes del sync a Linear
+
+- `Treasury snapshot consolidado por cuenta y venue`
+  - clasificacion:
+    - parcial
+- `Portfolio budget engine por bot / estrategia / simbolo`
+  - clasificacion:
+    - pendiente
+- `Position sizer real`
+  - clasificacion:
+    - parcial
+- `Exchange rule validator Binance`
+  - clasificacion:
+    - parcial
+- `Capital reservation ledger`
+  - clasificacion:
+    - pendiente
+- `Frontend operativo Capital & Allocation`
+  - clasificacion:
+    - parcial
+- `QA + docs/truth del bloque`
+  - clasificacion:
+    - parcial
+
+## Orden recomendado de implementacion backend-first
+
+1. `Treasury snapshot consolidado por cuenta y venue`
+2. `Exchange rule validator Binance`
+3. `Position sizer real`
+4. `Portfolio budget engine por bot / estrategia / simbolo`
+5. `Capital reservation ledger`
+6. `Frontend operativo Capital & Allocation`
+7. `QA + docs/truth del bloque`
 
 ## Bloques ejecutables recomendados
 

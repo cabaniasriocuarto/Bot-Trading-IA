@@ -2,6 +2,39 @@
 
 ## 2026-04-05
 
+### Intento real de sync a Linear para `Capital & Allocation Control`
+- Se ejecuto auditoria real de tooling para este bloque:
+  - `gh auth status` OK
+  - `Linear MCP` no disponible:
+    - `unknown MCP server 'linear'`
+  - `linear` CLI local no disponible en esta sesion
+- No hubo sync real a Linear.
+- Done real en repo/docs; sync administrativo pendiente.
+- Se profundizo `docs/product/inputs/2026-04-capital-allocation-control.md` para dejar el dominio listo para alta administrativa con:
+  - padre:
+    - `Capital & Allocation Control`
+  - sub-issues exactas:
+    - `Treasury snapshot consolidado por cuenta y venue`
+    - `Portfolio budget engine por bot / estrategia / simbolo`
+    - `Position sizer real`
+    - `Exchange rule validator Binance`
+    - `Capital reservation ledger`
+    - `Frontend operativo Capital & Allocation`
+    - `QA + docs/truth del bloque`
+  - alcance por sub-issue
+  - dependencias
+  - criterio de aceptacion
+  - tipo (`backend`, `frontend/BFF`, `mixto`)
+  - clasificacion local (`parcial` / `pendiente`)
+- Se dejo asentado en `docs/truth` el orden backend-first recomendado:
+  1. `Treasury snapshot consolidado por cuenta y venue`
+  2. `Exchange rule validator Binance`
+  3. `Position sizer real`
+  4. `Portfolio budget engine por bot / estrategia / simbolo`
+  5. `Capital reservation ledger`
+  6. `Frontend operativo Capital & Allocation`
+  7. `QA + docs/truth del bloque`
+
 ### Estructuracion de inputs de producto y traduccion local a Linear
 - Se creo `docs/product/inputs/` como ubicacion canonica para inputs de producto separados del truth layer y separados de bibliografia/runbooks.
 - Se generaron 3 documentos nuevos y estables:
