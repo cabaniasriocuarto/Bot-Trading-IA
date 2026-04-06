@@ -1,0 +1,197 @@
+name: Beast Staging E2E (GitHub VM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Backend staging base URL
+        required: true
+        default: https://bot-trading-ia-staging.up.railway.app
+        type: string
+      username:
+        description: Admin username
+        required: true
+        default: Wadmin
+        type: string
+      market:
+        description: Market
+        required: true
+        default: crypto
+        type: string
+      symbol:
+        description: Symbol
+        required: true
+        default: BTCUSDT
+        type: string
+      timeframe:
+        description: Timeframe
+        required: true
+        default: 5m
+        type: string
+      start:
+        description: Start date
+        required: true
+        default: 2024-01-01
+        type: string
+      end:
+        description: End date
+        required: true
+        default: 2024-03-31
+        type: string
+      strategy_id:
+        description: Optional strategy id
+        required: false
+        default: trend_pullback_orderflow_confirm_v1
+        type: string
+      bootstrap_dataset:
+        description: Bootstrap BTCUSDT 1m if needed
+        required: true
+        default: false
+        type: boolean
+      bootstrap_start_month:
+        description: Bootstrap start month
+        required: true
+        default: 2024-01
+        type: string
+      bootstrap_end_month:
+        description: Bootstrap end month
+        required: true
+        default: 2024-12
+        type: string
+      use_orderflow_data:
+        description: Use orderflow data
+        required: true
+        default: false
+        type: boolean
+      max_wait_sec:
+        description: Max wait for terminal status
+        required: true
+        default: 180
+        type: number
+      strict:
+        description: Fail workflow if Beast run is not usable
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  beast-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Validate auth configuration
+        env:
+          RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
+        run: |
+          if [[ -z "${RTLAB_STAGING_ADMIN_PASSWORD:-}" && -z "${RTLAB_STAGING_AUTH_TOKEN:-}" ]]; then
+            echo "Missing staging secrets: set RTLAB_STAGING_AUTH_TOKEN or RTLAB_STAGING_ADMIN_PASSWORD." >&2
+            exit 1
+          fi
+
+      - name: Run Beast staging E2E
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          USERNAME: ${{ inputs.username }}
+          MARKET: ${{ inputs.market }}
+          SYMBOL: ${{ inputs.symbol }}
+          TIMEFRAME: ${{ inputs.timeframe }}
+          START_DATE: ${{ inputs.start }}
+          END_DATE: ${{ inputs.end }}
+          STRATEGY_ID: ${{ inputs.strategy_id }}
+          BOOTSTRAP_DATASET: ${{ inputs.bootstrap_dataset }}
+          BOOTSTRAP_START_MONTH: ${{ inputs.bootstrap_start_month }}
+          BOOTSTRAP_END_MONTH: ${{ inputs.bootstrap_end_month }}
+          USE_ORDERFLOW_DATA: ${{ inputs.use_orderflow_data }}
+          MAX_WAIT_SEC: ${{ inputs.max_wait_sec }}
+          STRICT: ${{ inputs.strict }}
+          RTLAB_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          report_prefix="artifacts/beast_staging_e2e_gha_${GITHUB_RUN_ID}"
+
+          cmd=(
+            python scripts/beast_staging_e2e_report.py
+            --base-url "${BASE_URL}"
+            --username "${USERNAME}"
+            --market "${MARKET}"
+            --symbol "${SYMBOL}"
+            --timeframe "${TIMEFRAME}"
+            --start "${START_DATE}"
+            --end "${END_DATE}"
+            --strategy-id "${STRATEGY_ID}"
+            --report-prefix "${report_prefix}"
+            --max-wait-sec "${MAX_WAIT_SEC}"
+          )
+
+          if [[ "${USE_ORDERFLOW_DATA}" == "true" ]]; then
+            cmd+=(--use-orderflow-data)
+          else
+            cmd+=(--no-orderflow-data)
+          fi
+
+          if [[ "${BOOTSTRAP_DATASET}" == "true" ]]; then
+            cmd+=(
+              --bootstrap-crypto-public
+              --bootstrap-start-month "${BOOTSTRAP_START_MONTH}"
+              --bootstrap-end-month "${BOOTSTRAP_END_MONTH}"
+            )
+          fi
+
+          if [[ "${STRICT}" == "true" ]]; then
+            cmd+=(--strict)
+          else
+            cmd+=(--no-strict)
+          fi
+
+          if [[ -n "${RTLAB_STAGING_AUTH_TOKEN:-}" ]]; then
+            cmd+=(--auth-token "${RTLAB_STAGING_AUTH_TOKEN}")
+          fi
+
+          "${cmd[@]}" | tee artifacts/beast_staging_e2e_stdout.log
+
+      - name: Build summary
+        if: always()
+        run: |
+          set -euo pipefail
+          latest_md="$(ls -1t artifacts/beast_staging_e2e_gha_${GITHUB_RUN_ID}_*.md 2>/dev/null | head -n 1 || true)"
+          if [[ -n "${latest_md}" && -f "${latest_md}" ]]; then
+            {
+              echo "## Beast Staging E2E"
+              echo
+              grep -E "^- strategy_id:|^- market/symbol/timeframe:|^- run_id:|^- terminal_state:|^- overall_pass:" "${latest_md}" || true
+              echo
+              echo "Report file: ${latest_md}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "No beast E2E report generated." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beast-staging-e2e-${{ github.run_id }}
+          path: |
+            artifacts/beast_staging_e2e_gha_${{ github.run_id }}_*.md
+            artifacts/beast_staging_e2e_gha_${{ github.run_id }}_*.json
+            artifacts/beast_staging_e2e_stdout.log
+          if-no-files-found: warn
