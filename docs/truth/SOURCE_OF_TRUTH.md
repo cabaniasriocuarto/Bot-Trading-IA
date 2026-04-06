@@ -2334,6 +2334,27 @@ El proyecto tiene:
 
 ## 2026-04-06
 
+### Paridad frontend ↔ staging API en Backtests
+- `Linear MCP` siguio sin estar disponible en esta sesion.
+- Hallazgo operativo confirmado:
+  - `https://bot-trading-ia-csud.vercel.app/backtests` **no** es la superficie correcta para validar staging.
+  - El proyecto Vercel `bot-trading-ia-csud` usa `BACKEND_API_URL=https://bot-trading-ia-production.up.railway.app`.
+  - El proyecto Vercel `bot-trading-ia-staging-2` usa `BACKEND_API_URL=https://bot-trading-ia-staging.up.railway.app`.
+- Evidencia real contrastada:
+  - `csud -> /api/v1/research/beast/status` devuelve `policy_state=missing` y warnings legacy de YAML faltantes.
+  - `staging-2 -> /api/v1/research/beast/status` devuelve `policy_state=enabled`, sin warnings, alineado con Railway staging.
+  - `health` de production expone `mode=live` y `user_data_dir=/app/data/rtlab_user_data`.
+  - `health` de staging expone `mode=paper` y `user_data_dir=/app/user_data`.
+- Causa raiz exacta:
+  - la divergencia observada no era cache ni payload legacy del frontend;
+  - era mezcla de superficies: `csud` muestra production, mientras el saneamiento previo de Beast se habia validado en staging.
+- Decision operativa correcta:
+  - URL canonica para validar Backtests/Beast contra staging: `https://bot-trading-ia-staging-2.vercel.app/backtests`
+  - `csud` queda como superficie de production y no debe usarse como referencia de staging.
+- Cambio minimo aplicado:
+  - `Backtests` ahora expone en UI el backend objetivo del frontend via `NEXT_PUBLIC_BACKEND_URL`.
+  - `staging-smoke.yml` y `scripts/staging_smoke_report.py` pasan a usar `bot-trading-ia-staging-2` como frontend staging por defecto.
+
 ### Beast / Backtests staging: test E2E real sobre BTCUSDT
 - `Linear MCP` no estuvo disponible en esta sesion.
 - El bloque se ejecuto como validacion operativa puntual, no como megaproyecto de Backtests.

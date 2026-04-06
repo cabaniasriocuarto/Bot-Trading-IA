@@ -2,6 +2,25 @@
 
 Fecha: 2026-04-06
 
+## Siguiente bloque exacto para paridad frontend ↔ staging API en Backtests - 2026-04-06
+- [x] Auditar la URL reportada por usuario:
+  - `https://bot-trading-ia-csud.vercel.app/backtests`
+  - corresponde al proyecto Vercel `bot-trading-ia-csud`
+  - ese frontend apunta a `BACKEND_API_URL=https://bot-trading-ia-production.up.railway.app`
+- [x] Confirmar la superficie correcta para validar staging:
+  - `https://bot-trading-ia-staging-2.vercel.app/backtests`
+  - ese frontend apunta a `BACKEND_API_URL=https://bot-trading-ia-staging.up.railway.app`
+- [x] Confirmar por payload real que no habia bug de cache ni warning legacy inventado:
+  - `csud` devolvia `policy_state=missing` porque estaba leyendo produccion
+  - `staging-2` devolvia `policy_state=enabled` porque estaba leyendo staging saneado
+- [x] Dejar trazabilidad minima en frontend/ops:
+  - `Backtests` expone `Backend objetivo del frontend`
+  - `staging-smoke` usa por default `bot-trading-ia-staging-2`
+- [ ] Validar el deploy publicado del frontend ya corregido:
+  - abrir `https://bot-trading-ia-staging-2.vercel.app/backtests`
+  - confirmar que muestra el backend objetivo de staging
+  - dejar de usar `bot-trading-ia-csud.vercel.app/backtests` como superficie de validacion de staging
+
 ## Siguiente bloque exacto para Railway auto-deploy root-safe - 2026-04-06
 - [x] Auditar `staging` real:
   - `rootDirectory=null`

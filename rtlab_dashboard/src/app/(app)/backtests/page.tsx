@@ -119,6 +119,7 @@ const MARKET_OPTIONS: Record<RunForm["market"], string[]> = {
   forex: ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"],
   equities: ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"],
 };
+const FRONTEND_BACKEND_TARGET = (process.env.NEXT_PUBLIC_BACKEND_URL || "").trim();
 
 type MetricGrade = "muy_malo" | "malo" | "aceptable" | "bueno" | "excelente";
 
@@ -1003,6 +1004,11 @@ export default function BacktestsPage() {
     }
     return "Beast disponible: usa scheduler local con budget governor y cola por jobs.";
   }, [beastEnabledState, beastStatus]);
+
+  const frontendBackendHint = useMemo(() => {
+    if (!FRONTEND_BACKEND_TARGET) return "";
+    return `Frontend -> BFF -> ${FRONTEND_BACKEND_TARGET}`;
+  }, []);
 
   const massErrorHint = useMemo(() => {
     const msg = String(massError || "");
@@ -3916,6 +3922,9 @@ export default function BacktestsPage() {
                 </p>
                 {beastStatus?.policy_source_root ? (
                   <p className="mt-1 text-[11px] text-slate-500">Policy root runtime: {beastStatus.policy_source_root}</p>
+                ) : null}
+                {frontendBackendHint ? (
+                  <p className="mt-1 text-[11px] text-slate-500">Backend objetivo del frontend: {frontendBackendHint}</p>
                 ) : null}
                 {beastStatus?.policy_warnings?.length ? (
                   <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-200">

@@ -139,7 +139,7 @@ def _build_markdown(report: dict[str, Any]) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Smoke checks para staging (NO-LIVE).")
     parser.add_argument("--backend-base-url", default="https://bot-trading-ia-staging.up.railway.app")
-    parser.add_argument("--frontend-login-url", default="https://bot-trading-ia-staging.vercel.app/login")
+    parser.add_argument("--frontend-login-url", default="https://bot-trading-ia-staging-2.vercel.app/login")
     parser.add_argument("--username", default=os.getenv("RTLAB_USERNAME", "Wadmin"))
     parser.add_argument(
         "--password",
