@@ -2,6 +2,59 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## Estructuracion canonica de inputs de producto en 3 dominios - 2026-04-05
+
+- Worktree operativa usada para este bloque:
+  - `Bot-Trading-IA-binance-diag`
+- Rama usada:
+  - `chore/product-inputs-structuring`
+- Motivo para no usar el `cwd` base:
+  - el repo base `Bot-Trading-IA` estaba sucio y atrasado respecto del frente operativo/documental;
+  - la worktree `Bot-Trading-IA-binance-diag` estaba limpia y ya contenia `docs/truth` mas frescos.
+- Hallazgo importante sobre la fuente:
+  - no aparecio un unico archivo maestro ya canonico con los 3 dominios separados;
+  - la fuente real quedo mezclada en varios documentos, con este input bruto principal:
+    - `docs/_archive/CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`
+  - y con soporte complementario de:
+    - `docs/_archive/UI_UX_RESEARCH_FIRST_FINAL.md`
+    - `docs/audit/ACTION_PLAN_FINAL_20260304.md`
+    - `docs/audit/FINDINGS_MASTER_20260304.md`
+    - `docs/runbooks/LIVE_INCIDENT_RESPONSE.md`
+    - `docs/runbooks/LIVE_CONTAINMENT_AND_ROLLBACK.md`
+    - `docs/_archive/research_stack.md`
+    - `rtlab_dashboard/README.md`
+- Para dejar de usar ese material mezclado como pseudo-bibliografia y pasarlo a input de producto, se crearon 3 documentos canonicos:
+  - `docs/product/inputs/2026-04-ui-trades-console.md`
+  - `docs/product/inputs/2026-04-capital-allocation-control.md`
+  - `docs/product/inputs/2026-04-runtime-incidents-ops.md`
+- Criterio de separacion aplicado:
+  - `UI / Trades Console / Exportes`:
+    - charting, overlays, tabla de trades, filtros, focus, exportes, QA Playwright
+  - `Capital & Allocation Control`:
+    - treasury snapshot, budget engine, reservation ledger, position sizing, exchange rule validator, pre-trade fail-closed
+  - `Runtime Incidents / Logs / Alerts / Ops`:
+    - incident model, taxonomy, problem details, alerting, dedup, correlation, containment, auditoria operativa
+- Estado de Linear en esta sesion:
+  - `Linear MCP` no esta disponible (`unknown MCP server 'linear'`)
+  - por lo tanto no hubo sync real de issues/proyectos;
+  - se dejo modelado local listo dentro de los 3 documentos mediante secciones `Sugerencia de issues/sub-issues en Linear`
+- Modelado local listo para sync administrativo posterior:
+  - Padre A:
+    - `UI / Trades Console / Exportes / Trade Review`
+  - Padre B:
+    - `Capital & Allocation Control`
+  - Padre C:
+    - `Runtime Incidents / Logs / Alerts / Ops`
+- Auditoria local de huecos y duplicados detectados por repo/docs:
+  - el dominio UI estaba repartido entre `trades`, `backtests`, `README` del dashboard y notas UX archivadas
+  - el dominio capital/allocation estaba repartido entre `portfolio`, `risk`, `filter_prevalidator`, `risk_policy`, `execution_safety` y notas offline de research
+  - el dominio incidentes/ops estaba repartido entre `alerts.py`, `Alerts & Logs`, runbooks live y hallazgos de auditoria
+  - conclusion:
+    - el problema principal era estructural/documental, no de falta total de material
+- Resultado operativo de este bloque:
+  - repo y `docs/truth` ya tienen una capa canonica para traducir el backlog a bloques ejecutables y a parent/sub-issues de Linear
+  - sync administrativo a Linear queda pendiente, pero el trabajo real de separacion quedo hecho en repo/docs
+
 ## Monitor externo de PAPER via GitHub Actions validado en rama operativa - 2026-04-05
 
 - Rama operativa usada:

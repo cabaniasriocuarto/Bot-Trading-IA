@@ -2,6 +2,28 @@
 
 Fecha: 2026-04-05
 
+## Siguiente bloque exacto tras separar inputs de producto en 3 dominios - 2026-04-05
+- [x] Separar el material mezclado en 3 inputs canonicos dentro de `docs/product/inputs/`
+- [x] Dejar cada input con estructura homogenea y sugerencia de parent/sub-issues
+- [x] Dejar constancia en `docs/truth` de la nueva ubicacion y del criterio de separacion
+- [ ] Sync administrativo pendiente:
+  - conectar `Linear MCP` o usar la integracion real disponible
+  - crear o alinear los padres:
+    - `UI / Trades Console / Exportes / Trade Review`
+    - `Capital & Allocation Control`
+    - `Runtime Incidents / Logs / Alerts / Ops`
+  - crear o reescribir sub-issues usando los documentos canonicos como fuente
+- [ ] Auditoria de backlog a ejecutar cuando Linear este disponible:
+  - clasificar issues como:
+    - hecha
+    - parcial
+    - pendiente
+    - para reescribir
+    - pendiente administrativo
+  - revisar dependencias, duplicados y huecos contra repo/docs
+- [ ] Siguiente bloque tecnico recomendado despues del sync administrativo:
+  - elegir uno de los 3 dominios ya separados y abrir implementacion por sub-bloques, no desde el archivo mezclado anterior
+
 ## Siguiente bloque exacto tras validar el monitor externo de PAPER - 2026-04-05
 - [x] Implementar monitor externo de `PAPER` via GitHub Actions:
   - script `scripts/paper_validation_monitor.py`

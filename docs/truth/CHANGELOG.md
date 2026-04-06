@@ -2,6 +2,34 @@
 
 ## 2026-04-05
 
+### Estructuracion de inputs de producto y traduccion local a Linear
+- Se creo `docs/product/inputs/` como ubicacion canonica para inputs de producto separados del truth layer y separados de bibliografia/runbooks.
+- Se generaron 3 documentos nuevos y estables:
+  - `2026-04-ui-trades-console.md`
+  - `2026-04-capital-allocation-control.md`
+  - `2026-04-runtime-incidents-ops.md`
+- La fuente bruta no estaba en un unico archivo maestro limpio; se tomo como input principal:
+  - `docs/_archive/CONVERSACION_SCREENSHOTS_REFERENCIA_UNIVERSOS_COSTOS_GATES_EXCHANGES.txt`
+  - complementado con `UI_UX_RESEARCH_FIRST_FINAL.md`, `ACTION_PLAN_FINAL_20260304.md`, `FINDINGS_MASTER_20260304.md`, runbooks live, `research_stack.md` y `rtlab_dashboard/README.md`
+- Cada documento nuevo quedo normalizado con:
+  - proposito
+  - alcance
+  - objetivos funcionales
+  - backend/frontend/persistencia requeridos
+  - contratos esperados
+  - integraciones
+  - performance / restricciones
+  - tests
+  - riesgos fail-closed
+  - relacion con otros dominios
+  - sugerencia de parent/sub-issues en Linear
+  - siguiente bloque recomendado
+- `Linear MCP` no estuvo disponible en esta sesion, por lo que no hubo sync real.
+- Se dejo hecho el modelado local listo para sync administrativo posterior:
+  - Padre A: `UI / Trades Console / Exportes / Trade Review`
+  - Padre B: `Capital & Allocation Control`
+  - Padre C: `Runtime Incidents / Logs / Alerts / Ops`
+
 ### Monitor externo de `PAPER` via GitHub Actions
 - Se agrego `scripts/paper_validation_monitor.py` para monitoreo operativo externo de `PAPER`:
   - consulta `health`, `status`, `execution/orders`, `validation/runs`, `validation/readiness`
