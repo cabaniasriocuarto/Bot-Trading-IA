@@ -14,6 +14,8 @@ import re
 import secrets
 import socket
 import sqlite3
+import subprocess
+import sys
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -216,6 +218,91 @@ def _env_float(name: str, default: float) -> float:
         return float(str(os.getenv(name, str(default))).strip())
     except Exception:
         return default
+
+
+def _validate_year_month(value: str, *, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}", text):
+        raise HTTPException(status_code=400, detail=f"{field_name} debe usar formato YYYY-MM")
+    return text
+
+
+def _bootstrap_crypto_public_dataset(body: DataBootstrapCryptoBody) -> dict[str, Any]:
+    symbols = [normalize_symbol(symbol) for symbol in (body.symbols or []) if str(symbol or "").strip()]
+    if not symbols:
+        raise HTTPException(status_code=400, detail="symbols no puede estar vacio")
+    if len(symbols) > 10:
+        raise HTTPException(status_code=400, detail="symbols excede el maximo permitido (10)")
+
+    start_month = _validate_year_month(body.start_month, field_name="start_month")
+    end_month = _validate_year_month(body.end_month, field_name="end_month")
+    if end_month < start_month:
+        raise HTTPException(status_code=400, detail="end_month debe ser >= start_month")
+
+    script_path = (PROJECT_ROOT / "scripts" / "download_crypto_binance_public.py").resolve()
+    if not script_path.exists():
+        raise HTTPException(status_code=500, detail=f"Downloader no encontrado: {script_path}")
+
+    command = [
+        sys.executable,
+        str(script_path),
+        "--user-data-dir",
+        str(USER_DATA_DIR),
+        "--symbols",
+        *symbols,
+        "--start-month",
+        start_month,
+        "--end-month",
+        end_month,
+    ]
+    if body.skip_checksum:
+        command.append("--skip-checksum")
+
+    timeout_sec = max(60, _env_int("RTLAB_DATA_BOOTSTRAP_TIMEOUT_SEC", 900))
+    completed = subprocess.run(
+        command,
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr_text = str(completed.stderr or "").strip()
+        stdout_text = str(completed.stdout or "").strip()
+        detail = stderr_text or stdout_text or "bootstrap dataset failed"
+        raise HTTPException(status_code=502, detail=detail[:500])
+
+    catalog = DataCatalog(USER_DATA_DIR)
+    status = catalog.status()
+    bootstrapped: list[dict[str, Any]] = []
+    for symbol in symbols:
+        entry = catalog.find_entry("crypto", symbol, "1m")
+        bootstrapped.append(
+            {
+                "market": "crypto",
+                "symbol": symbol,
+                "timeframe": "1m",
+                "dataset_1m_present": bool(entry),
+                "source": entry.source if entry else None,
+                "dataset_hash": entry.dataset_hash if entry else "",
+                "manifest_path": entry.manifest_path if entry else "",
+            }
+        )
+
+    return {
+        "ok": True,
+        "market": "crypto",
+        "provider": "binance_public",
+        "user_data_dir": str(USER_DATA_DIR),
+        "data_root": str((USER_DATA_DIR / "data").resolve()),
+        "symbols": symbols,
+        "start_month": start_month,
+        "end_month": end_month,
+        "bootstrapped": bootstrapped,
+        "stdout_tail": str(completed.stdout or "").strip()[-800:],
+        "data_status": status,
+    }
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -668,6 +755,13 @@ class ReportingExportBody(BaseModel):
     family: str | None = None
     symbol: str | None = None
     report_scope: Literal["summary", "daily", "monthly", "trades", "costs", "full"] = "full"
+
+
+class DataBootstrapCryptoBody(BaseModel):
+    symbols: list[str]
+    start_month: str
+    end_month: str
+    skip_checksum: bool = False
 
 
 class ExecutionPreflightBody(BaseModel):
@@ -10302,6 +10396,30 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/data/status")
     def data_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return DataCatalog(USER_DATA_DIR).status()
+
+    @app.post("/api/v1/data/bootstrap/crypto-binance-public")
+    def data_bootstrap_crypto_binance_public(
+        body: DataBootstrapCryptoBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        payload = _bootstrap_crypto_public_dataset(body)
+        store.add_log(
+            event_type="data_bootstrap_crypto_binance_public",
+            severity="info",
+            module="data",
+            message="Bootstrap dataset crypto/binance_public ejecutado",
+            related_ids=[str(x) for x in (payload.get("symbols") or [])[:10]],
+            payload={
+                "provider": payload.get("provider"),
+                "market": payload.get("market"),
+                "symbols": payload.get("symbols"),
+                "start_month": payload.get("start_month"),
+                "end_month": payload.get("end_month"),
+                "requested_by": user.get("username"),
+                "bootstrapped": payload.get("bootstrapped"),
+            },
+        )
+        return payload
 
     @app.get("/api/v1/instruments/registry/summary")
     def instruments_registry_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:

@@ -40,6 +40,21 @@ on:
         required: true
         default: true
         type: boolean
+      bootstrap_dataset:
+        description: Bootstrap crypto public dataset before Beast probe
+        required: true
+        default: false
+        type: boolean
+      bootstrap_start_month:
+        description: Bootstrap start month (YYYY-MM)
+        required: false
+        default: 2024-01
+        type: string
+      bootstrap_end_month:
+        description: Bootstrap end month (YYYY-MM)
+        required: false
+        default: 2024-12
+        type: string
 
 jobs:
   smoke:
@@ -129,6 +144,9 @@ jobs:
           BACKEND_BASE_URL: ${{ github.event_name == 'schedule' && 'https://bot-trading-ia-staging.up.railway.app' || inputs.backend_base_url }}
           USERNAME: ${{ github.event_name == 'schedule' && 'Wadmin' || inputs.username }}
           TIMEOUT_SEC: ${{ github.event_name == 'schedule' && 20 || inputs.timeout_sec }}
+          BOOTSTRAP_DATASET: ${{ github.event_name == 'schedule' && 'false' || inputs.bootstrap_dataset }}
+          BOOTSTRAP_START_MONTH: ${{ github.event_name == 'schedule' && '2024-01' || inputs.bootstrap_start_month }}
+          BOOTSTRAP_END_MONTH: ${{ github.event_name == 'schedule' && '2024-12' || inputs.bootstrap_end_month }}
           RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
           RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
         run: |
@@ -147,6 +165,10 @@ jobs:
             --report-prefix "${report_prefix}"
             --no-strict
           )
+
+          if [[ "${BOOTSTRAP_DATASET}" == "true" ]]; then
+            cmd+=(--bootstrap-crypto-public --bootstrap-start-month "${BOOTSTRAP_START_MONTH}" --bootstrap-end-month "${BOOTSTRAP_END_MONTH}")
+          fi
 
           if [[ -n "${RTLAB_STAGING_AUTH_TOKEN:-}" ]]; then
             cmd+=(--auth-token "${RTLAB_STAGING_AUTH_TOKEN}")
@@ -176,7 +198,7 @@ jobs:
               echo
               echo "## Beast Runtime"
               echo
-              grep -E "^- user_data_dir:|^- policy_state:|^- policy_source_root:|^- data_root:|^- exact_dataset_present:|^- overall_pass:" "${latest_beast_md}" || true
+              grep -E "^- user_data_dir:|^- bootstrap_attempted:|^- bootstrap_ok:|^- policy_state:|^- policy_source_root:|^- data_root:|^- exact_dataset_present:|^- overall_pass:" "${latest_beast_md}" || true
               echo
               echo "Report file: ${latest_beast_md}"
             } >> "${GITHUB_STEP_SUMMARY}"

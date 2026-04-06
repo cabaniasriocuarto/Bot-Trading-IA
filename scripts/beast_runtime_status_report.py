@@ -105,6 +105,28 @@ def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _bootstrap_crypto_public(
+    *,
+    base_url: str,
+    timeout_sec: float,
+    token: str,
+    symbol: str,
+    start_month: str,
+    end_month: str,
+) -> tuple[dict[str, Any], str, int]:
+    return _http_json(
+        method="POST",
+        url=f"{base_url}/api/v1/data/bootstrap/crypto-binance-public",
+        timeout_sec=timeout_sec,
+        headers=_auth_headers(token),
+        json_body={
+            "symbols": [symbol],
+            "start_month": start_month,
+            "end_month": end_month,
+        },
+    )
+
+
 def _find_exact_dataset(
     data_status: dict[str, Any],
     *,
@@ -161,6 +183,8 @@ def _build_markdown(report: dict[str, Any]) -> str:
         f"- user_data_dir: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('user_data_dir')}`",
         f"- persistent_storage: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('persistent_storage')}`",
         f"- runtime_engine: `{health.get('runtime_engine')}`",
+        f"- bootstrap_attempted: `{checks.get('bootstrap_attempted')}`",
+        f"- bootstrap_ok: `{checks.get('bootstrap_ok')}`",
         "",
         "## Beast",
         f"- beast_status_ok: `{checks.get('beast_status_ok')}`",
@@ -201,6 +225,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--market", default="crypto")
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--timeframe", default="5m")
+    parser.add_argument("--bootstrap-crypto-public", action="store_true")
+    parser.add_argument("--bootstrap-start-month", default="")
+    parser.add_argument("--bootstrap-end-month", default="")
     parser.add_argument("--report-prefix", default="artifacts/beast_runtime_status")
     parser.add_argument("--strict", dest="strict", action="store_true", default=True)
     parser.add_argument("--no-strict", dest="strict", action="store_false")
@@ -239,11 +266,14 @@ def main() -> int:
         "health": {},
         "data_status": {},
         "beast_status": {},
+        "bootstrap": {},
         "dataset_probe": {},
         "checks": {
             "health_ok": False,
             "data_status_ok": False,
             "beast_status_ok": False,
+            "bootstrap_attempted": bool(args.bootstrap_crypto_public),
+            "bootstrap_ok": False,
             "overall_pass": False,
         },
     }
@@ -261,6 +291,22 @@ def main() -> int:
 
     if token:
         headers = _auth_headers(token)
+        if args.bootstrap_crypto_public:
+            bootstrap_start_month = str(args.bootstrap_start_month or "").strip()
+            bootstrap_end_month = str(args.bootstrap_end_month or "").strip()
+            bootstrap_payload, bootstrap_error, _ = _bootstrap_crypto_public(
+                base_url=base_url,
+                timeout_sec=timeout_sec,
+                token=token,
+                symbol=symbol,
+                start_month=bootstrap_start_month,
+                end_month=bootstrap_end_month,
+            )
+            if bootstrap_error:
+                report["endpoint_errors"]["data_bootstrap_crypto_binance_public"] = bootstrap_error
+            else:
+                report["bootstrap"] = bootstrap_payload
+                report["checks"]["bootstrap_ok"] = bool(bootstrap_payload.get("ok"))
         data_status, err_data, _ = _http_json(
             method="GET",
             url=f"{base_url}/api/v1/data/status",
@@ -297,6 +343,7 @@ def main() -> int:
         report["checks"]["health_ok"]
         and report["checks"]["data_status_ok"]
         and report["checks"]["beast_status_ok"]
+        and (not args.bootstrap_crypto_public or report["checks"]["bootstrap_ok"])
         and beast_policy_state != "missing"
     )
 
