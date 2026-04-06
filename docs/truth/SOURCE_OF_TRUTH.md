@@ -2,6 +2,29 @@
 
 Fecha de actualizacion: 2026-04-05
 
+## PR 2 product inputs + truth structuring preparado para integrar a `main` - 2026-04-05
+
+- Rama limpia de integracion usada para este bloque:
+  - `integration/product-inputs-and-truth-main`
+- Base real usada:
+  - `main` ya actualizado con el merge del PR runtime `#15`
+- Alcance intencional de este PR 2:
+  - introducir `docs/product/inputs/*` como capa canonica de input de producto
+  - dejar trazabilidad minima en `docs/truth/*`
+  - dejar la estructura lista para sync administrativo a Linear
+- Dominios canonicos incluidos:
+  - `docs/product/inputs/2026-04-ui-trades-console.md`
+  - `docs/product/inputs/2026-04-capital-allocation-control.md`
+  - `docs/product/inputs/2026-04-runtime-incidents-ops.md`
+- Queda explicitamente afuera de este PR 2:
+  - implementacion grande de `Capital & Allocation Control`
+  - implementacion grande de `UI / Trades Console / Exportes`
+  - implementacion grande de `Runtime Incidents / Logs / Alerts / Ops`
+  - sync real de Linear si la integracion sigue no disponible
+- Criterio adoptado:
+  - separar backlog/input de producto de la capa de verdad runtime;
+  - no mezclar todavia modelado documental con implementacion de dominio.
+
 ## PR 1 runtime live/paper hardening preparado para integrar a `main` - 2026-04-05
 
 - Rama limpia de integracion usada para este bloque:
