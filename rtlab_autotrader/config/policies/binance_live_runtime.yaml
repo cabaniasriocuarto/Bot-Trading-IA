@@ -1,0 +1,124 @@
+binance_live_runtime:
+  connectors:
+    binance_spot:
+      vendor: binance
+      market_family: spot
+      repo_family: spot
+      execution_connector: binance_spot
+      account_scope: spot_wallet
+      cost_model: spot_costs
+      symbol_domain: crypto
+      live_capabilities: ["paper", "testnet", "live"]
+      user_stream_mode: websocket_api_spot
+      order_test_supported: true
+      order_paths:
+        paper: dry_run
+        testnet: live_submit
+        live: live_submit
+      user_stream:
+        enabled: true
+        supported_modes: ["websocket_api_spot", "legacy_listenkey"]
+        default_mode: websocket_api_spot
+        live_ws_base_url: "wss://ws-api.binance.com:443/ws-api/v3"
+        testnet_ws_base_url: "wss://ws-api.testnet.binance.vision/ws-api/v3"
+        ws_url_env_live: "BINANCE_SPOT_USER_WS_URL"
+        ws_url_env_testnet: "BINANCE_SPOT_TESTNET_USER_WS_URL"
+        keepalive_interval_sec: 0
+        user_stream_backoff_seconds: [1, 2, 4, 8, 16, 30]
+        user_stream_jitter_pct: 0.20
+        user_stream_hard_recycle_hours: 23.5
+        ping_expectation_seconds: 20
+        pong_timeout_seconds: 60
+        stale_warn_ms: 15000
+        stale_block_live_ms: 45000
+        max_consecutive_failures_before_degraded: 3
+        max_subscriptions_per_connection: 1000
+        max_lifetime_subscriptions_per_connection: 65535
+        recv_window_ms: 5000
+      market_ws:
+        enabled: true
+        transport_modes_allowed: ["combined", "raw"]
+        default_transport: combined
+        live_ws_base_url: "wss://stream.binance.com:9443"
+        testnet_ws_base_url: "wss://stream.testnet.binance.vision"
+        ws_url_env_live: "BINANCE_SPOT_WS_URL"
+        ws_url_env_testnet: "BINANCE_SPOT_TESTNET_WS_URL"
+        raw_path: "/ws"
+        combined_path_prefix: "/stream?streams="
+        required_streams: ["bookTicker", "aggTrade"]
+        optional_streams: ["depth@100ms"]
+        market_ws_backoff_seconds: [1, 2, 4, 8, 16, 30]
+        market_ws_jitter_pct: 0.20
+        market_ws_hard_recycle_hours: 23.5
+        ping_expectation_seconds: 20
+        pong_timeout_seconds: 60
+        stale_warn_ms: 3000
+        stale_block_live_ms: 10000
+        max_consecutive_ws_failures_before_block_live: 3
+        max_incoming_messages_per_sec: 5
+        max_streams_per_connection: 1024
+        max_connection_attempts_per_5m_per_ip: 300
+    binance_um_futures:
+      vendor: binance
+      market_family: um_futures
+      repo_family: usdm_futures
+      execution_connector: binance_um_futures
+      account_scope: futures_wallet
+      cost_model: um_futures_costs
+      symbol_domain: crypto
+      live_capabilities: ["paper", "testnet", "live"]
+      user_stream_mode: futures_listenkey
+      order_test_supported: false
+      order_paths:
+        paper: dry_run
+        testnet: live_submit
+        live: live_submit
+      user_stream:
+        enabled: true
+        supported_modes: ["futures_listenkey"]
+        default_mode: futures_listenkey
+        live_ws_base_url: "wss://fstream.binance.com"
+        testnet_ws_base_url: "wss://stream.binancefuture.com"
+        ws_url_env_live: "BINANCE_USDM_USER_WS_URL"
+        ws_url_env_testnet: "BINANCE_USDM_TESTNET_USER_WS_URL"
+        keepalive_interval_sec: 3300
+        user_stream_backoff_seconds: [1, 2, 4, 8, 16, 30]
+        user_stream_jitter_pct: 0.20
+        user_stream_hard_recycle_hours: 23.5
+        ping_expectation_seconds: 180
+        pong_timeout_seconds: 600
+        stale_warn_ms: 15000
+        stale_block_live_ms: 45000
+        max_consecutive_failures_before_degraded: 3
+        max_subscriptions_per_connection: 1
+        max_lifetime_subscriptions_per_connection: 1
+        recv_window_ms: 5000
+      market_ws:
+        enabled: true
+        transport_modes_allowed: ["combined", "raw"]
+        default_transport: combined
+        live_ws_base_url: "wss://fstream.binance.com"
+        testnet_ws_base_url: "wss://stream.binancefuture.com"
+        ws_url_env_live: "BINANCE_USDM_WS_URL"
+        ws_url_env_testnet: "BINANCE_USDM_TESTNET_WS_URL"
+        raw_path: "/ws"
+        combined_path_prefix: "/stream?streams="
+        required_streams: ["bookTicker", "aggTrade", "markPrice@1s"]
+        optional_streams: ["indexPrice@1s"]
+        market_ws_backoff_seconds: [1, 2, 4, 8, 16, 30]
+        market_ws_jitter_pct: 0.20
+        market_ws_hard_recycle_hours: 23.5
+        ping_expectation_seconds: 180
+        pong_timeout_seconds: 600
+        stale_warn_ms: 2000
+        stale_block_live_ms: 5000
+        max_consecutive_ws_failures_before_block_live: 3
+        max_incoming_messages_per_sec: 10
+        max_streams_per_connection: 1024
+        max_connection_attempts_per_5m_per_ip: 300
+  runtime_guardrails:
+    block_live_on_stale_when_running: true
+    block_live_after_failure_threshold: true
+    mark_degraded_on_disconnect: true
+    require_explicit_start: true
+    public_smoke_supported: true

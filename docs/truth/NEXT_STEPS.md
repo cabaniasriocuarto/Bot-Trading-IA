@@ -1,6 +1,28 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-03-18
+Fecha: 2026-04-05
+
+## Siguiente bloque exacto tras preparar PR 1 runtime live/paper hardening - 2026-04-05
+- [x] Crear rama limpia desde `origin/main` para integrar solo runtime validado.
+- [x] Dejar afuera:
+  - `docs/product/inputs/*`
+  - sync/modelado administrativo de Linear
+  - backlog/documentacion grande de producto
+- [x] Portar runtime live/paper ya validado:
+  - `margin_guard`
+  - persistencia paper al ledger
+  - accounting/backfill paper
+  - monitor externo de `PAPER`
+- [ ] Abrir y revisar el PR 1 contra `main`.
+- [ ] Una vez mergeado el PR 1:
+  - dejar activo el cron de `.github/workflows/paper-validation-monitor.yml` en default branch
+  - seguir acumulando evidencia honesta de `PAPER`
+  - reevaluar `PAPER` cuando suban `orders` / `trading_days`
+- [ ] Siguiente PR recomendado despues de este:
+  - elegir un dominio grande separado y abrirlo en bloque propio, empezando por backend-first;
+  - preferencia actual:
+    - `Capital & Allocation Control`
+    - empezando por `Treasury snapshot consolidado por cuenta y venue`
 
 ## Cierre del bloque RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - 2026-03-18
 - [x] Fijar `config/policies/` de la raiz del monorepo como fuente operativa canonica.

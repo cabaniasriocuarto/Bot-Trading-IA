@@ -1,6 +1,42 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-03-18
+Fecha de actualizacion: 2026-04-05
+
+## PR 1 runtime live/paper hardening preparado para integrar a `main` - 2026-04-05
+
+- Rama limpia de integracion usada para este bloque:
+  - `integration/runtime-live-paper-hardening-main`
+- Base real usada:
+  - `origin/main`
+- Alcance intencional de este PR 1:
+  - hardening runtime live/paper ya validado
+  - fixes operativos de `margin_guard`
+  - persistencia paper al ledger operativo
+  - correccion contable `gross/net/cost` y backfill via reconcile
+  - monitor externo de `PAPER` via GitHub Actions
+- Queda explicitamente afuera de este PR 1:
+  - `docs/product/inputs/*`
+  - sync/modelado administrativo de Linear
+  - dominio grande `Capital & Allocation Control`
+  - dominio grande `UI / Trades Console / Exportes`
+  - dominio grande `Runtime Incidents / Logs / Alerts / Ops`
+- Estado runtime real que este PR busca consolidar en `main`:
+  - auth Binance saneado en staging
+  - `live_safety.overall_status = OK`
+  - `margin_guard.level` visible y `margin_level_blocker` resuelto
+  - `PAPER` ya no falla por `orders=0`
+  - `max_gross_net_inconsistency_rate` resuelto
+  - frente restante de `PAPER`:
+    - volumen/tiempo operativo (`min_orders`, `min_trading_days`)
+- Monitor de `PAPER` incluido en este PR:
+  - `.github/workflows/paper-validation-monitor.yml`
+  - `scripts/paper_validation_monitor.py`
+- Limitacion importante del monitor:
+  - el cron del workflow solo quedara realmente activo cuando el archivo exista en la branch por defecto;
+  - antes del merge a `main`, esa automatizacion sigue siendo validable solo por dispatch/manual o desde ramas que ya lo contengan.
+- Criterio de integracion adoptado:
+  - priorizar un PR coherente de runtime validado;
+  - no mezclar todavia estructuracion de producto/backlog/documentacion grande.
 
 ## RTLOPS-2 / RTLOPS-1 / RTLOPS-7: autoridad de policies + taxonomia de modos + jerarquia documental - 2026-03-18
 

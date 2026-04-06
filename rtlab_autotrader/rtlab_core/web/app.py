@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import copy
 import csv
 import hashlib
 import hmac
@@ -35,8 +36,17 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.execution import ExecutionRealityService
+from rtlab_core.execution.alerts import (
+    DEFAULT_ALERT_SEVERITY_PRECEDENCE,
+    DEFAULT_ALERT_SOURCE_PRECEDENCE,
+)
+from rtlab_core.execution.live_preflight import LivePreflightDB, attestation_status
+from rtlab_core.execution.live_market_runtime import load_binance_live_runtime_bundle
+from rtlab_core.execution.reality import load_execution_router_bundle, load_execution_safety_bundle
 from rtlab_core.execution.oms import OMS, Order
 from rtlab_core.execution.reconciliation import reconcile_orders
+from rtlab_core.instruments import BinanceInstrumentRegistryService
 from rtlab_core.learning import LearningService
 from rtlab_core.learning.experience_store import ExperienceStore
 from rtlab_core.learning.knowledge import KnowledgeLoader
@@ -44,9 +54,16 @@ from rtlab_core.learning.option_b_engine import OptionBLearningEngine
 from rtlab_core.learning.shadow_runner import BINANCE_PUBLIC_MARKETDATA_BASE_URL, ShadowRunConfig, ShadowRunner
 from rtlab_core.mode_taxonomy import GLOBAL_RUNTIME_MODES, mode_taxonomy_payload, normalize_bot_policy_mode, normalize_global_runtime_mode
 from rtlab_core.policy_paths import describe_policy_root_resolution, resolve_policy_root
+from rtlab_core.reporting import ReportingBridgeService
 from rtlab_core.risk.kill_switch import KillSwitch
 from rtlab_core.risk.risk_engine import RiskEngine, RiskLimits
 from rtlab_core.rollout import CompareEngine, GateEvaluator, RolloutManager
+from rtlab_core.runtime_controls import (
+    alert_thresholds_policy,
+    default_global_runtime_mode as runtime_default_global_mode,
+    load_runtime_controls_bundle,
+    observability_policy,
+)
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.data.loader import DataLoader
@@ -55,12 +72,40 @@ from rtlab_core.src.research import MassBacktestCoordinator, MassBacktestEngine
 from rtlab_core.src.reports.reporting import ReportEngine as ArtifactReportEngine
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 from rtlab_core.types import OrderStatus, Side
+from rtlab_core.universe import InstrumentUniverseService
+from rtlab_core.validation import ValidationService, load_validation_gates_bundle
 
 APP_VERSION = "0.1.0"
 PROJECT_ROOT = Path(os.getenv("RTLAB_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 MONOREPO_ROOT = (PROJECT_ROOT.parent if (PROJECT_ROOT.parent / "knowledge").exists() else PROJECT_ROOT).resolve()
 DEFAULT_CONFIG_POLICIES_ROOT = (MONOREPO_ROOT / "config" / "policies").resolve()
 CONFIG_POLICIES_ROOT = resolve_policy_root(MONOREPO_ROOT, explicit=DEFAULT_CONFIG_POLICIES_ROOT)
+_OBSERVABILITY_POLICY = observability_policy(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+_ALERT_THRESHOLDS_POLICY = alert_thresholds_policy(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+_RUNTIME_TELEMETRY_POLICY = (
+    _OBSERVABILITY_POLICY.get("runtime_telemetry")
+    if isinstance(_OBSERVABILITY_POLICY.get("runtime_telemetry"), dict)
+    else {}
+)
+_OBSERVABILITY_LOGGING_POLICY = (
+    _OBSERVABILITY_POLICY.get("logging")
+    if isinstance(_OBSERVABILITY_POLICY.get("logging"), dict)
+    else {}
+)
+_BREAKER_ALERT_THRESHOLDS = (
+    _ALERT_THRESHOLDS_POLICY.get("breaker_integrity")
+    if isinstance(_ALERT_THRESHOLDS_POLICY.get("breaker_integrity"), dict)
+    else {}
+)
+_OPS_ALERT_THRESHOLDS = (
+    _ALERT_THRESHOLDS_POLICY.get("operations")
+    if isinstance(_ALERT_THRESHOLDS_POLICY.get("operations"), dict)
+    else {}
+)
+DEFAULT_GLOBAL_RUNTIME_MODE = runtime_default_global_mode(
+    repo_root=MONOREPO_ROOT,
+    explicit_root=DEFAULT_CONFIG_POLICIES_ROOT,
+)
 
 
 def _resolve_user_data_dir() -> Path:
@@ -123,6 +168,7 @@ BOT_STATE_PATH = USER_DATA_DIR / "logs" / "bot_state.json"
 STRATEGY_META_PATH = STRATEGY_PACKS_DIR / "strategy_meta.json"
 RUNS_PATH = USER_DATA_DIR / "backtests" / "runs.json"
 BACKTEST_CATALOG_DB_PATH = USER_DATA_DIR / "backtests" / "catalog.sqlite3"
+INSTRUMENT_REGISTRY_DB_PATH = USER_DATA_DIR / "instruments" / "registry.sqlite3"
 BOTS_PATH = USER_DATA_DIR / "learning" / "bots.json"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -137,8 +183,12 @@ DEFAULT_VIEWER_PASSWORD = ""  # No hay default seguro — configurar VIEWER_PASS
 RUNTIME_ENGINE_REAL = "real"
 RUNTIME_ENGINE_SIMULATED = "simulated"
 RUNTIME_CONTRACT_VERSION = "runtime_snapshot_v1"
-RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = "synthetic_v1"
-RUNTIME_TELEMETRY_SOURCE_REAL = "runtime_loop_v1"
+RUNTIME_TELEMETRY_SOURCE_SYNTHETIC = str(
+    _RUNTIME_TELEMETRY_POLICY["synthetic_source"]
+).strip().lower()
+RUNTIME_TELEMETRY_SOURCE_REAL = str(
+    _RUNTIME_TELEMETRY_POLICY["real_source"]
+).strip().lower()
 BINANCE_TESTNET_BASE_URL_DEFAULT = "https://testnet.binance.vision"
 BINANCE_TESTNET_WS_URL_DEFAULT = "wss://testnet.binance.vision/ws"
 BINANCE_LIVE_BASE_URL_DEFAULT = "https://api.binance.com"
@@ -208,14 +258,62 @@ RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC = max(1, _env_int("RUNTIME_REMOTE_ORDER
 RUNTIME_REMOTE_ORDER_SYMBOL = str(os.getenv("RUNTIME_REMOTE_ORDER_SYMBOL", os.getenv("BINANCE_TESTNET_TEST_SYMBOL", "BTCUSDT"))).strip().upper()
 RUNTIME_REMOTE_ORDER_SIDE = str(os.getenv("RUNTIME_REMOTE_ORDER_SIDE", "BUY")).strip().upper()
 RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC = max(1, _env_int("RUNTIME_OPEN_ORDER_ABSENCE_GRACE_SEC", 20))
-BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(1, _env_int("BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS", 24))
-BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(1.0, max(0.0, _env_float("BREAKER_EVENTS_UNKNOWN_RATIO_WARN", 0.10)))
-BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(1, _env_int("BREAKER_EVENTS_UNKNOWN_MIN_EVENTS", 10))
-SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(1, _env_int("SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC", 60))
-OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(0.1, _env_float("OPS_ALERT_SLIPPAGE_P95_WARN_BPS", 8.0))
-OPS_ALERT_API_ERRORS_WARN = max(1, _env_int("OPS_ALERT_API_ERRORS_WARN", 1))
-OPS_ALERT_BREAKER_WINDOW_HOURS = max(1, _env_int("OPS_ALERT_BREAKER_WINDOW_HOURS", 24))
-OPS_ALERT_DRIFT_ENABLED = _env_bool("OPS_ALERT_DRIFT_ENABLED", True)
+BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS = max(
+    1,
+    _env_int(
+        "BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS",
+        int(_BREAKER_ALERT_THRESHOLDS["integrity_window_hours"]),
+    ),
+)
+BREAKER_EVENTS_UNKNOWN_RATIO_WARN = min(
+    1.0,
+    max(
+        0.0,
+        _env_float(
+            "BREAKER_EVENTS_UNKNOWN_RATIO_WARN",
+            float(_BREAKER_ALERT_THRESHOLDS["unknown_ratio_warn"]),
+        ),
+    ),
+)
+BREAKER_EVENTS_UNKNOWN_MIN_EVENTS = max(
+    1,
+    _env_int(
+        "BREAKER_EVENTS_UNKNOWN_MIN_EVENTS",
+        int(_BREAKER_ALERT_THRESHOLDS["min_events_warn"]),
+    ),
+)
+SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC = max(
+    1,
+    _env_int(
+        "SECURITY_INTERNAL_HEADER_ALERT_THROTTLE_SEC",
+        int(_OBSERVABILITY_LOGGING_POLICY["security_internal_header_alert_throttle_sec"]),
+    ),
+)
+OPS_ALERT_SLIPPAGE_P95_WARN_BPS = max(
+    0.1,
+    _env_float(
+        "OPS_ALERT_SLIPPAGE_P95_WARN_BPS",
+        float(_OPS_ALERT_THRESHOLDS["slippage_p95_warn_bps"]),
+    ),
+)
+OPS_ALERT_API_ERRORS_WARN = max(
+    1,
+    _env_int(
+        "OPS_ALERT_API_ERRORS_WARN",
+        int(_OPS_ALERT_THRESHOLDS["api_errors_warn"]),
+    ),
+)
+OPS_ALERT_BREAKER_WINDOW_HOURS = max(
+    1,
+    _env_int(
+        "OPS_ALERT_BREAKER_WINDOW_HOURS",
+        int(_OPS_ALERT_THRESHOLDS["breaker_window_hours"]),
+    ),
+)
+OPS_ALERT_DRIFT_ENABLED = _env_bool(
+    "OPS_ALERT_DRIFT_ENABLED",
+    bool(_OPS_ALERT_THRESHOLDS["drift_enabled"]),
+)
 SHADOW_MARKETDATA_BASE_URL = str(os.getenv("SHADOW_MARKETDATA_BASE_URL", BINANCE_PUBLIC_MARKETDATA_BASE_URL)).strip() or BINANCE_PUBLIC_MARKETDATA_BASE_URL
 SHADOW_DEFAULT_LOOKBACK_BARS = max(60, _env_int("SHADOW_DEFAULT_LOOKBACK_BARS", 300))
 SHADOW_DEFAULT_POLL_SEC = max(10, _env_int("SHADOW_DEFAULT_POLL_SEC", 30))
@@ -480,6 +578,23 @@ class BotStartBody(BaseModel):
     bot_id: str | None = None
 
 
+class LivePreflightRunBody(BaseModel):
+    mode: Literal["live", "testnet"] = "live"
+    symbol: str | None = None
+    side: Literal["BUY", "SELL"] = "BUY"
+    quantity: float | None = None
+    quote_order_qty: float | None = None
+
+
+class LivePreflightAttestBody(BaseModel):
+    mode: Literal["live", "testnet"] = "live"
+    manual_permissions_verified: bool = True
+    trade_enabled_verified: bool = True
+    withdraw_disabled_verified: bool = True
+    ip_restriction_verified: bool = True
+    note: str | None = None
+
+
 class ShadowStartBody(BaseModel):
     bot_id: str | None = None
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -539,6 +654,117 @@ class TradesBulkDeleteBody(BaseModel):
     date_from: str | None = None
     date_to: str | None = None
     dry_run: bool = False
+
+
+class InstrumentRegistrySyncBody(BaseModel):
+    family: Literal["spot", "margin", "usdm_futures", "coinm_futures"] | None = None
+    environment: Literal["live", "testnet"] | None = None
+
+
+class ReportingExportBody(BaseModel):
+    strategy_id: str | None = None
+    bot_id: str | None = None
+    venue: str | None = None
+    family: str | None = None
+    symbol: str | None = None
+    report_scope: Literal["summary", "daily", "monthly", "trades", "costs", "full"] = "full"
+
+
+class ExecutionPreflightBody(BaseModel):
+    family: str
+    environment: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: float | None = None
+    quote_quantity: float | None = None
+    price: float | None = None
+    stop_price: float | None = None
+    time_in_force: str | None = None
+    mode: str | None = None
+    strategy_id: str | None = None
+    bot_id: str | None = None
+    reduce_only: bool | None = None
+    requested_notional: float | None = None
+    slippage_bps: float | None = None
+    spread_bps: float | None = None
+    estimated_fee: float | None = None
+    market_snapshot: dict[str, Any] | None = None
+
+
+class ExecutionCancelAllBody(BaseModel):
+    family: str
+    environment: str
+    symbol: str
+
+
+class ExecutionKillSwitchTripBody(BaseModel):
+    reason: str
+    severity: str = "BLOCK"
+    trigger_type: str = "manual"
+    family: str | None = None
+    symbol: str | None = None
+
+
+class ExecutionKillSwitchResetBody(BaseModel):
+    reason: str = "manual_reset"
+
+
+class ExecutionMarketStreamStartBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+    symbols: list[str]
+    transport_mode: Literal["combined", "raw"] | None = None
+
+
+class ExecutionMarketStreamStopBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+
+
+class ExecutionUserStreamStartBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+    user_stream_mode: Literal["legacy_listenkey", "websocket_api_spot", "futures_listenkey"] | None = None
+
+
+class ExecutionUserStreamStopBody(BaseModel):
+    execution_connector: Literal["binance_spot", "binance_um_futures"]
+    environment: Literal["live", "testnet"]
+
+
+class ExecutionLiveOrdersReconcileBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
+class ExecutionLiveFillsReconcileBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
+class ExecutionReconciliationRunBody(BaseModel):
+    execution_order_id: str | None = None
+    family: str | None = None
+    environment: str | None = None
+    symbol: str | None = None
+    bot_id: str | None = None
+    trigger: str = "MANUAL"
+
+
+class ValidationEvaluateBody(BaseModel):
+    stage: Literal["PAPER", "TESTNET", "CANARY"] | None = None
+    venue: str = "binance"
+    family: str | None = None
+    symbol: str | None = None
 
 
 def utc_now() -> datetime:
@@ -616,6 +842,13 @@ def _config_policy_files() -> tuple[Path, dict[str, Path]]:
         "beast_mode": root / "beast_mode.yaml",
         "fees": root / "fees.yaml",
         "fundamentals_credit_filter": root / "fundamentals_credit_filter.yaml",
+        "runtime_controls": root / "runtime_controls.yaml",
+        "cost_stack": root / "cost_stack.yaml",
+        "reporting_exports": root / "reporting_exports.yaml",
+        "execution_safety": root / "execution_safety.yaml",
+        "execution_router": root / "execution_router.yaml",
+        "validation_gates": root / "validation_gates.yaml",
+        "binance_live_runtime": root / "binance_live_runtime.yaml",
     }
 
 
@@ -626,17 +859,76 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
     beast = bundle.get("beast_mode") if isinstance(bundle.get("beast_mode"), dict) else {}
     fees = bundle.get("fees") if isinstance(bundle.get("fees"), dict) else {}
     fundamentals = bundle.get("fundamentals_credit_filter") if isinstance(bundle.get("fundamentals_credit_filter"), dict) else {}
+    runtime_controls = bundle.get("runtime_controls") if isinstance(bundle.get("runtime_controls"), dict) else {}
+    cost_stack = bundle.get("cost_stack") if isinstance(bundle.get("cost_stack"), dict) else {}
+    reporting_exports = bundle.get("reporting_exports") if isinstance(bundle.get("reporting_exports"), dict) else {}
+    execution_safety = bundle.get("execution_safety") if isinstance(bundle.get("execution_safety"), dict) else {}
+    execution_router = bundle.get("execution_router") if isinstance(bundle.get("execution_router"), dict) else {}
+    validation_gates = bundle.get("validation_gates") if isinstance(bundle.get("validation_gates"), dict) else {}
+    binance_live_runtime = bundle.get("binance_live_runtime") if isinstance(bundle.get("binance_live_runtime"), dict) else {}
     g = gates.get("gates") if isinstance(gates.get("gates"), dict) else {}
     m = micro.get("microstructure") if isinstance(micro.get("microstructure"), dict) else {}
     r = risk.get("risk_policy") if isinstance(risk.get("risk_policy"), dict) else {}
     b = beast.get("beast_mode") if isinstance(beast.get("beast_mode"), dict) else {}
     f = fees.get("fees") if isinstance(fees.get("fees"), dict) else {}
     fc = fundamentals.get("fundamentals_credit_filter") if isinstance(fundamentals.get("fundamentals_credit_filter"), dict) else {}
+    rc = runtime_controls.get("runtime_controls") if isinstance(runtime_controls.get("runtime_controls"), dict) else {}
+    cs = cost_stack.get("cost_stack") if isinstance(cost_stack.get("cost_stack"), dict) else {}
+    rexp = reporting_exports.get("reporting_exports") if isinstance(reporting_exports.get("reporting_exports"), dict) else {}
+    exs = execution_safety.get("execution_safety") if isinstance(execution_safety.get("execution_safety"), dict) else {}
+    exr = execution_router.get("execution_router") if isinstance(execution_router.get("execution_router"), dict) else {}
+    vg = validation_gates.get("validation_gates") if isinstance(validation_gates.get("validation_gates"), dict) else {}
+    blr = binance_live_runtime.get("binance_live_runtime") if isinstance(binance_live_runtime.get("binance_live_runtime"), dict) else {}
+    blr_connectors = blr.get("connectors") if isinstance(blr.get("connectors"), dict) else {}
+    blr_spot = blr_connectors.get("binance_spot") if isinstance(blr_connectors.get("binance_spot"), dict) else {}
+    blr_um = blr_connectors.get("binance_um_futures") if isinstance(blr_connectors.get("binance_um_futures"), dict) else {}
+    blr_spot_user = blr_spot.get("user_stream") if isinstance(blr_spot.get("user_stream"), dict) else {}
+    blr_um_user = blr_um.get("user_stream") if isinstance(blr_um.get("user_stream"), dict) else {}
+    blr_spot_ws = blr_spot.get("market_ws") if isinstance(blr_spot.get("market_ws"), dict) else {}
+    blr_um_ws = blr_um.get("market_ws") if isinstance(blr_um.get("market_ws"), dict) else {}
     f_scoring = fc.get("scoring") if isinstance(fc.get("scoring"), dict) else {}
     f_thr = f_scoring.get("thresholds") if isinstance(f_scoring.get("thresholds"), dict) else {}
     vpin = m.get("vpin") if isinstance(m.get("vpin"), dict) else {}
     thresholds = vpin.get("thresholds") if isinstance(vpin.get("thresholds"), dict) else {}
     surrogate = g.get("surrogate_adjustments") if isinstance(g.get("surrogate_adjustments"), dict) else {}
+    execution_modes = rc.get("execution_modes") if isinstance(rc.get("execution_modes"), dict) else {}
+    observability = rc.get("observability") if isinstance(rc.get("observability"), dict) else {}
+    runtime_telemetry = observability.get("runtime_telemetry") if isinstance(observability.get("runtime_telemetry"), dict) else {}
+    drift = rc.get("drift") if isinstance(rc.get("drift"), dict) else {}
+    drift_adwin = drift.get("adwin") if isinstance(drift.get("adwin"), dict) else {}
+    drift_page_hinkley = drift.get("page_hinkley") if isinstance(drift.get("page_hinkley"), dict) else {}
+    health_scoring = rc.get("health_scoring") if isinstance(rc.get("health_scoring"), dict) else {}
+    circuit_breakers = health_scoring.get("circuit_breakers") if isinstance(health_scoring.get("circuit_breakers"), dict) else {}
+    execution_guard = health_scoring.get("execution_guard") if isinstance(health_scoring.get("execution_guard"), dict) else {}
+    alert_thresholds = rc.get("alert_thresholds") if isinstance(rc.get("alert_thresholds"), dict) else {}
+    breaker_integrity = alert_thresholds.get("breaker_integrity") if isinstance(alert_thresholds.get("breaker_integrity"), dict) else {}
+    operations = alert_thresholds.get("operations") if isinstance(alert_thresholds.get("operations"), dict) else {}
+    legacy_aliases = execution_modes.get("legacy_aliases") if isinstance(execution_modes.get("legacy_aliases"), dict) else {}
+    cs_sources = cs.get("sources") if isinstance(cs.get("sources"), dict) else {}
+    cs_estimation = cs.get("estimation") if isinstance(cs.get("estimation"), dict) else {}
+    cs_aggregation = cs.get("aggregation") if isinstance(cs.get("aggregation"), dict) else {}
+    cs_alerts = cs.get("alerts") if isinstance(cs.get("alerts"), dict) else {}
+    rexp_formats = rexp.get("formats") if isinstance(rexp.get("formats"), dict) else {}
+    rexp_limits = rexp.get("limits") if isinstance(rexp.get("limits"), dict) else {}
+    exs_modes = exs.get("modes") if isinstance(exs.get("modes"), dict) else {}
+    exs_preflight = exs.get("preflight") if isinstance(exs.get("preflight"), dict) else {}
+    exs_exchange_filters = exs.get("exchange_filters") if isinstance(exs.get("exchange_filters"), dict) else {}
+    exs_live_preflight = exs.get("live_preflight") if isinstance(exs.get("live_preflight"), dict) else {}
+    exs_alerting = exs.get("alerting") if isinstance(exs.get("alerting"), dict) else {}
+    exs_sizing = exs.get("sizing") if isinstance(exs.get("sizing"), dict) else {}
+    exs_kill = exs.get("kill_switch") if isinstance(exs.get("kill_switch"), dict) else {}
+    exr_families = exr.get("families_enabled") if isinstance(exr.get("families_enabled"), dict) else {}
+    exr_supported = (
+        exr.get("first_iteration_supported_order_types")
+        if isinstance(exr.get("first_iteration_supported_order_types"), dict)
+        else {}
+    )
+    vg_stages = vg.get("stages") if isinstance(vg.get("stages"), dict) else {}
+    vg_paper = vg_stages.get("paper") if isinstance(vg_stages.get("paper"), dict) else {}
+    vg_testnet = vg_stages.get("testnet") if isinstance(vg_stages.get("testnet"), dict) else {}
+    vg_canary = vg_stages.get("canary") if isinstance(vg_stages.get("canary"), dict) else {}
+    vg_blocks = vg.get("blocks") if isinstance(vg.get("blocks"), dict) else {}
+    vg_promotion = vg.get("promotion") if isinstance(vg.get("promotion"), dict) else {}
     return {
         "pbo_reject_if_gt": (g.get("pbo") or {}).get("reject_if_gt") if isinstance(g.get("pbo"), dict) else None,
         "dsr_min": (g.get("dsr") or {}).get("min_dsr") if isinstance(g.get("dsr"), dict) else None,
@@ -658,6 +950,88 @@ def _policy_summary(bundle: dict[str, Any]) -> dict[str, Any]:
         "surrogate_adjustments_enabled": surrogate.get("enabled"),
         "surrogate_adjustments_allowed_execution_modes": surrogate.get("allowed_execution_modes") if isinstance(surrogate.get("allowed_execution_modes"), list) else [],
         "surrogate_adjustments_promotion_blocked": surrogate.get("promotion_blocked"),
+        "runtime_default_mode": execution_modes.get("default_global_runtime_mode"),
+        "runtime_global_modes": execution_modes.get("global_runtime_modes") if isinstance(execution_modes.get("global_runtime_modes"), list) else [],
+        "bot_policy_modes": execution_modes.get("bot_policy_modes") if isinstance(execution_modes.get("bot_policy_modes"), list) else [],
+        "legacy_non_runtime_aliases": sorted(
+            [("MOCK" if str(alias).strip().lower() == "mock" else str(alias)) for alias in legacy_aliases]
+        ),
+        "telemetry_real_source": runtime_telemetry.get("real_source"),
+        "telemetry_synthetic_source": runtime_telemetry.get("synthetic_source"),
+        "drift_default_algorithm": drift.get("default_algorithm"),
+        "drift_min_points": drift.get("min_points"),
+        "drift_trigger_votes_required": drift.get("trigger_votes_required"),
+        "drift_adwin_mean_shift_zscore_threshold": drift_adwin.get("mean_shift_zscore_threshold"),
+        "drift_page_hinkley_delta": drift_page_hinkley.get("delta"),
+        "drift_page_hinkley_lambda": drift_page_hinkley.get("lambda"),
+        "health_max_error_streak": circuit_breakers.get("max_error_streak"),
+        "health_max_ws_lag_ms": circuit_breakers.get("max_ws_lag_ms"),
+        "health_max_desync_count": circuit_breakers.get("max_desync_count"),
+        "health_max_spread_spike_bps": circuit_breakers.get("max_spread_spike_bps"),
+        "health_max_vpin_percentile": circuit_breakers.get("max_vpin_percentile"),
+        "health_critical_error_limit": execution_guard.get("critical_error_limit"),
+        "ops_alert_drift_enabled": operations.get("drift_enabled"),
+        "ops_alert_slippage_p95_warn_bps": operations.get("slippage_p95_warn_bps"),
+        "ops_alert_api_errors_warn": operations.get("api_errors_warn"),
+        "ops_alert_breaker_window_hours": operations.get("breaker_window_hours"),
+        "breaker_unknown_ratio_warn": breaker_integrity.get("unknown_ratio_warn"),
+        "breaker_min_events_warn": breaker_integrity.get("min_events_warn"),
+        "breaker_integrity_window_hours": breaker_integrity.get("integrity_window_hours"),
+        "cost_stack_spot_commission_source": cs_sources.get("spot_commission_source"),
+        "cost_stack_futures_income_source": cs_sources.get("futures_income_source"),
+        "cost_stack_margin_interest_source": cs_sources.get("margin_interest_source"),
+        "cost_stack_spread_bps_default": cs_estimation.get("spread_bps_default"),
+        "cost_stack_slippage_bps_default": cs_estimation.get("slippage_bps_default"),
+        "cost_stack_block_missing_live_real_source": cs_estimation.get("block_if_missing_real_cost_source_in_live"),
+        "cost_stack_allow_fallback_estimation_in_paper": cs_estimation.get("allow_fallback_estimation_in_paper"),
+        "cost_stack_supported_periods": cs_aggregation.get("supported_periods") if isinstance(cs_aggregation.get("supported_periods"), list) else [],
+        "cost_stack_fee_source_stale_warn_hours": cs_alerts.get("warn_if_fee_source_stale_hours_gt"),
+        "cost_stack_warn_total_cost_pct_gross": cs_alerts.get("warn_if_total_cost_pct_of_gross_pnl_gt"),
+        "cost_stack_block_total_cost_pct_gross": cs_alerts.get("block_if_total_cost_pct_of_gross_pnl_gt"),
+        "reporting_export_formats": sorted([fmt for fmt, enabled in rexp_formats.items() if enabled]),
+        "reporting_export_max_rows": rexp_limits.get("max_rows_per_export"),
+        "execution_allow_live": exs_modes.get("allow_live"),
+        "execution_quote_stale_block_ms": exs_preflight.get("quote_stale_block_ms"),
+        "execution_exchange_filters_max_age_ms": exs_exchange_filters.get("max_age_ms"),
+        "execution_exchange_filters_missing_symbol_filters": exs_exchange_filters.get("missing_symbol_filters"),
+        "execution_live_preflight_freshness_hard_max_sec": exs_live_preflight.get("freshness_hard_max_sec"),
+        "execution_live_preflight_attestation_max_age_days": exs_live_preflight.get("attestation_max_age_days"),
+        "execution_live_preflight_drift_pass_max_ms": exs_live_preflight.get("drift_pass_max_ms"),
+        "execution_live_preflight_drift_warn_max_ms": exs_live_preflight.get("drift_warn_max_ms"),
+        "execution_live_preflight_recv_window_warn_ms": exs_live_preflight.get("recv_window_warn_ms"),
+        "execution_live_preflight_recv_window_fail_ms": exs_live_preflight.get("recv_window_fail_ms"),
+        "execution_alerting_severity_rank": (
+            [str(row) for row in exs_alerting.get("severity_rank") if str(row).strip()]
+            if isinstance(exs_alerting.get("severity_rank"), list)
+            else list(DEFAULT_ALERT_SEVERITY_PRECEDENCE)
+        ),
+        "execution_alerting_severity_source_precedence": (
+            [str(row) for row in exs_alerting.get("severity_source_precedence") if str(row).strip()]
+            if isinstance(exs_alerting.get("severity_source_precedence"), list)
+            else list(DEFAULT_ALERT_SOURCE_PRECEDENCE)
+        ),
+        "execution_require_capability_snapshot": exs_preflight.get("require_capability_snapshot"),
+        "execution_max_notional_per_order_usd": exs_sizing.get("max_notional_per_order_usd"),
+        "execution_max_open_orders_total": exs_sizing.get("max_open_orders_total"),
+        "execution_kill_switch_enabled": exs_kill.get("enabled"),
+        "execution_kill_switch_auto_cancel_all": exs_kill.get("auto_cancel_all_on_trip"),
+        "execution_router_families_enabled": sorted([name for name, enabled in exr_families.items() if enabled]),
+        "execution_router_supported_order_types": exr_supported,
+        "validation_stage_order": vg_promotion.get("order") if isinstance(vg_promotion.get("order"), list) else [],
+        "validation_paper_min_orders": vg_paper.get("min_orders"),
+        "validation_testnet_min_orders": vg_testnet.get("min_orders"),
+        "validation_canary_min_orders": vg_canary.get("min_orders"),
+        "validation_block_if_policy_missing": vg_blocks.get("block_if_policy_missing"),
+        "validation_allow_manual_override": vg_blocks.get("allow_manual_override"),
+        "binance_live_connectors": sorted(list(blr_connectors.keys())),
+        "binance_spot_default_transport": blr_spot_ws.get("default_transport"),
+        "binance_spot_user_stream_mode": blr_spot.get("user_stream_mode"),
+        "binance_spot_user_stream_enabled": blr_spot_user.get("enabled"),
+        "binance_spot_user_stream_keepalive_sec": blr_spot_user.get("keepalive_interval_sec"),
+        "binance_um_default_transport": blr_um_ws.get("default_transport"),
+        "binance_um_user_stream_mode": blr_um.get("user_stream_mode"),
+        "binance_um_user_stream_enabled": blr_um_user.get("enabled"),
+        "binance_um_user_stream_keepalive_sec": blr_um_user.get("keepalive_interval_sec"),
     }
 
 
@@ -668,6 +1042,95 @@ def load_numeric_policies_bundle() -> dict[str, Any]:
     meta: dict[str, Any] = {}
     warnings: list[str] = list(authority.get("warnings") or [])
     for name, path in files.items():
+        if name == "runtime_controls":
+            runtime_bundle = load_runtime_controls_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if runtime_bundle.get("errors"):
+                warnings.extend(str(row) for row in (runtime_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = {"runtime_controls": runtime_bundle.get("runtime_controls", {})}
+            meta[name] = {
+                "path": str(runtime_bundle.get("path") or path),
+                "exists": bool(runtime_bundle.get("exists", False)),
+                "valid": bool(runtime_bundle.get("valid", False)),
+                "source": str(runtime_bundle.get("source") or ""),
+                "source_hash": str(runtime_bundle.get("source_hash") or ""),
+                "policy_hash": str(runtime_bundle.get("policy_hash") or ""),
+                "errors": list(runtime_bundle.get("errors") or []),
+            }
+            continue
+        if name in {"execution_safety", "execution_router"}:
+            execution_bundle = (
+                load_execution_safety_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+                if name == "execution_safety"
+                else load_execution_router_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            )
+            if execution_bundle.get("errors"):
+                warnings.extend(str(row) for row in (execution_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = execution_bundle.get("payload") if isinstance(execution_bundle.get("payload"), dict) else {}
+            meta[name] = {
+                "path": str(execution_bundle.get("path") or path),
+                "source_root": str(execution_bundle.get("source_root") or root),
+                "exists": bool(execution_bundle.get("exists", False)),
+                "valid": bool(execution_bundle.get("valid", False)),
+                "source": str(execution_bundle.get("source") or ""),
+                "source_hash": str(execution_bundle.get("source_hash") or ""),
+                "policy_hash": str(execution_bundle.get("policy_hash") or ""),
+                "errors": list(execution_bundle.get("errors") or []),
+                "warnings": list(execution_bundle.get("warnings") or []),
+                "fallback_used": bool(execution_bundle.get("fallback_used", False)),
+                "selected_role": execution_bundle.get("selected_role"),
+                "canonical_root": execution_bundle.get("canonical_root"),
+                "canonical_role": execution_bundle.get("canonical_role"),
+                "divergent_candidates": execution_bundle.get("divergent_candidates") or [],
+            }
+            continue
+        if name == "validation_gates":
+            validation_bundle = load_validation_gates_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if validation_bundle.get("errors"):
+                warnings.extend(str(row) for row in (validation_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = (
+                validation_bundle.get("validation_gates_bundle")
+                if isinstance(validation_bundle.get("validation_gates_bundle"), dict)
+                else {}
+            )
+            meta[name] = {
+                "path": str(validation_bundle.get("path") or path),
+                "source_root": str(validation_bundle.get("source_root") or root),
+                "exists": bool(validation_bundle.get("exists", False)),
+                "valid": bool(validation_bundle.get("valid", False)),
+                "source": str(validation_bundle.get("source") or ""),
+                "source_hash": str(validation_bundle.get("source_hash") or ""),
+                "policy_hash": str(validation_bundle.get("policy_hash") or ""),
+                "errors": list(validation_bundle.get("errors") or []),
+                "warnings": list(validation_bundle.get("warnings") or []),
+                "fallback_used": bool(validation_bundle.get("fallback_used", False)),
+                "selected_role": validation_bundle.get("selected_role"),
+                "canonical_root": validation_bundle.get("canonical_root"),
+                "canonical_role": validation_bundle.get("canonical_role"),
+                "divergent_candidates": validation_bundle.get("divergent_candidates") or [],
+            }
+            continue
+        if name == "binance_live_runtime":
+            runtime_bundle = load_binance_live_runtime_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            if runtime_bundle.get("errors"):
+                warnings.extend(str(row) for row in (runtime_bundle.get("errors") or []) if str(row).strip())
+            payloads[name] = runtime_bundle.get("payload") if isinstance(runtime_bundle.get("payload"), dict) else {}
+            meta[name] = {
+                "path": str(runtime_bundle.get("path") or path),
+                "source_root": str(runtime_bundle.get("source_root") or root),
+                "exists": bool(runtime_bundle.get("exists", False)),
+                "valid": bool(runtime_bundle.get("valid", False)),
+                "source": str(runtime_bundle.get("source") or ""),
+                "source_hash": str(runtime_bundle.get("source_hash") or ""),
+                "policy_hash": str(runtime_bundle.get("policy_hash") or ""),
+                "errors": list(runtime_bundle.get("errors") or []),
+                "warnings": list(runtime_bundle.get("warnings") or []),
+                "fallback_used": bool(runtime_bundle.get("fallback_used", False)),
+                "selected_role": runtime_bundle.get("selected_role"),
+                "canonical_root": runtime_bundle.get("canonical_root"),
+                "canonical_role": runtime_bundle.get("canonical_role"),
+                "divergent_candidates": runtime_bundle.get("divergent_candidates") or [],
+            }
+            continue
         exists = path.exists()
         data = _yaml_file_or_default(path, {})
         valid = isinstance(data, dict) and bool(data)
@@ -1281,7 +1744,10 @@ def exchange_name() -> str:
 
 
 def default_mode() -> str:
-    return normalize_global_runtime_mode(get_env("MODE", "paper"), default="paper")
+    return normalize_global_runtime_mode(
+        get_env("MODE", DEFAULT_GLOBAL_RUNTIME_MODE),
+        default=DEFAULT_GLOBAL_RUNTIME_MODE,
+    )
 
 
 def running_on_railway() -> bool:
@@ -1683,7 +2149,11 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
             params={},
             timeout_sec=timeout_sec,
         )
-        checks["account"] = {"ok": account_ok, "status_code": account_result["status_code"], "endpoint": account_result["url"]}
+        checks["account"] = {
+            "ok": account_ok,
+            "status_code": account_result["status_code"],
+            "endpoint": account_result.get("url") or f"{creds['base_url']}/api/v3/account",
+        }
         if not account_ok:
             category, detail = _classify_exchange_error(account_result["status_code"], account_result["payload"])
             checks["account"]["error_type"] = category
@@ -1712,7 +2182,12 @@ def diagnose_exchange(mode: str | None = None, *, force_refresh: bool = False) -
                 params={"symbol": symbol, "side": "BUY", "type": "MARKET", "quoteOrderQty": quote_qty},
                 timeout_sec=timeout_sec,
             )
-            checks["order_test"] = {"ok": order_ok, "status_code": order_result["status_code"], "endpoint": order_result["url"], "symbol": symbol}
+            checks["order_test"] = {
+                "ok": order_ok,
+                "status_code": order_result["status_code"],
+                "endpoint": order_result.get("url") or f"{creds['base_url']}/api/v3/order/test",
+                "symbol": symbol,
+            }
             if not order_ok:
                 category, detail = _classify_exchange_error(order_result["status_code"], order_result["payload"])
                 checks["order_test"]["error_type"] = category
@@ -1794,6 +2269,7 @@ def ensure_paths() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     (USER_DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
     (USER_DATA_DIR / "backtests").mkdir(parents=True, exist_ok=True)
+    (USER_DATA_DIR / "instruments").mkdir(parents=True, exist_ok=True)
 
 
 class ConsoleStore:
@@ -1831,6 +2307,44 @@ class ConsoleStore:
         self.backtest_catalog = BacktestCatalogDB(BACKTEST_CATALOG_DB_PATH)
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
         self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog, policies_root=CONFIG_POLICIES_ROOT)
+        self.instrument_registry = BinanceInstrumentRegistryService(
+            db_path=INSTRUMENT_REGISTRY_DB_PATH,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+        )
+        self.instrument_universes = InstrumentUniverseService(self.instrument_registry)
+        self.reporting_bridge = ReportingBridgeService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            instrument_registry_service=self.instrument_registry,
+            runs_path=RUNS_PATH,
+        )
+        self.execution_reality = ExecutionRealityService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            instrument_registry_service=self.instrument_registry,
+            universe_service=self.instrument_universes,
+            reporting_bridge_service=self.reporting_bridge,
+            runs_loader=self.load_runs,
+        )
+        self.validation = ValidationService(
+            user_data_dir=USER_DATA_DIR,
+            repo_root=MONOREPO_ROOT,
+            explicit_policy_root=DEFAULT_CONFIG_POLICIES_ROOT,
+            execution_service=self.execution_reality,
+            reporting_bridge_service=self.reporting_bridge,
+            instrument_registry_service=self.instrument_registry,
+            universe_service=self.instrument_universes,
+        )
+        self.live_preflight = LivePreflightDB(CONSOLE_DB_PATH)
+        self.instrument_registry_startup_sync: dict[str, Any] = {
+            "ok": True,
+            "startup": True,
+            "skipped": True,
+            "reason": "not_run",
+        }
         self._init_console_db()
         self._ensure_defaults()
 
@@ -2058,6 +2572,10 @@ class ConsoleStore:
         self._ensure_default_bots()
         self._ensure_seed_backtest()
         self._sync_backtest_runs_catalog()
+        try:
+            self.reporting_bridge.refresh_materialized_views(self.load_runs())
+        except Exception:
+            pass
         self.add_log(
             event_type="health",
             severity="info",
@@ -6634,6 +7152,180 @@ class RuntimeBridge:
             "notional_usd": notional,
         }
 
+    def _paper_runtime_quote_snapshot(self, *, family: str, symbol: str) -> dict[str, Any]:
+        quote_snapshot = store.execution_reality._quote_snapshot(family, "paper", symbol)  # type: ignore[attr-defined]
+        runtime_summary = store.execution_reality.market_streams_summary()
+        sessions = runtime_summary.get("sessions") if isinstance(runtime_summary.get("sessions"), list) else []
+        now_ms = int(time.time() * 1000)
+        normalized_family = str(family or "").strip().lower()
+        canonical_symbol = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        fresh_runtime_snapshot: dict[str, Any] | None = None
+
+        for row in sessions:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("environment") or "").strip().lower() != "live":
+                continue
+            if str(row.get("repo_family") or "").strip().lower() != normalized_family:
+                continue
+            if not bool(row.get("running")) or not bool(row.get("connected")):
+                continue
+            best_quotes = row.get("best_quotes") if isinstance(row.get("best_quotes"), dict) else {}
+            best_quote = best_quotes.get(canonical_symbol) if isinstance(best_quotes.get(canonical_symbol), dict) else {}
+            bid = _as_float(best_quote.get("bid"), 0.0)
+            ask = _as_float(best_quote.get("ask"), 0.0)
+            if bid <= 0.0 and ask <= 0.0:
+                continue
+            quote_ts_ms = _as_int(best_quote.get("event_time_ms"), 0) or now_ms
+            fresh_runtime_snapshot = {
+                "bid": bid if bid > 0.0 else None,
+                "ask": ask if ask > 0.0 else None,
+                "quote_ts_ms": quote_ts_ms,
+                "orderbook_ts_ms": quote_ts_ms,
+                "source": f"runtime_summary:{row.get('execution_connector') or 'unknown'}",
+                "updated_at": utc_now_iso(),
+            }
+            store.execution_reality.set_market_snapshot(
+                family=family,
+                environment="paper",
+                symbol=canonical_symbol,
+                bid=fresh_runtime_snapshot.get("bid"),
+                ask=fresh_runtime_snapshot.get("ask"),
+                quote_ts_ms=quote_ts_ms,
+                orderbook_ts_ms=quote_ts_ms,
+                source=str(fresh_runtime_snapshot.get("source") or "runtime_summary"),
+            )
+            break
+
+        if isinstance(fresh_runtime_snapshot, dict):
+            return fresh_runtime_snapshot
+        return quote_snapshot if isinstance(quote_snapshot, dict) else {}
+
+    def _maybe_submit_paper_runtime_order(self, *, state: dict[str, Any]) -> dict[str, Any]:
+        intent = self._runtime_order_intent(mode="paper")
+        signal_strategy_id = str(intent.get("strategy_id") or "")
+        signal_symbol = RuntimeBridge._sanitize_exchange_symbol(intent.get("symbol") or "")
+        signal_side = str(intent.get("side") or "").strip().upper()
+        signal_action = str(intent.get("action") or "flat").strip().lower()
+        signal_reason = str(intent.get("reason") or "").strip()
+        base_result = {
+            "submitted": False,
+            "signal_action": signal_action,
+            "signal_reason": signal_reason,
+            "signal_strategy_id": signal_strategy_id,
+            "signal_symbol": signal_symbol,
+            "signal_side": signal_side,
+        }
+
+        if signal_action != "trade":
+            return {**base_result, "reason": "strategy_signal_flat"}
+        if signal_side not in {"BUY", "SELL"}:
+            return {**base_result, "reason": "strategy_signal_side_missing"}
+        if not bool((self._last_risk or {}).get("allow_new_positions", True)):
+            return {**base_result, "reason": "risk_blocked"}
+
+        family = "spot"
+        symbol = signal_symbol or RuntimeBridge._sanitize_exchange_symbol(RUNTIME_REMOTE_ORDER_SYMBOL) or "BTCUSDT"
+        cooldown_sec = int(RUNTIME_REMOTE_ORDER_SUBMIT_COOLDOWN_SEC)
+
+        open_payload = store.execution_reality.list_orders(
+            family=family,
+            environment="paper",
+            symbol=symbol,
+            status="OPEN",
+            limit=200,
+            offset=0,
+        )
+        open_items = list(open_payload.get("items") or []) if isinstance(open_payload, dict) else []
+        if open_items:
+            for row in open_items[:10]:
+                execution_order_id = str(row.get("execution_order_id") or "").strip()
+                if execution_order_id:
+                    try:
+                        store.execution_reality.order_detail(execution_order_id)
+                    except Exception:
+                        continue
+            open_payload = store.execution_reality.list_orders(
+                family=family,
+                environment="paper",
+                symbol=symbol,
+                status="OPEN",
+                limit=200,
+                offset=0,
+            )
+            open_items = list(open_payload.get("items") or []) if isinstance(open_payload, dict) else []
+            if open_items:
+                return {**base_result, "reason": "open_orders_present", "open_orders": len(open_items)}
+
+        latest_payload = store.execution_reality.list_orders(
+            family=family,
+            environment="paper",
+            symbol=symbol,
+            limit=1,
+            offset=0,
+        )
+        latest_items = list(latest_payload.get("items") or []) if isinstance(latest_payload, dict) else []
+        if latest_items:
+            last_submitted_raw = str(latest_items[0].get("submitted_at") or "").strip()
+            if last_submitted_raw:
+                try:
+                    last_dt = datetime.fromisoformat(
+                        last_submitted_raw.replace("Z", "+00:00") if last_submitted_raw.endswith("Z") else last_submitted_raw
+                    )
+                    age_sec = max(0.0, (utc_now() - last_dt).total_seconds())
+                    if age_sec < float(cooldown_sec):
+                        return {**base_result, "reason": "submit_cooldown_active"}
+                except Exception:
+                    pass
+
+        quote_snapshot = self._paper_runtime_quote_snapshot(family=family, symbol=symbol)
+        if not isinstance(quote_snapshot, dict):
+            return {**base_result, "reason": "quote_snapshot_missing"}
+        ask = _as_float(quote_snapshot.get("ask"), 0.0)
+        bid = _as_float(quote_snapshot.get("bid"), 0.0)
+        ref_price = ask if signal_side == "BUY" and ask > 0 else bid if signal_side == "SELL" and bid > 0 else max(ask, bid, 0.0)
+        if ref_price <= 0:
+            return {**base_result, "reason": "quote_snapshot_invalid"}
+
+        notional = max(5.0, float(intent.get("notional_usd") or RUNTIME_REMOTE_ORDER_NOTIONAL_USD))
+        quantity = max(0.000001, round(notional / ref_price, 8))
+        created = store.execution_reality.create_order(
+            {
+                "family": family,
+                "environment": "paper",
+                "mode": "paper",
+                "strategy_id": signal_strategy_id or None,
+                "bot_id": str(state.get("active_bot_id") or "").strip() or None,
+                "symbol": symbol,
+                "side": signal_side,
+                "order_type": "MARKET",
+                "quantity": quantity,
+                "market_snapshot": copy.deepcopy(quote_snapshot),
+            }
+        )
+        execution_order_id = str(created.get("execution_order_id") or "").strip()
+        if not execution_order_id or str(created.get("order_status") or "").upper() == "BLOCKED":
+            blocking_reasons = created.get("blocking_reasons") if isinstance(created.get("blocking_reasons"), list) else []
+            return {
+                **base_result,
+                "reason": "submit_blocked",
+                "error": ", ".join(str(item) for item in blocking_reasons if str(item).strip()) or str(created.get("order_status") or ""),
+            }
+
+        detail = store.execution_reality.order_detail(execution_order_id) or {}
+        detail_order = detail.get("order") if isinstance(detail.get("order"), dict) else {}
+        fills = detail.get("fills") if isinstance(detail.get("fills"), list) else []
+        return {
+            **base_result,
+            "submitted": True,
+            "reason": "submitted",
+            "execution_order_id": execution_order_id,
+            "client_order_id": str(created.get("client_order_id") or ""),
+            "order_status": str((detail_order or created).get("order_status") or ""),
+            "current_local_state": str(detail.get("current_local_state") or (detail_order or created).get("current_local_state") or ""),
+            "fills_count": len(fills),
+        }
+
     def _remember_remote_submit_request(self, client_order_id: str) -> bool:
         text = str(client_order_id or "").strip()
         if not text:
@@ -7170,6 +7862,7 @@ class RuntimeBridge:
             self._active_mode = active_mode
             now_iso = utc_now_iso()
             max_age_for_stale = max(10, _as_int((settings.get("execution") or {}).get("order_timeout_sec"), 45))
+            paper_submit_result: dict[str, Any] | None = None
 
             if event == "kill":
                 self._kill_switch.trigger("admin_killswitch")
@@ -7187,6 +7880,9 @@ class RuntimeBridge:
                 canceled_total = int(canceled_now) + int(canceled_remote)
                 if canceled_total > 0:
                     self._stats["requotes"] = self._stats.get("requotes", 0) + canceled_total
+
+            if runtime_engine != RUNTIME_ENGINE_REAL and running and active_mode == "paper":
+                paper_submit_result = self._maybe_submit_paper_runtime_order(state=state)
 
             if runtime_engine != RUNTIME_ENGINE_REAL or not running:
                 changed = self._set_state_value(state, "runtime_telemetry_source", RUNTIME_TELEMETRY_SOURCE_SYNTHETIC) or changed
@@ -7217,6 +7913,17 @@ class RuntimeBridge:
                 if runtime_engine != RUNTIME_ENGINE_REAL:
                     self._reset_runtime_costs()
                 self._remote_positions = []
+                if isinstance(paper_submit_result, dict):
+                    changed = self._set_state_value(state, "runtime_last_signal_action", str(paper_submit_result.get("signal_action") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_reason", str(paper_submit_result.get("signal_reason") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_strategy_id", str(paper_submit_result.get("signal_strategy_id") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_symbol", str(paper_submit_result.get("signal_symbol") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_signal_side", str(paper_submit_result.get("signal_side") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_reason", str(paper_submit_result.get("reason") or "")) or changed
+                    changed = self._set_state_value(state, "runtime_last_remote_submit_error", str(paper_submit_result.get("error") or "")) or changed
+                    if bool(paper_submit_result.get("submitted")):
+                        changed = self._set_state_value(state, "runtime_last_remote_submit_at", now_iso) or changed
+                        changed = self._set_state_value(state, "runtime_last_remote_client_order_id", str(paper_submit_result.get("client_order_id") or "")) or changed
                 self._append_execution_point(settings=settings, mode=active_mode)
                 return changed
 
@@ -8549,6 +9256,579 @@ def live_can_be_enabled(gates_payload: dict[str, Any]) -> tuple[bool, str]:
     return True, "All live gates are PASS"
 
 
+def _live_preflight_policy() -> dict[str, Any]:
+    defaults = {
+        "freshness_hard_max_sec": 600,
+        "attestation_max_age_days": 30,
+        "drift_pass_max_ms": 1500,
+        "drift_warn_max_ms": 4000,
+        "recv_window_warn_ms": 5000,
+        "recv_window_fail_ms": 60000,
+    }
+    payload = store.execution_reality.safety_policy().get("live_preflight")
+    cfg = payload if isinstance(payload, dict) else {}
+    merged = {**defaults, **cfg}
+    merged["freshness_hard_max_sec"] = max(60, int(_as_int(merged.get("freshness_hard_max_sec"), 600)))
+    merged["attestation_max_age_days"] = max(1, int(_as_int(merged.get("attestation_max_age_days"), 30)))
+    merged["drift_pass_max_ms"] = max(0, int(_as_int(merged.get("drift_pass_max_ms"), 1500)))
+    merged["drift_warn_max_ms"] = max(merged["drift_pass_max_ms"], int(_as_int(merged.get("drift_warn_max_ms"), 4000)))
+    merged["recv_window_warn_ms"] = max(0, int(_as_int(merged.get("recv_window_warn_ms"), 5000)))
+    merged["recv_window_fail_ms"] = max(merged["recv_window_warn_ms"], int(_as_int(merged.get("recv_window_fail_ms"), 60000)))
+    return merged
+
+
+def _live_preflight_default_symbol(mode: str) -> str:
+    normalized_mode = str(mode or "live").strip().lower()
+    candidates = [
+        os.getenv("BINANCE_TESTNET_TEST_SYMBOL") if normalized_mode == "testnet" else os.getenv("BINANCE_LIVE_PREFLIGHT_SYMBOL"),
+        os.getenv("BINANCE_LIVE_PREFLIGHT_SYMBOL") if normalized_mode == "testnet" else os.getenv("BINANCE_TESTNET_TEST_SYMBOL"),
+        "BTCUSDT",
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip().upper()
+        if text:
+            return text
+    return "BTCUSDT"
+
+
+def _live_preflight_default_quote_qty(mode: str) -> float:
+    normalized_mode = str(mode or "live").strip().lower()
+    candidates = [
+        os.getenv("BINANCE_TESTNET_TEST_QUOTE_QTY") if normalized_mode == "testnet" else os.getenv("BINANCE_LIVE_PREFLIGHT_QUOTE_QTY"),
+        os.getenv("BINANCE_LIVE_PREFLIGHT_QUOTE_QTY") if normalized_mode == "testnet" else os.getenv("BINANCE_TESTNET_TEST_QUOTE_QTY"),
+        "15",
+    ]
+    for candidate in candidates:
+        try:
+            value = float(candidate)
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return 15.0
+
+
+def _live_preflight_candidate(mode: str, requested: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = requested if isinstance(requested, dict) else {}
+    normalized_mode = "testnet" if str(body.get("mode") or mode or "live").strip().lower() == "testnet" else "live"
+    symbol = str(body.get("symbol") or _live_preflight_default_symbol(normalized_mode)).strip().upper()
+    side = str(body.get("side") or "BUY").strip().upper()
+    quantity = body.get("quantity")
+    quote_order_qty = body.get("quote_order_qty")
+    if quantity is None and quote_order_qty is None:
+        quote_order_qty = _live_preflight_default_quote_qty(normalized_mode)
+    return {
+        "family": "spot",
+        "environment": normalized_mode,
+        "mode": normalized_mode,
+        "symbol": symbol,
+        "side": side if side in {"BUY", "SELL"} else "BUY",
+        "order_type": "MARKET",
+        "quantity": None if quantity is None else float(quantity),
+        "quote_quantity": None if quote_order_qty is None else float(quote_order_qty),
+    }
+
+
+def _live_preflight_runtime_quote(mode: str, symbol: str) -> dict[str, Any] | None:
+    quote = store.execution_reality._quote_snapshot("spot", mode, symbol)  # type: ignore[attr-defined]
+    if not isinstance(quote, dict):
+        return None
+    if quote.get("quote_ts_ms") is None:
+        return None
+    return {
+        "bid": quote.get("bid"),
+        "ask": quote.get("ask"),
+        "mark_price": quote.get("mark_price"),
+        "quote_ts_ms": quote.get("quote_ts_ms"),
+        "orderbook_ts_ms": quote.get("orderbook_ts_ms"),
+        "source": quote.get("source"),
+    }
+
+
+def _parse_utc_ts(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _live_preflight_gate(mode: str = "live") -> dict[str, Any]:
+    normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+    latest = store.live_preflight.latest_run(mode=normalized_mode)
+    if latest is None:
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": "live_preflight_missing",
+            "latest": None,
+            "fresh": False,
+        }
+    status = str(latest.get("overall_status") or "").upper()
+    if status != "PASS":
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": f"live_preflight_status_{status.lower() or 'fail'}",
+            "latest": latest,
+            "fresh": False,
+        }
+    expires_at = _parse_utc_ts(latest.get("expires_at"))
+    now_dt = datetime.now(timezone.utc)
+    if expires_at is None or expires_at <= now_dt:
+        return {
+            "ok": False,
+            "mode": normalized_mode,
+            "reason": "live_preflight_expired",
+            "latest": latest,
+            "fresh": False,
+        }
+    return {
+        "ok": True,
+        "mode": normalized_mode,
+        "reason": "live_preflight_pass",
+        "latest": latest,
+        "fresh": True,
+    }
+
+
+def _live_reconciliation_gate(*, bot_id: str | None = None) -> dict[str, Any]:
+    return store.execution_reality.live_reconciliation_gate(
+        environment="live",
+        bot_id=str(bot_id or "").strip() or None,
+        trigger="PRESTART_LIVE",
+        run_required=True,
+    )
+
+
+def latest_live_preflight_payload(mode: str = "live", *, limit: int = 10) -> dict[str, Any]:
+    normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+    policy = _live_preflight_policy()
+    latest_attestation = store.live_preflight.latest_attestation(mode=normalized_mode)
+    return {
+        "mode": normalized_mode,
+        "policy": copy.deepcopy(policy),
+        "latest": store.live_preflight.latest_run(mode=normalized_mode),
+        "recent_runs": store.live_preflight.list_runs(mode=normalized_mode, limit=max(1, int(limit))),
+        "latest_attestation": latest_attestation,
+        "attestation_status": attestation_status(
+            latest_attestation,
+            max_age_days=int(policy.get("attestation_max_age_days", 30)),
+        ),
+        "live_enablement_gate": _live_preflight_gate(normalized_mode),
+    }
+
+
+def build_live_preflight(
+    payload: dict[str, Any] | None = None,
+    *,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    requested = payload if isinstance(payload, dict) else {}
+    policy = _live_preflight_policy()
+    candidate = _live_preflight_candidate(str(requested.get("mode") or "live"), requested)
+    mode = str(candidate.get("mode") or "live")
+    symbol = str(candidate.get("symbol") or "")
+    evaluated_dt = datetime.now(timezone.utc)
+    evaluated_at = evaluated_dt.isoformat()
+    freshness_seconds = int(policy.get("freshness_hard_max_sec", 600))
+    expires_at = (evaluated_dt + timedelta(seconds=freshness_seconds)).isoformat()
+    settings = store.load_settings()
+    state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    runtime_snapshot = _runtime_contract_snapshot(state)
+    telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
+    diagnostics: list[dict[str, Any]] = []
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    checks: dict[str, Any] = {}
+    source_versions = {
+        "execution_policy_hash": store.execution_reality.policy_hash(),
+        "binance_live_runtime_hash": store.execution_reality.binance_live_runtime_hash(),
+        "runtime_contract_version": RUNTIME_CONTRACT_VERSION,
+        "mode_taxonomy": list(GLOBAL_RUNTIME_MODES),
+    }
+
+    def _push_check(name: str, status: str, detail: str, **extra: Any) -> None:
+        checks[name] = {"status": status, "detail": detail, **extra}
+        if status == "FAIL":
+            blocking_reasons.append(name)
+        elif status == "WARN":
+            warnings.append(name)
+
+    creds = load_exchange_credentials(mode)
+    runtime_engine = _runtime_engine_from_state(state)
+    runtime_real_required = runtime_engine == RUNTIME_ENGINE_REAL
+    credentials_ok = bool(creds.get("has_keys")) and str(creds.get("exchange") or "").strip().lower() == "binance"
+    mode_ok = mode in {"live", "testnet"}
+    if credentials_ok and mode_ok and runtime_real_required:
+        _push_check(
+            "credentials_mode",
+            "PASS",
+            "Credenciales, exchange y runtime real disponibles para preflight final.",
+            exchange=creds.get("exchange"),
+            mode=mode,
+            runtime_engine=runtime_engine,
+            key_source=creds.get("key_source"),
+        )
+    else:
+        detail_parts = []
+        if not credentials_ok:
+            detail_parts.append("credenciales_binance_missing")
+        if not mode_ok:
+            detail_parts.append("mode_invalid")
+        if not runtime_real_required:
+            detail_parts.append("runtime_engine_not_real")
+        _push_check(
+            "credentials_mode",
+            "FAIL",
+            ", ".join(detail_parts) or "Preflight live requiere exchange/binance, modo live|testnet y runtime real.",
+            exchange=creds.get("exchange"),
+            mode=mode,
+            runtime_engine=runtime_engine,
+            key_source=creds.get("key_source"),
+            missing_env_vars=list(creds.get("missing_env_vars") or []),
+        )
+
+    timeout_sec = _exchange_timeout_seconds()
+    drift_ms: int | None = None
+    recv_window_ms = int(store.execution_reality._exchange_adapter_recv_window_ms())  # type: ignore[attr-defined]
+    time_status = "FAIL"
+    time_detail = "No se pudo validar server time."
+    time_url = f"{str(creds.get('base_url') or '').rstrip('/')}/api/v3/time"
+    if credentials_ok:
+        local_before = int(time.time() * 1000)
+        try:
+            response = requests.get(time_url, timeout=timeout_sec)
+            local_after = int(time.time() * 1000)
+            payload_json = _parse_json_response(response)
+            if response.ok and isinstance(payload_json, dict) and payload_json.get("serverTime") is not None:
+                server_time_ms = int(payload_json.get("serverTime"))
+                local_mid = int((local_before + local_after) / 2)
+                drift_ms = int(server_time_ms - local_mid)
+                abs_drift_ms = abs(drift_ms)
+                if abs_drift_ms <= int(policy.get("drift_pass_max_ms", 1500)):
+                    time_status = "PASS"
+                    time_detail = f"Drift {drift_ms} ms dentro del umbral PASS."
+                elif abs_drift_ms <= int(policy.get("drift_warn_max_ms", 4000)):
+                    time_status = "WARN"
+                    time_detail = f"Drift {drift_ms} ms en zona WARN."
+                else:
+                    time_status = "FAIL"
+                    time_detail = f"Drift {drift_ms} ms excede el umbral FAIL."
+            else:
+                time_detail = f"Server time no disponible ({response.status_code})."
+        except Exception as exc:
+            time_detail = f"Server time request failed: {exc}"
+    if recv_window_ms > int(policy.get("recv_window_fail_ms", 60000)):
+        time_status = "FAIL"
+        time_detail = f"{time_detail} recvWindow={recv_window_ms} supera el maximo permitido."
+    elif recv_window_ms > int(policy.get("recv_window_warn_ms", 5000)) and time_status == "PASS":
+        time_status = "WARN"
+        time_detail = f"{time_detail} recvWindow={recv_window_ms} supera la recomendacion operativa."
+    _push_check(
+        "timing_security",
+        time_status,
+        time_detail,
+        drift_ms=drift_ms,
+        recv_window_ms=recv_window_ms,
+        time_url=time_url,
+    )
+
+    diagnose_payload = diagnose_exchange(mode, force_refresh=True)
+    diagnostics.extend(
+        {"source": "diagnose_exchange", "message": str(item)}
+        for item in (diagnose_payload.get("diagnostics") or [])
+        if str(item).strip()
+    )
+    if bool(diagnose_payload.get("connector_ok")) and bool(diagnose_payload.get("order_ok")):
+        _push_check(
+            "exchange_diagnose",
+            "PASS",
+            "Diagnose exchange confirma conector y order/test.",
+            connector_ok=True,
+            order_ok=True,
+        )
+    else:
+        _push_check(
+            "exchange_diagnose",
+            "FAIL",
+            str(diagnose_payload.get("last_error") or diagnose_payload.get("order_reason") or diagnose_payload.get("connector_reason") or "Diagnose exchange failed."),
+            connector_ok=bool(diagnose_payload.get("connector_ok")),
+            order_ok=bool(diagnose_payload.get("order_ok")),
+        )
+
+    gates_payload = evaluate_gates(mode, runtime_state=state, force_exchange_check=True)
+    if mode == "live":
+        live_allowed, live_reason = live_can_be_enabled(gates_payload)
+        _push_check(
+            "live_gates",
+            "PASS" if live_allowed else "FAIL",
+            "Gates LIVE en PASS." if live_allowed else f"Gates LIVE bloquean: {live_reason}",
+            overall_status=gates_payload.get("overall_status"),
+            required_ids=[row.get("id") for row in (gates_payload.get("gates") or []) if isinstance(row, dict)],
+        )
+    else:
+        _push_check(
+            "live_gates",
+            "PASS" if str(gates_payload.get("overall_status") or "").upper() == "PASS" else "WARN",
+            f"Gates {mode.upper()} = {gates_payload.get('overall_status')}.",
+            overall_status=gates_payload.get("overall_status"),
+        )
+
+    latest_att = store.live_preflight.latest_attestation(mode=mode)
+    att_status = attestation_status(latest_att, max_age_days=int(policy.get("attestation_max_age_days", 30)))
+    _push_check(
+        "manual_attestation",
+        str(att_status.get("status") or "FAIL"),
+        str(att_status.get("reason") or "manual_attestation_missing"),
+        attestation=copy.deepcopy(latest_att),
+        verified_by=(latest_att or {}).get("verified_by"),
+        verified_at=att_status.get("verified_at"),
+        expires_at=att_status.get("expires_at"),
+        actor=actor,
+    )
+
+    account_payload = store.execution_reality.fetch_account_balances(
+        family="spot",
+        environment=mode,
+        omit_zero_balances=False,
+    )
+    account = account_payload.get("account") if isinstance(account_payload.get("account"), dict) else {}
+    permissions = [str(item).upper() for item in (account.get("permissions") or []) if str(item).strip()]
+    account_type = str(account.get("accountType") or "").upper()
+    can_trade = bool(account.get("canTrade"))
+    balances = account_payload.get("balances") if isinstance(account_payload.get("balances"), list) else []
+    balances_parseable = isinstance(balances, list)
+    non_zero_balances = [
+        row
+        for row in balances
+        if isinstance(row, dict)
+        and (abs(_as_float(row.get("free"), 0.0)) > 0.0 or abs(_as_float(row.get("locked"), 0.0)) > 0.0)
+    ]
+    account_status = "PASS"
+    account_messages: list[str] = []
+    if not bool(account_payload.get("ok")):
+        account_status = "FAIL"
+        account_messages.append(str(((account_payload.get("remote_source") or {}).get("reason")) or "account_request_failed"))
+    if not can_trade:
+        account_status = "FAIL"
+        account_messages.append("canTrade=false")
+    if not balances_parseable:
+        account_status = "FAIL"
+        account_messages.append("balances_unparseable")
+    if "SPOT" not in permissions:
+        account_status = "FAIL"
+        account_messages.append("SPOT permission missing")
+    if account_type and account_type != "SPOT":
+        account_status = "FAIL"
+        account_messages.append(f"accountType={account_type}")
+    elif not account_type and account_status == "PASS":
+        account_status = "WARN"
+        account_messages.append("accountType missing")
+    if non_zero_balances and account_status == "PASS":
+        account_messages.append(f"holdings relevantes detectados: {len(non_zero_balances)}")
+    _push_check(
+        "account_readiness",
+        account_status,
+        "; ".join(account_messages) if account_messages else "Cuenta SPOT lista para preflight final.",
+        can_trade=can_trade,
+        can_withdraw=account.get("canWithdraw"),
+        permissions=permissions,
+        account_type=account_type or None,
+        balances_count=len(balances),
+        non_zero_balances_count=len(non_zero_balances),
+        remote_source=copy.deepcopy(account_payload.get("remote_source") or {}),
+    )
+
+    exchange_info_payload = store.execution_reality.fetch_exchange_info(family="spot", environment=mode)
+    exchange_info = exchange_info_payload.get("exchange_info") if isinstance(exchange_info_payload.get("exchange_info"), dict) else {}
+    symbols = exchange_info.get("symbols") if isinstance(exchange_info.get("symbols"), list) else []
+    symbol_row = next((row for row in symbols if isinstance(row, dict) and str(row.get("symbol") or "").upper() == symbol), None)
+    filter_rules = store.execution_reality.filter_rules(family="spot", symbol=symbol, environment=mode)
+    filter_summary = filter_rules.get("filter_summary") if isinstance(filter_rules.get("filter_summary"), dict) else {}
+    required_filter_keys = ["price_filter", "lot_size"]
+    missing_filters = [key for key in required_filter_keys if not isinstance(filter_summary.get(key), dict)]
+    if not isinstance(filter_summary.get("min_notional"), dict) and not isinstance(filter_summary.get("notional"), dict):
+        missing_filters.append("min_notional_or_notional")
+    exchange_rules_status = "PASS"
+    exchange_rules_messages: list[str] = []
+    if not bool(exchange_info_payload.get("ok")):
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(str(((exchange_info_payload.get("remote_source") or {}).get("reason")) or "exchange_info_request_failed"))
+    if symbol_row is None:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append("symbol_missing_in_exchange_info")
+    elif str(symbol_row.get("status") or "").upper() != "TRADING":
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"symbol_status={symbol_row.get('status')}")
+    freshness_status = str(filter_rules.get("freshness_status") or "").lower()
+    if freshness_status in {"missing", "block"}:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"exchange_filters_{freshness_status}")
+    if missing_filters:
+        exchange_rules_status = "FAIL"
+        exchange_rules_messages.append(f"missing_filters:{','.join(sorted(missing_filters))}")
+    if isinstance(filter_summary.get("market_lot_size"), dict):
+        pass
+    else:
+        exchange_rules_messages.append("market_lot_size_not_present")
+        if exchange_rules_status == "PASS":
+            exchange_rules_status = "WARN"
+    _push_check(
+        "symbol_filters",
+        exchange_rules_status,
+        "; ".join(exchange_rules_messages) if exchange_rules_messages else "Símbolo y filtros oficiales disponibles.",
+        symbol_status=(symbol_row or {}).get("status"),
+        filter_source=filter_rules.get("filter_source"),
+        freshness_status=filter_rules.get("freshness_status"),
+        snapshot_timestamp=filter_rules.get("snapshot_timestamp"),
+        remote_source=copy.deepcopy(exchange_info_payload.get("remote_source") or {}),
+        missing_filters=missing_filters,
+    )
+
+    market_snapshot = _live_preflight_runtime_quote(mode, symbol)
+    preflight_request = {**candidate}
+    if market_snapshot is not None:
+        preflight_request["market_snapshot"] = market_snapshot
+    preflight_payload = store.execution_reality.preflight(preflight_request)
+    preflight_status = "PASS" if bool(preflight_payload.get("allowed")) else "FAIL"
+    preflight_detail = "Preflight execution reality PASS."
+    if not bool(preflight_payload.get("allowed")):
+        preflight_detail = ", ".join(str(item) for item in (preflight_payload.get("blocking_reasons") or []) if str(item).strip()) or "execution_preflight_failed"
+    elif preflight_payload.get("warnings"):
+        preflight_status = "WARN"
+        preflight_detail = ", ".join(str(item) for item in (preflight_payload.get("warnings") or []) if str(item).strip()) or "execution_preflight_warn"
+    _push_check(
+        "execution_preflight",
+        preflight_status,
+        preflight_detail,
+        filter_validation=copy.deepcopy(preflight_payload.get("filter_validation") or {}),
+        snapshot_source=copy.deepcopy(preflight_payload.get("snapshot_source") or {}),
+        fail_closed=bool(preflight_payload.get("fail_closed")),
+    )
+
+    normalized_preview = preflight_payload.get("normalized_order_preview") if isinstance(preflight_payload.get("normalized_order_preview"), dict) else {}
+    order_test_payload: dict[str, Any]
+    if bool(preflight_payload.get("allowed")) and account_status != "FAIL" and exchange_rules_status != "FAIL":
+        order_test_payload = store.execution_reality.test_order_contract(
+            family="spot",
+            environment=mode,
+            preview=normalized_preview,
+            client_order_id=f"live-preflight-{int(time.time())}",
+        )
+        order_test_status = "PASS" if bool(order_test_payload.get("ok")) else "FAIL"
+        order_test_detail = "order/test OK." if bool(order_test_payload.get("ok")) else str(((order_test_payload.get("remote_source") or {}).get("reason")) or "order_test_failed")
+    else:
+        order_test_payload = {
+            "ok": False,
+            "supported": True,
+            "remote_source": {"reason": "skipped_due_to_precheck_failure"},
+        }
+        order_test_status = "FAIL"
+        order_test_detail = "order/test omitido por fallos previos de preflight."
+    _push_check(
+        "order_test",
+        order_test_status,
+        order_test_detail,
+        remote_source=copy.deepcopy(order_test_payload.get("remote_source") or {}),
+        supported=bool(order_test_payload.get("supported", True)),
+    )
+
+    open_orders_count = 0
+    open_orders_status = "PASS"
+    open_orders_messages: list[str] = []
+    if credentials_ok:
+        ok_open, open_meta = _binance_signed_request(
+            method="GET",
+            base_url=str(creds.get("base_url") or ""),
+            path="/api/v3/openOrders",
+            api_key=str(creds.get("api_key") or ""),
+            api_secret=str(creds.get("api_secret") or ""),
+            params={},
+            timeout_sec=timeout_sec,
+        )
+        if ok_open:
+            payload_rows = open_meta.get("payload") if isinstance(open_meta.get("payload"), list) else []
+            open_orders_count = len(payload_rows)
+            if open_orders_count > 0:
+                open_orders_status = "WARN"
+                open_orders_messages.append(f"open_orders_present={open_orders_count}")
+        else:
+            open_orders_status = "WARN"
+            open_orders_messages.append(str(open_meta.get("reason") or "open_orders_probe_failed"))
+    if non_zero_balances:
+        open_orders_status = "WARN" if open_orders_status == "PASS" else open_orders_status
+        open_orders_messages.append(f"non_zero_holdings={len(non_zero_balances)}")
+    _push_check(
+        "operational_state",
+        open_orders_status,
+        "; ".join(open_orders_messages) if open_orders_messages else "Sin órdenes abiertas remotas y holdings parseables.",
+        open_orders_count=open_orders_count,
+        non_zero_balances_count=len(non_zero_balances),
+    )
+
+    overall_status = "FAIL" if any(item.get("status") == "FAIL" for item in checks.values()) else "WARN" if any(item.get("status") == "WARN" for item in checks.values()) else "PASS"
+    stored = store.live_preflight.insert_run(
+        {
+            "mode": mode,
+            "exchange": "binance",
+            "market_type": "spot",
+            "symbol": symbol,
+            "side": candidate.get("side"),
+            "quantity": candidate.get("quantity"),
+            "quote_order_qty": candidate.get("quote_quantity"),
+            "evaluated_at": evaluated_at,
+            "expires_at": expires_at,
+            "overall_status": overall_status,
+            "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "checks": checks,
+            "source_versions": source_versions,
+            "diagnostics": diagnostics,
+            "manual_attestations": {
+                "latest": latest_att,
+                "status": att_status,
+            },
+            "freshness_seconds": freshness_seconds,
+            "runtime_context": {
+                "runtime_engine": runtime_engine,
+                "runtime_snapshot": runtime_snapshot,
+                "telemetry_guard": telemetry_guard,
+                "gates_overall": gates_payload.get("overall_status"),
+                "mode_before_run": state.get("mode"),
+            },
+            "exchange_context": {
+                "base_url": creds.get("base_url"),
+                "ws_url": creds.get("ws_url"),
+                "key_source": creds.get("key_source"),
+                "account_type": account_type or None,
+                "permissions": permissions,
+                "can_trade": can_trade,
+                "can_withdraw": account.get("canWithdraw"),
+                "symbol_status": (symbol_row or {}).get("status"),
+                "filter_source": filter_rules.get("filter_source"),
+                "exchange_info_remote_source": copy.deepcopy(exchange_info_payload.get("remote_source") or {}),
+                "account_remote_source": copy.deepcopy(account_payload.get("remote_source") or {}),
+                "order_test_remote_source": copy.deepcopy(order_test_payload.get("remote_source") or {}),
+                "open_orders_count": open_orders_count,
+            },
+        }
+    )
+    return {
+        "ok": overall_status == "PASS",
+        "run": stored,
+        "policy": copy.deepcopy(policy),
+        "latest_attestation": latest_att,
+        "attestation_status": att_status,
+        "live_enablement_gate": _live_preflight_gate(mode),
+    }
+
+
 def build_status_payload() -> dict[str, Any]:
     settings = store.load_settings()
     state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
@@ -8748,6 +10028,8 @@ def build_operational_alerts_payload() -> dict[str, Any]:
             "slippage_p95_warn_bps": OPS_ALERT_SLIPPAGE_P95_WARN_BPS,
             "api_errors_warn": OPS_ALERT_API_ERRORS_WARN,
             "breaker_window_hours": OPS_ALERT_BREAKER_WINDOW_HOURS,
+            "breaker_unknown_ratio_warn": BREAKER_EVENTS_UNKNOWN_RATIO_WARN,
+            "breaker_min_events_warn": BREAKER_EVENTS_UNKNOWN_MIN_EVENTS,
         },
         "signals": {
             "drift": drift_payload,
@@ -8846,6 +10128,46 @@ def parse_strategy_yaml_upload(payload: bytes) -> dict[str, Any]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="RTLAB API", version=APP_VERSION)
+
+    @app.on_event("startup")
+    async def instrument_registry_startup_sync() -> None:
+        try:
+            store.instrument_registry_startup_sync = store.instrument_registry.sync_on_startup()
+        except Exception as exc:
+            store.instrument_registry_startup_sync = {
+                "ok": False,
+                "startup": True,
+                "skipped": False,
+                "reason": "startup_sync_failed",
+                "error": str(exc),
+            }
+            store.add_log(
+                event_type="instrument_registry",
+                severity="warn",
+                module="instruments",
+                message="Instrument registry startup sync failed",
+                related_ids=[],
+                payload={"error": str(exc)},
+            )
+
+    @app.on_event("startup")
+    async def execution_live_orders_startup_recovery() -> None:
+        try:
+            store.execution_live_orders_startup_recovery = store.execution_reality.recover_live_orders_on_startup()
+        except Exception as exc:
+            store.execution_live_orders_startup_recovery = {
+                "ok": False,
+                "reason": "startup_recovery_failed",
+                "error": str(exc),
+            }
+            store.add_log(
+                event_type="execution_recovery",
+                severity="warn",
+                module="execution",
+                message="Live order startup recovery failed",
+                related_ids=[],
+                payload={"error": str(exc)},
+            )
 
     @app.middleware("http")
     async def api_rate_limit_middleware(request: Request, call_next):
@@ -8980,6 +10302,727 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/data/status")
     def data_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return DataCatalog(USER_DATA_DIR).status()
+
+    @app.get("/api/v1/instruments/registry/summary")
+    def instruments_registry_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_registry.registry_summary()
+
+    @app.get("/api/v1/instruments/registry/snapshots")
+    def instruments_registry_snapshots(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            items = store.instrument_registry.db.list_snapshots(
+                family=family,
+                environment=environment,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "items": items,
+            "policy_source": store.instrument_registry.policy_source(),
+        }
+
+    @app.post("/api/v1/instruments/registry/sync")
+    def instruments_registry_sync(
+        body: InstrumentRegistrySyncBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            payload = store.instrument_registry.sync(
+                family=body.family,
+                environment=body.environment,
+                startup=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store.add_log(
+            event_type="instrument_registry",
+            severity="info",
+            module="instruments",
+            message="Instrument registry sync requested",
+            related_ids=[],
+            payload={"family": body.family, "environment": body.environment, "ok": payload.get("ok")},
+        )
+        return payload
+
+    @app.get("/api/v1/instruments/universes")
+    def instruments_universes(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_universes.summary()
+
+    @app.get("/api/v1/account/capabilities/summary")
+    def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.instrument_registry.capabilities_summary()
+
+    @app.post("/api/v1/execution/preflight")
+    def execution_preflight(
+        body: ExecutionPreflightBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.preflight(body.model_dump())
+
+    @app.get("/api/v1/execution/filter-rules")
+    def execution_filter_rules(
+        family: str = Query(...),
+        symbol: str = Query(...),
+        environment: str = Query(default="live"),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.filter_rules(
+                family=family,
+                symbol=symbol,
+                environment=environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/orders")
+    def execution_create_order(
+        body: ExecutionPreflightBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.create_order(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/orders")
+    def execution_list_orders(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.list_orders(
+                family=family,
+                environment=environment,
+                symbol=symbol,
+                status=status,
+                strategy_id=strategy_id,
+                bot_id=bot_id,
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/orders/{execution_order_id}")
+    def execution_order_detail(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.order_detail(execution_order_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return payload
+
+    @app.get("/api/v1/execution/live-orders")
+    def execution_live_orders(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_live_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/live-orders/unresolved")
+    def execution_live_orders_unresolved(
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.unresolved_live_orders(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+        )
+
+    @app.get("/api/v1/execution/live-orders/{execution_order_id}")
+    def execution_live_order_detail(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.order_detail(execution_order_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return payload
+
+    @app.get("/api/v1/execution/live-orders/timeline/{execution_order_id}")
+    def execution_live_order_timeline(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        order = store.execution_reality.db.order_by_id(execution_order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return {
+            "execution_order_id": execution_order_id,
+            "timeline": store.execution_reality.live_order_timeline(execution_order_id),
+        }
+
+    @app.post("/api/v1/execution/live-orders/reconcile")
+    def execution_live_orders_reconcile(
+        body: ExecutionLiveOrdersReconcileBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconcile_live_orders(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/summary")
+    def execution_reconciliation_summary(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconciliation_summary(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            execution_order_id=execution_order_id,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases")
+    def execution_reconciliation_cases(
+        final_status: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        blocking_only: bool = Query(default=False),
+        active_only: bool = Query(default=False),
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_reconciliation_cases_payload(
+            final_status=final_status,
+            severity=severity,
+            blocking_only=blocking_only,
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            active_only=active_only,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases/open")
+    def execution_reconciliation_cases_open(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        execution_order_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.open_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            execution_order_id=execution_order_id,
+            bot_id=bot_id,
+            limit=limit,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/cases/{reconciliation_case_id}")
+    def execution_reconciliation_case_detail(
+        reconciliation_case_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.reconciliation_case_detail(reconciliation_case_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="reconciliation_case_not_found")
+        return payload
+
+    @app.post("/api/v1/execution/reconciliation/run")
+    def execution_reconciliation_run(
+        body: ExecutionReconciliationRunBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.post("/api/v1/execution/reconciliation/run/by-order/{execution_order_id}")
+    def execution_reconciliation_run_by_order(
+        execution_order_id: str,
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        trigger: str = Query(default="MANUAL"),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            bot_id=bot_id,
+            trigger=trigger,
+        )
+
+    @app.post("/api/v1/execution/reconciliation/run/by-symbol/{symbol}")
+    def execution_reconciliation_run_by_symbol(
+        symbol: str,
+        environment: str | None = Query(default="live"),
+        family: str | None = Query(default="spot"),
+        bot_id: str | None = Query(default=None),
+        trigger: str = Query(default="MANUAL"),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.run_reconciliation_engine(
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            bot_id=bot_id,
+            trigger=trigger,
+        )
+
+    @app.get("/api/v1/execution/reconciliation/desync")
+    def execution_reconciliation_desync(
+        environment: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.desync_reconciliation_cases(
+            environment=environment,
+            family=family,
+            symbol=symbol,
+            bot_id=bot_id,
+            limit=limit,
+        )
+
+    @app.get("/api/v1/execution/live-fills")
+    def execution_live_fills(
+        execution_order_id: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        reconciliation_status: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.list_live_fills(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+            reconciliation_status=reconciliation_status,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/v1/execution/live-fills/discrepancies")
+    def execution_live_fills_discrepancies(
+        execution_order_id: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        environment: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.live_fill_discrepancies(
+            execution_order_id=execution_order_id,
+            family=family,
+            environment=environment,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/execution/live-fills/by-order/{execution_order_id}")
+    def execution_live_fills_by_order(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        order = store.execution_reality.db.order_by_id(execution_order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="execution_order_not_found")
+        return {
+            "execution_order_id": execution_order_id,
+            "order": store.execution_reality._live_order_summary_row(order),
+            "fills": store.execution_reality.list_live_fills(execution_order_id=execution_order_id, limit=500, offset=0)["items"],
+        }
+
+    @app.get("/api/v1/execution/live-fills/{execution_fill_id}")
+    def execution_live_fill_detail(
+        execution_fill_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.execution_reality.live_fill_detail(execution_fill_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="execution_fill_not_found")
+        return payload
+
+    @app.post("/api/v1/execution/live-fills/reconcile")
+    def execution_live_fills_reconcile(
+        body: ExecutionLiveFillsReconcileBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reconcile_live_fills(
+            execution_order_id=body.execution_order_id,
+            family=body.family,
+            environment=body.environment,
+            symbol=body.symbol,
+            bot_id=body.bot_id,
+            trigger=body.trigger,
+        )
+
+    @app.post("/api/v1/execution/orders/{execution_order_id}/cancel")
+    def execution_cancel_order(
+        execution_order_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.cancel_order(execution_order_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/orders/cancel-all")
+    def execution_cancel_all(
+        body: ExecutionCancelAllBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.cancel_all(
+                family=body.family,
+                environment=body.environment,
+                symbol=body.symbol,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/kill-switch/status")
+    def execution_kill_switch_status(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.kill_switch_status()
+
+    @app.post("/api/v1/execution/kill-switch/trip")
+    def execution_kill_switch_trip(
+        body: ExecutionKillSwitchTripBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.trip_kill_switch(
+            trigger_type=body.trigger_type,
+            severity=body.severity,
+            family=body.family,
+            symbol=body.symbol,
+            reason=body.reason,
+        )
+
+    @app.post("/api/v1/execution/kill-switch/reset")
+    def execution_kill_switch_reset(
+        body: ExecutionKillSwitchResetBody,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.execution_reality.reset_kill_switch(reason=body.reason)
+
+    @app.get("/api/v1/execution/reconcile/summary")
+    def execution_reconcile_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.reconcile_orders()
+
+    @app.get("/api/v1/execution/live-safety/summary")
+    def execution_live_safety_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.live_safety_summary()
+
+    @app.get("/api/v1/execution/market-streams/summary")
+    def execution_market_streams_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.market_streams_summary()
+
+    @app.post("/api/v1/execution/market-streams/start")
+    def execution_market_streams_start(
+        body: ExecutionMarketStreamStartBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.start_market_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+                symbols=body.symbols,
+                transport_mode=body.transport_mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/market-streams/stop")
+    def execution_market_streams_stop(
+        body: ExecutionMarketStreamStopBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.stop_market_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/execution/user-streams/summary")
+    def execution_user_streams_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.execution_reality.user_streams_summary()
+
+    @app.post("/api/v1/execution/user-streams/start")
+    def execution_user_streams_start(
+        body: ExecutionUserStreamStartBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.start_user_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+                user_stream_mode=body.user_stream_mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/execution/user-streams/stop")
+    def execution_user_streams_stop(
+        body: ExecutionUserStreamStopBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        try:
+            return store.execution_reality.stop_user_stream(
+                execution_connector=body.execution_connector,
+                environment=body.environment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/validation/summary")
+    def validation_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.validation.summary()
+
+    @app.get("/api/v1/validation/runs")
+    def validation_runs(
+        stage: str | None = Query(default=None),
+        result: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return store.validation.runs(limit=limit, offset=offset, stage=stage, result=result)
+
+    @app.get("/api/v1/validation/runs/{validation_run_id}")
+    def validation_run_detail(
+        validation_run_id: str,
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        payload = store.validation.run_detail(validation_run_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="validation_run_not_found")
+        return payload
+
+    @app.post("/api/v1/validation/evaluate")
+    def validation_evaluate(
+        body: ValidationEvaluateBody,
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return store.validation.evaluate(
+            stage=body.stage,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.get("/api/v1/validation/readiness")
+    def validation_readiness(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.validation.readiness()
+
+    def _refresh_reporting_views() -> None:
+        try:
+            store.reporting_bridge.refresh_materialized_views(store.load_runs())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/reporting/performance/summary")
+    def reporting_performance_summary(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.performance_summary(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/performance/daily")
+    def reporting_performance_daily(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.daily_series(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/performance/monthly")
+    def reporting_performance_monthly(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.monthly_series(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/costs/breakdown")
+    def reporting_costs_breakdown(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.costs_breakdown(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+        )
+
+    @app.get("/api/v1/reporting/trades")
+    def reporting_trades(
+        strategy_id: str | None = Query(default=None),
+        bot_id: str | None = Query(default=None),
+        venue: str | None = Query(default=None),
+        family: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.trades(
+            strategy_id=strategy_id,
+            bot_id=bot_id,
+            venue=venue,
+            family=family,
+            symbol=symbol,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.post("/api/v1/reporting/exports/xlsx")
+    def reporting_export_xlsx(
+        body: ReportingExportBody,
+        user: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.create_export(
+            export_type="xlsx",
+            generated_by=str(user.get("username") or "system"),
+            report_scope=body.report_scope,
+            strategy_id=body.strategy_id,
+            bot_id=body.bot_id,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.post("/api/v1/reporting/exports/pdf")
+    def reporting_export_pdf(
+        body: ReportingExportBody,
+        user: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return store.reporting_bridge.create_export(
+            export_type="pdf",
+            generated_by=str(user.get("username") or "system"),
+            report_scope=body.report_scope,
+            strategy_id=body.strategy_id,
+            bot_id=body.bot_id,
+            venue=body.venue,
+            family=body.family,
+            symbol=body.symbol,
+        )
+
+    @app.get("/api/v1/reporting/exports")
+    def reporting_exports(
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        _refresh_reporting_views()
+        return {
+            "items": store.reporting_bridge.db.list_exports(limit=limit),
+            "policy_source": store.reporting_bridge.policy_source(),
+        }
 
     @app.get("/api/v1/strategies")
     def list_strategies(_: dict[str, str] = Depends(current_user)) -> list[dict[str, Any]]:
@@ -12111,6 +14154,45 @@ def create_app() -> FastAPI:
         payload = diagnose_exchange(selected_mode, force_refresh=force)
         return payload
 
+    @app.get("/api/v1/exchange/live-preflight")
+    def exchange_live_preflight(
+        mode: str = Query(default="live"),
+        limit: int = Query(default=10, ge=1, le=50),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        normalized_mode = "testnet" if str(mode or "").strip().lower() == "testnet" else "live"
+        return latest_live_preflight_payload(normalized_mode, limit=limit)
+
+    @app.post("/api/v1/exchange/live-preflight/run")
+    def exchange_live_preflight_run(
+        body: LivePreflightRunBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return build_live_preflight(body.model_dump(), actor=user.get("username"))
+
+    @app.post("/api/v1/exchange/live-preflight/attest")
+    def exchange_live_preflight_attest(
+        body: LivePreflightAttestBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        mode = "testnet" if str(body.mode or "").strip().lower() == "testnet" else "live"
+        store.live_preflight.insert_attestation(
+            {
+                "mode": mode,
+                "exchange": "binance",
+                "market_type": "spot",
+                "created_at": utc_now_iso(),
+                "verified_by": user.get("username", "admin"),
+                "verified_at": utc_now_iso(),
+                "note": body.note,
+                "manual_permissions_verified": body.manual_permissions_verified,
+                "trade_enabled_verified": body.trade_enabled_verified,
+                "withdraw_disabled_verified": body.withdraw_disabled_verified,
+                "ip_restriction_verified": body.ip_restriction_verified,
+            }
+        )
+        return latest_live_preflight_payload(mode)
+
     @app.get("/api/v1/diagnostics/breaker-events")
     def diagnostics_breaker_events(
         window_hours: int = Query(default=BREAKER_EVENTS_INTEGRITY_WINDOW_HOURS, ge=1, le=168),
@@ -12135,6 +14217,18 @@ def create_app() -> FastAPI:
             allowed, reason = live_can_be_enabled(gates_payload)
             if not allowed:
                 raise HTTPException(status_code=400, detail=f"LIVE blocked by gates: {reason}")
+            preflight_gate = _live_preflight_gate("live")
+            if not bool(preflight_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
+                )
+            reconcile_gate = _live_reconciliation_gate()
+            if not bool(reconcile_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by reconciliation: {reconcile_gate.get('reason')}",
+                )
         state = store.load_bot_state()
         state["mode"] = mode
         state["runtime_engine"] = _runtime_engine_from_state(state)
@@ -12155,6 +14249,19 @@ def create_app() -> FastAPI:
     def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
+        if str(state.get("mode") or "").strip().lower() == "live":
+            preflight_gate = _live_preflight_gate("live")
+            if not bool(preflight_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by final preflight: {preflight_gate.get('reason')}",
+                )
+            reconcile_gate = _live_reconciliation_gate(bot_id=bot_id)
+            if not bool(reconcile_gate.get("ok")):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LIVE blocked by reconciliation: {reconcile_gate.get('reason')}",
+                )
         # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
         strategy_name: str | None = None
         active_bot_id = str(bot_id or "").strip() or None

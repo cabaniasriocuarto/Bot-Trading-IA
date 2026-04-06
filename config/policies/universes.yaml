@@ -1,0 +1,29 @@
+globals:
+  leveraged_token_suffixes: ["UP", "DOWN", "BULL", "BEAR"]
+universes:
+  core_spot_usdt:
+    venue: binance
+    family: spot
+    quote_assets: ["USDT"]
+    require_status: ["TRADING"]
+    exclude_leveraged_tokens: true
+    min_live_eligible: true
+  core_margin_usdt:
+    venue: binance
+    family: margin
+    quote_assets: ["USDT"]
+    require_status: ["TRADING"]
+    min_live_eligible: true
+    require_margin_capability: true
+  core_usdm_perps:
+    venue: binance
+    family: usdm_futures
+    contract_types: ["PERPETUAL"]
+    require_status: ["TRADING"]
+    min_live_eligible: true
+  core_coinm_perps:
+    venue: binance
+    family: coinm_futures
+    contract_types: ["PERPETUAL"]
+    require_status: ["TRADING"]
+    min_live_eligible: true

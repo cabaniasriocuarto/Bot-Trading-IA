@@ -1,0 +1,24 @@
+reporting_exports:
+  formats:
+    csv: true
+    xlsx: true
+    pdf: true
+  xlsx:
+    include_summary_sheet: true
+    include_daily_sheet: true
+    include_monthly_sheet: true
+    include_trades_sheet: true
+    include_cost_breakdown_sheet: true
+  pdf:
+    include_summary_cards: true
+    include_equity_curve: true
+    include_daily_pnl_chart: true
+    include_monthly_pnl_chart: true
+    include_cost_breakdown_table: true
+    include_top_strategies: true
+  retention:
+    export_manifest_keep_days: 30
+  filenames:
+    prefix: "rtlab_report"
+  limits:
+    max_rows_per_export: 50000
