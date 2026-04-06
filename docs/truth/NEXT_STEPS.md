@@ -2,6 +2,21 @@
 
 Fecha: 2026-04-06
 
+## Siguiente bloque exacto para Railway auto-deploy root-safe - 2026-04-06
+- [x] Auditar `staging` real:
+  - `rootDirectory=null`
+  - `dockerfilePath=docker/Dockerfile`
+  - GitHub auto-deploy fallando porque el repo root no tenia ese archivo
+- [x] Dejar solucion por codigo/config:
+  - `docker/Dockerfile` en repo root
+  - `railway.json` con `dockerfilePath=docker/Dockerfile`
+  - `watchPatterns` restringidos al backend/config
+- [ ] Validar con deploy real desde la raiz del repo:
+  - disparar deploy con la branch tecnica actual
+  - confirmar en Railway que el deployment muestre `configFile` y use el `docker/Dockerfile` root
+- [ ] Luego, validar el siguiente merge a `main`:
+  - debe auto-desplegar sin volver a fallar por `Dockerfile 'docker/Dockerfile' does not exist`
+
 ## Siguiente bloque exacto para Backtests / Beast runtime roots - 2026-04-06
 - [x] Reconstruir el problema real desde repo/docs/truth:
   - `runtime sin policy` provenia de runtime/backend, no del frontend.
