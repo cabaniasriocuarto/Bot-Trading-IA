@@ -1,6 +1,30 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-05
+Fecha: 2026-04-06
+
+## Siguiente bloque exacto para Backtests / Beast runtime roots - 2026-04-06
+- [x] Reconstruir el problema real desde repo/docs/truth:
+  - `runtime sin policy` provenia de runtime/backend, no del frontend.
+  - `resolve_policy_root()` ya estaba corregido.
+  - el image seguia sin empaquetar `config/policies`.
+- [x] Aplicar fix minimo de empaquetado:
+  - `rtlab_autotrader/docker/Dockerfile` ahora copia `config/` a `/app/config`.
+- [ ] Validar deploy/runtime real del fix:
+  - redeployar el backend que usa `rtlab_autotrader/docker/Dockerfile`
+  - verificar `GET /api/v1/research/beast/status`
+  - esperado:
+    - `policy_state != missing`
+    - sin cadena de `Policy YAML no encontrado` para `config/policies/*`
+- [ ] Validar root de dataset en runtime real:
+  - confirmar el `RTLAB_USER_DATA_DIR` efectivo del servicio
+  - si la UI sigue mostrando `/app/data/rtlab_user_data/data`, decidir con evidencia si es el mount correcto o un env legacy
+- [ ] Si el dataset sigue faltando luego del redeploy:
+  - cargar dataset reproducible en `${RTLAB_USER_DATA_DIR}/data`
+  - para crypto, usar downloader publico y volver a consultar `/api/v1/data/status`
+- [ ] Deuda administrativa:
+  - `Linear MCP` no disponible en esta sesion
+  - sync pendiente con issue puntual:
+    - `Backtests/Beast: corregir policy root y data root en runtime staging`
 
 ## Siguiente bloque exacto tras mergear PR 1 runtime - 2026-04-05
 - [x] Resolver el status viejo de Vercel que bloqueaba `#15`.

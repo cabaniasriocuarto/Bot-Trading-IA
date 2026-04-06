@@ -1,6 +1,37 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-05
+Fecha de actualizacion: 2026-04-06
+
+## Backtests / Beast: audit de policy root + data root en runtime - 2026-04-06
+
+- Rama tecnica usada para este bloque:
+  - `fix/beast-policy-packaging-runtime-roots`
+- Alcance deliberadamente chico:
+  - no abrir `todo Backtests`
+  - no mezclar UX grande
+  - corregir solo la causa real del `runtime sin policy` y dejar el estado de dataset escrito sin maquillaje
+- Confirmado en repo:
+  - `rtlab_autotrader/rtlab_core/web/app.py` publica `policy_state`, `policy_source_root` y `policy_warnings` desde `load_numeric_policies_bundle()`.
+  - `rtlab_autotrader/rtlab_core/policy_paths.py` ya resuelve roots por presencia real de YAML y no por mera existencia de carpeta.
+  - el image backend definido en `rtlab_autotrader/docker/Dockerfile` no copiaba `config/`, por lo que el contenedor podia arrancar con `/app` pero sin `/app/config/policies`.
+- Causa raiz exacta del `runtime sin policy`:
+  - no era un bug de frontend ni de `resolve_policy_root()`;
+  - era un problema de empaquetado del runtime: faltaba `config/policies` dentro del image.
+- Cambio minimo aplicado:
+  - `rtlab_autotrader/docker/Dockerfile` ahora copia `config/` a `/app/config`.
+  - con eso, el runtime de Beast/Research Batch puede resolver `config/policies/*` en el layout que `app.py` ya espera.
+- Estado del dataset root:
+  - `DataCatalog` siempre expone `${RTLAB_USER_DATA_DIR}/data`.
+  - si la UI muestra rutas tipo `/app/data/rtlab_user_data/data`, eso refleja el `RTLAB_USER_DATA_DIR` activo del runtime y no un bug cosmetico del panel.
+  - sin acceso autenticado a Railway en esta sesion, no hay evidencia suficiente para afirmar que ese root sea incorrecto.
+  - por lo tanto, `dataset real faltante` sigue tratandose como faltante operativo real hasta demostrar lo contrario.
+- Consecuencia operativa honesta:
+  - este fix apunta a eliminar los falsos `Policy YAML no encontrado`.
+  - si despues del redeploy sigue faltando dataset, el siguiente paso correcto es cargar manifests/processed data en el root activo del runtime (`RTLAB_USER_DATA_DIR/data`) y no tocar UI para ocultarlo.
+- Linear:
+  - `Linear MCP` sigue sin estar disponible en esta sesion.
+  - titulo recomendado para trazabilidad administrativa:
+    - `Backtests/Beast: corregir policy root y data root en runtime staging`
 
 ## PR 2 product inputs + truth structuring preparado para integrar a `main` - 2026-04-05
 

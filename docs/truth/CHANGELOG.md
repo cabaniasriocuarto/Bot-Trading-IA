@@ -1,5 +1,24 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-06
+
+### Backtests / Beast: runtime sin policy audit + fix minimo de empaquetado
+- Diagnostico real reconstruido desde repo + docs/truth + runtime visible en UI:
+  - el badge `runtime sin policy` no venia del frontend; salia de `/api/v1/research/beast/status` via `load_numeric_policies_bundle()`.
+  - `resolve_policy_root()` ya estaba endurecido para preferir YAML reales, pero el image de backend seguia sin empaquetar `config/policies/`.
+  - `rtlab_autotrader/docker/Dockerfile` copiaba `rtlab_core`, `user_data`, `scripts` y `rtlab_config.yaml.example`, pero no `config/`.
+  - en ese escenario, el runtime en `/app` queda sin `/app/config/policies`, cae en warnings `Policy YAML no encontrado` y publica `policy_state=missing`.
+- Cambio minimo aplicado:
+  - `rtlab_autotrader/docker/Dockerfile` ahora copia `config/` a `/app/config`.
+  - objetivo: que Beast/Research Batch vean `config/policies/*` dentro del contenedor y desaparezca el falso `runtime sin policy`.
+- Dataset root:
+  - el root visible en UI (`data_root`) sigue siendo `RTLAB_USER_DATA_DIR/data`.
+  - si el runtime muestra rutas tipo `/app/data/rtlab_user_data/data`, eso puede ser una variable real del deploy y no un bug del frontend.
+  - el faltante de dataset sigue siendo operativo hasta validar el mount/runtime real; no se maquilla desde codigo.
+- Integracion operativa:
+  - `Linear MCP` no estuvo disponible en esta sesion.
+  - encuadre administrativo recomendado: `Backtests/Beast: corregir policy root y data root en runtime staging`.
+
 ## 2026-04-05
 
 ### PR 2 documental preparado desde rama limpia
