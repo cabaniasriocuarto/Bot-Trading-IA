@@ -2331,3 +2331,42 @@ El proyecto tiene:
   - proponer limpieza
   - borrar/mover solo lo claramente obsoleto, redundante o enga?oso
   - no tocar artefactos actuales/ambiguos solo por estar viejos o ser locales
+
+## 2026-04-06
+
+### Beast / Backtests staging: test E2E real sobre BTCUSDT
+- `Linear MCP` no estuvo disponible en esta sesion.
+- El bloque se ejecuto como validacion operativa puntual, no como megaproyecto de Backtests.
+- Verdad tecnica confirmada en staging:
+  - `policy_state=enabled`
+  - `policy_source_root=/app/config/policies`
+  - `data_root=/app/user_data/data`
+  - dataset base disponible: `BTCUSDT 1m` real en volumen persistente
+- Se ejecuto una corrida real de Beast sobre staging con:
+  - endpoint: `POST /api/v1/research/beast/start`
+  - estrategia: `trend_pullback_orderflow_confirm_v1`
+  - `market=crypto`
+  - `symbol=BTCUSDT`
+  - `timeframe=5m`
+  - periodo: `2024-01-01 -> 2024-03-31`
+  - `dataset_source=auto`
+  - `data_mode=dataset`
+  - `validation_mode=walk-forward`
+  - `use_orderflow_data=false`
+- Evidencia real del run:
+  - workflow GitHub Actions: `24022545610`
+  - artifact con reporte E2E + smoke + beast runtime
+  - `run_id=BX-000001`
+  - estado terminal: `COMPLETED`
+  - `results_count=1`
+  - `variants_total=1`
+  - `strategy_id=trend_pullback_orderflow_confirm_v1`
+- El motor resolvio correctamente `1m + resample`:
+  - antes del run no habia dataset exacto `BTCUSDT 5m`
+  - despues del run quedo `exact_present=true`
+  - archivo generado: `/app/user_data/data/crypto/processed/BTCUSDT_5m.parquet`
+  - manifest generado: `/app/user_data/data/crypto/manifests/BTCUSDT_5m.json`
+- Lectura correcta del estado:
+  - Beast/Backtests ya no esta roto por `policy root`
+  - staging ya esta listo para testeo real sobre `BTCUSDT`
+  - el siguiente cuello ya no es runtime basico sino cobertura de datasets/estrategias si se quiere ampliar el pool

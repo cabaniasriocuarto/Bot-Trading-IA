@@ -2216,3 +2216,26 @@
 - `backtests/page.tsx`: overlays/equity/drawdown ahora muestran ejes con nombre (`Paso / muestra`, `Equity neta`, `Drawdown`).
 - `test_web_live_ready.py`: nuevas validaciones para `run -> bot` persistente aun si cambia el pool del bot, y forwarding de `bot_id` en mass/beast.
 - Limpieza local conservadora: eliminados solo `tmp/`, `tmp_test_ud/`, runs `synthetic_seeded` no versionados y metadata vacia de `mass_backtests/`.
+
+## 2026-04-06
+
+### Beast staging E2E
+- Se agrego sonda reutilizable de test E2E para Beast en staging:
+  - `scripts/beast_staging_e2e_report.py`
+  - `staging-smoke.yml` ahora puede ejecutar Beast E2E sobre `BTCUSDT`
+  - workflow dedicado adicional: `.github/workflows/beast-staging-e2e.yml`
+- Validacion real cerrada:
+  - workflow: `24022545610`
+  - run real: `BX-000001`
+  - estrategia: `trend_pullback_orderflow_confirm_v1`
+  - `timeframe=5m`
+  - `dataset_source=auto`
+  - `use_orderflow_data=false`
+  - estado final: `COMPLETED`
+  - `results_count=1`
+- El run materializo dataset exacto `BTCUSDT 5m` a partir de `1m`:
+  - `exact_present=false -> true`
+  - output: `/app/user_data/data/crypto/processed/BTCUSDT_5m.parquet`
+- Conclusión operativa:
+  - Beast/Backtests en staging ya es usable para testeo real sobre `BTCUSDT`
+  - no hizo falta fix adicional de backend/producto en este bloque

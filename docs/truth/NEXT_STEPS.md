@@ -880,3 +880,17 @@ Fecha: 2026-04-06
 - [ ] Validar en deploy visible que la rama con `beast/status` corregido este realmente desplegada y deje de mostrar `Modo Bestia deshabilitado` falso.
 - [ ] Completar export consolidado de conocimiento por lote de bots (no solo export JSON por bot individual).
 - [ ] Seguir con simplificacion UX: agrupar acciones masivas/edicion de pool para reducir ruido por fila en `Strategies`.
+
+## 2026-04-06
+
+### Beast / Backtests staging
+- [x] Confirmar runtime Beast sano en staging (`policy_state=enabled`, `policy_source_root=/app/config/policies`, `data_root=/app/user_data/data`).
+- [x] Ejecutar test E2E real de Beast sobre `BTCUSDT` en staging.
+- [x] Confirmar corrida real `BX-000001` en `COMPLETED` con `trend_pullback_orderflow_confirm_v1`.
+- [x] Confirmar generacion de dataset exacto `BTCUSDT 5m` via resample desde `1m`.
+- [ ] Si se quiere ampliar el testeo de Beast, bootstrappear datasets reales adicionales del pool (`ETHUSDT`, `BNBUSDT`, `SOLUSDT`, etc.) antes de abrir otro bloque de runtime.
+- [ ] Cuando Linear vuelva a estar disponible, registrar este cierre como issue puntual: `Backtests/Beast: testeo real en staging sobre BTCUSDT`.
+
+### Siguiente bloque recomendado
+1. Repetir el workflow de Beast E2E para una segunda estrategia real o para otro simbolo del pool, sin abrir cambios de producto si el runtime sigue sano.
+2. Si el objetivo pasa a cobertura de pool, abrir un bloque chico de datos para poblar timeframes/simbolos faltantes en `/app/user_data/data`.

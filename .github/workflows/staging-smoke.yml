@@ -40,6 +40,11 @@ on:
         required: true
         default: true
         type: boolean
+      include_beast_e2e:
+        description: Run authenticated Beast E2E BTCUSDT test
+        required: true
+        default: false
+        type: boolean
       bootstrap_dataset:
         description: Bootstrap crypto public dataset before Beast probe
         required: true
@@ -55,6 +60,21 @@ on:
         required: false
         default: 2024-12
         type: string
+      beast_strategy_id:
+        description: Strategy id for Beast E2E
+        required: false
+        default: trend_pullback_orderflow_confirm_v1
+        type: string
+      beast_use_orderflow_data:
+        description: Use orderflow data in Beast E2E
+        required: true
+        default: false
+        type: boolean
+      beast_max_wait_sec:
+        description: Max wait seconds for Beast E2E terminal state
+        required: true
+        default: 180
+        type: number
 
 jobs:
   smoke:
@@ -176,6 +196,62 @@ jobs:
 
           "${cmd[@]}" | tee artifacts/beast_runtime_stdout.log
 
+      - name: Run Beast staging E2E
+        if: ${{ inputs.include_beast_e2e }}
+        env:
+          BACKEND_BASE_URL: ${{ inputs.backend_base_url }}
+          USERNAME: ${{ inputs.username }}
+          TIMEOUT_SEC: ${{ inputs.timeout_sec }}
+          BOOTSTRAP_DATASET: ${{ inputs.bootstrap_dataset }}
+          BOOTSTRAP_START_MONTH: ${{ inputs.bootstrap_start_month }}
+          BOOTSTRAP_END_MONTH: ${{ inputs.bootstrap_end_month }}
+          BEAST_STRATEGY_ID: ${{ inputs.beast_strategy_id }}
+          BEAST_USE_ORDERFLOW_DATA: ${{ inputs.beast_use_orderflow_data }}
+          BEAST_MAX_WAIT_SEC: ${{ inputs.beast_max_wait_sec }}
+          STRICT: ${{ inputs.strict }}
+          RTLAB_STAGING_ADMIN_PASSWORD: ${{ secrets.RTLAB_STAGING_ADMIN_PASSWORD }}
+          RTLAB_STAGING_AUTH_TOKEN: ${{ secrets.RTLAB_STAGING_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          report_prefix="artifacts/beast_staging_e2e_gha_${GITHUB_RUN_ID}"
+          export RTLAB_ADMIN_PASSWORD="${RTLAB_STAGING_ADMIN_PASSWORD:-}"
+
+          cmd=(
+            python scripts/beast_staging_e2e_report.py
+            --base-url "${BACKEND_BASE_URL}"
+            --username "${USERNAME}"
+            --market crypto
+            --symbol BTCUSDT
+            --timeframe 5m
+            --start 2024-01-01
+            --end 2024-03-31
+            --strategy-id "${BEAST_STRATEGY_ID}"
+            --report-prefix "${report_prefix}"
+            --max-wait-sec "${BEAST_MAX_WAIT_SEC}"
+          )
+
+          if [[ "${BEAST_USE_ORDERFLOW_DATA}" == "true" ]]; then
+            cmd+=(--use-orderflow-data)
+          else
+            cmd+=(--no-orderflow-data)
+          fi
+
+          if [[ "${BOOTSTRAP_DATASET}" == "true" ]]; then
+            cmd+=(--bootstrap-crypto-public --bootstrap-start-month "${BOOTSTRAP_START_MONTH}" --bootstrap-end-month "${BOOTSTRAP_END_MONTH}")
+          fi
+
+          if [[ "${STRICT}" == "true" ]]; then
+            cmd+=(--strict)
+          else
+            cmd+=(--no-strict)
+          fi
+
+          if [[ -n "${RTLAB_STAGING_AUTH_TOKEN:-}" ]]; then
+            cmd+=(--auth-token "${RTLAB_STAGING_AUTH_TOKEN}")
+          fi
+
+          "${cmd[@]}" | tee artifacts/beast_staging_e2e_stdout.log
+
       - name: Build summary
         if: always()
         run: |
@@ -203,6 +279,17 @@ jobs:
               echo "Report file: ${latest_beast_md}"
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
+          latest_beast_e2e_md="$(ls -1t artifacts/beast_staging_e2e_gha_${GITHUB_RUN_ID}_*.md 2>/dev/null | head -n 1 || true)"
+          if [[ -n "${latest_beast_e2e_md}" && -f "${latest_beast_e2e_md}" ]]; then
+            {
+              echo
+              echo "## Beast E2E"
+              echo
+              grep -E "^- strategy_id:|^- market/symbol/timeframe:|^- run_id:|^- terminal_state:|^- overall_pass:" "${latest_beast_e2e_md}" || true
+              echo
+              echo "Report file: ${latest_beast_e2e_md}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
       - name: Upload artifacts
         if: always()
@@ -216,4 +303,7 @@ jobs:
             artifacts/beast_runtime_status_gha_${{ github.run_id }}_*.md
             artifacts/beast_runtime_status_gha_${{ github.run_id }}_*.json
             artifacts/beast_runtime_stdout.log
+            artifacts/beast_staging_e2e_gha_${{ github.run_id }}_*.md
+            artifacts/beast_staging_e2e_gha_${{ github.run_id }}_*.json
+            artifacts/beast_staging_e2e_stdout.log
           if-no-files-found: warn
