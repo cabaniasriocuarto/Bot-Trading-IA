@@ -71,6 +71,35 @@ def _ensure_runtime_real_for_rollout_api(module, client, headers: dict[str, str]
   assert start.status_code == 200, start.text
 
 
+def _force_runtime_contract_live_ready(module) -> None:
+  state = module.store.load_bot_state()
+  now_iso = module.utc_now_iso()
+  state.update(
+    {
+      "mode": "live",
+      "runtime_engine": "real",
+      "runtime_contract_version": "runtime_snapshot_v1",
+      "runtime_telemetry_source": "runtime_loop_v1",
+      "runtime_loop_alive": True,
+      "runtime_executor_connected": True,
+      "runtime_reconciliation_ok": True,
+      "runtime_exchange_connector_ok": True,
+      "runtime_exchange_order_ok": True,
+      "runtime_exchange_mode": "live",
+      "runtime_exchange_verified_at": now_iso,
+      "runtime_account_surface_ok": True,
+      "runtime_account_surface_verified_at": now_iso,
+      "runtime_account_surface_reason": "exchange_api",
+      "runtime_account_can_trade": True,
+      "runtime_account_permissions": ["SPOT"],
+      "runtime_account_balances_count": 1,
+      "runtime_heartbeat_at": now_iso,
+      "runtime_last_reconcile_at": now_iso,
+    }
+  )
+  module.store.save_bot_state(state)
+
+
 def test_gate_evaluator_with_knowledge_gates_defaults_pass_and_fail() -> None:
   repo_root = Path(__file__).resolve().parents[2]
   evaluator = GateEvaluator(repo_root=repo_root)
@@ -1007,6 +1036,147 @@ defaults:
   assert status.status_code == 200, status.text
   status_payload = status.json()
   assert status_payload["live_signal_telemetry"]["phases"]["shadow"]["events"] >= 1
+  readiness = client.get("/api/v1/validation/readiness", headers=headers)
+  assert readiness.status_code == 200, readiness.text
+  readiness_payload = readiness.json()
+  readiness_by_stage = readiness_payload.get("readiness_by_stage") or {}
+  assert {"paper", "testnet", "canary", "live_serio"} <= set(readiness_by_stage)
+  assert readiness_by_stage["testnet"]["ready"] is False
+  assert isinstance(readiness_by_stage["live_serio"].get("blocking_reasons"), list)
+  assert readiness_payload["live_serio_ready"] is False
+
+
+def test_rollout_shadow_phase_uses_public_rollout_surfaces_until_runtime_live_is_ready(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  _ensure_runtime_real_for_rollout_api(module, client, headers)
+
+  yaml_payload = """
+id: rollout_candidate_strategy_shadow_ops
+name: Rollout Candidate Shadow Ops
+version: 1.0.0
+defaults:
+  risk_per_trade_pct: 0.5
+""".strip()
+  upload = client.post(
+    "/api/v1/strategies/upload",
+    headers=headers,
+    files={"file": ("rollout_candidate_strategy_shadow_ops.yaml", yaml_payload.encode("utf-8"), "application/x-yaml")},
+  )
+  assert upload.status_code == 200, upload.text
+
+  runs = module.store.load_runs()
+  baseline_run = copy.deepcopy(runs[0])
+  baseline_run["id"] = "run_baseline_rollout_shadow_ops"
+  baseline_run["strategy_id"] = "trend_pullback_orderflow_confirm_v1"
+  baseline_run["data_source"] = "binance_public"
+  baseline_run["validation_mode"] = "walk-forward"
+  baseline_run["validation_summary"] = {"mode": "walk-forward", "implemented": True}
+  baseline_run["dataset_hash"] = "same_dataset_rollout_shadow_ops"
+  baseline_run["period"] = {"start": "2024-01-01", "end": "2024-12-31"}
+  baseline_run["metrics"].update({"trade_count": 200, "winrate": 0.50, "profit_factor": 1.25, "sharpe": 1.30, "sortino": 1.80, "calmar": 1.05, "max_dd": 0.12, "max_dd_duration_bars": 5000, "expectancy_usd_per_trade": 10.0})
+  baseline_run["costs_breakdown"].update({"gross_pnl_total": 2000.0, "total_cost": 600.0, "net_pnl_total": 1400.0, "net_pnl": 1400.0})
+  candidate_run = copy.deepcopy(baseline_run)
+  candidate_run["id"] = "run_candidate_rollout_shadow_ops"
+  candidate_run["strategy_id"] = "rollout_candidate_strategy_shadow_ops"
+  candidate_run["metrics"].update({"winrate": 0.54, "profit_factor": 1.35, "sharpe": 1.55, "sortino": 2.10, "calmar": 1.25, "max_dd": 0.13, "expectancy_usd_per_trade": 12.0})
+  _set_required_anti_overfitting_metrics(baseline_run, pbo=0.02, dsr=1.05)
+  _set_required_anti_overfitting_metrics(candidate_run, pbo=0.02, dsr=1.09)
+  candidate_run["costs_breakdown"].update({"gross_pnl_total": 2150.0, "total_cost": 630.0, "net_pnl_total": 1520.0, "net_pnl": 1520.0})
+  module.store.save_runs([candidate_run, baseline_run, *runs])
+
+  start = client.post("/api/v1/rollout/start", headers=headers, json={"candidate_run_id": candidate_run["id"], "baseline_run_id": baseline_run["id"]})
+  assert start.status_code == 200, start.text
+  adv = client.post("/api/v1/rollout/advance", headers=headers, json={})
+  assert adv.status_code == 200, adv.text
+  old_paper = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+  eval_paper = client.post("/api/v1/rollout/evaluate-phase", headers=headers, json={"phase": "paper_soak", "override_started_at": old_paper, "auto_advance": True})
+  assert eval_paper.status_code == 200, eval_paper.text
+
+  monkeypatch.setattr(
+    module,
+    "diagnose_exchange",
+    lambda mode, force_refresh=False: {
+      "ok": True,
+      "mode": mode,
+      "exchange": "binance",
+      "connector_ok": True,
+      "connector_reason": "ok",
+      "order_ok": True,
+      "order_reason": "ok",
+    },
+  )
+  old_testnet = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+  eval_testnet = client.post("/api/v1/rollout/evaluate-phase", headers=headers, json={"phase": "testnet_soak", "override_started_at": old_testnet, "auto_advance": True})
+  assert eval_testnet.status_code == 200, eval_testnet.text
+  approve = client.post("/api/v1/rollout/approve", headers=headers, json={"reason": "ok"})
+  assert approve.status_code == 200, approve.text
+  assert approve.json()["state"]["state"] == "LIVE_SHADOW"
+
+  rollout_status_fail = client.get("/api/v1/rollout/status", headers=headers)
+  assert rollout_status_fail.status_code == 200, rollout_status_fail.text
+  fail_body = rollout_status_fail.json()
+  assert fail_body["state"] == "LIVE_SHADOW"
+  assert fail_body["current_phase"] == "shadow"
+  assert fail_body["routing"]["shadow_only"] is True
+
+  gates_fail = module.evaluate_gates("live", force_exchange_check=True)
+  g9_fail = {row["id"]: row for row in gates_fail["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9_fail["status"] == "FAIL"
+  runtime_contract_fail = (g9_fail.get("details") or {}).get("runtime_contract") or {}
+  assert "exchange_mode_match" in set(runtime_contract_fail.get("missing_checks") or [])
+
+  _force_runtime_contract_live_ready(module)
+  monkeypatch.setattr(module.runtime_bridge, "sync_runtime_state", lambda state, settings, event=None: False)
+
+  rollout_status_ok = client.get("/api/v1/rollout/status", headers=headers)
+  assert rollout_status_ok.status_code == 200, rollout_status_ok.text
+  ok_body = rollout_status_ok.json()
+  assert ok_body["state"] == "LIVE_SHADOW"
+  assert ok_body["current_phase"] == "shadow"
+  assert ok_body["routing"]["shadow_only"] is True
+
+  gates_pass = module.evaluate_gates("live", force_exchange_check=True, runtime_state=module.store.load_bot_state())
+  g9_pass = {row["id"]: row for row in gates_pass["gates"]}["G9_RUNTIME_ENGINE_REAL"]
+  assert g9_pass["status"] == "PASS"
+  runtime_contract_pass = (g9_pass.get("details") or {}).get("runtime_contract") or {}
+  assert runtime_contract_pass.get("mode") == "live"
+  assert runtime_contract_pass.get("ready_for_live") is True
+
+  invalid_payload = client.post(
+    "/api/v1/rollout/blending/preview",
+    headers=headers,
+    json={
+      "baseline_signal": {},
+      "candidate_signal": {"confidence": 0.9},
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+    },
+  )
+  assert invalid_payload.status_code == 400, invalid_payload.text
+  invalid_detail = str(invalid_payload.json().get("detail") or "")
+  assert "baseline_signal requiere action reconocible o score numerico explicito" in invalid_detail
+
+  routed = client.post(
+    "/api/v1/rollout/blending/preview",
+    headers=headers,
+    json={
+      "baseline_signal": {"action": "long", "confidence": 0.7},
+      "candidate_signal": {"action": "short", "confidence": 0.9},
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "record_telemetry": True,
+    },
+  )
+  assert routed.status_code == 200, routed.text
+  body = routed.json()
+  assert body["event"]["phase"] == "shadow"
+  assert body["event"]["source_label"] == "manual_preview"
+  assert body["event"]["source_refs"] == {}
+  assert body["event"]["decisions"]["executed"]["action"] == "long"
+  assert body["event"]["decisions"]["executed"]["shadow_only"] is True
+  assert body["telemetry"]["phases"]["shadow"]["events"] >= 1
 
 
 def test_rollout_api_evaluate_phase_fail_closed_when_runtime_telemetry_synthetic(tmp_path: Path, monkeypatch) -> None:

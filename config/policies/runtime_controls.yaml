@@ -1,0 +1,64 @@
+runtime_controls:
+  execution_modes:
+    default_global_runtime_mode: "paper"
+    global_runtime_modes: ["paper", "testnet", "live"]
+    bot_policy_modes: ["shadow", "paper", "testnet", "live"]
+    research_evidence_modes: ["backtest", "shadow", "paper", "testnet"]
+    shadow:
+      counts_as_real_runtime: false
+      allowed_global_runtimes: ["paper", "testnet", "live"]
+      requires_bot_mode: "shadow"
+    legacy_aliases:
+      mock:
+        canonical_category: "local_frontend_alias"
+        counts_as_real_runtime: false
+      demo:
+        canonical_category: "research_legacy_context"
+        counts_as_real_runtime: false
+
+  observability:
+    runtime_telemetry:
+      real_source: "runtime_loop_v1"
+      synthetic_source: "synthetic_v1"
+      fail_closed_when_not_real: true
+    logging:
+      security_internal_header_alert_throttle_sec: 60
+
+  drift:
+    default_algorithm: "adwin"
+    min_points: 20
+    trigger_votes_required: 2
+    metrics:
+      - "returns"
+      - "realized_vol"
+      - "atr"
+      - "spread_bps"
+      - "slippage_bps"
+      - "expectancy_usd"
+      - "max_dd"
+    adwin:
+      mean_shift_zscore_threshold: 1.1
+    page_hinkley:
+      delta: 0.01
+      lambda: 5.0
+
+  health_scoring:
+    circuit_breakers:
+      max_error_streak: 3
+      max_ws_lag_ms: 5000
+      max_desync_count: 2
+      max_spread_spike_bps: 25.0
+      max_vpin_percentile: 90.0
+    execution_guard:
+      critical_error_limit: 5
+
+  alert_thresholds:
+    breaker_integrity:
+      integrity_window_hours: 24
+      unknown_ratio_warn: 0.10
+      min_events_warn: 10
+    operations:
+      drift_enabled: true
+      slippage_p95_warn_bps: 8.0
+      api_errors_warn: 1
+      breaker_window_hours: 24

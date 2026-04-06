@@ -168,11 +168,22 @@ class BotPolicyStateRepository:
             "runtime_loop_alive": False,
             "runtime_executor_connected": False,
             "runtime_reconciliation_ok": False,
+            "runtime_operational_safety_ok": False,
+            "runtime_operational_safety_status": "",
+            "runtime_last_safety_eval_at": "",
+            "runtime_unknown_timeout_active": False,
+            "runtime_unknown_timeout_since": "",
             "runtime_exchange_connector_ok": False,
             "runtime_exchange_order_ok": False,
             "runtime_exchange_mode": "",
             "runtime_exchange_verified_at": "",
             "runtime_exchange_reason": "",
+            "runtime_account_surface_ok": False,
+            "runtime_account_surface_verified_at": "",
+            "runtime_account_surface_reason": "",
+            "runtime_account_can_trade": False,
+            "runtime_account_permissions": [],
+            "runtime_account_balances_count": 0,
             "runtime_account_positions_ok": False,
             "runtime_account_positions_verified_at": "",
             "runtime_account_positions_reason": "",
@@ -218,8 +229,12 @@ class BotPolicyStateRepository:
             "runtime_loop_alive",
             "runtime_executor_connected",
             "runtime_reconciliation_ok",
+            "runtime_operational_safety_ok",
+            "runtime_unknown_timeout_active",
             "runtime_exchange_connector_ok",
             "runtime_exchange_order_ok",
+            "runtime_account_surface_ok",
+            "runtime_account_can_trade",
         ):
             if key not in state or not isinstance(state.get(key), bool):
                 state[key] = bool(state.get(key, False))
@@ -227,9 +242,14 @@ class BotPolicyStateRepository:
         for key in (
             "runtime_heartbeat_at",
             "runtime_last_reconcile_at",
+            "runtime_last_safety_eval_at",
+            "runtime_operational_safety_status",
+            "runtime_unknown_timeout_since",
             "runtime_exchange_verified_at",
             "runtime_exchange_mode",
             "runtime_exchange_reason",
+            "runtime_account_surface_verified_at",
+            "runtime_account_surface_reason",
             "runtime_last_signal_action",
             "runtime_last_signal_reason",
             "runtime_last_signal_strategy_id",
@@ -239,6 +259,16 @@ class BotPolicyStateRepository:
             if key not in state:
                 state[key] = ""
                 changed = True
+        if "runtime_account_permissions" not in state or not isinstance(state.get("runtime_account_permissions"), list):
+            state["runtime_account_permissions"] = list(state.get("runtime_account_permissions") or [])
+            changed = True
+        try:
+            balances_count = int(state.get("runtime_account_balances_count", 0))
+        except (TypeError, ValueError):
+            balances_count = 0
+        if state.get("runtime_account_balances_count") != balances_count:
+            state["runtime_account_balances_count"] = balances_count
+            changed = True
         if changed:
             json_save(self.bot_state_path, state)
         return state
