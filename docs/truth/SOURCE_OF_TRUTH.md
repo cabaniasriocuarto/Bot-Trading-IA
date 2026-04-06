@@ -1,6 +1,34 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-05
+Fecha de actualizacion: 2026-04-06
+
+## Railway staging: fix de auto-deploy GitHub/root directory ausente - 2026-04-06
+
+- Estado real auditado en Railway `staging`:
+  - `serviceManifest.build.builder = DOCKERFILE`
+  - `serviceManifest.build.dockerfilePath = docker/Dockerfile`
+  - `rootDirectory = null`
+  - volumen montado en `/app/user_data`
+  - variable activa:
+    - `RTLAB_USER_DATA_DIR=/app/user_data`
+- Causa raiz exacta del fallo de auto-deploy desde GitHub/main:
+  - Railway estaba construyendo desde la raiz del repo;
+  - por documentacion oficial, Railway busca `Dockerfile` en la raiz del `source directory` y acepta un path custom con `RAILWAY_DOCKERFILE_PATH` o config-as-code;
+  - en este servicio, el path configurado era `docker/Dockerfile`, pero en la raiz del repo ese archivo no existia;
+  - por eso el build de GitHub fallaba con `Dockerfile 'docker/Dockerfile' does not exist`.
+- Por que el deploy manual por CLI seguia funcionando:
+  - los deploys manuales se hacian con `railway up rtlab_autotrader --path-as-root`;
+  - eso convertia `rtlab_autotrader/` en `source directory`;
+  - dentro de esa raiz si existia `docker/Dockerfile`, por eso el build pasaba.
+- Solucion automatica aplicada:
+  - se agrega `docker/Dockerfile` en la raiz del repo, compatible con build context repo root;
+  - se agrega `railway.json` en la raiz con config-as-code para fijar:
+    - `builder=DOCKERFILE`
+    - `dockerfilePath=docker/Dockerfile`
+    - `watchPatterns` del backend/config
+- Resultado esperado:
+  - Railway ya no depende del `Root Directory` visible en UI para encontrar el Dockerfile correcto;
+  - el proximo merge a `main` deberia poder auto-desplegar desde GitHub con el source directory en repo root.
 
 ## PR 2 product inputs + truth structuring preparado para integrar a `main` - 2026-04-05
 

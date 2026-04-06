@@ -1,6 +1,23 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-05
+Fecha: 2026-04-06
+
+## Siguiente bloque exacto para Railway auto-deploy root-safe - 2026-04-06
+- [x] Auditar `staging` real:
+  - `rootDirectory=null`
+  - `dockerfilePath=docker/Dockerfile`
+  - GitHub auto-deploy fallando porque el repo root no tenia ese archivo
+- [x] Dejar solucion por codigo/config:
+  - `docker/Dockerfile` en repo root
+  - `railway.json` con `dockerfilePath=docker/Dockerfile`
+  - `watchPatterns` restringidos al backend/config
+- [x] Validar con deploy real desde la raiz del repo:
+  - deployment `dc35aa67-1c8e-44cc-b21b-8fc2b1413bda`
+  - `configFile=railway.json`
+  - `status=SUCCESS`
+  - `GET /api/v1/health -> 200`
+- [ ] Luego, validar el siguiente merge a `main`:
+  - debe auto-desplegar sin volver a fallar por `Dockerfile 'docker/Dockerfile' does not exist`
 
 ## Siguiente bloque exacto tras mergear PR 1 runtime - 2026-04-05
 - [x] Resolver el status viejo de Vercel que bloqueaba `#15`.
