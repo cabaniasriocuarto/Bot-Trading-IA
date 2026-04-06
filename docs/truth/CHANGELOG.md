@@ -1,5 +1,31 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-05
+
+### PR 1 runtime live/paper hardening preparado desde rama limpia
+- Se creo la rama limpia `integration/runtime-live-paper-hardening-main` desde `origin/main`.
+- Se porto un paquete coherente de runtime validado sin mezclar:
+  - `docs/product/inputs/*`
+  - sync de Linear
+  - structuring/backlog administrativo
+- Se incluyeron en este PR 1:
+  - `ExecutionRealityService` y surfaces runtime asociadas
+  - instrument registry / reporting / validation runtime requeridos por el flujo live/paper
+  - fixes validados de:
+    - `margin_guard`
+    - quote reuse para `paper`
+    - persistencia paper al ledger operativo
+    - `gross/net/cost` en trade rows paper
+    - backfill via reconcile
+  - monitor externo de `PAPER`:
+    - `.github/workflows/paper-validation-monitor.yml`
+    - `scripts/paper_validation_monitor.py`
+- Se deja explicitado que el cron del monitor solo quedara activo al mergear a la branch por defecto.
+- Queda explicitamente afuera de este PR 1:
+  - `docs/product/inputs/*`
+  - sync administrativo/modelado en Linear
+  - bloques grandes de `Capital & Allocation Control`, `UI / Trades Console` y `Runtime Incidents / Logs / Alerts / Ops`
+
 ## 2026-03-18
 
 ### RTLOPS-2 / RTLOPS-1 / RTLOPS-7 - micro-hardening final frontend de authority/runtime
