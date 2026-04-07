@@ -2789,6 +2789,67 @@ def test_select_user_data_dir_does_not_resolve_runtime_path(tmp_path: Path, monk
   assert str(selected).replace("\\", "/").endswith("/app/data/rtlab_user_data")
 
 
+def test_reporting_bridge_service_uses_runtime_path_for_user_data_dir(tmp_path: Path, monkeypatch) -> None:
+  from rtlab_core.reporting import service as reporting_module
+
+  sentinel = Path("/app/data/rtlab_user_data")
+  monkeypatch.setattr(reporting_module, "runtime_path", lambda value: sentinel)
+  monkeypatch.setattr(reporting_module, "ReportingBridgeDB", lambda path: {"path": str(path)})
+  monkeypatch.setattr(reporting_module.Path, "mkdir", lambda self, parents=False, exist_ok=False: None)
+
+  service = reporting_module.ReportingBridgeService(user_data_dir=sentinel, repo_root=tmp_path)
+  assert service.user_data_dir == sentinel
+  assert service.runs_path == sentinel
+  assert service.exports_dir == sentinel
+
+
+def test_execution_reality_service_uses_runtime_path_for_user_data_dir(tmp_path: Path, monkeypatch) -> None:
+  from rtlab_core.execution import reality as reality_module
+
+  sentinel = Path("/app/data/rtlab_user_data")
+  monkeypatch.setattr(reality_module, "runtime_path", lambda value: sentinel)
+  monkeypatch.setattr(reality_module, "ExecutionRealityDB", lambda path: {"path": str(path)})
+  monkeypatch.setattr(reality_module, "BinanceLiveAdapter", lambda **kwargs: object())
+  monkeypatch.setattr(reality_module, "BinanceMarketWebSocketRuntime", lambda **kwargs: object())
+  monkeypatch.setattr(reality_module, "BinanceUserStreamRuntime", lambda **kwargs: object())
+
+  service = reality_module.ExecutionRealityService(user_data_dir=sentinel, repo_root=tmp_path)
+  assert service.user_data_dir == sentinel
+
+
+def test_validation_service_uses_runtime_path_for_user_data_dir(tmp_path: Path, monkeypatch) -> None:
+  from rtlab_core.validation import service as validation_module
+
+  sentinel = Path("/app/data/rtlab_user_data")
+  monkeypatch.setattr(validation_module, "runtime_path", lambda value: sentinel)
+  monkeypatch.setattr(validation_module, "ValidationDB", lambda path: {"path": str(path)})
+
+  service = validation_module.ValidationService(
+    user_data_dir=sentinel,
+    repo_root=tmp_path,
+    execution_service=object(),
+    reporting_bridge_service=object(),
+    instrument_registry_service=object(),
+  )
+  assert service.user_data_dir == sentinel
+
+
+def test_learning_and_rollout_use_runtime_path_for_user_data_dir(tmp_path: Path, monkeypatch) -> None:
+  from rtlab_core.learning import service as learning_module
+  from rtlab_core.rollout import manager as rollout_module
+
+  sentinel = Path("/app/data/rtlab_user_data")
+  monkeypatch.setattr(learning_module, "runtime_path", lambda value: sentinel)
+  monkeypatch.setattr(learning_module, "KnowledgeLoader", lambda repo_root: {"repo_root": str(repo_root)})
+  monkeypatch.setattr(rollout_module, "runtime_path", lambda value: sentinel)
+
+  learning_service = learning_module.LearningService(user_data_dir=sentinel, repo_root=tmp_path)
+  rollout_manager = rollout_module.RolloutManager(user_data_dir=sentinel)
+
+  assert learning_service.root == sentinel
+  assert rollout_manager.root == sentinel
+
+
 def test_strategy_upload_validation_and_primary_assignment(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

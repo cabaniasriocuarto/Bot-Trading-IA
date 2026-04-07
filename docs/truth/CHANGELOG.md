@@ -2,6 +2,20 @@
 
 ## 2026-04-07
 
+### Produccion Railway: startup path deja de resolver roots runtime en servicios globales
+- Diagnostico mas fuerte del `502`:
+  - `rtlab_core.web.app` seguia construyendo servicios globales que resolvian `user_data_dir` por filesystem durante import/startup.
+- Cambio minimo/profesional aplicado:
+  - `ReportingBridgeService`
+  - `ExecutionRealityService`
+  - `ValidationService`
+  - `LearningService`
+  - `RolloutManager`
+  pasan a usar `runtime_path(...)` para roots runtime.
+- Validacion local:
+  - tests puntuales agregados para esos constructores;
+  - `py_compile` y `pytest` del camino critico -> PASS.
+
 ### Auditoria seria de Backtests / Beast / Masivo
 - Diagnostico real del dominio sobre `main`:
   - Beast y Masivo comparten `USER_DATA_DIR`, `DataCatalog`, `build_data_provider(...)` y preflight de dataset;
