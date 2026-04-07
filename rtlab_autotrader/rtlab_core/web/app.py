@@ -473,9 +473,9 @@ LOGIN_RATE_LIMIT_WINDOW_MIN = _env_int("RATE_LIMIT_LOGIN_WINDOW_MIN", 10)
 LOGIN_LOCKOUT_MIN = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_MIN", 30)
 LOGIN_LOCKOUT_AFTER_FAILS = _env_int("RATE_LIMIT_LOGIN_LOCKOUT_AFTER_FAILS", 20)
 LOGIN_RATE_LIMIT_BACKEND = str(os.getenv("RATE_LIMIT_LOGIN_BACKEND", "sqlite")).strip().lower()
-LOGIN_RATE_LIMIT_SQLITE_PATH = Path(
+LOGIN_RATE_LIMIT_SQLITE_PATH = _runtime_path(
     str(os.getenv("RATE_LIMIT_LOGIN_SQLITE_PATH", "")).strip() or str(CONSOLE_DB_PATH)
-).resolve()
+)
 API_RATE_LIMIT_ENABLED = _env_bool("RATE_LIMIT_GENERAL_ENABLED", True)
 API_RATE_LIMIT_GENERAL_PER_MIN = max(1, _env_int("RATE_LIMIT_GENERAL_REQ_PER_MIN", 60))
 API_RATE_LIMIT_EXPENSIVE_PER_MIN = max(1, _env_int("RATE_LIMIT_EXPENSIVE_REQ_PER_MIN", 5))
@@ -1726,7 +1726,7 @@ class LoginRateLimiter:
         normalized_backend = str(backend or "memory").strip().lower()
         self.backend = normalized_backend if normalized_backend in {"memory", "sqlite"} else "memory"
         configured_sqlite = str(sqlite_path).strip() if sqlite_path is not None else ""
-        self.sqlite_path = Path(configured_sqlite).resolve() if configured_sqlite else LOGIN_RATE_LIMIT_SQLITE_PATH
+        self.sqlite_path = _runtime_path(configured_sqlite) if configured_sqlite else LOGIN_RATE_LIMIT_SQLITE_PATH
         self._lock = Lock()
         self._state: dict[str, dict[str, Any]] = {}
         if self.backend == "sqlite":
@@ -1891,8 +1891,18 @@ class LoginRateLimiter:
             if key in self._state:
                 self._state.pop(key, None)
 
+LOGIN_RATE_LIMITER: LoginRateLimiter | None = None
+_LOGIN_RATE_LIMITER_LOCK = Lock()
 
-LOGIN_RATE_LIMITER = LoginRateLimiter()
+
+def _get_login_rate_limiter() -> LoginRateLimiter:
+    global LOGIN_RATE_LIMITER
+    if isinstance(LOGIN_RATE_LIMITER, LoginRateLimiter):
+        return LOGIN_RATE_LIMITER
+    with _LOGIN_RATE_LIMITER_LOCK:
+        if not isinstance(LOGIN_RATE_LIMITER, LoginRateLimiter):
+            LOGIN_RATE_LIMITER = LoginRateLimiter()
+        return LOGIN_RATE_LIMITER
 
 
 class ApiRateLimiter:
@@ -2538,6 +2548,13 @@ def ensure_paths() -> None:
 class ConsoleStore:
     def __init__(self) -> None:
         ensure_paths()
+        self._startup_maintenance_lock = Lock()
+        self._startup_maintenance_started = False
+        self.startup_maintenance_status: dict[str, Any] = {
+            "started": False,
+            "ok": None,
+            "reason": "not_started",
+        }
         self.registry = RegistryDB(REGISTRY_DB_PATH)
         self.strategy_truth = StrategyTruthRepository(meta_path=STRATEGY_META_PATH)
         self.strategy_evidence = StrategyEvidenceRepository(
@@ -2609,7 +2626,7 @@ class ConsoleStore:
             "reason": "not_run",
         }
         self._init_console_db()
-        self._ensure_defaults()
+        self._ensure_defaults(include_maintenance=False)
 
     def record_experience_run(
         self,
@@ -2826,27 +2843,61 @@ class ConsoleStore:
 
     def breaker_events_integrity(self, *, window_hours: int | None = None, strict: bool = True) -> dict[str, Any]:
         return self.decision_log.breaker_events_integrity(window_hours=window_hours, strict=strict)
-    def _ensure_defaults(self) -> None:
+    def _ensure_defaults(self, *, include_maintenance: bool = True) -> None:
         self._ensure_default_settings()
         self._ensure_default_bot_state()
         self._ensure_default_strategy()
         self._ensure_knowledge_strategies_registry()
         self._ensure_strategy_registry_invariants()
         self._ensure_default_bots()
+        if include_maintenance:
+            self._run_startup_maintenance()
+
+    def _run_startup_maintenance(self) -> None:
+        status = {
+            "started": True,
+            "ok": True,
+            "reason": "completed",
+            "started_at": utc_now_iso(),
+        }
         self._ensure_seed_backtest()
         self._sync_backtest_runs_catalog()
         try:
             self.reporting_bridge.refresh_materialized_views(self.load_runs())
+        except Exception as exc:
+            status["ok"] = False
+            status["reason"] = "reporting_refresh_failed"
+            status["error"] = str(exc)
+        try:
+            self.add_log(
+                event_type="health",
+                severity="info" if bool(status.get("ok", False)) else "warn",
+                module="bootstrap",
+                message="Console API startup maintenance completed" if bool(status.get("ok", False)) else "Console API startup maintenance degraded",
+                related_ids=[],
+                payload={"version": APP_VERSION, **status},
+            )
         except Exception:
             pass
-        self.add_log(
-            event_type="health",
-            severity="info",
-            module="bootstrap",
-            message="Console API initialized",
-            related_ids=[],
-            payload={"version": APP_VERSION},
-        )
+        status["finished_at"] = utc_now_iso()
+        self.startup_maintenance_status = status
+
+    def ensure_startup_maintenance(self, *, blocking: bool = False) -> dict[str, Any]:
+        with self._startup_maintenance_lock:
+            if self._startup_maintenance_started:
+                return dict(self.startup_maintenance_status)
+            self._startup_maintenance_started = True
+            self.startup_maintenance_status = {
+                "started": True,
+                "ok": None,
+                "reason": "running",
+                "started_at": utc_now_iso(),
+            }
+            if blocking:
+                self._run_startup_maintenance()
+                return dict(self.startup_maintenance_status)
+            Thread(target=self._run_startup_maintenance, name="console-startup-maintenance", daemon=True).start()
+            return dict(self.startup_maintenance_status)
 
     def _ensure_default_settings(self) -> None:
         self.policy_state.save_settings(self.policy_state.load_settings())
@@ -10401,6 +10452,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="RTLAB API", version=APP_VERSION)
 
     @app.on_event("startup")
+    async def console_startup_maintenance() -> None:
+        store.ensure_startup_maintenance(blocking=False)
+
+    @app.on_event("startup")
     async def instrument_registry_startup_sync() -> None:
         try:
             store.instrument_registry_startup_sync = store.instrument_registry.sync_on_startup()
@@ -10469,7 +10524,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
         settings = store.load_settings()
-        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+        state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=False)
         mode = state.get("mode", "paper")
         runtime_snapshot = _runtime_contract_snapshot(state)
         telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
@@ -10498,7 +10553,8 @@ def create_app() -> FastAPI:
         username = body.username.strip()
         client_ip = _request_client_ip(request)
         limiter_key = f"{client_ip}:{username.lower()}"
-        allowed, retry_after_sec, reason = LOGIN_RATE_LIMITER.check(limiter_key)
+        limiter = _get_login_rate_limiter()
+        allowed, retry_after_sec, reason = limiter.check(limiter_key)
         if not allowed:
             detail = (
                 f"Demasiados intentos de login. Reintenta en {retry_after_sec}s."
@@ -10512,9 +10568,9 @@ def create_app() -> FastAPI:
         elif username == viewer_username() and body.password == viewer_password():
             role = ROLE_VIEWER
         if not role:
-            LOGIN_RATE_LIMITER.register_failure(limiter_key)
+            limiter.register_failure(limiter_key)
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        LOGIN_RATE_LIMITER.register_success(limiter_key)
+        limiter.register_success(limiter_key)
         token = store.create_session(username=username, role=role)
         store.add_log(
             event_type="auth",

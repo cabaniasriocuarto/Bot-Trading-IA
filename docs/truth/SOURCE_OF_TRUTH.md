@@ -2,6 +2,29 @@
 
 Fecha de actualizacion: 2026-04-07
 
+## Produccion Railway: el 502 seguia atado al startup blocking path de auth y ConsoleStore - 2026-04-07
+
+- Hallazgo raiz aislado en repo:
+  - aun despues de `#28`, el import de `rtlab_core.web.main` seguia tardando ~33s localmente con la configuracion default;
+  - al forzar `RATE_LIMIT_LOGIN_BACKEND=memory`, ese mismo import bajaba a ~4.6s.
+- Evidencia tecnica concreta:
+  - `LoginRateLimiter()` seguia instanciado globalmente en import-time y por default usando backend `sqlite`;
+  - ese camino seguia tocando `RTLAB_USER_DATA_DIR`/`CONSOLE_DB_PATH` antes de servir requests;
+  - ademas `ConsoleStore.__init__()` seguia ejecutando:
+    - `_ensure_seed_backtest()`
+    - `_sync_backtest_runs_catalog()`
+    - `reporting_bridge.refresh_materialized_views(...)`
+    en el boot blocking path;
+  - `/api/v1/health` todavia llamaba `_sync_runtime_state(..., persist=True)`, o sea que el probe escribia estado en vez de limitarse a medir disponibilidad.
+- Cambio minimo/profesional aplicado:
+  - el login rate limiter pasa a inicializacion lazy y deja de bloquear el import de la app;
+  - su sqlite path tambien deja de usar `resolve()` sobre roots runtime;
+  - `ConsoleStore` mueve seed/sync/reporting a mantenimiento de startup no bloqueante;
+  - `/api/v1/health` pasa a `persist=False` para ser una sonda read-only de disponibilidad.
+- Lectura operativa correcta:
+  - este fix baja de forma fuerte el startup path del backend;
+  - el cierre real del incidente solo queda confirmado cuando Railway produccion vuelva a `200` y se pueda leer `health` sobre el deployment activo.
+
 ## Produccion Railway: el startup seguia resolviendo `RTLAB_USER_DATA_DIR` en servicios instanciados al importar `app.py` - 2026-04-07
 
 - Hallazgo raiz aislado en repo:
