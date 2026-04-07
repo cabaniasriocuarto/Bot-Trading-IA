@@ -7,6 +7,11 @@ Fecha de actualizacion: 2026-04-07
 - Hallazgo raiz aislado en repo:
   - aun despues de `#28`, el import de `rtlab_core.web.main` seguia tardando ~33s localmente con la configuracion default;
   - al forzar `RATE_LIMIT_LOGIN_BACKEND=memory`, ese mismo import bajaba a ~4.6s.
+- Hallazgo adicional confirmado al seguir auditando el boot:
+  - incluso con ese import ya aliviado, `create_app()` seguia registrando hooks `startup` que hacian trabajo potencialmente pesado/bloqueante:
+    - `instrument_registry.sync_on_startup()`
+    - `execution_reality.recover_live_orders_on_startup()`
+  - el segundo es especialmente sensible porque por policy de reconciliacion queda habilitado por default.
 - Evidencia tecnica concreta:
   - `LoginRateLimiter()` seguia instanciado globalmente en import-time y por default usando backend `sqlite`;
   - ese camino seguia tocando `RTLAB_USER_DATA_DIR`/`CONSOLE_DB_PATH` antes de servir requests;
@@ -20,6 +25,7 @@ Fecha de actualizacion: 2026-04-07
   - el login rate limiter pasa a inicializacion lazy y deja de bloquear el import de la app;
   - su sqlite path tambien deja de usar `resolve()` sobre roots runtime;
   - `ConsoleStore` mueve seed/sync/reporting a mantenimiento de startup no bloqueante;
+  - los hooks `startup` de instrument registry y live order recovery pasan a background no bloqueante;
   - `/api/v1/health` pasa a `persist=False` para ser una sonda read-only de disponibilidad.
 - Lectura operativa correcta:
   - este fix baja de forma fuerte el startup path del backend;

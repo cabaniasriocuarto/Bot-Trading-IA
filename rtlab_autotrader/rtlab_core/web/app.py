@@ -2625,6 +2625,12 @@ class ConsoleStore:
             "skipped": True,
             "reason": "not_run",
         }
+        self.execution_live_orders_startup_recovery: dict[str, Any] = {
+            "ok": True,
+            "startup": True,
+            "skipped": True,
+            "reason": "not_run",
+        }
         self._init_console_db()
         self._ensure_defaults(include_maintenance=False)
 
@@ -10451,49 +10457,98 @@ def parse_strategy_yaml_upload(payload: bytes) -> dict[str, Any]:
 def create_app() -> FastAPI:
     app = FastAPI(title="RTLAB API", version=APP_VERSION)
 
+    def _launch_startup_task(name: str, runner) -> None:
+        Thread(target=runner, name=name, daemon=True).start()
+
     @app.on_event("startup")
     async def console_startup_maintenance() -> None:
         store.ensure_startup_maintenance(blocking=False)
 
     @app.on_event("startup")
     async def instrument_registry_startup_sync() -> None:
-        try:
-            store.instrument_registry_startup_sync = store.instrument_registry.sync_on_startup()
-        except Exception as exc:
-            store.instrument_registry_startup_sync = {
-                "ok": False,
-                "startup": True,
-                "skipped": False,
-                "reason": "startup_sync_failed",
-                "error": str(exc),
-            }
-            store.add_log(
-                event_type="instrument_registry",
-                severity="warn",
-                module="instruments",
-                message="Instrument registry startup sync failed",
-                related_ids=[],
-                payload={"error": str(exc)},
-            )
+        store.instrument_registry_startup_sync = {
+            "ok": True,
+            "startup": True,
+            "skipped": False,
+            "reason": "scheduled",
+            "background": True,
+            "scheduled_at": utc_now_iso(),
+        }
+
+        def _run() -> None:
+            try:
+                payload = store.instrument_registry.sync_on_startup()
+                if isinstance(payload, dict):
+                    payload["background"] = True
+                store.instrument_registry_startup_sync = payload if isinstance(payload, dict) else {
+                    "ok": True,
+                    "startup": True,
+                    "skipped": False,
+                    "reason": "completed_without_payload",
+                    "background": True,
+                }
+            except Exception as exc:
+                store.instrument_registry_startup_sync = {
+                    "ok": False,
+                    "startup": True,
+                    "skipped": False,
+                    "reason": "startup_sync_failed",
+                    "background": True,
+                    "error": str(exc),
+                }
+                store.add_log(
+                    event_type="instrument_registry",
+                    severity="warn",
+                    module="instruments",
+                    message="Instrument registry startup sync failed",
+                    related_ids=[],
+                    payload={"error": str(exc)},
+                )
+
+        _launch_startup_task("instrument-registry-startup-sync", _run)
 
     @app.on_event("startup")
     async def execution_live_orders_startup_recovery() -> None:
-        try:
-            store.execution_live_orders_startup_recovery = store.execution_reality.recover_live_orders_on_startup()
-        except Exception as exc:
-            store.execution_live_orders_startup_recovery = {
-                "ok": False,
-                "reason": "startup_recovery_failed",
-                "error": str(exc),
-            }
-            store.add_log(
-                event_type="execution_recovery",
-                severity="warn",
-                module="execution",
-                message="Live order startup recovery failed",
-                related_ids=[],
-                payload={"error": str(exc)},
-            )
+        store.execution_live_orders_startup_recovery = {
+            "ok": True,
+            "startup": True,
+            "skipped": False,
+            "reason": "scheduled",
+            "background": True,
+            "scheduled_at": utc_now_iso(),
+        }
+
+        def _run() -> None:
+            try:
+                payload = store.execution_reality.recover_live_orders_on_startup()
+                if isinstance(payload, dict):
+                    payload["background"] = True
+                store.execution_live_orders_startup_recovery = payload if isinstance(payload, dict) else {
+                    "ok": True,
+                    "startup": True,
+                    "skipped": False,
+                    "reason": "completed_without_payload",
+                    "background": True,
+                }
+            except Exception as exc:
+                store.execution_live_orders_startup_recovery = {
+                    "ok": False,
+                    "startup": True,
+                    "skipped": False,
+                    "reason": "startup_recovery_failed",
+                    "background": True,
+                    "error": str(exc),
+                }
+                store.add_log(
+                    event_type="execution_recovery",
+                    severity="warn",
+                    module="execution",
+                    message="Live order startup recovery failed",
+                    related_ids=[],
+                    payload={"error": str(exc)},
+                )
+
+        _launch_startup_task("execution-live-orders-startup-recovery", _run)
 
     @app.middleware("http")
     async def api_rate_limit_middleware(request: Request, call_next):
