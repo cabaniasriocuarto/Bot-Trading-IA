@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from rtlab_core.src.data.runtime_path import runtime_path
+
 
 def _json_load(path: Path, default: Any) -> Any:
     if not path.exists():
@@ -74,7 +76,7 @@ class DataProvider(Protocol):
 
 class DatasetModeDataProvider:
     def __init__(self, *, user_data_dir: Path, catalog: Any) -> None:
-        self.user_data_dir = Path(user_data_dir).resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
         self.catalog = catalog
 
     def _standard_dataset_dir(self, provider: str, market: str, symbol: str, timeframe: str) -> Path:
@@ -91,7 +93,7 @@ class DatasetModeDataProvider:
         for f in (getattr(entry, "files", None) or []):
             if isinstance(f, str):
                 files.append(f)
-        unique_files = [str(Path(f).resolve()) for f in dict.fromkeys(files)]
+        unique_files = [str(runtime_path(f)) for f in dict.fromkeys(files)]
         payload = {
             "provider": provider,
             "market": market,

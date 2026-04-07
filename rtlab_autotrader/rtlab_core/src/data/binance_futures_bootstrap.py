@@ -16,6 +16,7 @@ import requests
 from rtlab_core.data.marketdata import ensure_datetime_index, resample_ohlcv
 
 from .catalog import DataCatalog
+from .runtime_path import runtime_path
 from .universes import normalize_symbol
 
 BINANCE_PUBLIC_BASE = "https://data.binance.vision/"
@@ -411,7 +412,7 @@ def bootstrap_futures_datasets(
         universe_payload = select_top_symbols(current_session, family, top_n=top_n)
         resolved_symbols = [str(symbol) for symbol in universe_payload.get("symbols") or []]
         universe_manifest_path = str(
-            _write_universe_manifest(user_data_dir, family=family, top_n=int(universe_payload["top_n"]), payload=universe_payload).resolve()
+            runtime_path(_write_universe_manifest(user_data_dir, family=family, top_n=int(universe_payload["top_n"]), payload=universe_payload))
         )
 
     bootstrapped: list[dict[str, Any]] = []
@@ -435,9 +436,9 @@ def bootstrap_futures_datasets(
                         {
                             "month": month,
                             "source_type": "binance_public_zip",
-                            "archive_path": str(archive_path.resolve()),
+                            "archive_path": str(runtime_path(archive_path)),
                             "archive_url": zip_url,
-                            "checksum_file_path": str(checksum_path.resolve()) if checksum_path.exists() else "",
+                            "checksum_file_path": str(runtime_path(checksum_path)) if checksum_path.exists() else "",
                             "checksum_validation_result": bool(checksum_valid) or bool(skip_checksum),
                             "rows": int(len(segment_df)),
                         }
@@ -538,7 +539,7 @@ def bootstrap_futures_datasets(
                         "min_ts": derived_min_ts,
                         "max_ts": derived_max_ts,
                         "dataset_file_hash": _sha256_file(actual_derived_file),
-                        "base_manifest_path": str((catalog.manifests_dir("crypto") / f"{symbol}_1m.json").resolve()),
+                        "base_manifest_path": str(runtime_path(catalog.manifests_dir("crypto") / f"{symbol}_1m.json")),
                     },
                 )
                 derived_items.append(
@@ -546,8 +547,8 @@ def bootstrap_futures_datasets(
                         "timeframe": timeframe,
                         "dataset_present": True,
                         "dataset_hash": str(derived_manifest.get("dataset_hash") or ""),
-                        "manifest_path": str((catalog.manifests_dir("crypto") / f"{symbol}_{timeframe}.json").resolve()),
-                        "processed_path": str(actual_derived_file.resolve()),
+                        "manifest_path": str(runtime_path(catalog.manifests_dir("crypto") / f"{symbol}_{timeframe}.json")),
+                        "processed_path": str(runtime_path(actual_derived_file)),
                         "rows": int(len(resampled)),
                     }
                 )
@@ -558,8 +559,8 @@ def bootstrap_futures_datasets(
                     "market_family": family,
                     "dataset_1m_present": True,
                     "dataset_1m_hash": str(base_manifest.get("dataset_hash") or ""),
-                    "manifest_1m_path": str((catalog.manifests_dir("crypto") / f"{symbol}_1m.json").resolve()),
-                    "processed_1m_path": str(actual_base_file.resolve()),
+                    "manifest_1m_path": str(runtime_path(catalog.manifests_dir("crypto") / f"{symbol}_1m.json")),
+                    "processed_1m_path": str(runtime_path(actual_base_file)),
                     "rows_1m": int(len(base_df_indexed)),
                     "source_type": base_source_type,
                     "derived": derived_items,
@@ -585,8 +586,8 @@ def bootstrap_futures_datasets(
         "start_month": start_month,
         "end_month": end_month,
         "resample_timeframes": derived_timeframes,
-        "user_data_dir": str(user_data_dir.resolve()),
-        "data_root": str((user_data_dir / "data").resolve()),
+        "user_data_dir": str(runtime_path(user_data_dir)),
+        "data_root": str(runtime_path(user_data_dir / "data")),
         "bootstrapped": bootstrapped,
         "data_status": catalog.status(),
         "universe_manifest_path": universe_manifest_path,
