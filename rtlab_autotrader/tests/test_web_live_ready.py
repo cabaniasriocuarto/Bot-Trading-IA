@@ -2698,6 +2698,56 @@ def test_storage_gate_blocks_live_when_user_data_is_ephemeral(tmp_path: Path, mo
   assert can_live is False
 
 
+def test_storage_status_requires_real_mount_not_only_non_tmp(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "_mount_metadata_for_path",
+    lambda path: {
+      "target_path": str(Path(path).resolve()),
+      "probe_path": str(Path(path).resolve()),
+      "mount_detected": False,
+      "mount_point": "",
+      "mount_source": "",
+      "mount_fs_type": "",
+    },
+  )
+  monkeypatch.setenv("RTLAB_USER_DATA_DIR", "/app/data/rtlab_user_data")
+
+  storage = module._user_data_persistence_status(Path("/app/data/rtlab_user_data"))
+  assert storage["storage_ephemeral"] is False
+  assert storage["persistent_storage"] is False
+  assert storage["mount_detected"] is False
+  assert "volumen montado real" in str(storage.get("warning") or "").lower()
+
+  monkeypatch.setattr(module, "USER_DATA_DIR", Path("/app/data/rtlab_user_data"))
+  gates_live = module.evaluate_gates("live")
+  gate_by_id = {row["id"]: row for row in gates_live["gates"]}
+  assert gate_by_id["G10_STORAGE_PERSISTENCE"]["status"] == "FAIL"
+  assert "volumen montado real" in str(gate_by_id["G10_STORAGE_PERSISTENCE"].get("reason") or "").lower()
+
+
+def test_select_user_data_dir_prefers_mounted_runtime_candidate_over_unmounted_explicit(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  mounted_candidate = Path("/data/rtlab_user_data").resolve()
+  monkeypatch.setattr(module, "_mounted_runtime_user_data_candidates", lambda: [mounted_candidate])
+  monkeypatch.setattr(
+    module,
+    "_mount_metadata_for_path",
+    lambda path: {
+      "target_path": str(Path(path).resolve()),
+      "probe_path": str(Path(path).resolve()),
+      "mount_detected": str(Path(path).resolve()) == str(mounted_candidate),
+      "mount_point": "/data" if str(Path(path).resolve()) == str(mounted_candidate) else "",
+      "mount_source": "railway-volume" if str(Path(path).resolve()) == str(mounted_candidate) else "",
+      "mount_fs_type": "ext4" if str(Path(path).resolve()) == str(mounted_candidate) else "",
+    },
+  )
+
+  selected = module._select_user_data_dir(explicit=Path("/app/data/rtlab_user_data"))
+  assert selected == mounted_candidate
+
+
 def test_strategy_upload_validation_and_primary_assignment(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

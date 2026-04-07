@@ -2,6 +2,47 @@
 
 Fecha de actualizacion: 2026-04-06
 
+## Produccion Railway: persistencia durable de datasets requiere mount real, no solo path fuera de `/tmp` - 2026-04-07
+
+- Hallazgo raiz confirmado en repo:
+  - `storage.persistent_storage` y `G10_STORAGE_PERSISTENCE` se calculaban solo con una heuristica de path:
+    - si `RTLAB_USER_DATA_DIR` no estaba bajo `/tmp`, el runtime lo marcaba como persistente;
+    - no verificaba si el path estaba realmente respaldado por un volumen montado.
+- Consecuencia operativa:
+  - produccion podia escribir datasets en `/app/data/rtlab_user_data` dentro del contenedor activo;
+  - Beast podia llegar a correr con esos archivos;
+  - pero tras restart/redeploy el catalogo podia reaparecer vacio si ese root no estaba sobre un mount real.
+- Cambio minimo aplicado en repo:
+  - `rtlab_core.web.app` ahora:
+    - detecta mount real desde `/proc/self/mountinfo` + `Path.is_mount()`;
+    - solo marca `persistent_storage=true` cuando el root efectivo esta sobre un mount no-root;
+    - expone en `health.storage`:
+      - `configured_user_data_dir`
+      - `selection_drift`
+      - `mount_detected`
+      - `mount_point`
+      - `mount_source`
+      - `mount_fs_type`
+      - `mounted_runtime_candidates`
+  - `G10_STORAGE_PERSISTENCE` pasa a fail-closed:
+    - `PASS` solo si hay mount real;
+    - `FAIL/WARN` si el path es efimero o si no apunta a un volumen montado real.
+- Normalizacion de roots soportados para Railway:
+  - `/data/rtlab_user_data`
+  - `/app/data/rtlab_user_data`
+  - `/app/user_data`
+- Regla operativa correcta desde ahora:
+  - no confiar en `persistent_storage=true` solo por ver un path “no /tmp”;
+  - validar siempre el mount real y el `mount_point` expuesto por `/api/v1/health`.
+- Validacion canonica agregada:
+  - workflow `production-storage-durability.yml`
+  - combina:
+    - `scripts/check_storage_persistence.py`
+    - `scripts/beast_runtime_status_report.py`
+    - bootstrap Futures `BTCUSDT` y re-check posterior del dataset exacto `5m`
+  - objetivo:
+    - confirmar que produccion usa un root montado real antes de vender persistencia durable.
+
 ## Produccion Backtests/Beast: dataset faltante por catalogo vacio en volumen runtime - 2026-04-06
 
 - Superficie productiva canonica auditada:

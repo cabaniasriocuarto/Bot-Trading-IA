@@ -2,6 +2,27 @@
 
 Fecha: 2026-04-06
 
+## Siguiente bloque exacto para persistencia durable de datasets en produccion - 2026-04-07
+- [x] Confirmar que el problema residual ya no era Beast ni bootstrap:
+  - el bootstrap real de `BTCUSDT` funciono
+  - Beast completo `BX-000001`
+  - el catalogo luego reaparecio vacio
+- [x] Confirmar la brecha raiz en runtime:
+  - `persistent_storage=true` solo significaba “no esta en `/tmp`”
+  - no habia verificacion de mount real
+- [x] Aplicar fix fail-closed:
+  - detectar mount real en runtime
+  - exponer `mount_detected`, `mount_point`, `mount_source`, `selection_drift`
+  - bloquear `G10_STORAGE_PERSISTENCE` si el root no esta montado
+- [x] Dejar validacion operativa canonica:
+  - workflow `production-storage-durability.yml`
+  - reusa secretos productivos
+  - checa mount real + bootstrap `BTCUSDT` + re-check del dataset exacto `5m`
+- [ ] Siguiente paso exacto:
+  - correr `production-storage-durability.yml` contra `main`
+  - si `mount_detected=false`, corregir mount/variable en Railway produccion
+  - si `mount_detected=true` y el dataset sobrevive, volver a validar `csud/backtests`
+
 ## Siguiente bloque exacto para Beast/Backtests dataset bootstrap en produccion - 2026-04-06
 - [x] Confirmar que el bloqueo actual ya no era `policy_state=missing`:
   - produccion devuelve `policy_state=enabled`

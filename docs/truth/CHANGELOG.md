@@ -1,5 +1,32 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-07
+
+### Produccion Railway: persistencia durable de datasets requiere mount real
+- Diagnostico real:
+  - `storage.persistent_storage` y `G10_STORAGE_PERSISTENCE` estaban basados solo en “path fuera de `/tmp`”.
+  - eso producia falsos positivos de persistencia si `RTLAB_USER_DATA_DIR` apuntaba a un directorio no montado dentro del contenedor.
+- Cambio minimo/profesional aplicado:
+  - `rtlab_core.web.app` ahora detecta mount real con `Path.is_mount()` + `/proc/self/mountinfo`
+  - `health.storage` expone:
+    - `configured_user_data_dir`
+    - `selection_drift`
+    - `mount_detected`
+    - `mount_point`
+    - `mount_source`
+    - `mount_fs_type`
+    - `mounted_runtime_candidates`
+  - `G10_STORAGE_PERSISTENCE` queda fail-closed:
+    - `PASS` solo si el root efectivo esta sobre un mount real
+    - `FAIL/WARN` si el path es efimero o no montado
+  - si el env apunta a un root no montado y existe un candidate soportado montado, el runtime prioriza el candidate montado
+- Validacion operativa agregada:
+  - nuevo workflow `.github/workflows/production-storage-durability.yml`
+  - usa secretos productivos para:
+    - chequear persistencia real
+    - bootstrap `BTCUSDT`
+    - revalidar presencia del dataset exacto `5m`
+
 ## 2026-04-06
 
 ### Produccion Beast/Backtests: bootstrap canonico de datasets Binance Futures

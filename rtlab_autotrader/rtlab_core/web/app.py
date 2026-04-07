@@ -111,23 +111,92 @@ DEFAULT_GLOBAL_RUNTIME_MODE = runtime_default_global_mode(
 )
 
 
-def _resolve_user_data_dir() -> Path:
-    explicit = os.getenv("RTLAB_USER_DATA_DIR")
-    if explicit:
-        return Path(explicit).resolve()
+SUPPORTED_RUNTIME_USER_DATA_DIRS = (
+    Path("/data/rtlab_user_data"),
+    Path("/app/data/rtlab_user_data"),
+    Path("/app/user_data"),
+)
 
-    preferred = (PROJECT_ROOT / "user_data").resolve()
+
+def _decode_mountinfo_path(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _read_mountinfo() -> list[dict[str, str]]:
+    mountinfo_path = Path("/proc/self/mountinfo")
+    if not mountinfo_path.exists():
+        return []
+    rows: list[dict[str, str]] = []
     try:
-        preferred.mkdir(parents=True, exist_ok=True)
-        test_file = preferred / ".write_test"
-        test_file.write_text("ok", encoding="utf-8")
-        test_file.unlink(missing_ok=True)
-        return preferred
+        for raw_line in mountinfo_path.read_text(encoding="utf-8").splitlines():
+            if " - " not in raw_line:
+                continue
+            left, right = raw_line.split(" - ", 1)
+            left_parts = left.split()
+            right_parts = right.split()
+            if len(left_parts) < 5 or len(right_parts) < 3:
+                continue
+            rows.append(
+                {
+                    "mount_point": _decode_mountinfo_path(left_parts[4]),
+                    "fs_type": str(right_parts[0] or ""),
+                    "source": str(right_parts[1] or ""),
+                }
+            )
     except Exception:
-        return Path("/tmp/rtlab_user_data").resolve()
+        return []
+    return rows
 
 
-USER_DATA_DIR = _resolve_user_data_dir()
+def _mount_metadata_for_path(path: str | Path) -> dict[str, Any]:
+    target = Path(path).resolve()
+    probe = target
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    mount_point: Path | None = None
+    current = probe
+    while True:
+        try:
+            if current.exists() and current.is_mount():
+                mount_point = current.resolve()
+                break
+        except Exception:
+            pass
+        if current.parent == current:
+            break
+        current = current.parent
+
+    root_mount = Path(target.anchor or "/").resolve()
+    mount_detected = bool(mount_point is not None and mount_point != root_mount)
+    mount_entry = {}
+    if mount_point is not None:
+        mount_entry = next(
+            (row for row in _read_mountinfo() if str(row.get("mount_point") or "") == str(mount_point)),
+            {},
+        )
+    return {
+        "target_path": str(target),
+        "probe_path": str(probe.resolve()),
+        "mount_detected": mount_detected,
+        "mount_point": str(mount_point) if mount_point is not None else "",
+        "mount_source": str(mount_entry.get("source") or ""),
+        "mount_fs_type": str(mount_entry.get("fs_type") or ""),
+    }
+
+
+def _mounted_runtime_user_data_candidates() -> list[Path]:
+    out: list[Path] = []
+    for candidate in SUPPORTED_RUNTIME_USER_DATA_DIRS:
+        meta = _mount_metadata_for_path(candidate)
+        if meta.get("mount_detected"):
+            out.append(candidate.resolve())
+    return out
 
 
 def _path_is_ephemeral_user_data(path: str | Path) -> bool:
@@ -144,20 +213,67 @@ def _path_is_ephemeral_user_data(path: str | Path) -> bool:
     )
 
 
+def _select_user_data_dir(*, explicit: Path | None) -> Path:
+    mounted_candidates = _mounted_runtime_user_data_candidates()
+    if explicit is not None:
+        explicit_path = explicit.resolve()
+        if _path_is_ephemeral_user_data(explicit_path):
+            return explicit_path
+        if _mount_metadata_for_path(explicit_path).get("mount_detected"):
+            return explicit_path
+        if mounted_candidates:
+            return mounted_candidates[0]
+        return explicit_path
+
+    if mounted_candidates:
+        return mounted_candidates[0]
+
+    preferred = (PROJECT_ROOT / "user_data").resolve()
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        test_file = preferred / ".write_test"
+        test_file.write_text("ok", encoding="utf-8")
+        test_file.unlink(missing_ok=True)
+        return preferred
+    except Exception:
+        return Path("/tmp/rtlab_user_data").resolve()
+
+
+def _resolve_user_data_dir() -> Path:
+    explicit_raw = str(os.getenv("RTLAB_USER_DATA_DIR", "")).strip()
+    explicit = Path(explicit_raw).resolve() if explicit_raw else None
+    return _select_user_data_dir(explicit=explicit)
+
+
+USER_DATA_DIR = _resolve_user_data_dir()
+
+
 def _user_data_persistence_status(path: str | Path | None = None) -> dict[str, Any]:
     target = Path(path).resolve() if path is not None else USER_DATA_DIR
-    explicit_env = bool(str(os.getenv("RTLAB_USER_DATA_DIR", "")).strip())
+    explicit_raw = str(os.getenv("RTLAB_USER_DATA_DIR", "")).strip()
+    explicit_env = bool(explicit_raw)
     ephemeral = _path_is_ephemeral_user_data(target)
-    warning = (
-        "RTLAB_USER_DATA_DIR apunta a almacenamiento efimero; un redeploy puede resetear bots/runs/logs."
-        if ephemeral
-        else ""
-    )
+    mount_meta = _mount_metadata_for_path(target)
+    persistent_storage = bool((not ephemeral) and mount_meta.get("mount_detected"))
+    configured_path = Path(explicit_raw).resolve() if explicit_raw else None
+    selection_drift = bool(configured_path is not None and configured_path != target)
+    warning = ""
+    if ephemeral:
+        warning = "RTLAB_USER_DATA_DIR apunta a almacenamiento efimero; un redeploy puede resetear bots/runs/logs."
+    elif not persistent_storage:
+        warning = "RTLAB_USER_DATA_DIR no apunta a un volumen montado real; el estado puede perderse tras restart/redeploy."
     return {
         "user_data_dir": str(target),
+        "configured_user_data_dir": str(configured_path) if configured_path is not None else "",
         "explicit_env": explicit_env,
         "storage_ephemeral": bool(ephemeral),
-        "persistent_storage": not bool(ephemeral),
+        "persistent_storage": persistent_storage,
+        "selection_drift": selection_drift,
+        "mounted_runtime_candidates": [str(path) for path in _mounted_runtime_user_data_candidates()],
+        "mount_detected": bool(mount_meta.get("mount_detected")),
+        "mount_point": str(mount_meta.get("mount_point") or ""),
+        "mount_source": str(mount_meta.get("mount_source") or ""),
+        "mount_fs_type": str(mount_meta.get("mount_fs_type") or ""),
         "warning": warning,
     }
 
@@ -9355,12 +9471,20 @@ def evaluate_gates(
         g10_status = "PASS"
         g10_reason = "User data en almacenamiento persistente"
     else:
-        if active_mode == "live":
-            g10_status = "FAIL"
-            g10_reason = "User data en almacenamiento efimero; LIVE bloqueado hasta usar volumen persistente"
+        if bool(storage_status.get("storage_ephemeral")):
+            if active_mode == "live":
+                g10_status = "FAIL"
+                g10_reason = "User data en almacenamiento efimero; LIVE bloqueado hasta usar volumen persistente"
+            else:
+                g10_status = "WARN"
+                g10_reason = "User data en almacenamiento efimero; posible perdida de estado tras redeploy"
         else:
-            g10_status = "WARN"
-            g10_reason = "User data en almacenamiento efimero; posible perdida de estado tras redeploy"
+            if active_mode == "live":
+                g10_status = "FAIL"
+                g10_reason = "User data no apunta a un volumen montado real; LIVE bloqueado hasta corregir RTLAB_USER_DATA_DIR/mount path"
+            else:
+                g10_status = "WARN"
+                g10_reason = "User data no apunta a un volumen montado real; posible perdida de estado tras restart/redeploy"
     gates.append(
         gate_row(
             "G10_STORAGE_PERSISTENCE",
