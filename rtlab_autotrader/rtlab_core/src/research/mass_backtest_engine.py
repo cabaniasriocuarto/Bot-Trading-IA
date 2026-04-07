@@ -21,6 +21,7 @@ import yaml
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
 from rtlab_core.policy_paths import resolve_policy_root
 from rtlab_core.src.data.catalog import DataCatalog
+from rtlab_core.src.data.runtime_path import runtime_path
 from .data_provider import build_data_provider
 
 
@@ -125,14 +126,14 @@ class FoldWindow:
 
 class MassBacktestEngine:
     def __init__(self, *, user_data_dir: Path, repo_root: Path, knowledge_loader: Any) -> None:
-        self.user_data_dir = Path(user_data_dir).resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
         self.repo_root = Path(repo_root).resolve()
         self.knowledge_loader = knowledge_loader
         self.catalog = DataCatalog(self.user_data_dir)
         self.backtest_catalog = BacktestCatalogDB(self.user_data_dir / "backtests" / "catalog.sqlite3")
         self.cost_model_resolver = CostModelResolver(catalog=self.backtest_catalog)
         self.fundamentals_filter = FundamentalsCreditFilter(catalog=self.backtest_catalog)
-        self.root = (self.user_data_dir / "research" / "mass_backtests").resolve()
+        self.root = runtime_path(self.user_data_dir / "research" / "mass_backtests")
         self.db_path = self.root / "metadata.sqlite3"
         self.root.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -2057,7 +2058,7 @@ class MassBacktestCoordinator:
         self._beast_queue: deque[dict[str, Any]] = deque()
         self._beast_active_run_ids: set[str] = set()
         self._beast_jobs_meta: dict[str, dict[str, Any]] = {}
-        self._beast_state_path = (self.engine.root / "beast_mode_state.json").resolve()
+        self._beast_state_path = runtime_path(self.engine.root / "beast_mode_state.json")
         self._beast_stop_requested = False
         self._beast_metrics = self._load_beast_metrics()
 

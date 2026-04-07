@@ -10,6 +10,7 @@ import pandas as pd
 from rtlab_core.data.marketdata import ensure_datetime_index
 
 from .catalog import CatalogEntry, DataCatalog
+from .runtime_path import runtime_path
 from .universes import DEFAULT_SOURCES, normalize_market, normalize_symbol, normalize_timeframe
 
 
@@ -108,7 +109,7 @@ class LoadedDataset:
 
 class DataLoader:
     def __init__(self, user_data_dir: Path) -> None:
-        self.user_data_dir = user_data_dir.resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
         self.catalog = DataCatalog(self.user_data_dir)
 
     def _processed_path(self, market: str, symbol: str, timeframe: str) -> Path:

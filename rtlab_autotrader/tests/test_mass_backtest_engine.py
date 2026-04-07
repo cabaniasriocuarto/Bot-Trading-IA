@@ -4,8 +4,11 @@ from pathlib import Path
 import json
 import pytest
 
+from rtlab_core.src.data import catalog as catalog_module
 from rtlab_core.learning.knowledge import KnowledgeLoader
+from rtlab_core.src.reports import reporting as reporting_module
 from rtlab_core.src.data.catalog import DataCatalog
+from rtlab_core.src.research import data_provider as data_provider_module
 from rtlab_core.src.research.data_provider import build_data_provider
 from rtlab_core.src.research.mass_backtest_engine import FoldWindow, MassBacktestCoordinator, MassBacktestEngine
 from rtlab_core.policy_paths import resolve_policy_root
@@ -170,6 +173,28 @@ def test_dataset_mode_provider_no_api_keys_required_and_returns_hints_when_missi
   assert payload["public_downloadable"] is True
   assert payload["ready"] is False
   assert payload["hints"]
+
+
+def test_data_catalog_does_not_resolve_runtime_storage_path(monkeypatch) -> None:
+  monkeypatch.setattr(catalog_module.Path, "resolve", lambda self, strict=False: (_ for _ in ()).throw(AssertionError("resolve should not be called")))
+  catalog = catalog_module.DataCatalog(Path("/app/data/rtlab_user_data"))
+  assert str(catalog.user_data_dir).replace("\\", "/") == "/app/data/rtlab_user_data"
+  assert str(catalog.data_root).replace("\\", "/") == "/app/data/rtlab_user_data/data"
+
+
+def test_dataset_mode_provider_does_not_resolve_runtime_storage_path(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setattr(data_provider_module.Path, "resolve", lambda self, strict=False: (_ for _ in ()).throw(AssertionError("resolve should not be called")))
+  provider = data_provider_module.DatasetModeDataProvider(
+    user_data_dir=Path("/app/data/rtlab_user_data"),
+    catalog=DataCatalog(tmp_path),
+  )
+  assert str(provider.user_data_dir).replace("\\", "/") == "/app/data/rtlab_user_data"
+
+
+def test_report_engine_does_not_resolve_runtime_storage_path(monkeypatch) -> None:
+  monkeypatch.setattr(reporting_module.Path, "resolve", lambda self, strict=False: (_ for _ in ()).throw(AssertionError("resolve should not be called")))
+  report_engine = reporting_module.ReportEngine(Path("/app/data/rtlab_user_data"))
+  assert str(report_engine.user_data_dir).replace("\\", "/") == "/app/data/rtlab_user_data"
 
 
 def test_orderflow_toggle_can_disable_microstructure_in_mass_backtest(tmp_path: Path) -> None:

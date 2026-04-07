@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .universes import DEFAULT_SOURCES, MARKET_UNIVERSES, SUPPORTED_MARKETS, SUPPORTED_TIMEFRAMES, normalize_market, normalize_symbol
+from .runtime_path import runtime_path
 
 
 def _json_load(path: Path) -> dict[str, Any]:
@@ -53,8 +54,8 @@ class CatalogEntry:
 
 class DataCatalog:
     def __init__(self, user_data_dir: Path) -> None:
-        self.user_data_dir = user_data_dir.resolve()
-        self.data_root = (self.user_data_dir / "data").resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
+        self.data_root = runtime_path(self.user_data_dir / "data")
 
     def manifests_dir(self, market: str) -> Path:
         return self.data_root / normalize_market(market) / "manifests"
@@ -149,7 +150,7 @@ class DataCatalog:
         tf = timeframe.lower()
         manifest_dir = self.manifests_dir(mk)
         manifest_dir.mkdir(parents=True, exist_ok=True)
-        normalized_files = [Path(p).resolve() for p in files]
+        normalized_files = [runtime_path(p) for p in files]
         dataset_hash = _sha256_files([p for p in normalized_files if p.exists()])
         payload: dict[str, Any] = {
             "market": mk,
@@ -159,7 +160,7 @@ class DataCatalog:
             "start": start,
             "end": end,
             "files": [str(p) for p in normalized_files],
-            "processed_path": str(processed_path.resolve()) if processed_path else None,
+            "processed_path": str(runtime_path(processed_path)) if processed_path else None,
             "dataset_hash": dataset_hash,
         }
         if extra:

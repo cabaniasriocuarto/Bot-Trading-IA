@@ -2,6 +2,24 @@
 
 ## 2026-04-07
 
+### Auditoria seria de Backtests / Beast / Masivo
+- Diagnostico real del dominio sobre `main`:
+  - Beast y Masivo comparten `USER_DATA_DIR`, `DataCatalog`, `build_data_provider(...)` y preflight de dataset;
+  - no habia evidencia de roots separados ni de un bug de frontend inventando dataset faltante.
+- Hallazgo importante corregido en rama de auditoria:
+  - seguian vivos `Path.resolve()` sobre roots runtime dentro de:
+    - `rtlab_core.src.data.catalog`
+    - `rtlab_core.src.data.loader`
+    - `rtlab_core.src.research.data_provider`
+    - `rtlab_core.src.research.mass_backtest_engine`
+    - `rtlab_core.src.reports.reporting`
+    - `rtlab_core.src.data.binance_futures_bootstrap`
+  - se introduce `rtlab_core.src.data.runtime_path` para normalizar paths runtime sin tocar el filesystem del volumen.
+  - `Backtests` deja de silenciar errores de refresh en el panel Beast y ahora muestra un error explicito si no puede leer el backend real.
+- Lectura honesta:
+  - Backtests mejora y queda mas coherente internamente;
+  - pero mientras produccion siga devolviendo `502 Application failed to respond`, el dominio no puede considerarse cerrado sobre `main`.
+
 ### Produccion Railway: mount detection no bloqueante por `mountinfo`
 - Diagnostico real posterior al merge de `#24`:
   - produccion empezo a responder `502 Application failed to respond`;

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rtlab_core.src.data.runtime_path import runtime_path
+
 
 def _to_csv(rows: list[dict[str, Any]]) -> str:
     if not rows:
@@ -20,7 +22,7 @@ def _to_csv(rows: list[dict[str, Any]]) -> str:
 
 class ReportEngine:
     def __init__(self, user_data_dir: Path) -> None:
-        self.user_data_dir = user_data_dir.resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
 
     def write_backtest_artifacts(self, run_id: str, run_payload: dict[str, Any]) -> dict[str, str]:
         base = self.user_data_dir / "backtests" / "artifacts" / run_id

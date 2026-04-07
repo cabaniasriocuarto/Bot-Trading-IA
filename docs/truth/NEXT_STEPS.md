@@ -1,6 +1,27 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-06
+Fecha: 2026-04-07
+
+## Siguiente bloque exacto para Backtests / Beast / Masivo tras auditoria seria - 2026-04-07
+- [x] Confirmar paridad Beast vs Masivo:
+  - comparten `USER_DATA_DIR`, `DataCatalog`, `build_data_provider(...)` y preflight de dataset;
+  - no hay evidencia de que uno lea otro root/catalogo.
+- [x] Identificar deuda inmediata del dominio:
+  - seguian quedando `Path.resolve()` sobre roots runtime dentro de dataset/catalog/provider/engine/artifacts aunque `health/startup` ya se habia saneado.
+- [x] Aplicar reparacion chica y coherente en rama de auditoria:
+  - introducir `runtime_path(...)`
+  - migrar Backtests runtime paths a esa normalizacion
+  - hacer fail-honest el panel Beast cuando el backend no responde
+  - agregar tests anti-regresion
+- [ ] Siguiente paso exacto:
+  - mergear la rama de auditoria
+  - esperar deploy de produccion
+  - confirmar `200` en `/api/v1/health`
+  - rerun de validacion Backtests:
+    - `/api/v1/data/status`
+    - `/api/v1/research/beast/status`
+    - `/api/v1/research/mass-backtest/status`
+  - solo si produccion vuelve a `200`, rebootstrapear `BTCUSDT` y reconfirmar durabilidad/catalogo
 
 ## Siguiente bloque exacto para estabilidad de mount detection en produccion - 2026-04-07
 - [x] Confirmar que el fix anterior de persistencia dejo de ser solo un problema de catalogo:

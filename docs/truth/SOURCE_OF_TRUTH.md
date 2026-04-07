@@ -1,6 +1,39 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-06
+Fecha de actualizacion: 2026-04-07
+
+## Auditoria Backtests / Beast / Masivo: Beast y Masivo comparten root/catalogo, pero el dominio todavia arrastra deuda runtime - 2026-04-07
+
+- Alcance auditado:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+  - `rtlab_core.web.app`
+  - `rtlab_core.src.data.*`
+  - `rtlab_core.src.research.*`
+  - `rtlab_core.src.reports.reporting`
+- Hallazgo estructural confirmado:
+  - Beast y Masivo **no** usan roots distintos;
+  - ambos dependen del mismo `USER_DATA_DIR`, del mismo `DataCatalog`, del mismo `build_data_provider(...)` y del mismo preflight `_preflight_dataset_ready(...)`;
+  - cuando uno ve dataset faltante y el otro tambien, la causa raiz es compartida.
+- Hallazgo tecnico importante:
+  - despues de `#25` y `#26`, seguian quedando `Path.resolve()` sobre roots runtime dentro del propio dominio Backtests:
+    - `DataCatalog`
+    - `DataLoader`
+    - `DatasetModeDataProvider`
+    - `MassBacktestEngine`
+    - `ArtifactReportEngine`
+    - metadata/reportes del bootstrap Futures
+  - eso dejaba una deuda inconsistente:
+    - `health/startup` ya no resolvia roots runtime;
+    - pero Backtests todavia podia volver a tocar/normalizar esos mismos paths por filesystem dentro del flujo de datasets y artifacts.
+- Cambio minimo/profesional aplicado en rama de auditoria:
+  - nuevo helper `rtlab_core.src.data.runtime_path` para normalizar paths runtime sin `resolve()`;
+  - el dominio Backtests migra a esa normalizacion para dataset roots, manifests y artifacts locales;
+  - el panel de Beast en frontend deja de tragarse errores de refresh y ahora muestra cuando no puede leer el estado real del backend;
+  - se agregan tests para impedir regresion de `resolve()` sobre `/app/data/rtlab_user_data`.
+- Estado operativo honesto al cierre de la auditoria:
+  - el frontend de Backtests no esta inventando el problema;
+  - `csud` sigue apuntando a produccion;
+  - la causa activa visible para el usuario sigue siendo disponibilidad/runtime de produccion (`502`), no divergencia Beast-vs-Masivo ni warning legacy del frontend.
 
 ## Produccion Railway: la deteccion de mount no puede tocar el volumen por `exists()/is_mount()` - 2026-04-07
 
