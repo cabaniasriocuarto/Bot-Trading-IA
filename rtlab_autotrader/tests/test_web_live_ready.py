@@ -394,6 +394,45 @@ def test_startup_hooks_schedule_background_work_without_blocking(tmp_path: Path,
   release.set()
 
 
+def test_startup_maintenance_records_failure_status(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+
+  def _boom() -> None:
+    raise RuntimeError("seed exploded")
+
+  monkeypatch.setattr(module.store, "_ensure_seed_backtest", _boom)
+  monkeypatch.setattr(module.store, "_sync_backtest_runs_catalog", lambda: None)
+  monkeypatch.setattr(module.store.decision_log, "backfill_runtime_indexes", lambda: None)
+  monkeypatch.setattr(module.store.reporting_bridge, "refresh_materialized_views", lambda _runs: None)
+
+  status = module.store.ensure_startup_maintenance(blocking=True)
+
+  assert status["ok"] is False
+  assert status["reason"] == "seed_backtest_failed"
+  assert status["error"] == "seed exploded"
+  assert status.get("finished_at")
+
+
+def test_startup_maintenance_records_decision_log_backfill_failure(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+
+  monkeypatch.setattr(module.store, "_ensure_seed_backtest", lambda: None)
+  monkeypatch.setattr(module.store, "_sync_backtest_runs_catalog", lambda: None)
+  monkeypatch.setattr(
+    module.store.decision_log,
+    "backfill_runtime_indexes",
+    lambda: (_ for _ in ()).throw(RuntimeError("decision log exploded")),
+  )
+  monkeypatch.setattr(module.store.reporting_bridge, "refresh_materialized_views", lambda _runs: None)
+
+  status = module.store.ensure_startup_maintenance(blocking=True)
+
+  assert status["ok"] is False
+  assert status["reason"] == "decision_log_backfill_failed"
+  assert status["error"] == "decision log exploded"
+  assert status.get("finished_at")
+
+
 def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   module.API_RATE_LIMITER = module.ApiRateLimiter(
@@ -2913,6 +2952,29 @@ def test_learning_and_rollout_use_runtime_path_for_user_data_dir(tmp_path: Path,
 
   assert learning_service.root == sentinel
   assert rollout_manager.root == sentinel
+
+
+def test_decision_log_initialize_can_skip_backfill(tmp_path: Path, monkeypatch) -> None:
+  from rtlab_core.domains.decision_log.repository import BotDecisionLogRepository
+
+  calls: list[str] = []
+  repo = BotDecisionLogRepository(
+    db_path=tmp_path / "console.sqlite3",
+    schema_sql="CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, ts TEXT, type TEXT, severity TEXT, module TEXT, message TEXT, related_ids TEXT, payload_json TEXT);"
+               "CREATE TABLE IF NOT EXISTS breaker_events (ts TEXT, bot_id TEXT, mode TEXT, reason TEXT, run_id TEXT, symbol TEXT, source_log_id INTEGER UNIQUE);",
+    backfill_max_rows=1000,
+    integrity_window_hours=24,
+    unknown_ratio_warn=0.2,
+    unknown_min_events=10,
+  )
+
+  monkeypatch.setattr(repo, "_backfill_logs_has_bot_ref", lambda conn: calls.append("has_bot_ref"))
+  monkeypatch.setattr(repo, "_backfill_log_bot_refs", lambda conn: calls.append("log_bot_refs"))
+  monkeypatch.setattr(repo, "_backfill_breaker_events_from_logs", lambda conn: calls.append("breaker_events"))
+
+  repo.initialize(include_backfill=False)
+
+  assert calls == []
 
 
 def test_strategy_upload_validation_and_primary_assignment(tmp_path: Path, monkeypatch) -> None:

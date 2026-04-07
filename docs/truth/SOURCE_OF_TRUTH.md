@@ -2,6 +2,22 @@
 
 Fecha de actualizacion: 2026-04-07
 
+## Produccion Railway: el decision log seguia haciendo backfill pesado dentro del startup sincrono - 2026-04-07
+
+- Hallazgo raiz adicional en repo:
+  - aun despues de sacar varios bloqueos del boot path, `ConsoleStore.__init__()` seguia llamando `BotDecisionLogRepository.initialize()` de forma sincrona;
+  - ese init no solo aseguraba esquema: tambien corria backfills de `logs`, `log_bot_refs` y `breaker_events`.
+- Por que esto importa para produccion:
+  - staging puede tolerarlo con menos volumen de datos;
+  - produccion, con SQLite/volume mas cargado, puede quedar colgada antes de responder `health`.
+- Cambio minimo/profesional aplicado:
+  - `decision_log.initialize(include_backfill=False)` deja el camino sincrono reducido a esquema y migraciones minimas;
+  - el backfill pesado pasa a `startup maintenance` en background;
+  - si esa etapa falla, el estado queda registrado como `decision_log_backfill_failed`.
+- Lectura operativa correcta:
+  - esto sigue siendo un fix repo-side para bajar bloqueo de arranque;
+  - el cierre real del incidente solo queda confirmado cuando Railway produccion vuelva a `200`.
+
 ## Produccion Railway: el 502 seguia atado al startup blocking path de auth y ConsoleStore - 2026-04-07
 
 - Hallazgo raiz aislado en repo:
