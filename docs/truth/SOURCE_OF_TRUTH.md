@@ -2,6 +2,57 @@
 
 Fecha de actualizacion: 2026-04-06
 
+## Produccion Backtests/Beast: dataset faltante por catalogo vacio en volumen runtime - 2026-04-06
+
+- Superficie productiva canonica auditada:
+  - `https://bot-trading-ia-csud.vercel.app/backtests`
+  - esa URL apunta a `https://bot-trading-ia-production.up.railway.app`
+- Estado real confirmado antes del fix de datos:
+  - `GET /api/v1/research/beast/status` en produccion:
+    - `policy_state=enabled`
+    - `policy_source_root=/app/config/policies`
+  - `GET /api/v1/data/status` en produccion:
+    - `data_root=/app/data/rtlab_user_data/data`
+    - `available_count=0`
+    - `missing_count=63`
+    - faltante explicito para `crypto/BTCUSDT/5m`
+- Causa raiz exacta del bloqueo visible:
+  - el runtime de Beast ya estaba sano en policies;
+  - el bloqueo real paso a ser ausencia de datasets/manifests canónicos en el volumen persistente de produccion;
+  - Backtests/Beast decide el faltante desde `DataCatalog.status()` sobre `${RTLAB_USER_DATA_DIR}/data`, no desde frontend ni desde un warning legacy.
+- Cambio canonico aplicado en repo:
+  - nuevo bootstrap oficial de Binance Futures:
+    - `rtlab_autotrader/scripts/bootstrap_binance_futures_public.py`
+    - `POST /api/v1/data/bootstrap/binance-futures-public`
+  - fuente prioritaria:
+    - zips historicos oficiales de Binance Futures + `.CHECKSUM`
+  - fallback:
+    - REST oficial de klines Futures
+  - persistencia:
+    - sobre el volumen/runtime real del servicio (`${RTLAB_USER_DATA_DIR}/data`)
+  - salida canónica:
+    - base `1m`
+    - derivados `5m`, `15m`, `1h`, `4h`, `1d`
+    - manifests con provenance (`source_type`, `market_family`, `checksum_validation_result`, `archive_paths`, `dataset_file_hash`, etc.)
+- Criterio auditable de universo para escalar el pipeline:
+  - USD-M:
+    - `status=TRADING`
+    - `contractType=PERPETUAL`
+    - `underlyingType=COIN`
+    - ranking por `quoteVolume` 24h descendente
+  - COIN-M:
+    - `contractStatus=TRADING`
+    - `contractType=PERPETUAL`
+    - `underlyingType=COIN`
+    - ranking por `baseVolume * weightedAvgPrice` 24h descendente
+- Regla operativa inmediata:
+  - el desbloqueo minimo en produccion/main se hace con:
+    - `market_family=usdm`
+    - `symbols=[BTCUSDT]`
+    - `start_month=2024-01`
+    - `end_month=2024-12`
+    - `resample_timeframes=[5m,15m,1h,4h,1d]`
+
 ## Produccion Beast/runtime: policies ausentes por empaquetado legacy - 2026-04-06
 
 - Superficie real auditada por el usuario:

@@ -24,7 +24,15 @@ def ensure_datetime_index(df: pd.DataFrame, ts_col: str = "timestamp") -> pd.Dat
 
 def resample_ohlcv(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     source = ensure_datetime_index(df)
-    rule = timeframe.upper().replace("M", "T")
+    normalized = str(timeframe or "").strip().lower()
+    if normalized.endswith("m"):
+        rule = f"{int(normalized[:-1])}min"
+    elif normalized.endswith("h"):
+        rule = f"{int(normalized[:-1])}h"
+    elif normalized.endswith("d"):
+        rule = f"{int(normalized[:-1])}d"
+    else:
+        rule = normalized
     aggregated = source.resample(rule).agg(
         {
             "open": "first",

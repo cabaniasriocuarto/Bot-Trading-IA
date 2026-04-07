@@ -2,6 +2,27 @@
 
 ## 2026-04-06
 
+### Produccion Beast/Backtests: bootstrap canonico de datasets Binance Futures
+- Diagnostico real:
+  - el warning visible en `csud/backtests` ya no venia de `policy_state=missing`;
+  - produccion tenia `policy_state=enabled`, pero `GET /api/v1/data/status` devolvia `available_count=0` en `${RTLAB_USER_DATA_DIR}/data`.
+- Causa raiz cerrada en repo:
+  - no existia un bootstrap canonico de datasets Futures persistido sobre el volumen runtime real de produccion.
+- Cambio minimo/profesional aplicado:
+  - nuevo modulo `rtlab_core/src/data/binance_futures_bootstrap.py`
+  - nuevo script `rtlab_autotrader/scripts/bootstrap_binance_futures_public.py`
+  - nuevo endpoint admin `POST /api/v1/data/bootstrap/binance-futures-public`
+  - `DataCatalog` ignora `*.summary.json` y deja de contarlos como datasets reales
+  - `Backtests` ahora sugiere el comando canonico de Futures, no el downloader legacy spot
+- Fuente y criterio canónicos:
+  - prioridad: zips historicos oficiales de Binance Futures + `.CHECKSUM`
+  - fallback: REST oficial de klines Futures
+  - base única: `1m`
+  - resample canonico: `5m`, `15m`, `1h`, `4h`, `1d`
+  - seleccion top 40:
+    - USD-M: `quoteVolume` 24h desc sobre contratos `TRADING/PERPETUAL`
+    - COIN-M: `baseVolume * weightedAvgPrice` 24h desc sobre contratos `TRADING/PERPETUAL`
+
 ### Produccion Beast/runtime: empaquetado legacy sin `config/`
 - Diagnostico real:
   - `bot-trading-ia-csud` no estaba mintiendo; estaba leyendo produccion real.
