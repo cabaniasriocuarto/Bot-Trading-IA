@@ -2,6 +2,22 @@
 
 Fecha: 2026-04-06
 
+## Siguiente bloque exacto para estabilidad de mount detection en produccion - 2026-04-07
+- [x] Confirmar que el fix anterior de persistencia dejo de ser solo un problema de catalogo:
+  - despues del merge de `#24`, produccion paso a `502 Application failed to respond`
+  - el workflow `Production Storage Durability` (`24063115973`) fallo por timeout antes del bootstrap
+- [x] Confirmar la hipotesis tecnica mas fuerte:
+  - el runtime no debe tocar el filesystem del volumen con `exists()/is_mount()` para decidir persistencia
+  - esa sonda puede bloquear el proceso en Railway
+- [x] Aplicar correccion minima:
+  - detectar mount por `mountinfo` solamente
+  - mantener fail-closed sin tocar el volume path
+- [ ] Siguiente paso exacto:
+  - mergear este ajuste
+  - esperar que produccion vuelva a `200`
+  - rerun `Production Storage Durability`
+  - si el workflow pasa `Check mounted storage gate`, recien ahi rebootstrapear `BTCUSDT` y reconfirmar Beast/Backtests
+
 ## Siguiente bloque exacto para persistencia durable de datasets en produccion - 2026-04-07
 - [x] Confirmar que el problema residual ya no era Beast ni bootstrap:
   - el bootstrap real de `BTCUSDT` funciono

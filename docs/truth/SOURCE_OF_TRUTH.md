@@ -2,6 +2,27 @@
 
 Fecha de actualizacion: 2026-04-06
 
+## Produccion Railway: la deteccion de mount no puede tocar el volumen por `exists()/is_mount()` - 2026-04-07
+
+- Hallazgo raiz confirmado tras merge de `#24`:
+  - el fix fail-closed anterior era conceptualmente correcto;
+  - pero la implementacion apoyada en `Path.exists()` + `Path.is_mount()` sobre roots runtime podia bloquear el proceso en produccion.
+- Evidencia real:
+  - `main` quedo en `b007abeaa749411f6137845bf28c06373c2c877f`;
+  - despues del auto-deploy, `https://bot-trading-ia-production.up.railway.app/api/v1/health` paso a responder `502 Application failed to respond` de forma sostenida;
+  - el workflow `Production Storage Durability` (`24063115973`) fallo en el primer chequeo por `Read timed out` contra produccion antes de cualquier bootstrap.
+- Diagnostico tecnico mas fuerte:
+  - el problema activo ya no es Beast ni el bootstrap;
+  - la deteccion de mount debe ser no bloqueante y basada solo en metadata del kernel (`/proc/self/mountinfo`), sin hacer probes filesystem sobre el volume path.
+- Cambio minimo/profesional aplicado en repo:
+  - `rtlab_core.web.app` deja de usar `exists()/is_mount()` para clasificar mounts runtime;
+  - ahora resuelve el mount efectivo por longest-prefix match contra `/proc/self/mountinfo`;
+  - esto mantiene el fail-closed pero evita tocar el filesystem del volumen durante health/runtime selection.
+- Regla operativa correcta desde ahora:
+  - para Railway produccion:
+    - usar `mountinfo` como fuente de verdad para mount detection;
+    - no usar probes filesystem sobre roots de volumen para decidir persistencia durable.
+
 ## Produccion Railway: persistencia durable de datasets requiere mount real, no solo path fuera de `/tmp` - 2026-04-07
 
 - Hallazgo raiz confirmado en repo:
