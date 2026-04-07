@@ -52,6 +52,31 @@ Fecha de actualizacion: 2026-04-06
     - `start_month=2024-01`
     - `end_month=2024-12`
     - `resample_timeframes=[5m,15m,1h,4h,1d]`
+- Estado real post-merge/post-bootstrap:
+  - `POST /api/v1/data/bootstrap/binance-futures-public` ejecutado en produccion con:
+    - `market_family=usdm`
+    - `symbols=[BTCUSDT]`
+    - `start_month=2024-01`
+    - `end_month=2024-12`
+    - `resample_timeframes=[5m,15m,1h,4h,1d]`
+  - resultado:
+    - `available_count=6`
+    - `BTCUSDT_1m.parquet` persistido en `/app/data/rtlab_user_data/data/crypto/processed/`
+    - derivados persistidos:
+      - `5m`
+      - `15m`
+      - `1h`
+      - `4h`
+      - `1d`
+    - `checksum_validation_result=true` para los `12` zips mensuales oficiales de 2024
+  - validacion funcional real posterior:
+    - Beast en produccion completo una corrida E2E sobre `BTCUSDT/5m`
+    - `run_id=BX-000001`
+    - `terminal_state=COMPLETED`
+    - `results_count=1`
+  - consecuencia operativa:
+    - `csud/backtests` ya no deberia marcar faltante para `BTCUSDT/5m`
+    - el bloqueo pendiente de Beast deja de ser dataset base para ese caso y pasa a ser cobertura de universo adicional si se quiere escalar
 
 ## Produccion Beast/runtime: policies ausentes por empaquetado legacy - 2026-04-06
 
