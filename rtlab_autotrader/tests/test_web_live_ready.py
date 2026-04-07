@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import io
 import json
@@ -8,6 +9,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event
 
 import numpy as np
 import pandas as pd
@@ -357,6 +359,39 @@ def test_health_endpoint_does_not_persist_runtime_state(tmp_path: Path, monkeypa
   assert response.status_code == 200, response.text
   assert persist_flags
   assert persist_flags[-1] is False
+
+
+def test_startup_hooks_schedule_background_work_without_blocking(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  instrument_started = Event()
+  execution_started = Event()
+  release = Event()
+
+  monkeypatch.setattr(module.store, "ensure_startup_maintenance", lambda *, blocking=False: {"ok": True, "blocking": blocking})
+
+  def _slow_instrument_sync():
+    instrument_started.set()
+    release.wait(1.0)
+    return {"ok": True, "startup": True, "skipped": False, "reason": "completed"}
+
+  def _slow_execution_recovery():
+    execution_started.set()
+    release.wait(1.0)
+    return {"ok": True, "startup": True, "skipped": False, "reason": "completed"}
+
+  monkeypatch.setattr(module.store.instrument_registry, "sync_on_startup", _slow_instrument_sync)
+  monkeypatch.setattr(module.store.execution_reality, "recover_live_orders_on_startup", _slow_execution_recovery)
+
+  start = time.perf_counter()
+  for handler in module.app.router.on_startup:
+    asyncio.run(handler())
+  elapsed = time.perf_counter() - start
+
+  assert elapsed < 0.3
+  assert instrument_started.wait(0.3)
+  assert execution_started.wait(0.3)
+
+  release.set()
 
 
 def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:

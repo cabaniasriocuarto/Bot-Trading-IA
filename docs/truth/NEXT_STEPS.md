@@ -10,6 +10,7 @@ Fecha: 2026-04-07
 - [x] Aplicar correccion minima:
   - lazy init para login rate limiter
   - mantenimiento de `ConsoleStore` no bloqueante
+  - startup hooks de sync/recovery no bloqueantes
   - `health` read-only
 - [ ] Siguiente paso exacto:
   - mergear este fix
