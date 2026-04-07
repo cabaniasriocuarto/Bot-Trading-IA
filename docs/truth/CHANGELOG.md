@@ -2,6 +2,20 @@
 
 ## 2026-04-06
 
+### Produccion Beast/runtime: empaquetado legacy sin `config/`
+- Diagnostico real:
+  - `bot-trading-ia-csud` no estaba mintiendo; estaba leyendo produccion real.
+  - `GET /api/v1/config/policies` en produccion devolvia `available=false` y ausencia total de:
+    - `/app/config/policies`
+    - `/app/rtlab_autotrader/config/policies`
+- Causa raiz cerrada en repo:
+  - `rtlab_autotrader/docker/Dockerfile` no copiaba `config/` al contenedor.
+- Cambio minimo:
+  - `rtlab_autotrader/docker/Dockerfile` ahora agrega `COPY config /app/config`.
+- Objetivo:
+  - alinear el build legacy/nested de produccion con el runtime que staging ya usa sano;
+  - evitar que Beast vuelva a quedar en `policy_state=missing` por empaquetado incompleto.
+
 ### Railway staging: auto-deploy reproducible desde GitHub/main
 - Diagnostico real de infraestructura:
   - en `staging`, Railway quedo con `rootDirectory=null` y `dockerfilePath=docker/Dockerfile`.
