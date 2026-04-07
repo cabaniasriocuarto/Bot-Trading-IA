@@ -2,6 +2,36 @@
 
 Fecha de actualizacion: 2026-04-06
 
+## Produccion Beast/runtime: policies ausentes por empaquetado legacy - 2026-04-06
+
+- Superficie real auditada por el usuario:
+  - `https://bot-trading-ia-csud.vercel.app/backtests`
+  - ese frontend apunta a `https://bot-trading-ia-production.up.railway.app`
+- Contraste real entre staging y produccion:
+  - `staging` via `bot-trading-ia-staging-2`:
+    - `GET /api/v1/research/beast/status` -> `policy_state=enabled`
+    - `GET /api/v1/config/policies` -> `available=true`
+    - `authority.candidates[0]` en `/app/config/policies` con `15/15` YAML presentes
+  - `produccion` via `bot-trading-ia-csud`:
+    - `GET /api/v1/research/beast/status` -> `policy_state=missing`
+    - `GET /api/v1/config/policies` -> `available=false`
+    - `authority.candidates` reporta ausentes tanto:
+      - `/app/config/policies`
+      - `/app/rtlab_autotrader/config/policies`
+- Causa raiz exacta confirmada en repo:
+  - el Dockerfile legacy `rtlab_autotrader/docker/Dockerfile` no copiaba `config/` al contenedor;
+  - el Dockerfile root-safe del repo root si copia `config/`, por eso staging ya estaba sano;
+  - la compat local `rtlab_autotrader/config/policies/` si existe y contiene los `15` YAML esperados.
+- Cambio minimo aplicado:
+  - endurecer el Dockerfile legacy de `rtlab_autotrader` para que tambien haga `COPY config /app/config`;
+  - asi, si produccion sigue construyendo con `rtlab_autotrader/` como source/root efectivo, Beast deja de quedar sin policies por empaquetado.
+- Regla de validacion operativa desde ahora:
+  - `staging` se valida en `https://bot-trading-ia-staging-2.vercel.app/backtests`
+  - `produccion` se valida en `https://bot-trading-ia-csud.vercel.app/backtests`
+  - el chequeo tecnico canonico para distinguir problema de frontend vs runtime es:
+    - `GET /api/v1/config/policies`
+    - `GET /api/v1/research/beast/status`
+
 ## Railway staging: fix de auto-deploy GitHub/root directory ausente - 2026-04-06
 
 - Estado real auditado en Railway `staging`:

@@ -2,6 +2,24 @@
 
 Fecha: 2026-04-06
 
+## Siguiente bloque exacto para Beast en produccion / csud - 2026-04-06
+- [x] Confirmar que `bot-trading-ia-csud.vercel.app/backtests` apunta a produccion:
+  - `BACKEND_API_URL=https://bot-trading-ia-production.up.railway.app`
+- [x] Confirmar que el problema real ya no era frontend parity:
+  - `csud` devolvia `policy_state=missing`
+  - `staging-2` devolvia `policy_state=enabled`
+- [x] Confirmar la causa raiz exacta en produccion:
+  - `GET /api/v1/config/policies` reporta ausentes:
+    - `/app/config/policies`
+    - `/app/rtlab_autotrader/config/policies`
+  - el Dockerfile legacy `rtlab_autotrader/docker/Dockerfile` no copiaba `config/`
+- [x] Aplicar fix minimo de empaquetado:
+  - `COPY config /app/config` en `rtlab_autotrader/docker/Dockerfile`
+- [ ] Validar el deploy productivo posterior:
+  - `GET /api/v1/config/policies` en produccion debe pasar a `available=true`
+  - `GET /api/v1/research/beast/status` en produccion debe dejar `policy_state=missing`
+  - `https://bot-trading-ia-csud.vercel.app/backtests` debe reflejar ese estado sano sin warning legacy desalineado
+
 ## Siguiente bloque exacto para paridad frontend ↔ staging API en Backtests - 2026-04-06
 - [x] Auditar la URL reportada por usuario:
   - `https://bot-trading-ia-csud.vercel.app/backtests`
