@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from rtlab_core.src.data.runtime_path import runtime_path
+
 from .models import ALLOWED_TRANSITIONS, PHASE_STATE_BY_NAME, ROLLOUT_STATES
 
 
@@ -29,7 +31,7 @@ def _json_save(path: Path, payload: Any) -> None:
 
 class RolloutManager:
     def __init__(self, *, user_data_dir: Path) -> None:
-        self.root = (Path(user_data_dir).resolve() / "rollout").resolve()
+        self.root = runtime_path(Path(user_data_dir) / "rollout")
         self.state_path = self.root / "state.json"
         self.artifacts_root = self.root / "artifacts"
 

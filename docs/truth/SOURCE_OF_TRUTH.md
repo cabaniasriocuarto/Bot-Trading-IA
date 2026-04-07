@@ -2,6 +2,29 @@
 
 Fecha de actualizacion: 2026-04-07
 
+## Produccion Railway: el startup seguia resolviendo `RTLAB_USER_DATA_DIR` en servicios instanciados al importar `app.py` - 2026-04-07
+
+- Hallazgo raiz aislado en repo:
+  - aunque `web.app` y el dominio Backtests ya habian dejado de resolver roots runtime en varias rutas criticas,
+    el backend seguia instanciando durante import/startup:
+    - `ReportingBridgeService`
+    - `ExecutionRealityService`
+    - `ValidationService`
+    - `LearningService`
+    - `RolloutManager`
+  - esos servicios todavia hacian `Path.resolve()` sobre `user_data_dir` o roots derivados del volumen.
+- Evidencia tecnica concreta:
+  - `ConsoleStore()` se construye en import-time dentro de `rtlab_core.web.app`;
+  - en ese camino se crean `reporting/execution/validation`;
+  - ademas `learning_service` y `rollout_manager` se construyen como globals del modulo;
+  - por lo tanto, si `resolve()` sobre el root runtime vuelve a tocar un mount problemático en Railway, el proceso puede quedar sin responder antes de servir `/api/v1/health`.
+- Cambio minimo/profesional aplicado:
+  - esos servicios migran a `runtime_path(...)` para normalizar roots runtime sin `resolve()`;
+  - se agregan tests puntuales de constructor para impedir regresion de ese patron.
+- Lectura operativa correcta:
+  - este cambio apunta directamente al startup path del backend productivo;
+  - el cierre real del incidente recien queda confirmado cuando produccion vuelva a `200` en `/api/v1/health`.
+
 ## Auditoria Backtests / Beast / Masivo: Beast y Masivo comparten root/catalogo, pero el dominio todavia arrastra deuda runtime - 2026-04-07
 
 - Alcance auditado:

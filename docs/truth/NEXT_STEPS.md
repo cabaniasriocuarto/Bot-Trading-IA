@@ -2,6 +2,21 @@
 
 Fecha: 2026-04-07
 
+## Siguiente bloque exacto para recuperar `502` en Railway produccion - 2026-04-07
+- [x] Aislar una causa concreta de startup en repo:
+  - servicios globales construidos por `rtlab_core.web.app` seguian resolviendo `RTLAB_USER_DATA_DIR`/roots runtime por filesystem.
+- [x] Aplicar correccion minima:
+  - migrar esos constructores a `runtime_path(...)`
+  - agregar tests anti-regresion
+- [ ] Siguiente paso exacto:
+  - mergear este fix
+  - esperar auto-deploy de Railway produccion
+  - confirmar `GET /api/v1/health -> 200`
+  - solo despues revalidar:
+    - `/api/v1/data/status`
+    - `/api/v1/research/beast/status`
+    - `/api/v1/research/mass-backtest/status`
+
 ## Siguiente bloque exacto para Backtests / Beast / Masivo tras auditoria seria - 2026-04-07
 - [x] Confirmar paridad Beast vs Masivo:
   - comparten `USER_DATA_DIR`, `DataCatalog`, `build_data_provider(...)` y preflight de dataset;

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from rtlab_core.policy_paths import resolve_policy_root
+from rtlab_core.src.data.runtime_path import runtime_path
 
 
 VENUE_BINANCE = "binance"
@@ -759,12 +760,12 @@ class ReportingBridgeService:
         instrument_registry_service: Any | None = None,
         runs_path: Path | None = None,
     ) -> None:
-        self.user_data_dir = Path(user_data_dir).resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
         self.repo_root = Path(repo_root).resolve()
         self.explicit_policy_root = explicit_policy_root.resolve() if explicit_policy_root is not None else None
         self.instrument_registry_service = instrument_registry_service
-        self.runs_path = (runs_path or (self.user_data_dir / "backtests" / "runs.json")).resolve()
-        self.exports_dir = (self.user_data_dir / "reporting" / "exports").resolve()
+        self.runs_path = runtime_path(runs_path or (self.user_data_dir / "backtests" / "runs.json"))
+        self.exports_dir = runtime_path(self.user_data_dir / "reporting" / "exports")
         self.exports_dir.mkdir(parents=True, exist_ok=True)
         self.db = ReportingBridgeDB(self.user_data_dir / "reporting" / "reporting.sqlite3")
 

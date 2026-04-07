@@ -59,6 +59,7 @@ from rtlab_core.execution.reconciliation_engine import (
     reconciliation_severity_rank,
 )
 from rtlab_core.policy_paths import describe_policy_root_resolution
+from rtlab_core.src.data.runtime_path import runtime_path
 
 
 EXECUTION_SAFETY_FILENAME = "execution_safety.yaml"
@@ -2506,7 +2507,7 @@ class ExecutionRealityService:
         explicit_policy_root: Path | None = None,
         runs_loader: Any | None = None,
     ) -> None:
-        self.user_data_dir = Path(user_data_dir).resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
         self.repo_root = Path(repo_root).resolve()
         self.instrument_registry_service = instrument_registry_service
         self.universe_service = universe_service

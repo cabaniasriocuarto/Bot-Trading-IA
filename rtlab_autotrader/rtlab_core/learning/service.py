@@ -9,6 +9,8 @@ from typing import Any, Callable
 
 import yaml
 
+from rtlab_core.src.data.runtime_path import runtime_path
+
 from .brain import (
     MEDIUM_RISK_PROFILE,
     StrategySelector,
@@ -86,7 +88,7 @@ def _default_learning_risk_profile() -> dict[str, Any]:
 
 class LearningService:
     def __init__(self, *, user_data_dir: Path, repo_root: Path) -> None:
-        self.root = (user_data_dir / "learning").resolve()
+        self.root = runtime_path(user_data_dir / "learning")
         self.status_path = self.root / "status.json"
         self.drift_path = self.root / "drift.json"
         self.recommendations_path = self.root / "recommendations.json"

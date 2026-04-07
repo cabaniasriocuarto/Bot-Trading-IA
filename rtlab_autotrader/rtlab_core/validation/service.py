@@ -13,6 +13,7 @@ from uuid import uuid4
 import yaml
 
 from rtlab_core.policy_paths import describe_policy_root_resolution
+from rtlab_core.src.data.runtime_path import runtime_path
 
 
 VALIDATION_GATES_FILENAME = "validation_gates.yaml"
@@ -713,7 +714,7 @@ class ValidationService:
         universe_service: Any | None = None,
         explicit_policy_root: Path | None = None,
     ) -> None:
-        self.user_data_dir = Path(user_data_dir).resolve()
+        self.user_data_dir = runtime_path(user_data_dir)
         self.repo_root = Path(repo_root).resolve()
         self.execution_service = execution_service
         self.reporting_bridge_service = reporting_bridge_service
