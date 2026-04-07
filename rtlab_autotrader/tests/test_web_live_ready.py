@@ -2727,6 +2727,26 @@ def test_storage_status_requires_real_mount_not_only_non_tmp(tmp_path: Path, mon
   assert "volumen montado real" in str(gate_by_id["G10_STORAGE_PERSISTENCE"].get("reason") or "").lower()
 
 
+def test_mount_metadata_uses_mountinfo_prefix_without_touching_filesystem(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setattr(
+    module,
+    "_read_mountinfo",
+    lambda: [
+      {"mount_point": "/", "source": "overlay", "fs_type": "overlay"},
+      {"mount_point": "/app/data", "source": "railway-volume", "fs_type": "fuse.railway"},
+    ],
+  )
+  monkeypatch.setattr(module.Path, "exists", lambda self: (_ for _ in ()).throw(AssertionError("exists should not be called")))
+  monkeypatch.setattr(module.Path, "is_mount", lambda self: (_ for _ in ()).throw(AssertionError("is_mount should not be called")))
+
+  meta = module._mount_metadata_for_path("/app/data/rtlab_user_data/data")
+  assert meta["mount_detected"] is True
+  assert meta["mount_point"] == "/app/data"
+  assert meta["mount_source"] == "railway-volume"
+  assert meta["mount_fs_type"] == "fuse.railway"
+
+
 def test_select_user_data_dir_prefers_mounted_runtime_candidate_over_unmounted_explicit(tmp_path: Path, monkeypatch) -> None:
   module, _client = _build_app(tmp_path, monkeypatch)
   mounted_candidate = Path("/data/rtlab_user_data").resolve()

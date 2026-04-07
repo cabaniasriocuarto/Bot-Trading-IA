@@ -2,6 +2,16 @@
 
 ## 2026-04-07
 
+### Produccion Railway: mount detection no bloqueante por `mountinfo`
+- Diagnostico real posterior al merge de `#24`:
+  - produccion empezo a responder `502 Application failed to respond`;
+  - el workflow `Production Storage Durability` (`24063115973`) fallo por `Read timed out` en el primer chequeo de storage.
+- Causa raiz mas fuerte:
+  - la deteccion de mount apoyada en `Path.exists()` + `Path.is_mount()` podia bloquear el runtime al tocar roots de volumen en Railway.
+- Cambio minimo/profesional aplicado:
+  - `rtlab_core.web.app` ahora resuelve mounts runtime solo via `/proc/self/mountinfo` (longest-prefix match);
+  - se elimina la necesidad de tocar el filesystem del volumen para determinar persistencia.
+
 ### Produccion Railway: persistencia durable de datasets requiere mount real
 - Diagnostico real:
   - `storage.persistent_storage` y `G10_STORAGE_PERSISTENCE` estaban basados solo en “path fuera de `/tmp`”.

@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import posixpath
 import random
 import re
 import secrets
@@ -154,37 +155,34 @@ def _read_mountinfo() -> list[dict[str, str]]:
     return rows
 
 
-def _mount_metadata_for_path(path: str | Path) -> dict[str, Any]:
-    target = Path(path).resolve()
-    probe = target
-    while not probe.exists() and probe.parent != probe:
-        probe = probe.parent
-    mount_point: Path | None = None
-    current = probe
-    while True:
-        try:
-            if current.exists() and current.is_mount():
-                mount_point = current.resolve()
-                break
-        except Exception:
-            pass
-        if current.parent == current:
-            break
-        current = current.parent
+def _normalize_mount_lookup_path(value: str | Path) -> str:
+    raw = os.fspath(value)
+    posix_raw = str(raw or "").replace("\\", "/").strip()
+    if posix_raw.startswith("/"):
+        normalized = posixpath.normpath(posix_raw)
+        return normalized if normalized.startswith("/") else f"/{normalized.lstrip('/')}"
+    return str(Path(os.path.abspath(raw)))
 
-    root_mount = Path(target.anchor or "/").resolve()
-    mount_detected = bool(mount_point is not None and mount_point != root_mount)
+
+def _mount_metadata_for_path(path: str | Path) -> dict[str, Any]:
+    target_path = _normalize_mount_lookup_path(path)
     mount_entry = {}
-    if mount_point is not None:
-        mount_entry = next(
-            (row for row in _read_mountinfo() if str(row.get("mount_point") or "") == str(mount_point)),
-            {},
-        )
+    for row in _read_mountinfo():
+        mount_point = _normalize_mount_lookup_path(str(row.get("mount_point") or ""))
+        if target_path == mount_point or target_path.startswith(f"{mount_point.rstrip('/')}/"):
+            if not mount_entry or len(mount_point) > len(str(mount_entry.get("mount_point") or "")):
+                mount_entry = {
+                    "mount_point": mount_point,
+                    "source": str(row.get("source") or ""),
+                    "fs_type": str(row.get("fs_type") or ""),
+                }
+    mount_point = str(mount_entry.get("mount_point") or "")
+    mount_detected = bool(mount_point and mount_point != "/")
     return {
-        "target_path": str(target),
-        "probe_path": str(probe.resolve()),
+        "target_path": target_path,
+        "probe_path": mount_point or target_path,
         "mount_detected": mount_detected,
-        "mount_point": str(mount_point) if mount_point is not None else "",
+        "mount_point": mount_point,
         "mount_source": str(mount_entry.get("source") or ""),
         "mount_fs_type": str(mount_entry.get("fs_type") or ""),
     }
