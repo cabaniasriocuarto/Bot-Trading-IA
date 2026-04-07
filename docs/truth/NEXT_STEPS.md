@@ -16,16 +16,24 @@ Fecha: 2026-04-06
   - derivados `5m`, `15m`, `1h`, `4h`, `1d`
   - manifests con provenance
   - seleccion top 40 auditable para `usdm` y `coinm`
-- [ ] Ejecutar el desbloqueo inmediato en produccion/main:
+- [x] Ejecutar el desbloqueo inmediato en produccion/main:
   - `POST /api/v1/data/bootstrap/binance-futures-public`
   - `market_family=usdm`
   - `symbols=[BTCUSDT]`
   - `start_month=2024-01`
   - `end_month=2024-12`
   - `resample_timeframes=[5m,15m,1h,4h,1d]`
-- [ ] Validar post-bootstrap:
-  - `GET /api/v1/data/status` debe dejar de reportar faltante para `BTCUSDT/5m`
-  - si es posible, correr una prueba real minima de Beast/Backtests sobre `BTCUSDT`
+- [x] Validar post-bootstrap:
+  - `GET /api/v1/data/status` ya no reporta faltante para `BTCUSDT/5m`
+  - Beast ya corrio una prueba real minima en produccion:
+    - `run_id=BX-000001`
+    - `terminal_state=COMPLETED`
+    - `results_count=1`
+- [ ] Siguiente paso exacto:
+  - ampliar el bootstrap canonico al universo objetivo:
+    - top 40 `usdm` TRADING/PERPETUAL
+    - top 40 `coinm` TRADING/PERPETUAL
+  - mantener `1m` como base unica y derivar `5m/15m/1h/4h/1d`
 
 ## Siguiente bloque exacto para Beast en produccion / csud - 2026-04-06
 - [x] Confirmar que `bot-trading-ia-csud.vercel.app/backtests` apunta a produccion:

@@ -22,6 +22,19 @@
   - seleccion top 40:
     - USD-M: `quoteVolume` 24h desc sobre contratos `TRADING/PERPETUAL`
     - COIN-M: `baseVolume * weightedAvgPrice` 24h desc sobre contratos `TRADING/PERPETUAL`
+- Validacion real de cierre:
+  - mergeado en `main`
+  - auto-deploy productivo confirmado por la aparicion del endpoint nuevo en `bot-trading-ia-production.up.railway.app`
+  - bootstrap productivo ejecutado para:
+    - `BTCUSDT`
+    - `usdm`
+    - `2024-01..2024-12`
+    - `5m/15m/1h/4h/1d`
+  - catalogo productivo paso a `available_count=6`
+  - Beast produjo una corrida real E2E:
+    - `run_id=BX-000001`
+    - `terminal_state=COMPLETED`
+    - `results_count=1`
 
 ### Produccion Beast/runtime: empaquetado legacy sin `config/`
 - Diagnostico real:
