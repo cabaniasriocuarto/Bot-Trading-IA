@@ -5906,6 +5906,74 @@ def test_data_bootstrap_crypto_binance_public_rejects_invalid_months(tmp_path: P
   assert "start_month" in str((res.json() or {}).get("detail") or "")
 
 
+def test_data_bootstrap_binance_futures_public_runs_bootstrap_and_updates_catalog(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  captured: dict[str, object] = {}
+
+  def _fake_bootstrap_futures_datasets(**kwargs):
+    captured.update(kwargs)
+    _seed_local_backtest_dataset(Path(module.USER_DATA_DIR), "crypto", "BTCUSDT", source="binance_public")
+    loader = module.DataLoader(Path(module.USER_DATA_DIR))
+    loader.load_resampled("crypto", "BTCUSDT", "5m", "2024-01-01", "2024-01-31")
+    status = module.DataCatalog(Path(module.USER_DATA_DIR)).status()
+    return {
+      "ok": True,
+      "provider": "binance_public",
+      "market": "crypto",
+      "market_family": "usdm",
+      "selection_mode": "symbols",
+      "selection_criterion": "status=TRADING + contractType=PERPETUAL + underlyingType=COIN; rank por quoteVolume 24h desc",
+      "symbols": ["BTCUSDT"],
+      "top_n": None,
+      "start_month": "2024-01",
+      "end_month": "2024-12",
+      "resample_timeframes": ["5m", "15m", "1h", "4h", "1d"],
+      "user_data_dir": str(Path(module.USER_DATA_DIR)),
+      "data_root": str((Path(module.USER_DATA_DIR) / "data").resolve()),
+      "bootstrapped": [
+        {
+          "symbol": "BTCUSDT",
+          "market_family": "usdm",
+          "dataset_1m_present": True,
+          "derived": [{"timeframe": "5m", "dataset_present": True}],
+        }
+      ],
+      "data_status": status,
+      "universe_manifest_path": None,
+      "universe_selection": None,
+    }
+
+  monkeypatch.setattr(module, "bootstrap_futures_datasets", _fake_bootstrap_futures_datasets)
+
+  res = client.post(
+    "/api/v1/data/bootstrap/binance-futures-public",
+    headers=headers,
+    json={
+      "market_family": "usdm",
+      "symbols": ["BTCUSDT"],
+      "start_month": "2024-01",
+      "end_month": "2024-12",
+      "resample_timeframes": ["5m", "15m", "1h", "4h", "1d"],
+    },
+  )
+  assert res.status_code == 200, res.text
+  payload = res.json()
+  assert payload["ok"] is True
+  assert payload["market_family"] == "usdm"
+  assert payload["symbols"] == ["BTCUSDT"]
+  assert payload["bootstrapped"][0]["dataset_1m_present"] is True
+  assert payload["data_status"]["available_count"] >= 2
+
+  assert captured["market_family"] == "usdm"
+  assert captured["symbols"] == ["BTCUSDT"]
+  assert captured["top_n"] is None
+  assert captured["start_month"] == "2024-01"
+  assert captured["end_month"] == "2024-12"
+
+
 def test_research_beast_start_rejects_missing_dataset(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

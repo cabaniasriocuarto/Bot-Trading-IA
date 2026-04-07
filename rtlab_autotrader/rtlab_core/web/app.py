@@ -67,6 +67,7 @@ from rtlab_core.runtime_controls import (
     observability_policy,
 )
 from rtlab_core.src.backtest.engine import BacktestCosts, BacktestEngine, BacktestRequest, MarketDataset
+from rtlab_core.src.data.binance_futures_bootstrap import bootstrap_futures_datasets
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.data.loader import DataLoader
 from rtlab_core.src.data.universes import MARKET_UNIVERSES, SUPPORTED_TIMEFRAMES, normalize_market, normalize_symbol, normalize_timeframe
@@ -303,6 +304,45 @@ def _bootstrap_crypto_public_dataset(body: DataBootstrapCryptoBody) -> dict[str,
         "stdout_tail": str(completed.stdout or "").strip()[-800:],
         "data_status": status,
     }
+
+
+def _bootstrap_binance_futures_public_dataset(body: DataBootstrapBinanceFuturesBody) -> dict[str, Any]:
+    symbols = [normalize_symbol(symbol) for symbol in (body.symbols or []) if str(symbol or "").strip()]
+    top_n = int(body.top_n or 0)
+    if not symbols and top_n <= 0:
+        raise HTTPException(status_code=400, detail="Debe informar symbols o top_n")
+    if symbols and top_n > 0:
+        raise HTTPException(status_code=400, detail="Usar symbols o top_n, no ambos")
+    if len(symbols) > 40:
+        raise HTTPException(status_code=400, detail="symbols excede el maximo permitido (40)")
+    if top_n > 40:
+        raise HTTPException(status_code=400, detail="top_n excede el maximo permitido (40)")
+
+    start_month = _validate_year_month(body.start_month, field_name="start_month")
+    end_month = _validate_year_month(body.end_month, field_name="end_month")
+    if end_month < start_month:
+        raise HTTPException(status_code=400, detail="end_month debe ser >= start_month")
+
+    try:
+        payload = bootstrap_futures_datasets(
+            user_data_dir=USER_DATA_DIR,
+            market_family=str(body.market_family or "usdm"),
+            start_month=start_month,
+            end_month=end_month,
+            symbols=symbols or None,
+            top_n=(top_n if top_n > 0 else None),
+            resample_timeframes=list(body.resample_timeframes or []),
+            skip_checksum=bool(body.skip_checksum),
+            allow_rest_fallback=bool(body.allow_rest_fallback),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:500]) from exc
+
+    return payload
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -762,6 +802,17 @@ class DataBootstrapCryptoBody(BaseModel):
     start_month: str
     end_month: str
     skip_checksum: bool = False
+
+
+class DataBootstrapBinanceFuturesBody(BaseModel):
+    market_family: Literal["usdm", "coinm"] = "usdm"
+    symbols: list[str] | None = None
+    top_n: int | None = None
+    start_month: str
+    end_month: str
+    resample_timeframes: list[str] | None = None
+    skip_checksum: bool = False
+    allow_rest_fallback: bool = True
 
 
 class ExecutionPreflightBody(BaseModel):
@@ -10417,6 +10468,35 @@ def create_app() -> FastAPI:
                 "end_month": payload.get("end_month"),
                 "requested_by": user.get("username"),
                 "bootstrapped": payload.get("bootstrapped"),
+            },
+        )
+        return payload
+
+    @app.post("/api/v1/data/bootstrap/binance-futures-public")
+    def data_bootstrap_binance_futures_public(
+        body: DataBootstrapBinanceFuturesBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        payload = _bootstrap_binance_futures_public_dataset(body)
+        store.add_log(
+            event_type="data_bootstrap_binance_futures_public",
+            severity="info",
+            module="data",
+            message="Bootstrap dataset Binance Futures ejecutado",
+            related_ids=[str(x) for x in (payload.get("symbols") or [])[:10]],
+            payload={
+                "provider": payload.get("provider"),
+                "market": payload.get("market"),
+                "market_family": payload.get("market_family"),
+                "symbols": payload.get("symbols"),
+                "top_n": payload.get("top_n"),
+                "selection_criterion": payload.get("selection_criterion"),
+                "start_month": payload.get("start_month"),
+                "end_month": payload.get("end_month"),
+                "resample_timeframes": payload.get("resample_timeframes"),
+                "requested_by": user.get("username"),
+                "bootstrapped": payload.get("bootstrapped"),
+                "universe_manifest_path": payload.get("universe_manifest_path"),
             },
         )
         return payload

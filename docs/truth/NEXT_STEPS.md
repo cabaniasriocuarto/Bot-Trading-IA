@@ -2,6 +2,31 @@
 
 Fecha: 2026-04-06
 
+## Siguiente bloque exacto para Beast/Backtests dataset bootstrap en produccion - 2026-04-06
+- [x] Confirmar que el bloqueo actual ya no era `policy_state=missing`:
+  - produccion devuelve `policy_state=enabled`
+  - `csud` apunta a produccion real
+- [x] Confirmar la causa raiz exacta del faltante:
+  - `GET /api/v1/data/status` en produccion devolvia `available_count=0`
+  - el catalogo se resuelve en `${RTLAB_USER_DATA_DIR}/data`
+- [x] Dejar armado el pipeline canonico de Futures:
+  - zips oficiales de Binance Futures + `.CHECKSUM`
+  - fallback REST oficial
+  - base `1m`
+  - derivados `5m`, `15m`, `1h`, `4h`, `1d`
+  - manifests con provenance
+  - seleccion top 40 auditable para `usdm` y `coinm`
+- [ ] Ejecutar el desbloqueo inmediato en produccion/main:
+  - `POST /api/v1/data/bootstrap/binance-futures-public`
+  - `market_family=usdm`
+  - `symbols=[BTCUSDT]`
+  - `start_month=2024-01`
+  - `end_month=2024-12`
+  - `resample_timeframes=[5m,15m,1h,4h,1d]`
+- [ ] Validar post-bootstrap:
+  - `GET /api/v1/data/status` debe dejar de reportar faltante para `BTCUSDT/5m`
+  - si es posible, correr una prueba real minima de Beast/Backtests sobre `BTCUSDT`
+
 ## Siguiente bloque exacto para Beast en produccion / csud - 2026-04-06
 - [x] Confirmar que `bot-trading-ia-csud.vercel.app/backtests` apunta a produccion:
   - `BACKEND_API_URL=https://bot-trading-ia-production.up.railway.app`

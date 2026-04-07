@@ -703,7 +703,7 @@ export default function BacktestsPage() {
     const startMonth = String(form.start || "").slice(0, 7);
     const endMonth = String(form.end || "").slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(startMonth) || !/^\d{4}-\d{2}$/.test(endMonth)) return "";
-    return `python rtlab_autotrader/scripts/download_crypto_binance_public.py --symbols ${String(form.symbol || "").toUpperCase()} --start-month ${startMonth} --end-month ${endMonth}`;
+    return `python rtlab_autotrader/scripts/bootstrap_binance_futures_public.py --market-family usdm --symbols ${String(form.symbol || "").toUpperCase()} --start-month ${startMonth} --end-month ${endMonth} --resample-timeframes 5m 15m 1h 4h 1d`;
   }, [form.end, form.market, form.start, form.symbol]);
 
   const refreshCatalogRuns = useCallback(async () => {

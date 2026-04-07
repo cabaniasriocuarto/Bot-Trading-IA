@@ -70,6 +70,8 @@ class DataCatalog:
             if not manifests.exists():
                 continue
             for path in sorted(manifests.glob("*.json")):
+                if path.name.endswith(".summary.json"):
+                    continue
                 try:
                     payload = _json_load(path)
                     out.append(
@@ -113,7 +115,12 @@ class DataCatalog:
                                 "market": market,
                                 "symbol": symbol,
                                 "timeframe": tf,
-                                "hint": f"Descarga datos con scripts/download_{'crypto_binance_public' if market=='crypto' else 'forex_dukascopy' if market=='forex' else 'equities_alpaca'}.py",
+                                "hint": (
+                                    "Bootstrap canonico: scripts/bootstrap_binance_futures_public.py --market-family usdm --symbols "
+                                    f"{symbol} --start-month 2024-01 --end-month 2024-12 --resample-timeframes 5m 15m 1h 4h 1d"
+                                    if market == "crypto"
+                                    else f"Descarga datos con scripts/download_{'forex_dukascopy' if market=='forex' else 'equities_alpaca'}.py"
+                                ),
                             }
                         )
         return {
