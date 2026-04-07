@@ -11,6 +11,7 @@ Fecha: 2026-04-07
 - [x] Aplicar reparacion chica y coherente en rama de auditoria:
   - introducir `runtime_path(...)`
   - migrar Backtests runtime paths a esa normalizacion
+  - hacer fail-honest el panel Beast cuando el backend no responde
   - agregar tests anti-regresion
 - [ ] Siguiente paso exacto:
   - mergear la rama de auditoria

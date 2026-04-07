@@ -28,6 +28,7 @@ Fecha de actualizacion: 2026-04-07
 - Cambio minimo/profesional aplicado en rama de auditoria:
   - nuevo helper `rtlab_core.src.data.runtime_path` para normalizar paths runtime sin `resolve()`;
   - el dominio Backtests migra a esa normalizacion para dataset roots, manifests y artifacts locales;
+  - el panel de Beast en frontend deja de tragarse errores de refresh y ahora muestra cuando no puede leer el estado real del backend;
   - se agregan tests para impedir regresion de `resolve()` sobre `/app/data/rtlab_user_data`.
 - Estado operativo honesto al cierre de la auditoria:
   - el frontend de Backtests no esta inventando el problema;

@@ -15,6 +15,7 @@
     - `rtlab_core.src.reports.reporting`
     - `rtlab_core.src.data.binance_futures_bootstrap`
   - se introduce `rtlab_core.src.data.runtime_path` para normalizar paths runtime sin tocar el filesystem del volumen.
+  - `Backtests` deja de silenciar errores de refresh en el panel Beast y ahora muestra un error explicito si no puede leer el backend real.
 - Lectura honesta:
   - Backtests mejora y queda mas coherente internamente;
   - pero mientras produccion siga devolviendo `502 Application failed to respond`, el dominio no puede considerarse cerrado sobre `main`.

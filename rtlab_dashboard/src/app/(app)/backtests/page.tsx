@@ -581,6 +581,7 @@ export default function BacktestsPage() {
   const [massOnlyPass, setMassOnlyPass] = useState(true);
   const [beastTier, setBeastTier] = useState<"hobby" | "pro">("hobby");
   const [beastStatus, setBeastStatus] = useState<BeastModeStatusResponse | null>(null);
+  const [beastPanelError, setBeastPanelError] = useState("");
   const [beastJobs, setBeastJobs] = useState<BeastModeJobsResponse["items"]>([]);
   const [beastBusy, setBeastBusy] = useState(false);
   const [massSelectedRow, setMassSelectedRow] = useState<MassBacktestResultRow | null>(null);
@@ -927,8 +928,9 @@ export default function BacktestsPage() {
       ]);
       setBeastStatus(status);
       setBeastJobs(jobs.items || []);
-    } catch {
-      // best effort
+      setBeastPanelError("");
+    } catch (err) {
+      setBeastPanelError(uiErrMsg(err, "No se pudo leer el estado real de Beast."));
     }
   }, []);
 
@@ -3925,6 +3927,11 @@ export default function BacktestsPage() {
                 ) : null}
                 {frontendBackendHint ? (
                   <p className="mt-1 text-[11px] text-slate-500">Backend objetivo del frontend: {frontendBackendHint}</p>
+                ) : null}
+                {beastPanelError ? (
+                  <div className="mt-2 rounded border border-rose-500/30 bg-rose-500/10 p-2 text-[11px] text-rose-200">
+                    {beastPanelError}
+                  </div>
                 ) : null}
                 {beastStatus?.policy_warnings?.length ? (
                   <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-200">
