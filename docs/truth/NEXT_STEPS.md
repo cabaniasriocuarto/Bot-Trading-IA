@@ -12,6 +12,7 @@ Fecha: 2026-04-06
 - [x] Aplicar correccion minima:
   - detectar mount por `mountinfo` solamente
   - mantener fail-closed sin tocar el volume path
+  - quitar `Path.resolve()` del camino critico de `RTLAB_USER_DATA_DIR`
 - [ ] Siguiente paso exacto:
   - mergear este ajuste
   - esperar que produccion vuelva a `200`

@@ -17,6 +17,7 @@ Fecha de actualizacion: 2026-04-06
 - Cambio minimo/profesional aplicado en repo:
   - `rtlab_core.web.app` deja de usar `exists()/is_mount()` para clasificar mounts runtime;
   - ahora resuelve el mount efectivo por longest-prefix match contra `/proc/self/mountinfo`;
+  - tambien deja de hacer `Path.resolve()` sobre `RTLAB_USER_DATA_DIR` y roots runtime en el camino critico de seleccion/health;
   - esto mantiene el fail-closed pero evita tocar el filesystem del volumen durante health/runtime selection.
 - Regla operativa correcta desde ahora:
   - para Railway produccion:
