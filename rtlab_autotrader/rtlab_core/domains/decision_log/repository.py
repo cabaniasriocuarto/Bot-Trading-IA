@@ -32,11 +32,12 @@ class BotDecisionLogRepository:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def initialize(self) -> None:
+    def initialize(self, *, include_backfill: bool = True) -> None:
         with self._connect() as conn:
             conn.executescript(self.schema_sql)
             self._ensure_migrations(conn)
-            self._backfill_breaker_events_from_logs(conn)
+            if include_backfill:
+                self._run_backfills(conn)
             conn.commit()
 
     def _ensure_migrations(self, conn: sqlite3.Connection) -> None:
@@ -54,8 +55,15 @@ class BotDecisionLogRepository:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_log_bot_refs_bot_id_log_id ON log_bot_refs(bot_id, log_id DESC)")
+    def _run_backfills(self, conn: sqlite3.Connection) -> None:
         self._backfill_logs_has_bot_ref(conn)
         self._backfill_log_bot_refs(conn)
+        self._backfill_breaker_events_from_logs(conn)
+
+    def backfill_runtime_indexes(self) -> None:
+        with self._connect() as conn:
+            self._run_backfills(conn)
+            conn.commit()
 
     def _backfill_logs_has_bot_ref(self, conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT MAX(id) AS max_id FROM logs").fetchone()

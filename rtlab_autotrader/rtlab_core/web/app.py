@@ -2649,7 +2649,7 @@ class ConsoleStore:
         return conn
 
     def _init_console_db(self) -> None:
-        self.decision_log.initialize()
+        self.decision_log.initialize(include_backfill=False)
 
     def _ensure_console_db_migrations(self, conn: sqlite3.Connection) -> None:
         columns = {str(row["name"] or "").strip() for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
@@ -2866,14 +2866,33 @@ class ConsoleStore:
             "reason": "completed",
             "started_at": utc_now_iso(),
         }
-        self._ensure_seed_backtest()
-        self._sync_backtest_runs_catalog()
         try:
-            self.reporting_bridge.refresh_materialized_views(self.load_runs())
+            self._ensure_seed_backtest()
         except Exception as exc:
             status["ok"] = False
-            status["reason"] = "reporting_refresh_failed"
+            status["reason"] = "seed_backtest_failed"
             status["error"] = str(exc)
+        if bool(status.get("ok", False)):
+            try:
+                self._sync_backtest_runs_catalog()
+            except Exception as exc:
+                status["ok"] = False
+                status["reason"] = "backtest_catalog_sync_failed"
+                status["error"] = str(exc)
+        if bool(status.get("ok", False)):
+            try:
+                self.decision_log.backfill_runtime_indexes()
+            except Exception as exc:
+                status["ok"] = False
+                status["reason"] = "decision_log_backfill_failed"
+                status["error"] = str(exc)
+        if bool(status.get("ok", False)):
+            try:
+                self.reporting_bridge.refresh_materialized_views(self.load_runs())
+            except Exception as exc:
+                status["ok"] = False
+                status["reason"] = "reporting_refresh_failed"
+                status["error"] = str(exc)
         try:
             self.add_log(
                 event_type="health",
@@ -2883,8 +2902,11 @@ class ConsoleStore:
                 related_ids=[],
                 payload={"version": APP_VERSION, **status},
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            if bool(status.get("ok", False)):
+                status["ok"] = False
+                status["reason"] = "startup_maintenance_log_failed"
+                status["error"] = str(exc)
         status["finished_at"] = utc_now_iso()
         self.startup_maintenance_status = status
 

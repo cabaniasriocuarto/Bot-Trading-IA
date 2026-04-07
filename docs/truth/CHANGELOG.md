@@ -2,6 +2,17 @@
 
 ## 2026-04-07
 
+### Produccion Railway: decision log deja el backfill pesado fuera del boot blocking path
+- Diagnostico repo-side adicional del `502`:
+  - `ConsoleStore.__init__()` seguia llamando `BotDecisionLogRepository.initialize()` en startup sync;
+  - ese init corria backfills sobre `logs`, `log_bot_refs` y `breaker_events`, lo que en produccion puede pegarle al volumen/SQLite mucho mas que en staging.
+- Cambio minimo/profesional aplicado:
+  - `initialize(include_backfill=False)` asegura esquema/migraciones minimas sin hacer backfill pesado;
+  - el backfill de `decision_log` pasa a `startup maintenance` en background;
+  - si esa etapa falla, `startup_maintenance_status` ahora lo refleja con `decision_log_backfill_failed`.
+- Validacion local:
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k decision_log or startup_maintenance` -> PASS.
+
 ### Produccion Railway: startup deja de bloquearse por auth sqlite y mantenimiento de ConsoleStore
 - Diagnostico mas fuerte del `502` residual:
   - el import de `rtlab_core.web.main` seguia tardando ~33s con la configuracion default;

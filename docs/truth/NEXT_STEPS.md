@@ -2,6 +2,22 @@
 
 Fecha: 2026-04-07
 
+## Siguiente bloque exacto para confirmar si el `502` estaba en el backfill del decision log - 2026-04-07
+- [x] Aislar nueva causa repo-side plausible:
+  - `BotDecisionLogRepository.initialize()` seguia haciendo backfill pesado en el arranque sync del servicio.
+- [x] Aplicar correccion minima:
+  - dejar solo esquema/migraciones minimas en init sync
+  - mover backfill de `decision_log` al mantenimiento de startup en background
+  - reflejar `decision_log_backfill_failed` si esa etapa se degrada
+- [ ] Siguiente paso exacto:
+  - mergear este fix
+  - esperar auto-deploy de Railway produccion
+  - confirmar `GET /api/v1/health -> 200`
+  - solo despues revalidar:
+    - `/api/v1/data/status`
+    - `/api/v1/research/beast/status`
+    - `/api/v1/research/mass-backtest/status`
+
 ## Siguiente bloque exacto para confirmar recuperacion de `502` tras aliviar startup - 2026-04-07
 - [x] Aislar causa repo-side mas fuerte del residual:
   - `LoginRateLimiter` global con backend sqlite en import-time;
