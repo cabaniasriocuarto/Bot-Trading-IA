@@ -2,6 +2,20 @@
 
 ## 2026-04-07
 
+### Produccion Railway: startup deja de bloquearse por auth sqlite y mantenimiento de ConsoleStore
+- Diagnostico mas fuerte del `502` residual:
+  - el import de `rtlab_core.web.main` seguia tardando ~33s con la configuracion default;
+  - al pasar `RATE_LIMIT_LOGIN_BACKEND=memory`, ese import caia a ~4.6s.
+- Cambio minimo/profesional aplicado:
+  - `LoginRateLimiter` deja de instanciarse en import-time y pasa a lazy init on-demand;
+  - su sqlite path deja de resolver roots runtime;
+  - `ConsoleStore` saca `_ensure_seed_backtest`, `_sync_backtest_runs_catalog` y `refresh_materialized_views(...)` del boot blocking path y los corre como mantenimiento no bloqueante;
+  - `/api/v1/health` deja de persistir runtime state.
+- Validacion local:
+  - `main import` local: ~33s -> ~4s;
+  - `py_compile` -> PASS;
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k login_rate_limit or health_endpoint_does_not_persist_runtime_state` -> PASS.
+
 ### Produccion Railway: startup path deja de resolver roots runtime en servicios globales
 - Diagnostico mas fuerte del `502`:
   - `rtlab_core.web.app` seguia construyendo servicios globales que resolvian `user_data_dir` por filesystem durante import/startup.

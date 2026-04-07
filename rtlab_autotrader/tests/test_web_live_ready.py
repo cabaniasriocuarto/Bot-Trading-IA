@@ -329,6 +329,36 @@ def test_auth_login_rate_limit_shared_sqlite_backend_across_instances(tmp_path: 
   assert reset_reason == ""
 
 
+def test_auth_login_rate_limiter_is_lazy_until_first_login(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RATE_LIMIT_LOGIN_BACKEND", "memory")
+  module, client = _build_app(tmp_path, monkeypatch)
+
+  assert module.LOGIN_RATE_LIMITER is None
+
+  token = _login(client, "Wadmin", "moroco123")
+
+  assert isinstance(token, str) and token
+  assert isinstance(module.LOGIN_RATE_LIMITER, module.LoginRateLimiter)
+
+
+def test_health_endpoint_does_not_persist_runtime_state(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  persist_flags: list[bool] = []
+  original = module._sync_runtime_state
+
+  def _spy_sync_runtime_state(state, *, settings=None, event=None, persist=True):
+    persist_flags.append(bool(persist))
+    return original(state, settings=settings, event=event, persist=persist)
+
+  monkeypatch.setattr(module, "_sync_runtime_state", _spy_sync_runtime_state)
+
+  response = client.get("/api/v1/health")
+
+  assert response.status_code == 200, response.text
+  assert persist_flags
+  assert persist_flags[-1] is False
+
+
 def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   module.API_RATE_LIMITER = module.ApiRateLimiter(
