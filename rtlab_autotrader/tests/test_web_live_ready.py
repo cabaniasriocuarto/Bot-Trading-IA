@@ -2768,6 +2768,27 @@ def test_select_user_data_dir_prefers_mounted_runtime_candidate_over_unmounted_e
   assert selected == mounted_candidate
 
 
+def test_select_user_data_dir_does_not_resolve_runtime_path(tmp_path: Path, monkeypatch) -> None:
+  module, _client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setattr(module.Path, "resolve", lambda self, strict=False: (_ for _ in ()).throw(AssertionError("resolve should not be called")))
+  monkeypatch.setattr(module, "_mounted_runtime_user_data_candidates", lambda: [])
+  monkeypatch.setattr(
+    module,
+    "_mount_metadata_for_path",
+    lambda path: {
+      "target_path": str(path),
+      "probe_path": str(path),
+      "mount_detected": False,
+      "mount_point": "",
+      "mount_source": "",
+      "mount_fs_type": "",
+    },
+  )
+
+  selected = module._select_user_data_dir(explicit=Path("/app/data/rtlab_user_data"))
+  assert str(selected).replace("\\", "/").endswith("/app/data/rtlab_user_data")
+
+
 def test_strategy_upload_validation_and_primary_assignment(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

@@ -164,6 +164,10 @@ def _normalize_mount_lookup_path(value: str | Path) -> str:
     return str(Path(os.path.abspath(raw)))
 
 
+def _runtime_path(value: str | Path) -> Path:
+    return Path(_normalize_mount_lookup_path(value))
+
+
 def _mount_metadata_for_path(path: str | Path) -> dict[str, Any]:
     target_path = _normalize_mount_lookup_path(path)
     mount_entry = {}
@@ -193,7 +197,7 @@ def _mounted_runtime_user_data_candidates() -> list[Path]:
     for candidate in SUPPORTED_RUNTIME_USER_DATA_DIRS:
         meta = _mount_metadata_for_path(candidate)
         if meta.get("mount_detected"):
-            out.append(candidate.resolve())
+            out.append(_runtime_path(candidate))
     return out
 
 
@@ -214,7 +218,7 @@ def _path_is_ephemeral_user_data(path: str | Path) -> bool:
 def _select_user_data_dir(*, explicit: Path | None) -> Path:
     mounted_candidates = _mounted_runtime_user_data_candidates()
     if explicit is not None:
-        explicit_path = explicit.resolve()
+        explicit_path = _runtime_path(explicit)
         if _path_is_ephemeral_user_data(explicit_path):
             return explicit_path
         if _mount_metadata_for_path(explicit_path).get("mount_detected"):
@@ -239,7 +243,7 @@ def _select_user_data_dir(*, explicit: Path | None) -> Path:
 
 def _resolve_user_data_dir() -> Path:
     explicit_raw = str(os.getenv("RTLAB_USER_DATA_DIR", "")).strip()
-    explicit = Path(explicit_raw).resolve() if explicit_raw else None
+    explicit = _runtime_path(explicit_raw) if explicit_raw else None
     return _select_user_data_dir(explicit=explicit)
 
 
@@ -247,13 +251,13 @@ USER_DATA_DIR = _resolve_user_data_dir()
 
 
 def _user_data_persistence_status(path: str | Path | None = None) -> dict[str, Any]:
-    target = Path(path).resolve() if path is not None else USER_DATA_DIR
+    target = _runtime_path(path) if path is not None else USER_DATA_DIR
     explicit_raw = str(os.getenv("RTLAB_USER_DATA_DIR", "")).strip()
     explicit_env = bool(explicit_raw)
     ephemeral = _path_is_ephemeral_user_data(target)
     mount_meta = _mount_metadata_for_path(target)
     persistent_storage = bool((not ephemeral) and mount_meta.get("mount_detected"))
-    configured_path = Path(explicit_raw).resolve() if explicit_raw else None
+    configured_path = _runtime_path(explicit_raw) if explicit_raw else None
     selection_drift = bool(configured_path is not None and configured_path != target)
     warning = ""
     if ephemeral:

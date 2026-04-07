@@ -10,6 +10,7 @@
   - la deteccion de mount apoyada en `Path.exists()` + `Path.is_mount()` podia bloquear el runtime al tocar roots de volumen en Railway.
 - Cambio minimo/profesional aplicado:
   - `rtlab_core.web.app` ahora resuelve mounts runtime solo via `/proc/self/mountinfo` (longest-prefix match);
+  - elimina `Path.resolve()` del camino critico de `RTLAB_USER_DATA_DIR` para no tocar el volume path durante startup/health;
   - se elimina la necesidad de tocar el filesystem del volumen para determinar persistencia.
 
 ### Produccion Railway: persistencia durable de datasets requiere mount real
