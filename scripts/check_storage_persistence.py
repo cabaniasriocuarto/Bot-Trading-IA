@@ -148,8 +148,14 @@ def main() -> int:
         "runtime_mode": str(health.get("runtime_mode") or ""),
         "storage": {
             "user_data_dir": storage.get("user_data_dir"),
+            "configured_user_data_dir": storage.get("configured_user_data_dir"),
             "storage_ephemeral": storage.get("storage_ephemeral"),
             "persistent_storage": storage.get("persistent_storage"),
+            "selection_drift": storage.get("selection_drift"),
+            "mount_detected": storage.get("mount_detected"),
+            "mount_point": storage.get("mount_point"),
+            "mount_source": storage.get("mount_source"),
+            "mount_fs_type": storage.get("mount_fs_type"),
             "warning": storage.get("warning"),
         },
         "g10_storage_persistence": {

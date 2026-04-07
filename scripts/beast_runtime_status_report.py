@@ -127,6 +127,32 @@ def _bootstrap_crypto_public(
     )
 
 
+def _bootstrap_futures_public(
+    *,
+    base_url: str,
+    timeout_sec: float,
+    token: str,
+    market_family: str,
+    symbol: str,
+    start_month: str,
+    end_month: str,
+    resample_timeframes: list[str],
+) -> tuple[dict[str, Any], str, int]:
+    return _http_json(
+        method="POST",
+        url=f"{base_url}/api/v1/data/bootstrap/binance-futures-public",
+        timeout_sec=timeout_sec,
+        headers=_auth_headers(token),
+        json_body={
+            "market_family": market_family,
+            "symbols": [symbol],
+            "start_month": start_month,
+            "end_month": end_month,
+            "resample_timeframes": resample_timeframes,
+        },
+    )
+
+
 def _find_exact_dataset(
     data_status: dict[str, Any],
     *,
@@ -181,7 +207,12 @@ def _build_markdown(report: dict[str, Any]) -> str:
         "## Runtime",
         f"- health_ok: `{checks.get('health_ok')}`",
         f"- user_data_dir: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('user_data_dir')}`",
+        f"- configured_user_data_dir: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('configured_user_data_dir')}`",
         f"- persistent_storage: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('persistent_storage')}`",
+        f"- mount_detected: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('mount_detected')}`",
+        f"- mount_point: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('mount_point')}`",
+        f"- mount_source: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('mount_source')}`",
+        f"- selection_drift: `{((health.get('storage') or {}) if isinstance(health.get('storage'), dict) else {}).get('selection_drift')}`",
         f"- runtime_engine: `{health.get('runtime_engine')}`",
         f"- bootstrap_attempted: `{checks.get('bootstrap_attempted')}`",
         f"- bootstrap_ok: `{checks.get('bootstrap_ok')}`",
@@ -201,6 +232,8 @@ def _build_markdown(report: dict[str, Any]) -> str:
         f"- missing_count: `{data.get('missing_count')}`",
         f"- exact_dataset_present: `{dataset.get('exact_present')}`",
         f"- fallback_symbol_matches: `{len(dataset.get('fallback_symbol_matches') or [])}`",
+        f"- post_wait_available_count: `{((report.get('post_wait_data_status') or {}) if isinstance(report.get('post_wait_data_status'), dict) else {}).get('available_count')}`",
+        f"- post_wait_exact_dataset_present: `{((report.get('post_wait_dataset_probe') or {}) if isinstance(report.get('post_wait_dataset_probe'), dict) else {}).get('exact_present')}`",
         "",
         "## Overall",
         f"- overall_pass: `{checks.get('overall_pass')}`",
@@ -226,8 +259,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--timeframe", default="5m")
     parser.add_argument("--bootstrap-crypto-public", action="store_true")
+    parser.add_argument("--bootstrap-futures-public", action="store_true")
+    parser.add_argument("--bootstrap-market-family", default="usdm")
     parser.add_argument("--bootstrap-start-month", default="")
     parser.add_argument("--bootstrap-end-month", default="")
+    parser.add_argument("--bootstrap-resample-timeframes", nargs="*", default=["5m", "15m", "1h", "4h", "1d"])
+    parser.add_argument("--post-bootstrap-wait-sec", type=float, default=0.0)
+    parser.add_argument("--require-mounted-storage", action="store_true")
+    parser.add_argument("--require-exact-dataset", action="store_true")
     parser.add_argument("--report-prefix", default="artifacts/beast_runtime_status")
     parser.add_argument("--strict", dest="strict", action="store_true", default=True)
     parser.add_argument("--no-strict", dest="strict", action="store_false")
@@ -267,12 +306,14 @@ def main() -> int:
         "data_status": {},
         "beast_status": {},
         "bootstrap": {},
+        "post_wait_data_status": {},
+        "post_wait_dataset_probe": {},
         "dataset_probe": {},
         "checks": {
             "health_ok": False,
             "data_status_ok": False,
             "beast_status_ok": False,
-            "bootstrap_attempted": bool(args.bootstrap_crypto_public),
+            "bootstrap_attempted": bool(args.bootstrap_crypto_public or args.bootstrap_futures_public),
             "bootstrap_ok": False,
             "overall_pass": False,
         },
@@ -307,6 +348,24 @@ def main() -> int:
             else:
                 report["bootstrap"] = bootstrap_payload
                 report["checks"]["bootstrap_ok"] = bool(bootstrap_payload.get("ok"))
+        elif args.bootstrap_futures_public:
+            bootstrap_start_month = str(args.bootstrap_start_month or "").strip()
+            bootstrap_end_month = str(args.bootstrap_end_month or "").strip()
+            bootstrap_payload, bootstrap_error, _ = _bootstrap_futures_public(
+                base_url=base_url,
+                timeout_sec=timeout_sec,
+                token=token,
+                market_family=str(args.bootstrap_market_family or "usdm").strip().lower(),
+                symbol=symbol,
+                start_month=bootstrap_start_month,
+                end_month=bootstrap_end_month,
+                resample_timeframes=[str(item).strip() for item in args.bootstrap_resample_timeframes if str(item).strip()],
+            )
+            if bootstrap_error:
+                report["endpoint_errors"]["data_bootstrap_binance_futures_public"] = bootstrap_error
+            else:
+                report["bootstrap"] = bootstrap_payload
+                report["checks"]["bootstrap_ok"] = bool(bootstrap_payload.get("ok"))
         data_status, err_data, _ = _http_json(
             method="GET",
             url=f"{base_url}/api/v1/data/status",
@@ -335,15 +394,43 @@ def main() -> int:
         else:
             report["beast_status"] = beast_status
             report["checks"]["beast_status_ok"] = True
+
+        if float(args.post_bootstrap_wait_sec or 0.0) > 0:
+            import time
+
+            time.sleep(max(0.0, float(args.post_bootstrap_wait_sec)))
+            post_wait_data_status, post_wait_err, _ = _http_json(
+                method="GET",
+                url=f"{base_url}/api/v1/data/status",
+                timeout_sec=timeout_sec,
+                headers=headers,
+            )
+            if post_wait_err:
+                report["endpoint_errors"]["data_status_post_wait"] = post_wait_err
+            else:
+                report["post_wait_data_status"] = post_wait_data_status
+                report["post_wait_dataset_probe"] = _find_exact_dataset(
+                    post_wait_data_status,
+                    market=market,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                )
     else:
         report["endpoint_errors"]["auth"] = auth_error or auth_source
 
     beast_policy_state = str((report.get("beast_status") or {}).get("policy_state") or "").strip().lower()
+    storage = report.get("health", {}).get("storage") if isinstance(report.get("health"), dict) else {}
+    storage_mount_detected = bool(storage.get("mount_detected")) if isinstance(storage, dict) else False
+    dataset_probe = report.get("post_wait_dataset_probe") if isinstance(report.get("post_wait_dataset_probe"), dict) and report.get("post_wait_dataset_probe") else report.get("dataset_probe")
+    exact_dataset_present = bool((dataset_probe or {}).get("exact_present")) if isinstance(dataset_probe, dict) else False
     report["checks"]["overall_pass"] = bool(
         report["checks"]["health_ok"]
         and report["checks"]["data_status_ok"]
         and report["checks"]["beast_status_ok"]
         and (not args.bootstrap_crypto_public or report["checks"]["bootstrap_ok"])
+        and (not args.bootstrap_futures_public or report["checks"]["bootstrap_ok"])
+        and (not args.require_mounted_storage or storage_mount_detected)
+        and (not args.require_exact_dataset or exact_dataset_present)
         and beast_policy_state != "missing"
     )
 
