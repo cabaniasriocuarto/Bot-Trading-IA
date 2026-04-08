@@ -1,5 +1,23 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-08
+
+### Produccion: PAPER canonico con LIVE bloqueado de forma honesta
+- Diagnostico real:
+  - production ya estaba online y `/api/v1/health` respondia `200`;
+  - pero seguia exponiendo `mode=live` con `runtime_ready_for_live=false`;
+  - Settings consultaba gates del modo actual, no la readiness real de `LIVE`.
+- Cambio minimo/profesional aplicado:
+  - `rtlab_core.web.app` degrada fail-closed a `paper` cualquier estado legado `live` cuando las gates/live readiness siguen en `FAIL`;
+  - la degradacion tambien deja el bot en `PAUSED` y `running=false`;
+  - `PUT /api/v1/settings` rechaza transiciones invalidas a `LIVE`;
+  - `/api/v1/gates` y `/api/v1/gates/reevaluate` aceptan `?mode=live`;
+  - Settings usa gates de `LIVE` y deja visible que `PAPER` es la postura canonica hasta cerrar readiness.
+- Validacion local:
+  - `git diff --check` -> PASS
+  - `uv run --project rtlab_autotrader --with pytest python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "health_endpoint_reports_paper_when_live_readiness_is_pending or settings_endpoint_fail_closed_to_paper_when_live_readiness_is_pending or settings_update_rejects_live_without_readiness or gates_endpoint_accepts_explicit_live_mode_query or settings_endpoint_recovers_legacy_settings_shape"` -> PASS
+  - `npm.cmd exec eslint -- "src/app/(app)/settings/page.tsx"` -> PASS
+
 ## 2026-04-07
 
 ### Produccion Railway: decision log deja el backfill pesado fuera del boot blocking path

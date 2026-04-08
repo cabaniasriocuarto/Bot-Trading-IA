@@ -147,6 +147,24 @@ def _make_zip(files: dict[str, str]) -> bytes:
   return buffer.getvalue()
 
 
+def _blocked_live_gates_payload(reason: str = "Binance -2015") -> dict[str, object]:
+  return {
+    "mode": "live",
+    "overall_status": "FAIL",
+    "gates": [
+      {"id": "G1_CONFIG_VALID", "status": "PASS", "reason": ""},
+      {"id": "G2_AUTH_READY", "status": "PASS", "reason": ""},
+      {"id": "G3_BACKEND_HEALTH", "status": "PASS", "reason": ""},
+      {"id": "G4_EXCHANGE_CONNECTOR_READY", "status": "FAIL", "reason": reason},
+      {"id": "G5_STRATEGY_PRINCIPAL_SET", "status": "FAIL", "reason": "Principal strategy live pendiente"},
+      {"id": "G6_RISK_LIMITS_SET", "status": "PASS", "reason": ""},
+      {"id": "G7_ORDER_SIM_OR_PAPER_OK", "status": "FAIL", "reason": reason},
+      {"id": "G9_RUNTIME_ENGINE_REAL", "status": "FAIL", "reason": "Runtime contract v1 incompleto para LIVE."},
+      {"id": "G10_STORAGE_PERSISTENCE", "status": "PASS", "reason": ""},
+    ],
+  }
+
+
 def test_auth_and_admin_protection(tmp_path: Path, monkeypatch) -> None:
   _, client = _build_app(tmp_path, monkeypatch)
 
@@ -3086,6 +3104,76 @@ def test_settings_endpoint_recovers_legacy_settings_shape(tmp_path: Path, monkey
   assert isinstance(body.get("rollout"), dict)
   assert isinstance(body.get("blending"), dict)
   assert isinstance(body["rollout"].get("testnet_checks"), dict)
+
+
+def test_health_endpoint_reports_paper_when_live_readiness_is_pending(tmp_path: Path, monkeypatch) -> None:
+  seed_settings = {"mode": "LIVE", "exchange": "binance"}
+  module, client = _build_app(tmp_path, monkeypatch, seed_settings=seed_settings)
+  state = module.store.load_bot_state()
+  state["mode"] = "live"
+  module.store.save_bot_state(state)
+  monkeypatch.setattr(module.runtime_bridge, "sync_runtime_state", lambda state, settings, event=None: False)
+  monkeypatch.setattr(module, "evaluate_gates", lambda mode=None, runtime_state=None, force_exchange_check=False: _blocked_live_gates_payload())
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda gates_payload: (False, "Binance -2015"))
+
+  res = client.get("/api/v1/health")
+
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["mode"] == "paper"
+  assert body["exchange"]["mode"] == "PAPER"
+  assert module.store.load_bot_state()["mode"] == "live"
+
+
+def test_settings_endpoint_fail_closed_to_paper_when_live_readiness_is_pending(tmp_path: Path, monkeypatch) -> None:
+  seed_settings = {"mode": "LIVE", "exchange": "binance"}
+  module, client = _build_app(tmp_path, monkeypatch, seed_settings=seed_settings)
+  state = module.store.load_bot_state()
+  state["mode"] = "live"
+  module.store.save_bot_state(state)
+  monkeypatch.setattr(module.runtime_bridge, "sync_runtime_state", lambda state, settings, event=None: False)
+  monkeypatch.setattr(module, "evaluate_gates", lambda mode=None, runtime_state=None, force_exchange_check=False: _blocked_live_gates_payload())
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda gates_payload: (False, "Binance -2015"))
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  res = client.get("/api/v1/settings", headers=_auth_headers(admin_token))
+
+  assert res.status_code == 200, res.text
+  body = res.json()
+  assert body["mode"] == "PAPER"
+  assert module.store.load_settings()["mode"] == "PAPER"
+  assert module.store.load_bot_state()["mode"] == "paper"
+
+
+def test_settings_update_rejects_live_without_readiness(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  monkeypatch.setattr(module, "evaluate_gates", lambda mode=None, runtime_state=None, force_exchange_check=False: _blocked_live_gates_payload())
+  monkeypatch.setattr(module, "live_can_be_enabled", lambda gates_payload: (False, "Binance -2015"))
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  res = client.put("/api/v1/settings", headers=_auth_headers(admin_token), json={"mode": "LIVE"})
+
+  assert res.status_code == 400, res.text
+  assert "LIVE bloqueado" in res.text
+  assert module.store.load_settings()["mode"] == "PAPER"
+
+
+def test_gates_endpoint_accepts_explicit_live_mode_query(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  captured: dict[str, object] = {}
+
+  def _fake_evaluate_gates(mode=None, runtime_state=None, force_exchange_check=False):
+    captured["mode"] = mode
+    return _blocked_live_gates_payload()
+
+  monkeypatch.setattr(module, "evaluate_gates", _fake_evaluate_gates)
+
+  admin_token = _login(client, "Wadmin", "moroco123")
+  res = client.get("/api/v1/gates?mode=live", headers=_auth_headers(admin_token))
+
+  assert res.status_code == 200, res.text
+  assert captured["mode"] == "live"
+  assert res.json()["mode"] == "live"
 
 
 def test_learning_research_loop_and_adopt_option_b(tmp_path: Path, monkeypatch) -> None:
