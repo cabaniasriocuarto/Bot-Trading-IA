@@ -196,7 +196,7 @@ export default function SettingsPage() {
       try {
         const [data, gatesPayload, cfgLearning] = await Promise.all([
           apiGet<SettingsResponse>("/api/v1/settings"),
-          apiGet<{ gates: GateItem[]; overall_status: "PASS" | "FAIL" | "WARN" }>("/api/v1/gates"),
+          apiGet<{ gates: GateItem[]; overall_status: "PASS" | "FAIL" | "WARN" }>("/api/v1/gates?mode=live"),
           apiGet<LearningConfigResponse>("/api/v1/config/learning"),
         ]);
         setSettings(data);
@@ -371,7 +371,7 @@ export default function SettingsPage() {
   const reevaluateGates = async () => {
     setGatesLoading(true);
     try {
-      const res = await fetch("/api/v1/gates/reevaluate", {
+      const res = await fetch("/api/v1/gates/reevaluate?mode=live", {
         method: "POST",
         credentials: "include",
       });
@@ -532,7 +532,7 @@ export default function SettingsPage() {
   if (loading) return <p className="text-sm text-slate-400">Cargando configuracion...</p>;
   if (!settings) return <p className="text-sm text-rose-300">No se pudo cargar configuracion: {error || "sin respuesta"}</p>;
 
-  const liveLocked = settings.mode === "LIVE" && gatesOverall !== "PASS";
+  const liveLocked = gatesOverall !== "PASS";
   const learning = settings.learning;
   const engineOptions = learningConfig?.engines ?? [];
   const selectedEngine =
@@ -566,7 +566,7 @@ export default function SettingsPage() {
       <section className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardTitle>Modo y Exchange</CardTitle>
-          <CardDescription>Runtime global canonico: PAPER / TESTNET / LIVE. MOCK queda solo como alias legado del mock local.</CardDescription>
+          <CardDescription>Runtime global canonico: PAPER por defecto. TESTNET es validacion controlada y LIVE queda bloqueado hasta que la readiness real pase a PASS.</CardDescription>
           <CardContent className="space-y-3">
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">Modo</label>
@@ -592,7 +592,7 @@ export default function SettingsPage() {
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-300">
               Estado: <Badge variant={settings.mode === "LIVE" ? "danger" : settings.mode === "TESTNET" ? "warn" : settings.mode === "MOCK" ? "neutral" : "success"}>{settings.mode}</Badge>
               {settings.mode === "MOCK" ? <p className="mt-2 text-xs text-slate-400">MOCK es alias legado del mock local; no representa el runtime real del backend.</p> : null}
-              {liveLocked ? <p className="mt-2 text-xs text-amber-300">LIVE bloqueado: checklist incompleto.</p> : null}
+              {liveLocked ? <p className="mt-2 text-xs text-amber-300">LIVE bloqueado por readiness pendiente; PAPER es el modo canonico actual.</p> : null}
             </div>
           </CardContent>
         </Card>

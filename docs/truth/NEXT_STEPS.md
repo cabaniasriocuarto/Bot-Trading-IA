@@ -1,6 +1,23 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-07
+Fecha: 2026-04-08
+
+## Opcion 2 exacta: Binance LIVE readiness real, despues de dejar PAPER canonico - 2026-04-08
+- [x] Dejar production online y fail-closed:
+  - `/api/v1/health` ya responde `200`
+  - el runtime canonico queda en `PAPER`
+  - `LIVE` ya no debe verse como operativo mientras la readiness siga pendiente
+- [x] Expresar el bloqueo real sin maquillaje:
+  - Settings consulta gates de `LIVE`
+  - `LIVE` queda bloqueado con razon honesta
+  - `SHADOW` se mantiene permitido porque no toca exchange real
+- [ ] Siguiente paso exacto:
+  - rotar API keys Binance para production
+  - aplicar IP whitelist correcta
+  - validar permisos minimos de cuenta
+  - configurar principal strategy `live`
+  - correr rollout/canary real
+  - recien cuando `G4/G5/G7/G9` y readiness final esten en `PASS`, habilitar `LIVE`
 
 ## Siguiente bloque exacto para confirmar si el `502` estaba en el backfill del decision log - 2026-04-07
 - [x] Aislar nueva causa repo-side plausible:

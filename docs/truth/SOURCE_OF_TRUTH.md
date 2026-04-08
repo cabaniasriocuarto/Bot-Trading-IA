@@ -1,6 +1,34 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-07
+Fecha de actualizacion: 2026-04-08
+
+## Produccion online, pero la postura canonica de runtime debe quedar en PAPER hasta cerrar LIVE readiness - 2026-04-08
+
+- Estado real confirmado al abrir este bloque:
+  - Railway production ya responde `200` en `/api/v1/health`;
+  - Backtests y Execution vuelven a cargar;
+  - pero el backend seguia exponiendo `mode=live` al mismo tiempo que `runtime_ready_for_live=false`.
+- Causa raiz del desalineamiento:
+  - habia estado legado persistido en `console_settings.json` / `bot_state.json` con `LIVE`;
+  - `bot_mode` ya bloqueaba nuevos cambios a `LIVE` por gates/preflight, pero `settings` y `status` todavia podian reflejar ese estado viejo;
+  - ademas la UI de Settings estaba evaluando `/api/v1/gates` del modo actual, no la readiness real de `LIVE`.
+- Cambio minimo/profesional aplicado:
+  - el backend degrada fail-closed a `PAPER` cualquier estado legado `LIVE` cuando `live_can_be_enabled(...)` sigue en `FAIL`;
+  - esa degradacion tambien pausa el bot (`PAUSED`, `running=false`) para evitar acciones reales accidentales;
+  - `PUT /api/v1/settings` ahora rechaza `LIVE` si la readiness real sigue pendiente;
+  - `GET/POST /api/v1/gates` aceptan `?mode=live` para consultar la readiness de `LIVE` sin depender del modo actual;
+  - Settings ahora consulta gates de `LIVE` y muestra que `PAPER` es la postura canonica mientras `LIVE` siga bloqueado.
+- Decision canonica de este bloque:
+  - runtime global: `PAPER`
+  - operador principal efectivo: `PAPER`
+  - `SHADOW`: permitido porque no toca exchange real
+  - `LIVE`: bloqueado de forma honesta y fail-closed hasta cerrar readiness real
+- Lo que este bloque NO cierra:
+  - rotacion de API keys Binance
+  - IP whitelist
+  - permisos minimos de cuenta
+  - principal strategy live
+  - rollout/canary para promotion a live
 
 ## Produccion Railway: el decision log seguia haciendo backfill pesado dentro del startup sincrono - 2026-04-07
 

@@ -297,6 +297,7 @@ ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
 ALLOWED_ROLES = {ROLE_ADMIN, ROLE_VIEWER}
 ALLOWED_MODES = set(GLOBAL_RUNTIME_MODES)
+SAFE_GLOBAL_RUNTIME_MODE = "paper"
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = ""  # No hay default seguro — configurar ADMIN_PASSWORD en variables de entorno
 DEFAULT_VIEWER_USERNAME = "viewer"
@@ -9282,8 +9283,40 @@ def _sync_runtime_state(
     runtime_state.setdefault("runtime_last_reconcile_at", "")
     runtime_settings = settings if isinstance(settings, dict) else store.load_settings()
     changed = runtime_bridge.sync_runtime_state(runtime_state, runtime_settings, event=event)
-    if persist and changed:
-        store.save_bot_state(runtime_state)
+    safe_posture = {
+        "blocked": False,
+        "reason": "",
+        "requested_mode": str(runtime_state.get("mode") or SAFE_GLOBAL_RUNTIME_MODE),
+        "effective_mode": str(runtime_state.get("mode") or SAFE_GLOBAL_RUNTIME_MODE),
+        "state_changed": False,
+        "settings_changed": False,
+    }
+    if persist:
+        runtime_state, runtime_settings, safe_posture = _enforce_safe_paper_runtime_posture(
+            runtime_state,
+            settings=runtime_settings,
+        )
+    if persist:
+        if changed or bool(safe_posture.get("state_changed")):
+            store.save_bot_state(runtime_state)
+        if bool(safe_posture.get("settings_changed")):
+            store.save_settings(runtime_settings)
+        if bool(safe_posture.get("blocked")) and (
+            bool(safe_posture.get("state_changed")) or bool(safe_posture.get("settings_changed"))
+        ):
+            store.add_log(
+                event_type="mode_changed",
+                severity="warn",
+                module="control",
+                message="LIVE bloqueado por readiness pendiente; runtime degradado a PAPER.",
+                related_ids=[],
+                payload={
+                    "source": str(event or "runtime_sync"),
+                    "requested_mode": str(safe_posture.get("requested_mode") or "live"),
+                    "effective_mode": str(safe_posture.get("effective_mode") or SAFE_GLOBAL_RUNTIME_MODE),
+                    "reason": str(safe_posture.get("reason") or ""),
+                },
+            )
     return runtime_state
 
 
@@ -9604,6 +9637,65 @@ def live_can_be_enabled(gates_payload: dict[str, Any]) -> tuple[bool, str]:
             reason = row["reason"] if row else f"{gate_id} missing"
             return False, reason
     return True, "All live gates are PASS"
+
+
+def _enforce_safe_paper_runtime_posture(
+    state: dict[str, Any] | None,
+    *,
+    settings: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    runtime_state = dict(state or {})
+    runtime_settings = dict(settings or {})
+    state_mode = normalize_global_runtime_mode(
+        str(runtime_state.get("mode") or ""),
+        default=SAFE_GLOBAL_RUNTIME_MODE,
+    )
+    settings_mode = normalize_global_runtime_mode(
+        str(runtime_settings.get("mode") or ""),
+        default=SAFE_GLOBAL_RUNTIME_MODE,
+    )
+    requested_live = state_mode == "live" or settings_mode == "live"
+    if not requested_live:
+        return runtime_state, runtime_settings, {
+            "blocked": False,
+            "reason": "",
+            "requested_mode": state_mode or settings_mode,
+            "effective_mode": state_mode or settings_mode or SAFE_GLOBAL_RUNTIME_MODE,
+            "state_changed": False,
+            "settings_changed": False,
+        }
+
+    gates_payload = evaluate_gates("live", runtime_state=runtime_state)
+    allowed, reason = live_can_be_enabled(gates_payload)
+    if allowed:
+        return runtime_state, runtime_settings, {
+            "blocked": False,
+            "reason": "",
+            "requested_mode": "live",
+            "effective_mode": "live",
+            "state_changed": False,
+            "settings_changed": False,
+        }
+
+    state_changed = False
+    settings_changed = False
+    if state_mode == "live":
+        runtime_state["mode"] = SAFE_GLOBAL_RUNTIME_MODE
+        runtime_state["running"] = False
+        runtime_state["bot_status"] = "PAUSED"
+        state_changed = True
+    if settings_mode == "live":
+        runtime_settings["mode"] = SAFE_GLOBAL_RUNTIME_MODE.upper()
+        settings_changed = True
+
+    return runtime_state, runtime_settings, {
+        "blocked": True,
+        "reason": str(reason or "LIVE bloqueado por readiness pendiente."),
+        "requested_mode": "live",
+        "effective_mode": SAFE_GLOBAL_RUNTIME_MODE,
+        "state_changed": state_changed,
+        "settings_changed": settings_changed,
+    }
 
 
 def _live_preflight_policy() -> dict[str, Any]:
@@ -10182,6 +10274,7 @@ def build_live_preflight(
 def build_status_payload() -> dict[str, Any]:
     settings = store.load_settings()
     state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=True)
+    settings = store.load_settings()
     runtime_snapshot = _runtime_contract_snapshot(state)
     telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
     runtime_engine = str(runtime_snapshot.get("runtime_engine") or _runtime_engine_from_state(state))
@@ -10195,7 +10288,7 @@ def build_status_payload() -> dict[str, Any]:
         "state": state.get("bot_status", "PAUSED"),
         "bot_status": state.get("bot_status", "PAUSED"),
         "mode": state.get("mode", "paper"),
-        "exchange": {"name": settings.get("exchange", exchange_name()), "mode": settings.get("mode", default_mode().upper())},
+        "exchange": {"name": settings.get("exchange", exchange_name()), "mode": str(state.get("mode", "paper")).upper()},
         "runtime": {
             "engine": runtime_engine,
             "mode": runtime_mode,
@@ -10604,6 +10697,8 @@ def create_app() -> FastAPI:
         state = _sync_runtime_state(store.load_bot_state(), settings=settings, persist=False)
         mode = state.get("mode", "paper")
         runtime_snapshot = _runtime_contract_snapshot(state)
+        if str(mode or "").strip().lower() == "live" and not bool(runtime_snapshot.get("ready_for_live", False)):
+            mode = SAFE_GLOBAL_RUNTIME_MODE
         telemetry_guard = _runtime_telemetry_guard(runtime_snapshot)
         runtime_engine = str(runtime_snapshot.get("runtime_engine") or _runtime_engine_from_state(state))
         storage_status = _user_data_persistence_status()
@@ -10678,16 +10773,19 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/v1/gates")
-    def gates(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
-        payload = evaluate_gates()
+    def gates(mode: str | None = Query(default=None), _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        payload = evaluate_gates(mode=mode)
         settings = store.load_settings()
         settings["gate_checklist"] = payload["gates"]
         store.save_settings(settings)
         return payload
 
     @app.post("/api/v1/gates/reevaluate")
-    def gates_reevaluate(_: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        payload = evaluate_gates(force_exchange_check=True)
+    def gates_reevaluate(
+        mode: str | None = Query(default=None),
+        _: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        payload = evaluate_gates(mode=mode, force_exchange_check=True)
         store.add_log(
             event_type="gates",
             severity="info",
@@ -14507,6 +14605,8 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/settings")
     def settings(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         current = store.load_settings()
+        _sync_runtime_state(store.load_bot_state(), settings=current, event="settings_read", persist=True)
+        current = store.load_settings()
         merged = learning_service.ensure_settings_shape(current)
         store.save_settings(merged)
         return merged
@@ -14569,7 +14669,19 @@ def create_app() -> FastAPI:
             if engine_id:
                 merged["learning"]["selector_algo"] = _engine_id_to_selector_algo(engine_id)
         merged = learning_service.ensure_settings_shape(merged)
+        requested_mode = normalize_global_runtime_mode(
+            str(merged.get("mode") or default_mode()),
+            default=default_mode(),
+        )
+        if requested_mode == "live":
+            candidate_state = dict(store.load_bot_state())
+            candidate_state["mode"] = "live"
+            _, _, safe_posture = _enforce_safe_paper_runtime_posture(candidate_state, settings=merged)
+            if bool(safe_posture.get("blocked")):
+                raise HTTPException(status_code=400, detail=f"LIVE bloqueado: {safe_posture.get('reason')}")
         store.save_settings(merged)
+        _sync_runtime_state(store.load_bot_state(), settings=merged, event="settings_update", persist=True)
+        merged = store.load_settings()
         store.add_log(
             event_type="settings_changed",
             severity="info",
@@ -14693,15 +14805,16 @@ def create_app() -> FastAPI:
         state["running"] = False
         store.save_bot_state(state)
         state = _sync_runtime_state(state, settings=store.load_settings(), event="mode_change", persist=True)
+        effective_mode = str(state.get("mode") or mode)
         store.add_log(
             event_type="mode_changed",
-            severity="warn" if mode == "live" else "info",
+            severity="warn" if effective_mode == "live" else "info",
             module="control",
-            message=f"Bot mode set to {mode}",
+            message=f"Bot mode set to {effective_mode}",
             related_ids=[],
-            payload={"mode": mode},
+            payload={"requested_mode": mode, "effective_mode": effective_mode},
         )
-        return {"ok": True, "mode": mode}
+        return {"ok": True, "mode": effective_mode}
 
     def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
