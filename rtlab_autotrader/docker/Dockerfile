@@ -9,6 +9,6 @@ COPY user_data /app/user_data
 COPY scripts /app/scripts
 COPY rtlab_config.yaml.example /app/rtlab_config.yaml.example
 
-RUN pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir .
 
 ENTRYPOINT ["python", "-m", "rtlab_core.web.main"]
