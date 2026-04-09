@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import pytest
+import pandas as pd
 
 from rtlab_core.src.data import catalog as catalog_module
 from rtlab_core.learning.knowledge import KnowledgeLoader
 from rtlab_core.src.reports import reporting as reporting_module
+from rtlab_core.src.data.loader import DataLoader
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.research import data_provider as data_provider_module
 from rtlab_core.src.research.data_provider import build_data_provider
@@ -64,6 +66,76 @@ def _seed_dataset_manifest(tmp_path: Path, *, market: str = "crypto", symbol: st
     "files": [str(chunk.resolve())],
   }
   (dataset_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _seed_legacy_catalog_manifest(tmp_path: Path, *, market: str = "crypto", symbol: str = "BTCUSDT") -> Path:
+  processed_dir = tmp_path / "data" / market / "processed"
+  manifests_dir = tmp_path / "data" / market / "manifests"
+  processed_dir.mkdir(parents=True, exist_ok=True)
+  manifests_dir.mkdir(parents=True, exist_ok=True)
+  csv_path = processed_dir / f"{symbol}_1m.csv"
+  df = pd.DataFrame(
+    {
+      "timestamp": pd.date_range("2024-01-01T00:00:00Z", periods=15, freq="1min"),
+      "open": [100.0 + idx for idx in range(15)],
+      "high": [101.0 + idx for idx in range(15)],
+      "low": [99.0 + idx for idx in range(15)],
+      "close": [100.5 + idx for idx in range(15)],
+      "volume": [10.0 + idx for idx in range(15)],
+    }
+  )
+  df.to_csv(csv_path, index=False)
+  legacy_csv = Path(
+    rf"C:\Users\Admin\Desktop\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA\rtlab_autotrader\user_data\data\{market}\processed\{symbol}_1m.csv"
+  )
+  manifest = {
+    "market": market,
+    "symbol": symbol,
+    "timeframe": "1m",
+    "source": "binance_public",
+    "start": str(df["timestamp"].min().isoformat()),
+    "end": str(df["timestamp"].max().isoformat()),
+    "files": [str(legacy_csv)],
+    "processed_path": str(legacy_csv),
+    "dataset_hash": "legacy-dataset-hash",
+    "raw_files": [
+      rf"C:\Users\Admin\Desktop\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA\rtlab_autotrader\user_data\data\{market}\binance_public\{symbol}\1m\{symbol}-1m-2024-01.zip"
+    ],
+  }
+  (manifests_dir / f"{symbol}_1m.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+  summary = {
+    "market": market,
+    "symbol": symbol,
+    "timeframe": "1m",
+    "source": "binance_public",
+    "files": [str(legacy_csv)],
+    "dataset_hash": "legacy-dataset-hash",
+  }
+  (manifests_dir / f"{symbol}_1m.summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+  return csv_path
+
+
+def _seed_legacy_standard_manifest(tmp_path: Path, *, market: str = "crypto", symbol: str = "BTCUSDT", timeframe: str = "5m") -> Path:
+  dataset_dir = tmp_path / "datasets" / "binance_public" / market / symbol / timeframe
+  dataset_dir.mkdir(parents=True, exist_ok=True)
+  chunk = dataset_dir / "chunk.csv"
+  chunk.write_text("timestamp,open,high,low,close,volume\n2024-01-01T00:00:00Z,1,2,0.5,1.5,10\n", encoding="utf-8")
+  legacy_chunk = Path(
+    rf"C:\Users\Admin\Desktop\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA\rtlab_autotrader\user_data\datasets\binance_public\{market}\{symbol}\{timeframe}\chunk.csv"
+  )
+  manifest = {
+    "provider": "binance_public",
+    "market": market,
+    "symbol": symbol,
+    "timeframe": timeframe,
+    "dataset_source": "binance_public",
+    "dataset_hash": "legacy-standard-hash",
+    "start": "2024-01-01",
+    "end": "2024-01-31",
+    "files": [str(legacy_chunk)],
+  }
+  (dataset_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+  return chunk
 
 
 def test_load_knowledge_pack_and_generate_variants_reproducible(tmp_path: Path) -> None:
@@ -195,6 +267,42 @@ def test_report_engine_does_not_resolve_runtime_storage_path(monkeypatch) -> Non
   monkeypatch.setattr(reporting_module.Path, "resolve", lambda self, strict=False: (_ for _ in ()).throw(AssertionError("resolve should not be called")))
   report_engine = reporting_module.ReportEngine(Path("/app/data/rtlab_user_data"))
   assert str(report_engine.user_data_dir).replace("\\", "/") == "/app/data/rtlab_user_data"
+
+
+def test_catalog_relocates_legacy_manifest_paths_and_ignores_summary_files(tmp_path: Path) -> None:
+  csv_path = _seed_legacy_catalog_manifest(tmp_path)
+  catalog = DataCatalog(tmp_path)
+  entries = catalog.list_entries("crypto")
+  assert len(entries) == 1
+  entry = entries[0]
+  assert entry.processed_path == str(csv_path.resolve())
+  assert entry.files == [str(csv_path.resolve())]
+
+  status = catalog.status()
+  assert status["available_count"] == 1
+  assert len(status["available"]) == 1
+  assert str(status["available"][0]["manifest_path"]).endswith("BTCUSDT_1m.json")
+
+  loaded = DataLoader(tmp_path).load_resampled("crypto", "BTCUSDT", "5m", "2024-01-01", "2024-01-02")
+  assert loaded.dataset_hash
+  assert str((loaded.manifest or {}).get("derived_from") or "") == "1m"
+  assert not loaded.df.empty
+
+  provider = build_data_provider(mode="dataset", user_data_dir=tmp_path, catalog=catalog)
+  resolved = provider.resolve(market="crypto", symbol="BTCUSDT", timeframe="5m", start="2024-01-01", end="2024-01-02")
+  assert resolved.ready is True
+  assert len(resolved.files) == 1
+  assert resolved.files[0].endswith("BTCUSDT_5m.csv")
+  assert Path(resolved.files[0]).exists()
+
+
+def test_dataset_mode_provider_relocates_legacy_standard_manifest_paths(tmp_path: Path) -> None:
+  chunk = _seed_legacy_standard_manifest(tmp_path)
+  provider = build_data_provider(mode="dataset", user_data_dir=tmp_path, catalog=DataCatalog(tmp_path))
+  resolved = provider.resolve(market="crypto", symbol="BTCUSDT", timeframe="5m", start="2024-01-01", end="2024-01-31")
+  assert resolved.ready is True
+  assert resolved.files == [str(chunk.resolve())]
+  assert resolved.dataset_hash == "legacy-standard-hash"
 
 
 def test_orderflow_toggle_can_disable_microstructure_in_mass_backtest(tmp_path: Path) -> None:

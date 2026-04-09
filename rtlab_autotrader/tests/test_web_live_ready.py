@@ -4353,6 +4353,55 @@ def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, 
   manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
+def _seed_legacy_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, *, source: str) -> None:
+  processed_dir = user_data_dir / "data" / market / "processed"
+  manifests_dir = user_data_dir / "data" / market / "manifests"
+  processed_dir.mkdir(parents=True, exist_ok=True)
+  manifests_dir.mkdir(parents=True, exist_ok=True)
+  timestamps = pd.date_range("2024-01-01", periods=2000, freq="1min", tz="UTC")
+  df = pd.DataFrame(
+    {
+      "timestamp": timestamps,
+      "open": np.linspace(100.0, 101.5, len(timestamps)),
+      "high": np.linspace(100.5, 102.0, len(timestamps)),
+      "low": np.linspace(99.5, 101.0, len(timestamps)),
+      "close": np.linspace(100.2, 101.7, len(timestamps)),
+      "volume": np.linspace(10.0, 20.0, len(timestamps)),
+    }
+  )
+  csv_path = processed_dir / f"{symbol}_1m.csv"
+  df.to_csv(csv_path, index=False)
+
+  import hashlib
+  digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+  legacy_csv = Path(
+    rf"C:\Users\Admin\Desktop\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA\rtlab_autotrader\user_data\data\{market}\processed\{symbol}_1m.csv"
+  )
+  manifest = {
+    "market": market,
+    "symbol": symbol,
+    "timeframe": "1m",
+    "source": source,
+    "start": str(df["timestamp"].min().isoformat()),
+    "end": str(df["timestamp"].max().isoformat()),
+    "files": [str(legacy_csv)],
+    "processed_path": str(legacy_csv),
+    "dataset_hash": digest,
+  }
+  (manifests_dir / f"{symbol}_1m.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+  summary = {
+    "market": market,
+    "symbol": symbol,
+    "timeframe": "1m",
+    "source": source,
+    "start": manifest["start"],
+    "end": manifest["end"],
+    "files": [str(legacy_csv)],
+    "dataset_hash": digest,
+  }
+  (manifests_dir / f"{symbol}_1m.summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
 def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
   shared_hash = str(candidate_run.get("dataset_hash") or baseline_run.get("dataset_hash") or "e2e-shared-hash")
   shared_period = candidate_run.get("period") if isinstance(candidate_run.get("period"), dict) else (
@@ -4504,6 +4553,42 @@ def test_event_backtest_engine_runs_for_crypto_forex_equities(tmp_path: Path, mo
   assert status.status_code == 200
   payload = status.json()
   assert "available" in payload and "missing" in payload
+
+
+def test_backtests_and_data_status_relocate_legacy_manifest_paths(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_legacy_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  status = client.get("/api/v1/data/status", headers=headers)
+  assert status.status_code == 200, status.text
+  payload = status.json()
+  assert payload["available_count"] == 1
+  assert len(payload["available"]) == 1
+  row = payload["available"][0]
+  assert str(row["processed_path"]).endswith("BTCUSDT_1m.csv")
+  assert not str(row["manifest_path"]).endswith(".summary.json")
+
+  res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": "trend_pullback_orderflow_confirm_v1",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-01-01",
+      "validation_mode": "walk-forward",
+    },
+  )
+  assert res.status_code == 200, res.text
+  run = res.json()["run"]
+  assert run["data_source"] == "binance_public"
+  assert run["dataset_hash"]
 
 
 def test_strategy_registry_seeds_knowledge_pack_and_patch_flags(tmp_path: Path, monkeypatch) -> None:

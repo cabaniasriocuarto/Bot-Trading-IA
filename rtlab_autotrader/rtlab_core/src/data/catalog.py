@@ -22,6 +22,43 @@ def _sha256_files(paths: list[Path]) -> str:
     return digest.hexdigest()
 
 
+def relocate_user_data_path(user_data_dir: Path, raw: str | Path | None) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    path = Path(text)
+    try:
+        if path.exists():
+            return str(path.resolve())
+    except Exception:
+        pass
+
+    candidates: list[Path] = []
+    if not path.is_absolute():
+        candidates.append((user_data_dir / path).resolve())
+
+    parts = list(path.parts)
+    lower_parts = [str(part).lower() for part in parts]
+    if "user_data" in lower_parts:
+        idx = lower_parts.index("user_data")
+        suffix = Path(*parts[idx + 1 :]) if idx + 1 < len(parts) else Path()
+        candidates.append((user_data_dir / suffix).resolve())
+    elif "data" in lower_parts:
+        idx = lower_parts.index("data")
+        suffix = Path(*parts[idx + 1 :]) if idx + 1 < len(parts) else Path()
+        candidates.append((user_data_dir / "data" / suffix).resolve())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        if candidate.exists():
+            return candidate_str
+    return text
+
+
 @dataclass(slots=True)
 class CatalogEntry:
     market: str
@@ -63,6 +100,35 @@ class DataCatalog:
     def processed_dir(self, market: str) -> Path:
         return self.data_root / normalize_market(market) / "processed"
 
+    def _normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        out = dict(payload)
+        out["files"] = [
+            str(relocate_user_data_path(self.user_data_dir, item) or str(item))
+            for item in payload.get("files", [])
+            if isinstance(item, str)
+        ]
+        processed_path = relocate_user_data_path(self.user_data_dir, payload.get("processed_path"))
+        if processed_path:
+            out["processed_path"] = processed_path
+        if isinstance(payload.get("raw_files"), list):
+            out["raw_files"] = [
+                str(relocate_user_data_path(self.user_data_dir, item) or str(item))
+                for item in payload.get("raw_files", [])
+                if isinstance(item, str)
+            ]
+        raw_dir = relocate_user_data_path(self.user_data_dir, payload.get("raw_dir"))
+        if raw_dir:
+            out["raw_dir"] = raw_dir
+        return out
+
+    @staticmethod
+    def _entry_has_accessible_file(entry: CatalogEntry) -> bool:
+        candidates: list[Path] = []
+        if entry.processed_path:
+            candidates.append(Path(entry.processed_path))
+        candidates.extend(Path(item) for item in entry.files if str(item).strip())
+        return any(path.exists() and path.is_file() for path in candidates)
+
     def list_entries(self, market: str | None = None) -> list[CatalogEntry]:
         markets = [normalize_market(market)] if market else list(SUPPORTED_MARKETS)
         out: list[CatalogEntry] = []
@@ -74,7 +140,7 @@ class DataCatalog:
                 if path.name.endswith(".summary.json"):
                     continue
                 try:
-                    payload = _json_load(path)
+                    payload = self._normalize_payload(_json_load(path))
                     out.append(
                         CatalogEntry(
                             market=str(payload.get("market", mk)),
@@ -105,7 +171,8 @@ class DataCatalog:
 
     def status(self) -> dict[str, Any]:
         entries = self.list_entries()
-        present = {(e.market, e.symbol, e.timeframe) for e in entries}
+        available_entries = [entry for entry in entries if self._entry_has_accessible_file(entry)]
+        present = {(e.market, e.symbol, e.timeframe) for e in available_entries}
         missing: list[dict[str, Any]] = []
         for market, symbols in MARKET_UNIVERSES.items():
             for symbol in symbols:
@@ -126,8 +193,8 @@ class DataCatalog:
                         )
         return {
             "data_root": str(self.data_root),
-            "available_count": len(entries),
-            "available": [e.to_dict() for e in entries],
+            "available_count": len(available_entries),
+            "available": [e.to_dict() for e in available_entries],
             "missing_count": len(missing),
             "missing": missing,
         }
