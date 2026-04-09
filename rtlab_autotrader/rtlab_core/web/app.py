@@ -8415,28 +8415,76 @@ def risk_hooks(context):
 
     def strategy_evidence_or_404(self, strategy_id: str, *, limit: int = 10) -> dict[str, Any]:
         strategy = self.strategy_or_404(strategy_id)
-        rows = [row for row in self.load_runs() if str((row or {}).get("strategy_id") or "") == strategy_id]
-        rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        runs = [row for row in self.load_runs() if str((row or {}).get("strategy_id") or "") == strategy_id]
+        runs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        run_by_id = {str((row or {}).get("id") or "").strip(): row for row in runs if str((row or {}).get("id") or "").strip()}
+
+        ledger_rows = [row for row in _collect_research_trial_ledger_items() if str((row or {}).get("strategy_id") or "") == strategy_id]
+        ledger_rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+        combined_rows: list[tuple[dict[str, Any] | None, dict[str, Any] | None]] = []
+        seen_run_ids: set[str] = set()
+        for row in ledger_rows:
+            run_id = str((row or {}).get("run_id") or "").strip()
+            legacy_id = str((row or {}).get("legacy_json_id") or "").strip()
+            source_run = run_by_id.get(run_id) or (run_by_id.get(legacy_id) if legacy_id else None)
+            key = run_id or legacy_id
+            if key:
+                seen_run_ids.add(key)
+            combined_rows.append((row, source_run))
+        for row in runs:
+            run_id = str((row or {}).get("id") or "").strip()
+            if run_id and run_id in seen_run_ids:
+                continue
+            combined_rows.append((None, row))
+
         items: list[dict[str, Any]] = []
-        for row in rows[: max(1, int(limit))]:
+        for ledger_row, run_row in combined_rows[: max(1, int(limit))]:
+            row = run_row or ledger_row or {}
             params_json = row.get("params_json") if isinstance(row.get("params_json"), dict) else {}
+            validation_summary = row.get("validation_summary") if isinstance(row.get("validation_summary"), dict) else {}
+            evidence_status = _first_text((ledger_row or {}).get("evidence_status"))
+            evidence_flags = [str(flag) for flag in ((ledger_row or {}).get("evidence_flags") or []) if str(flag).strip()]
+            notes = _first_text(row.get("notes"))
+            if not notes and ledger_row:
+                notes = (
+                    f"Evidence {evidence_status} derivada del trial ledger."
+                    if evidence_status
+                    else "Evidence derivada del trial ledger."
+                )
+                if evidence_flags:
+                    notes = f"{notes} Flags: {', '.join(evidence_flags[:3])}."
+            validation_mode = _first_text(
+                row.get("validation_mode"),
+                validation_summary.get("mode"),
+                params_json.get("validation_mode"),
+                (ledger_row or {}).get("validation_quality"),
+            )
+            metrics = {}
+            if isinstance((ledger_row or {}).get("metrics"), dict):
+                metrics = (ledger_row or {}).get("metrics") or {}
+            elif isinstance(row.get("metrics"), dict):
+                metrics = row.get("metrics") or {}
             items.append(
                 {
-                    "run_id": str(row.get("id") or ""),
-                    "mode": str(row.get("mode") or "backtest"),
-                    "created_at": str(row.get("created_at") or ""),
-                    "metrics": row.get("metrics") if isinstance(row.get("metrics"), dict) else {},
-                    "tags": [str(tag) for tag in (row.get("tags") or []) if str(tag).strip()],
-                    "notes": str(row.get("notes") or ""),
-                    "validation_mode": str(params_json.get("validation_mode") or ""),
+                    "run_id": _first_text((ledger_row or {}).get("run_id"), row.get("id")),
+                    "mode": _first_text((ledger_row or {}).get("source"), row.get("mode"), "backtest"),
+                    "created_at": _first_text((ledger_row or {}).get("created_at"), row.get("created_at")),
+                    "metrics": metrics,
+                    "tags": [str(tag) for tag in ((row.get("tags") or strategy.get("tags") or [])) if str(tag).strip()],
+                    "notes": notes,
+                    "validation_mode": validation_mode,
+                    "evidence_status": evidence_status or None,
+                    "evidence_flags": evidence_flags,
+                    "candidate_stage": _first_text((ledger_row or {}).get("candidate_stage")),
                 }
             )
         latest = items[0] if items else None
         return {
             "strategy_id": strategy_id,
             "strategy_version": str(strategy.get("version") or "0.0.0"),
-            "last_run_at": strategy.get("last_run_at"),
-            "run_count": len(rows),
+            "last_run_at": _first_text(strategy.get("last_run_at"), (latest or {}).get("created_at")),
+            "run_count": len(combined_rows),
             "last_oos": (latest.get("metrics") if isinstance(latest, dict) else None),
             "latest_run": latest,
             "items": items,

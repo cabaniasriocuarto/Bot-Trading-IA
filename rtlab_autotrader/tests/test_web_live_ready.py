@@ -4749,6 +4749,29 @@ def test_api_domain_contracts_split_truth_evidence_policy_state_and_decision_log
   assert any(str(row.get("reason") or "") == "rtlrese_14_smoke" for row in (decision_log_payload.get("breaker_events") or []))
 
 
+def test_strategy_evidence_endpoint_prefers_trial_ledger_metadata(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  assert strategies.status_code == 200, strategies.text
+  strategy_id = strategies.json()[0]["id"]
+
+  evidence_res = client.get(f"/api/v1/strategies/{strategy_id}/evidence?limit=3", headers=headers)
+  assert evidence_res.status_code == 200, evidence_res.text
+  evidence_payload = evidence_res.json()
+  assert evidence_payload["run_count"] >= 1
+  assert evidence_payload["items"]
+
+  first = evidence_payload["items"][0]
+  assert first["run_id"]
+  assert first["validation_mode"] == "walk-forward"
+  assert first["evidence_status"] == "legacy"
+  assert "missing_commit_hash" in first["evidence_flags"]
+  assert "trial ledger" in str(first["notes"]).lower()
+
+
 def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
