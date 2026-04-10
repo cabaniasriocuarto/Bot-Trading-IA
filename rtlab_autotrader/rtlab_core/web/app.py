@@ -17395,6 +17395,30 @@ def create_app() -> FastAPI:
         report["metadata"] = metadata
         return report
 
+    def _build_strategy_run_detail_preview(catalog_row: dict[str, Any]) -> dict[str, Any]:
+        report = _build_rollout_report_from_catalog_row(catalog_row)
+        equity_curve = report.get("equity_curve") if isinstance(report.get("equity_curve"), list) else []
+        drawdown_curve = report.get("drawdown_curve") if isinstance(report.get("drawdown_curve"), list) else []
+        trades = report.get("trades") if isinstance(report.get("trades"), list) else []
+        costs_model = report.get("costs_model") if isinstance(report.get("costs_model"), dict) else {}
+        costs_breakdown = report.get("costs_breakdown") if isinstance(report.get("costs_breakdown"), dict) else {}
+        artifacts_links = report.get("artifacts_links") if isinstance(report.get("artifacts_links"), dict) else {}
+        metrics = report.get("metrics") if isinstance(report.get("metrics"), dict) else {}
+        legacy_id = str(catalog_row.get("legacy_json_id") or "").strip()
+        source = "legacy_payload" if legacy_id and (equity_curve or trades or artifacts_links) else "catalog_summary"
+        return {
+            "source": source,
+            "series_available": bool(equity_curve),
+            "trades_available": bool(trades),
+            "costs_available": bool(costs_model or costs_breakdown),
+            "trade_count": int(metrics.get("trade_count") or metrics.get("roundtrips") or len(trades) or 0),
+            "equity_curve": equity_curve,
+            "drawdown_curve": drawdown_curve,
+            "costs_model": costs_model or None,
+            "costs_breakdown": costs_breakdown or None,
+            "artifacts_links": artifacts_links or None,
+        }
+
     def _resolve_strategy_from_report_or_catalog(report: dict[str, Any], catalog_row: dict[str, Any] | None = None) -> dict[str, Any]:
         strategy_id = str(report.get("strategy_id") or "")
         if strategy_id and not strategy_id.startswith("ST-"):
@@ -17832,6 +17856,7 @@ def create_app() -> FastAPI:
         if kpis:
             row["kpis"] = kpis
         row["artifacts_index"] = store.backtest_catalog.get_artifacts_for_run(str(row.get("run_id") or ""))
+        row["strategy_detail"] = _build_strategy_run_detail_preview(row)
         legacy_id = str(row.get("legacy_json_id") or "")
         if legacy_id:
             row["legacy_backtest_api"] = {

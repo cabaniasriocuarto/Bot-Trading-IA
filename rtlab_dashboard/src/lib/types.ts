@@ -1637,6 +1637,20 @@ export interface BacktestCatalogRun {
   rank?: number;
   related_bot_ids?: string[];
   related_bots?: BacktestCatalogRunRelatedBot[];
+  strategy_detail?: BacktestCatalogRunStrategyDetail;
+}
+
+export interface BacktestCatalogRunStrategyDetail {
+  source: "legacy_payload" | "catalog_summary" | string;
+  series_available: boolean;
+  trades_available: boolean;
+  costs_available: boolean;
+  trade_count: number;
+  equity_curve?: BacktestRun["equity_curve"];
+  drawdown_curve?: BacktestRun["drawdown_curve"];
+  costs_model?: BacktestRun["costs_model"] | null;
+  costs_breakdown?: BacktestRun["costs_breakdown"] | null;
+  artifacts_links?: BacktestRun["artifacts_links"] | null;
 }
 
 export interface BacktestCatalogRunsResponse {

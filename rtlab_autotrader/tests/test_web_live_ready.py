@@ -4843,7 +4843,6 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   )
   assert bulk_delete.status_code == 200, bulk_delete.text
   assert bulk_delete.json()["deleted_count"] >= 1
-
   after_delete = client.get("/api/v1/runs", headers=headers)
   assert after_delete.status_code == 200
   assert all(row["run_id"] != first["run_id"] for row in after_delete.json()["items"])
@@ -4899,6 +4898,44 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   cfg_snapshot = (batch_detail.json().get("config") or {})
   assert isinstance(cfg_snapshot.get("policy_snapshot_summary"), dict)
   assert cfg_snapshot["policy_snapshot_summary"].get("pbo_reject_if_gt") == 0.05
+
+
+def test_runs_detail_exposes_strategy_detail_preview_for_strategies_ui(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  runs_res = client.get("/api/v1/runs?limit=20", headers=headers)
+  assert runs_res.status_code == 200, runs_res.text
+  items = runs_res.json()["items"]
+  assert items
+  target = next((row for row in items if row.get("legacy_json_id")), items[0])
+
+  detail_res = client.get(f"/api/v1/runs/{target['run_id']}", headers=headers)
+  assert detail_res.status_code == 200, detail_res.text
+  detail_payload = detail_res.json()
+  strategy_detail = detail_payload.get("strategy_detail") or {}
+
+  assert strategy_detail["source"] in {"legacy_payload", "catalog_summary"}
+  assert isinstance(strategy_detail["series_available"], bool)
+  assert isinstance(strategy_detail["trades_available"], bool)
+  assert isinstance(strategy_detail["costs_available"], bool)
+  assert isinstance(strategy_detail["trade_count"], int)
+  assert "equity_curve" in strategy_detail
+  assert "drawdown_curve" in strategy_detail
+  assert "costs_model" in strategy_detail
+  assert "costs_breakdown" in strategy_detail
+  assert "artifacts_links" in strategy_detail
+
+  if target.get("legacy_json_id"):
+    assert strategy_detail["source"] == "legacy_payload"
+    assert strategy_detail["series_available"] is True
+    assert strategy_detail["trades_available"] is True
+    assert isinstance(strategy_detail["equity_curve"], list) and strategy_detail["equity_curve"]
+    assert isinstance(strategy_detail["costs_model"], dict)
+    assert "fees_bps" in strategy_detail["costs_model"]
+    assert isinstance(strategy_detail["artifacts_links"], dict)
+    assert "equity_curve_csv" in strategy_detail["artifacts_links"]
 
 
 def test_runs_validate_and_promote_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
