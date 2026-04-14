@@ -34,6 +34,7 @@ export default function StrategyDetailPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [allBacktests, setAllBacktests] = useState<BacktestRun[]>([]);
   const [strategyRunDetails, setStrategyRunDetails] = useState<BacktestCatalogRun[]>([]);
+  const [compareRunSummary, setCompareRunSummary] = useState<BacktestCatalogRun | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [compareId, setCompareId] = useState("");
   const [compatibilityNotice, setCompatibilityNotice] = useState("");
@@ -92,6 +93,26 @@ export default function StrategyDetailPage() {
     };
     void load();
   }, [strategyId]);
+
+  useEffect(() => {
+    let active = true;
+
+    const load = async () => {
+      if (!compareId) {
+        setCompareRunSummary(null);
+        return;
+      }
+      const latestRun = await loadLatestStrategyRunSummary(compareId);
+      if (active) {
+        setCompareRunSummary(latestRun);
+      }
+    };
+
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [compareId]);
 
   const latestEvidenceRun = evidence?.latest_run || null;
   const latestEvidenceMetrics = latestEvidenceRun?.metrics || null;
@@ -176,28 +197,13 @@ export default function StrategyDetailPage() {
     return rows[0] || null;
   }, [allBacktestsByStrategy, compare]);
 
+  const latestCurrentComparableRun = strategyRunDetails[0] || null;
+
   const evidenceComparisonRows = useMemo(() => {
-    if (!latestCurrentBacktest || !latestCompareDetailedBacktest) return [];
-    return [
-      { label: "CAGR", current: fmtPct(latestCurrentBacktest.metrics.cagr), compare: fmtPct(latestCompareDetailedBacktest.metrics.cagr) },
-      { label: "Max DD", current: fmtPct(latestCurrentBacktest.metrics.max_dd), compare: fmtPct(latestCompareDetailedBacktest.metrics.max_dd) },
-      { label: "Sharpe", current: fmtNum(latestCurrentBacktest.metrics.sharpe), compare: fmtNum(latestCompareDetailedBacktest.metrics.sharpe) },
-      { label: "Sortino", current: fmtNum(latestCurrentBacktest.metrics.sortino), compare: fmtNum(latestCompareDetailedBacktest.metrics.sortino) },
-      { label: "Calmar", current: fmtNum(latestCurrentBacktest.metrics.calmar), compare: fmtNum(latestCompareDetailedBacktest.metrics.calmar) },
-      { label: "Winrate", current: fmtPct(latestCurrentBacktest.metrics.winrate), compare: fmtPct(latestCompareDetailedBacktest.metrics.winrate) },
-      {
-        label: "Expectancy / Avg Trade",
-        current: `${fmtNum(latestCurrentBacktest.metrics.expectancy)} / ${fmtNum(latestCurrentBacktest.metrics.avg_trade)}`,
-        compare: `${fmtNum(latestCompareDetailedBacktest.metrics.expectancy)} / ${fmtNum(latestCompareDetailedBacktest.metrics.avg_trade)}`,
-      },
-      { label: "Turnover", current: fmtNum(latestCurrentBacktest.metrics.turnover), compare: fmtNum(latestCompareDetailedBacktest.metrics.turnover) },
-      {
-        label: "Robustness",
-        current: fmtNum(latestCurrentBacktest.metrics.robust_score),
-        compare: fmtNum(latestCompareDetailedBacktest.metrics.robust_score),
-      },
-    ];
-  }, [latestCompareDetailedBacktest, latestCurrentBacktest]);
+    const modernRows = buildComparisonRowsFromModernRuns(latestCurrentComparableRun, compareRunSummary);
+    if (modernRows.length) return modernRows;
+    return buildComparisonRowsFromLegacyRuns(latestCurrentBacktest, latestCompareDetailedBacktest);
+  }, [compareRunSummary, latestCompareDetailedBacktest, latestCurrentBacktest, latestCurrentComparableRun]);
 
   if (!truth) {
     return <p className="text-sm text-slate-400">Cargando estrategia...</p>;
@@ -338,7 +344,10 @@ export default function StrategyDetailPage() {
                   </TBody>
                 </Table>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Evidence: comparacion del ultimo backtest detallado</p>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Evidence: comparacion del ultimo run comparable</p>
+                  <p className="mb-3 text-xs text-slate-500">
+                    La tabla usa KPIs modernos de `/api/v1/runs` cuando existen; si faltan corridas comparables, cae temporalmente al resumen legacy.
+                  </p>
                   {evidenceComparisonRows.length ? (
                     <Table>
                       <THead>
@@ -535,6 +544,61 @@ function strategyEvidenceFromLegacy(strategy: Strategy, backtests: BacktestRun[]
   };
 }
 
+type ComparableRunKpis = BacktestCatalogRun["kpis"] & {
+  avg_trade?: number;
+  turnover?: number;
+  robust_score?: number;
+  robustness_score?: number;
+};
+
+function buildComparisonRowsFromModernRuns(current: BacktestCatalogRun | null, compare: BacktestCatalogRun | null) {
+  const currentKpis = (current?.kpis || {}) as ComparableRunKpis;
+  const compareKpis = (compare?.kpis || {}) as ComparableRunKpis;
+  if (!current || !compare) return [];
+  return [
+    { label: "CAGR", current: fmtPct(currentKpis.cagr || 0), compare: fmtPct(compareKpis.cagr || 0) },
+    { label: "Max DD", current: fmtPct(currentKpis.max_dd || 0), compare: fmtPct(compareKpis.max_dd || 0) },
+    { label: "Sharpe", current: fmtNum(currentKpis.sharpe || 0), compare: fmtNum(compareKpis.sharpe || 0) },
+    { label: "Sortino", current: fmtNum(currentKpis.sortino || 0), compare: fmtNum(compareKpis.sortino || 0) },
+    { label: "Calmar", current: fmtNum(currentKpis.calmar || 0), compare: fmtNum(compareKpis.calmar || 0) },
+    { label: "Winrate", current: fmtPct(currentKpis.winrate || 0), compare: fmtPct(compareKpis.winrate || 0) },
+    {
+      label: "Expectancy / Avg Trade",
+      current: `${fmtNum(currentKpis.expectancy_value ?? currentKpis.expectancy ?? 0)} / ${fmtNum(currentKpis.avg_trade ?? currentKpis.expectancy_value ?? currentKpis.expectancy ?? 0)}`,
+      compare: `${fmtNum(compareKpis.expectancy_value ?? compareKpis.expectancy ?? 0)} / ${fmtNum(compareKpis.avg_trade ?? compareKpis.expectancy_value ?? compareKpis.expectancy ?? 0)}`,
+    },
+    { label: "Turnover", current: fmtNum(currentKpis.turnover || 0), compare: fmtNum(compareKpis.turnover || 0) },
+    {
+      label: "Robustness",
+      current: fmtNum(currentKpis.robust_score ?? currentKpis.robustness_score ?? 0),
+      compare: fmtNum(compareKpis.robust_score ?? compareKpis.robustness_score ?? 0),
+    },
+  ];
+}
+
+function buildComparisonRowsFromLegacyRuns(current: BacktestRun | null, compare: BacktestRun | null) {
+  if (!current || !compare) return [];
+  return [
+    { label: "CAGR", current: fmtPct(current.metrics.cagr), compare: fmtPct(compare.metrics.cagr) },
+    { label: "Max DD", current: fmtPct(current.metrics.max_dd), compare: fmtPct(compare.metrics.max_dd) },
+    { label: "Sharpe", current: fmtNum(current.metrics.sharpe), compare: fmtNum(compare.metrics.sharpe) },
+    { label: "Sortino", current: fmtNum(current.metrics.sortino), compare: fmtNum(compare.metrics.sortino) },
+    { label: "Calmar", current: fmtNum(current.metrics.calmar), compare: fmtNum(compare.metrics.calmar) },
+    { label: "Winrate", current: fmtPct(current.metrics.winrate), compare: fmtPct(compare.metrics.winrate) },
+    {
+      label: "Expectancy / Avg Trade",
+      current: `${fmtNum(current.metrics.expectancy)} / ${fmtNum(current.metrics.avg_trade)}`,
+      compare: `${fmtNum(compare.metrics.expectancy)} / ${fmtNum(compare.metrics.avg_trade)}`,
+    },
+    { label: "Turnover", current: fmtNum(current.metrics.turnover), compare: fmtNum(compare.metrics.turnover) },
+    {
+      label: "Robustness",
+      current: fmtNum(current.metrics.robust_score),
+      compare: fmtNum(compare.metrics.robust_score),
+    },
+  ];
+}
+
 async function loadStrategyRunDetails(strategyId: string): Promise<BacktestCatalogRun[]> {
   try {
     const response = await apiGet<BacktestCatalogRunsResponse>(
@@ -553,5 +617,17 @@ async function loadStrategyRunDetails(strategyId: string): Promise<BacktestCatal
     return [...details].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   } catch {
     return [];
+  }
+}
+
+async function loadLatestStrategyRunSummary(strategyId: string): Promise<BacktestCatalogRun | null> {
+  try {
+    const response = await apiGet<BacktestCatalogRunsResponse>(
+      `/api/v1/runs?strategy_id=${encodeURIComponent(strategyId)}&limit=1`,
+    );
+    const items = Array.isArray(response.items) ? response.items : [];
+    return items[0] || null;
+  } catch {
+    return null;
   }
 }
