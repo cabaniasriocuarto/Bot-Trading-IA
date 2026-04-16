@@ -119,6 +119,12 @@ const BOT_ENGINE_HELP: Record<string, string> = {
   bandit_ucb1: "UCB1: balancea exploracion y explotacion con una cota superior conservadora.",
 };
 
+const BOT_RISK_PROFILE_HELP: Record<"conservative" | "medium" | "aggressive", string> = {
+  conservative: "Fail-closed y prioriza preservacion de capital: menos exposición, menos posiciones y menor riesgo por trade.",
+  medium: "Perfil base recomendado: exposición moderada, drawdown controlado y límites consistentes con el registry canónico.",
+  aggressive: "Permite mayor utilización del capital, más posiciones y riesgo por trade más alto, sin abrir todavía multi-symbol ni lifecycle.",
+};
+
 function proposalBadge(status: string | undefined): "success" | "warn" | "danger" | "neutral" {
   const normalized = String(status || "").toLowerCase();
   if (normalized.includes("approved")) return "success";
@@ -308,6 +314,14 @@ export default function StrategiesPage() {
       alias: normalized.alias || null,
       description: normalized.description || null,
       domain_type: normalized.domain_type,
+      capital_base_usd: normalized.capital_base_usd,
+      max_total_exposure_pct: normalized.max_total_exposure_pct,
+      max_asset_exposure_pct: normalized.max_asset_exposure_pct,
+      risk_profile: normalized.risk_profile,
+      risk_per_trade_pct: normalized.risk_per_trade_pct,
+      max_daily_loss_pct: normalized.max_daily_loss_pct,
+      max_drawdown_pct: normalized.max_drawdown_pct,
+      max_positions: normalized.max_positions,
       ...extras,
     };
   };
@@ -743,6 +757,14 @@ export default function StrategiesPage() {
         description: bot.description || "",
         domain_type: bot.domain_type,
         registry_status: bot.registry_status,
+        capital_base_usd: bot.capital_base_usd,
+        max_total_exposure_pct: bot.max_total_exposure_pct,
+        max_asset_exposure_pct: bot.max_asset_exposure_pct,
+        risk_profile: bot.risk_profile,
+        risk_per_trade_pct: bot.risk_per_trade_pct,
+        max_daily_loss_pct: bot.max_daily_loss_pct,
+        max_drawdown_pct: bot.max_drawdown_pct,
+        max_positions: bot.max_positions,
         name: bot.name,
         engine: bot.engine,
         mode: bot.mode,
@@ -1723,8 +1745,8 @@ export default function StrategiesPage() {
             <div className="mt-3 grid gap-3 xl:grid-cols-[1.5fr_1fr]">
               <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Nuevo bot — registry mínimo</p>
-                  <Badge variant="info">RTLRESE-26</Badge>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Nuevo bot — registry base</p>
+                  <Badge variant="info">RTLRESE-27</Badge>
                 </div>
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                   <div>
@@ -1756,6 +1778,18 @@ export default function StrategiesPage() {
                       <option value="futures">futures</option>
                     </Select>
                   </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Perfil de riesgo</p>
+                    <Select
+                      value={botRegistryDraft.risk_profile}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("risk_profile", e.target.value)}
+                    >
+                      <option value="conservative">conservative</option>
+                      <option value="medium">medium</option>
+                      <option value="aggressive">aggressive</option>
+                    </Select>
+                  </div>
                   <div className="flex items-end">
                     <Button
                       className="h-10 w-full"
@@ -1775,6 +1809,93 @@ export default function StrategiesPage() {
                     disabled={role !== "admin" || botCreateBusy}
                     onChange={(e) => updateBotRegistryDraftField("description", e.target.value)}
                   />
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-4">
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Capital base USD</p>
+                    <Input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={String(botRegistryDraft.capital_base_usd)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("capital_base_usd", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Exposición total %</p>
+                    <Input
+                      type="number"
+                      min="0.01"
+                      max="100"
+                      step="0.01"
+                      value={String(botRegistryDraft.max_total_exposure_pct)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("max_total_exposure_pct", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Exposición por activo %</p>
+                    <Input
+                      type="number"
+                      min="0.01"
+                      max="100"
+                      step="0.01"
+                      value={String(botRegistryDraft.max_asset_exposure_pct)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("max_asset_exposure_pct", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Posiciones máximas</p>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={String(botRegistryDraft.max_positions)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("max_positions", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Riesgo por trade %</p>
+                    <Input
+                      type="number"
+                      min="0.01"
+                      max="100"
+                      step="0.01"
+                      value={String(botRegistryDraft.risk_per_trade_pct)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("risk_per_trade_pct", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Pérdida diaria %</p>
+                    <Input
+                      type="number"
+                      min="0.01"
+                      max="100"
+                      step="0.01"
+                      value={String(botRegistryDraft.max_daily_loss_pct)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("max_daily_loss_pct", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Drawdown %</p>
+                    <Input
+                      type="number"
+                      min="0.01"
+                      max="100"
+                      step="0.01"
+                      value={String(botRegistryDraft.max_drawdown_pct)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("max_drawdown_pct", e.target.value)}
+                    />
+                  </div>
+                  <div className="rounded border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-400">
+                    {BOT_RISK_PROFILE_HELP[botRegistryDraft.risk_profile]}
+                  </div>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button
@@ -1806,7 +1927,7 @@ export default function StrategiesPage() {
                   </Button>
                 </div>
                 <p className="mt-2 text-[11px] text-slate-400">
-                  Este bloque crea identidad persistente del bot. No configura aún capital, símbolos, strategy pool ni lifecycle.
+                  Este bloque fija identidad, capital base y límites mínimos por bot. Deja fuera symbols, strategy pool canónico, lifecycle y multi-symbol.
                 </p>
               </div>
 
@@ -1872,8 +1993,17 @@ export default function StrategiesPage() {
                               <div className="mt-1 flex flex-wrap gap-1">
                                 <Badge variant={bot.domain_type === "futures" ? "warn" : "info"}>{bot.domain_type}</Badge>
                                 <Badge variant={registryArchived ? "neutral" : "success"}>{bot.registry_status}</Badge>
+                                <Badge variant={bot.risk_profile === "aggressive" ? "warn" : bot.risk_profile === "conservative" ? "info" : "neutral"}>
+                                  {bot.risk_profile}
+                                </Badge>
                               </div>
                               {bot.alias ? <p className="truncate text-[10px] text-slate-500">@{bot.alias}</p> : null}
+                              <p className="mt-1 text-[10px] text-slate-400">
+                                Cap: <strong>{fmtNum(bot.capital_base_usd)}</strong> USD · Expo: <strong>{fmtPct(bot.max_total_exposure_pct / 100)}</strong>
+                              </p>
+                              <p className="text-[10px] text-slate-500">
+                                Asset cap: {fmtPct(bot.max_asset_exposure_pct / 100)} · Risk/trade: {fmtPct(bot.risk_per_trade_pct / 100)} · Max pos: {bot.max_positions}
+                              </p>
                             </div>
                           </TD>
                           <TD className="whitespace-nowrap">{bot.engine}</TD>
@@ -1975,6 +2105,105 @@ export default function StrategiesPage() {
                                       />
                                     </div>
                                   </div>
+                                  <div className="grid gap-2 md:grid-cols-2">
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Capital base USD</p>
+                                      <Input
+                                        type="number"
+                                        min="0.01"
+                                        step="0.01"
+                                        value={String(registryDraft.capital_base_usd)}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "capital_base_usd", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Perfil de riesgo</p>
+                                      <Select
+                                        value={registryDraft.risk_profile}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "risk_profile", e.target.value)}
+                                      >
+                                        <option value="conservative">conservative</option>
+                                        <option value="medium">medium</option>
+                                        <option value="aggressive">aggressive</option>
+                                      </Select>
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Exposición total %</p>
+                                      <Input
+                                        type="number"
+                                        min="0.01"
+                                        max="100"
+                                        step="0.01"
+                                        value={String(registryDraft.max_total_exposure_pct)}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_total_exposure_pct", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Exposición por activo %</p>
+                                      <Input
+                                        type="number"
+                                        min="0.01"
+                                        max="100"
+                                        step="0.01"
+                                        value={String(registryDraft.max_asset_exposure_pct)}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_asset_exposure_pct", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Riesgo por trade %</p>
+                                      <Input
+                                        type="number"
+                                        min="0.01"
+                                        max="100"
+                                        step="0.01"
+                                        value={String(registryDraft.risk_per_trade_pct)}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "risk_per_trade_pct", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Pérdida diaria %</p>
+                                      <Input
+                                        type="number"
+                                        min="0.01"
+                                        max="100"
+                                        step="0.01"
+                                        value={String(registryDraft.max_daily_loss_pct)}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_daily_loss_pct", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Drawdown %</p>
+                                      <Input
+                                        type="number"
+                                        min="0.01"
+                                        max="100"
+                                        step="0.01"
+                                        value={String(registryDraft.max_drawdown_pct)}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_drawdown_pct", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Posiciones máximas</p>
+                                      <Input
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        value={String(registryDraft.max_positions)}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_positions", e.target.value)}
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="rounded border border-slate-800 bg-slate-950/50 p-2 text-[10px] text-slate-400">
+                                    {BOT_RISK_PROFILE_HELP[registryDraft.risk_profile]}
+                                  </div>
                                   <div className="flex flex-wrap gap-2">
                                     <Button
                                       size="sm"
@@ -2017,7 +2246,7 @@ export default function StrategiesPage() {
                                     )}
                                   </div>
                                   <p className="text-[10px] text-slate-400">
-                                    `bot_id` estable: {bot.bot_id || bot.id}. Este panel solo edita identidad/dominio/archivado.
+                                    `bot_id` estable: {bot.bot_id || bot.id}. Este panel edita identidad, capital base y límites mínimos del registry. `engine/mode` siguen abajo como config operativa existente.
                                   </p>
                                 </div>
                               </details>

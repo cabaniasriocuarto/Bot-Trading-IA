@@ -1,6 +1,29 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-14
+Fecha: 2026-04-16
+
+## Siguiente bloque exacto despues de RTLRESE-27 - 2026-04-16
+- [x] Extender Bot Registry con configuracion base operativa por bot:
+  - `capital_base_usd`
+  - `risk_profile`
+  - limites minimos de exposicion, perdida y capacidad
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - persistencia real en el registry ya existente
+  - validaciones explicitas
+  - UI minima conectada al backend real
+  - tests reales del bloque
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-28` y resolver solo:
+    - asignacion de simbolos por bot
+    - validaciones minimas de simbolos segun `domain_type`
+    - superficie minima de UI para ver/agregar/quitar simbolos del bot
+  - mantener fuera de ese bloque:
+    - strategy pool (`RTLRESE-29`)
+    - lifecycle (`RTLRESE-25`)
+    - multi-symbol runtime (`RTLOPS-72+`)
+    - live console
+    - reglas avanzadas de portfolio por simbolo
 
 ## Siguiente bloque exacto despues de RTLRESE-26 - 2026-04-14
 - [x] Dejar Bot Registry con identidad real y persistente:

@@ -19,6 +19,37 @@ export const botRegistryFormSchema = z.object({
     .max(280, "La descripción no puede superar 280 caracteres.")
     .transform((value) => value || ""),
   domain_type: z.enum(["spot", "futures"]),
+  capital_base_usd: z.coerce.number().gt(0, "El capital base debe ser > 0."),
+  max_total_exposure_pct: z.coerce
+    .number()
+    .gt(0, "La exposición total debe ser > 0.")
+    .lte(100, "La exposición total no puede superar 100%."),
+  max_asset_exposure_pct: z.coerce
+    .number()
+    .gt(0, "La exposición por activo debe ser > 0.")
+    .lte(100, "La exposición por activo no puede superar 100%."),
+  risk_profile: z.enum(["conservative", "medium", "aggressive"]),
+  risk_per_trade_pct: z.coerce
+    .number()
+    .gt(0, "El riesgo por trade debe ser > 0.")
+    .lte(100, "El riesgo por trade no puede superar 100%."),
+  max_daily_loss_pct: z.coerce
+    .number()
+    .gt(0, "La pérdida diaria máxima debe ser > 0.")
+    .lte(100, "La pérdida diaria máxima no puede superar 100%."),
+  max_drawdown_pct: z.coerce
+    .number()
+    .gt(0, "El drawdown máximo debe ser > 0.")
+    .lte(100, "El drawdown máximo no puede superar 100%."),
+  max_positions: z.coerce.number().int().gte(1, "Las posiciones máximas deben ser >= 1."),
+}).superRefine((value, ctx) => {
+  if (value.max_asset_exposure_pct > value.max_total_exposure_pct) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["max_asset_exposure_pct"],
+      message: "La exposición por activo no puede superar la exposición total.",
+    });
+  }
 });
 
 export type BotRegistryDraft = z.input<typeof botRegistryFormSchema>;
@@ -29,7 +60,21 @@ export const DEFAULT_BOT_REGISTRY_DRAFT: BotRegistryDraft = {
   alias: "",
   description: "",
   domain_type: "spot",
+  capital_base_usd: "10000",
+  max_total_exposure_pct: "65",
+  max_asset_exposure_pct: "25",
+  risk_profile: "medium",
+  risk_per_trade_pct: "0.5",
+  max_daily_loss_pct: "3",
+  max_drawdown_pct: "15",
+  max_positions: "10",
 };
+
+function asDraftNumber(value: unknown, fallback: string): string {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  return String(numeric);
+}
 
 export function normalizeBotRegistryDraft(draft: BotRegistryDraft): BotRegistryFormData {
   return botRegistryFormSchema.parse(draft);
@@ -41,6 +86,14 @@ export function buildBotRegistryDraft(bot?: Partial<BotInstance> | null): BotReg
     alias: String(bot?.alias || "").trim(),
     description: String(bot?.description || "").trim(),
     domain_type: bot?.domain_type === "futures" ? "futures" : "spot",
+    capital_base_usd: asDraftNumber(bot?.capital_base_usd, "10000"),
+    max_total_exposure_pct: asDraftNumber(bot?.max_total_exposure_pct, "65"),
+    max_asset_exposure_pct: asDraftNumber(bot?.max_asset_exposure_pct, "25"),
+    risk_profile: bot?.risk_profile === "conservative" || bot?.risk_profile === "aggressive" ? bot.risk_profile : "medium",
+    risk_per_trade_pct: asDraftNumber(bot?.risk_per_trade_pct, "0.5"),
+    max_daily_loss_pct: asDraftNumber(bot?.max_daily_loss_pct, "3"),
+    max_drawdown_pct: asDraftNumber(bot?.max_drawdown_pct, "15"),
+    max_positions: asDraftNumber(bot?.max_positions, "10"),
   };
 }
 
@@ -49,4 +102,3 @@ export function getBotDisplayName(bot: Pick<BotInstance, "display_name" | "name"
   if (displayName) return displayName;
   return String(bot.name || "").trim() || "Bot";
 }
-

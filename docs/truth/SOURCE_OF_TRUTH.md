@@ -1,6 +1,65 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-14
+Fecha de actualizacion: 2026-04-16
+
+## RTLRESE-27 - Bot Registry con capital base, risk profile y configuracion operativa minima por bot - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - la entidad `Bot` ya no conserva solo identidad persistente;
+  - ahora tambien persiste una configuracion base operativa por bot para capital, riesgo y limites minimos previos a `RTLRESE-28+`.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `capital_base_usd`
+  - `risk_profile`
+    - `conservative`
+    - `medium`
+    - `aggressive`
+  - `max_total_exposure_pct`
+  - `max_asset_exposure_pct`
+  - `risk_per_trade_pct`
+  - `max_daily_loss_pct`
+  - `max_drawdown_pct`
+  - `max_positions`
+- Fuente de persistencia real usada por este bloque:
+  - se mantiene la misma capa ya usada por `RTLRESE-26` en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - no se crea storage paralelo ni tablas nuevas para el registry del bot.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - los endpoints del registry ahora aceptan y devuelven identidad + capital/risk/base config minima en un mismo contrato coherente.
+- Reglas canonicas fijadas en este bloque:
+  - `capital_base_usd > 0`
+  - `risk_profile` queda acotado a `conservative|medium|aggressive`
+  - `max_total_exposure_pct`, `max_asset_exposure_pct`, `risk_per_trade_pct`, `max_daily_loss_pct` y `max_drawdown_pct` deben quedar en `0 < x <= 100`
+  - `max_positions >= 1`
+  - `max_asset_exposure_pct` no puede exceder `max_total_exposure_pct`
+  - el registry resuelve defaults minimos coherentes con el perfil de riesgo elegido cuando el payload no trae todos los limites explicitos.
+- Configuracion base operativa usada en este bloque:
+  - `engine`, `mode` y `status` siguen siendo la base operativa ya existente del repo;
+  - este bloque no reemplaza esa base: la complementa con presupuesto y limites minimos por bot.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - formulario de alta con `risk_profile`, capital base y limites minimos
+    - listado visible con resumen de capital/riesgo por bot
+    - edicion inline de la configuracion base del registry
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema zod real con coercion numerica y validacion cruzada de exposicion
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con la nueva base canonica de configuracion por bot
+- Lo que este bloque NO implementa:
+  - symbols assignment
+  - strategy pool
+  - seleccion por simbolo
+  - multi-symbol runtime
+  - lifecycle entre entornos
+  - live console
+  - configuracion avanzada de capital/riesgo por simbolo o por estrategia
+- Conclusion operativa:
+  - desde este bloque, el bot ya existe como entidad configurable minima mas alla de su identidad;
+  - el siguiente bloque debe colgarse de esta base para abrir asignacion de simbolos, no volver a redefinir budget/risk base.
 
 ## RTLRESE-26 - Bot Registry canonico con identidad persistente y soft-archive - 2026-04-14
 

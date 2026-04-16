@@ -10,6 +10,7 @@ export type BotPolicyMode = "shadow" | "paper" | "testnet" | "live";
 export type ResearchEvidenceMode = "backtest" | "shadow" | "paper" | "testnet";
 export type BotRegistryDomainType = "spot" | "futures";
 export type BotRegistryStatus = "active" | "archived";
+export type BotRiskProfile = "conservative" | "medium" | "aggressive";
 
 export interface HealthResponse {
   ok: boolean;
@@ -255,6 +256,14 @@ export interface BotInstance {
   domain_type: BotRegistryDomainType;
   registry_status: BotRegistryStatus;
   archived_at?: string | null;
+  capital_base_usd: number;
+  max_total_exposure_pct: number;
+  max_asset_exposure_pct: number;
+  risk_profile: BotRiskProfile;
+  risk_per_trade_pct: number;
+  max_daily_loss_pct: number;
+  max_drawdown_pct: number;
+  max_positions: number;
   name: string;
   engine: string;
   mode: BotPolicyMode;

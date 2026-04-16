@@ -1,5 +1,49 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-16
+
+### RTLRESE-27 - Bot Registry con capital base, perfil de riesgo y configuracion minima por bot
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` extiende el registry del bot con:
+    - `capital_base_usd`
+    - `risk_profile = conservative|medium|aggressive`
+    - `max_total_exposure_pct`
+    - `max_asset_exposure_pct`
+    - `risk_per_trade_pct`
+    - `max_daily_loss_pct`
+    - `max_drawdown_pct`
+    - `max_positions`
+  - el backend persiste esos campos en la misma capa canonica de bots;
+  - agrega validaciones server-side para montos, porcentajes, enteros y consistencia entre exposicion total y exposicion por activo;
+  - cuando faltan limites explicitos, aplica defaults minimos coherentes con el `risk_profile`.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots` y `PATCH /api/v1/bots/{bot_id}` ahora aceptan capital/risk/base config minima;
+  - `GET /api/v1/bots` y `GET /api/v1/bots/{bot_id}` devuelven esos campos persistidos.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - formulario minimo de alta con capital base y limites de riesgo
+    - edicion inline de esos campos
+    - resumen visual de capital/risk profile por bot
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema y helpers para el draft extendido
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con los nuevos campos
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cobertura minima para normalizacion numerica y validacion de exposicion
+- Tests corridos:
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "test_bots_multi_instance_endpoints"` -> PASS
+  - `npm.cmd exec vitest run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-28` symbols assignment
+  - `RTLRESE-29` strategy pool
+  - `RTLRESE-30` gobierno avanzado
+  - `RTLRESE-31` contratos extensos adicionales
+  - `RTLOPS-72+` multi-symbol/runtime
+  - lifecycle y live console
+
 ## 2026-04-14
 
 ### RTLRESE-26 - Bot Registry con identidad editable, dominio y archivado persistente

@@ -787,6 +787,14 @@ class BotCreateBody(BaseModel):
     description: str | None = None
     domain_type: str | None = None
     registry_status: str | None = None
+    capital_base_usd: float | None = None
+    max_total_exposure_pct: float | None = None
+    max_asset_exposure_pct: float | None = None
+    risk_profile: str | None = None
+    risk_per_trade_pct: float | None = None
+    max_daily_loss_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    max_positions: int | None = None
     name: str | None = None
     engine: str = "bandit_thompson"
     mode: Literal["shadow", "paper", "testnet", "live"] = "paper"
@@ -802,6 +810,14 @@ class BotPatchBody(BaseModel):
     description: str | None = None
     domain_type: str | None = None
     registry_status: str | None = None
+    capital_base_usd: float | None = None
+    max_total_exposure_pct: float | None = None
+    max_asset_exposure_pct: float | None = None
+    risk_profile: str | None = None
+    risk_per_trade_pct: float | None = None
+    max_daily_loss_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    max_positions: int | None = None
     name: str | None = None
     engine: str | None = None
     mode: Literal["shadow", "paper", "testnet", "live"] | None = None
@@ -832,6 +848,39 @@ class BotBulkPatchBody(BaseModel):
 
 class BotStartBody(BaseModel):
     bot_id: str | None = None
+
+
+BOT_DEFAULT_CAPITAL_BASE_USD = 10000.0
+BOT_DEFAULT_RISK_PROFILE = "medium"
+BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
+    "conservative": {
+        "risk_profile": "conservative",
+        "max_total_exposure_pct": 40.0,
+        "max_asset_exposure_pct": 15.0,
+        "risk_per_trade_pct": 0.25,
+        "max_daily_loss_pct": 1.0,
+        "max_drawdown_pct": 8.0,
+        "max_positions": 5,
+    },
+    "medium": {
+        "risk_profile": "medium",
+        "max_total_exposure_pct": 65.0,
+        "max_asset_exposure_pct": 25.0,
+        "risk_per_trade_pct": 0.5,
+        "max_daily_loss_pct": 3.0,
+        "max_drawdown_pct": 15.0,
+        "max_positions": 10,
+    },
+    "aggressive": {
+        "risk_profile": "aggressive",
+        "max_total_exposure_pct": 85.0,
+        "max_asset_exposure_pct": 35.0,
+        "risk_per_trade_pct": 1.0,
+        "max_daily_loss_pct": 5.0,
+        "max_drawdown_pct": 22.0,
+        "max_positions": 20,
+    },
+}
 
 
 class LivePreflightRunBody(BaseModel):
@@ -3657,6 +3706,18 @@ def risk_hooks(context):
         return domain
 
     @staticmethod
+    def _normalize_bot_risk_profile(value: str | None) -> str:
+        profile = str(value or BOT_DEFAULT_RISK_PROFILE).strip().lower()
+        if profile not in BOT_RISK_PROFILE_DEFAULTS:
+            return BOT_DEFAULT_RISK_PROFILE
+        return profile
+
+    @classmethod
+    def _bot_risk_profile_defaults(cls, risk_profile: str | None) -> dict[str, float | int | str]:
+        profile = cls._normalize_bot_risk_profile(risk_profile)
+        return dict(BOT_RISK_PROFILE_DEFAULTS.get(profile) or BOT_RISK_PROFILE_DEFAULTS[BOT_DEFAULT_RISK_PROFILE])
+
+    @staticmethod
     def _normalize_bot_engine(value: str | None) -> str:
         engine = str(value or "bandit_thompson").strip()
         return engine or "bandit_thompson"
@@ -3708,6 +3769,129 @@ def risk_hooks(context):
             raise HTTPException(status_code=400, detail="registry_status debe ser 'active' o 'archived'")
         return normalized
 
+    def _validate_bot_risk_profile(self, value: Any) -> str:
+        profile = str(value or "").strip().lower()
+        if not profile:
+            raise HTTPException(status_code=400, detail="risk_profile es requerido")
+        normalized = self._normalize_bot_risk_profile(profile)
+        if normalized != profile:
+            raise HTTPException(status_code=400, detail="risk_profile debe ser 'conservative', 'medium' o 'aggressive'")
+        return normalized
+
+    @staticmethod
+    def _validate_bot_positive_number(value: Any, *, field_name: str) -> float:
+        try:
+            number = float(value)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser numerico")
+        if number <= 0:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser > 0")
+        return float(number)
+
+    @staticmethod
+    def _validate_bot_percentage(value: Any, *, field_name: str) -> float:
+        try:
+            number = float(value)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser numerico")
+        if number < 0 or number > 100:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe estar entre 0 y 100")
+        if number == 0:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser > 0")
+        return float(number)
+
+    @staticmethod
+    def _validate_bot_positive_int(value: Any, *, field_name: str) -> int:
+        try:
+            number = int(value)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser entero")
+        if number < 1:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser >= 1")
+        return int(number)
+
+    @staticmethod
+    def _bot_float_or_default(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _bot_int_or_default(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    def _resolve_bot_registry_base_config(
+        self,
+        *,
+        current: dict[str, Any] | None = None,
+        capital_base_usd: Any = None,
+        max_total_exposure_pct: Any = None,
+        max_asset_exposure_pct: Any = None,
+        risk_profile: Any = None,
+        risk_per_trade_pct: Any = None,
+        max_daily_loss_pct: Any = None,
+        max_drawdown_pct: Any = None,
+        max_positions: Any = None,
+    ) -> dict[str, Any]:
+        current_row = current if isinstance(current, dict) else {}
+        profile = (
+            self._validate_bot_risk_profile(risk_profile)
+            if risk_profile is not None
+            else self._normalize_bot_risk_profile(str(current_row.get("risk_profile") or BOT_DEFAULT_RISK_PROFILE))
+        )
+        defaults = self._bot_risk_profile_defaults(profile)
+        resolved = {
+            "risk_profile": profile,
+            "capital_base_usd": self._validate_bot_positive_number(
+                capital_base_usd if capital_base_usd is not None else current_row.get("capital_base_usd", BOT_DEFAULT_CAPITAL_BASE_USD),
+                field_name="capital_base_usd",
+            ),
+            "max_total_exposure_pct": self._validate_bot_percentage(
+                max_total_exposure_pct
+                if max_total_exposure_pct is not None
+                else current_row.get("max_total_exposure_pct", defaults.get("max_total_exposure_pct")),
+                field_name="max_total_exposure_pct",
+            ),
+            "max_asset_exposure_pct": self._validate_bot_percentage(
+                max_asset_exposure_pct
+                if max_asset_exposure_pct is not None
+                else current_row.get("max_asset_exposure_pct", defaults.get("max_asset_exposure_pct")),
+                field_name="max_asset_exposure_pct",
+            ),
+            "risk_per_trade_pct": self._validate_bot_percentage(
+                risk_per_trade_pct
+                if risk_per_trade_pct is not None
+                else current_row.get("risk_per_trade_pct", defaults.get("risk_per_trade_pct")),
+                field_name="risk_per_trade_pct",
+            ),
+            "max_daily_loss_pct": self._validate_bot_percentage(
+                max_daily_loss_pct
+                if max_daily_loss_pct is not None
+                else current_row.get("max_daily_loss_pct", defaults.get("max_daily_loss_pct")),
+                field_name="max_daily_loss_pct",
+            ),
+            "max_drawdown_pct": self._validate_bot_percentage(
+                max_drawdown_pct
+                if max_drawdown_pct is not None
+                else current_row.get("max_drawdown_pct", defaults.get("max_drawdown_pct")),
+                field_name="max_drawdown_pct",
+            ),
+            "max_positions": self._validate_bot_positive_int(
+                max_positions if max_positions is not None else current_row.get("max_positions", defaults.get("max_positions")),
+                field_name="max_positions",
+            ),
+        }
+        if float(resolved["max_asset_exposure_pct"]) > float(resolved["max_total_exposure_pct"]):
+            raise HTTPException(
+                status_code=400,
+                detail="max_asset_exposure_pct no puede superar max_total_exposure_pct",
+            )
+        return resolved
+
     def _next_bot_id(self, rows: list[dict[str, Any]]) -> str:
         max_n = 0
         for row in rows:
@@ -3724,6 +3908,8 @@ def risk_hooks(context):
     def _normalize_bot_row(self, row: dict[str, Any], *, strategy_ids: set[str] | None = None) -> dict[str, Any]:
         if not isinstance(row, dict):
             row = {}
+        risk_profile = self._normalize_bot_risk_profile(str(row.get("risk_profile") or BOT_DEFAULT_RISK_PROFILE))
+        risk_defaults = self._bot_risk_profile_defaults(risk_profile)
         sid_allow = strategy_ids if isinstance(strategy_ids, set) else None
         pool_ids_raw = row.get("pool_strategy_ids") if isinstance(row.get("pool_strategy_ids"), list) else []
         pool_strategy_ids: list[str] = []
@@ -3764,6 +3950,10 @@ def risk_hooks(context):
         if registry_status == "archived":
             legacy_status = "archived"
         archived_at = archived_at_raw or (str(row.get("updated_at") or now_iso) if registry_status == "archived" else None)
+        total_exposure_pct = min(
+            100.0,
+            max(0.01, self._bot_float_or_default(row.get("max_total_exposure_pct"), float(risk_defaults.get("max_total_exposure_pct") or 65.0))),
+        )
         return {
             "id": bot_id,
             "bot_id": bot_id,
@@ -3774,6 +3964,29 @@ def risk_hooks(context):
             "domain_type": self._normalize_bot_domain_type(str(row.get("domain_type") or "spot")),
             "registry_status": registry_status,
             "archived_at": archived_at,
+            "capital_base_usd": round(max(0.01, self._bot_float_or_default(row.get("capital_base_usd"), BOT_DEFAULT_CAPITAL_BASE_USD)), 6),
+            "max_total_exposure_pct": round(total_exposure_pct, 4),
+            "max_asset_exposure_pct": round(
+                min(
+                    total_exposure_pct,
+                    max(0.01, self._bot_float_or_default(row.get("max_asset_exposure_pct"), float(risk_defaults.get("max_asset_exposure_pct") or 25.0))),
+                ),
+                4,
+            ),
+            "risk_profile": risk_profile,
+            "risk_per_trade_pct": round(
+                min(100.0, max(0.0001, self._bot_float_or_default(row.get("risk_per_trade_pct"), float(risk_defaults.get("risk_per_trade_pct") or 0.5)))),
+                4,
+            ),
+            "max_daily_loss_pct": round(
+                min(100.0, max(0.0001, self._bot_float_or_default(row.get("max_daily_loss_pct"), float(risk_defaults.get("max_daily_loss_pct") or 3.0)))),
+                4,
+            ),
+            "max_drawdown_pct": round(
+                min(100.0, max(0.0001, self._bot_float_or_default(row.get("max_drawdown_pct"), float(risk_defaults.get("max_drawdown_pct") or 15.0)))),
+                4,
+            ),
+            "max_positions": max(1, self._bot_int_or_default(row.get("max_positions"), int(risk_defaults.get("max_positions") or 10))),
             "engine": self._normalize_bot_engine(str(row.get("engine") or "bandit_thompson")),
             "mode": self._normalize_bot_mode(str(row.get("mode") or "paper")),
             "status": legacy_status,
@@ -4770,6 +4983,14 @@ def risk_hooks(context):
         description: str | None = None,
         domain_type: str | None = None,
         registry_status: str | None = None,
+        capital_base_usd: float | None = None,
+        max_total_exposure_pct: float | None = None,
+        max_asset_exposure_pct: float | None = None,
+        risk_profile: str | None = None,
+        risk_per_trade_pct: float | None = None,
+        max_daily_loss_pct: float | None = None,
+        max_drawdown_pct: float | None = None,
+        max_positions: int | None = None,
         name: str | None = None,
         engine: str = "bandit_thompson",
         mode: str = "paper",
@@ -4793,6 +5014,16 @@ def risk_hooks(context):
         effective_status = self._normalize_bot_status(status)
         if effective_registry_status == "archived":
             effective_status = "archived"
+        base_config = self._resolve_bot_registry_base_config(
+            capital_base_usd=capital_base_usd,
+            max_total_exposure_pct=max_total_exposure_pct,
+            max_asset_exposure_pct=max_asset_exposure_pct,
+            risk_profile=risk_profile,
+            risk_per_trade_pct=risk_per_trade_pct,
+            max_daily_loss_pct=max_daily_loss_pct,
+            max_drawdown_pct=max_drawdown_pct,
+            max_positions=max_positions,
+        )
         row = self._normalize_bot_row(
             {
                 "id": self._next_bot_id(rows),
@@ -4809,6 +5040,7 @@ def risk_hooks(context):
                 "pool_strategy_ids": pool_strategy_ids or [],
                 "universe": universe or [],
                 "notes": notes or "",
+                **base_config,
                 "created_at": now_iso,
                 "updated_at": now_iso,
             },
@@ -4828,6 +5060,8 @@ def risk_hooks(context):
                 "pool_size": len(row["pool_strategy_ids"]),
                 "domain_type": row["domain_type"],
                 "registry_status": row["registry_status"],
+                "risk_profile": row["risk_profile"],
+                "capital_base_usd": row["capital_base_usd"],
             },
         )
         return row
@@ -4841,6 +5075,14 @@ def risk_hooks(context):
         description: str | None = None,
         domain_type: str | None = None,
         registry_status: str | None = None,
+        capital_base_usd: float | None = None,
+        max_total_exposure_pct: float | None = None,
+        max_asset_exposure_pct: float | None = None,
+        risk_profile: str | None = None,
+        risk_per_trade_pct: float | None = None,
+        max_daily_loss_pct: float | None = None,
+        max_drawdown_pct: float | None = None,
+        max_positions: int | None = None,
         name: str | None = None,
         engine: str | None = None,
         mode: str | None = None,
@@ -4886,6 +5128,32 @@ def risk_hooks(context):
                 if str(patched.get("status") or "").strip().lower() == "archived":
                     patched["status"] = "active"
                 patched["archived_at"] = None
+        if any(
+            value is not None
+            for value in (
+                capital_base_usd,
+                max_total_exposure_pct,
+                max_asset_exposure_pct,
+                risk_profile,
+                risk_per_trade_pct,
+                max_daily_loss_pct,
+                max_drawdown_pct,
+                max_positions,
+            )
+        ):
+            patched.update(
+                self._resolve_bot_registry_base_config(
+                    current=current,
+                    capital_base_usd=capital_base_usd,
+                    max_total_exposure_pct=max_total_exposure_pct,
+                    max_asset_exposure_pct=max_asset_exposure_pct,
+                    risk_profile=risk_profile,
+                    risk_per_trade_pct=risk_per_trade_pct,
+                    max_daily_loss_pct=max_daily_loss_pct,
+                    max_drawdown_pct=max_drawdown_pct,
+                    max_positions=max_positions,
+                )
+            )
         if pool_strategy_ids is not None:
             patched["pool_strategy_ids"] = pool_strategy_ids
         if universe is not None:
@@ -4909,6 +5177,8 @@ def risk_hooks(context):
                 "mode": rows[idx].get("mode"),
                 "engine": rows[idx].get("engine"),
                 "domain_type": rows[idx].get("domain_type"),
+                "risk_profile": rows[idx].get("risk_profile"),
+                "capital_base_usd": rows[idx].get("capital_base_usd"),
             },
         )
         return rows[idx]
@@ -12011,6 +12281,14 @@ def create_app() -> FastAPI:
             description=body.description,
             domain_type=body.domain_type,
             registry_status=body.registry_status,
+            capital_base_usd=body.capital_base_usd,
+            max_total_exposure_pct=body.max_total_exposure_pct,
+            max_asset_exposure_pct=body.max_asset_exposure_pct,
+            risk_profile=body.risk_profile,
+            risk_per_trade_pct=body.risk_per_trade_pct,
+            max_daily_loss_pct=body.max_daily_loss_pct,
+            max_drawdown_pct=body.max_drawdown_pct,
+            max_positions=body.max_positions,
             name=body.name,
             engine=body.engine,
             mode=body.mode,
@@ -12035,6 +12313,14 @@ def create_app() -> FastAPI:
             description=body.description,
             domain_type=body.domain_type,
             registry_status=body.registry_status,
+            capital_base_usd=body.capital_base_usd,
+            max_total_exposure_pct=body.max_total_exposure_pct,
+            max_asset_exposure_pct=body.max_asset_exposure_pct,
+            risk_profile=body.risk_profile,
+            risk_per_trade_pct=body.risk_per_trade_pct,
+            max_daily_loss_pct=body.max_daily_loss_pct,
+            max_drawdown_pct=body.max_drawdown_pct,
+            max_positions=body.max_positions,
             name=body.name,
             engine=body.engine,
             mode=body.mode,
