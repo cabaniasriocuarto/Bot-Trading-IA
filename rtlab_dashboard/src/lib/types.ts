@@ -8,6 +8,8 @@ export type LegacyMockRuntimeAlias = "MOCK";
 export type TradingMode = RuntimeMode | LegacyMockRuntimeAlias;
 export type BotPolicyMode = "shadow" | "paper" | "testnet" | "live";
 export type ResearchEvidenceMode = "backtest" | "shadow" | "paper" | "testnet";
+export type BotRegistryDomainType = "spot" | "futures";
+export type BotRegistryStatus = "active" | "archived";
 
 export interface HealthResponse {
   ok: boolean;
@@ -246,6 +248,13 @@ export interface BotInstanceStrategyRef {
 
 export interface BotInstance {
   id: string;
+  bot_id?: string;
+  display_name: string;
+  alias?: string | null;
+  description?: string | null;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  archived_at?: string | null;
   name: string;
   engine: string;
   mode: BotPolicyMode;

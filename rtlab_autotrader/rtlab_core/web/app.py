@@ -782,6 +782,11 @@ class RunsBulkBody(BaseModel):
 
 
 class BotCreateBody(BaseModel):
+    display_name: str | None = None
+    alias: str | None = None
+    description: str | None = None
+    domain_type: str | None = None
+    registry_status: str | None = None
     name: str | None = None
     engine: str = "bandit_thompson"
     mode: Literal["shadow", "paper", "testnet", "live"] = "paper"
@@ -792,6 +797,11 @@ class BotCreateBody(BaseModel):
 
 
 class BotPatchBody(BaseModel):
+    display_name: str | None = None
+    alias: str | None = None
+    description: str | None = None
+    domain_type: str | None = None
+    registry_status: str | None = None
     name: str | None = None
     engine: str | None = None
     mode: Literal["shadow", "paper", "testnet", "live"] | None = None
@@ -3633,9 +3643,70 @@ def risk_hooks(context):
         return status
 
     @staticmethod
+    def _normalize_bot_registry_status(value: str | None) -> str:
+        status = str(value or "active").strip().lower()
+        if status not in {"active", "archived"}:
+            return "active"
+        return status
+
+    @staticmethod
+    def _normalize_bot_domain_type(value: str | None) -> str:
+        domain = str(value or "spot").strip().lower()
+        if domain not in {"spot", "futures"}:
+            return "spot"
+        return domain
+
+    @staticmethod
     def _normalize_bot_engine(value: str | None) -> str:
         engine = str(value or "bandit_thompson").strip()
         return engine or "bandit_thompson"
+
+    @staticmethod
+    def _validate_bot_display_name(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="display_name es requerido")
+        if len(text) < 3:
+            raise HTTPException(status_code=400, detail="display_name debe tener al menos 3 caracteres")
+        if len(text) > 80:
+            raise HTTPException(status_code=400, detail="display_name no puede superar 80 caracteres")
+        return text
+
+    @staticmethod
+    def _validate_bot_alias(value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if len(text) > 40:
+            raise HTTPException(status_code=400, detail="alias no puede superar 40 caracteres")
+        return text
+
+    @staticmethod
+    def _validate_bot_description(value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if len(text) > 280:
+            raise HTTPException(status_code=400, detail="description no puede superar 280 caracteres")
+        return text
+
+    def _validate_bot_domain_type(self, value: Any) -> str:
+        domain = str(value or "").strip().lower()
+        if not domain:
+            raise HTTPException(status_code=400, detail="domain_type es requerido")
+        normalized = self._normalize_bot_domain_type(domain)
+        if normalized != domain:
+            raise HTTPException(status_code=400, detail="domain_type debe ser 'spot' o 'futures'")
+        return normalized
+
+    def _validate_bot_registry_status(self, value: Any) -> str:
+        status = str(value or "").strip().lower()
+        if not status:
+            raise HTTPException(status_code=400, detail="registry_status es requerido")
+        normalized = self._normalize_bot_registry_status(status)
+        if normalized != status:
+            raise HTTPException(status_code=400, detail="registry_status debe ser 'active' o 'archived'")
+        return normalized
 
     def _next_bot_id(self, rows: list[dict[str, Any]]) -> str:
         max_n = 0
@@ -3675,12 +3746,37 @@ def risk_hooks(context):
             seen_universe.add(val)
             universe.append(val)
         now_iso = utc_now_iso()
+        bot_id = str(row.get("id") or "").strip() or "BOT-000000"
+        display_name = str(row.get("display_name") or row.get("name") or "").strip()
+        if len(display_name) < 3:
+            display_name = bot_id
+        display_name = display_name[:80] or bot_id
+        alias = str(row.get("alias") or "").strip()[:40] or None
+        description = str(row.get("description") or "").strip()[:280] or None
+        legacy_status = self._normalize_bot_status(str(row.get("status") or "active"))
+        archived_at_raw = str(row.get("archived_at") or "").strip()
+        registry_status = self._normalize_bot_registry_status(
+            str(
+                row.get("registry_status")
+                or ("archived" if legacy_status == "archived" or archived_at_raw else "active")
+            )
+        )
+        if registry_status == "archived":
+            legacy_status = "archived"
+        archived_at = archived_at_raw or (str(row.get("updated_at") or now_iso) if registry_status == "archived" else None)
         return {
-            "id": str(row.get("id") or "").strip() or "BOT-000000",
-            "name": str(row.get("name") or "AutoBot").strip()[:120] or "AutoBot",
+            "id": bot_id,
+            "bot_id": bot_id,
+            "display_name": display_name,
+            "name": display_name,
+            "alias": alias,
+            "description": description,
+            "domain_type": self._normalize_bot_domain_type(str(row.get("domain_type") or "spot")),
+            "registry_status": registry_status,
+            "archived_at": archived_at,
             "engine": self._normalize_bot_engine(str(row.get("engine") or "bandit_thompson")),
             "mode": self._normalize_bot_mode(str(row.get("mode") or "paper")),
-            "status": self._normalize_bot_status(str(row.get("status") or "active")),
+            "status": legacy_status,
             "pool_strategy_ids": pool_strategy_ids,
             "universe": universe,
             "notes": str(row.get("notes") or "")[:500],
@@ -3773,7 +3869,10 @@ def risk_hooks(context):
         default_row = self._normalize_bot_row(
             {
                 "id": "BOT-000001",
-                "name": "AutoBot Principal",
+                "display_name": "Bot Principal",
+                "name": "Bot Principal",
+                "domain_type": "spot",
+                "registry_status": "active",
                 "engine": "bandit_thompson",
                 "mode": "paper",
                 "status": "active",
@@ -3800,7 +3899,11 @@ def risk_hooks(context):
                 continue
             ref = {
                 "id": bot_id,
-                "name": str(bot.get("name") or bot_id),
+                "bot_id": bot_id,
+                "display_name": str(bot.get("display_name") or bot.get("name") or bot_id),
+                "name": str(bot.get("display_name") or bot.get("name") or bot_id),
+                "domain_type": self._normalize_bot_domain_type(str(bot.get("domain_type") or "spot")),
+                "registry_status": self._normalize_bot_registry_status(str(bot.get("registry_status") or "active")),
                 "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
                 "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
                 "status": self._normalize_bot_status(str(bot.get("status") or "")),
@@ -3812,7 +3915,7 @@ def risk_hooks(context):
                 refs = out.setdefault(sid, [])
                 refs.append(ref)
         for strategy_id, refs in out.items():
-            refs.sort(key=lambda row: (str(row.get("name") or ""), str(row.get("id") or "")))
+            refs.sort(key=lambda row: (str(row.get("display_name") or row.get("name") or ""), str(row.get("id") or "")))
             out[strategy_id] = refs
         return out
 
@@ -3886,7 +3989,11 @@ def risk_hooks(context):
                 continue
             bots_by_id[bid] = {
                 "id": bid,
-                "name": str(bot.get("name") or bid),
+                "bot_id": bid,
+                "display_name": str(bot.get("display_name") or bot.get("name") or bid),
+                "name": str(bot.get("display_name") or bot.get("name") or bid),
+                "domain_type": self._normalize_bot_domain_type(str(bot.get("domain_type") or "spot")),
+                "registry_status": self._normalize_bot_registry_status(str(bot.get("registry_status") or "active")),
                 "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
                 "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
                 "status": self._normalize_bot_status(str(bot.get("status") or "")),
@@ -3905,7 +4012,11 @@ def risk_hooks(context):
                             bid,
                             {
                                 "id": bid,
+                                "bot_id": bid,
+                                "display_name": bid,
                                 "name": bid,
+                                "domain_type": "spot",
+                                "registry_status": "active",
                                 "engine": "unknown",
                                 "mode": "unknown",
                                 "status": "unknown",
@@ -4642,30 +4753,59 @@ def risk_hooks(context):
                 else []
             ) or []
             out.append(payload)
-        out.sort(key=lambda item: (0 if str(item.get("status")) == "active" else 1, item.get("name", ""), item.get("id", "")))
+        out.sort(
+            key=lambda item: (
+                0 if str(item.get("registry_status") or "active") == "active" else 1,
+                str(item.get("display_name") or item.get("name") or ""),
+                str(item.get("id") or ""),
+            )
+        )
         return out
 
     def create_bot_instance(
         self,
         *,
-        name: str | None,
-        engine: str,
-        mode: str,
-        status: str,
-        pool_strategy_ids: list[str] | None,
-        universe: list[str] | None,
-        notes: str | None,
+        display_name: str | None = None,
+        alias: str | None = None,
+        description: str | None = None,
+        domain_type: str | None = None,
+        registry_status: str | None = None,
+        name: str | None = None,
+        engine: str = "bandit_thompson",
+        mode: str = "paper",
+        status: str = "active",
+        pool_strategy_ids: list[str] | None = None,
+        universe: list[str] | None = None,
+        notes: str | None = None,
     ) -> dict[str, Any]:
         rows = self.load_bots()
         valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
         now_iso = utc_now_iso()
+        identity_name = self._validate_bot_display_name(display_name if display_name is not None else name)
+        identity_alias = self._validate_bot_alias(alias)
+        identity_description = self._validate_bot_description(description)
+        identity_domain = self._validate_bot_domain_type(domain_type or "spot")
+        effective_registry_status = (
+            self._validate_bot_registry_status(registry_status)
+            if registry_status is not None
+            else ("archived" if self._normalize_bot_status(status) == "archived" else "active")
+        )
+        effective_status = self._normalize_bot_status(status)
+        if effective_registry_status == "archived":
+            effective_status = "archived"
         row = self._normalize_bot_row(
             {
                 "id": self._next_bot_id(rows),
-                "name": name or f"AutoBot {len(rows) + 1}",
+                "display_name": identity_name,
+                "name": identity_name,
+                "alias": identity_alias,
+                "description": identity_description,
+                "domain_type": identity_domain,
+                "registry_status": effective_registry_status,
+                "archived_at": now_iso if effective_registry_status == "archived" else None,
                 "engine": engine,
                 "mode": mode,
-                "status": status,
+                "status": effective_status,
                 "pool_strategy_ids": pool_strategy_ids or [],
                 "universe": universe or [],
                 "notes": notes or "",
@@ -4680,9 +4820,15 @@ def risk_hooks(context):
             event_type="bot_instance",
             severity="info",
             module="learning",
-            message=f"Bot creado: {row['id']} ({row['name']})",
+            message=f"Bot creado: {row['id']} ({row['display_name']})",
             related_ids=[row["id"]],
-            payload={"engine": row["engine"], "mode": row["mode"], "pool_size": len(row["pool_strategy_ids"])},
+            payload={
+                "engine": row["engine"],
+                "mode": row["mode"],
+                "pool_size": len(row["pool_strategy_ids"]),
+                "domain_type": row["domain_type"],
+                "registry_status": row["registry_status"],
+            },
         )
         return row
 
@@ -4690,6 +4836,11 @@ def risk_hooks(context):
         self,
         bot_id: str,
         *,
+        display_name: str | None = None,
+        alias: str | None = None,
+        description: str | None = None,
+        domain_type: str | None = None,
+        registry_status: str | None = None,
         name: str | None = None,
         engine: str | None = None,
         mode: str | None = None,
@@ -4705,14 +4856,36 @@ def risk_hooks(context):
         valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
         current = dict(rows[idx])
         patched = dict(current)
-        if name is not None:
-            patched["name"] = name
+        if display_name is not None or name is not None:
+            next_display_name = display_name if display_name is not None else name
+            validated_display_name = self._validate_bot_display_name(next_display_name)
+            patched["display_name"] = validated_display_name
+            patched["name"] = validated_display_name
+        if alias is not None:
+            patched["alias"] = self._validate_bot_alias(alias)
+        if description is not None:
+            patched["description"] = self._validate_bot_description(description)
+        if domain_type is not None:
+            patched["domain_type"] = self._validate_bot_domain_type(domain_type)
         if engine is not None:
             patched["engine"] = engine
         if mode is not None:
             patched["mode"] = mode
         if status is not None:
-            patched["status"] = status
+            effective_status = self._normalize_bot_status(status)
+            patched["status"] = effective_status
+            patched["registry_status"] = "archived" if effective_status == "archived" else "active"
+            patched["archived_at"] = utc_now_iso() if effective_status == "archived" else None
+        if registry_status is not None:
+            effective_registry_status = self._validate_bot_registry_status(registry_status)
+            patched["registry_status"] = effective_registry_status
+            if effective_registry_status == "archived":
+                patched["status"] = "archived"
+                patched["archived_at"] = utc_now_iso()
+            else:
+                if str(patched.get("status") or "").strip().lower() == "archived":
+                    patched["status"] = "active"
+                patched["archived_at"] = None
         if pool_strategy_ids is not None:
             patched["pool_strategy_ids"] = pool_strategy_ids
         if universe is not None:
@@ -4730,9 +4903,39 @@ def risk_hooks(context):
             module="learning",
             message=f"Bot actualizado: {bot_id}",
             related_ids=[bot_id],
-            payload={"status": rows[idx].get("status"), "mode": rows[idx].get("mode"), "engine": rows[idx].get("engine")},
+            payload={
+                "status": rows[idx].get("status"),
+                "registry_status": rows[idx].get("registry_status"),
+                "mode": rows[idx].get("mode"),
+                "engine": rows[idx].get("engine"),
+                "domain_type": rows[idx].get("domain_type"),
+            },
         )
         return rows[idx]
+
+    def get_bot_instance(
+        self,
+        bot_id: str,
+        *,
+        recommendations: list[dict[str, Any]] | None = None,
+        include_recent_logs: bool | None = False,
+        recent_logs_per_bot: int | None = 0,
+    ) -> dict[str, Any]:
+        items = self.list_bot_instances(
+            recommendations=recommendations,
+            include_recent_logs=include_recent_logs,
+            recent_logs_per_bot=recent_logs_per_bot,
+        )
+        item = next((row for row in items if str(row.get("id") or "") == str(bot_id or "").strip()), None)
+        if not item:
+            raise HTTPException(status_code=404, detail="BotInstance not found")
+        return item
+
+    def archive_bot_instance(self, bot_id: str) -> dict[str, Any]:
+        return self.patch_bot_instance(bot_id, registry_status="archived")
+
+    def restore_bot_instance(self, bot_id: str) -> dict[str, Any]:
+        return self.patch_bot_instance(bot_id, registry_status="active")
 
     def delete_bot_instance(self, bot_id: str) -> dict[str, Any]:
         rows = self.load_bots()
@@ -11710,6 +11913,7 @@ def create_app() -> FastAPI:
     def list_bots(
         response: Response,
         debug_perf: bool = Query(default=False),
+        registry_status: Literal["all", "active", "archived"] = Query(default="all"),
         recent_logs: bool | None = Query(default=None),
         recent_logs_per_bot: int | None = Query(default=None, ge=0, le=50),
         _: dict[str, str] = Depends(current_user),
@@ -11752,9 +11956,19 @@ def create_app() -> FastAPI:
                     },
                 )
 
+        filtered_payload = dict(payload)
+        if registry_status != "all":
+            filtered_items = [
+                row
+                for row in (payload.get("items") or [])
+                if str((row or {}).get("registry_status") or "active") == registry_status
+            ]
+            filtered_payload["items"] = filtered_items
+            filtered_payload["total"] = len(filtered_items)
+
         if not debug_perf:
-            return payload
-        out = dict(payload)
+            return filtered_payload
+        out = dict(filtered_payload)
         out["perf"] = {
             "cache": cache_state,
             "latency_ms": round(total_ms, 3),
@@ -11792,6 +12006,11 @@ def create_app() -> FastAPI:
         ensure_bot_live_mode_allowed(body.mode)
         ensure_bot_capacity_available()
         bot = store.create_bot_instance(
+            display_name=body.display_name,
+            alias=body.alias,
+            description=body.description,
+            domain_type=body.domain_type,
+            registry_status=body.registry_status,
             name=body.name,
             engine=body.engine,
             mode=body.mode,
@@ -11811,6 +12030,11 @@ def create_app() -> FastAPI:
         ensure_bot_live_mode_allowed(body.mode)
         bot = store.patch_bot_instance(
             bot_id,
+            display_name=body.display_name,
+            alias=body.alias,
+            description=body.description,
+            domain_type=body.domain_type,
+            registry_status=body.registry_status,
             name=body.name,
             engine=body.engine,
             mode=body.mode,
@@ -11823,6 +12047,43 @@ def create_app() -> FastAPI:
         recs = learning_service.load_all_recommendations()
         items = store.list_bot_instances(recommendations=recs)
         enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
+        return {"ok": True, "bot": enriched}
+
+    @app.get("/api/v1/bots/{bot_id}")
+    def get_bot(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        recs = learning_service.load_all_recommendations()
+        bot = store.get_bot_instance(
+            bot_id,
+            recommendations=recs,
+            include_recent_logs=False,
+            recent_logs_per_bot=0,
+        )
+        return {"bot": bot}
+
+    @app.post("/api/v1/bots/{bot_id}/archive")
+    def archive_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        bot = store.archive_bot_instance(bot_id)
+        _invalidate_bots_overview_cache()
+        recs = learning_service.load_all_recommendations()
+        enriched = store.get_bot_instance(
+            bot_id,
+            recommendations=recs,
+            include_recent_logs=False,
+            recent_logs_per_bot=0,
+        )
+        return {"ok": True, "bot": enriched, "archived": bot.get("archived_at")}
+
+    @app.post("/api/v1/bots/{bot_id}/restore")
+    def restore_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        store.restore_bot_instance(bot_id)
+        _invalidate_bots_overview_cache()
+        recs = learning_service.load_all_recommendations()
+        enriched = store.get_bot_instance(
+            bot_id,
+            recommendations=recs,
+            include_recent_logs=False,
+            recent_logs_per_bot=0,
+        )
         return {"ok": True, "bot": enriched}
 
     @app.get("/api/v1/bots/{bot_id}/policy-state")
@@ -11876,9 +12137,13 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/v1/bots/{bot_id}")
     def delete_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        deleted = store.delete_bot_instance(bot_id)
-        _invalidate_bots_overview_cache()
-        return {"ok": True, "deleted": deleted, "remaining": len(store.load_bots())}
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Bot registry usa soft-archive; no se permite borrado destructivo en este bloque. "
+                f"Usa /api/v1/bots/{bot_id}/archive."
+            ),
+        )
 
     @app.post("/api/v1/bots/bulk-patch")
     def patch_bots_bulk(body: BotBulkPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

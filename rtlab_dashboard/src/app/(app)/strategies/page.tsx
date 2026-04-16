@@ -12,7 +12,13 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api";
+import {
+  DEFAULT_BOT_REGISTRY_DRAFT,
+  buildBotRegistryDraft,
+  getBotDisplayName,
+  normalizeBotRegistryDraft,
+} from "@/lib/bot-registry";
+import { apiGet, apiPatch, apiPost } from "@/lib/client-api";
 import type {
   BacktestRun,
   BotInstance,
@@ -146,6 +152,9 @@ export default function StrategiesPage() {
   const [learningGuidance, setLearningGuidance] = useState<LearningGuidanceRow[]>([]);
   const [shadowStatus, setShadowStatus] = useState<ShadowStatusResponse | null>(null);
   const [bots, setBots] = useState<BotInstance[]>([]);
+  const [botRegistryDraft, setBotRegistryDraft] = useState(DEFAULT_BOT_REGISTRY_DRAFT);
+  const [botRegistryDraftsById, setBotRegistryDraftsById] = useState<Record<string, typeof DEFAULT_BOT_REGISTRY_DRAFT>>({});
+  const [botRegistryFilter, setBotRegistryFilter] = useState<"all" | "active" | "archived">("active");
   const [learningBusy, setLearningBusy] = useState(false);
   const [learningActionBusyId, setLearningActionBusyId] = useState<string | null>(null);
   const [proposalActionBusyId, setProposalActionBusyId] = useState<string | null>(null);
@@ -185,7 +194,7 @@ export default function StrategiesPage() {
       apiGet<{ items: LearningProposal[] }>("/api/v1/learning/proposals").catch(() => ({ items: [] })),
       apiGet<{ items: LearningGuidanceRow[] }>("/api/v1/learning/guidance").catch(() => ({ items: [] })),
       apiGet<ShadowStatusResponse>("/api/v1/learning/shadow/status").catch(() => null),
-      apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
+      apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0&registry_status=all").catch(() => ({ items: [] })),
     ]);
     setStrategies(rows);
     setBacktests(bt);
@@ -228,6 +237,80 @@ export default function StrategiesPage() {
         setError(err instanceof Error ? err.message : "No se pudieron cargar KPIs.");
       });
   }, [selected, kpiMode, kpiFrom, kpiTo]);
+
+  useEffect(() => {
+    setBotRegistryDraftsById((prev) => {
+      const next = { ...prev };
+      for (const bot of bots) {
+        if (!next[bot.id]) {
+          next[bot.id] = buildBotRegistryDraft(bot);
+        }
+      }
+      for (const botId of Object.keys(next)) {
+        if (!bots.some((bot) => bot.id === botId)) {
+          delete next[botId];
+        }
+      }
+      return next;
+    });
+  }, [bots]);
+
+  const activeRegistryBots = useMemo(
+    () => bots.filter((bot) => String(bot.registry_status || "active") === "active"),
+    [bots],
+  );
+
+  const visibleRegistryBots = useMemo(() => {
+    if (botRegistryFilter === "all") return bots;
+    return bots.filter((bot) => String(bot.registry_status || "active") === botRegistryFilter);
+  }, [bots, botRegistryFilter]);
+
+  const botRegistryCounts = useMemo(
+    () => ({
+      active: bots.filter((bot) => String(bot.registry_status || "active") === "active").length,
+      archived: bots.filter((bot) => String(bot.registry_status || "active") === "archived").length,
+    }),
+    [bots],
+  );
+
+  const formatBotRegistryError = (err: unknown, fallback: string) => {
+    if (err instanceof z.ZodError) {
+      return err.issues[0]?.message || fallback;
+    }
+    return err instanceof Error ? err.message : fallback;
+  };
+
+  const syncBotRegistryDraft = (bot: BotInstance) => {
+    setBotRegistryDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: buildBotRegistryDraft(bot),
+    }));
+  };
+
+  const updateBotRegistryDraftField = (field: keyof typeof DEFAULT_BOT_REGISTRY_DRAFT, value: string) => {
+    setBotRegistryDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const updateBotRegistryDraftForBot = (botId: string, field: keyof typeof DEFAULT_BOT_REGISTRY_DRAFT, value: string) => {
+    setBotRegistryDraftsById((prev) => ({
+      ...prev,
+      [botId]: {
+        ...(prev[botId] || DEFAULT_BOT_REGISTRY_DRAFT),
+        [field]: value,
+      },
+    }));
+  };
+
+  const buildCreateBotPayload = (draft: typeof DEFAULT_BOT_REGISTRY_DRAFT, extras: Record<string, unknown> = {}) => {
+    const normalized = normalizeBotRegistryDraft(draft);
+    return {
+      display_name: normalized.display_name,
+      alias: normalized.alias || null,
+      description: normalized.description || null,
+      domain_type: normalized.domain_type,
+      ...extras,
+    };
+  };
 
   const pick = (strategy: Strategy) => {
     setSelected(strategy);
@@ -469,14 +552,14 @@ export default function StrategiesPage() {
   }, [strategies]);
 
   useEffect(() => {
-    if (!bots.length) {
+    if (!activeRegistryBots.length) {
       if (strategyTargetBotId) setStrategyTargetBotId("");
       return;
     }
-    if (!strategyTargetBotId || !bots.some((row) => row.id === strategyTargetBotId)) {
-      setStrategyTargetBotId(bots[0].id);
+    if (!strategyTargetBotId || !activeRegistryBots.some((row) => row.id === strategyTargetBotId)) {
+      setStrategyTargetBotId(activeRegistryBots[0].id);
     }
-  }, [bots, strategyTargetBotId]);
+  }, [activeRegistryBots, strategyTargetBotId]);
 
   useEffect(() => {
     setBotPoolDrafts((prev) => {
@@ -533,6 +616,22 @@ export default function StrategiesPage() {
     }
   };
 
+  const createBotRegistryOnly = async () => {
+    setBotCreateBusy(true);
+    setError("");
+    setUploadMsg("");
+    try {
+      await apiPost("/api/v1/bots", buildCreateBotPayload(botRegistryDraft));
+      setBotRegistryDraft(DEFAULT_BOT_REGISTRY_DRAFT);
+      setUploadMsg("Bot creado en registry.");
+      await refresh();
+    } catch (err) {
+      setError(formatBotRegistryError(err, "No se pudo crear el bot."));
+    } finally {
+      setBotCreateBusy(false);
+    }
+  };
+
   const createBotFromSelectedStrategies = async () => {
     if (!selectedStrategyIds.length) {
       setError("Selecciona estrategias antes de crear un bot.");
@@ -542,19 +641,19 @@ export default function StrategiesPage() {
     setError("");
     setUploadMsg("");
     try {
-      await apiPost("/api/v1/bots", {
-        name: `AutoBot ${bots.length + 1}`,
+      await apiPost("/api/v1/bots", buildCreateBotPayload(botRegistryDraft, {
         engine: learningStatus?.selector_algo === "ucb1" ? "bandit_ucb1" : learningStatus?.selector_algo === "regime_rules" ? "fixed_rules" : "bandit_thompson",
         mode: "paper",
         status: "active",
         pool_strategy_ids: selectedStrategyIds,
         universe: ["BTCUSDT", "ETHUSDT"],
         notes: "Creado desde seleccion multiple de estrategias.",
-      });
+      }));
+      setBotRegistryDraft(DEFAULT_BOT_REGISTRY_DRAFT);
       setUploadMsg(`Bot creado con ${selectedStrategyIds.length} estrategias.`);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo crear el bot desde la seleccion.");
+      setError(formatBotRegistryError(err, "No se pudo crear el bot desde la seleccion."));
     } finally {
       setBotCreateBusy(false);
     }
@@ -569,7 +668,7 @@ export default function StrategiesPage() {
       setError("Selecciona al menos una estrategia.");
       return;
     }
-    const targetBot = bots.find((row) => row.id === strategyTargetBotId);
+    const targetBot = activeRegistryBots.find((row) => row.id === strategyTargetBotId);
     if (!targetBot) {
       setError("No encontre el bot destino.");
       return;
@@ -579,7 +678,11 @@ export default function StrategiesPage() {
         ? [...selectedStrategyIds]
         : Array.from(new Set([...(targetBot.pool_strategy_ids || []), ...selectedStrategyIds]));
     await patchBot(strategyTargetBotId, { pool_strategy_ids: poolIds });
-    setUploadMsg(mode === "replace" ? `Pool de ${targetBot.name} reemplazado.` : `Estrategias agregadas a ${targetBot.name}.`);
+    setUploadMsg(
+      mode === "replace"
+        ? `Pool de ${getBotDisplayName(targetBot)} reemplazado.`
+        : `Estrategias agregadas a ${getBotDisplayName(targetBot)}.`,
+    );
   };
 
   const addRecommendationToBot = async (rec: LearningRecommendationLite) => {
@@ -587,7 +690,7 @@ export default function StrategiesPage() {
       setError("Elige un bot destino antes de cargar sugerencias.");
       return;
     }
-    const targetBot = bots.find((row) => row.id === strategyTargetBotId);
+    const targetBot = activeRegistryBots.find((row) => row.id === strategyTargetBotId);
     if (!targetBot) {
       setError("No encontre el bot destino.");
       return;
@@ -607,7 +710,7 @@ export default function StrategiesPage() {
     await patchBot(targetBot.id, {
       pool_strategy_ids: Array.from(new Set([...(targetBot.pool_strategy_ids || []), ...recommendedIds])),
     });
-    setUploadMsg(`Sugerencia cargada al bot ${targetBot.name}: ${recommendedIds.length} estrategias.`);
+    setUploadMsg(`Sugerencia cargada al bot ${getBotDisplayName(targetBot)}: ${recommendedIds.length} estrategias.`);
   };
 
   const toggleBotPoolDraftStrategy = (botId: string, strategyId: string) => {
@@ -628,29 +731,18 @@ export default function StrategiesPage() {
     setUploadMsg(`Pool del bot actualizado (${draftIds.length} estrategias).`);
   };
 
-  const deleteBot = async (bot: BotInstance) => {
-    if (!confirm(`Eliminar bot ${bot.name}? Esta accion borra su registro activo.`)) return;
-    setBotActionBusyId(bot.id);
-    setError("");
-    setUploadMsg("");
-    try {
-      await apiDelete(`/api/v1/bots/${bot.id}`);
-      setSelectedStrategyIds((prev) => [...prev]);
-      setUploadMsg(`Bot ${bot.name} eliminado.`);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo borrar el bot.");
-    } finally {
-      setBotActionBusyId(null);
-    }
-  };
-
   const exportBotKnowledge = (bot: BotInstance) => {
     const poolIds = botPoolDrafts[bot.id] || bot.pool_strategy_ids || [];
     const payload = {
       exported_at: new Date().toISOString(),
       bot: {
         id: bot.id,
+        bot_id: bot.bot_id || bot.id,
+        display_name: getBotDisplayName(bot),
+        alias: bot.alias || "",
+        description: bot.description || "",
+        domain_type: bot.domain_type,
+        registry_status: bot.registry_status,
         name: bot.name,
         engine: bot.engine,
         mode: bot.mode,
@@ -687,7 +779,7 @@ export default function StrategiesPage() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${bot.id}_knowledge_export.json`;
+    anchor.download = `${bot.id}_registry_export.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -733,19 +825,21 @@ export default function StrategiesPage() {
   const createBotFromCurrentPool = async () => {
     setBotCreateBusy(true);
     setError("");
+    setUploadMsg("");
     try {
-      await apiPost("/api/v1/bots", {
-        name: `AutoBot ${bots.length + 1}`,
+      await apiPost("/api/v1/bots", buildCreateBotPayload(botRegistryDraft, {
         engine: learningStatus?.selector_algo === "ucb1" ? "bandit_ucb1" : learningStatus?.selector_algo === "regime_rules" ? "fixed_rules" : "bandit_thompson",
         mode: "paper",
         status: "active",
         pool_strategy_ids: learningPoolStrategies.map((row) => row.id),
         universe: ["BTCUSDT", "ETHUSDT"],
         notes: "Creado desde panel Estrategias (pool actual de aprendizaje).",
-      });
+      }));
+      setBotRegistryDraft(DEFAULT_BOT_REGISTRY_DRAFT);
+      setUploadMsg("Bot creado desde el pool actual.");
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo crear el bot.");
+      setError(formatBotRegistryError(err, "No se pudo crear el bot."));
     } finally {
       setBotCreateBusy(false);
     }
@@ -814,15 +908,68 @@ export default function StrategiesPage() {
     setBotActionBusyId(botId);
     setError("");
     try {
-      try {
+      const patchKeys = Object.keys(patch);
+      const isPolicyStatePatch = patchKeys.every((key) =>
+        ["engine", "mode", "status", "pool_strategy_ids", "universe", "notes"].includes(key),
+      );
+      if (isPolicyStatePatch) {
         await apiPatch(`/api/v1/bots/${botId}/policy-state`, patch);
-      } catch (err) {
-        if (!(err instanceof ApiError) || err.status !== 404) throw err;
+      } else {
         await apiPatch(`/api/v1/bots/${botId}`, patch);
       }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo actualizar el bot.");
+    } finally {
+      setBotActionBusyId(null);
+    }
+  };
+
+  const saveBotRegistryIdentity = async (bot: BotInstance) => {
+    const draft = botRegistryDraftsById[bot.id] || buildBotRegistryDraft(bot);
+    setBotActionBusyId(bot.id);
+    setError("");
+    setUploadMsg("");
+    try {
+      const payload = buildCreateBotPayload(draft);
+      const res = await apiPatch<{ ok: boolean; bot: BotInstance }>(`/api/v1/bots/${bot.id}`, payload);
+      syncBotRegistryDraft(res.bot);
+      setUploadMsg(`Identidad de ${getBotDisplayName(res.bot)} actualizada.`);
+      await refresh();
+    } catch (err) {
+      setError(formatBotRegistryError(err, "No se pudo guardar la identidad del bot."));
+    } finally {
+      setBotActionBusyId(null);
+    }
+  };
+
+  const archiveBotRegistry = async (bot: BotInstance) => {
+    setBotActionBusyId(bot.id);
+    setError("");
+    setUploadMsg("");
+    try {
+      const res = await apiPost<{ ok: boolean; bot: BotInstance }>(`/api/v1/bots/${bot.id}/archive`);
+      syncBotRegistryDraft(res.bot);
+      setUploadMsg(`Bot archivado: ${getBotDisplayName(res.bot)}.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo archivar el bot.");
+    } finally {
+      setBotActionBusyId(null);
+    }
+  };
+
+  const restoreBotRegistry = async (bot: BotInstance) => {
+    setBotActionBusyId(bot.id);
+    setError("");
+    setUploadMsg("");
+    try {
+      const res = await apiPost<{ ok: boolean; bot: BotInstance }>(`/api/v1/bots/${bot.id}/restore`);
+      syncBotRegistryDraft(res.bot);
+      setUploadMsg(`Bot restaurado: ${getBotDisplayName(res.bot)}.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo restaurar el bot.");
     } finally {
       setBotActionBusyId(null);
     }
@@ -980,19 +1127,19 @@ export default function StrategiesPage() {
             </div>
             <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
               <p className="text-[11px] uppercase tracking-wide text-slate-400">Bot destino</p>
-              <Select value={strategyTargetBotId} onChange={(e) => setStrategyTargetBotId(e.target.value)} disabled={!bots.length}>
-                <option value="">{bots.length ? "Elegir bot..." : "Sin bots"}</option>
-                {bots.map((bot) => (
+              <Select value={strategyTargetBotId} onChange={(e) => setStrategyTargetBotId(e.target.value)} disabled={!activeRegistryBots.length}>
+                <option value="">{activeRegistryBots.length ? "Elegir bot..." : "Sin bots activos"}</option>
+                {activeRegistryBots.map((bot) => (
                   <option key={`bulk-bot-${bot.id}`} value={bot.id}>
-                    {bot.name} ({bot.mode.toUpperCase()} / {bot.engine})
+                    {getBotDisplayName(bot)} ({bot.domain_type} / {bot.mode.toUpperCase()} / {bot.engine})
                   </option>
                 ))}
               </Select>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" className="h-8 px-3 text-[11px]" disabled={role !== "admin" || !bots.length || !selectedStrategyIds.length || !strategyTargetBotId} onClick={() => void applySelectedStrategiesToBot("append")}>
+                <Button variant="outline" className="h-8 px-3 text-[11px]" disabled={role !== "admin" || !activeRegistryBots.length || !selectedStrategyIds.length || !strategyTargetBotId} onClick={() => void applySelectedStrategiesToBot("append")}>
                   Agregar a bot
                 </Button>
-                <Button variant="outline" className="h-8 px-3 text-[11px]" disabled={role !== "admin" || !bots.length || !selectedStrategyIds.length || !strategyTargetBotId} onClick={() => void applySelectedStrategiesToBot("replace")}>
+                <Button variant="outline" className="h-8 px-3 text-[11px]" disabled={role !== "admin" || !activeRegistryBots.length || !selectedStrategyIds.length || !strategyTargetBotId} onClick={() => void applySelectedStrategiesToBot("replace")}>
                   Reemplazar pool
                 </Button>
               </div>
@@ -1564,24 +1711,128 @@ export default function StrategiesPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bots / AutoBots (multi-instancia)</p>
-                <p className="text-[11px] text-slate-400">Izquierda: policy_state del bot (engine/modo/status/pool). Derecha: evidence y decision log derivados (trades, Sharpe, breakers, experiencia).</p>
+                <p className="text-[11px] text-slate-400">Registry del bot: identidad visible, dominio y archivado. Policy/evidence siguen abajo como compatibilidad operativa.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void refresh()}>
                   Refrescar bots
                 </Button>
-                <Button
-                  size="sm"
-                  className="h-7 px-2 text-[11px]"
-                  disabled={role !== "admin" || botCreateBusy}
-                  onClick={() => void createBotFromCurrentPool()}
-                >
-                  {botCreateBusy ? "Creando..." : "Crear bot (pool actual)"}
-                </Button>
               </div>
             </div>
 
-            {bots.length ? (
+            <div className="mt-3 grid gap-3 xl:grid-cols-[1.5fr_1fr]">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Nuevo bot — registry mínimo</p>
+                  <Badge variant="info">RTLRESE-26</Badge>
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Nombre visible</p>
+                    <Input
+                      value={botRegistryDraft.display_name}
+                      placeholder="Bot Momentum Spot"
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("display_name", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Alias</p>
+                    <Input
+                      value={botRegistryDraft.alias}
+                      placeholder="momentum-a"
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("alias", e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Dominio</p>
+                    <Select
+                      value={botRegistryDraft.domain_type}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("domain_type", e.target.value)}
+                    >
+                      <option value="spot">spot</option>
+                      <option value="futures">futures</option>
+                    </Select>
+                  </div>
+                  <div className="flex items-end">
+                    <Button
+                      className="h-10 w-full"
+                      disabled={role !== "admin" || botCreateBusy}
+                      onClick={() => void createBotRegistryOnly()}
+                    >
+                      {botCreateBusy ? "Creando..." : "Crear bot"}
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-2">
+                  <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Descripción</p>
+                  <Textarea
+                    rows={3}
+                    value={botRegistryDraft.description}
+                    placeholder="Uso esperado del bot, sin mezclar symbols/pool/lifecycle."
+                    disabled={role !== "admin" || botCreateBusy}
+                    onChange={(e) => updateBotRegistryDraftField("description", e.target.value)}
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={role !== "admin" || botCreateBusy}
+                    onClick={() => void createBotFromCurrentPool()}
+                  >
+                    {botCreateBusy ? "Creando..." : "Crear bot + pool actual"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={role !== "admin" || botCreateBusy || !selectedStrategyIds.length}
+                    onClick={() => void createBotFromSelectedStrategies()}
+                  >
+                    {botCreateBusy ? "Creando..." : `Crear bot + selección (${selectedStrategyIds.length})`}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={role !== "admin" || botCreateBusy}
+                    onClick={() => setBotRegistryDraft(DEFAULT_BOT_REGISTRY_DRAFT)}
+                  >
+                    Resetear
+                  </Button>
+                </div>
+                <p className="mt-2 text-[11px] text-slate-400">
+                  Este bloque crea identidad persistente del bot. No configura aún capital, símbolos, strategy pool ni lifecycle.
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Visibilidad del registry</p>
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Mostrar</p>
+                    <Select value={botRegistryFilter} onChange={(e) => setBotRegistryFilter(e.target.value as "all" | "active" | "archived")}>
+                      <option value="active">Solo activos</option>
+                      <option value="archived">Solo archivados</option>
+                      <option value="all">Todos</option>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded border border-slate-800 p-2">Activos: <strong>{botRegistryCounts.active}</strong></div>
+                    <div className="rounded border border-slate-800 p-2">Archivados: <strong>{botRegistryCounts.archived}</strong></div>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    El `bot_id` es estable. El nombre visible, alias y descripción son editables sin perder trazabilidad.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {visibleRegistryBots.length ? (
               <div className="mt-3 overflow-x-auto">
                 <Table className="text-xs">
                   <THead>
@@ -1602,9 +1853,11 @@ export default function StrategiesPage() {
                     </TR>
                   </THead>
                   <TBody>
-                    {bots.map((bot) => {
+                    {visibleRegistryBots.map((bot) => {
                       const m = bot.metrics;
                       const busy = botActionBusyId === bot.id;
+                      const registryArchived = bot.registry_status === "archived";
+                      const registryDraft = botRegistryDraftsById[bot.id] || buildBotRegistryDraft(bot);
                       const experienceBySource = m?.experience_by_source;
                       const poolDraftIds = botPoolDrafts[bot.id] || bot.pool_strategy_ids || [];
                       const poolDraftRows = poolDraftIds
@@ -1614,8 +1867,13 @@ export default function StrategiesPage() {
                         <TR key={bot.id} className="align-top">
                           <TD className="max-w-[180px]">
                             <div className="max-w-[180px]">
-                              <p className="truncate font-semibold text-slate-100" title={bot.name}>{bot.name}</p>
-                              <p className="truncate text-[11px] text-slate-400" title={bot.id}>{bot.id}</p>
+                              <p className="truncate font-semibold text-slate-100" title={getBotDisplayName(bot)}>{getBotDisplayName(bot)}</p>
+                              <p className="truncate text-[11px] text-slate-400" title={bot.bot_id || bot.id}>{bot.bot_id || bot.id}</p>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                <Badge variant={bot.domain_type === "futures" ? "warn" : "info"}>{bot.domain_type}</Badge>
+                                <Badge variant={registryArchived ? "neutral" : "success"}>{bot.registry_status}</Badge>
+                              </div>
+                              {bot.alias ? <p className="truncate text-[10px] text-slate-500">@{bot.alias}</p> : null}
                             </div>
                           </TD>
                           <TD className="whitespace-nowrap">{bot.engine}</TD>
@@ -1659,7 +1917,7 @@ export default function StrategiesPage() {
                                 size="sm"
                                 variant="outline"
                                 className="h-7 px-2 text-[11px]"
-                                disabled={role !== "admin" || busy}
+                                disabled={role !== "admin" || busy || registryArchived}
                                 onClick={() => void patchBot(bot.id, { status: bot.status === "active" ? "paused" : "active" })}
                               >
                                 {bot.status === "active" ? "Pausar" : "Activar"}
@@ -1668,7 +1926,7 @@ export default function StrategiesPage() {
                                 size="sm"
                                 variant="outline"
                                 className="h-7 px-2 text-[11px]"
-                                disabled={role !== "admin" || busy}
+                                disabled={role !== "admin" || busy || registryArchived}
                                 onClick={() => void patchBot(bot.id, { pool_strategy_ids: learningPoolStrategies.map((row) => row.id) })}
                               >
                                 Usar pool actual
@@ -1676,6 +1934,93 @@ export default function StrategiesPage() {
                               <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => exportBotKnowledge(bot)}>
                                 Exportar
                               </Button>
+                              <details className="rounded border border-cyan-900/70 bg-slate-950/70 px-2 py-0.5 text-[11px] text-slate-200">
+                                <summary className="cursor-pointer select-none">Registry</summary>
+                                <div className="mt-2 min-w-[320px] space-y-2">
+                                  <div className="grid gap-2">
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Nombre visible</p>
+                                      <Input
+                                        value={registryDraft.display_name}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "display_name", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Alias</p>
+                                      <Input
+                                        value={registryDraft.alias}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "alias", e.target.value)}
+                                      />
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Dominio</p>
+                                      <Select
+                                        value={registryDraft.domain_type}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "domain_type", e.target.value)}
+                                      >
+                                        <option value="spot">spot</option>
+                                        <option value="futures">futures</option>
+                                      </Select>
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Descripción</p>
+                                      <Textarea
+                                        rows={3}
+                                        value={registryDraft.description}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "description", e.target.value)}
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy}
+                                      onClick={() => void saveBotRegistryIdentity(bot)}
+                                    >
+                                      Guardar identidad
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy}
+                                      onClick={() => syncBotRegistryDraft(bot)}
+                                    >
+                                      Resetear
+                                    </Button>
+                                    {registryArchived ? (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 px-2 text-[11px]"
+                                        disabled={role !== "admin" || busy}
+                                        onClick={() => void restoreBotRegistry(bot)}
+                                      >
+                                        Restaurar
+                                      </Button>
+                                    ) : (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 px-2 text-[11px]"
+                                        disabled={role !== "admin" || busy}
+                                        onClick={() => void archiveBotRegistry(bot)}
+                                      >
+                                        Archivar
+                                      </Button>
+                                    )}
+                                  </div>
+                                  <p className="text-[10px] text-slate-400">
+                                    `bot_id` estable: {bot.bot_id || bot.id}. Este panel solo edita identidad/dominio/archivado.
+                                  </p>
+                                </div>
+                              </details>
                               <details className="rounded border border-slate-700 bg-slate-950/70 px-2 py-0.5 text-[11px] text-slate-200">
                                 <summary className="cursor-pointer select-none">M&aacute;s</summary>
                                 <div className="mt-2 min-w-[280px] space-y-2">
@@ -1687,7 +2032,7 @@ export default function StrategiesPage() {
                                           size="sm"
                                           variant="outline"
                                           className="h-7 justify-start px-2 text-[11px]"
-                                          disabled={role !== "admin" || busy || modeKey === "live"}
+                                          disabled={role !== "admin" || busy || registryArchived || modeKey === "live"}
                                           onClick={() => void patchBot(bot.id, { mode: modeKey })}
                                         >
                                           {`Modo ${modeKey.toUpperCase()}`}{modeKey === "live" ? " (bloqueado)" : ""}
@@ -1704,7 +2049,7 @@ export default function StrategiesPage() {
                                           size="sm"
                                           variant="outline"
                                           className="h-7 justify-start px-2 text-[11px]"
-                                          disabled={role !== "admin" || busy}
+                                          disabled={role !== "admin" || busy || registryArchived}
                                           onClick={() => void patchBot(bot.id, { engine: engineKey })}
                                         >
                                           {engineKey === "fixed_rules" ? "Engine Reglas fijas" : engineKey === "bandit_thompson" ? "Engine Thompson" : "Engine UCB1"}
@@ -1720,7 +2065,7 @@ export default function StrategiesPage() {
                                         size="sm"
                                         variant="outline"
                                         className="h-7 px-2 text-[11px]"
-                                        disabled={role !== "admin" || shadowBusy || bot.mode !== "shadow" || bot.status !== "active"}
+                                        disabled={role !== "admin" || shadowBusy || registryArchived || bot.mode !== "shadow" || bot.status !== "active"}
                                         onClick={() => void startShadowRunner(bot.id)}
                                       >
                                         Simular en shadow
@@ -1739,12 +2084,6 @@ export default function StrategiesPage() {
                                       El runner mock usa velas cerradas, no envia ordenes y guarda experiencia persistente.
                                     </p>
                                   </div>
-                                  <Button size="sm" variant="outline" className="h-7 justify-start px-2 text-[11px]" disabled={role !== "admin" || busy} onClick={() => void patchBot(bot.id, { status: "archived" })}>
-                                    Archivar bot
-                                  </Button>
-                                  <Button size="sm" variant="outline" className="h-7 justify-start px-2 text-[11px]" disabled={role !== "admin" || busy} onClick={() => void deleteBot(bot)}>
-                                    Borrar bot
-                                  </Button>
                                 </div>
                               </details>
                             </div>
@@ -1762,7 +2101,7 @@ export default function StrategiesPage() {
                                           <input
                                             type="checkbox"
                                             checked={checked}
-                                            disabled={role !== "admin" || busy}
+                                            disabled={role !== "admin" || busy || registryArchived}
                                             onChange={() => toggleBotPoolDraftStrategy(bot.id, strategy.id)}
                                           />
                                         </label>
@@ -1770,10 +2109,10 @@ export default function StrategiesPage() {
                                     })}
                                 </div>
                                 <div className="flex flex-wrap gap-2">
-                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy} onClick={() => void saveBotPoolDraft(bot.id)}>
+                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => void saveBotPoolDraft(bot.id)}>
                                     Guardar pool
                                   </Button>
-                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy} onClick={() => resetBotPoolDraft(bot.id, bot.pool_strategy_ids || [])}>
+                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => resetBotPoolDraft(bot.id, bot.pool_strategy_ids || [])}>
                                     Resetear
                                   </Button>
                                 </div>
@@ -1842,7 +2181,9 @@ export default function StrategiesPage() {
               </div>
             ) : (
               <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-400">
-                Todav&iacute;a no hay bots multi-instancia. Cre&aacute; uno desde el pool actual para operar shadow/paper/testnet con m&eacute;tricas separadas.
+                {bots.length
+                  ? "No hay bots visibles para el filtro actual del registry."
+                  : "Todav\u00eda no hay bots registrados. Cre\u00e1 uno con identidad real y dominio expl\u00edcito para empezar."}
               </div>
             )}
           </div>

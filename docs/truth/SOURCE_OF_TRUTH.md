@@ -1,6 +1,77 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-08
+Fecha de actualizacion: 2026-04-14
+
+## RTLRESE-26 - Bot Registry canonico con identidad persistente y soft-archive - 2026-04-14
+
+- Estado real confirmado en esta rama:
+  - ya existe una entidad `Bot` persistente en registry con identidad separada de su nombre interno legado pobre;
+  - el backend conserva `bot_id` estable y expone identidad visible editable sin perder trazabilidad historica.
+- Campos canonicos que quedan persistidos y visibles:
+  - `bot_id`
+  - `display_name`
+  - `alias`
+  - `description`
+  - `domain_type`
+    - `spot`
+    - `futures`
+  - `registry_status`
+    - `active`
+    - `archived`
+  - `created_at`
+  - `updated_at`
+  - `archived_at`
+- Fuente de persistencia real usada por este bloque:
+  - la misma capa ya existente de bots en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - no se creo una persistencia paralela ni un storage nuevo fuera del patron actual del repo.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - `DELETE /api/v1/bots/{bot_id}` queda bloqueado en este bloque con `409` para sostener soft-archive y evitar borrado destructivo accidental.
+- Reglas canonicas fijadas en este bloque:
+  - `display_name` es requerido, editable y visible para el usuario;
+  - `bot_id` no se reemplaza por el nombre visible;
+  - `domain_type` queda acotado a `spot|futures`;
+  - `registry_status` queda acotado a `active|archived`;
+  - el archivado es soft-archive y no borrado destructivo.
+- Validaciones reales aplicadas server-side y en la UI:
+  - `display_name`
+    - trim
+    - minimo `3`
+    - maximo `80`
+  - `alias`
+    - trim
+    - maximo `40`
+  - `description`
+    - trim
+    - maximo `280`
+  - `domain_type`
+    - enum estricto `spot|futures`
+  - `registry_status`
+    - enum estricto `active|archived`
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - formulario minimo para crear bots con identidad real
+    - listado mostrando `display_name`, `bot_id`, `domain_type` y `registry_status`
+    - edicion inline de identidad
+    - acciones visibles de archivar / restaurar
+  - el panel sigue conviviendo con `policy_state`/evidence existentes, pero este bloque no expande lifecycle, pool ni multi-symbol.
+- Lo que este bloque NO implementa:
+  - capital/risk profile
+  - symbols assignment
+  - strategy pool como dominio canonico
+  - lifecycle `backtest/shadow/paper/testnet/live`
+  - multi-symbol runtime
+  - live console
+  - metricas avanzadas del bot
+- Conclusion operativa:
+  - desde este bloque, el registry del bot ya no depende de nombres pobres tipo `AutoBot N` como identidad de producto;
+  - la identidad canonica del bot ya existe de forma persistente y auditable;
+  - los siguientes bloques deben colgarse de esta base, no volver a inventarla.
 
 ## Produccion online, pero la postura canonica de runtime debe quedar en PAPER hasta cerrar LIVE readiness - 2026-04-08
 

@@ -1,6 +1,31 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-08
+Fecha: 2026-04-14
+
+## Siguiente bloque exacto despues de RTLRESE-26 - 2026-04-14
+- [x] Dejar Bot Registry con identidad real y persistente:
+  - `bot_id` estable
+  - `display_name` editable
+  - `alias`
+  - `description`
+  - `domain_type=spot|futures`
+  - `registry_status=active|archived`
+  - create/list/get/patch/archive/restore reales
+- [x] Conectar UI minima al backend real:
+  - alta desde registry
+  - listado con identidad canonica
+  - edicion inline
+  - archivar / restaurar
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-27` y resolver solo:
+    - capital / budget base por bot
+    - risk profile base por bot
+    - flags/config minima para que el bot exista como entidad configurable mas alla de su identidad
+  - mantener fuera de ese bloque:
+    - symbols assignment (`RTLRESE-28`)
+    - strategy pool (`RTLRESE-29`)
+    - lifecycle (`RTLRESE-25`)
+    - multi-symbol runtime (`RTLOPS-72+`)
 
 ## Opcion 2 exacta: Binance LIVE readiness real, despues de dejar PAPER canonico - 2026-04-08
 - [x] Dejar production online y fail-closed:

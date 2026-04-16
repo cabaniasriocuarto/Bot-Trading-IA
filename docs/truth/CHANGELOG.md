@@ -1,5 +1,55 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-14
+
+### RTLRESE-26 - Bot Registry con identidad editable, dominio y archivado persistente
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` ahora modela identidad canonica de bot con:
+    - `bot_id`
+    - `display_name`
+    - `alias`
+    - `description`
+    - `domain_type = spot|futures`
+    - `registry_status = active|archived`
+    - `archived_at`
+  - se preserva `bot_id` estable aunque el nombre visible cambie;
+  - `archive` y `restore` pasan a operar como soft-archive real, sin borrado destructivo.
+- Cambio real aplicado en API:
+  - `GET /api/v1/bots`
+    - ahora soporta `registry_status=all|active|archived`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - `DELETE /api/v1/bots/{bot_id}`
+    - queda explicitamente bloqueado con `409` para no permitir borrado destructivo en un bloque de soft-archive
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta de bot por registry minimo
+    - edicion inline de identidad
+    - badges de dominio y estado de registry
+    - archivado/restauracion visibles
+    - las altas nuevas ya no dependen de nombres pobres tipo `AutoBot N`
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema y helpers de validacion del formulario de registry
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con campos canonicos de registry
+- Tests corridos:
+  - `uv run --project rtlab_autotrader --link-mode=copy python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py rtlab_autotrader/tests/test_web_live_ready.py -k "test_bot_registry_identity_crud_and_filters or test_bot_registry_identity_validations or test_bots_multi_instance_endpoints"` -> PASS
+  - la suite de `RTLRESE-26` ahora cubre explicitamente que `DELETE /api/v1/bots/{bot_id}` devuelve `409` y obliga a usar `archive`
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd exec vitest run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-27` capital/risk profile
+  - `RTLRESE-28` symbols assignment
+  - `RTLRESE-29` strategy pool
+  - `RTLRESE-30` gobierno avanzado
+  - `RTLRESE-31` contracts extensos
+  - `RTLOPS-72+` multi-symbol/runtime
+
 ## 2026-04-08
 
 ### Produccion: PAPER canonico con LIVE bloqueado de forma honesta

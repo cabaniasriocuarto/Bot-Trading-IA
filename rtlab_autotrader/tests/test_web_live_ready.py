@@ -4782,11 +4782,15 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   assert updated_bot["status"] == "paused"
 
   delete_res = client.delete(f"/api/v1/bots/{bot['id']}", headers=headers)
-  assert delete_res.status_code == 200, delete_res.text
-  delete_payload = delete_res.json()
-  assert delete_payload["ok"] is True
-  assert str((delete_payload.get("deleted") or {}).get("id") or "") == bot["id"]
-  assert int(delete_payload.get("remaining") or 0) == initial_total
+  assert delete_res.status_code == 409, delete_res.text
+  assert "soft-archive" in str(delete_res.json().get("detail") or "")
+
+  after_delete_attempt = client.get("/api/v1/bots", headers=headers)
+  assert after_delete_attempt.status_code == 200, after_delete_attempt.text
+  after_items = after_delete_attempt.json()["items"]
+  after_ids = {str(row["id"]) for row in after_items}
+  assert bot["id"] in after_ids
+  assert int(after_delete_attempt.json().get("total") or 0) == initial_total + 1
 
 
 def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monkeypatch) -> None:
