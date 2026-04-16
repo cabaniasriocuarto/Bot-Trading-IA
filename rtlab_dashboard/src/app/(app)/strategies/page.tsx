@@ -22,6 +22,8 @@ import { apiGet, apiPatch, apiPost } from "@/lib/client-api";
 import type {
   BacktestRun,
   BotInstance,
+  InstrumentUniverseItem,
+  InstrumentUniverseSummaryResponse,
   LearningExperienceSummaryResponse,
   LearningGuidanceRow,
   LearningProposal,
@@ -125,6 +127,17 @@ const BOT_RISK_PROFILE_HELP: Record<"conservative" | "medium" | "aggressive", st
   aggressive: "Permite mayor utilización del capital, más posiciones y riesgo por trade más alto, sin abrir todavía multi-symbol ni lifecycle.",
 };
 
+function universeFamilyMatchesDomain(domainType: BotInstance["domain_type"], family: string): boolean {
+  if (domainType === "futures") return family === "usdm_futures" || family === "coinm_futures";
+  return family === "spot";
+}
+
+function selectedValuesFromOptions(options: HTMLOptionsCollection): string[] {
+  return Array.from(options)
+    .filter((option) => option.selected)
+    .map((option) => option.value);
+}
+
 function proposalBadge(status: string | undefined): "success" | "warn" | "danger" | "neutral" {
   const normalized = String(status || "").toLowerCase();
   if (normalized.includes("approved")) return "success";
@@ -158,6 +171,7 @@ export default function StrategiesPage() {
   const [learningGuidance, setLearningGuidance] = useState<LearningGuidanceRow[]>([]);
   const [shadowStatus, setShadowStatus] = useState<ShadowStatusResponse | null>(null);
   const [bots, setBots] = useState<BotInstance[]>([]);
+  const [botUniverseCatalog, setBotUniverseCatalog] = useState<InstrumentUniverseSummaryResponse | null>(null);
   const [botRegistryDraft, setBotRegistryDraft] = useState(DEFAULT_BOT_REGISTRY_DRAFT);
   const [botRegistryDraftsById, setBotRegistryDraftsById] = useState<Record<string, typeof DEFAULT_BOT_REGISTRY_DRAFT>>({});
   const [botRegistryFilter, setBotRegistryFilter] = useState<"all" | "active" | "archived">("active");
@@ -190,6 +204,7 @@ export default function StrategiesPage() {
       learningGuidanceRes,
       shadowStatusRes,
       botsRes,
+      botUniverseRes,
     ] = await Promise.all([
       apiGet<Strategy[]>("/api/v1/strategies"),
       apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
@@ -201,6 +216,7 @@ export default function StrategiesPage() {
       apiGet<{ items: LearningGuidanceRow[] }>("/api/v1/learning/guidance").catch(() => ({ items: [] })),
       apiGet<ShadowStatusResponse>("/api/v1/learning/shadow/status").catch(() => null),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0&registry_status=all").catch(() => ({ items: [] })),
+      apiGet<InstrumentUniverseSummaryResponse>("/api/v1/instruments/universes").catch(() => ({ items: [] })),
     ]);
     setStrategies(rows);
     setBacktests(bt);
@@ -212,6 +228,7 @@ export default function StrategiesPage() {
     setLearningGuidance(Array.isArray(learningGuidanceRes?.items) ? learningGuidanceRes.items : []);
     setShadowStatus(shadowStatusRes);
     setBots(Array.isArray(botsRes?.items) ? botsRes.items : []);
+    setBotUniverseCatalog(botUniverseRes);
     if (!selected) return;
     const updated = rows.find((row) => row.id === selected.id);
     if (updated) {
@@ -286,6 +303,19 @@ export default function StrategiesPage() {
     return err instanceof Error ? err.message : fallback;
   };
 
+  const universeItems = useMemo(
+    () => (Array.isArray(botUniverseCatalog?.items) ? botUniverseCatalog.items : []),
+    [botUniverseCatalog],
+  );
+
+  const universeByName = useMemo(() => {
+    const map = new Map<string, InstrumentUniverseItem>();
+    for (const item of universeItems) {
+      map.set(item.name, item);
+    }
+    return map;
+  }, [universeItems]);
+
   const syncBotRegistryDraft = (bot: BotInstance) => {
     setBotRegistryDraftsById((prev) => ({
       ...prev,
@@ -293,11 +323,11 @@ export default function StrategiesPage() {
     }));
   };
 
-  const updateBotRegistryDraftField = (field: keyof typeof DEFAULT_BOT_REGISTRY_DRAFT, value: string) => {
+  const updateBotRegistryDraftField = <K extends keyof typeof DEFAULT_BOT_REGISTRY_DRAFT>(field: K, value: (typeof DEFAULT_BOT_REGISTRY_DRAFT)[K]) => {
     setBotRegistryDraft((prev) => ({ ...prev, [field]: value }));
   };
 
-  const updateBotRegistryDraftForBot = (botId: string, field: keyof typeof DEFAULT_BOT_REGISTRY_DRAFT, value: string) => {
+  const updateBotRegistryDraftForBot = <K extends keyof typeof DEFAULT_BOT_REGISTRY_DRAFT>(botId: string, field: K, value: (typeof DEFAULT_BOT_REGISTRY_DRAFT)[K]) => {
     setBotRegistryDraftsById((prev) => ({
       ...prev,
       [botId]: {
@@ -307,6 +337,27 @@ export default function StrategiesPage() {
     }));
   };
 
+  const syncUniverseSelection = (
+    draft: typeof DEFAULT_BOT_REGISTRY_DRAFT,
+    nextUniverseName: string,
+  ): typeof DEFAULT_BOT_REGISTRY_DRAFT => {
+    const universeOption = universeByName.get(nextUniverseName);
+    const validUniverseSymbols = new Set((universeOption?.symbols || []).map((item) => String(item || "").trim().toUpperCase()));
+    const filteredSymbols = (draft.universe || []).filter((item) => validUniverseSymbols.has(String(item || "").trim().toUpperCase()));
+    return {
+      ...draft,
+      universe_name: nextUniverseName,
+      universe: filteredSymbols,
+      max_live_symbols: String(Math.min(Math.max(filteredSymbols.length || 1, 1), 12)),
+    };
+  };
+
+  const universeOptionsForDomain = useCallback(
+    (domainType: "spot" | "futures") =>
+      universeItems.filter((item) => universeFamilyMatchesDomain(domainType, String(item.family || "").trim().toLowerCase())),
+    [universeItems],
+  );
+
   const buildCreateBotPayload = (draft: typeof DEFAULT_BOT_REGISTRY_DRAFT, extras: Record<string, unknown> = {}) => {
     const normalized = normalizeBotRegistryDraft(draft);
     return {
@@ -314,6 +365,9 @@ export default function StrategiesPage() {
       alias: normalized.alias || null,
       description: normalized.description || null,
       domain_type: normalized.domain_type,
+      universe_name: normalized.universe_name,
+      universe: normalized.universe,
+      max_live_symbols: normalized.max_live_symbols,
       capital_base_usd: normalized.capital_base_usd,
       max_total_exposure_pct: normalized.max_total_exposure_pct,
       max_asset_exposure_pct: normalized.max_asset_exposure_pct,
@@ -660,7 +714,6 @@ export default function StrategiesPage() {
         mode: "paper",
         status: "active",
         pool_strategy_ids: selectedStrategyIds,
-        universe: ["BTCUSDT", "ETHUSDT"],
         notes: "Creado desde seleccion multiple de estrategias.",
       }));
       setBotRegistryDraft(DEFAULT_BOT_REGISTRY_DRAFT);
@@ -765,11 +818,16 @@ export default function StrategiesPage() {
         max_daily_loss_pct: bot.max_daily_loss_pct,
         max_drawdown_pct: bot.max_drawdown_pct,
         max_positions: bot.max_positions,
+        universe_name: bot.universe_name || "",
+        universe_family: bot.universe_family || "",
         name: bot.name,
         engine: bot.engine,
         mode: bot.mode,
         status: bot.status,
         universe: bot.universe || [],
+        max_live_symbols: bot.max_live_symbols ?? null,
+        symbol_assignment_status: bot.symbol_assignment_status || "error",
+        symbol_assignment_errors: bot.symbol_assignment_errors || [],
         notes: bot.notes || "",
       },
       metrics: bot.metrics || {},
@@ -854,7 +912,6 @@ export default function StrategiesPage() {
         mode: "paper",
         status: "active",
         pool_strategy_ids: learningPoolStrategies.map((row) => row.id),
-        universe: ["BTCUSDT", "ETHUSDT"],
         notes: "Creado desde panel Estrategias (pool actual de aprendizaje).",
       }));
       setBotRegistryDraft(DEFAULT_BOT_REGISTRY_DRAFT);
@@ -1746,7 +1803,7 @@ export default function StrategiesPage() {
               <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Nuevo bot — registry base</p>
-                  <Badge variant="info">RTLRESE-27</Badge>
+                  <Badge variant="info">RTLRESE-28</Badge>
                 </div>
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                   <div>
@@ -1772,7 +1829,7 @@ export default function StrategiesPage() {
                     <Select
                       value={botRegistryDraft.domain_type}
                       disabled={role !== "admin" || botCreateBusy}
-                      onChange={(e) => updateBotRegistryDraftField("domain_type", e.target.value)}
+                      onChange={(e) => updateBotRegistryDraftField("domain_type", e.target.value as "spot" | "futures")}
                     >
                       <option value="spot">spot</option>
                       <option value="futures">futures</option>
@@ -1783,12 +1840,39 @@ export default function StrategiesPage() {
                     <Select
                       value={botRegistryDraft.risk_profile}
                       disabled={role !== "admin" || botCreateBusy}
-                      onChange={(e) => updateBotRegistryDraftField("risk_profile", e.target.value)}
+                      onChange={(e) => updateBotRegistryDraftField("risk_profile", e.target.value as "conservative" | "medium" | "aggressive")}
                     >
                       <option value="conservative">conservative</option>
                       <option value="medium">medium</option>
                       <option value="aggressive">aggressive</option>
                     </Select>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Universo válido</p>
+                    <Select
+                      value={botRegistryDraft.universe_name}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => setBotRegistryDraft((prev) => syncUniverseSelection(prev, e.target.value))}
+                    >
+                      <option value="">Elegir universo...</option>
+                      {universeOptionsForDomain(botRegistryDraft.domain_type).map((item) => (
+                        <option key={`create-universe-${item.name}`} value={item.name}>
+                          {item.name} · {item.family} · {item.size} símbolos
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Cap live</p>
+                    <Input
+                      type="number"
+                      min="1"
+                      max="12"
+                      step="1"
+                      value={String(botRegistryDraft.max_live_symbols)}
+                      disabled={role !== "admin" || botCreateBusy}
+                      onChange={(e) => updateBotRegistryDraftField("max_live_symbols", e.target.value)}
+                    />
                   </div>
                   <div className="flex items-end">
                     <Button
@@ -1809,6 +1893,35 @@ export default function StrategiesPage() {
                     disabled={role !== "admin" || botCreateBusy}
                     onChange={(e) => updateBotRegistryDraftField("description", e.target.value)}
                   />
+                </div>
+                <div className="mt-3">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-400">Símbolos asignados</p>
+                    <span className="text-[10px] text-slate-500">
+                      {botRegistryDraft.universe.length} asignados · {universeByName.get(botRegistryDraft.universe_name)?.size || 0} válidos
+                    </span>
+                  </div>
+                  <select
+                    multiple
+                    className="min-h-[180px] w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100"
+                    disabled={role !== "admin" || botCreateBusy || !botRegistryDraft.universe_name}
+                    value={botRegistryDraft.universe}
+                    onChange={(e) => updateBotRegistryDraftField("universe", selectedValuesFromOptions(e.target.options))}
+                  >
+                    {((universeByName.get(botRegistryDraft.universe_name)?.symbols as string[] | undefined) || []).map((symbol) => (
+                      <option key={`create-symbol-${symbol}`} value={symbol}>
+                        {symbol}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                    <span>
+                      Universo elegido: <strong>{botRegistryDraft.universe_name || "pendiente"}</strong>
+                    </span>
+                    <span>
+                      Sample: {(universeByName.get(botRegistryDraft.universe_name)?.sample_symbols || []).slice(0, 4).join(" · ") || "sin sample"}
+                    </span>
+                  </div>
                 </div>
                 <div className="mt-3 grid gap-2 md:grid-cols-4">
                   <div>
@@ -1927,7 +2040,7 @@ export default function StrategiesPage() {
                   </Button>
                 </div>
                 <p className="mt-2 text-[11px] text-slate-400">
-                  Este bloque fija identidad, capital base y límites mínimos por bot. Deja fuera symbols, strategy pool canónico, lifecycle y multi-symbol.
+                  Este bloque fija identidad, capital base, symbols assignment, universo válido y cap live por bot. Deja fuera strategy pool canónico, lifecycle y runtime multi-symbol.
                 </p>
               </div>
 
@@ -2004,6 +2117,17 @@ export default function StrategiesPage() {
                               <p className="text-[10px] text-slate-500">
                                 Asset cap: {fmtPct(bot.max_asset_exposure_pct / 100)} · Risk/trade: {fmtPct(bot.risk_per_trade_pct / 100)} · Max pos: {bot.max_positions}
                               </p>
+                              <p className="text-[10px] text-slate-400">
+                                Universo: <strong>{bot.universe_name || "pendiente"}</strong> · Símbolos: <strong>{bot.universe?.length || 0}</strong> · Live cap: <strong>{bot.max_live_symbols ?? "-"}</strong>
+                              </p>
+                              <p className={`text-[10px] ${bot.symbol_assignment_status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                Assignment: {bot.symbol_assignment_status === "valid" ? "válido" : "error de configuración"}
+                              </p>
+                              {bot.symbol_assignment_errors?.length ? (
+                                <p className="text-[10px] text-amber-300" title={bot.symbol_assignment_errors.join(" | ")}>
+                                  {bot.symbol_assignment_errors[0]}
+                                </p>
+                              ) : null}
                             </div>
                           </TD>
                           <TD className="whitespace-nowrap">{bot.engine}</TD>
@@ -2089,10 +2213,46 @@ export default function StrategiesPage() {
                                       <Select
                                         value={registryDraft.domain_type}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "domain_type", e.target.value)}
+                                        onChange={(e) =>
+                                          setBotRegistryDraftsById((prev) => ({
+                                            ...prev,
+                                            [bot.id]: syncUniverseSelection(
+                                              {
+                                                ...(prev[bot.id] || registryDraft),
+                                                domain_type: e.target.value as "spot" | "futures",
+                                              },
+                                              universeFamilyMatchesDomain(
+                                                e.target.value as "spot" | "futures",
+                                                String(universeByName.get((prev[bot.id] || registryDraft).universe_name)?.family || "").trim().toLowerCase(),
+                                              )
+                                                ? (prev[bot.id] || registryDraft).universe_name
+                                                : "",
+                                            ),
+                                          }))
+                                        }
                                       >
                                         <option value="spot">spot</option>
                                         <option value="futures">futures</option>
+                                      </Select>
+                                    </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Universo válido</p>
+                                      <Select
+                                        value={registryDraft.universe_name}
+                                        disabled={role !== "admin" || busy}
+                                        onChange={(e) =>
+                                          setBotRegistryDraftsById((prev) => ({
+                                            ...prev,
+                                            [bot.id]: syncUniverseSelection(prev[bot.id] || registryDraft, e.target.value),
+                                          }))
+                                        }
+                                      >
+                                        <option value="">Elegir universo...</option>
+                                        {universeOptionsForDomain(registryDraft.domain_type).map((item) => (
+                                          <option key={`${bot.id}-universe-${item.name}`} value={item.name}>
+                                            {item.name} · {item.family} · {item.size} símbolos
+                                          </option>
+                                        ))}
                                       </Select>
                                     </div>
                                     <div>
@@ -2104,6 +2264,30 @@ export default function StrategiesPage() {
                                         onChange={(e) => updateBotRegistryDraftForBot(bot.id, "description", e.target.value)}
                                       />
                                     </div>
+                                  </div>
+                                  <div>
+                                    <div className="mb-1 flex items-center justify-between gap-2">
+                                      <p className="text-[10px] uppercase tracking-wide text-slate-400">Símbolos asignados</p>
+                                      <span className="text-[10px] text-slate-500">
+                                        {registryDraft.universe.length} asignados · {universeByName.get(registryDraft.universe_name)?.size || 0} válidos
+                                      </span>
+                                    </div>
+                                    <select
+                                      multiple
+                                      className="min-h-[160px] w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100"
+                                      disabled={role !== "admin" || busy || registryArchived || !registryDraft.universe_name}
+                                      value={registryDraft.universe}
+                                      onChange={(e) => updateBotRegistryDraftForBot(bot.id, "universe", selectedValuesFromOptions(e.target.options))}
+                                    >
+                                      {((universeByName.get(registryDraft.universe_name)?.symbols as string[] | undefined) || []).map((symbol) => (
+                                        <option key={`${bot.id}-symbol-${symbol}`} value={symbol}>
+                                          {symbol}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <p className="mt-1 text-[10px] text-slate-400">
+                                      Sample: {(universeByName.get(registryDraft.universe_name)?.sample_symbols || []).slice(0, 4).join(" · ") || "sin sample"}
+                                    </p>
                                   </div>
                                   <div className="grid gap-2 md:grid-cols-2">
                                     <div>
@@ -2122,7 +2306,7 @@ export default function StrategiesPage() {
                                       <Select
                                         value={registryDraft.risk_profile}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "risk_profile", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "risk_profile", e.target.value as "conservative" | "medium" | "aggressive")}
                                       >
                                         <option value="conservative">conservative</option>
                                         <option value="medium">medium</option>
@@ -2200,10 +2384,29 @@ export default function StrategiesPage() {
                                         onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_positions", e.target.value)}
                                       />
                                     </div>
+                                    <div>
+                                      <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">Cap live</p>
+                                      <Input
+                                        type="number"
+                                        min="1"
+                                        max="12"
+                                        step="1"
+                                        value={String(registryDraft.max_live_symbols)}
+                                        disabled={role !== "admin" || busy || registryArchived}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_live_symbols", e.target.value)}
+                                      />
+                                    </div>
                                   </div>
                                   <div className="rounded border border-slate-800 bg-slate-950/50 p-2 text-[10px] text-slate-400">
                                     {BOT_RISK_PROFILE_HELP[registryDraft.risk_profile]}
                                   </div>
+                                  {bot.symbol_assignment_errors?.length ? (
+                                    <div className="rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                      {bot.symbol_assignment_errors.map((item) => (
+                                        <p key={`${bot.id}-assignment-${item}`}>{item}</p>
+                                      ))}
+                                    </div>
+                                  ) : null}
                                   <div className="flex flex-wrap gap-2">
                                     <Button
                                       size="sm"
@@ -2246,7 +2449,7 @@ export default function StrategiesPage() {
                                     )}
                                   </div>
                                   <p className="text-[10px] text-slate-400">
-                                    `bot_id` estable: {bot.bot_id || bot.id}. Este panel edita identidad, capital base y límites mínimos del registry. `engine/mode` siguen abajo como config operativa existente.
+                                    `bot_id` estable: {bot.bot_id || bot.id}. Este panel edita identidad, capital base, symbols assignment, universo válido y cap live. `engine/mode` siguen abajo como config operativa existente.
                                   </p>
                                 </div>
                               </details>

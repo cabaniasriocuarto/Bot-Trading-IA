@@ -11,6 +11,7 @@ export type ResearchEvidenceMode = "backtest" | "shadow" | "paper" | "testnet";
 export type BotRegistryDomainType = "spot" | "futures";
 export type BotRegistryStatus = "active" | "archived";
 export type BotRiskProfile = "conservative" | "medium" | "aggressive";
+export type InstrumentUniverseFamily = "spot" | "margin" | "usdm_futures" | "coinm_futures" | string;
 
 export interface HealthResponse {
   ok: boolean;
@@ -270,7 +271,12 @@ export interface BotInstance {
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
   pool_strategies?: BotInstanceStrategyRef[];
+  universe_name?: string | null;
+  universe_family?: InstrumentUniverseFamily | null;
   universe?: string[];
+  max_live_symbols?: number | null;
+  symbol_assignment_status?: "valid" | "error" | string;
+  symbol_assignment_errors?: string[];
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -282,7 +288,9 @@ export interface BotPolicyState {
   mode: BotPolicyMode;
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
+  universe_name?: string;
   universe: string[];
+  max_live_symbols?: number | null;
   notes: string;
   created_at: string;
   updated_at: string;
@@ -291,6 +299,24 @@ export interface BotPolicyState {
 export interface BotPolicyStateResponse {
   bot_id: string;
   policy_state: BotPolicyState;
+}
+
+export interface InstrumentUniverseItem {
+  name: string;
+  venue: string;
+  family: InstrumentUniverseFamily;
+  size: number;
+  symbols: string[];
+  sample_symbols: string[];
+  fresh: boolean;
+  stale: boolean;
+  capability_required: boolean;
+  capability_available: boolean;
+}
+
+export interface InstrumentUniverseSummaryResponse {
+  items: InstrumentUniverseItem[];
+  policy_source?: Record<string, unknown>;
 }
 
 export interface StrategyComparison {

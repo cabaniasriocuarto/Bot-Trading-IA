@@ -14,6 +14,9 @@ describe("bot-registry helpers", () => {
       alias: "  momentum-a  ",
       description: "  Bot con identidad persistente  ",
       domain_type: "spot",
+      universe_name: "core_spot_usdt",
+      universe: ["BTCUSDT", "ETHUSDT"],
+      max_live_symbols: "2",
       capital_base_usd: "25000",
       max_total_exposure_pct: "70",
       max_asset_exposure_pct: "25",
@@ -29,6 +32,9 @@ describe("bot-registry helpers", () => {
       alias: "momentum-a",
       description: "Bot con identidad persistente",
       domain_type: "spot",
+      universe_name: "core_spot_usdt",
+      universe: ["BTCUSDT", "ETHUSDT"],
+      max_live_symbols: 2,
       capital_base_usd: 25000,
       max_total_exposure_pct: 70,
       max_asset_exposure_pct: 25,
@@ -40,11 +46,13 @@ describe("bot-registry helpers", () => {
     });
   });
 
-  it("rechaza display_name corto, dominio invalido o exposición inconsistente", () => {
+  it("rechaza display_name corto, dominio invalido, símbolos duplicados o exposición inconsistente", () => {
     expect(() =>
       normalizeBotRegistryDraft({
         ...DEFAULT_BOT_REGISTRY_DRAFT,
         display_name: "ab",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT"],
         domain_type: "spot",
       }),
     ).toThrow("al menos 3 caracteres");
@@ -53,6 +61,8 @@ describe("bot-registry helpers", () => {
       normalizeBotRegistryDraft({
         ...DEFAULT_BOT_REGISTRY_DRAFT,
         display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT"],
         domain_type: "margin" as never,
       }),
     ).toThrow();
@@ -61,10 +71,32 @@ describe("bot-registry helpers", () => {
       normalizeBotRegistryDraft({
         ...DEFAULT_BOT_REGISTRY_DRAFT,
         display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT"],
         max_total_exposure_pct: "20",
         max_asset_exposure_pct: "25",
       }),
     ).toThrow("exposición por activo");
+
+    expect(() =>
+      normalizeBotRegistryDraft({
+        ...DEFAULT_BOT_REGISTRY_DRAFT,
+        display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT", "BTCUSDT"],
+        max_live_symbols: "1",
+      }),
+    ).toThrow("duplicados");
+
+    expect(() =>
+      normalizeBotRegistryDraft({
+        ...DEFAULT_BOT_REGISTRY_DRAFT,
+        display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT"],
+        max_live_symbols: "2",
+      }),
+    ).toThrow("cap live");
   });
 
   it("arma draft desde un bot existente y prioriza display_name", () => {
@@ -77,6 +109,10 @@ describe("bot-registry helpers", () => {
       description: "Descripción del bot.",
       domain_type: "futures",
       registry_status: "active",
+      universe_name: "core_usdm_perps",
+      universe_family: "usdm_futures",
+      universe: ["BTCUSDT", "ETHUSDT"],
+      max_live_symbols: 2,
       capital_base_usd: 32000,
       max_total_exposure_pct: 80,
       max_asset_exposure_pct: 30,
@@ -98,6 +134,9 @@ describe("bot-registry helpers", () => {
       alias: "fut-a",
       description: "Descripción del bot.",
       domain_type: "futures",
+      universe_name: "core_usdm_perps",
+      universe: ["BTCUSDT", "ETHUSDT"],
+      max_live_symbols: "2",
       capital_base_usd: "32000",
       max_total_exposure_pct: "80",
       max_asset_exposure_pct: "30",

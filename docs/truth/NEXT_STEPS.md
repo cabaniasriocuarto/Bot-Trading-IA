@@ -2,6 +2,28 @@
 
 Fecha: 2026-04-16
 
+## Siguiente bloque exacto despues de RTLRESE-28 - 2026-04-16
+- [x] Extender Bot Registry con asignacion manual de simbolos por bot:
+  - `universe_name`
+  - `universe`
+  - `max_live_symbols`
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - persistencia real sobre el registry ya existente
+  - universo valido reutilizando el catalogo real del sistema
+  - validaciones explicitas de dominio, duplicados y cap live
+  - estado fail-closed visible si la asignacion deja de ser valida
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-29` y resolver solo:
+    - strategy pool asignado por bot
+    - persistencia real del pool
+    - limites minimos del pool dentro del registry
+  - mantener fuera de ese bloque:
+    - elegibilidad estrategia<->simbolo
+    - runtime multi-symbol (`RTLOPS-72+`)
+    - lifecycle
+    - live console
+
 ## Siguiente bloque exacto despues de RTLRESE-27 - 2026-04-16
 - [x] Extender Bot Registry con configuracion base operativa por bot:
   - `capital_base_usd`

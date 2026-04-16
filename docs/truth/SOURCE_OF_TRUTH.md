@@ -2,6 +2,65 @@
 
 Fecha de actualizacion: 2026-04-16
 
+## RTLRESE-28 - Bot Registry con asignacion de simbolos, universo valido y cap live - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no conserva solo identidad y config base;
+  - ahora tambien persiste la asignacion manual de simbolos por bot, el universo valido desde el que salen esos simbolos y un `cap live` inicial.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `universe_name`
+  - `universe`
+    - lista de simbolos asignados al bot
+  - `max_live_symbols`
+  - `symbol_assignment_status`
+    - `valid`
+    - `error`
+  - `symbol_assignment_errors`
+- Fuente de verdad real usada por este bloque:
+  - la persistencia del bot sigue viviendo en la misma capa canonica de `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - el universo valido NO se redefine dentro del registry del bot;
+  - la validacion reutiliza el catalogo real expuesto por `InstrumentUniverseService` y la policy canonica de universos (`config/policies/universes.yaml`).
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `GET /api/v1/instruments/universes`
+  - los endpoints del registry ahora aceptan y devuelven identidad + config base + asignacion de simbolos en un mismo contrato coherente.
+- Reglas canonicas fijadas en este bloque:
+  - `universe` debe tener al menos `1` simbolo
+  - no se aceptan simbolos duplicados
+  - todos los simbolos deben existir en un universo real del catalogo
+  - `max_live_symbols` debe ser entero en `1..12`
+  - `max_live_symbols` no puede exceder la cantidad de simbolos asignados
+  - bots `spot` solo aceptan universos `spot`
+  - bots `futures` solo aceptan universos `usdm_futures|coinm_futures`
+  - si un simbolo previamente asignado deja de existir o deja de ser valido en el catalogo real, el bot queda en estado fail-closed de configuracion:
+    - `symbol_assignment_status = error`
+    - `symbol_assignment_errors[]` con el detalle
+  - un bot archivado no acepta edicion operativa de asignacion/cap/universo.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - selector de universo valido por bot
+    - multi-select de simbolos asignados desde ese universo
+    - input real de `cap live`
+    - badges y mensajes de error cuando la asignacion queda invalida
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema zod real para `universe`, `universe_name` y `max_live_symbols`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con estado de asignacion y errores
+- Lo que este bloque NO implementa:
+  - strategy pool
+  - elegibilidad estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - runtime multi-symbol
+  - routing / consolidacion / net execution
+  - lifecycle entre entornos
+  - live console
+- Conclusion operativa:
+  - desde este bloque, el lado registry del bot ya puede expresar un universo valido, una lista asignada de simbolos y un limite live inicial sin inventar runtime multi-symbol;
+  - el siguiente bloque debe apoyarse sobre esta base para abrir `strategy pool`, no volver a redefinir simbolos/universos/cap live.
+
 ## RTLRESE-27 - Bot Registry con capital base, risk profile y configuracion operativa minima por bot - 2026-04-16
 
 - Estado real confirmado en esta rama:

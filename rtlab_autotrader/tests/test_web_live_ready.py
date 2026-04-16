@@ -127,6 +127,94 @@ def _build_app(tmp_path: Path, monkeypatch, mode: str = "paper", seed_settings: 
   return module, TestClient(module.app)
 
 
+def _catalog_item(
+  *,
+  family: str,
+  symbol: str,
+  base_asset: str,
+  quote_asset: str = "USDT",
+  contract_type: str | None = None,
+) -> dict[str, object]:
+  return {
+    "instrument_id": f"binance:{family}:{symbol}",
+    "symbol": symbol,
+    "family": family,
+    "environment": "live",
+    "status": "TRADING",
+    "base_asset": base_asset,
+    "quote_asset": quote_asset,
+    "contract_type": contract_type,
+    "margin_asset": quote_asset if family in {"usdm_futures", "coinm_futures"} else None,
+    "catalog_source": "test_fixture",
+    "filter_summary": {},
+    "permission_summary": {},
+    "live_eligible": True,
+    "testnet_eligible": True,
+    "paper_eligible": True,
+    "raw_hash": f"{family}:{symbol}",
+    "raw_payload": {"symbol": symbol, "family": family, "status": "TRADING"},
+  }
+
+
+def _seed_bot_registry_catalog(module, *, include_futures: bool = True) -> None:
+  db = module.store.instrument_registry.db
+  db.save_snapshot(
+    family="spot",
+    environment="live",
+    source_endpoint="test://spot-live",
+    raw_payload={"symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
+    items=[
+      _catalog_item(family="spot", symbol="BTCUSDT", base_asset="BTC"),
+      _catalog_item(family="spot", symbol="ETHUSDT", base_asset="ETH"),
+      _catalog_item(family="spot", symbol="SOLUSDT", base_asset="SOL"),
+    ],
+    policy_hash="test-policy-hash",
+  )
+  if include_futures:
+    db.save_snapshot(
+      family="usdm_futures",
+      environment="live",
+      source_endpoint="test://usdm-live",
+      raw_payload={"symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
+      items=[
+        _catalog_item(family="usdm_futures", symbol="BTCUSDT", base_asset="BTC", contract_type="PERPETUAL"),
+        _catalog_item(family="usdm_futures", symbol="ETHUSDT", base_asset="ETH", contract_type="PERPETUAL"),
+        _catalog_item(family="usdm_futures", symbol="SOLUSDT", base_asset="SOL", contract_type="PERPETUAL"),
+      ],
+      policy_hash="test-policy-hash",
+    )
+
+
+def _valid_bot_registry_payload(
+  *,
+  name: str | None = None,
+  display_name: str | None = None,
+  domain_type: str = "spot",
+  universe_name: str | None = None,
+  universe: list[str] | None = None,
+  max_live_symbols: int | None = None,
+  **extra,
+) -> dict[str, object]:
+  assigned_universe = universe or ["BTCUSDT"]
+  selected_universe_name = (
+    universe_name
+    or ("core_usdm_perps" if str(domain_type).strip().lower() == "futures" else "core_spot_usdt")
+  )
+  live_cap = max_live_symbols if max_live_symbols is not None else min(len(assigned_universe), 1) or 1
+  payload: dict[str, object] = {
+    "domain_type": domain_type,
+    "universe_name": selected_universe_name,
+    "universe": assigned_universe,
+    "max_live_symbols": live_cap,
+  }
+  if name is not None:
+    payload["name"] = name
+  if display_name is not None:
+    payload["display_name"] = display_name
+  payload.update(extra)
+  return payload
+
+
 def _auth_headers(token: str) -> dict[str, str]:
   return {"Authorization": f"Bearer {token}"}
 
@@ -472,6 +560,7 @@ def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
 
 def test_api_expensive_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(module)
   module.API_RATE_LIMITER = module.ApiRateLimiter(
     enabled=True,
     general_per_minute=100,
@@ -483,15 +572,14 @@ def test_api_expensive_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
 
   strategies = client.get("/api/v1/strategies", headers=headers).json()
   pool_ids = [row["id"] for row in strategies if row.get("id")]
-  payload = {
-    "name": "rate-limit-expensive-1",
-    "engine": "bandit_thompson",
-    "mode": "paper",
-    "status": "active",
-    "pool_strategy_ids": pool_ids[:1],
-    "universe": ["BTCUSDT"],
-    "notes": "rate limit test",
-  }
+  payload = _valid_bot_registry_payload(
+    name="rate-limit-expensive-1",
+    engine="bandit_thompson",
+    mode="paper",
+    status="active",
+    pool_strategy_ids=pool_ids[:1],
+    notes="rate limit test",
+  )
 
   first = client.post("/api/v1/bots", headers=headers, json=payload)
   assert first.status_code == 200, first.text
@@ -4724,6 +4812,7 @@ def test_runtime_recommendations_are_visible_in_listing_endpoint(tmp_path: Path,
 
 def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
@@ -4741,14 +4830,17 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
   create_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={
-      "name": "AutoBot Testnet",
-      "engine": "bandit_ucb1",
-      "mode": "testnet",
-      "status": "paused",
-      "pool_strategy_ids": pool_ids,
-      "universe": ["BTCUSDT"],
-    },
+    json=_valid_bot_registry_payload(
+      name="AutoBot Testnet",
+      domain_type="futures",
+      universe_name="core_usdm_perps",
+      universe=["BTCUSDT"],
+      max_live_symbols=1,
+      engine="bandit_ucb1",
+      mode="testnet",
+      status="paused",
+      pool_strategy_ids=pool_ids,
+    ),
   )
   assert create_res.status_code == 200, create_res.text
   bot = create_res.json()["bot"]
@@ -4795,6 +4887,7 @@ def test_bots_multi_instance_endpoints(tmp_path: Path, monkeypatch) -> None:
 
 def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
@@ -4825,7 +4918,7 @@ def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monk
   create_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "AutoBot Cache", "mode": "paper", "status": "active"},
+    json=_valid_bot_registry_payload(name="AutoBot Cache", mode="paper", status="active"),
   )
   assert create_res.status_code == 200, create_res.text
   assert call_counter["n"] == 2
@@ -4901,6 +4994,7 @@ def test_bots_overview_supports_recent_logs_query_overrides_and_cache_key(tmp_pa
 def test_bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override(tmp_path: Path, monkeypatch) -> None:
   monkeypatch.setenv("BOTS_OVERVIEW_AUTO_DISABLE_LOGS_BOT_COUNT", "1")
   module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
@@ -4910,15 +5004,14 @@ def test_bots_overview_auto_disables_recent_logs_for_large_default_polling_but_k
   create = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={
-      "name": "bot-auto-disable-logs",
-      "engine": "bandit_thompson",
-      "mode": "paper",
-      "status": "active",
-      "pool_strategy_ids": [strategy_id],
-      "universe": ["BTCUSDT"],
-      "notes": "auto-disable logs test",
-    },
+    json=_valid_bot_registry_payload(
+      name="bot-auto-disable-logs",
+      engine="bandit_thompson",
+      mode="paper",
+      status="active",
+      pool_strategy_ids=[strategy_id],
+      notes="auto-disable logs test",
+    ),
   )
   assert create.status_code == 200, create.text
 
@@ -5035,6 +5128,7 @@ def test_logs_has_bot_ref_materialized_and_bots_recent_logs_ignore_unrelated(tmp
 
 def test_log_bot_refs_table_is_populated_and_used_in_overview(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
@@ -5045,7 +5139,7 @@ def test_log_bot_refs_table_is_populated_and_used_in_overview(tmp_path: Path, mo
   create_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "AutoBot RefTable", "mode": "paper", "status": "active"},
+    json=_valid_bot_registry_payload(name="AutoBot RefTable", mode="paper", status="active"),
   )
   assert create_res.status_code == 200, create_res.text
   bot2_id = str((create_res.json().get("bot") or {}).get("id") or "")
@@ -5136,13 +5230,14 @@ def test_bots_overview_prefers_exact_bot_experience_over_current_pool(tmp_path: 
 
 def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
   bot1_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "AutoBot Scope 1", "mode": "paper", "status": "active"},
+    json=_valid_bot_registry_payload(name="AutoBot Scope 1", mode="paper", status="active"),
   )
   assert bot1_res.status_code == 200, bot1_res.text
   bot1_id = bot1_res.json()["bot"]["id"]
@@ -5150,7 +5245,7 @@ def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch)
   bot2_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "AutoBot Scope 2", "mode": "paper", "status": "active"},
+    json=_valid_bot_registry_payload(name="AutoBot Scope 2", mode="paper", status="active"),
   )
   assert bot2_res.status_code == 200, bot2_res.text
   bot2_id = bot2_res.json()["bot"]["id"]
@@ -5408,6 +5503,7 @@ def test_alerts_operational_alerts_clear_when_runtime_recovers(tmp_path: Path, m
 
 def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
@@ -5415,7 +5511,7 @@ def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
   create_live = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "AutoBot Live", "mode": "live", "status": "active"},
+    json=_valid_bot_registry_payload(name="AutoBot Live", mode="live", status="active"),
   )
   assert create_live.status_code == 400, create_live.text
   assert "LIVE" in str(create_live.json().get("detail") or "")
@@ -5423,7 +5519,7 @@ def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
   create_paper = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "AutoBot Base", "mode": "paper", "status": "active"},
+    json=_valid_bot_registry_payload(name="AutoBot Base", mode="paper", status="active"),
   )
   assert create_paper.status_code == 200, create_paper.text
   bot_id = create_paper.json()["bot"]["id"]
@@ -5448,20 +5544,21 @@ def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
 def test_bots_creation_respects_max_instances_limit(tmp_path: Path, monkeypatch) -> None:
   monkeypatch.setenv("BOTS_MAX_INSTANCES", "2")
   _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
 
   create_1 = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "Cap 1", "mode": "paper", "status": "active"},
+    json=_valid_bot_registry_payload(name="Cap 1", mode="paper", status="active"),
   )
   assert create_1.status_code == 200, create_1.text
 
   create_2 = client.post(
     "/api/v1/bots",
     headers=headers,
-    json={"name": "Cap 2", "mode": "paper", "status": "active"},
+    json=_valid_bot_registry_payload(name="Cap 2", mode="paper", status="active"),
   )
   assert create_2.status_code == 400
   detail = str(create_2.json().get("detail") or "")

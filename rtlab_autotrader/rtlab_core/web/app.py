@@ -795,6 +795,8 @@ class BotCreateBody(BaseModel):
     max_daily_loss_pct: float | None = None
     max_drawdown_pct: float | None = None
     max_positions: int | None = None
+    universe_name: str | None = None
+    max_live_symbols: int | None = None
     name: str | None = None
     engine: str = "bandit_thompson"
     mode: Literal["shadow", "paper", "testnet", "live"] = "paper"
@@ -818,6 +820,8 @@ class BotPatchBody(BaseModel):
     max_daily_loss_pct: float | None = None
     max_drawdown_pct: float | None = None
     max_positions: int | None = None
+    universe_name: str | None = None
+    max_live_symbols: int | None = None
     name: str | None = None
     engine: str | None = None
     mode: Literal["shadow", "paper", "testnet", "live"] | None = None
@@ -852,6 +856,7 @@ class BotStartBody(BaseModel):
 
 BOT_DEFAULT_CAPITAL_BASE_USD = 10000.0
 BOT_DEFAULT_RISK_PROFILE = "medium"
+BOT_MAX_LIVE_SYMBOLS = 12
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -3892,6 +3897,203 @@ def risk_hooks(context):
             )
         return resolved
 
+    @staticmethod
+    def _normalize_bot_universe_name(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    @staticmethod
+    def _normalize_bot_assigned_symbols(value: Any) -> list[str]:
+        raw = value if isinstance(value, list) else []
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            symbol = str(item or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+        return symbols
+
+    @staticmethod
+    def _normalize_bot_max_live_symbols(value: Any) -> int | None:
+        if value is None or str(value).strip() == "":
+            return None
+        try:
+            number = int(value)
+        except Exception:
+            return None
+        if number < 1:
+            return None
+        return number
+
+    @staticmethod
+    def _bot_allowed_universe_families(domain_type: str) -> set[str]:
+        normalized = str(domain_type or "").strip().lower()
+        if normalized == "futures":
+            return {"usdm_futures", "coinm_futures"}
+        return {"spot"}
+
+    def _instrument_universe_index(self) -> dict[str, dict[str, Any]]:
+        summary = self.instrument_universes.summary()
+        items = summary.get("items") if isinstance(summary.get("items"), list) else []
+        out: dict[str, dict[str, Any]] = {}
+        for row in items:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if name:
+                out[name] = row
+        return out
+
+    def _resolve_bot_symbol_assignment(
+        self,
+        *,
+        current: dict[str, Any] | None = None,
+        domain_type: str,
+        universe_name: Any = None,
+        universe: Any = None,
+        max_live_symbols: Any = None,
+    ) -> dict[str, Any]:
+        if universe is not None and not isinstance(universe, list):
+            raise HTTPException(status_code=400, detail="universe debe ser una lista de simbolos")
+        current_row = current if isinstance(current, dict) else {}
+        effective_universe_name = (
+            self._normalize_bot_universe_name(universe_name)
+            if universe_name is not None
+            else self._normalize_bot_universe_name(current_row.get("universe_name"))
+        )
+        raw_universe = universe if universe is not None else current_row.get("universe")
+        raw_symbols = raw_universe if isinstance(raw_universe, list) else []
+        if not effective_universe_name:
+            raise HTTPException(status_code=400, detail="universe_name es requerido")
+        if not raw_symbols:
+            raise HTTPException(status_code=400, detail="universe debe contener al menos 1 simbolo asignado")
+
+        assigned_symbols: list[str] = []
+        seen_symbols: set[str] = set()
+        duplicate_symbols: list[str] = []
+        for item in raw_symbols:
+            symbol = str(item or "").strip().upper()
+            if not symbol:
+                continue
+            if symbol in seen_symbols:
+                duplicate_symbols.append(symbol)
+                continue
+            seen_symbols.add(symbol)
+            assigned_symbols.append(symbol)
+        if duplicate_symbols:
+            duplicates_label = ", ".join(sorted(set(duplicate_symbols)))
+            raise HTTPException(status_code=400, detail=f"universe no admite simbolos duplicados: {duplicates_label}")
+        if not assigned_symbols:
+            raise HTTPException(status_code=400, detail="universe debe contener al menos 1 simbolo asignado")
+
+        effective_max_live_symbols = max_live_symbols if max_live_symbols is not None else current_row.get("max_live_symbols")
+        live_cap = self._validate_bot_positive_int(effective_max_live_symbols, field_name="max_live_symbols")
+        if live_cap > BOT_MAX_LIVE_SYMBOLS:
+            raise HTTPException(status_code=400, detail=f"max_live_symbols no puede superar {BOT_MAX_LIVE_SYMBOLS}")
+        if live_cap > len(assigned_symbols):
+            raise HTTPException(status_code=400, detail="max_live_symbols no puede superar la cantidad de simbolos asignados")
+
+        universe_index = self._instrument_universe_index()
+        universe_payload = universe_index.get(effective_universe_name)
+        if not universe_payload:
+            raise HTTPException(status_code=400, detail=f"universe_name invalido: {effective_universe_name}")
+        universe_family = str(universe_payload.get("family") or "").strip().lower()
+        if universe_family not in self._bot_allowed_universe_families(domain_type):
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe_name {effective_universe_name} no es compatible con domain_type={domain_type}",
+            )
+        valid_symbols = {
+            str(item or "").strip().upper()
+            for item in (universe_payload.get("symbols") or [])
+            if str(item or "").strip()
+        }
+        if not valid_symbols:
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe_name {effective_universe_name} no tiene simbolos validos en el catalogo activo",
+            )
+        invalid_symbols = [symbol for symbol in assigned_symbols if symbol not in valid_symbols]
+        if invalid_symbols:
+            invalid_label = ", ".join(invalid_symbols)
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe contiene simbolos fuera del catalogo valido para {effective_universe_name}: {invalid_label}",
+            )
+        return {
+            "universe_name": effective_universe_name,
+            "universe_family": universe_family,
+            "universe": assigned_symbols,
+            "max_live_symbols": live_cap,
+        }
+
+    def _bot_symbol_assignment_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        domain_type = self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot"))
+        universe_name = self._normalize_bot_universe_name(payload.get("universe_name"))
+        assigned_symbols = self._normalize_bot_assigned_symbols(payload.get("universe"))
+        max_live_symbols = self._normalize_bot_max_live_symbols(payload.get("max_live_symbols"))
+        universe_map = universe_index if isinstance(universe_index, dict) else self._instrument_universe_index()
+        errors: list[str] = []
+        universe_family: str | None = None
+
+        if not universe_name:
+            errors.append("universe_name pendiente en registry")
+        if not assigned_symbols:
+            errors.append("universe debe contener al menos 1 simbolo asignado")
+        if max_live_symbols is None:
+            errors.append("max_live_symbols pendiente en registry")
+        elif max_live_symbols > BOT_MAX_LIVE_SYMBOLS:
+            errors.append(f"max_live_symbols no puede superar {BOT_MAX_LIVE_SYMBOLS}")
+        elif max_live_symbols > len(assigned_symbols):
+            errors.append("max_live_symbols no puede superar la cantidad de simbolos asignados")
+
+        universe_payload = universe_map.get(universe_name or "") if universe_name else None
+        if universe_name and universe_payload is None:
+            errors.append(f"universe_name invalido: {universe_name}")
+        if universe_payload is not None:
+            universe_family = str(universe_payload.get("family") or "").strip().lower() or None
+            if universe_family not in self._bot_allowed_universe_families(domain_type):
+                errors.append(f"universe_name {universe_name} no es compatible con domain_type={domain_type}")
+            valid_symbols = {
+                str(item or "").strip().upper()
+                for item in (universe_payload.get("symbols") or [])
+                if str(item or "").strip()
+            }
+            if not valid_symbols:
+                errors.append(f"universe_name {universe_name} no tiene simbolos validos en el catalogo activo")
+            else:
+                invalid_symbols = [symbol for symbol in assigned_symbols if symbol not in valid_symbols]
+                if invalid_symbols:
+                    errors.append(f"simbolos fuera del catalogo valido: {', '.join(invalid_symbols)}")
+
+        return {
+            "universe_name": universe_name,
+            "universe_family": universe_family,
+            "universe": assigned_symbols,
+            "max_live_symbols": max_live_symbols,
+            "symbol_assignment_status": "valid" if not errors else "error",
+            "symbol_assignment_errors": errors,
+        }
+
+    @staticmethod
+    def _ensure_bot_operational_patch_allowed(current: dict[str, Any], *, has_operational_changes: bool) -> None:
+        if not has_operational_changes:
+            return
+        if str((current or {}).get("registry_status") or "active").strip().lower() != "archived":
+            return
+        raise HTTPException(
+            status_code=409,
+            detail="Bot archivado no admite edicion operativa; restauralo primero",
+        )
+
     def _next_bot_id(self, rows: list[dict[str, Any]]) -> str:
         max_n = 0
         for row in rows:
@@ -3922,15 +4124,9 @@ def risk_hooks(context):
                 continue
             seen_pool.add(sid)
             pool_strategy_ids.append(sid)
-        universe_raw = row.get("universe") if isinstance(row.get("universe"), list) else []
-        universe: list[str] = []
-        seen_universe: set[str] = set()
-        for item in universe_raw:
-            val = str(item or "").strip().upper()
-            if not val or val in seen_universe:
-                continue
-            seen_universe.add(val)
-            universe.append(val)
+        universe_name = self._normalize_bot_universe_name(row.get("universe_name"))
+        universe = self._normalize_bot_assigned_symbols(row.get("universe"))
+        max_live_symbols = self._normalize_bot_max_live_symbols(row.get("max_live_symbols"))
         now_iso = utc_now_iso()
         bot_id = str(row.get("id") or "").strip() or "BOT-000000"
         display_name = str(row.get("display_name") or row.get("name") or "").strip()
@@ -3991,7 +4187,9 @@ def risk_hooks(context):
             "mode": self._normalize_bot_mode(str(row.get("mode") or "paper")),
             "status": legacy_status,
             "pool_strategy_ids": pool_strategy_ids,
+            "universe_name": universe_name,
             "universe": universe,
+            "max_live_symbols": max_live_symbols,
             "notes": str(row.get("notes") or "")[:500],
             "created_at": str(row.get("created_at") or now_iso),
             "updated_at": str(row.get("updated_at") or now_iso),
@@ -4036,7 +4234,9 @@ def risk_hooks(context):
             "mode": str(bot.get("mode") or "paper"),
             "status": str(bot.get("status") or "active"),
             "pool_strategy_ids": [str(item) for item in (bot.get("pool_strategy_ids") or []) if str(item).strip()],
+            "universe_name": str(bot.get("universe_name") or ""),
             "universe": [str(item) for item in (bot.get("universe") or []) if str(item).strip()],
+            "max_live_symbols": bot.get("max_live_symbols"),
             "notes": str(bot.get("notes") or ""),
             "created_at": str(bot.get("created_at") or ""),
             "updated_at": str(bot.get("updated_at") or ""),
@@ -4090,7 +4290,9 @@ def risk_hooks(context):
                 "mode": "paper",
                 "status": "active",
                 "pool_strategy_ids": pool_ids,
+                "universe_name": "core_spot_usdt",
                 "universe": ["BTCUSDT", "ETHUSDT"],
+                "max_live_symbols": 2,
                 "notes": "Bot base (Opcion B): propone cambios y requiere aprobacion humana.",
                 "created_at": utc_now_iso(),
                 "updated_at": utc_now_iso(),
@@ -4942,6 +5144,7 @@ def risk_hooks(context):
             recent_logs_per_bot=effective_recent_logs_per_bot,
             perf=overview_perf,
         )
+        universe_index = self._instrument_universe_index()
         out: list[dict[str, Any]] = []
         for row in rows:
             pool_ids = [sid for sid in (row.get("pool_strategy_ids") or []) if sid in by_id]
@@ -4965,6 +5168,7 @@ def risk_hooks(context):
                 if isinstance(overview.get(bot_id), dict)
                 else []
             ) or []
+            payload.update(self._bot_symbol_assignment_payload(row, universe_index=universe_index))
             out.append(payload)
         out.sort(
             key=lambda item: (
@@ -4991,6 +5195,8 @@ def risk_hooks(context):
         max_daily_loss_pct: float | None = None,
         max_drawdown_pct: float | None = None,
         max_positions: int | None = None,
+        universe_name: str | None = None,
+        max_live_symbols: int | None = None,
         name: str | None = None,
         engine: str = "bandit_thompson",
         mode: str = "paper",
@@ -5024,6 +5230,12 @@ def risk_hooks(context):
             max_drawdown_pct=max_drawdown_pct,
             max_positions=max_positions,
         )
+        symbol_assignment = self._resolve_bot_symbol_assignment(
+            domain_type=identity_domain,
+            universe_name=universe_name,
+            universe=universe,
+            max_live_symbols=max_live_symbols,
+        )
         row = self._normalize_bot_row(
             {
                 "id": self._next_bot_id(rows),
@@ -5038,7 +5250,9 @@ def risk_hooks(context):
                 "mode": mode,
                 "status": effective_status,
                 "pool_strategy_ids": pool_strategy_ids or [],
-                "universe": universe or [],
+                "universe_name": symbol_assignment["universe_name"],
+                "universe": symbol_assignment["universe"],
+                "max_live_symbols": symbol_assignment["max_live_symbols"],
                 "notes": notes or "",
                 **base_config,
                 "created_at": now_iso,
@@ -5062,6 +5276,9 @@ def risk_hooks(context):
                 "registry_status": row["registry_status"],
                 "risk_profile": row["risk_profile"],
                 "capital_base_usd": row["capital_base_usd"],
+                "universe_name": row.get("universe_name"),
+                "assigned_symbols": len(row.get("universe") or []),
+                "max_live_symbols": row.get("max_live_symbols"),
             },
         )
         return row
@@ -5083,6 +5300,8 @@ def risk_hooks(context):
         max_daily_loss_pct: float | None = None,
         max_drawdown_pct: float | None = None,
         max_positions: int | None = None,
+        universe_name: str | None = None,
+        max_live_symbols: int | None = None,
         name: str | None = None,
         engine: str | None = None,
         mode: str | None = None,
@@ -5098,6 +5317,31 @@ def risk_hooks(context):
         valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
         current = dict(rows[idx])
         patched = dict(current)
+        self._ensure_bot_operational_patch_allowed(
+            current,
+            has_operational_changes=any(
+                value is not None
+                for value in (
+                    domain_type,
+                    capital_base_usd,
+                    max_total_exposure_pct,
+                    max_asset_exposure_pct,
+                    risk_profile,
+                    risk_per_trade_pct,
+                    max_daily_loss_pct,
+                    max_drawdown_pct,
+                    max_positions,
+                    engine,
+                    mode,
+                    status,
+                    pool_strategy_ids,
+                    universe_name,
+                    universe,
+                    max_live_symbols,
+                    notes,
+                )
+            ),
+        )
         if display_name is not None or name is not None:
             next_display_name = display_name if display_name is not None else name
             validated_display_name = self._validate_bot_display_name(next_display_name)
@@ -5154,10 +5398,24 @@ def risk_hooks(context):
                     max_positions=max_positions,
                 )
             )
+        if (
+            domain_type is not None
+            or universe_name is not None
+            or universe is not None
+            or max_live_symbols is not None
+        ):
+            symbol_assignment = self._resolve_bot_symbol_assignment(
+                current=patched,
+                domain_type=str(patched.get("domain_type") or "spot"),
+                universe_name=universe_name,
+                universe=universe,
+                max_live_symbols=max_live_symbols,
+            )
+            patched["universe_name"] = symbol_assignment["universe_name"]
+            patched["universe"] = symbol_assignment["universe"]
+            patched["max_live_symbols"] = symbol_assignment["max_live_symbols"]
         if pool_strategy_ids is not None:
             patched["pool_strategy_ids"] = pool_strategy_ids
-        if universe is not None:
-            patched["universe"] = universe
         if notes is not None:
             patched["notes"] = notes
         patched["id"] = bot_id
@@ -5179,6 +5437,9 @@ def risk_hooks(context):
                 "domain_type": rows[idx].get("domain_type"),
                 "risk_profile": rows[idx].get("risk_profile"),
                 "capital_base_usd": rows[idx].get("capital_base_usd"),
+                "universe_name": rows[idx].get("universe_name"),
+                "assigned_symbols": len(rows[idx].get("universe") or []),
+                "max_live_symbols": rows[idx].get("max_live_symbols"),
             },
         )
         return rows[idx]
@@ -12289,6 +12550,8 @@ def create_app() -> FastAPI:
             max_daily_loss_pct=body.max_daily_loss_pct,
             max_drawdown_pct=body.max_drawdown_pct,
             max_positions=body.max_positions,
+            universe_name=body.universe_name,
+            max_live_symbols=body.max_live_symbols,
             name=body.name,
             engine=body.engine,
             mode=body.mode,
@@ -12321,6 +12584,8 @@ def create_app() -> FastAPI:
             max_daily_loss_pct=body.max_daily_loss_pct,
             max_drawdown_pct=body.max_drawdown_pct,
             max_positions=body.max_positions,
+            universe_name=body.universe_name,
+            max_live_symbols=body.max_live_symbols,
             name=body.name,
             engine=body.engine,
             mode=body.mode,

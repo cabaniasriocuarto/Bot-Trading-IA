@@ -19,6 +19,14 @@ export const botRegistryFormSchema = z.object({
     .max(280, "La descripción no puede superar 280 caracteres.")
     .transform((value) => value || ""),
   domain_type: z.enum(["spot", "futures"]),
+  universe_name: z
+    .string()
+    .trim()
+    .min(1, "El universo válido es requerido."),
+  universe: z
+    .array(z.string().trim().min(1, "Cada símbolo asignado debe ser válido."))
+    .min(1, "Debes asignar al menos 1 símbolo válido."),
+  max_live_symbols: z.coerce.number().int().gte(1, "El cap live debe ser >= 1.").lte(12, "El cap live no puede superar 12."),
   capital_base_usd: z.coerce.number().gt(0, "El capital base debe ser > 0."),
   max_total_exposure_pct: z.coerce
     .number()
@@ -43,6 +51,28 @@ export const botRegistryFormSchema = z.object({
     .lte(100, "El drawdown máximo no puede superar 100%."),
   max_positions: z.coerce.number().int().gte(1, "Las posiciones máximas deben ser >= 1."),
 }).superRefine((value, ctx) => {
+  const seenSymbols = new Set<string>();
+  const duplicateSymbols = new Set<string>();
+  for (const rawSymbol of value.universe) {
+    const symbol = String(rawSymbol || "").trim().toUpperCase();
+    if (!symbol) continue;
+    if (seenSymbols.has(symbol)) duplicateSymbols.add(symbol);
+    seenSymbols.add(symbol);
+  }
+  if (duplicateSymbols.size) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["universe"],
+      message: `No puede haber símbolos duplicados: ${Array.from(duplicateSymbols).join(", ")}`,
+    });
+  }
+  if (value.max_live_symbols > value.universe.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["max_live_symbols"],
+      message: "El cap live no puede superar la cantidad de símbolos asignados.",
+    });
+  }
   if (value.max_asset_exposure_pct > value.max_total_exposure_pct) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -60,6 +90,9 @@ export const DEFAULT_BOT_REGISTRY_DRAFT: BotRegistryDraft = {
   alias: "",
   description: "",
   domain_type: "spot",
+  universe_name: "",
+  universe: [],
+  max_live_symbols: "1",
   capital_base_usd: "10000",
   max_total_exposure_pct: "65",
   max_asset_exposure_pct: "25",
@@ -76,16 +109,32 @@ function asDraftNumber(value: unknown, fallback: string): string {
   return String(numeric);
 }
 
+function asDraftUniverse(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || "").trim().toUpperCase())
+    .filter((item) => item.length > 0);
+}
+
 export function normalizeBotRegistryDraft(draft: BotRegistryDraft): BotRegistryFormData {
-  return botRegistryFormSchema.parse(draft);
+  const normalizedDraft = {
+    ...draft,
+    universe_name: String(draft.universe_name || "").trim(),
+    universe: asDraftUniverse(draft.universe),
+  };
+  return botRegistryFormSchema.parse(normalizedDraft);
 }
 
 export function buildBotRegistryDraft(bot?: Partial<BotInstance> | null): BotRegistryDraft {
+  const assignedUniverse = asDraftUniverse(bot?.universe);
   return {
     display_name: String(bot?.display_name || bot?.name || "").trim(),
     alias: String(bot?.alias || "").trim(),
     description: String(bot?.description || "").trim(),
     domain_type: bot?.domain_type === "futures" ? "futures" : "spot",
+    universe_name: String(bot?.universe_name || "").trim(),
+    universe: assignedUniverse,
+    max_live_symbols: asDraftNumber(bot?.max_live_symbols, assignedUniverse.length ? String(Math.min(assignedUniverse.length, 12)) : "1"),
     capital_base_usd: asDraftNumber(bot?.capital_base_usd, "10000"),
     max_total_exposure_pct: asDraftNumber(bot?.max_total_exposure_pct, "65"),
     max_asset_exposure_pct: asDraftNumber(bot?.max_asset_exposure_pct, "25"),

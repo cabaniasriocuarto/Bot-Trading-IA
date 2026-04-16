@@ -2,6 +2,45 @@
 
 ## 2026-04-16
 
+### RTLRESE-28 - Bot Registry con simbolos asignados, universo valido y cap live
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` extiende el registry del bot con:
+    - `universe_name`
+    - `universe`
+    - `max_live_symbols`
+    - `symbol_assignment_status`
+    - `symbol_assignment_errors`
+  - el backend persiste esos campos en la misma capa canonica de bots;
+  - reutiliza `InstrumentUniverseService` y `config/policies/universes.yaml` como fuente real del catalogo;
+  - valida duplicados, existencia real de simbolos, compatibilidad con `domain_type` y limite `max_live_symbols <= len(universe)`;
+  - si el catalogo deja invalida una asignacion ya persistida, el bot queda fail-closed con error de configuracion visible por API.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots` y `PATCH /api/v1/bots/{bot_id}` ahora aceptan y validan `universe_name`, `universe` y `max_live_symbols`;
+  - `GET /api/v1/bots` y `GET /api/v1/bots/{bot_id}` devuelven el estado de asignacion;
+  - el registry se apoya en `GET /api/v1/instruments/universes` como catalogo canonico del universo valido.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta y edicion inline con universo valido, simbolos asignados y `cap live`
+    - errores reales de validacion de asignacion
+    - resumen por bot de universo, cantidad de simbolos, `cap live` y estado de validez
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema y validaciones cruzadas para duplicados y `max_live_symbols`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con estado de asignacion y errores
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cobertura minima para simbolos duplicados y `cap live`
+- Tests corridos:
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "api_expensive_rate_limit_guard or bots_multi_instance_endpoints or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override or log_bot_refs_table_is_populated_and_used_in_overview or bots_overview_scopes_kills_by_bot_and_mode or bots_live_mode_blocked_by_gates or bots_creation_respects_max_instances_limit"` -> PASS
+  - `npm.cmd exec vitest run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL por desalineacion preexistente de `.next/types` en el repo; `next build` si paso con el bloque nuevo
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-29` strategy pool
+  - elegibilidad estrategia<->simbolo
+  - `RTLOPS-72+` runtime multi-symbol
+  - lifecycle y live console
+
 ### RTLRESE-27 - Bot Registry con capital base, perfil de riesgo y configuracion minima por bot
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/web/app.py` extiende el registry del bot con:
