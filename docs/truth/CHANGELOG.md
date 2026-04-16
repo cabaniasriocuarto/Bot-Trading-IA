@@ -1008,6 +1008,21 @@
 - Validacion local:
   - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k decision_log or startup_maintenance` -> PASS.
 
+### Auditoria implementada: startup maintenance y wrappers SQLite ya no se quedan en estado ambiguo ni resuelven runtime paths
+- Hallazgo real de review sobre lo implementado:
+  - el mantenimiento de startup podia romper antes del refresh de reporting y dejar `startup_maintenance_status` clavado en `running`;
+  - ademas seguian quedando wrappers SQLite del camino de arranque haciendo `Path.resolve()` sobre runtime paths:
+    - `ReportingBridgeDB`
+    - `ExecutionRealityDB`
+    - `ValidationDB`
+    - `LivePreflightDB`
+    - `BinanceInstrumentRegistryDB`
+- Cambio minimo/profesional aplicado en rama de auditoria:
+  - `_run_startup_maintenance()` ahora marca fallo explicito por etapa y siempre publica `finished_at`;
+  - esos wrappers SQLite pasan a `runtime_path(...)` en vez de `resolve()`.
+- Validacion local:
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k startup_maintenance_records_failure_status or startup_db_wrappers_do_not_resolve_runtime_sqlite_paths` -> PASS.
+
 ### Produccion Railway: startup deja de bloquearse por auth sqlite y mantenimiento de ConsoleStore
 - Diagnostico mas fuerte del `502` residual:
   - el import de `rtlab_core.web.main` seguia tardando ~33s con la configuracion default;

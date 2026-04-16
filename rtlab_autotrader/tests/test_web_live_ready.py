@@ -552,6 +552,43 @@ def test_startup_maintenance_records_decision_log_backfill_failure(tmp_path: Pat
   assert status["error"] == "decision log exploded"
   assert status.get("finished_at")
 
+def test_startup_db_wrappers_do_not_resolve_runtime_sqlite_paths(tmp_path: Path, monkeypatch) -> None:
+  import pathlib
+
+  from rtlab_core.execution.live_preflight import LivePreflightDB
+  from rtlab_core.execution.reality import ExecutionRealityDB
+  from rtlab_core.instruments.registry import BinanceInstrumentRegistryDB
+  from rtlab_core.reporting.service import ReportingBridgeDB
+  from rtlab_core.validation.service import ValidationDB
+
+  runtime_targets = {
+    tmp_path / "reporting" / "reporting.sqlite3",
+    tmp_path / "execution" / "execution.sqlite3",
+    tmp_path / "validation" / "validation.sqlite3",
+    tmp_path / "console" / "console.sqlite3",
+    tmp_path / "instruments" / "registry.sqlite3",
+  }
+  original_resolve = pathlib.Path.resolve
+
+  def _guard_resolve(self, *args, **kwargs):
+    if self in runtime_targets:
+      raise AssertionError(f"resolve() no debe tocar runtime sqlite path: {self}")
+    return original_resolve(self, *args, **kwargs)
+
+  monkeypatch.setattr(pathlib.Path, "resolve", _guard_resolve)
+
+  reporting = ReportingBridgeDB(tmp_path / "reporting" / "reporting.sqlite3")
+  execution = ExecutionRealityDB(tmp_path / "execution" / "execution.sqlite3")
+  validation = ValidationDB(tmp_path / "validation" / "validation.sqlite3")
+  live_preflight = LivePreflightDB(tmp_path / "console" / "console.sqlite3")
+  instruments = BinanceInstrumentRegistryDB(tmp_path / "instruments" / "registry.sqlite3")
+
+  assert reporting.db_path == tmp_path / "reporting" / "reporting.sqlite3"
+  assert execution.db_path == tmp_path / "execution" / "execution.sqlite3"
+  assert validation.db_path == tmp_path / "validation" / "validation.sqlite3"
+  assert live_preflight.db_path == tmp_path / "console" / "console.sqlite3"
+  assert instruments.db_path == tmp_path / "instruments" / "registry.sqlite3"
+
 
 def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
