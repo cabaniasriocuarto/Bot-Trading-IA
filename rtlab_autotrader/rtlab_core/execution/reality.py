@@ -878,7 +878,7 @@ def execution_router_policy(
 
 class ExecutionRealityDB:
     def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path).resolve()
+        self.db_path = runtime_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 

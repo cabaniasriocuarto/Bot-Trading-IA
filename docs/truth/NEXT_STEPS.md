@@ -46,7 +46,7 @@ Fecha: 2026-04-08
   - startup hooks de sync/recovery no bloqueantes
   - `health` read-only
 - [ ] Siguiente paso exacto:
-  - mergear este fix
+  - confirmar que Railway produccion esta corriendo el deploy ya mergeado
   - esperar auto-deploy de Railway produccion
   - confirmar `GET /api/v1/health -> 200`
   - solo despues revalidar:
@@ -61,7 +61,7 @@ Fecha: 2026-04-08
   - migrar esos constructores a `runtime_path(...)`
   - agregar tests anti-regresion
 - [ ] Siguiente paso exacto:
-  - mergear este fix
+  - confirmar que Railway produccion esta corriendo el deploy ya mergeado
   - esperar auto-deploy de Railway produccion
   - confirmar `GET /api/v1/health -> 200`
   - solo despues revalidar:
@@ -81,7 +81,7 @@ Fecha: 2026-04-08
   - hacer fail-honest el panel Beast cuando el backend no responde
   - agregar tests anti-regresion
 - [ ] Siguiente paso exacto:
-  - mergear la rama de auditoria
+  - confirmar que produccion ya tomo el hardening mergeado en `main`
   - esperar deploy de produccion
   - confirmar `200` en `/api/v1/health`
   - rerun de validacion Backtests:
@@ -102,7 +102,7 @@ Fecha: 2026-04-08
   - mantener fail-closed sin tocar el volume path
   - quitar `Path.resolve()` del camino critico de `RTLAB_USER_DATA_DIR`
 - [ ] Siguiente paso exacto:
-  - mergear este ajuste
+  - confirmar que Railway produccion esta corriendo el ajuste ya mergeado
   - esperar que produccion vuelva a `200`
   - rerun `Production Storage Durability`
   - si el workflow pasa `Check mounted storage gate`, recien ahi rebootstrapear `BTCUSDT` y reconfirmar Beast/Backtests

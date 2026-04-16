@@ -19,6 +19,7 @@ import yaml
 
 from rtlab_core.execution.binance_adapter import map_exchange_error
 from rtlab_core.policy_paths import describe_policy_root_resolution
+from rtlab_core.src.data.runtime_path import runtime_path
 
 
 VENUE_BINANCE = "binance"
@@ -1091,7 +1092,7 @@ def _credentials_for_family(family: str, environment: str) -> tuple[str, str, li
 
 class BinanceInstrumentRegistryDB:
     def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path).resolve()
+        self.db_path = runtime_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 

@@ -46,6 +46,24 @@ Fecha de actualizacion: 2026-04-08
   - esto sigue siendo un fix repo-side para bajar bloqueo de arranque;
   - el cierre real del incidente solo queda confirmado cuando Railway produccion vuelva a `200`.
 
+## Auditoria implementada: el startup maintenance y varios SQLite wrappers seguian dejando una brecha real en el camino de arranque - 2026-04-07
+
+- Hallazgo real sobre lo implementado:
+  - aunque `#28`, `#29` y `#30` ya habian endurecido el startup path, todavia quedaban dos deudas concretas:
+    - `_run_startup_maintenance()` podia fallar antes de llegar al `reporting refresh` y dejar `startup_maintenance_status` ambiguo (`running` sin `finished_at`);
+    - varios wrappers SQLite construidos en startup seguian haciendo `Path.resolve()` sobre runtime paths del volumen:
+      - `ReportingBridgeDB`
+      - `ExecutionRealityDB`
+      - `ValidationDB`
+      - `LivePreflightDB`
+      - `BinanceInstrumentRegistryDB`
+- Cambio minimo/profesional aplicado:
+  - `_run_startup_maintenance()` ahora clasifica fallos por etapa (`seed_backtest_failed`, `backtest_catalog_sync_failed`, `reporting_refresh_failed`) y siempre deja `finished_at`;
+  - esos wrappers SQLite pasan a `runtime_path(...)` para no volver a resolver roots runtime del volumen en el camino critico.
+- Lectura operativa correcta:
+  - este ajuste no “cierra” por si solo el incidente `502`;
+  - pero si baja otra capa real de fragilidad del boot path y deja observabilidad honesta cuando el mantenimiento de startup se degrada.
+
 ## Produccion Railway: el 502 seguia atado al startup blocking path de auth y ConsoleStore - 2026-04-07
 
 - Hallazgo raiz aislado en repo:
