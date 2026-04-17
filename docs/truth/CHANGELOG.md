@@ -2,6 +2,49 @@
 
 ## 2026-04-16
 
+### RTLRESE-29 - Bot Registry con strategy pool asignado, persistencia y limites
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` introduce:
+    - `BOT_MAX_POOL_STRATEGIES = 15`
+    - helper canonico para validar/resolver `pool_strategy_ids`
+    - `strategy_pool_status`
+    - `strategy_pool_errors`
+    - `max_pool_strategies`
+  - el backend ya no elimina `strategy_id` invalidas en silencio al normalizar bots;
+  - crea validacion explicita contra la fuente real de `list_strategies()` y rechaza:
+    - pool vacio
+    - duplicados
+    - ids inexistentes
+    - estrategias `archived`
+    - estrategias `disabled/inactive`
+    - estrategias con `allow_learning=false`
+  - si un bot ya persistido queda desalineado por cambios del strategy registry/truth, el pool queda fail-closed con error visible por API.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots` y `PATCH /api/v1/bots/{bot_id}` ahora validan `pool_strategy_ids` con cap `15`;
+  - `GET /api/v1/bots`, `GET /api/v1/bots/{bot_id}` y `GET /api/v1/bots/{bot_id}/policy-state` devuelven estado, errores y limite del pool;
+  - `PATCH /api/v1/bots/{bot_id}/policy-state` y `bulk-patch` reutilizan la misma validacion del pool.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta con selector real de strategy pool
+    - edicion de pool por bot sobre el mismo draft del registry
+    - visualizacion del cap `15`
+    - errores reales de pool y estado fail-closed por bot
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema/helpers del draft extendidos con `pool_strategy_ids`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstanceStrategyRef`, `BotInstance` y `BotPolicyState` tipados con estado del pool
+- Tests corridos:
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`4 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL por desalineacion preexistente de `tsconfig.json` con `.next/types` faltantes; no bloquea `next build` y no fue introducido por `RTLRESE-29`
+- Fuera de alcance mantenido a proposito:
+  - elegibilidad estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - consolidacion / runtime multi-symbol (`RTLOPS-72+`)
+  - lifecycle
+  - live console
+
 ### RTLRESE-28 - Bot Registry con simbolos asignados, universo valido y cap live
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/web/app.py` extiende el registry del bot con:

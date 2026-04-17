@@ -2,6 +2,29 @@
 
 Fecha: 2026-04-16
 
+## Siguiente bloque exacto despues de RTLRESE-29 - 2026-04-16
+- [x] Extender Bot Registry con strategy pool asignado por bot:
+  - `pool_strategy_ids`
+  - `pool_strategies`
+  - `strategy_pool_status`
+  - `strategy_pool_errors`
+  - `max_pool_strategies`
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - persistencia real sobre el registry ya existente
+  - fuente canonica apoyada en `strategy registry / truth`
+  - validaciones explicitas de minimo, duplicados, ids invalidos y cap `15`
+  - estado fail-closed visible si el pool deja de ser valido
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-30` y resolver solo:
+    - gobierno avanzado / restricciones siguientes del Bot Registry sobre la base ya persistida
+    - sin reabrir pool, simbolos o config base ya cerrados en `RTLRESE-27/28/29`
+  - mantener fuera de ese bloque:
+    - elegibilidad estrategia<->simbolo
+    - runtime multi-symbol (`RTLOPS-72+`)
+    - lifecycle
+    - live console
+
 ## Siguiente bloque exacto despues de RTLRESE-28 - 2026-04-16
 - [x] Extender Bot Registry con asignacion manual de simbolos por bot:
   - `universe_name`
@@ -13,7 +36,7 @@ Fecha: 2026-04-16
   - universo valido reutilizando el catalogo real del sistema
   - validaciones explicitas de dominio, duplicados y cap live
   - estado fail-closed visible si la asignacion deja de ser valida
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - abrir `RTLRESE-29` y resolver solo:
     - strategy pool asignado por bot
     - persistencia real del pool

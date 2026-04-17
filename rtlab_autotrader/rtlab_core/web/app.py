@@ -857,6 +857,7 @@ class BotStartBody(BaseModel):
 BOT_DEFAULT_CAPITAL_BASE_USD = 10000.0
 BOT_DEFAULT_RISK_PROFILE = "medium"
 BOT_MAX_LIVE_SYMBOLS = 12
+BOT_MAX_POOL_STRATEGIES = 15
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -3946,6 +3947,130 @@ def risk_hooks(context):
                 out[name] = row
         return out
 
+    @staticmethod
+    def _normalize_bot_pool_strategy_ids(value: Any) -> list[str]:
+        raw = value if isinstance(value, list) else []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            strategy_id = str(item or "").strip()
+            if not strategy_id or strategy_id in seen:
+                continue
+            seen.add(strategy_id)
+            out.append(strategy_id)
+        return out
+
+    @staticmethod
+    def _bot_pool_duplicate_ids(value: Any) -> list[str]:
+        raw = value if isinstance(value, list) else []
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for item in raw:
+            strategy_id = str(item or "").strip()
+            if not strategy_id:
+                continue
+            if strategy_id in seen:
+                duplicates.add(strategy_id)
+                continue
+            seen.add(strategy_id)
+        return sorted(duplicates)
+
+    @staticmethod
+    def _strategy_index_by_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        return {
+            str(row.get("id") or ""): row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("id") or "").strip()
+        }
+
+    def _bot_strategy_pool_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        raw_pool = payload.get("pool_strategy_ids") if isinstance(payload.get("pool_strategy_ids"), list) else []
+        pool_ids = self._normalize_bot_pool_strategy_ids(raw_pool)
+        duplicate_ids = self._bot_pool_duplicate_ids(raw_pool)
+        strategy_map = (
+            strategies_index
+            if isinstance(strategies_index, dict)
+            else self._strategy_index_by_id(self.list_strategies())
+        )
+        errors: list[str] = []
+        pool_meta: list[dict[str, Any]] = []
+        effective_pool_ids: list[str] = []
+
+        if not pool_ids:
+            errors.append("pool_strategy_ids debe contener al menos 1 estrategia asignada")
+        if len(pool_ids) > BOT_MAX_POOL_STRATEGIES:
+            errors.append(f"pool_strategy_ids no puede superar {BOT_MAX_POOL_STRATEGIES} estrategias")
+        if duplicate_ids:
+            errors.append(f"pool_strategy_ids no admite duplicados: {', '.join(duplicate_ids)}")
+
+        for strategy_id in pool_ids:
+            strategy = strategy_map.get(strategy_id)
+            if not isinstance(strategy, dict):
+                errors.append(f"strategy_id inexistente en strategy registry/truth: {strategy_id}")
+                continue
+            enabled_for_trading = bool(strategy.get("enabled_for_trading", strategy.get("enabled", False)))
+            allow_learning = bool(strategy.get("allow_learning", True))
+            status = str(strategy.get("status") or ("active" if enabled_for_trading else "disabled")).strip().lower() or "disabled"
+            pool_meta.append(
+                {
+                    "id": strategy_id,
+                    "name": str(strategy.get("name") or strategy_id),
+                    "allow_learning": allow_learning,
+                    "enabled_for_trading": enabled_for_trading,
+                    "is_primary": bool(strategy.get("is_primary", False)),
+                    "status": status,
+                }
+            )
+            if status == "archived":
+                errors.append(f"strategy_id archivada y no elegible para pool: {strategy_id}")
+                continue
+            if status != "active":
+                errors.append(f"strategy_id inactiva para pool: {strategy_id}")
+                continue
+            if not enabled_for_trading:
+                errors.append(f"strategy_id deshabilitada para trading: {strategy_id}")
+                continue
+            if not allow_learning:
+                errors.append(f"strategy_id no elegible para pool (allow_learning=false): {strategy_id}")
+                continue
+            effective_pool_ids.append(strategy_id)
+
+        return {
+            "pool_strategy_ids": pool_ids,
+            "pool_strategies": pool_meta,
+            "strategy_pool_status": "valid" if not errors else "error",
+            "strategy_pool_errors": errors,
+            "max_pool_strategies": BOT_MAX_POOL_STRATEGIES,
+            "effective_pool_strategy_ids": effective_pool_ids if not errors else [],
+        }
+
+    def _validate_bot_strategy_pool(
+        self,
+        pool_strategy_ids: Any,
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> list[str]:
+        if not isinstance(pool_strategy_ids, list):
+            raise HTTPException(status_code=400, detail="pool_strategy_ids debe ser una lista de strategy ids")
+        pool_payload = self._bot_strategy_pool_payload(
+            {"pool_strategy_ids": pool_strategy_ids},
+            strategies_index=strategies_index,
+        )
+        if str(pool_payload.get("strategy_pool_status") or "error") != "valid":
+            detail = "; ".join(
+                str(item)
+                for item in (pool_payload.get("strategy_pool_errors") or [])
+                if str(item).strip()
+            )
+            raise HTTPException(status_code=400, detail=detail or "pool_strategy_ids invalido")
+        return [str(item) for item in (pool_payload.get("pool_strategy_ids") or []) if str(item).strip()]
+
     def _resolve_bot_symbol_assignment(
         self,
         *,
@@ -4107,23 +4232,12 @@ def risk_hooks(context):
                 continue
         return f"BOT-{max_n + 1:06d}"
 
-    def _normalize_bot_row(self, row: dict[str, Any], *, strategy_ids: set[str] | None = None) -> dict[str, Any]:
+    def _normalize_bot_row(self, row: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(row, dict):
             row = {}
         risk_profile = self._normalize_bot_risk_profile(str(row.get("risk_profile") or BOT_DEFAULT_RISK_PROFILE))
         risk_defaults = self._bot_risk_profile_defaults(risk_profile)
-        sid_allow = strategy_ids if isinstance(strategy_ids, set) else None
-        pool_ids_raw = row.get("pool_strategy_ids") if isinstance(row.get("pool_strategy_ids"), list) else []
-        pool_strategy_ids: list[str] = []
-        seen_pool: set[str] = set()
-        for item in pool_ids_raw:
-            sid = str(item or "").strip()
-            if not sid or sid in seen_pool:
-                continue
-            if sid_allow is not None and sid not in sid_allow:
-                continue
-            seen_pool.add(sid)
-            pool_strategy_ids.append(sid)
+        pool_strategy_ids = self._normalize_bot_pool_strategy_ids(row.get("pool_strategy_ids"))
         universe_name = self._normalize_bot_universe_name(row.get("universe_name"))
         universe = self._normalize_bot_assigned_symbols(row.get("universe"))
         max_live_symbols = self._normalize_bot_max_live_symbols(row.get("max_live_symbols"))
@@ -4199,13 +4313,12 @@ def risk_hooks(context):
         payload = self.policy_state.load_bot_rows()
         if not isinstance(payload, list):
             payload = []
-        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
         normalized: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         changed = False
         for idx, raw in enumerate(payload):
             before = dict(raw) if isinstance(raw, dict) else {}
-            row = self._normalize_bot_row(before, strategy_ids=valid_strategy_ids)
+            row = self._normalize_bot_row(before)
             if not row["id"] or row["id"] == "BOT-000000" or row["id"] in seen_ids:
                 row["id"] = self._next_bot_id(normalized)
                 changed = True
@@ -4228,12 +4341,16 @@ def risk_hooks(context):
         raise HTTPException(status_code=404, detail="BotInstance not found")
 
     @staticmethod
-    def _bot_policy_state_payload(bot: dict[str, Any]) -> dict[str, Any]:
+    def _bot_policy_state_payload(bot: dict[str, Any], *, pool_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        resolved_pool = pool_payload if isinstance(pool_payload, dict) else {}
         return {
             "engine": str(bot.get("engine") or "bandit_thompson"),
             "mode": str(bot.get("mode") or "paper"),
             "status": str(bot.get("status") or "active"),
-            "pool_strategy_ids": [str(item) for item in (bot.get("pool_strategy_ids") or []) if str(item).strip()],
+            "pool_strategy_ids": [str(item) for item in (resolved_pool.get("pool_strategy_ids") or []) if str(item).strip()],
+            "strategy_pool_status": str(resolved_pool.get("strategy_pool_status") or "error"),
+            "strategy_pool_errors": [str(item) for item in (resolved_pool.get("strategy_pool_errors") or []) if str(item).strip()],
+            "max_pool_strategies": int(resolved_pool.get("max_pool_strategies") or BOT_MAX_POOL_STRATEGIES),
             "universe_name": str(bot.get("universe_name") or ""),
             "universe": [str(item) for item in (bot.get("universe") or []) if str(item).strip()],
             "max_live_symbols": bot.get("max_live_symbols"),
@@ -4243,7 +4360,9 @@ def risk_hooks(context):
         }
 
     def bot_policy_state_or_404(self, bot_id: str) -> dict[str, Any]:
-        return self._bot_policy_state_payload(self.bot_or_404(bot_id))
+        bot = self.bot_or_404(bot_id)
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        return self._bot_policy_state_payload(bot, pool_payload=pool_payload)
 
     def patch_bot_policy_state(
         self,
@@ -4265,7 +4384,8 @@ def risk_hooks(context):
             universe=universe,
             notes=notes,
         )
-        return self._bot_policy_state_payload(bot)
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        return self._bot_policy_state_payload(bot, pool_payload=pool_payload)
 
     def _ensure_default_bots(self) -> None:
         rows = self.load_bots()
@@ -4275,8 +4395,13 @@ def risk_hooks(context):
         pool_ids = [
             str(row.get("id"))
             for row in strategies
-            if str(row.get("status") or "") != "archived" and bool(row.get("allow_learning", True))
+            if (
+                str(row.get("status") or "").strip().lower() == "active"
+                and bool(row.get("enabled_for_trading", row.get("enabled", False)))
+                and bool(row.get("allow_learning", True))
+            )
         ]
+        pool_ids = pool_ids[:BOT_MAX_POOL_STRATEGIES]
         if not pool_ids:
             pool_ids = [str(row.get("id")) for row in strategies[:1] if row.get("id")]
         default_row = self._normalize_bot_row(
@@ -4297,7 +4422,6 @@ def risk_hooks(context):
                 "created_at": utc_now_iso(),
                 "updated_at": utc_now_iso(),
             },
-            strategy_ids={str(row.get("id") or "") for row in strategies},
         )
         self.save_bots([default_row])
 
@@ -4697,15 +4821,19 @@ def risk_hooks(context):
         perf_stages["strategies_count"] = len(strategies_rows)
         perf_stages["runs_count"] = len(runs_rows)
         perf_stages["recommendations_count"] = len(rec_rows)
-        strategy_by_id = {str(row.get("id") or ""): row for row in strategies_rows if str(row.get("id") or "")}
+        strategy_by_id = self._strategy_index_by_id(strategies_rows)
 
         t_stage = time.perf_counter()
         bot_pool_ids: dict[str, list[str]] = {}
         strategy_ids_in_pool: set[str] = set()
         for bot in bots_rows:
             bid = str(bot.get("id") or "")
-            pool_ids = [sid for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategy_by_id]
-            normalized_pool = [str(sid) for sid in pool_ids]
+            pool_payload = self._bot_strategy_pool_payload(bot, strategies_index=strategy_by_id)
+            normalized_pool = [
+                str(sid)
+                for sid in (pool_payload.get("effective_pool_strategy_ids") or [])
+                if str(sid).strip()
+            ]
             bot_pool_ids[bid] = normalized_pool
             strategy_ids_in_pool.update(normalized_pool)
         perf_stages["stage_pool_index_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
@@ -5134,7 +5262,7 @@ def risk_hooks(context):
             overview_perf["logs_per_bot_effective"] = int(effective_recent_logs_per_bot)
         strategies = self.list_strategies()
         runs = self.load_runs()
-        by_id = {str(s.get("id") or ""): s for s in strategies}
+        by_id = self._strategy_index_by_id(strategies)
         overview = self.get_bots_overview(
             recommendations=recommendations,
             bots=rows,
@@ -5147,22 +5275,24 @@ def risk_hooks(context):
         universe_index = self._instrument_universe_index()
         out: list[dict[str, Any]] = []
         for row in rows:
-            pool_ids = [sid for sid in (row.get("pool_strategy_ids") or []) if sid in by_id]
-            pool_meta = [
-                {
-                    "id": sid,
-                    "name": str(by_id[sid].get("name") or sid),
-                    "allow_learning": bool(by_id[sid].get("allow_learning", True)),
-                    "enabled_for_trading": bool(by_id[sid].get("enabled_for_trading", by_id[sid].get("enabled", False))),
-                    "is_primary": bool(by_id[sid].get("is_primary", False)),
-                }
-                for sid in pool_ids
+            pool_payload = self._bot_strategy_pool_payload(row, strategies_index=by_id)
+            effective_pool_ids = [
+                str(sid)
+                for sid in (pool_payload.get("effective_pool_strategy_ids") or [])
+                if str(sid).strip()
             ]
             payload = dict(row)
-            payload["pool_strategy_ids"] = pool_ids
-            payload["pool_strategies"] = pool_meta
+            payload["pool_strategy_ids"] = [str(sid) for sid in (pool_payload.get("pool_strategy_ids") or []) if str(sid).strip()]
+            payload["pool_strategies"] = list(pool_payload.get("pool_strategies") or [])
+            payload["strategy_pool_status"] = str(pool_payload.get("strategy_pool_status") or "error")
+            payload["strategy_pool_errors"] = [str(item) for item in (pool_payload.get("strategy_pool_errors") or []) if str(item).strip()]
+            payload["max_pool_strategies"] = int(pool_payload.get("max_pool_strategies") or BOT_MAX_POOL_STRATEGIES)
             bot_id = str(row.get("id") or "")
-            payload["metrics"] = self._bot_metrics(dict(row, pool_strategy_ids=pool_ids), recommendations=recommendations, overview=overview)
+            payload["metrics"] = self._bot_metrics(
+                dict(row, pool_strategy_ids=effective_pool_ids),
+                recommendations=recommendations,
+                overview=overview,
+            )
             payload["recent_logs"] = (
                 ((overview.get(bot_id) or {}).get("recent_logs"))
                 if isinstance(overview.get(bot_id), dict)
@@ -5206,7 +5336,8 @@ def risk_hooks(context):
         notes: str | None = None,
     ) -> dict[str, Any]:
         rows = self.load_bots()
-        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
+        strategy_rows = self.list_strategies()
+        strategy_index = self._strategy_index_by_id(strategy_rows)
         now_iso = utc_now_iso()
         identity_name = self._validate_bot_display_name(display_name if display_name is not None else name)
         identity_alias = self._validate_bot_alias(alias)
@@ -5236,6 +5367,10 @@ def risk_hooks(context):
             universe=universe,
             max_live_symbols=max_live_symbols,
         )
+        validated_pool_strategy_ids = self._validate_bot_strategy_pool(
+            pool_strategy_ids if pool_strategy_ids is not None else [],
+            strategies_index=strategy_index,
+        )
         row = self._normalize_bot_row(
             {
                 "id": self._next_bot_id(rows),
@@ -5249,7 +5384,7 @@ def risk_hooks(context):
                 "engine": engine,
                 "mode": mode,
                 "status": effective_status,
-                "pool_strategy_ids": pool_strategy_ids or [],
+                "pool_strategy_ids": validated_pool_strategy_ids,
                 "universe_name": symbol_assignment["universe_name"],
                 "universe": symbol_assignment["universe"],
                 "max_live_symbols": symbol_assignment["max_live_symbols"],
@@ -5258,7 +5393,6 @@ def risk_hooks(context):
                 "created_at": now_iso,
                 "updated_at": now_iso,
             },
-            strategy_ids=valid_strategy_ids,
         )
         rows.append(row)
         self.save_bots(rows)
@@ -5314,7 +5448,8 @@ def risk_hooks(context):
         idx = next((i for i, row in enumerate(rows) if str(row.get("id")) == bot_id), None)
         if idx is None:
             raise HTTPException(status_code=404, detail="BotInstance not found")
-        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
+        strategy_rows = self.list_strategies()
+        strategy_index = self._strategy_index_by_id(strategy_rows)
         current = dict(rows[idx])
         patched = dict(current)
         self._ensure_bot_operational_patch_allowed(
@@ -5415,13 +5550,16 @@ def risk_hooks(context):
             patched["universe"] = symbol_assignment["universe"]
             patched["max_live_symbols"] = symbol_assignment["max_live_symbols"]
         if pool_strategy_ids is not None:
-            patched["pool_strategy_ids"] = pool_strategy_ids
+            patched["pool_strategy_ids"] = self._validate_bot_strategy_pool(
+                pool_strategy_ids,
+                strategies_index=strategy_index,
+            )
         if notes is not None:
             patched["notes"] = notes
         patched["id"] = bot_id
         patched["created_at"] = str(current.get("created_at") or utc_now_iso())
         patched["updated_at"] = utc_now_iso()
-        rows[idx] = self._normalize_bot_row(patched, strategy_ids=valid_strategy_ids)
+        rows[idx] = self._normalize_bot_row(patched)
         self.save_bots(rows)
         self.add_log(
             event_type="bot_instance",
@@ -5462,7 +5600,10 @@ def risk_hooks(context):
             raise HTTPException(status_code=404, detail="BotInstance not found")
         return item
 
-    def archive_bot_instance(self, bot_id: str) -> dict[str, Any]:
+    def archive_bot_instance(
+        self,
+        bot_id: str,
+    ) -> dict[str, Any]:
         return self.patch_bot_instance(bot_id, registry_status="archived")
 
     def restore_bot_instance(self, bot_id: str) -> dict[str, Any]:
@@ -9495,15 +9636,20 @@ class ShadowRunCoordinator:
         strategies = {str(row.get("id") or ""): row for row in self.store.list_strategies() if str(row.get("id") or "")}
         targets: list[dict[str, Any]] = []
         for bot in eligible_bots:
-            pool_ids = [str(sid) for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategies]
-            allowed_ids: list[str] = []
-            for strategy_id in pool_ids:
-                strategy = strategies.get(strategy_id) or {}
-                if str(strategy.get("status") or "active").strip().lower() == "archived":
-                    continue
-                if not bool(strategy.get("allow_learning", True)):
-                    continue
-                allowed_ids.append(strategy_id)
+            pool_payload = self.store._bot_strategy_pool_payload(bot, strategies_index=strategies)
+            if str(pool_payload.get("strategy_pool_status") or "error") != "valid":
+                detail = "; ".join(
+                    str(item)
+                    for item in (pool_payload.get("strategy_pool_errors") or [])
+                    if str(item).strip()
+                )
+                warnings.append(f"{bot.get('id')}: pool inválido en registry ({detail})")
+                continue
+            allowed_ids = [
+                str(strategy_id)
+                for strategy_id in (pool_payload.get("effective_pool_strategy_ids") or [])
+                if str(strategy_id).strip()
+            ]
             if not allowed_ids:
                 warnings.append(f"{bot.get('id')}: sin estrategias Pool=true para shadow.")
                 continue
@@ -15655,7 +15801,15 @@ def create_app() -> FastAPI:
             bots = store.load_bots()
             bot_row = next((b for b in bots if str(b.get("id") or "") == active_bot_id), None)
             if bot_row:
-                pool = bot_row.get("pool_strategy_ids") or []
+                pool_payload = store._bot_strategy_pool_payload(bot_row)
+                if str(pool_payload.get("strategy_pool_status") or "error") != "valid":
+                    detail = "; ".join(
+                        str(item)
+                        for item in (pool_payload.get("strategy_pool_errors") or [])
+                        if str(item).strip()
+                    )
+                    raise HTTPException(status_code=400, detail=f"Bot {active_bot_id} con pool inválido: {detail}")
+                pool = pool_payload.get("effective_pool_strategy_ids") or []
                 if pool:
                     strategy_name = str(pool[0])
         if not strategy_name:

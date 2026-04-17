@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import type { BotInstance } from "@/lib/types";
 
+export const BOT_REGISTRY_MAX_POOL_STRATEGIES = 15;
+
 export const botRegistryFormSchema = z.object({
   display_name: z
     .string()
@@ -26,6 +28,10 @@ export const botRegistryFormSchema = z.object({
   universe: z
     .array(z.string().trim().min(1, "Cada símbolo asignado debe ser válido."))
     .min(1, "Debes asignar al menos 1 símbolo válido."),
+  pool_strategy_ids: z
+    .array(z.string().trim().min(1, "Cada estrategia del pool debe ser válida."))
+    .min(1, "Debes asignar al menos 1 estrategia válida al pool.")
+    .max(BOT_REGISTRY_MAX_POOL_STRATEGIES, `El pool no puede superar ${BOT_REGISTRY_MAX_POOL_STRATEGIES} estrategias.`),
   max_live_symbols: z.coerce.number().int().gte(1, "El cap live debe ser >= 1.").lte(12, "El cap live no puede superar 12."),
   capital_base_usd: z.coerce.number().gt(0, "El capital base debe ser > 0."),
   max_total_exposure_pct: z.coerce
@@ -66,6 +72,21 @@ export const botRegistryFormSchema = z.object({
       message: `No puede haber símbolos duplicados: ${Array.from(duplicateSymbols).join(", ")}`,
     });
   }
+  const seenStrategies = new Set<string>();
+  const duplicateStrategies = new Set<string>();
+  for (const rawStrategyId of value.pool_strategy_ids) {
+    const strategyId = String(rawStrategyId || "").trim();
+    if (!strategyId) continue;
+    if (seenStrategies.has(strategyId)) duplicateStrategies.add(strategyId);
+    seenStrategies.add(strategyId);
+  }
+  if (duplicateStrategies.size) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pool_strategy_ids"],
+      message: `No puede haber estrategias duplicadas en el pool: ${Array.from(duplicateStrategies).join(", ")}`,
+    });
+  }
   if (value.max_live_symbols > value.universe.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -92,6 +113,7 @@ export const DEFAULT_BOT_REGISTRY_DRAFT: BotRegistryDraft = {
   domain_type: "spot",
   universe_name: "",
   universe: [],
+  pool_strategy_ids: [],
   max_live_symbols: "1",
   capital_base_usd: "10000",
   max_total_exposure_pct: "65",
@@ -116,11 +138,19 @@ function asDraftUniverse(value: unknown): string[] {
     .filter((item) => item.length > 0);
 }
 
+function asDraftStrategyPool(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0);
+}
+
 export function normalizeBotRegistryDraft(draft: BotRegistryDraft): BotRegistryFormData {
   const normalizedDraft = {
     ...draft,
     universe_name: String(draft.universe_name || "").trim(),
     universe: asDraftUniverse(draft.universe),
+    pool_strategy_ids: asDraftStrategyPool(draft.pool_strategy_ids),
   };
   return botRegistryFormSchema.parse(normalizedDraft);
 }
@@ -134,6 +164,7 @@ export function buildBotRegistryDraft(bot?: Partial<BotInstance> | null): BotReg
     domain_type: bot?.domain_type === "futures" ? "futures" : "spot",
     universe_name: String(bot?.universe_name || "").trim(),
     universe: assignedUniverse,
+    pool_strategy_ids: asDraftStrategyPool(bot?.pool_strategy_ids),
     max_live_symbols: asDraftNumber(bot?.max_live_symbols, assignedUniverse.length ? String(Math.min(assignedUniverse.length, 12)) : "1"),
     capital_base_usd: asDraftNumber(bot?.capital_base_usd, "10000"),
     max_total_exposure_pct: asDraftNumber(bot?.max_total_exposure_pct, "65"),

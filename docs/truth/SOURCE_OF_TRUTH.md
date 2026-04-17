@@ -2,6 +2,69 @@
 
 Fecha de actualizacion: 2026-04-16
 
+## RTLRESE-29 - Bot Registry con strategy pool asignado, persistencia y limites - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no trata `pool_strategy_ids` como lista informal o derivada;
+  - ahora el pool asignado es una configuracion canonica del registry con validacion, persistencia y cap explicito por bot.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `pool_strategy_ids`
+    - lista declarativa de estrategias asignadas al bot
+  - `pool_strategies`
+    - metadata resuelta contra la fuente real del `strategy registry / truth`
+  - `strategy_pool_status`
+    - `valid`
+    - `error`
+  - `strategy_pool_errors`
+  - `max_pool_strategies`
+    - cap inicial canonico `15`
+- Fuente de verdad real usada por este bloque:
+  - la persistencia del bot sigue viviendo en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - el pool NO define estrategias por texto libre ni crea una fuente paralela dentro del registry del bot;
+  - la validacion reutiliza `store.list_strategies()` como vista canonica del `strategy registry / truth`, incluyendo `status`, `enabled_for_trading` y `allow_learning`.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `GET /api/v1/bots/{bot_id}/policy-state`
+  - `PATCH /api/v1/bots/{bot_id}/policy-state`
+  - los contratos del registry ahora devuelven pool asignado, metadata del pool, limite explicito y estado fail-closed del pool.
+- Reglas canonicas fijadas en este bloque:
+  - `pool_strategy_ids` debe tener al menos `1` estrategia
+  - `pool_strategy_ids` no puede superar `15` estrategias
+  - no se aceptan duplicados
+  - cada `strategy_id` debe existir en la fuente real del `strategy registry / truth`
+  - solo se aceptan estrategias:
+    - `status=active`
+    - `enabled_for_trading=true`
+    - `allow_learning=true`
+  - si una estrategia previamente persistida deja de ser valida, el bot queda fail-closed con:
+    - `strategy_pool_status = error`
+    - `strategy_pool_errors[]` visibles por API/UI
+  - el sistema ya no borra estrategias invalidas en silencio al normalizar el bot.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta con selector real de strategy pool
+    - edicion operativa del pool por bot
+    - resumen del cap `15`
+    - errores reales del pool visibles por bot
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema zod real para `pool_strategy_ids`
+    - validaciones de minimo, duplicados y cap `15`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` y `BotPolicyState` tipados con estado/errores del pool
+- Lo que este bloque NO implementa:
+  - elegibilidad estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - consolidacion de señales
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - lifecycle entre entornos
+  - live console
+- Conclusion operativa:
+  - desde este bloque, el lado registry del bot ya puede expresar un pool de estrategias persistente y acotado sin inventar runtime multi-symbol;
+  - el siguiente bloque del frente bots ya no necesita abrir persistencia base de pool, sino gobierno/capas siguientes sobre esta base.
+
 ## RTLRESE-28 - Bot Registry con asignacion de simbolos, universo valido y cap live - 2026-04-16
 
 - Estado real confirmado en esta rama:

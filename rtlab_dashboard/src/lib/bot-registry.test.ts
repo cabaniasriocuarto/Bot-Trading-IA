@@ -16,6 +16,7 @@ describe("bot-registry helpers", () => {
       domain_type: "spot",
       universe_name: "core_spot_usdt",
       universe: ["BTCUSDT", "ETHUSDT"],
+      pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1", "momentum_breakout_v2"],
       max_live_symbols: "2",
       capital_base_usd: "25000",
       max_total_exposure_pct: "70",
@@ -34,6 +35,7 @@ describe("bot-registry helpers", () => {
       domain_type: "spot",
       universe_name: "core_spot_usdt",
       universe: ["BTCUSDT", "ETHUSDT"],
+      pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1", "momentum_breakout_v2"],
       max_live_symbols: 2,
       capital_base_usd: 25000,
       max_total_exposure_pct: 70,
@@ -53,6 +55,7 @@ describe("bot-registry helpers", () => {
         display_name: "ab",
         universe_name: "core_spot_usdt",
         universe: ["BTCUSDT"],
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
         domain_type: "spot",
       }),
     ).toThrow("al menos 3 caracteres");
@@ -63,6 +66,7 @@ describe("bot-registry helpers", () => {
         display_name: "Bot válido",
         universe_name: "core_spot_usdt",
         universe: ["BTCUSDT"],
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
         domain_type: "margin" as never,
       }),
     ).toThrow();
@@ -73,6 +77,7 @@ describe("bot-registry helpers", () => {
         display_name: "Bot válido",
         universe_name: "core_spot_usdt",
         universe: ["BTCUSDT"],
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
         max_total_exposure_pct: "20",
         max_asset_exposure_pct: "25",
       }),
@@ -84,6 +89,7 @@ describe("bot-registry helpers", () => {
         display_name: "Bot válido",
         universe_name: "core_spot_usdt",
         universe: ["BTCUSDT", "BTCUSDT"],
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
         max_live_symbols: "1",
       }),
     ).toThrow("duplicados");
@@ -94,9 +100,40 @@ describe("bot-registry helpers", () => {
         display_name: "Bot válido",
         universe_name: "core_spot_usdt",
         universe: ["BTCUSDT"],
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
         max_live_symbols: "2",
       }),
     ).toThrow("cap live");
+
+    expect(() =>
+      normalizeBotRegistryDraft({
+        ...DEFAULT_BOT_REGISTRY_DRAFT,
+        display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT"],
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1", "trend_pullback_orderflow_confirm_v1"],
+      }),
+    ).toThrow("estrategias duplicadas");
+
+    expect(() =>
+      normalizeBotRegistryDraft({
+        ...DEFAULT_BOT_REGISTRY_DRAFT,
+        display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT"],
+        pool_strategy_ids: [],
+      }),
+    ).toThrow("al menos 1 estrategia");
+
+    expect(() =>
+      normalizeBotRegistryDraft({
+        ...DEFAULT_BOT_REGISTRY_DRAFT,
+        display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT"],
+        pool_strategy_ids: Array.from({ length: 16 }, (_, index) => `strategy_${index}`),
+      }),
+    ).toThrow("no puede superar 15");
   });
 
   it("arma draft desde un bot existente y prioriza display_name", () => {
@@ -112,6 +149,9 @@ describe("bot-registry helpers", () => {
       universe_name: "core_usdm_perps",
       universe_family: "usdm_futures",
       universe: ["BTCUSDT", "ETHUSDT"],
+      strategy_pool_status: "valid",
+      strategy_pool_errors: [],
+      max_pool_strategies: 15,
       max_live_symbols: 2,
       capital_base_usd: 32000,
       max_total_exposure_pct: 80,
@@ -124,7 +164,7 @@ describe("bot-registry helpers", () => {
       engine: "bandit_thompson",
       mode: "paper",
       status: "active",
-      pool_strategy_ids: [],
+      pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
       created_at: "2026-04-14T00:00:00Z",
       updated_at: "2026-04-14T00:00:00Z",
     });
@@ -136,6 +176,7 @@ describe("bot-registry helpers", () => {
       domain_type: "futures",
       universe_name: "core_usdm_perps",
       universe: ["BTCUSDT", "ETHUSDT"],
+      pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
       max_live_symbols: "2",
       capital_base_usd: "32000",
       max_total_exposure_pct: "80",

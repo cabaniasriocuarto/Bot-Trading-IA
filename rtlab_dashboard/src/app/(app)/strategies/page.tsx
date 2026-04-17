@@ -13,6 +13,7 @@ import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  BOT_REGISTRY_MAX_POOL_STRATEGIES,
   DEFAULT_BOT_REGISTRY_DRAFT,
   buildBotRegistryDraft,
   getBotDisplayName,
@@ -108,6 +109,8 @@ type LearningRecommendationLite = {
   recommendation_source?: "runtime" | "research" | string;
 };
 
+type PoolStrategyLite = Pick<Strategy, "id" | "name" | "allow_learning" | "enabled_for_trading" | "is_primary" | "status">;
+
 const BOT_MODE_HELP: Record<string, string> = {
   shadow: "Mock en vivo: usa market data real, no envia ordenes y guarda experiencia source=shadow.",
   paper: "Paper interno: corre con fondos virtuales y sirve para validar la logica sin exchange real.",
@@ -189,7 +192,6 @@ export default function StrategiesPage() {
   const [strategyPageSize, setStrategyPageSize] = useState<"20" | "50" | "100">("20");
   const [selectedStrategyIds, setSelectedStrategyIds] = useState<string[]>([]);
   const [strategyTargetBotId, setStrategyTargetBotId] = useState("");
-  const [botPoolDrafts, setBotPoolDrafts] = useState<Record<string, string[]>>({});
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams({ mode: kpiMode, from: kpiFrom, to: kpiTo });
@@ -316,6 +318,30 @@ export default function StrategiesPage() {
     return map;
   }, [universeItems]);
 
+  const strategyById = useMemo(() => {
+    const map = new Map<string, Strategy>();
+    for (const strategy of strategies) {
+      map.set(strategy.id, strategy);
+    }
+    return map;
+  }, [strategies]);
+
+  const eligiblePoolStrategies = useMemo(
+    () =>
+      strategies.filter(
+        (strategy) =>
+          String(strategy.status || "").trim().toLowerCase() === "active"
+          && Boolean(strategy.enabled_for_trading ?? strategy.enabled)
+          && Boolean(strategy.allow_learning ?? true),
+      ),
+    [strategies],
+  );
+
+  const eligiblePoolStrategyIds = useMemo(
+    () => new Set(eligiblePoolStrategies.map((strategy) => strategy.id)),
+    [eligiblePoolStrategies],
+  );
+
   const syncBotRegistryDraft = (bot: BotInstance) => {
     setBotRegistryDraftsById((prev) => ({
       ...prev,
@@ -327,13 +353,63 @@ export default function StrategiesPage() {
     setBotRegistryDraft((prev) => ({ ...prev, [field]: value }));
   };
 
-  const updateBotRegistryDraftForBot = <K extends keyof typeof DEFAULT_BOT_REGISTRY_DRAFT>(botId: string, field: K, value: (typeof DEFAULT_BOT_REGISTRY_DRAFT)[K]) => {
+  const updateBotRegistryDraftForBot = <K extends keyof typeof DEFAULT_BOT_REGISTRY_DRAFT>(
+    bot: BotInstance,
+    field: K,
+    value: (typeof DEFAULT_BOT_REGISTRY_DRAFT)[K],
+  ) => {
     setBotRegistryDraftsById((prev) => ({
       ...prev,
-      [botId]: {
-        ...(prev[botId] || DEFAULT_BOT_REGISTRY_DRAFT),
+      [bot.id]: {
+        ...(prev[bot.id] || buildBotRegistryDraft(bot)),
         [field]: value,
       },
+    }));
+  };
+
+  const normalizeDraftPoolIds = (strategyIds: string[]) =>
+    Array.from(
+      new Set(
+        strategyIds
+          .map((strategyId) => String(strategyId || "").trim())
+          .filter((strategyId) => strategyId.length > 0),
+      ),
+    );
+
+  const toggleDraftPoolStrategy = (draft: typeof DEFAULT_BOT_REGISTRY_DRAFT, strategyId: string): typeof DEFAULT_BOT_REGISTRY_DRAFT => {
+    const normalizedIds = normalizeDraftPoolIds(draft.pool_strategy_ids || []);
+    return {
+      ...draft,
+      pool_strategy_ids: normalizedIds.includes(strategyId)
+        ? normalizedIds.filter((id) => id !== strategyId)
+        : [...normalizedIds, strategyId],
+    };
+  };
+
+  const removeDraftPoolStrategy = (draft: typeof DEFAULT_BOT_REGISTRY_DRAFT, strategyId: string): typeof DEFAULT_BOT_REGISTRY_DRAFT => ({
+    ...draft,
+    pool_strategy_ids: normalizeDraftPoolIds(draft.pool_strategy_ids || []).filter((id) => id !== strategyId),
+  });
+
+  const toggleCreateBotPoolStrategy = (strategyId: string) => {
+    setBotRegistryDraft((prev) => toggleDraftPoolStrategy(prev, strategyId));
+  };
+
+  const removeCreateBotPoolStrategy = (strategyId: string) => {
+    setBotRegistryDraft((prev) => removeDraftPoolStrategy(prev, strategyId));
+  };
+
+  const toggleBotRegistryPoolStrategy = (bot: BotInstance, strategyId: string) => {
+    setBotRegistryDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: toggleDraftPoolStrategy(prev[bot.id] || buildBotRegistryDraft(bot), strategyId),
+    }));
+  };
+
+  const removeBotRegistryPoolStrategy = (bot: BotInstance, strategyId: string) => {
+    setBotRegistryDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: removeDraftPoolStrategy(prev[bot.id] || buildBotRegistryDraft(bot), strategyId),
     }));
   };
 
@@ -367,6 +443,7 @@ export default function StrategiesPage() {
       domain_type: normalized.domain_type,
       universe_name: normalized.universe_name,
       universe: normalized.universe,
+      pool_strategy_ids: normalized.pool_strategy_ids,
       max_live_symbols: normalized.max_live_symbols,
       capital_base_usd: normalized.capital_base_usd,
       max_total_exposure_pct: normalized.max_total_exposure_pct,
@@ -629,24 +706,6 @@ export default function StrategiesPage() {
     }
   }, [activeRegistryBots, strategyTargetBotId]);
 
-  useEffect(() => {
-    setBotPoolDrafts((prev) => {
-      const next: Record<string, string[]> = {};
-      for (const bot of bots) {
-        next[bot.id] = Array.isArray(prev[bot.id]) ? [...prev[bot.id]] : [...(bot.pool_strategy_ids || [])];
-      }
-      const prevKeys = Object.keys(prev);
-      const nextKeys = Object.keys(next);
-      if (
-        prevKeys.length === nextKeys.length &&
-        nextKeys.every((key) => Array.isArray(prev[key]) && prev[key].length === next[key].length && prev[key].every((id, idx) => id === next[key][idx]))
-      ) {
-        return prev;
-      }
-      return next;
-    });
-  }, [bots]);
-
   const toggleStrategySelection = (strategyId: string) => {
     setSelectedStrategyIds((prev) => (prev.includes(strategyId) ? prev.filter((id) => id !== strategyId) : [...prev, strategyId]));
   };
@@ -780,26 +839,8 @@ export default function StrategiesPage() {
     setUploadMsg(`Sugerencia cargada al bot ${getBotDisplayName(targetBot)}: ${recommendedIds.length} estrategias.`);
   };
 
-  const toggleBotPoolDraftStrategy = (botId: string, strategyId: string) => {
-    setBotPoolDrafts((prev) => {
-      const current = Array.isArray(prev[botId]) ? prev[botId] : [];
-      const next = current.includes(strategyId) ? current.filter((id) => id !== strategyId) : [...current, strategyId];
-      return { ...prev, [botId]: next };
-    });
-  };
-
-  const resetBotPoolDraft = (botId: string, fallbackIds: string[]) => {
-    setBotPoolDrafts((prev) => ({ ...prev, [botId]: [...fallbackIds] }));
-  };
-
-  const saveBotPoolDraft = async (botId: string) => {
-    const draftIds = botPoolDrafts[botId] || [];
-    await patchBot(botId, { pool_strategy_ids: draftIds });
-    setUploadMsg(`Pool del bot actualizado (${draftIds.length} estrategias).`);
-  };
-
   const exportBotKnowledge = (bot: BotInstance) => {
-    const poolIds = botPoolDrafts[bot.id] || bot.pool_strategy_ids || [];
+    const poolIds = (botRegistryDraftsById[bot.id]?.pool_strategy_ids || bot.pool_strategy_ids || []).map((strategyId) => String(strategyId || "").trim()).filter(Boolean);
     const payload = {
       exported_at: new Date().toISOString(),
       bot: {
@@ -1013,10 +1054,10 @@ export default function StrategiesPage() {
       const payload = buildCreateBotPayload(draft);
       const res = await apiPatch<{ ok: boolean; bot: BotInstance }>(`/api/v1/bots/${bot.id}`, payload);
       syncBotRegistryDraft(res.bot);
-      setUploadMsg(`Identidad de ${getBotDisplayName(res.bot)} actualizada.`);
+      setUploadMsg(`Registry de ${getBotDisplayName(res.bot)} actualizado.`);
       await refresh();
     } catch (err) {
-      setError(formatBotRegistryError(err, "No se pudo guardar la identidad del bot."));
+      setError(formatBotRegistryError(err, "No se pudo guardar el registry del bot."));
     } finally {
       setBotActionBusyId(null);
     }
@@ -1923,6 +1964,54 @@ export default function StrategiesPage() {
                     </span>
                   </div>
                 </div>
+                <div className="mt-3">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-400">Strategy pool asignado</p>
+                    <span className="text-[10px] text-slate-500">
+                      {botRegistryDraft.pool_strategy_ids.length}/{BOT_REGISTRY_MAX_POOL_STRATEGIES} en pool · {eligiblePoolStrategies.length} elegibles
+                    </span>
+                  </div>
+                  <div className="grid max-h-48 gap-1 overflow-auto rounded border border-slate-800 bg-slate-950/40 p-2">
+                    {eligiblePoolStrategies.map((strategy) => {
+                      const checked = botRegistryDraft.pool_strategy_ids.includes(strategy.id);
+                      return (
+                        <label key={`create-pool-${strategy.id}`} className="flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1">
+                          <span className="truncate text-slate-200" title={strategy.name}>{strategy.name}</span>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={role !== "admin" || botCreateBusy}
+                            onChange={() => toggleCreateBotPoolStrategy(strategy.id)}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {botRegistryDraft.pool_strategy_ids.length ? (
+                      botRegistryDraft.pool_strategy_ids.map((strategyId) => {
+                        const strategy = strategyById.get(strategyId);
+                        const invalid = !eligiblePoolStrategyIds.has(strategyId);
+                        return (
+                          <button
+                            key={`create-pool-chip-${strategyId}`}
+                            type="button"
+                            className={`rounded border px-2 py-1 text-[10px] ${invalid ? "border-amber-700 bg-amber-500/10 text-amber-200" : "border-slate-700 bg-slate-950/60 text-slate-200"}`}
+                            disabled={role !== "admin" || botCreateBusy}
+                            onClick={() => removeCreateBotPoolStrategy(strategyId)}
+                          >
+                            {strategy?.name || strategyId} ×
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <span className="text-[10px] text-slate-500">Sin estrategias asignadas todavía.</span>
+                    )}
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-400">
+                    Fuente canónica: strategy registry/truth. Solo se listan estrategias activas, habilitadas para trading y `allow_learning=true`.
+                  </p>
+                </div>
                 <div className="mt-3 grid gap-2 md:grid-cols-4">
                   <div>
                     <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Capital base USD</p>
@@ -2040,7 +2129,7 @@ export default function StrategiesPage() {
                   </Button>
                 </div>
                 <p className="mt-2 text-[11px] text-slate-400">
-                  Este bloque fija identidad, capital base, symbols assignment, universo válido y cap live por bot. Deja fuera strategy pool canónico, lifecycle y runtime multi-symbol.
+                  Este bloque fija identidad, capital base, strategy pool asignado, symbols assignment, universo válido y cap live por bot. Mantiene fuera elegibilidad estrategia↔símbolo, lifecycle y runtime multi-symbol.
                 </p>
               </div>
 
@@ -2093,10 +2182,10 @@ export default function StrategiesPage() {
                       const registryArchived = bot.registry_status === "archived";
                       const registryDraft = botRegistryDraftsById[bot.id] || buildBotRegistryDraft(bot);
                       const experienceBySource = m?.experience_by_source;
-                      const poolDraftIds = botPoolDrafts[bot.id] || bot.pool_strategy_ids || [];
+                      const poolDraftIds = registryDraft.pool_strategy_ids || [];
                       const poolDraftRows = poolDraftIds
-                        .map((strategyId) => strategies.find((row) => row.id === strategyId) || bot.pool_strategies?.find((row) => row.id === strategyId))
-                        .filter((row): row is Strategy => Boolean(row));
+                        .map((strategyId) => strategyById.get(strategyId) || bot.pool_strategies?.find((row) => row.id === strategyId))
+                        .filter((row): row is PoolStrategyLite => Boolean(row));
                       return (
                         <TR key={bot.id} className="align-top">
                           <TD className="max-w-[180px]">
@@ -2123,9 +2212,17 @@ export default function StrategiesPage() {
                               <p className={`text-[10px] ${bot.symbol_assignment_status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
                                 Assignment: {bot.symbol_assignment_status === "valid" ? "válido" : "error de configuración"}
                               </p>
+                              <p className={`text-[10px] ${bot.strategy_pool_status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                Pool: {bot.pool_strategy_ids.length}/{bot.max_pool_strategies ?? BOT_REGISTRY_MAX_POOL_STRATEGIES} · {bot.strategy_pool_status === "valid" ? "válido" : "error de configuración"}
+                              </p>
                               {bot.symbol_assignment_errors?.length ? (
                                 <p className="text-[10px] text-amber-300" title={bot.symbol_assignment_errors.join(" | ")}>
                                   {bot.symbol_assignment_errors[0]}
+                                </p>
+                              ) : null}
+                              {bot.strategy_pool_errors?.length ? (
+                                <p className="text-[10px] text-amber-300" title={bot.strategy_pool_errors.join(" | ")}>
+                                  {bot.strategy_pool_errors[0]}
                                 </p>
                               ) : null}
                             </div>
@@ -2141,7 +2238,12 @@ export default function StrategiesPage() {
                               {bot.status}
                             </Badge>
                           </TD>
-                          <TD>{m?.strategy_count ?? bot.pool_strategy_ids.length}</TD>
+                          <TD>
+                            <div>{bot.pool_strategy_ids.length}</div>
+                            <div className={`text-[10px] ${bot.strategy_pool_status === "valid" ? "text-slate-500" : "text-amber-300"}`}>
+                              {bot.strategy_pool_status === "valid" ? "registry ok" : "fail-closed"}
+                            </div>
+                          </TD>
                           <TD>
                             <div>{m?.trade_count ?? 0}</div>
                             <div className="text-[10px] text-slate-500">runs: {m?.run_count ?? 0}</div>
@@ -2197,7 +2299,7 @@ export default function StrategiesPage() {
                                       <Input
                                         value={registryDraft.display_name}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "display_name", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "display_name", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2205,7 +2307,7 @@ export default function StrategiesPage() {
                                       <Input
                                         value={registryDraft.alias}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "alias", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "alias", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2261,7 +2363,7 @@ export default function StrategiesPage() {
                                         rows={3}
                                         value={registryDraft.description}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "description", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "description", e.target.value)}
                                       />
                                     </div>
                                   </div>
@@ -2277,7 +2379,7 @@ export default function StrategiesPage() {
                                       className="min-h-[160px] w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-slate-100"
                                       disabled={role !== "admin" || busy || registryArchived || !registryDraft.universe_name}
                                       value={registryDraft.universe}
-                                      onChange={(e) => updateBotRegistryDraftForBot(bot.id, "universe", selectedValuesFromOptions(e.target.options))}
+                                      onChange={(e) => updateBotRegistryDraftForBot(bot, "universe", selectedValuesFromOptions(e.target.options))}
                                     >
                                       {((universeByName.get(registryDraft.universe_name)?.symbols as string[] | undefined) || []).map((symbol) => (
                                         <option key={`${bot.id}-symbol-${symbol}`} value={symbol}>
@@ -2298,7 +2400,7 @@ export default function StrategiesPage() {
                                         step="0.01"
                                         value={String(registryDraft.capital_base_usd)}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "capital_base_usd", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "capital_base_usd", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2306,7 +2408,7 @@ export default function StrategiesPage() {
                                       <Select
                                         value={registryDraft.risk_profile}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "risk_profile", e.target.value as "conservative" | "medium" | "aggressive")}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "risk_profile", e.target.value as "conservative" | "medium" | "aggressive")}
                                       >
                                         <option value="conservative">conservative</option>
                                         <option value="medium">medium</option>
@@ -2322,7 +2424,7 @@ export default function StrategiesPage() {
                                         step="0.01"
                                         value={String(registryDraft.max_total_exposure_pct)}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_total_exposure_pct", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "max_total_exposure_pct", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2334,7 +2436,7 @@ export default function StrategiesPage() {
                                         step="0.01"
                                         value={String(registryDraft.max_asset_exposure_pct)}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_asset_exposure_pct", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "max_asset_exposure_pct", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2346,7 +2448,7 @@ export default function StrategiesPage() {
                                         step="0.01"
                                         value={String(registryDraft.risk_per_trade_pct)}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "risk_per_trade_pct", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "risk_per_trade_pct", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2358,7 +2460,7 @@ export default function StrategiesPage() {
                                         step="0.01"
                                         value={String(registryDraft.max_daily_loss_pct)}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_daily_loss_pct", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "max_daily_loss_pct", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2370,7 +2472,7 @@ export default function StrategiesPage() {
                                         step="0.01"
                                         value={String(registryDraft.max_drawdown_pct)}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_drawdown_pct", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "max_drawdown_pct", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2381,7 +2483,7 @@ export default function StrategiesPage() {
                                         step="1"
                                         value={String(registryDraft.max_positions)}
                                         disabled={role !== "admin" || busy}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_positions", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "max_positions", e.target.value)}
                                       />
                                     </div>
                                     <div>
@@ -2393,7 +2495,7 @@ export default function StrategiesPage() {
                                         step="1"
                                         value={String(registryDraft.max_live_symbols)}
                                         disabled={role !== "admin" || busy || registryArchived}
-                                        onChange={(e) => updateBotRegistryDraftForBot(bot.id, "max_live_symbols", e.target.value)}
+                                        onChange={(e) => updateBotRegistryDraftForBot(bot, "max_live_symbols", e.target.value)}
                                       />
                                     </div>
                                   </div>
@@ -2415,7 +2517,7 @@ export default function StrategiesPage() {
                                       disabled={role !== "admin" || busy}
                                       onClick={() => void saveBotRegistryIdentity(bot)}
                                     >
-                                      Guardar identidad
+                                      Guardar registry
                                     </Button>
                                     <Button
                                       size="sm"
@@ -2449,7 +2551,7 @@ export default function StrategiesPage() {
                                     )}
                                   </div>
                                   <p className="text-[10px] text-slate-400">
-                                    `bot_id` estable: {bot.bot_id || bot.id}. Este panel edita identidad, capital base, symbols assignment, universo válido y cap live. `engine/mode` siguen abajo como config operativa existente.
+                                    `bot_id` estable: {bot.bot_id || bot.id}. Este panel edita identidad, capital base y symbols assignment; el pool asignado se gestiona en `Pool editable` con cap explícito {bot.max_pool_strategies ?? BOT_REGISTRY_MAX_POOL_STRATEGIES}. `engine/mode` siguen abajo como config operativa existente.
                                   </p>
                                 </div>
                               </details>
@@ -2520,12 +2622,16 @@ export default function StrategiesPage() {
                               </details>
                             </div>
                             <details className="mt-1 rounded border border-slate-800 bg-slate-950/30 p-2 text-[11px] text-slate-300">
-                              <summary className="cursor-pointer select-none">Pool editable ({poolDraftIds.length})</summary>
+                              <summary className="cursor-pointer select-none">Pool editable ({poolDraftIds.length}/{bot.max_pool_strategies ?? BOT_REGISTRY_MAX_POOL_STRATEGIES})</summary>
                               <div className="mt-2 space-y-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                                  <span>
+                                    Estado: <strong className={bot.strategy_pool_status === "valid" ? "text-emerald-300" : "text-amber-300"}>{bot.strategy_pool_status === "valid" ? "válido" : "error de configuración"}</strong>
+                                  </span>
+                                  <span>{eligiblePoolStrategies.length} estrategias elegibles en registry</span>
+                                </div>
                                 <div className="grid max-h-48 gap-1 overflow-auto rounded border border-slate-800 bg-slate-950/40 p-2">
-                                  {strategies
-                                    .filter((row) => row.status !== "archived")
-                                    .map((strategy) => {
+                                  {eligiblePoolStrategies.map((strategy) => {
                                       const checked = poolDraftIds.includes(strategy.id);
                                       return (
                                         <label key={`${bot.id}-draft-${strategy.id}`} className="flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1">
@@ -2534,17 +2640,45 @@ export default function StrategiesPage() {
                                             type="checkbox"
                                             checked={checked}
                                             disabled={role !== "admin" || busy || registryArchived}
-                                            onChange={() => toggleBotPoolDraftStrategy(bot.id, strategy.id)}
+                                            onChange={() => toggleBotRegistryPoolStrategy(bot, strategy.id)}
                                           />
                                         </label>
                                       );
                                     })}
                                 </div>
+                                <div className="flex flex-wrap gap-1">
+                                  {poolDraftIds.length ? (
+                                    poolDraftIds.map((strategyId) => {
+                                      const strategy = strategyById.get(strategyId) || bot.pool_strategies?.find((row) => row.id === strategyId);
+                                      const invalid = !eligiblePoolStrategyIds.has(strategyId);
+                                      return (
+                                        <button
+                                          key={`${bot.id}-pool-chip-${strategyId}`}
+                                          type="button"
+                                          className={`rounded border px-2 py-1 text-[10px] ${invalid ? "border-amber-700 bg-amber-500/10 text-amber-200" : "border-slate-700 bg-slate-950/60 text-slate-200"}`}
+                                          disabled={role !== "admin" || busy || registryArchived}
+                                          onClick={() => removeBotRegistryPoolStrategy(bot, strategyId)}
+                                        >
+                                          {strategy?.name || strategyId} ×
+                                        </button>
+                                      );
+                                    })
+                                  ) : (
+                                    <p className="text-slate-500">Sin estrategias asignadas.</p>
+                                  )}
+                                </div>
+                                {bot.strategy_pool_errors?.length ? (
+                                  <div className="rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                    {bot.strategy_pool_errors.map((item) => (
+                                      <p key={`${bot.id}-pool-error-${item}`}>{item}</p>
+                                    ))}
+                                  </div>
+                                ) : null}
                                 <div className="flex flex-wrap gap-2">
-                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => void saveBotPoolDraft(bot.id)}>
+                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => void saveBotRegistryIdentity(bot)}>
                                     Guardar pool
                                   </Button>
-                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => resetBotPoolDraft(bot.id, bot.pool_strategy_ids || [])}>
+                                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => syncBotRegistryDraft(bot)}>
                                     Resetear
                                   </Button>
                                 </div>
@@ -2561,6 +2695,8 @@ export default function StrategiesPage() {
                                           {s.is_primary ? <Badge variant="warn">Principal</Badge> : null}
                                           {s.allow_learning ? <Badge variant="info">Pool</Badge> : null}
                                           {s.enabled_for_trading ? <Badge variant="success">Trading</Badge> : null}
+                                          {s.status === "archived" ? <Badge variant="danger">Archivada</Badge> : null}
+                                          {s.status === "disabled" ? <Badge variant="warn">Disabled</Badge> : null}
                                         </div>
                                       </div>
                                       <p className="mt-1 text-[10px] text-slate-400">

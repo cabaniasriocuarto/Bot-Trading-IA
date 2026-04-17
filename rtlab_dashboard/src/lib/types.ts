@@ -246,6 +246,7 @@ export interface BotInstanceStrategyRef {
   allow_learning?: boolean;
   enabled_for_trading?: boolean;
   is_primary?: boolean;
+  status?: "active" | "disabled" | "archived" | string;
 }
 
 export interface BotInstance {
@@ -271,6 +272,9 @@ export interface BotInstance {
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
   pool_strategies?: BotInstanceStrategyRef[];
+  strategy_pool_status?: "valid" | "error" | string;
+  strategy_pool_errors?: string[];
+  max_pool_strategies?: number | null;
   universe_name?: string | null;
   universe_family?: InstrumentUniverseFamily | null;
   universe?: string[];
@@ -288,6 +292,9 @@ export interface BotPolicyState {
   mode: BotPolicyMode;
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
+  strategy_pool_status?: "valid" | "error" | string;
+  strategy_pool_errors?: string[];
+  max_pool_strategies?: number | null;
   universe_name?: string;
   universe: string[];
   max_live_symbols?: number | null;
