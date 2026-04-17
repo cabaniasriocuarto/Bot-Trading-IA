@@ -2,6 +2,21 @@
 
 Fecha: 2026-04-17
 
+## Siguiente bloque exacto despues de RTLOPS-72 - 2026-04-17
+- [x] Fundar el modelo canonico multi-symbol por bot:
+  - storage reutilizando `universe_name`, `universe` y `max_live_symbols`
+  - `GET/PATCH /api/v1/bots/{bot_id}/multi-symbol`
+  - limites base explicitos y fail-closed por catalogo/registry
+- [x] Mantener una implementacion minima-profesional:
+  - sin mapping estrategia<->simbolo
+  - sin consolidacion de señales
+  - sin lifecycle
+  - sin live console
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-73` y resolver solo:
+    - mapping/elegibilidad base de estrategias por simbolo sobre el modelo canonico multi-symbol ya persistido
+    - sin abrir todavia consolidacion, net execution, lifecycle ni live console
+
 ## Siguiente bloque exacto despues de RTLRESE-31 - 2026-04-17
 - [x] Consolidar el Bot Registry como surface minima canonica:
   - `GET /api/v1/bots/registry-contract`

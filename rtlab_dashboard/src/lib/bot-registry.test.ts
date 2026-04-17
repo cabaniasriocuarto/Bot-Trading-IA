@@ -9,19 +9,21 @@ import {
 import type { BotRegistryContractResponse } from "@/lib/types";
 
 const CONTRACT_FIXTURE: BotRegistryContractResponse = {
-  contract_version: "rtlrese31/v1",
+  contract_version: "rtlops72/v1",
   storage: {
     kind: "json_file",
     path: "learning/bots.json",
     stable_id_field: "bot_id",
     supports_soft_archive: true,
     trace_fields: ["created_at", "updated_at", "last_change_type", "last_change_summary", "last_changed_by", "last_change_source"],
+    multi_symbol_fields: ["universe_name", "universe", "max_live_symbols"],
   },
   api: {
     list_path: "/api/v1/bots",
     create_path: "/api/v1/bots",
     detail_path: "/api/v1/bots/{bot_id}",
     patch_path: "/api/v1/bots/{bot_id}",
+    multi_symbol_path: "/api/v1/bots/{bot_id}/multi-symbol",
     archive_path: "/api/v1/bots/{bot_id}/archive",
     restore_path: "/api/v1/bots/{bot_id}/restore",
     policy_state_path: "/api/v1/bots/{bot_id}/policy-state",
@@ -113,6 +115,28 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     policy_state: ["engine", "mode", "status", "notes"],
     governance: ["registry_status", "archived_at"],
     trace: ["created_at", "updated_at", "last_change_type", "last_change_summary", "last_changed_by", "last_change_source"],
+  },
+  multi_symbol: {
+    contract_version: "rtlops72/v1",
+    storage_fields: ["universe_name", "universe", "max_live_symbols"],
+    limits: {
+      configured_symbols_min: 1,
+      configured_symbols_max: 12,
+      max_active_symbols_min: 1,
+      max_active_symbols_max: 12,
+    },
+    fields: [
+      "domain_type",
+      "registry_status",
+      "universe_name",
+      "universe_family",
+      "symbols",
+      "configured_symbols_count",
+      "max_configured_symbols",
+      "max_active_symbols",
+      "status",
+      "errors",
+    ],
   },
 };
 
@@ -264,6 +288,17 @@ describe("bot-registry helpers", () => {
         pool_strategy_ids: Array.from({ length: 16 }, (_, index) => `strategy_${index}`),
       }, CONTRACT_FIXTURE),
     ).toThrow("no puede superar 15");
+
+    expect(() =>
+      normalizeBotRegistryDraft({
+        ...buildDefaultBotRegistryDraft(CONTRACT_FIXTURE),
+        display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: Array.from({ length: 13 }, (_, index) => `SYMBOL_${index}`),
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
+        max_live_symbols: "12",
+      }, CONTRACT_FIXTURE),
+    ).toThrow("no pueden superar 12");
   });
 
   it("arma draft desde un bot existente y prioriza display_name", () => {

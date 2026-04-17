@@ -840,6 +840,12 @@ class BotPolicyStatePatchBody(BaseModel):
     notes: str | None = None
 
 
+class BotMultiSymbolPatchBody(BaseModel):
+    universe_name: str | None = None
+    symbols: list[str] | None = None
+    max_active_symbols: int | None = None
+
+
 class BotBulkPatchBody(BaseModel):
     ids: list[str]
     engine: str | None = None
@@ -858,6 +864,9 @@ BOT_DEFAULT_CAPITAL_BASE_USD = 10000.0
 BOT_DEFAULT_RISK_PROFILE = "medium"
 BOT_MAX_LIVE_SYMBOLS = 12
 BOT_MAX_POOL_STRATEGIES = 15
+BOT_MULTI_SYMBOL_CONTRACT_VERSION = "rtlops72/v1"
+BOT_MULTI_SYMBOL_STORAGE_FIELDS = ("universe_name", "universe", "max_live_symbols")
+BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS = BOT_MAX_LIVE_SYMBOLS
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -887,7 +896,7 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
-BOT_REGISTRY_CONTRACT_VERSION = "rtlrese31/v1"
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops72/v1"
 BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
 BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
 BOT_REGISTRY_DEFAULT_MODE = "paper"
@@ -902,6 +911,7 @@ BOT_REGISTRY_API_SURFACE = {
     "create_path": "/api/v1/bots",
     "detail_path": "/api/v1/bots/{bot_id}",
     "patch_path": "/api/v1/bots/{bot_id}",
+    "multi_symbol_path": "/api/v1/bots/{bot_id}/multi-symbol",
     "archive_path": "/api/v1/bots/{bot_id}/archive",
     "restore_path": "/api/v1/bots/{bot_id}/restore",
     "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
@@ -4169,6 +4179,11 @@ def risk_hooks(context):
             raise HTTPException(status_code=400, detail=f"universe no admite simbolos duplicados: {duplicates_label}")
         if not assigned_symbols:
             raise HTTPException(status_code=400, detail="universe debe contener al menos 1 simbolo asignado")
+        if len(assigned_symbols) > BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe no puede superar {BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS} simbolos configurados",
+            )
 
         effective_max_live_symbols = max_live_symbols if max_live_symbols is not None else current_row.get("max_live_symbols")
         live_cap = self._validate_bot_positive_int(effective_max_live_symbols, field_name="max_live_symbols")
@@ -4230,6 +4245,10 @@ def risk_hooks(context):
             errors.append("universe_name pendiente en registry")
         if not assigned_symbols:
             errors.append("universe debe contener al menos 1 simbolo asignado")
+        elif len(assigned_symbols) > BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS:
+            errors.append(
+                f"universe no puede superar {BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS} simbolos configurados"
+            )
         if max_live_symbols is None:
             errors.append("max_live_symbols pendiente en registry")
         elif max_live_symbols > BOT_MAX_LIVE_SYMBOLS:
@@ -4264,6 +4283,85 @@ def risk_hooks(context):
             "symbol_assignment_status": "valid" if not errors else "error",
             "symbol_assignment_errors": errors,
         }
+
+    def _bot_multi_symbol_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        assignment = self._bot_symbol_assignment_payload(payload, universe_index=universe_index)
+        errors = [
+            self._normalize_multi_symbol_error_message(str(item))
+            for item in (assignment.get("symbol_assignment_errors") or [])
+            if str(item).strip()
+        ]
+        symbols = [str(item) for item in (assignment.get("universe") or []) if str(item).strip()]
+        max_active_symbols = self._normalize_bot_max_live_symbols(assignment.get("max_live_symbols"))
+        return {
+            "contract_version": BOT_MULTI_SYMBOL_CONTRACT_VERSION,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "universe_name": str(assignment.get("universe_name") or ""),
+            "universe_family": assignment.get("universe_family"),
+            "symbols": symbols,
+            "configured_symbols_count": len(symbols),
+            "max_configured_symbols": int(BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS),
+            "max_active_symbols": max_active_symbols,
+            "status": "valid" if not errors else "error",
+            "errors": errors,
+            "storage_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    def bot_multi_symbol_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_multi_symbol_payload(bot)
+
+    @staticmethod
+    def _normalize_multi_symbol_error_message(message: str) -> str:
+        normalized = str(message or "")
+        replacements = (
+            ("max_live_symbols", "max_active_symbols"),
+            ("cantidad de simbolos asignados", "cantidad de simbolos configurados"),
+            ("universe contiene simbolos duplicados", "symbols contiene simbolos duplicados"),
+            ("universe contiene simbolos fuera del catalogo valido para", "symbols contiene simbolos fuera del catalogo valido para"),
+            ("universe no puede quedar vacio", "symbols no puede quedar vacio"),
+            ("universe es requerido", "symbols es requerido"),
+            ("universe pendiente en registry", "symbols pendiente en registry"),
+            ("universe no puede superar", "symbols no puede superar"),
+        )
+        for source, target in replacements:
+            normalized = normalized.replace(source, target)
+        return normalized
+
+    def patch_bot_multi_symbol(
+        self,
+        bot_id: str,
+        *,
+        universe_name: str | None = None,
+        symbols: list[str] | None = None,
+        max_active_symbols: int | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_multi_symbol_api",
+    ) -> dict[str, Any]:
+        try:
+            bot = self.patch_bot_instance(
+                bot_id,
+                universe_name=universe_name,
+                universe=symbols,
+                max_live_symbols=max_active_symbols,
+                actor=actor,
+                change_source=change_source,
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=self._normalize_multi_symbol_error_message(str(exc.detail)),
+            ) from exc
+        return self._bot_multi_symbol_payload(bot)
 
     @staticmethod
     def _ensure_bot_operational_patch_allowed(current: dict[str, Any], *, has_operational_changes: bool) -> None:
@@ -4542,6 +4640,7 @@ def risk_hooks(context):
                 "stable_id_field": "bot_id",
                 "supports_soft_archive": True,
                 "trace_fields": list(BOT_REGISTRY_FIELD_GROUPS["trace"]),
+                "multi_symbol_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
             },
             "api": dict(BOT_REGISTRY_API_SURFACE),
             "defaults": {
@@ -4606,6 +4705,28 @@ def risk_hooks(context):
                 for profile, payload in BOT_RISK_PROFILE_DEFAULTS.items()
             },
             "fields": {key: list(values) for key, values in BOT_REGISTRY_FIELD_GROUPS.items()},
+            "multi_symbol": {
+                "contract_version": BOT_MULTI_SYMBOL_CONTRACT_VERSION,
+                "storage_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
+                "limits": {
+                    "configured_symbols_min": 1,
+                    "configured_symbols_max": int(BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS),
+                    "max_active_symbols_min": 1,
+                    "max_active_symbols_max": int(BOT_MAX_LIVE_SYMBOLS),
+                },
+                "fields": [
+                    "domain_type",
+                    "registry_status",
+                    "universe_name",
+                    "universe_family",
+                    "symbols",
+                    "configured_symbols_count",
+                    "max_configured_symbols",
+                    "max_active_symbols",
+                    "status",
+                    "errors",
+                ],
+            },
         }
 
     def bot_or_404(self, bot_id: str) -> dict[str, Any]:
@@ -5582,6 +5703,7 @@ def risk_hooks(context):
                 else []
             ) or []
             payload.update(self._bot_symbol_assignment_payload(row, universe_index=universe_index))
+            payload["multi_symbol"] = self._bot_multi_symbol_payload(row, universe_index=universe_index)
             out.append(payload)
         out.sort(
             key=lambda item: (
@@ -13117,6 +13239,25 @@ def create_app() -> FastAPI:
             recent_logs_per_bot=0,
         )
         return {"bot": bot}
+
+    @app.get("/api/v1/bots/{bot_id}/multi-symbol")
+    def bot_multi_symbol(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {"bot_id": bot_id, "multi_symbol": store.bot_multi_symbol_or_404(bot_id)}
+
+    @app.patch("/api/v1/bots/{bot_id}/multi-symbol")
+    def patch_bot_multi_symbol(bot_id: str, body: BotMultiSymbolPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        if body.universe_name is None and body.symbols is None and body.max_active_symbols is None:
+            raise HTTPException(status_code=400, detail="At least one multi_symbol field is required")
+        multi_symbol = store.patch_bot_multi_symbol(
+            bot_id,
+            universe_name=body.universe_name,
+            symbols=body.symbols,
+            max_active_symbols=body.max_active_symbols,
+            actor=user.get("username", "admin"),
+            change_source="bot_multi_symbol_api",
+        )
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "bot_id": bot_id, "multi_symbol": multi_symbol}
 
     @app.post("/api/v1/bots/{bot_id}/archive")
     def archive_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

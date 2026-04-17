@@ -2,6 +2,42 @@
 
 ## 2026-04-17
 
+### RTLOPS-72 - Bot Multi-Symbol con modelo canonico de simbolos por bot y limites base
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega `GET /api/v1/bots/{bot_id}/multi-symbol`
+    - agrega `PATCH /api/v1/bots/{bot_id}/multi-symbol`
+    - expone `multi_symbol` dentro del contrato canonico del registry y dentro de la respuesta de bots
+    - endurece el limite de simbolos configurados por bot con cap base `12`
+    - traduce errores del surface multi-symbol a naming canonico (`symbols`, `max_active_symbols`) sin romper el storage existente
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `BotMultiSymbolModel`, `BotMultiSymbolResponse` y el surface extendido del contrato
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - valida el cap de simbolos configurados usando el contrato canonico
+    - toma el limite activo desde `multi_symbol.limits.max_active_symbols_max`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cubre el cap de simbolos configurados y el contrato actualizado `rtlops72/v1`
+- Cambio real aplicado en tests backend:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre `GET /api/v1/bots/{bot_id}/multi-symbol`
+    - cubre `PATCH /api/v1/bots/{bot_id}/multi-symbol`
+    - cubre duplicados, cap configurado, cap activo, fail-closed por catalogo y guard de bot archivado
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`8 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS (`4 passed`)
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-73`
+  - `RTLOPS-74`
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+
 ### Auditoria global + cleanup controlado de residuos live/legacy
 - Cambio real aplicado en frontend:
   - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`

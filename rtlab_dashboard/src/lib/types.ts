@@ -250,6 +250,28 @@ export interface BotInstanceStrategyRef {
   status?: "active" | "disabled" | "archived" | string;
 }
 
+export interface BotMultiSymbolModel {
+  contract_version: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  configured_symbols_count: number;
+  max_configured_symbols: number;
+  max_active_symbols?: number | null;
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotMultiSymbolResponse {
+  bot_id: string;
+  multi_symbol: BotMultiSymbolModel;
+}
+
 export interface BotInstance {
   id: string;
   bot_id?: string;
@@ -286,6 +308,7 @@ export interface BotInstance {
   max_live_symbols?: number | null;
   symbol_assignment_status?: "valid" | "error" | string;
   symbol_assignment_errors?: string[];
+  multi_symbol?: BotMultiSymbolModel;
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -325,12 +348,14 @@ export interface BotRegistryContractResponse {
     stable_id_field: string;
     supports_soft_archive: boolean;
     trace_fields: string[];
+    multi_symbol_fields: string[];
   };
   api: {
     list_path: string;
     create_path: string;
     detail_path: string;
     patch_path: string;
+    multi_symbol_path: string;
     archive_path: string;
     restore_path: string;
     policy_state_path: string;
@@ -405,6 +430,17 @@ export interface BotRegistryContractResponse {
     policy_state: string[];
     governance: string[];
     trace: string[];
+  };
+  multi_symbol: {
+    contract_version: string;
+    storage_fields: string[];
+    limits: {
+      configured_symbols_min: number;
+      configured_symbols_max: number;
+      max_active_symbols_min: number;
+      max_active_symbols_max: number;
+    };
+    fields: string[];
   };
 }
 

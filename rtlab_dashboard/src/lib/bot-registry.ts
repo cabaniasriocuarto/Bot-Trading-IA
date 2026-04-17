@@ -104,6 +104,8 @@ function buildBotRegistryFormSchema(contract: BotRegistryContractResponse) {
   const domainTypes = new Set(contract.enums.domain_types);
   const riskProfiles = new Set(contract.enums.risk_profiles);
   const limits = contract.limits;
+  const configuredSymbolsMax = Number(contract.multi_symbol?.limits.configured_symbols_max || limits.max_live_symbols || 0);
+  const maxActiveSymbolsMax = Number(contract.multi_symbol?.limits.max_active_symbols_max || limits.max_live_symbols || 0);
   return z.object({
     display_name: z
       .string()
@@ -133,7 +135,8 @@ function buildBotRegistryFormSchema(contract: BotRegistryContractResponse) {
       .min(1, "El universo válido es requerido."),
     universe: z
       .array(z.string().trim().min(1, "Cada símbolo asignado debe ser válido."))
-      .min(limits.universe_min_size, `Debes asignar al menos ${limits.universe_min_size} símbolo válido.`),
+      .min(limits.universe_min_size, `Debes asignar al menos ${limits.universe_min_size} símbolo válido.`)
+      .max(configuredSymbolsMax, `Los símbolos configurados no pueden superar ${configuredSymbolsMax}.`),
     pool_strategy_ids: z
       .array(z.string().trim().min(1, "Cada estrategia del pool debe ser válida."))
       .min(limits.pool_strategy_ids_min_size, `Debes asignar al menos ${limits.pool_strategy_ids_min_size} estrategia válida al pool.`)
@@ -142,7 +145,7 @@ function buildBotRegistryFormSchema(contract: BotRegistryContractResponse) {
       .number()
       .int()
       .gte(limits.max_live_symbols_min, `El cap live debe ser >= ${limits.max_live_symbols_min}.`)
-      .lte(limits.max_live_symbols, `El cap live no puede superar ${limits.max_live_symbols}.`),
+      .lte(maxActiveSymbolsMax, `El cap live no puede superar ${maxActiveSymbolsMax}.`),
     capital_base_usd: z.coerce
       .number()
       .gt(limits.capital_base_usd_min, `El capital base debe ser > ${limits.capital_base_usd_min}.`),
@@ -277,7 +280,12 @@ export function buildBotRegistryDraft(
     pool_strategy_ids: asDraftStrategyPool(bot?.pool_strategy_ids),
     max_live_symbols: asDraftNumber(
       bot?.max_live_symbols,
-      assignedUniverse.length ? Math.min(assignedUniverse.length, contract.limits.max_live_symbols) : defaults.max_live_symbols,
+      assignedUniverse.length
+        ? Math.min(
+          assignedUniverse.length,
+          Number(contract.multi_symbol?.limits.max_active_symbols_max || contract.limits.max_live_symbols),
+        )
+        : defaults.max_live_symbols,
     ),
     capital_base_usd: asDraftNumber(bot?.capital_base_usd, defaults.capital_base_usd),
     max_total_exposure_pct: asDraftNumber(bot?.max_total_exposure_pct, defaults.max_total_exposure_pct),
@@ -295,7 +303,7 @@ export function getBotRegistryContractMaxPoolStrategies(contract: BotRegistryCon
 }
 
 export function getBotRegistryContractMaxLiveSymbols(contract: BotRegistryContractResponse): number {
-  return Number(contract.limits.max_live_symbols || 0);
+  return Number(contract.multi_symbol?.limits.max_active_symbols_max || contract.limits.max_live_symbols || 0);
 }
 
 export function getBotDisplayName(bot: Pick<BotInstance, "display_name" | "name">): string {

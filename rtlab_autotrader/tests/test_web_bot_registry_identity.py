@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from test_web_live_ready import _auth_headers, _build_app, _login, _seed_bot_registry_catalog
+from test_web_live_ready import _auth_headers, _build_app, _catalog_item, _login, _seed_bot_registry_catalog
 
 
 def _eligible_pool_ids(client, headers: dict[str, str]) -> list[str]:
@@ -52,6 +52,36 @@ def _seed_extra_pool_strategies(module, *, total: int) -> list[str]:
   module.store.save_strategy_meta(meta)
   module.store._ensure_strategy_registry_invariants()
   return seeded_ids
+
+
+def _seed_large_spot_universe(module) -> list[str]:
+  symbols = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "AVAXUSDT",
+    "TRXUSDT",
+    "DOTUSDT",
+    "MATICUSDT",
+  ]
+  module.store.instrument_registry.db.save_snapshot(
+    family="spot",
+    environment="live",
+    source_endpoint="test://spot-live-large",
+    raw_payload={"symbols": symbols},
+    items=[
+      _catalog_item(family="spot", symbol=symbol, base_asset=symbol.removesuffix("USDT"))
+      for symbol in symbols
+    ],
+    policy_hash="test-policy-hash",
+  )
+  return symbols
 
 
 def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> None:
@@ -485,14 +515,16 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert res.status_code == 200, res.text
   payload = res.json()
 
-  assert payload["contract_version"] == "rtlrese31/v1"
+  assert payload["contract_version"] == "rtlops72/v1"
   assert payload["storage"]["kind"] == "json_file"
   assert payload["storage"]["path"] == "learning/bots.json"
   assert payload["storage"]["stable_id_field"] == "bot_id"
   assert payload["storage"]["supports_soft_archive"] is True
   assert "last_change_type" in payload["storage"]["trace_fields"]
+  assert payload["storage"]["multi_symbol_fields"] == ["universe_name", "universe", "max_live_symbols"]
   assert payload["api"]["list_path"] == "/api/v1/bots"
   assert payload["api"]["patch_path"] == "/api/v1/bots/{bot_id}"
+  assert payload["api"]["multi_symbol_path"] == "/api/v1/bots/{bot_id}/multi-symbol"
   assert payload["api"]["policy_state_path"] == "/api/v1/bots/{bot_id}/policy-state"
   assert payload["api"]["decision_log_path"] == "/api/v1/bots/{bot_id}/decision-log"
   assert payload["defaults"]["domain_type"] == "spot"
@@ -511,6 +543,145 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "pool_strategy_ids" in payload["fields"]["strategy_pool"]
   assert "bot_id" in payload["fields"]["identity"]
   assert "last_change_source" in payload["fields"]["trace"]
+  assert payload["multi_symbol"]["contract_version"] == "rtlops72/v1"
+  assert payload["multi_symbol"]["storage_fields"] == ["universe_name", "universe", "max_live_symbols"]
+  assert int(payload["multi_symbol"]["limits"]["configured_symbols_max"]) == 12
+  assert int(payload["multi_symbol"]["limits"]["max_active_symbols_max"]) == 12
+  assert "symbols" in payload["multi_symbol"]["fields"]
+
+
+def test_bot_multi_symbol_surface_is_canonical_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Multi Symbol Canonico",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT", "ETHUSDT"],
+      "max_live_symbols": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  created = create_res.json()["bot"]
+  bot_id = str(created["id"])
+  assert created["multi_symbol"]["contract_version"] == "rtlops72/v1"
+  assert created["multi_symbol"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
+  assert int(created["multi_symbol"]["configured_symbols_count"]) == 2
+  assert int(created["multi_symbol"]["max_configured_symbols"]) == 12
+  assert int(created["multi_symbol"]["max_active_symbols"]) == 2
+  assert created["multi_symbol"]["status"] == "valid"
+
+  multi_symbol_res = client.get(f"/api/v1/bots/{bot_id}/multi-symbol", headers=headers)
+  assert multi_symbol_res.status_code == 200, multi_symbol_res.text
+  multi_symbol = multi_symbol_res.json()["multi_symbol"]
+  assert multi_symbol["contract_version"] == "rtlops72/v1"
+  assert multi_symbol["universe_name"] == "core_spot_usdt"
+  assert multi_symbol["symbols"] == ["BTCUSDT", "ETHUSDT"]
+  assert int(multi_symbol["configured_symbols_count"]) == 2
+  assert int(multi_symbol["max_configured_symbols"]) == 12
+  assert int(multi_symbol["max_active_symbols"]) == 2
+  assert multi_symbol["storage_fields"] == ["universe_name", "universe", "max_live_symbols"]
+  assert multi_symbol["status"] == "valid"
+
+  _module.store.instrument_registry.db.save_snapshot(
+    family="spot",
+    environment="live",
+    source_endpoint="test://spot-live-stale-multisymbol",
+    raw_payload={"symbols": ["BTCUSDT"]},
+    items=[
+      _catalog_item(family="spot", symbol="BTCUSDT", base_asset="BTC"),
+    ],
+    policy_hash="test-policy-hash",
+  )
+
+  stale_multi_symbol_res = client.get(f"/api/v1/bots/{bot_id}/multi-symbol", headers=headers)
+  assert stale_multi_symbol_res.status_code == 200, stale_multi_symbol_res.text
+  stale_multi_symbol = stale_multi_symbol_res.json()["multi_symbol"]
+  assert stale_multi_symbol["status"] == "error"
+  assert any("ETHUSDT" in str(item) for item in (stale_multi_symbol.get("errors") or []))
+
+
+def test_bot_multi_symbol_patch_validates_limits_and_archive_guard(tmp_path: Path, monkeypatch) -> None:
+  monkeypatch.setenv("RATE_LIMIT_EXPENSIVE_REQ_PER_MIN", "20")
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  large_symbols = _seed_large_spot_universe(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Multi Symbol Patch",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT"],
+      "max_live_symbols": 1,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  duplicate_res = client.patch(
+    f"/api/v1/bots/{bot_id}/multi-symbol",
+    headers=headers,
+    json={"symbols": ["BTCUSDT", "BTCUSDT"]},
+  )
+  assert duplicate_res.status_code == 400, duplicate_res.text
+  assert "duplicados" in str(duplicate_res.json().get("detail") or "")
+
+  max_active_res = client.patch(
+    f"/api/v1/bots/{bot_id}/multi-symbol",
+    headers=headers,
+    json={"symbols": ["BTCUSDT"], "max_active_symbols": 2},
+  )
+  assert max_active_res.status_code == 400, max_active_res.text
+  assert "max_active_symbols" in str(max_active_res.json().get("detail") or "")
+  assert "cantidad de simbolos configurados" in str(max_active_res.json().get("detail") or "")
+
+  too_many_res = client.patch(
+    f"/api/v1/bots/{bot_id}/multi-symbol",
+    headers=headers,
+    json={"universe_name": "core_spot_usdt", "symbols": large_symbols, "max_active_symbols": 12},
+  )
+  assert too_many_res.status_code == 400, too_many_res.text
+  assert "12 simbolos configurados" in str(too_many_res.json().get("detail") or "")
+
+  patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}/multi-symbol",
+    headers=headers,
+    json={"symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"], "max_active_symbols": 2},
+  )
+  assert patch_res.status_code == 200, patch_res.text
+  multi_symbol = patch_res.json()["multi_symbol"]
+  assert multi_symbol["symbols"] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+  assert int(multi_symbol["configured_symbols_count"]) == 3
+  assert int(multi_symbol["max_active_symbols"]) == 2
+  assert multi_symbol["status"] == "valid"
+
+  archive_res = client.post(f"/api/v1/bots/{bot_id}/archive", headers=headers)
+  assert archive_res.status_code == 200, archive_res.text
+
+  archived_patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}/multi-symbol",
+    headers=headers,
+    json={"max_active_symbols": 1},
+  )
+  assert archived_patch_res.status_code == 409, archived_patch_res.text
+  assert "archivado" in str(archived_patch_res.json().get("detail") or "").lower()
 
 
 def test_bot_registry_strategy_pool_validation_and_fail_closed(tmp_path: Path, monkeypatch) -> None:

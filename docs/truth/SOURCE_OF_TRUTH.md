@@ -2,6 +2,59 @@
 
 Fecha de actualizacion: 2026-04-17
 
+## RTLOPS-72 - Bot Multi-Symbol con modelo canonico de simbolos por bot y limites base - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - el runtime multi-symbol todavia NO esta resuelto;
+  - pero el registry del bot ya expone un modelo canonico minimo para representar multi-symbol sin texto libre ni storage paralelo.
+- Fuente de verdad real usada por este bloque:
+  - la persistencia multi-symbol sigue viviendo en el mismo storage canonico del registry (`learning/bots.json`);
+  - este bloque reutiliza exactamente los campos ya persistidos por `RTLRESE-28`:
+    - `universe_name`
+    - `universe`
+    - `max_live_symbols`
+  - no se crea una `v2` del registry ni un storage separado para multi-symbol.
+- Contratos reales expuestos por API despues de este bloque:
+  - sigue vigente `GET /api/v1/bots/registry-contract`, ahora versionado como `rtlops72/v1`;
+  - nuevo surface minimo canonico:
+    - `GET /api/v1/bots/{bot_id}/multi-symbol`
+    - `PATCH /api/v1/bots/{bot_id}/multi-symbol`
+  - el contrato del registry ahora deja visible:
+    - `storage.multi_symbol_fields`
+    - `api.multi_symbol_path`
+    - `multi_symbol.contract_version = rtlops72/v1`
+    - limites y fields del modelo multi-symbol.
+- Reglas canonicas fijadas en este bloque:
+  - `symbols` se apoyan en el universo/catalogo real del registry;
+  - no se aceptan simbolos duplicados;
+  - `configured_symbols_count >= 1`;
+  - `configured_symbols_count <= 12`;
+  - `max_active_symbols >= 1`;
+  - `max_active_symbols <= 12`;
+  - `max_active_symbols` no puede superar la cantidad de simbolos configurados;
+  - si el catalogo/universe real deja invalida una configuracion persistida, el bot queda fail-closed con:
+    - `multi_symbol.status = error`
+    - `multi_symbol.errors[]`
+  - un bot archivado no admite edicion operativa via `/multi-symbol`.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa el modelo y la respuesta canonica `multi_symbol`
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - valida el cap de simbolos configurados contra el contrato canonico
+    - sigue usando el mismo formulario del registry ya existente
+  - este bloque NO abre una UI nueva ni una live console para multi-symbol.
+- Lo que este bloque NO implementa:
+  - `RTLOPS-73`
+  - mapping estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - consolidacion de señales
+  - net execution
+  - lifecycle
+  - live console
+- Conclusion operativa:
+  - desde este bloque, el sistema ya tiene una base canonica y persistida para colgar el runtime multi-symbol;
+  - el siguiente bloque ya puede enfocarse en elegibilidad/mapping por simbolo, no en volver a fundar el modelo.
+
 ## Auditoria global + cleanup controlado de residuos live/legacy - 2026-04-17
 
 - Estado real revalidado contra repo + docs/truth + Linear:
