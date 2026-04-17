@@ -1,6 +1,66 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-16
+Fecha de actualizacion: 2026-04-17
+
+## RTLRESE-31 - Bot Registry con contratos minimos de storage, API y frontend - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no depende de defaults/limits hardcodeados en frontend para operar su surface minima;
+  - ahora tiene un contrato canonico explicito que alinea storage, API y frontend sobre el mismo shape administrativo del bot.
+- Fuente de verdad real consolidada en este bloque:
+  - el storage real sigue viviendo en `learning/bots.json`, administrado por `BotPolicyStateRepository` / `ConsoleStore`;
+  - no se creo un storage paralelo ni una `v2` del registry;
+  - la surface canonica nueva sale por `GET /api/v1/bots/registry-contract`.
+- Contratos reales expuestos por API despues de este bloque:
+  - siguen vigentes:
+    - `GET /api/v1/bots`
+    - `POST /api/v1/bots`
+    - `GET /api/v1/bots/{bot_id}`
+    - `PATCH /api/v1/bots/{bot_id}`
+    - `POST /api/v1/bots/{bot_id}/archive`
+    - `POST /api/v1/bots/{bot_id}/restore`
+    - `GET /api/v1/bots/{bot_id}/policy-state`
+    - `PATCH /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/decision-log`
+  - nuevo contrato minimo canonico:
+    - `GET /api/v1/bots/registry-contract`
+      - version de contrato
+      - storage real del registry
+      - surface API minima
+      - defaults canonicos
+      - limites canonicos
+      - enums canonicos
+      - grupos de campos del registry
+- Reglas canonicas fijadas en este bloque:
+  - frontend deja de definir por su cuenta:
+    - cap del pool
+    - cap live
+    - defaults de capital/risk profile/base config
+    - enums base del registry
+  - la UI del registry consume el contrato canonico del backend para:
+    - crear drafts
+    - validar drafts
+    - mostrar capacidad/storage/version del registry
+  - `bot_id` sigue siendo la identidad estable y el soft-archive sigue siendo la semantica valida del storage.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - helpers del draft consumen `BotRegistryContractResponse`
+    - validacion Zod deja de apoyarse en limites hardcodeados
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - carga `GET /api/v1/bots/registry-contract`
+    - crea/edita bots usando defaults/limits/enums canónicos
+    - muestra version y storage del registry en UI
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa el contrato canonico del registry
+- Lo que este bloque NO implementa:
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - mapping estrategia<->simbolo
+  - lifecycle
+  - live console
+  - nuevas features de negocio del bot
+- Conclusion operativa:
+  - desde este bloque, el Bot Registry queda cerrado como dominio minimo profesional y util;
+  - el siguiente frente ya no necesita consolidar contratos del registry y puede arrancar sobre runtime multi-symbol.
 
 ## RTLRESE-30 - Bot Registry con edicion, archivado/reactivacion y gobierno basico con trazabilidad - 2026-04-16
 

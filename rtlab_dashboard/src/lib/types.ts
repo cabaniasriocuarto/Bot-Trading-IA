@@ -317,6 +317,97 @@ export interface BotPolicyStateResponse {
   policy_state: BotPolicyState;
 }
 
+export interface BotRegistryContractResponse {
+  contract_version: string;
+  storage: {
+    kind: string;
+    path: string;
+    stable_id_field: string;
+    supports_soft_archive: boolean;
+    trace_fields: string[];
+  };
+  api: {
+    list_path: string;
+    create_path: string;
+    detail_path: string;
+    patch_path: string;
+    archive_path: string;
+    restore_path: string;
+    policy_state_path: string;
+    decision_log_path: string;
+  };
+  defaults: {
+    display_name: string;
+    alias: string;
+    description: string;
+    domain_type: BotRegistryDomainType;
+    registry_status: BotRegistryStatus;
+    engine: string;
+    mode: BotPolicyMode;
+    status: "active" | "paused" | "archived";
+    universe_name: string;
+    universe: string[];
+    pool_strategy_ids: string[];
+    max_live_symbols: number;
+    capital_base_usd: number;
+    max_total_exposure_pct: number;
+    max_asset_exposure_pct: number;
+    risk_profile: BotRiskProfile;
+    risk_per_trade_pct: number;
+    max_daily_loss_pct: number;
+    max_drawdown_pct: number;
+    max_positions: number;
+    notes: string;
+  };
+  limits: {
+    max_instances: number;
+    display_name_min_length: number;
+    display_name_max_length: number;
+    alias_max_length: number;
+    description_max_length: number;
+    notes_max_length: number;
+    universe_min_size: number;
+    pool_strategy_ids_min_size: number;
+    max_live_symbols_min: number;
+    max_live_symbols: number;
+    max_pool_strategies: number;
+    capital_base_usd_min: number;
+    percentage_min: number;
+    percentage_max: number;
+    max_positions_min: number;
+  };
+  enums: {
+    domain_types: BotRegistryDomainType[];
+    registry_statuses: BotRegistryStatus[];
+    risk_profiles: BotRiskProfile[];
+    modes: BotPolicyMode[];
+    statuses: Array<"active" | "paused" | "archived">;
+    engines: string[];
+    change_types: BotRegistryChangeType[];
+  };
+  risk_profiles: Record<
+    BotRiskProfile,
+    {
+      risk_profile: BotRiskProfile;
+      max_total_exposure_pct: number;
+      max_asset_exposure_pct: number;
+      risk_per_trade_pct: number;
+      max_daily_loss_pct: number;
+      max_drawdown_pct: number;
+      max_positions: number;
+    }
+  >;
+  fields: {
+    identity: string[];
+    base_config: string[];
+    symbol_assignment: string[];
+    strategy_pool: string[];
+    policy_state: string[];
+    governance: string[];
+    trace: string[];
+  };
+}
+
 export interface InstrumentUniverseItem {
   name: string;
   venue: string;

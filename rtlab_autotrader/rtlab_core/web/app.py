@@ -887,6 +887,63 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
+BOT_REGISTRY_CONTRACT_VERSION = "rtlrese31/v1"
+BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
+BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
+BOT_REGISTRY_DEFAULT_MODE = "paper"
+BOT_REGISTRY_DEFAULT_STATUS = "active"
+BOT_REGISTRY_ALLOWED_POLICY_STATUSES = ("active", "paused", "archived")
+BOT_REGISTRY_ALLOWED_REGISTRY_STATUSES = ("active", "archived")
+BOT_REGISTRY_ALLOWED_DOMAIN_TYPES = ("spot", "futures")
+BOT_REGISTRY_ALLOWED_ENGINES = ("fixed_rules", "bandit_thompson", "bandit_ucb1")
+BOT_REGISTRY_ALLOWED_CHANGE_TYPES = ("created", "updated", "archived", "reactivated")
+BOT_REGISTRY_API_SURFACE = {
+    "list_path": "/api/v1/bots",
+    "create_path": "/api/v1/bots",
+    "detail_path": "/api/v1/bots/{bot_id}",
+    "patch_path": "/api/v1/bots/{bot_id}",
+    "archive_path": "/api/v1/bots/{bot_id}/archive",
+    "restore_path": "/api/v1/bots/{bot_id}/restore",
+    "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
+    "decision_log_path": "/api/v1/bots/{bot_id}/decision-log",
+}
+BOT_REGISTRY_FIELD_GROUPS = {
+    "identity": ["id", "bot_id", "display_name", "alias", "description", "domain_type"],
+    "base_config": [
+        "capital_base_usd",
+        "risk_profile",
+        "max_total_exposure_pct",
+        "max_asset_exposure_pct",
+        "risk_per_trade_pct",
+        "max_daily_loss_pct",
+        "max_drawdown_pct",
+        "max_positions",
+    ],
+    "symbol_assignment": [
+        "universe_name",
+        "universe",
+        "max_live_symbols",
+        "symbol_assignment_status",
+        "symbol_assignment_errors",
+    ],
+    "strategy_pool": [
+        "pool_strategy_ids",
+        "pool_strategies",
+        "strategy_pool_status",
+        "strategy_pool_errors",
+        "max_pool_strategies",
+    ],
+    "policy_state": ["engine", "mode", "status", "notes"],
+    "governance": ["registry_status", "archived_at"],
+    "trace": [
+        "created_at",
+        "updated_at",
+        "last_change_type",
+        "last_change_summary",
+        "last_changed_by",
+        "last_change_source",
+    ],
+}
 
 
 class LivePreflightRunBody(BaseModel):
@@ -3693,21 +3750,21 @@ def risk_hooks(context):
     @staticmethod
     def _normalize_bot_status(value: str | None) -> str:
         status = str(value or "active").strip().lower()
-        if status not in {"active", "paused", "archived"}:
+        if status not in BOT_REGISTRY_ALLOWED_POLICY_STATUSES:
             return "active"
         return status
 
     @staticmethod
     def _normalize_bot_registry_status(value: str | None) -> str:
         status = str(value or "active").strip().lower()
-        if status not in {"active", "archived"}:
+        if status not in BOT_REGISTRY_ALLOWED_REGISTRY_STATUSES:
             return "active"
         return status
 
     @staticmethod
     def _normalize_bot_domain_type(value: str | None) -> str:
         domain = str(value or "spot").strip().lower()
-        if domain not in {"spot", "futures"}:
+        if domain not in BOT_REGISTRY_ALLOWED_DOMAIN_TYPES:
             return "spot"
         return domain
 
@@ -3725,8 +3782,8 @@ def risk_hooks(context):
 
     @staticmethod
     def _normalize_bot_engine(value: str | None) -> str:
-        engine = str(value or "bandit_thompson").strip()
-        return engine or "bandit_thompson"
+        engine = str(value or BOT_REGISTRY_DEFAULT_ENGINE).strip()
+        return engine or BOT_REGISTRY_DEFAULT_ENGINE
 
     @staticmethod
     def _validate_bot_display_name(value: Any) -> str:
@@ -4469,6 +4526,87 @@ def risk_hooks(context):
 
     def save_bots(self, rows: list[dict[str, Any]]) -> None:
         self.policy_state.save_bot_rows(rows)
+
+    def bot_registry_contract(self) -> dict[str, Any]:
+        try:
+            storage_path = self.policy_state.bots_path.relative_to(USER_DATA_DIR)
+            storage_label = storage_path.as_posix()
+        except Exception:
+            storage_label = str(self.policy_state.bots_path)
+        defaults = self._bot_risk_profile_defaults(BOT_DEFAULT_RISK_PROFILE)
+        return {
+            "contract_version": BOT_REGISTRY_CONTRACT_VERSION,
+            "storage": {
+                "kind": "json_file",
+                "path": storage_label,
+                "stable_id_field": "bot_id",
+                "supports_soft_archive": True,
+                "trace_fields": list(BOT_REGISTRY_FIELD_GROUPS["trace"]),
+            },
+            "api": dict(BOT_REGISTRY_API_SURFACE),
+            "defaults": {
+                "display_name": "",
+                "alias": "",
+                "description": "",
+                "domain_type": BOT_REGISTRY_DEFAULT_DOMAIN_TYPE,
+                "registry_status": "active",
+                "engine": BOT_REGISTRY_DEFAULT_ENGINE,
+                "mode": BOT_REGISTRY_DEFAULT_MODE,
+                "status": BOT_REGISTRY_DEFAULT_STATUS,
+                "universe_name": "",
+                "universe": [],
+                "pool_strategy_ids": [],
+                "max_live_symbols": 1,
+                "capital_base_usd": float(BOT_DEFAULT_CAPITAL_BASE_USD),
+                "risk_profile": BOT_DEFAULT_RISK_PROFILE,
+                "max_total_exposure_pct": float(defaults.get("max_total_exposure_pct") or 65.0),
+                "max_asset_exposure_pct": float(defaults.get("max_asset_exposure_pct") or 25.0),
+                "risk_per_trade_pct": float(defaults.get("risk_per_trade_pct") or 0.5),
+                "max_daily_loss_pct": float(defaults.get("max_daily_loss_pct") or 3.0),
+                "max_drawdown_pct": float(defaults.get("max_drawdown_pct") or 15.0),
+                "max_positions": int(defaults.get("max_positions") or 10),
+                "notes": "",
+            },
+            "limits": {
+                "max_instances": int(BOTS_MAX_INSTANCES),
+                "display_name_min_length": 3,
+                "display_name_max_length": 80,
+                "alias_max_length": 40,
+                "description_max_length": 280,
+                "notes_max_length": 500,
+                "universe_min_size": 1,
+                "pool_strategy_ids_min_size": 1,
+                "max_live_symbols_min": 1,
+                "max_live_symbols": int(BOT_MAX_LIVE_SYMBOLS),
+                "max_pool_strategies": int(BOT_MAX_POOL_STRATEGIES),
+                "capital_base_usd_min": 0.01,
+                "percentage_min": 0.01,
+                "percentage_max": 100.0,
+                "max_positions_min": 1,
+            },
+            "enums": {
+                "domain_types": list(BOT_REGISTRY_ALLOWED_DOMAIN_TYPES),
+                "registry_statuses": list(BOT_REGISTRY_ALLOWED_REGISTRY_STATUSES),
+                "risk_profiles": list(BOT_RISK_PROFILE_DEFAULTS.keys()),
+                "modes": ["shadow", "paper", "testnet", "live"],
+                "statuses": list(BOT_REGISTRY_ALLOWED_POLICY_STATUSES),
+                "engines": list(BOT_REGISTRY_ALLOWED_ENGINES),
+                "change_types": list(BOT_REGISTRY_ALLOWED_CHANGE_TYPES),
+            },
+            "risk_profiles": {
+                profile: {
+                    "risk_profile": str(payload.get("risk_profile") or profile),
+                    "max_total_exposure_pct": float(payload.get("max_total_exposure_pct") or 0.0),
+                    "max_asset_exposure_pct": float(payload.get("max_asset_exposure_pct") or 0.0),
+                    "risk_per_trade_pct": float(payload.get("risk_per_trade_pct") or 0.0),
+                    "max_daily_loss_pct": float(payload.get("max_daily_loss_pct") or 0.0),
+                    "max_drawdown_pct": float(payload.get("max_drawdown_pct") or 0.0),
+                    "max_positions": int(payload.get("max_positions") or 0),
+                }
+                for profile, payload in BOT_RISK_PROFILE_DEFAULTS.items()
+            },
+            "fields": {key: list(values) for key, values in BOT_REGISTRY_FIELD_GROUPS.items()},
+        }
 
     def bot_or_404(self, bot_id: str) -> dict[str, Any]:
         bot_id_n = str(bot_id or "").strip()
@@ -12800,6 +12938,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="params_yaml or params is required")
         strategy = store.update_strategy_params(strategy_id, params_yaml)
         return {"ok": True, "strategy": strategy}
+
+    @app.get("/api/v1/bots/registry-contract")
+    def bot_registry_contract(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.bot_registry_contract()
 
     @app.get("/api/v1/bots")
     def list_bots(

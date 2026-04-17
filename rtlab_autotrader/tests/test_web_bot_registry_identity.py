@@ -475,6 +475,44 @@ def test_bot_registry_base_config_defaults_for_legacy_shape(tmp_path: Path, monk
   assert created["strategy_pool_status"] == "valid"
 
 
+def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/bots/registry-contract", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()
+
+  assert payload["contract_version"] == "rtlrese31/v1"
+  assert payload["storage"]["kind"] == "json_file"
+  assert payload["storage"]["path"] == "learning/bots.json"
+  assert payload["storage"]["stable_id_field"] == "bot_id"
+  assert payload["storage"]["supports_soft_archive"] is True
+  assert "last_change_type" in payload["storage"]["trace_fields"]
+  assert payload["api"]["list_path"] == "/api/v1/bots"
+  assert payload["api"]["patch_path"] == "/api/v1/bots/{bot_id}"
+  assert payload["api"]["policy_state_path"] == "/api/v1/bots/{bot_id}/policy-state"
+  assert payload["api"]["decision_log_path"] == "/api/v1/bots/{bot_id}/decision-log"
+  assert payload["defaults"]["domain_type"] == "spot"
+  assert payload["defaults"]["risk_profile"] == "medium"
+  assert float(payload["defaults"]["capital_base_usd"]) == 10000.0
+  assert float(payload["defaults"]["max_total_exposure_pct"]) == 65.0
+  assert int(payload["defaults"]["max_positions"]) == 10
+  assert int(payload["limits"]["max_pool_strategies"]) == 15
+  assert int(payload["limits"]["max_live_symbols"]) == 12
+  assert int(payload["limits"]["display_name_max_length"]) == 80
+  assert int(payload["limits"]["max_instances"]) >= 1
+  assert payload["enums"]["domain_types"] == ["spot", "futures"]
+  assert payload["enums"]["registry_statuses"] == ["active", "archived"]
+  assert payload["enums"]["engines"] == ["fixed_rules", "bandit_thompson", "bandit_ucb1"]
+  assert float(payload["risk_profiles"]["aggressive"]["max_drawdown_pct"]) == 22.0
+  assert "pool_strategy_ids" in payload["fields"]["strategy_pool"]
+  assert "bot_id" in payload["fields"]["identity"]
+  assert "last_change_source" in payload["fields"]["trace"]
+
+
 def test_bot_registry_strategy_pool_validation_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)

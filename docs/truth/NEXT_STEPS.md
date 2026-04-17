@@ -1,6 +1,23 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-16
+Fecha: 2026-04-17
+
+## Siguiente bloque exacto despues de RTLRESE-31 - 2026-04-17
+- [x] Consolidar el Bot Registry como surface minima canonica:
+  - `GET /api/v1/bots/registry-contract`
+  - defaults/limites/enums del registry definidos en backend y consumidos por frontend
+  - storage real (`learning/bots.json`) visible sin crear una segunda verdad
+- [x] Mantener una implementacion minima-profesional:
+  - sin reabrir identidad, config base, symbols assignment, strategy pool ni gobierno basico
+  - sin tocar runtime live, lifecycle ni live console
+  - con frontend y API alineados sobre el mismo shape administrativo
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-72` como primer bloque del frente `RTLOPS-72+` y resolver solo runtime multi-symbol sobre el registry ya cerrado
+  - mantener fuera de ese bloque:
+    - lifecycle
+    - live console
+    - refactor global del registry
+    - cleanup Git adicional
 
 ## Siguiente bloque exacto despues de RTLRESE-30 - 2026-04-16
 - [x] Endurecer Bot Registry con gobierno basico y trazabilidad minima:

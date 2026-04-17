@@ -1,5 +1,52 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-17
+
+### RTLRESE-31 - Bot Registry con contratos minimos de storage, API y frontend
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega `GET /api/v1/bots/registry-contract`
+    - expone version, storage, defaults, limites, enums y grupos de campos del registry
+  - el storage real del bot sigue en `learning/bots.json`; este bloque no crea persistencia paralela.
+- Cambio real aplicado en API:
+  - el registry ahora tiene una surface minima canonica separada y consultable por frontend:
+    - `GET /api/v1/bots/registry-contract`
+  - se mantienen consistentes sin renombre arbitrario:
+    - `GET /api/v1/bots`
+    - `GET /api/v1/bots/{bot_id}`
+    - `PATCH /api/v1/bots/{bot_id}`
+    - `POST /api/v1/bots/{bot_id}/archive`
+    - `POST /api/v1/bots/{bot_id}/restore`
+    - `GET/PATCH /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/decision-log`
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - deja de hardcodear defaults/limits del registry
+    - consume `BotRegistryContractResponse` para construir y validar drafts
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - carga el contrato canonico del registry
+    - usa defaults/limits/enums del backend para crear/editar bots
+    - muestra contract version y storage real del registry
+  - `rtlab_dashboard/src/lib/types.ts`
+    - agrega typing del contrato minimo del registry
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre la surface API nueva `/api/v1/bots/registry-contract`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cubre que el draft/validacion del frontend dependen del contrato canonico y no de limites duros
+- Tests corridos:
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`6 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS (`4 passed`)
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL preexistente por include roto de `.next/types` en `tsconfig.json`; no fue introducido por `RTLRESE-31`
+- Fuera de alcance mantenido a proposito:
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - mapping estrategia<->simbolo
+  - lifecycle
+  - live console
+  - nuevas features de negocio del bot
+
 ## 2026-04-16
 
 ### RTLRESE-30 - Bot Registry con edicion, archivado/reactivacion y gobierno basico con trazabilidad
