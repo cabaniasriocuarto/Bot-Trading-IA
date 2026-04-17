@@ -2,6 +2,26 @@
 
 Fecha: 2026-04-17
 
+## Siguiente lote exacto despues del lote 1 de reparacion execution vs registry - 2026-04-17
+- [x] Corregir deuda real de surface operatoria en `execution`:
+  - quitar `DELETE /api/v1/bots/{bot_id}` de la UI
+  - usar soft-archive / restore reales del registry
+  - separar `status` runtime de `registry_status`
+  - mostrar identidad canonica (`display_name` + `bot_id`) en selector y tabla
+- [x] Mantener una reparacion chica y profesional:
+  - sin tocar el core de execution/live safety
+  - sin abrir `RTLOPS-73+`
+  - sin mezclar admin con codigo
+- [ ] Siguiente lote exacto recomendado:
+  - abrir `RTLOPS-71` y resolver solo deuda fina de strategy/frontend ya absorbido:
+    - surfaces que todavia viven de fallback o naming legacy
+    - QA fino donde el frontend moderno todavia esta subrepresentado
+  - mantener fuera de ese lote:
+    - `RTLOPS-73+`
+    - lifecycle
+    - live console
+    - refactor global del dashboard
+
 ## Siguiente bloque exacto despues de RTLOPS-72 - 2026-04-17
 - [x] Fundar el modelo canonico multi-symbol por bot:
   - storage reutilizando `universe_name`, `universe` y `max_live_symbols`

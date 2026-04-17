@@ -2,6 +2,35 @@
 
 ## 2026-04-17
 
+### Auditoria de deuda real - lote 1 de reparacion RTLOPS-24 + RTLOPS-34
+- Cambio real aplicado en frontend operatorio:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - deja de usar `DELETE /api/v1/bots/{bot_id}` desde UI
+    - usa archive/restore reales del registry
+    - separa badges y filtros de:
+      - `status` runtime
+      - `registry_status`
+    - muestra identidad canonica por `display_name` y `bot_id`
+- Cambio real aplicado en helper/test:
+  - `rtlab_dashboard/src/lib/execution-bots.ts`
+    - helper canonico para labels, filtros y badges del panel operatorio
+  - `rtlab_dashboard/src/lib/execution-bots.test.ts`
+    - cubre filtro archived por registry, label canonico y badges separados
+- Tests corridos:
+  - `npm.cmd test -- src/lib/bot-registry.test.ts src/lib/execution-bots.test.ts` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`8 passed`)
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-73`
+  - `RTLOPS-74`
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - cleanup administrativo de Linear
+
 ### RTLOPS-72 - Bot Multi-Symbol con modelo canonico de simbolos por bot y limites base
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/web/app.py`

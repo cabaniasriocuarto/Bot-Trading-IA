@@ -2,6 +2,40 @@
 
 Fecha de actualizacion: 2026-04-17
 
+## Auditoria de deuda real - lote 1 de reparacion RTLOPS-24 + RTLOPS-34 - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - la surface operatoria de `execution` ya no contradice al Bot Registry canonico en dos puntos criticos:
+    - deja de ofrecer borrado destructivo de bots;
+    - deja de mezclar `status` runtime con `registry_status` como si fueran lo mismo.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - usa identidad canonica del registry (`display_name` + `bot_id`) en selector, tabla y acciones;
+    - muestra por separado:
+      - `runtime:<status>`
+      - `registry:<registry_status>`
+    - reemplaza acciones stale de `DELETE /api/v1/bots/{bot_id}` por:
+      - `POST /api/v1/bots/{bot_id}/archive`
+      - `POST /api/v1/bots/{bot_id}/restore`
+    - evita edicion operativa sobre bots archivados desde esta surface.
+  - `rtlab_dashboard/src/lib/execution-bots.ts`
+    - helper canonico para labels, filtros y badges del frente operatorio
+  - `rtlab_dashboard/src/lib/execution-bots.test.ts`
+    - cubre identity label, filtro `archived` por registry y badges separados.
+- Regla canonica reafirmada:
+  - `registry_status=archived` pertenece al gobierno del registry;
+  - `status=active|paused|...` sigue siendo estado operativo/runtime;
+  - `execution` no debe volver a presentar `DELETE` como camino valido mientras el backend mantenga soft-archive fail-closed.
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+  - refactor del core de execution
+  - reescritura de surfaces research/backtests
+- Conclusion operativa:
+  - la consola operatoria principal ya no empuja al usuario a un contrato API invalidado por el backend;
+  - el siguiente lote de deuda real conviene ir sobre frontend fino de estrategia/surfaces derivadas, no sobre execution core.
+
 ## RTLOPS-72 - Bot Multi-Symbol con modelo canonico de simbolos por bot y limites base - 2026-04-17
 
 - Estado real confirmado en esta rama:
