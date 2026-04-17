@@ -2,6 +2,21 @@
 
 Fecha de actualizacion: 2026-04-17
 
+## Auditoria global + cleanup controlado de residuos live/legacy - 2026-04-17
+
+- Estado real revalidado contra repo + docs/truth + Linear:
+  - `RTLRESE-13` backend domains y `RTLRESE-14` API contracts ya aparecen absorbidas en esta base real:
+    - `rtlab_autotrader/rtlab_core/domains/*.py` esta trackeado
+    - `GET /api/v1/strategies/{strategy_id}/truth`
+    - `GET /api/v1/strategies/{strategy_id}/evidence`
+    - `GET/PATCH /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/decision-log`
+  - `RTLRESE-15` frontend domains ya opera sobre esos contratos canonicos; los fallbacks legacy que sobreviven son transicionales y no deben volver a presentarse como si `RTLRESE-14` siguiera sin integrar.
+  - `LIVE` global sigue bloqueado por guardrails reales y pendientes operativos de preflight/readiness/credenciales/canary; no se removio ninguna proteccion real.
+- Cleanup controlado aplicado en este bloque:
+  - la ayuda de `mode=live` en `Strategies` deja de expresarse como `NO GO` global y pasa a describir gating real por readiness/gates;
+  - los notices de fallback en `strategies/[id]` y `execution` dejan de decir que `RTLRESE-14` no esta integrada y pasan a describir degradacion transicional por contrato ausente.
+
 ## RTLRESE-31 - Bot Registry con contratos minimos de storage, API y frontend - 2026-04-17
 
 - Estado real confirmado en esta rama:
@@ -977,20 +992,24 @@ Cuando codigo, docs y configuracion discrepan:
     - rama dedicada: `feature/rtlrese-15-frontend-domains`
     - commit de cierre: `1443789`
     - resultado documentado: separacion visual y de tipos en frontend con fallback legacy acotado.
-- Estado real de integracion en ESTA base (`feature/rtlrese-16-docs-finalization`, misma base que `main` actual):
-  - el backend trackeado todavia expone contratos legacy visibles, por ejemplo:
-    - `POST /api/v1/bots/bulk-patch`
-    - `GET /api/v1/logs`
-  - el frontend trackeado todavia conserva mezcla legacy visible, por ejemplo:
-    - `Strategy.last_oos` en `rtlab_dashboard/src/lib/types.ts`
-    - `GET /api/v1/strategies/{id}` como contrato mixto en `strategies/[id]`
-    - tablas y cards de `strategies` / `execution` todavia no separadas por dominio en esta base.
-  - `rtlab_autotrader/rtlab_core/domains/` no aparece como arbol fuente trackeado en esta rama; solo se observaron residuos locales (`__pycache__`), no la integracion final del split.
+- Estado real de integracion en la base activa al 2026-04-17:
+  - `rtlab_autotrader/rtlab_core/domains/` ya aparece trackeado como arbol fuente real:
+    - `truth/`
+    - `evidence/`
+    - `policy_state/`
+    - `decision_log/`
+  - el backend ya expone contratos canonicos visibles:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+    - `GET/PATCH /api/v1/bots/{id}/policy-state`
+    - `GET /api/v1/bots/{id}/decision-log`
+  - el frontend base ya consume esos contratos en `strategies/[id]` y `execution`;
+  - todavia sobreviven fallbacks transicionales para degradar con honestidad si un backend remoto no expone el contrato esperado, pero eso ya no equivale a decir que `RTLRESE-14` no este integrada.
 - Conclusión operativa honesta:
-  - la frontera nueva ya quedo decidida y cerrada en ramas dedicadas 13/14/15;
-  - la compatibilidad legacy sigue vigente desde el punto de vista de integracion, porque esas ramas todavia no aparecen absorbidas por la base actual;
+  - la frontera 13/14/15 ya quedo absorbida de forma usable en la base real;
+  - cualquier pendiente restante ya no es "mergear RTLRESE-13/14/15", sino seguir achicando compatibilidad transicional sin romper consumidores remotos atrasados;
   - por lo tanto, cualquier lectura de `SOURCE_OF_TRUTH` debe distinguir:
-    - frontera canonica objetivo/cerrada
+    - cierre historico de frontera
     - estado efectivamente integrado hoy en la base activa
 - Criterio documental adoptado desde RTLRESE-16:
   - no volver a describir `Sharpe`, `Max DD`, `WinRate`, `trades` o `confidence` runtime como si fueran parte de `strategy_truth`;
@@ -1150,7 +1169,7 @@ Cuando codigo, docs y configuracion discrepan:
     - `shadow`
     - `paper`
     - `testnet`
-    - `live` visible solo como referencia, NO GO
+    - `live` visible como modo gated: si `preflight/readiness/gates` no pasan, queda bloqueado fail-closed
 - Frontend `Backtests`:
   - agrega selector de bot para research batch
   - agrega accion `Usar pool del bot`

@@ -2,6 +2,34 @@
 
 ## 2026-04-17
 
+### Auditoria global + cleanup controlado de residuos live/legacy
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - la ayuda de `mode=live` deja de expresar `NO GO` global y pasa a describir gating real por `preflight/readiness/gates`
+  - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`
+    - el fallback de `truth/evidence` deja de decir que `RTLRESE-14` no esta integrada
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - el fallback de `policy_state/decision_log` deja de decir que `RTLRESE-14` no esta integrada
+- Cambio real aplicado en docs/truth:
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+    - corrige el estado actual de integracion de `RTLRESE-13/14/15` en la base real
+    - deja explicitado que `LIVE` sigue bloqueado por guardrails reales y no por un slogan viejo
+  - `docs/truth/NEXT_STEPS.md`
+    - elimina pendientes falsos de "mergear o recrear" `RTLRESE-13/14/15`
+    - deja solo pendiente residual de compatibilidad transicional contra backends remotos viejos
+- Verificacion real aplicada:
+  - `rtlab_autotrader/rtlab_core/domains/*.py` ya esta trackeado en repo
+  - `rtlab_autotrader/rtlab_core/web/app.py` ya expone:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+    - `GET/PATCH /api/v1/bots/{id}/policy-state`
+    - `GET /api/v1/bots/{id}/decision-log`
+  - no se removio ningun guardrail real de `LIVE`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_live_mode_blocked_by_gates or bots_creation_respects_max_instances_limit or bots_overview_cache_hit_and_invalidation_on_create or log_bot_refs_table_is_populated_and_used_in_overview or bots_overview_scopes_kills_by_bot_and_mode" -q` -> PASS (`5 passed`)
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS tambien en frio tras limpieza controlada de artefactos locales (`.next/types`, `.next/dev/types`, `tsconfig.tsbuildinfo`)
+
 ### RTLRESE-31 - Bot Registry con contratos minimos de storage, API y frontend
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/web/app.py`

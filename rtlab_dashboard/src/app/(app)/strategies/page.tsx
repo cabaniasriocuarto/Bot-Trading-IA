@@ -119,7 +119,7 @@ const BOT_MODE_HELP: Record<string, string> = {
   shadow: "Mock en vivo: usa market data real, no envia ordenes y guarda experiencia source=shadow.",
   paper: "Paper interno: corre con fondos virtuales y sirve para validar la logica sin exchange real.",
   testnet: "Testnet del exchange: usa sandbox/API de prueba, distinto de shadow.",
-  live: "Live real: sigue NO GO. Se deja visible solo como referencia operativa y no debe activarse ahora.",
+  live: "Live real: modo gated. Solo debe activarse cuando preflight, validation gates y readiness real esten en PASS; si no, queda bloqueado fail-closed.",
 };
 
 const BOT_ENGINE_HELP: Record<string, string> = {

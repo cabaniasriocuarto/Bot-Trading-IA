@@ -54,7 +54,7 @@ export default function StrategyDetailPage() {
         if (!isMissingRouteError(err) || !fallbackStrategy) throw err;
         truthRes = strategyTruthFromLegacy(fallbackStrategy);
         legacyNotice =
-          "Compatibilidad legacy activa: strategy truth/evidence se reconstruyen desde /api/v1/strategies y /api/v1/backtests/runs mientras RTLRESE-14 no este integrado.";
+          "Compatibilidad transicional: el backend no expuso el contrato canonico de truth/evidence y la UI reconstruyo datos desde /api/v1/strategies y /api/v1/backtests/runs.";
       }
 
       try {
@@ -63,7 +63,7 @@ export default function StrategyDetailPage() {
         if (!isMissingRouteError(err) || !fallbackStrategy) throw err;
         evidenceRes = strategyEvidenceFromLegacy(fallbackStrategy, strategyBacktests);
         legacyNotice =
-          "Compatibilidad legacy activa: strategy truth/evidence se reconstruyen desde /api/v1/strategies y /api/v1/backtests/runs mientras RTLRESE-14 no este integrado.";
+          "Compatibilidad transicional: el backend no expuso el contrato canonico de truth/evidence y la UI reconstruyo datos desde /api/v1/strategies y /api/v1/backtests/runs.";
       }
 
       setTruth(truthRes);

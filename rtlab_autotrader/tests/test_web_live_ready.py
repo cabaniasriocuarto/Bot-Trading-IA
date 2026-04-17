@@ -215,6 +215,20 @@ def _valid_bot_registry_payload(
   return payload
 
 
+def _eligible_pool_ids(client: TestClient, headers: dict[str, str]) -> list[str]:
+  res = client.get("/api/v1/strategies", headers=headers)
+  assert res.status_code == 200, res.text
+  return [
+    str(row["id"])
+    for row in res.json()
+    if (
+      str(row.get("status") or "").strip().lower() == "active"
+      and bool(row.get("enabled_for_trading", row.get("enabled", False)))
+      and bool(row.get("allow_learning", True))
+    )
+  ]
+
+
 def _auth_headers(token: str) -> dict[str, str]:
   return {"Authorization": f"Bearer {token}"}
 
@@ -4890,6 +4904,8 @@ def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monk
   _seed_bot_registry_catalog(module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:1]
+  assert pool_ids
 
   call_counter = {"n": 0}
   original = module.store.list_bot_instances
@@ -4918,7 +4934,7 @@ def test_bots_overview_cache_hit_and_invalidation_on_create(tmp_path: Path, monk
   create_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="AutoBot Cache", mode="paper", status="active"),
+    json=_valid_bot_registry_payload(name="AutoBot Cache", mode="paper", status="active", pool_strategy_ids=pool_ids),
   )
   assert create_res.status_code == 200, create_res.text
   assert call_counter["n"] == 2
@@ -5131,6 +5147,8 @@ def test_log_bot_refs_table_is_populated_and_used_in_overview(tmp_path: Path, mo
   _seed_bot_registry_catalog(module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:1]
+  assert pool_ids
 
   first_list = client.get("/api/v1/bots", headers=headers)
   assert first_list.status_code == 200, first_list.text
@@ -5139,7 +5157,7 @@ def test_log_bot_refs_table_is_populated_and_used_in_overview(tmp_path: Path, mo
   create_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="AutoBot RefTable", mode="paper", status="active"),
+    json=_valid_bot_registry_payload(name="AutoBot RefTable", mode="paper", status="active", pool_strategy_ids=pool_ids),
   )
   assert create_res.status_code == 200, create_res.text
   bot2_id = str((create_res.json().get("bot") or {}).get("id") or "")
@@ -5233,11 +5251,13 @@ def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch)
   _seed_bot_registry_catalog(module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:1]
+  assert pool_ids
 
   bot1_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="AutoBot Scope 1", mode="paper", status="active"),
+    json=_valid_bot_registry_payload(name="AutoBot Scope 1", mode="paper", status="active", pool_strategy_ids=pool_ids),
   )
   assert bot1_res.status_code == 200, bot1_res.text
   bot1_id = bot1_res.json()["bot"]["id"]
@@ -5245,7 +5265,7 @@ def test_bots_overview_scopes_kills_by_bot_and_mode(tmp_path: Path, monkeypatch)
   bot2_res = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="AutoBot Scope 2", mode="paper", status="active"),
+    json=_valid_bot_registry_payload(name="AutoBot Scope 2", mode="paper", status="active", pool_strategy_ids=pool_ids),
   )
   assert bot2_res.status_code == 200, bot2_res.text
   bot2_id = bot2_res.json()["bot"]["id"]
@@ -5506,12 +5526,14 @@ def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
   _seed_bot_registry_catalog(_module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:1]
+  assert pool_ids
 
   # En entorno de tests no hay keys live/testnet, por lo que LIVE debe quedar bloqueado por gates.
   create_live = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="AutoBot Live", mode="live", status="active"),
+    json=_valid_bot_registry_payload(name="AutoBot Live", mode="live", status="active", pool_strategy_ids=pool_ids),
   )
   assert create_live.status_code == 400, create_live.text
   assert "LIVE" in str(create_live.json().get("detail") or "")
@@ -5519,7 +5541,7 @@ def test_bots_live_mode_blocked_by_gates(tmp_path: Path, monkeypatch) -> None:
   create_paper = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="AutoBot Base", mode="paper", status="active"),
+    json=_valid_bot_registry_payload(name="AutoBot Base", mode="paper", status="active", pool_strategy_ids=pool_ids),
   )
   assert create_paper.status_code == 200, create_paper.text
   bot_id = create_paper.json()["bot"]["id"]
@@ -5547,18 +5569,20 @@ def test_bots_creation_respects_max_instances_limit(tmp_path: Path, monkeypatch)
   _seed_bot_registry_catalog(_module)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:1]
+  assert pool_ids
 
   create_1 = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="Cap 1", mode="paper", status="active"),
+    json=_valid_bot_registry_payload(name="Cap 1", mode="paper", status="active", pool_strategy_ids=pool_ids),
   )
   assert create_1.status_code == 200, create_1.text
 
   create_2 = client.post(
     "/api/v1/bots",
     headers=headers,
-    json=_valid_bot_registry_payload(name="Cap 2", mode="paper", status="active"),
+    json=_valid_bot_registry_payload(name="Cap 2", mode="paper", status="active", pool_strategy_ids=pool_ids),
   )
   assert create_2.status_code == 400
   detail = str(create_2.json().get("detail") or "")

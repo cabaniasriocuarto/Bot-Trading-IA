@@ -629,7 +629,7 @@ export default function ExecutionPage() {
             setSelectedBotPolicyState(buildLegacyPolicyState(selectedBot));
             setSelectedBotDecisionLog(buildLegacyDecisionLog(selectedBot.id, logsRows));
             setSelectedBotDomainNotice(
-              "Compatibilidad legacy activa: policy_state se reconstruye desde /api/v1/bots y decision_log desde /api/v1/logs mientras RTLRESE-14 no este integrado.",
+              "Compatibilidad transicional: el backend no expuso los contratos canonicos del bot y la UI reconstruyo policy_state desde /api/v1/bots y decision_log desde /api/v1/logs.",
             );
           } catch (fallbackErr) {
             if (cancelled) return;

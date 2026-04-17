@@ -441,34 +441,23 @@ Fecha: 2026-04-17
   - `strategy_evidence`
   - `bot_policy_state`
   - `bot_decision_log`
-- [x] Compatibilidad razonable mantenida mientras RTLRESE-14 no este integrado en `main`.
-- [ ] Cuando RTLRESE-14 quede integrado en la base real:
-  - retirar fallbacks legacy de `strategies/[id]`, `strategies/page` y `execution/page`;
-  - dejar solo contratos de dominio.
-- [ ] Reejecutar validacion frontend real cuando el entorno tenga Node:
-  - `next lint`
-  - `tsc --noEmit`
-  - `next build`
+- [x] Dominios y endpoints canonicos ya absorbidos en la base real:
+  - `rtlab_autotrader/rtlab_core/domains/*.py` ya esta trackeado
+  - `GET /api/v1/strategies/{id}/truth`
+  - `GET /api/v1/strategies/{id}/evidence`
+  - `GET/PATCH /api/v1/bots/{id}/policy-state`
+  - `GET /api/v1/bots/{id}/decision-log`
+- [x] Reejecutar validacion frontend real con Node disponible:
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS tambien en frio tras limpieza controlada de artefactos locales (`.next/types`, `.next/dev/types`, `tsconfig.tsbuildinfo`)
 - [ ] Si aparece una pagina dedicada de bots en RTLRESE-16:
   - conservar la misma separacion semantica ya aplicada en `Execution`;
   - no volver a mezclar runtime global con `policy_state` del bot.
-- [x] Queda explicitado que RTLRESE-13/14/15 se cerraron en ramas dedicadas, pero no aparecen integradas en esta base activa.
-- [ ] Siguiente paso chico 1:
-  - mergear o recrear sobre la base actual el split backend de RTLRESE-13 y verificar que `rtlab_autotrader/rtlab_core/domains/*.py` quede trackeado.
-- [ ] Siguiente paso chico 2:
-  - mergear o recrear sobre la base actual el split API de RTLRESE-14 y verificar presencia real de:
-    - `GET /api/v1/strategies/{id}/truth`
-    - `GET /api/v1/strategies/{id}/evidence`
-    - `GET /api/v1/bots/{id}/policy-state`
-    - `PATCH /api/v1/bots/{id}/policy-state`
-    - `GET /api/v1/bots/{id}/decision-log`
-- [ ] Siguiente paso chico 3:
-  - mergear o recrear sobre la base actual el split frontend de RTLRESE-15 y verificar que:
-    - `rtlab_dashboard/src/lib/types.ts` ya no use `last_oos` como eje principal de lectura;
-    - `strategies/[id]` separe `truth` de `evidence`;
-    - `execution` separe `policy_state` de `decision_log`.
-- [ ] Siguiente paso chico 4:
-  - retirar etiquetas o contratos legacy solo despues de que 13/14/15 esten efectivamente integradas y validadas en la base real.
+- [x] Frontend base ya opera sobre esos contratos en `strategies/[id]` y `execution`.
+- [x] Ajustar los mensajes legacy que seguian diciendo que RTLRESE-14 no estaba integrada.
+- [ ] Pendiente chico residual:
+  - si reaparece un backend remoto viejo sin contratos de dominio, degradar con mensaje transicional honesto;
+  - no volver a presentar esa degradacion como si `RTLRESE-13/14/15` siguieran sin absorberse en la base real.
 
 ## Siguiente bloque chico tras RTLRESE-7
 - [x] Clasificacion minima `trusted/legacy/quarantine` en `strategy_evidence`.
