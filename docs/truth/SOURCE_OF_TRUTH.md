@@ -2,6 +2,69 @@
 
 Fecha de actualizacion: 2026-04-16
 
+## RTLRESE-30 - Bot Registry con edicion, archivado/reactivacion y gobierno basico con trazabilidad - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no solo persiste identidad/config/pool;
+  - ahora endurece el gobierno basico del bot con trazabilidad minima persistida y reglas explicitas de reactivacion.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `last_change_type`
+    - `created`
+    - `updated`
+    - `archived`
+    - `reactivated`
+  - `last_change_summary`
+  - `last_changed_by`
+  - `last_change_source`
+  - `updated_at` y `archived_at` siguen siendo timestamps canonicos del registry.
+- Fuente de verdad real usada por este bloque:
+  - la persistencia del bot sigue viviendo en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - la trazabilidad minima se persiste en el mismo registro del bot, sin abrir una auditoria enterprise paralela;
+  - la auditabilidad historica se apoya en el `decision_log` ya existente (`/api/v1/bots/{bot_id}/decision-log`), no en una segunda fuente de verdad.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - `GET /api/v1/bots/{bot_id}/policy-state`
+  - `PATCH /api/v1/bots/{bot_id}/policy-state`
+  - `GET /api/v1/bots/{bot_id}/decision-log`
+  - los contratos del registry ahora devuelven metadata minima de cambio junto al estado del bot.
+- Reglas canonicas fijadas en este bloque:
+  - `bot_id` sigue siendo inmutable y no se rompe por rename/display changes;
+  - `archive` sigue siendo soft-archive y no borrado destructivo;
+  - un bot archivado sigue sin admitir edicion operativa mientras siga archivado;
+  - `restore` ahora falla de forma explicita si el bot quedo invalido contra el registry actual:
+    - symbols assignment invalido
+    - strategy pool invalido
+    - `mode=live` no habilitado por gates actuales
+  - los cambios relevantes del registry dejan:
+    - tipo de cambio
+    - resumen
+    - actor
+    - source
+    - timestamp visible via `updated_at`.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - muestra trazabilidad minima por bot
+    - muestra `updated_at` / `archived_at`
+    - muestra ultimo tipo/resumen de cambio
+    - expone errores reales al intentar restaurar un bot invalido
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` y `BotPolicyState` tipados con metadata minima de trazabilidad
+- Lo que este bloque NO implementa:
+  - lifecycle completo entre entornos
+  - runtime multi-symbol
+  - elegibilidad estrategia<->simbolo
+  - consolidacion de señales
+  - live console
+  - contratos globales/minimos amplios de `RTLRESE-31`
+- Conclusion operativa:
+  - desde este bloque, el Bot Registry ya puede editar, archivar y reactivar con trazabilidad minima util y reactivacion fail-closed;
+  - el siguiente bloque ya puede enfocarse en contratos/minimos transversales del registry, no en volver a resolver gobierno basico.
+
 ## RTLRESE-29 - Bot Registry con strategy pool asignado, persistencia y limites - 2026-04-16
 
 - Estado real confirmado en esta rama:

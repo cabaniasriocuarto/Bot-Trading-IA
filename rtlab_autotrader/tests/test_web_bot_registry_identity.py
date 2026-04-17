@@ -96,6 +96,10 @@ def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> 
   assert created["domain_type"] == "spot"
   assert created["registry_status"] == "active"
   assert created["archived_at"] is None
+  assert created["last_change_type"] == "created"
+  assert "Bot creado" in str(created.get("last_change_summary") or "")
+  assert created["last_changed_by"] == "Wadmin"
+  assert created["last_change_source"] == "bot_registry_api"
   assert created["universe_name"] == "core_spot_usdt"
   assert created["universe"] == ["BTCUSDT", "ETHUSDT"]
   assert int(created["max_live_symbols"]) == 2
@@ -122,6 +126,7 @@ def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> 
   assert detail["pool_strategy_ids"] == pool_ids
   assert detail["strategy_pool_status"] == "valid"
   assert detail["symbol_assignment_status"] == "valid"
+  assert detail["last_change_type"] == "created"
 
   active_res = client.get("/api/v1/bots?registry_status=active&recent_logs=false&recent_logs_per_bot=0", headers=headers)
   assert active_res.status_code == 200, active_res.text
@@ -174,6 +179,10 @@ def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> 
   assert float(patched["max_daily_loss_pct"]) == 5.0
   assert float(patched["max_drawdown_pct"]) == 22.0
   assert int(patched["max_positions"]) == 12
+  assert patched["last_change_type"] == "updated"
+  assert "display_name" in str(patched.get("last_change_summary") or "")
+  assert patched["last_changed_by"] == "Wadmin"
+  assert patched["last_change_source"] == "bot_registry_api"
 
   delete_res = client.delete(f"/api/v1/bots/{bot_id}", headers=headers)
   assert delete_res.status_code == 409, delete_res.text
@@ -186,6 +195,8 @@ def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> 
   assert archived["registry_status"] == "archived"
   assert archived["status"] == "archived"
   assert archive_res.json()["archived"]
+  assert archived["last_change_type"] == "archived"
+  assert "archivado" in str(archived.get("last_change_summary") or "").lower()
 
   archived_res = client.get("/api/v1/bots?registry_status=archived&recent_logs=false&recent_logs_per_bot=0", headers=headers)
   assert archived_res.status_code == 200, archived_res.text
@@ -203,6 +214,27 @@ def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> 
   assert restored["registry_status"] == "active"
   assert restored["status"] == "active"
   assert restored["archived_at"] is None
+  assert restored["last_change_type"] == "reactivated"
+  assert "reactivado" in str(restored.get("last_change_summary") or "").lower()
+  assert restored["last_changed_by"] == "Wadmin"
+
+  policy_state_res = client.get(f"/api/v1/bots/{bot_id}/policy-state", headers=headers)
+  assert policy_state_res.status_code == 200, policy_state_res.text
+  policy_state = policy_state_res.json()["policy_state"]
+  assert policy_state["last_change_type"] == "reactivated"
+  assert policy_state["last_changed_by"] == "Wadmin"
+  assert policy_state["last_change_source"] == "bot_registry_api"
+
+  decision_log_res = client.get(f"/api/v1/bots/{bot_id}/decision-log?page_size=10", headers=headers)
+  assert decision_log_res.status_code == 200, decision_log_res.text
+  decision_log = decision_log_res.json()
+  decision_change_types = {
+    str((row.get("payload") or {}).get("change_type") or "")
+    for row in (decision_log.get("items") or [])
+    if isinstance(row, dict)
+  }
+  assert {"created", "updated", "archived", "reactivated"}.issubset(decision_change_types)
+
   _module.store.instrument_registry.db.save_snapshot(
     family="usdm_futures",
     environment="live",
@@ -260,6 +292,68 @@ def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> 
   assert all_res.status_code == 200, all_res.text
   all_ids = {str(row["id"]) for row in all_res.json()["items"]}
   assert bot_id in all_ids
+
+
+def test_bot_registry_restore_requires_valid_current_registry(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)
+  assert len(pool_ids) >= 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Reactivation Guard",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT"],
+      "max_live_symbols": 1,
+      "pool_strategy_ids": [pool_ids[0]],
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  archive_res = client.post(f"/api/v1/bots/{bot_id}/archive", headers=headers)
+  assert archive_res.status_code == 200, archive_res.text
+  assert archive_res.json()["bot"]["registry_status"] == "archived"
+
+  archive_strategy_res = client.patch(
+    f"/api/v1/strategies/{pool_ids[0]}",
+    headers=headers,
+    json={"status": "archived"},
+  )
+  assert archive_strategy_res.status_code == 200, archive_strategy_res.text
+
+  rejected_restore = client.post(f"/api/v1/bots/{bot_id}/restore", headers=headers)
+  assert rejected_restore.status_code == 409, rejected_restore.text
+  rejected_detail = str(rejected_restore.json().get("detail") or "")
+  assert "registry invalido" in rejected_detail
+  assert "archivada" in rejected_detail or "inactiva" in rejected_detail
+
+  archived_detail = client.get(f"/api/v1/bots/{bot_id}", headers=headers)
+  assert archived_detail.status_code == 200, archived_detail.text
+  archived_bot = archived_detail.json()["bot"]
+  assert archived_bot["registry_status"] == "archived"
+  assert archived_bot["last_change_type"] == "archived"
+
+  reactivate_strategy_res = client.patch(
+    f"/api/v1/strategies/{pool_ids[0]}",
+    headers=headers,
+    json={"status": "active", "enabled_for_trading": True, "allow_learning": True},
+  )
+  assert reactivate_strategy_res.status_code == 200, reactivate_strategy_res.text
+
+  restore_res = client.post(f"/api/v1/bots/{bot_id}/restore", headers=headers)
+  assert restore_res.status_code == 200, restore_res.text
+  restored = restore_res.json()["bot"]
+  assert restored["registry_status"] == "active"
+  assert restored["last_change_type"] == "reactivated"
+  assert restored["last_change_source"] == "bot_registry_api"
+
 
 def test_bot_registry_identity_validations(tmp_path: Path, monkeypatch) -> None:
   invalid_cases = [

@@ -10,6 +10,7 @@ export type BotPolicyMode = "shadow" | "paper" | "testnet" | "live";
 export type ResearchEvidenceMode = "backtest" | "shadow" | "paper" | "testnet";
 export type BotRegistryDomainType = "spot" | "futures";
 export type BotRegistryStatus = "active" | "archived";
+export type BotRegistryChangeType = "created" | "updated" | "archived" | "reactivated" | string;
 export type BotRiskProfile = "conservative" | "medium" | "aggressive";
 export type InstrumentUniverseFamily = "spot" | "margin" | "usdm_futures" | "coinm_futures" | string;
 
@@ -258,6 +259,10 @@ export interface BotInstance {
   domain_type: BotRegistryDomainType;
   registry_status: BotRegistryStatus;
   archived_at?: string | null;
+  last_change_type?: BotRegistryChangeType;
+  last_change_summary?: string | null;
+  last_changed_by?: string | null;
+  last_change_source?: string | null;
   capital_base_usd: number;
   max_total_exposure_pct: number;
   max_asset_exposure_pct: number;
@@ -301,6 +306,10 @@ export interface BotPolicyState {
   notes: string;
   created_at: string;
   updated_at: string;
+  last_change_type?: BotRegistryChangeType;
+  last_change_summary?: string | null;
+  last_changed_by?: string | null;
+  last_change_source?: string | null;
 }
 
 export interface BotPolicyStateResponse {

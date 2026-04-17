@@ -2,6 +2,28 @@
 
 Fecha: 2026-04-16
 
+## Siguiente bloque exacto despues de RTLRESE-30 - 2026-04-16
+- [x] Endurecer Bot Registry con gobierno basico y trazabilidad minima:
+  - `last_change_type`
+  - `last_change_summary`
+  - `last_changed_by`
+  - `last_change_source`
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - reactivacion fail-closed contra el registry actual
+  - soft-archive sin borrado destructivo
+  - visibilidad real de trazabilidad y errores de reactivacion
+  - reuse del `decision_log` existente sin abrir auditoria paralela
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-31` y resolver solo:
+    - contratos minimos de storage/API/frontend para el Bot Registry ya endurecido
+    - sin reabrir identidad, config base, symbols assignment, strategy pool o gobierno basico ya cerrados en `RTLRESE-26/27/28/29/30`
+  - mantener fuera de ese bloque:
+    - runtime multi-symbol (`RTLOPS-72+`)
+    - lifecycle
+    - live console
+    - elegibilidad estrategia<->simbolo
+
 ## Siguiente bloque exacto despues de RTLRESE-29 - 2026-04-16
 - [x] Extender Bot Registry con strategy pool asignado por bot:
   - `pool_strategy_ids`

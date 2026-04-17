@@ -4219,6 +4219,128 @@ def risk_hooks(context):
             detail="Bot archivado no admite edicion operativa; restauralo primero",
         )
 
+    @staticmethod
+    def _normalize_bot_change_type(value: Any) -> str:
+        change_type = str(value or "").strip().lower()
+        if change_type not in {"created", "updated", "archived", "reactivated"}:
+            return "updated"
+        return change_type
+
+    @staticmethod
+    def _normalize_bot_change_summary(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text[:280] or None
+
+    @staticmethod
+    def _normalize_bot_change_actor(value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:120] or "system"
+
+    @staticmethod
+    def _normalize_bot_change_source(value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:80] or "registry_legacy"
+
+    @classmethod
+    def _bot_changed_fields(cls, current: dict[str, Any] | None, updated: dict[str, Any]) -> list[str]:
+        if not isinstance(current, dict):
+            return []
+        tracked_fields = (
+            "display_name",
+            "alias",
+            "description",
+            "domain_type",
+            "registry_status",
+            "capital_base_usd",
+            "max_total_exposure_pct",
+            "max_asset_exposure_pct",
+            "risk_profile",
+            "risk_per_trade_pct",
+            "max_daily_loss_pct",
+            "max_drawdown_pct",
+            "max_positions",
+            "engine",
+            "mode",
+            "status",
+            "pool_strategy_ids",
+            "universe_name",
+            "universe",
+            "max_live_symbols",
+            "notes",
+        )
+        return [field for field in tracked_fields if current.get(field) != updated.get(field)]
+
+    @classmethod
+    def _bot_change_summary(
+        cls,
+        *,
+        change_type: str,
+        row: dict[str, Any],
+        changed_fields: list[str],
+    ) -> str:
+        display_name = str(row.get("display_name") or row.get("name") or row.get("id") or "bot")
+        if change_type == "created":
+            return (
+                f"Bot creado: {display_name} | "
+                f"pool={len(row.get('pool_strategy_ids') or [])} | "
+                f"symbols={len(row.get('universe') or [])}"
+            )[:280]
+        if change_type == "archived":
+            return "Bot archivado sin borrado destructivo"
+        if change_type == "reactivated":
+            if changed_fields:
+                return ("Bot reactivado tras validar registry actual; cambios: " + ", ".join(changed_fields[:8]))[:280]
+            return "Bot reactivado tras validar registry actual"
+        if changed_fields:
+            return ("Campos actualizados: " + ", ".join(changed_fields[:8]))[:280]
+        return "Actualizacion del registry sin cambios materiales visibles"
+
+    @classmethod
+    def _bot_trace_payload(
+        cls,
+        *,
+        change_type: str,
+        change_summary: str,
+        actor: str | None,
+        source: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "last_change_type": cls._normalize_bot_change_type(change_type),
+            "last_change_summary": cls._normalize_bot_change_summary(change_summary),
+            "last_changed_by": cls._normalize_bot_change_actor(actor),
+            "last_change_source": cls._normalize_bot_change_source(source),
+        }
+
+    def _ensure_bot_reactivation_allowed(
+        self,
+        row: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        errors: list[str] = []
+        assignment_payload = self._bot_symbol_assignment_payload(row)
+        pool_payload = self._bot_strategy_pool_payload(row, strategies_index=strategies_index)
+        errors.extend(
+            str(item)
+            for item in (assignment_payload.get("symbol_assignment_errors") or [])
+            if str(item).strip()
+        )
+        errors.extend(
+            str(item)
+            for item in (pool_payload.get("strategy_pool_errors") or [])
+            if str(item).strip()
+        )
+        if str(row.get("mode") or "").strip().lower() == "live":
+            gates_payload = evaluate_gates("live")
+            allowed, reason = live_can_be_enabled(gates_payload)
+            if not allowed:
+                errors.append(f"modo live no habilitado para reactivacion: {reason}")
+        if errors:
+            raise HTTPException(
+                status_code=409,
+                detail="No se puede reactivar bot archivado con registry invalido: " + "; ".join(errors),
+            )
+
     def _next_bot_id(self, rows: list[dict[str, Any]]) -> str:
         max_n = 0
         for row in rows:
@@ -4260,6 +4382,17 @@ def risk_hooks(context):
         if registry_status == "archived":
             legacy_status = "archived"
         archived_at = archived_at_raw or (str(row.get("updated_at") or now_iso) if registry_status == "archived" else None)
+        last_change_type = self._normalize_bot_change_type(
+            row.get("last_change_type") or ("archived" if registry_status == "archived" else "updated")
+        )
+        last_change_summary = self._normalize_bot_change_summary(
+            row.get("last_change_summary")
+            or (
+                "Metadata legacy del registry; detalle fino no disponible"
+                if row.get("last_change_type") is None
+                else None
+            )
+        )
         total_exposure_pct = min(
             100.0,
             max(0.01, self._bot_float_or_default(row.get("max_total_exposure_pct"), float(risk_defaults.get("max_total_exposure_pct") or 65.0))),
@@ -4307,6 +4440,10 @@ def risk_hooks(context):
             "notes": str(row.get("notes") or "")[:500],
             "created_at": str(row.get("created_at") or now_iso),
             "updated_at": str(row.get("updated_at") or now_iso),
+            "last_change_type": last_change_type,
+            "last_change_summary": last_change_summary,
+            "last_changed_by": self._normalize_bot_change_actor(row.get("last_changed_by")),
+            "last_change_source": self._normalize_bot_change_source(row.get("last_change_source")),
         }
 
     def load_bots(self) -> list[dict[str, Any]]:
@@ -4357,6 +4494,10 @@ def risk_hooks(context):
             "notes": str(bot.get("notes") or ""),
             "created_at": str(bot.get("created_at") or ""),
             "updated_at": str(bot.get("updated_at") or ""),
+            "last_change_type": ConsoleStore._normalize_bot_change_type(bot.get("last_change_type")),
+            "last_change_summary": ConsoleStore._normalize_bot_change_summary(bot.get("last_change_summary")),
+            "last_changed_by": ConsoleStore._normalize_bot_change_actor(bot.get("last_changed_by")),
+            "last_change_source": ConsoleStore._normalize_bot_change_source(bot.get("last_change_source")),
         }
 
     def bot_policy_state_or_404(self, bot_id: str) -> dict[str, Any]:
@@ -4374,6 +4515,8 @@ def risk_hooks(context):
         pool_strategy_ids: list[str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_policy_state_api",
     ) -> dict[str, Any]:
         bot = self.patch_bot_instance(
             bot_id,
@@ -4383,6 +4526,8 @@ def risk_hooks(context):
             pool_strategy_ids=pool_strategy_ids,
             universe=universe,
             notes=notes,
+            actor=actor,
+            change_source=change_source,
         )
         pool_payload = self._bot_strategy_pool_payload(bot)
         return self._bot_policy_state_payload(bot, pool_payload=pool_payload)
@@ -5334,6 +5479,8 @@ def risk_hooks(context):
         pool_strategy_ids: list[str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
     ) -> dict[str, Any]:
         rows = self.load_bots()
         strategy_rows = self.list_strategies()
@@ -5392,6 +5539,16 @@ def risk_hooks(context):
                 **base_config,
                 "created_at": now_iso,
                 "updated_at": now_iso,
+                **self._bot_trace_payload(
+                    change_type="created",
+                    change_summary=(
+                        f"Bot creado: {identity_name} | "
+                        f"pool={len(validated_pool_strategy_ids)} | "
+                        f"symbols={len(symbol_assignment['universe'])}"
+                    ),
+                    actor=actor,
+                    source=change_source,
+                ),
             },
         )
         rows.append(row)
@@ -5413,6 +5570,10 @@ def risk_hooks(context):
                 "universe_name": row.get("universe_name"),
                 "assigned_symbols": len(row.get("universe") or []),
                 "max_live_symbols": row.get("max_live_symbols"),
+                "actor": self._normalize_bot_change_actor(actor),
+                "change_type": row.get("last_change_type"),
+                "change_summary": row.get("last_change_summary"),
+                "change_source": row.get("last_change_source"),
             },
         )
         return row
@@ -5443,6 +5604,8 @@ def risk_hooks(context):
         pool_strategy_ids: list[str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
     ) -> dict[str, Any]:
         rows = self.load_bots()
         idx = next((i for i, row in enumerate(rows) if str(row.get("id")) == bot_id), None)
@@ -5556,10 +5719,38 @@ def risk_hooks(context):
             )
         if notes is not None:
             patched["notes"] = notes
+        current_registry_status = self._normalize_bot_registry_status(str(current.get("registry_status") or "active"))
         patched["id"] = bot_id
         patched["created_at"] = str(current.get("created_at") or utc_now_iso())
-        patched["updated_at"] = utc_now_iso()
-        rows[idx] = self._normalize_bot_row(patched)
+        now_iso = utc_now_iso()
+        patched["updated_at"] = now_iso
+        normalized_candidate = self._normalize_bot_row(patched)
+        next_registry_status = self._normalize_bot_registry_status(str(normalized_candidate.get("registry_status") or "active"))
+        if current_registry_status == "archived" and next_registry_status == "active":
+            self._ensure_bot_reactivation_allowed(normalized_candidate, strategies_index=strategy_index)
+        change_type = (
+            "archived"
+            if current_registry_status != "archived" and next_registry_status == "archived"
+            else "reactivated"
+            if current_registry_status == "archived" and next_registry_status == "active"
+            else "updated"
+        )
+        changed_fields = self._bot_changed_fields(current, normalized_candidate)
+        change_summary = self._bot_change_summary(
+            change_type=change_type,
+            row=normalized_candidate,
+            changed_fields=changed_fields,
+        )
+        normalized_candidate.update(
+            self._bot_trace_payload(
+                change_type=change_type,
+                change_summary=change_summary,
+                actor=actor,
+                source=change_source,
+            )
+        )
+        normalized_candidate["updated_at"] = now_iso
+        rows[idx] = normalized_candidate
         self.save_bots(rows)
         self.add_log(
             event_type="bot_instance",
@@ -5578,6 +5769,11 @@ def risk_hooks(context):
                 "universe_name": rows[idx].get("universe_name"),
                 "assigned_symbols": len(rows[idx].get("universe") or []),
                 "max_live_symbols": rows[idx].get("max_live_symbols"),
+                "actor": self._normalize_bot_change_actor(actor),
+                "change_type": rows[idx].get("last_change_type"),
+                "change_summary": rows[idx].get("last_change_summary"),
+                "change_source": rows[idx].get("last_change_source"),
+                "changed_fields": changed_fields,
             },
         )
         return rows[idx]
@@ -5603,11 +5799,30 @@ def risk_hooks(context):
     def archive_bot_instance(
         self,
         bot_id: str,
+        *,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
     ) -> dict[str, Any]:
-        return self.patch_bot_instance(bot_id, registry_status="archived")
+        return self.patch_bot_instance(
+            bot_id,
+            registry_status="archived",
+            actor=actor,
+            change_source=change_source,
+        )
 
-    def restore_bot_instance(self, bot_id: str) -> dict[str, Any]:
-        return self.patch_bot_instance(bot_id, registry_status="active")
+    def restore_bot_instance(
+        self,
+        bot_id: str,
+        *,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
+    ) -> dict[str, Any]:
+        return self.patch_bot_instance(
+            bot_id,
+            registry_status="active",
+            actor=actor,
+            change_source=change_source,
+        )
 
     def delete_bot_instance(self, bot_id: str) -> dict[str, Any]:
         rows = self.load_bots()
@@ -12679,7 +12894,7 @@ def create_app() -> FastAPI:
             )
 
     @app.post("/api/v1/bots")
-    def create_bot(body: BotCreateBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def create_bot(body: BotCreateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         ensure_bot_live_mode_allowed(body.mode)
         ensure_bot_capacity_available()
         bot = store.create_bot_instance(
@@ -12705,6 +12920,8 @@ def create_app() -> FastAPI:
             pool_strategy_ids=body.pool_strategy_ids,
             universe=body.universe,
             notes=body.notes,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
         )
         _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
@@ -12713,7 +12930,7 @@ def create_app() -> FastAPI:
         return {"ok": True, "bot": enriched}
 
     @app.patch("/api/v1/bots/{bot_id}")
-    def patch_bot(bot_id: str, body: BotPatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def patch_bot(bot_id: str, body: BotPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         ensure_bot_live_mode_allowed(body.mode)
         bot = store.patch_bot_instance(
             bot_id,
@@ -12739,6 +12956,8 @@ def create_app() -> FastAPI:
             pool_strategy_ids=body.pool_strategy_ids,
             universe=body.universe,
             notes=body.notes,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
         )
         _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
@@ -12758,8 +12977,12 @@ def create_app() -> FastAPI:
         return {"bot": bot}
 
     @app.post("/api/v1/bots/{bot_id}/archive")
-    def archive_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        bot = store.archive_bot_instance(bot_id)
+    def archive_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        bot = store.archive_bot_instance(
+            bot_id,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
+        )
         _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
         enriched = store.get_bot_instance(
@@ -12771,8 +12994,12 @@ def create_app() -> FastAPI:
         return {"ok": True, "bot": enriched, "archived": bot.get("archived_at")}
 
     @app.post("/api/v1/bots/{bot_id}/restore")
-    def restore_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        store.restore_bot_instance(bot_id)
+    def restore_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        store.restore_bot_instance(
+            bot_id,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
+        )
         _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
         enriched = store.get_bot_instance(
@@ -12788,7 +13015,7 @@ def create_app() -> FastAPI:
         return {"bot_id": bot_id, "policy_state": store.bot_policy_state_or_404(bot_id)}
 
     @app.patch("/api/v1/bots/{bot_id}/policy-state")
-    def patch_bot_policy_state(bot_id: str, body: BotPolicyStatePatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def patch_bot_policy_state(bot_id: str, body: BotPolicyStatePatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         if (
             body.engine is None
             and body.mode is None
@@ -12807,6 +13034,8 @@ def create_app() -> FastAPI:
             pool_strategy_ids=body.pool_strategy_ids,
             universe=body.universe,
             notes=body.notes,
+            actor=user.get("username", "admin"),
+            change_source="bot_policy_state_api",
         )
         _invalidate_bots_overview_cache()
         return {"ok": True, "bot_id": bot_id, "policy_state": policy_state}

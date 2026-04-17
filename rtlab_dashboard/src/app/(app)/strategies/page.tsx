@@ -305,6 +305,12 @@ export default function StrategiesPage() {
     return err instanceof Error ? err.message : fallback;
   };
 
+  const formatRegistryTs = (value?: string | null) => {
+    if (!value) return "-";
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+  };
+
   const universeItems = useMemo(
     () => (Array.isArray(botUniverseCatalog?.items) ? botUniverseCatalog.items : []),
     [botUniverseCatalog],
@@ -1073,7 +1079,7 @@ export default function StrategiesPage() {
       setUploadMsg(`Bot archivado: ${getBotDisplayName(res.bot)}.`);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo archivar el bot.");
+      setError(formatBotRegistryError(err, "No se pudo archivar el bot."));
     } finally {
       setBotActionBusyId(null);
     }
@@ -1089,7 +1095,7 @@ export default function StrategiesPage() {
       setUploadMsg(`Bot restaurado: ${getBotDisplayName(res.bot)}.`);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo restaurar el bot.");
+      setError(formatBotRegistryError(err, "No se pudo restaurar el bot."));
     } finally {
       setBotActionBusyId(null);
     }
@@ -2182,6 +2188,10 @@ export default function StrategiesPage() {
                       const registryArchived = bot.registry_status === "archived";
                       const registryDraft = botRegistryDraftsById[bot.id] || buildBotRegistryDraft(bot);
                       const experienceBySource = m?.experience_by_source;
+                      const lastChangeType = String(bot.last_change_type || "updated");
+                      const lastChangeSummary = String(bot.last_change_summary || "").trim();
+                      const lastChangedBy = String(bot.last_changed_by || "").trim();
+                      const lastChangeSource = String(bot.last_change_source || "").trim();
                       const poolDraftIds = registryDraft.pool_strategy_ids || [];
                       const poolDraftRows = poolDraftIds
                         .map((strategyId) => strategyById.get(strategyId) || bot.pool_strategies?.find((row) => row.id === strategyId))
@@ -2223,6 +2233,24 @@ export default function StrategiesPage() {
                               {bot.strategy_pool_errors?.length ? (
                                 <p className="text-[10px] text-amber-300" title={bot.strategy_pool_errors.join(" | ")}>
                                   {bot.strategy_pool_errors[0]}
+                                </p>
+                              ) : null}
+                              <p className="text-[10px] text-slate-400">
+                                Último cambio: <strong>{lastChangeType}</strong> · {formatRegistryTs(bot.updated_at)}
+                              </p>
+                              {lastChangeSummary ? (
+                                <p className="text-[10px] text-slate-500" title={lastChangeSummary}>
+                                  {lastChangeSummary}
+                                </p>
+                              ) : null}
+                              {lastChangedBy || lastChangeSource ? (
+                                <p className="text-[10px] text-slate-500">
+                                  Actor: {lastChangedBy || "system"} · Source: {lastChangeSource || "registry_legacy"}
+                                </p>
+                              ) : null}
+                              {bot.archived_at ? (
+                                <p className="text-[10px] text-slate-500">
+                                  Archivado: {formatRegistryTs(bot.archived_at)}
                                 </p>
                               ) : null}
                             </div>
@@ -2507,6 +2535,22 @@ export default function StrategiesPage() {
                                       {bot.symbol_assignment_errors.map((item) => (
                                         <p key={`${bot.id}-assignment-${item}`}>{item}</p>
                                       ))}
+                                    </div>
+                                  ) : null}
+                                  <div className="rounded border border-slate-800 bg-slate-950/50 p-2 text-[10px] text-slate-300">
+                                    <p className="mb-1 uppercase tracking-wide text-slate-400">Trazabilidad mínima</p>
+                                    <p>Actualizado: <strong>{formatRegistryTs(bot.updated_at)}</strong></p>
+                                    <p>Último cambio: <strong>{lastChangeType}</strong></p>
+                                    {lastChangeSummary ? <p>{lastChangeSummary}</p> : null}
+                                    <p>Actor: <strong>{lastChangedBy || "system"}</strong> · Source: <strong>{lastChangeSource || "registry_legacy"}</strong></p>
+                                    {bot.archived_at ? <p>Archivado: <strong>{formatRegistryTs(bot.archived_at)}</strong></p> : null}
+                                    <p className="text-slate-400">
+                                      La reactivación exige registry válido: assignment vigente, pool válido y gates de LIVE si el bot conserva `mode=live`.
+                                    </p>
+                                  </div>
+                                  {registryArchived && (bot.symbol_assignment_status !== "valid" || bot.strategy_pool_status !== "valid") ? (
+                                    <div className="rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                      Este bot archivado no podrá reactivarse hasta que el registry actual vuelva a ser válido.
                                     </div>
                                   ) : null}
                                   <div className="flex flex-wrap gap-2">

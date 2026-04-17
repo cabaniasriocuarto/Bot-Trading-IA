@@ -2,6 +2,44 @@
 
 ## 2026-04-16
 
+### RTLRESE-30 - Bot Registry con edicion, archivado/reactivacion y gobierno basico con trazabilidad
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` endurece el registry del bot con:
+    - `last_change_type`
+    - `last_change_summary`
+    - `last_changed_by`
+    - `last_change_source`
+  - create/edit/archive/restore/policy-state ahora persisten trazabilidad minima coherente en el mismo bot;
+  - `restore` deja de aceptar bots invalidos silenciosamente y pasa a rechazar:
+    - symbols assignment invalido contra el catalogo actual
+    - strategy pool invalido contra strategy registry/truth
+    - `mode=live` no habilitado por gates actuales
+  - el backend sigue reutilizando `decision_log` como respaldo auditable del cambio, sin abrir un subsistema paralelo.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots`, `PATCH /api/v1/bots/{bot_id}`, `POST /api/v1/bots/{bot_id}/archive`, `POST /api/v1/bots/{bot_id}/restore` y `PATCH /api/v1/bots/{bot_id}/policy-state` ahora registran actor/source/tipo/resumen del cambio;
+  - `GET /api/v1/bots`, `GET /api/v1/bots/{bot_id}` y `GET /api/v1/bots/{bot_id}/policy-state` devuelven la metadata minima de trazabilidad;
+  - `GET /api/v1/bots/{bot_id}/decision-log` sigue siendo la vista auditable historica del bot.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - muestra trazabilidad minima por bot
+    - muestra `updated_at` / `archived_at`
+    - expone errores reales de restauracion invalida
+    - deja visible que la reactivacion exige registry valido
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` y `BotPolicyState` tipados con metadata minima de cambio
+- Tests corridos:
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`5 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL por desalineacion preexistente de `tsconfig.json` con `.next/types` faltantes; no fue introducido por `RTLRESE-30`
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-31`
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - lifecycle
+  - live console
+  - elegibilidad estrategia<->simbolo
+
 ### RTLRESE-29 - Bot Registry con strategy pool asignado, persistencia y limites
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/web/app.py` introduce:
