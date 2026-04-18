@@ -2,6 +2,28 @@
 
 ## 2026-04-18
 
+### Microbloque de seguridad - desbloqueo de `Security CI` en PR #35
+- Cambio real aplicado en dependencias:
+  - `requirements-runtime.txt`
+    - sube `python-multipart` de `0.0.22` a `0.0.26` para cubrir el advisory `CVE-2026-40347` / `GHSA-mj87-hwqh-73pj`
+  - `requirements-research.txt`
+    - no requiere edicion directa; sigue heredando el runtime mediante `-r requirements-runtime.txt`
+  - `rtlab_autotrader/uv.lock`
+    - se regenera de forma minima para reflejar `python-multipart==0.0.26` en el lock del backend
+- Validacion real ejecutada:
+  - `uv lock -P python-multipart==0.0.26` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`14 passed`)
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL en frio por caveat preexistente de `.next/types` faltantes; `npm.cmd run typecheck` post-build -> PASS
+  - validacion puntual del paquete corregido: `uvx pip-audit -r <tmp python-multipart==0.0.26>` -> PASS (`No known vulnerabilities found`)
+- Limites honestos:
+  - `scripts/security_scan.ps1 -Strict` no pudo reproducirse localmente porque faltan `pip-audit` y `gitleaks` en `PATH`
+  - `uvx pip-audit -r requirements-runtime.txt` y `-r requirements-research.txt` no cerraron localmente por resolucion/metadata de `numpy` en Windows sin toolchain C; el desbloqueo definitivo del gate queda pendiente del rerun server-side de GitHub Actions
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-76`
+  - producto funcional
+  - Railway/Vercel prod
+
 ### RTLOPS-75 - consolidacion de señales y decision neta por simbolo
 - Cambio real aplicado en backend/API/frontend minimo:
   - `rtlab_autotrader/rtlab_core/web/app.py`
