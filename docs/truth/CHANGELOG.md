@@ -2,6 +2,42 @@
 
 ## 2026-04-18
 
+### RTLOPS-75 - consolidacion de señales y decision neta por simbolo
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo derivado `signal_consolidation`
+    - agrega `GET /api/v1/bots/{bot_id}/signal-consolidation`
+    - agrega `net_decision_by_symbol` con trazabilidad minima de inputs por simbolo
+    - eleva el contrato del registry a `rtlops75/v1`
+    - deja fail-closed la consolidacion cuando la seleccion previa o la metadata de la estrategia no permiten derivar una decision coherente
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops75/v1`
+    - cubre la decision neta por simbolo y la trazabilidad de inputs
+    - cubre el fail-closed cuando la estrategia seleccionada no expone una señal canónica derivable
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `signal_consolidation`, `net_decision_by_symbol` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops75/v1`
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - agrega una surface minima de lectura para ver decision neta, inputs participantes y acuerdo/conflicto por simbolo
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`14 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/strategies/page.tsx"` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Observacion operativa honesta:
+  - el primer `build` volvio a fallar por `EPERM` al limpiar `.next` dentro de OneDrive;
+  - se resolvio con limpieza segura de `.next` (solo artefacto generado no trackeado), sin tocar archivos tracked del repo.
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - ejecucion remota real por estrategia
+  - subcuentas
+
 ### RTLOPS-74 - seleccion de estrategia por simbolo
 - Cambio real aplicado en backend/API/frontend minimo:
   - `rtlab_autotrader/rtlab_core/web/app.py`

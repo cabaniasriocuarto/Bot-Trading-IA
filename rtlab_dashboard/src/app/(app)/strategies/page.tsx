@@ -2501,6 +2501,8 @@ export default function StrategiesPage() {
                         .filter((item) => item.length > 0);
                       const selectionExplicitCount = Object.keys(selectionModel?.strategy_selection_by_symbol || {}).length;
                       const selectionResolvedCount = Object.keys(selectionModel?.selected_strategy_by_symbol || {}).length;
+                      const signalConsolidationModel = bot.signal_consolidation;
+                      const signalConsolidationResolvedCount = Object.keys(signalConsolidationModel?.net_decision_by_symbol || {}).length;
                       const registryDraftUniverse = (registryDraft.universe || [])
                         .map((item) => String(item || "").trim().toUpperCase())
                         .filter((item) => item.length > 0)
@@ -2542,6 +2544,9 @@ export default function StrategiesPage() {
                               </p>
                               <p className={`text-[10px] ${selectionModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
                                 Selección: {selectionModel?.status === "valid" ? `${selectionResolvedCount} símbolos resueltos` : "fail-closed"}
+                              </p>
+                              <p className={`text-[10px] ${signalConsolidationModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                Consolidación: {signalConsolidationModel?.status === "valid" ? `${signalConsolidationResolvedCount} decisiones netas` : "fail-closed"}
                               </p>
                               {bot.symbol_assignment_errors?.length ? (
                                 <p className="text-[10px] text-amber-300" title={bot.symbol_assignment_errors.join(" | ")}>
@@ -3114,10 +3119,10 @@ export default function StrategiesPage() {
                                       Guardá un universe y pool válidos para editar elegibilidad por símbolo.
                                     </p>
                                   )}
-                                  <div className="mt-2 flex flex-wrap gap-2">
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
                                       className="h-7 px-2 text-[11px]"
                                       disabled={role !== "admin" || busy || registryArchived || eligibilityScopeDirty || !eligibilitySymbols.length || !eligibilityPoolRows.length}
                                       onClick={() => void saveBotStrategyEligibility(bot)}
@@ -3265,6 +3270,103 @@ export default function StrategiesPage() {
                                       Usar criterio automático
                                     </Button>
                                   </div>
+                                </div>
+                                <div className="rounded border border-slate-800 bg-slate-950/50 p-2">
+                                  <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                                    <span className="uppercase tracking-wide">Consolidación y decisión neta por símbolo</span>
+                                    <span>{signalConsolidationResolvedCount} decisiones netas</span>
+                                  </div>
+                                  <p className={`mt-1 text-[10px] ${signalConsolidationModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                    Estado: {signalConsolidationModel?.status === "valid" ? "válido" : "fail-closed"}
+                                  </p>
+                                  <p className="mt-1 text-[10px] text-slate-500">
+                                    La decisión final sigue la estrategia seleccionada por símbolo y deja visibles los inputs elegibles que participaron.
+                                  </p>
+                                  {signalConsolidationModel?.errors?.length ? (
+                                    <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                      {signalConsolidationModel.errors.map((item) => (
+                                        <p key={`${bot.id}-signal-consolidation-error-${item}`}>{item}</p>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {selectionSymbols.length ? (
+                                    <div className="mt-2 space-y-2">
+                                      {selectionSymbols.map((symbol) => {
+                                        const consolidationItem = signalConsolidationModel?.items?.find((item) => item.symbol === symbol);
+                                        const decision = signalConsolidationModel?.net_decision_by_symbol?.[symbol];
+                                        const netStrategyId = String(
+                                          decision?.selected_strategy_id
+                                            || consolidationItem?.net_strategy_id
+                                            || consolidationItem?.selected_strategy_id
+                                            || "",
+                                        );
+                                        const netStrategy = eligibilityPoolRows.find((strategy) => strategy.id === netStrategyId) || null;
+                                        const decisionLabel = decision?.action === "trade"
+                                          ? `${decision.side || "?"}`
+                                          : decision?.action === "flat"
+                                            ? "flat"
+                                            : "sin decisión";
+                                        return (
+                                          <div key={`${bot.id}-signal-consolidation-${symbol}`} className="rounded border border-slate-800 px-2 py-2">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                              <p className="font-semibold text-slate-100">{symbol}</p>
+                                              <span className="text-[10px] text-slate-400">
+                                                {consolidationItem?.input_summary?.valid_inputs ?? 0}/{consolidationItem?.input_summary?.total_inputs ?? 0} inputs válidos
+                                              </span>
+                                            </div>
+                                            <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                                              <div className="text-[10px] text-slate-400">
+                                                <p>
+                                                  Decisión neta: <strong className="text-slate-200">{decisionLabel}</strong>
+                                                </p>
+                                                <p>
+                                                  Estrategia final: <strong className="text-slate-200">{netStrategy?.name || netStrategyId || "sin resolver"}</strong>
+                                                </p>
+                                                <p>
+                                                  Criterio: <strong className="text-slate-200">{decision?.criterion || consolidationItem?.net_criterion || "sin criterio"}</strong>
+                                                </p>
+                                              </div>
+                                              <div className="text-[10px] text-slate-500">
+                                                <p>buy/sell/flat: {consolidationItem?.input_summary?.buy_signals ?? 0}/{consolidationItem?.input_summary?.sell_signals ?? 0}/{consolidationItem?.input_summary?.flat_signals ?? 0}</p>
+                                                <p>acuerdo: {consolidationItem?.input_summary?.agreement_status || "n/a"}</p>
+                                              </div>
+                                            </div>
+                                            {consolidationItem?.inputs?.length ? (
+                                              <div className="mt-2 space-y-1 text-[10px] text-slate-400">
+                                                {consolidationItem.inputs.map((input) => {
+                                                  const inputStrategy = eligibilityPoolRows.find((strategy) => strategy.id === input.strategy_id) || null;
+                                                  const inputLabel = input.action === "trade"
+                                                    ? `${input.side || "?"}`
+                                                    : input.action === "flat"
+                                                      ? "flat"
+                                                      : "sin señal";
+                                                  return (
+                                                    <p key={`${bot.id}-${symbol}-signal-input-${input.strategy_id}`}>
+                                                      {inputStrategy?.name || input.strategy_name || input.strategy_id}: <strong className="text-slate-200">{inputLabel}</strong>
+                                                      {" "}· {input.criterion || "sin criterio"}
+                                                    </p>
+                                                  );
+                                                })}
+                                              </div>
+                                            ) : null}
+                                            {consolidationItem?.errors?.length ? (
+                                              <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                                {consolidationItem.errors.map((issue) => (
+                                                  <p key={`${bot.id}-${symbol}-${issue.reason_code}-${issue.strategy_id || "scope"}`}>
+                                                    {issue.message}
+                                                  </p>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : (
+                                    <p className="mt-2 text-[10px] text-slate-500">
+                                      Guardá selección válida por símbolo para derivar una decisión neta auditable.
+                                    </p>
+                                  )}
                                 </div>
                                 <div className="flex flex-wrap gap-2">
                                   <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => void saveBotRegistryIdentity(bot)}>

@@ -2,6 +2,30 @@
 
 Fecha: 2026-04-18
 
+## Siguiente paso exacto despues de RTLOPS-75 - 2026-04-18
+- [x] Fundar la consolidacion canonica y la decision neta por simbolo:
+  - `GET /api/v1/bots/{bot_id}/signal-consolidation`
+  - `signal_consolidation` derivado sobre `RTLOPS-72 + RTLOPS-73 + RTLOPS-74`
+  - `net_decision_by_symbol` con trazabilidad minima de inputs
+  - `contract_version` del Bot Registry elevada a `rtlops75/v1`
+  - surface minima de lectura en `strategies/page.tsx`
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir `RTLOPS-76/77`
+  - sin tocar lifecycle
+  - sin tocar live console
+  - sin tocar ejecucion remota real por estrategia
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-76` y resolver solo los contratos minimos de runtime/storage/API para colgar la decision neta por simbolo ya canonica de:
+    - `RTLOPS-72`
+    - `RTLOPS-73`
+    - `RTLOPS-74`
+    - `RTLOPS-75`
+  - mantener fuera de ese bloque:
+    - `RTLOPS-77`
+    - lifecycle
+    - live console
+    - cualquier ejecucion separada por estrategia o por subcuenta
+
 ## Siguiente paso exacto despues de RTLOPS-74 - 2026-04-18
 - [x] Fundar seleccion canonica de estrategia por simbolo:
   - persistencia `strategy_selection_by_symbol`
@@ -14,7 +38,7 @@ Fecha: 2026-04-18
   - sin tocar lifecycle
   - sin tocar live console
   - sin abrir execution neta por simbolo
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - abrir `RTLOPS-75` y resolver solo la consolidacion de señales y la decision neta por simbolo sobre la base ya cerrada de:
     - `RTLOPS-72`
     - `RTLOPS-73`
@@ -38,7 +62,7 @@ Fecha: 2026-04-18
 - [x] Formalizar el comando canonico del repo:
   - `npm.cmd run typecheck`
   - implementado como `tsc --noEmit --incremental false`
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - volver al frente funcional y abrir `RTLOPS-74` sobre la linea viva actual
   - mantener fuera de ese bloque cualquier re-auditoria de tooling salvo que aparezca una regresion nueva y reproducible
 

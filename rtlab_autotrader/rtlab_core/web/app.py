@@ -903,6 +903,25 @@ BOT_STRATEGY_SELECTION_CRITERIA = (
     "primary_strategy",
     "pool_order",
 )
+BOT_SIGNAL_CONSOLIDATION_CONTRACT_VERSION = "rtlops75/v1"
+BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS: tuple[str, ...] = ()
+BOT_SIGNAL_CONSOLIDATION_REASON_CODES = (
+    "bot_archived",
+    "strategy_selection_invalid",
+    "selected_strategy_missing",
+    "selected_strategy_not_found",
+    "selected_strategy_disabled",
+    "selected_strategy_symbol_mismatch",
+    "selected_strategy_signal_unresolved",
+)
+BOT_SIGNAL_CONSOLIDATION_CRITERIA = (
+    "selected_strategy",
+    "action_override",
+    "side_override",
+    "defensive_tags_flat",
+    "meanreversion_tags_sell",
+    "trend_tags_buy",
+)
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -932,7 +951,7 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
-BOT_REGISTRY_CONTRACT_VERSION = "rtlops74/v1"
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops75/v1"
 BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
 BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
 BOT_REGISTRY_DEFAULT_MODE = "paper"
@@ -950,6 +969,7 @@ BOT_REGISTRY_API_SURFACE = {
     "multi_symbol_path": "/api/v1/bots/{bot_id}/multi-symbol",
     "symbol_strategy_eligibility_path": "/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
     "symbol_strategy_selection_path": "/api/v1/bots/{bot_id}/strategy-selection",
+    "signal_consolidation_path": "/api/v1/bots/{bot_id}/signal-consolidation",
     "archive_path": "/api/v1/bots/{bot_id}/archive",
     "restore_path": "/api/v1/bots/{bot_id}/restore",
     "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
@@ -988,6 +1008,9 @@ BOT_REGISTRY_FIELD_GROUPS = {
     "strategy_selection": [
         "strategy_selection_by_symbol",
         "strategy_selection",
+    ],
+    "signal_consolidation": [
+        "signal_consolidation",
     ],
     "policy_state": ["engine", "mode", "status", "notes"],
     "governance": ["registry_status", "archived_at"],
@@ -4968,6 +4991,409 @@ def risk_hooks(context):
         )
         return self._bot_strategy_selection_payload(bot)
 
+    @staticmethod
+    def _signal_consolidation_issue(
+        *,
+        reason_code: str,
+        message: str,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "reason_code": str(reason_code or "").strip(),
+            "message": str(message or "").strip(),
+            "symbol": str(symbol or "").strip().upper() or None,
+            "strategy_id": str(strategy_id or "").strip() or None,
+        }
+
+    def _strategy_signal_candidate(
+        self,
+        *,
+        strategy_id: str,
+        symbol: str,
+        strategies_index: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        strategy_id_n = str(strategy_id or "").strip()
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        strategy = strategies_index.get(strategy_id_n) if isinstance(strategies_index, dict) else None
+        if not isinstance(strategy, dict):
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_not_found",
+                message=f"{strategy_id_n} no existe en strategy registry/truth para {symbol_n}",
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_id_n,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        strategy_name = str(strategy.get("name") or strategy_id_n).strip() or strategy_id_n
+        enabled_for_trading = bool(strategy.get("enabled_for_trading", strategy.get("enabled", False)))
+        if not enabled_for_trading:
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_disabled",
+                message=f"{strategy_id_n} no esta habilitada para trading en {symbol_n}",
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_name,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        params = strategy.get("params") if isinstance(strategy.get("params"), dict) else {}
+        configured_symbol = RuntimeBridge._sanitize_exchange_symbol(
+            params.get("runtime_symbol")
+            or params.get("symbol")
+            or params.get("pair")
+            or params.get("market_symbol")
+        )
+        if configured_symbol and configured_symbol != symbol_n:
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_symbol_mismatch",
+                message=(
+                    f"{strategy_id_n} fija {configured_symbol} y no coincide con el simbolo consolidado {symbol_n}"
+                ),
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_name,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        action_override = str(params.get("runtime_action") or params.get("action") or "").strip().lower()
+        side_override = str(params.get("runtime_side") or params.get("side") or "").strip().upper()
+        tags = {
+            str(tag or "").strip().lower()
+            for tag in (strategy.get("tags") or [])
+            if str(tag or "").strip()
+        }
+        action: str | None = None
+        side: str | None = None
+        criterion: str | None = None
+        reason: str | None = None
+
+        if action_override in {"flat", "hold", "none", "pause"}:
+            action = "flat"
+            criterion = "action_override"
+            reason = "strategy_action_override_flat"
+        elif action_override in {"buy", "long"}:
+            action = "trade"
+            side = "BUY"
+            criterion = "action_override"
+            reason = "strategy_action_override_buy"
+        elif action_override in {"sell", "short"}:
+            action = "trade"
+            side = "SELL"
+            criterion = "action_override"
+            reason = "strategy_action_override_sell"
+        elif action_override == "trade":
+            if side_override in {"BUY", "SELL"}:
+                action = "trade"
+                side = side_override
+                criterion = "action_override"
+                reason = "strategy_action_override_trade"
+        elif side_override in {"BUY", "SELL"}:
+            action = "trade"
+            side = side_override
+            criterion = "side_override"
+            reason = "strategy_side_override"
+        else:
+            defensive_tags = {"defensive", "liquidity", "cash", "safe_mode", "capital_preservation"}
+            meanrev_tags = {"meanreversion", "mean_reversion", "reversion", "range"}
+            trend_tags = {"trend", "breakout", "momentum", "orderflow", "trend_scanning"}
+            if tags & defensive_tags:
+                action = "flat"
+                criterion = "defensive_tags_flat"
+                reason = "strategy_tags_defensive_flat"
+            elif tags & meanrev_tags:
+                action = "trade"
+                side = "SELL"
+                criterion = "meanreversion_tags_sell"
+                reason = "strategy_tags_meanreversion"
+            elif tags & trend_tags:
+                action = "trade"
+                side = "BUY"
+                criterion = "trend_tags_buy"
+                reason = "strategy_tags_trend"
+
+        if action is None:
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_signal_unresolved",
+                message=(
+                    f"{strategy_id_n} no expone override/tag canonico para derivar decision neta en {symbol_n}"
+                ),
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_name,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        return {
+            "strategy_id": strategy_id_n,
+            "strategy_name": strategy_name,
+            "symbol": symbol_n,
+            "action": action,
+            "side": side if action == "trade" else None,
+            "criterion": criterion,
+            "reason": reason,
+            "status": "valid",
+            "errors": [],
+        }
+
+    def _bot_signal_consolidation_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        strategy_map = (
+            strategies_index
+            if isinstance(strategies_index, dict)
+            else self._strategy_index_by_id(self.list_strategies())
+        )
+        selection = self._bot_strategy_selection_payload(
+            payload,
+            strategies_index=strategy_map,
+            universe_index=universe_index,
+        )
+        symbols = [str(item) for item in (selection.get("symbols") or []) if str(item).strip()]
+        selected_by_symbol = {
+            str(symbol): str(strategy_id)
+            for symbol, strategy_id in ((selection.get("selected_strategy_by_symbol") or {}).items())
+            if str(symbol).strip() and str(strategy_id).strip()
+        }
+        reason_codes: set[str] = set()
+        errors: list[str] = []
+        items: list[dict[str, Any]] = []
+        net_decision_by_symbol: dict[str, dict[str, Any]] = {}
+        registry_status = self._normalize_bot_registry_status(str(payload.get("registry_status") or "active"))
+
+        if registry_status == "archived":
+            reason_codes.add("bot_archived")
+            errors.append("Bot archivado: la decision neta por simbolo queda fail-closed hasta reactivacion valida.")
+        if str(selection.get("status") or "error") != "valid":
+            reason_codes.add("strategy_selection_invalid")
+            errors.extend(
+                str(item)
+                for item in (selection.get("errors") or [])
+                if str(item).strip()
+            )
+
+        for symbol in symbols:
+            selection_item = next(
+                (
+                    item
+                    for item in (selection.get("items") or [])
+                    if str((item or {}).get("symbol") or "").strip().upper() == str(symbol).strip().upper()
+                ),
+                {},
+            )
+            eligible_strategy_ids = [
+                str(item)
+                for item in ((selection_item.get("eligible_strategy_ids") or []) if isinstance(selection_item, dict) else [])
+                if str(item).strip()
+            ]
+            inputs = [
+                self._strategy_signal_candidate(
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    strategies_index=strategy_map,
+                )
+                for strategy_id in eligible_strategy_ids
+            ]
+            valid_inputs = [
+                item for item in inputs if str(item.get("status") or "error") == "valid"
+            ]
+            signatures = {
+                f"{str(item.get('action') or '')}:{str(item.get('side') or '')}"
+                for item in valid_inputs
+            }
+            input_summary = {
+                "total_inputs": len(inputs),
+                "valid_inputs": len(valid_inputs),
+                "buy_signals": sum(
+                    1 for item in valid_inputs if str(item.get("action") or "") == "trade" and str(item.get("side") or "") == "BUY"
+                ),
+                "sell_signals": sum(
+                    1 for item in valid_inputs if str(item.get("action") or "") == "trade" and str(item.get("side") or "") == "SELL"
+                ),
+                "flat_signals": sum(
+                    1 for item in valid_inputs if str(item.get("action") or "") == "flat"
+                ),
+                "agreement_status": (
+                    "single"
+                    if len(valid_inputs) <= 1
+                    else "aligned"
+                    if len(signatures) <= 1
+                    else "conflicted"
+                ),
+            }
+            item_errors: list[dict[str, Any]] = []
+            if registry_status == "archived":
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="bot_archived",
+                        message=f"{symbol} no puede consolidarse mientras el bot permanezca archivado",
+                        symbol=symbol,
+                    )
+                )
+            if str(selection.get("status") or "error") != "valid":
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="strategy_selection_invalid",
+                        message=f"{symbol} depende de una seleccion por simbolo valida antes de consolidar",
+                        symbol=symbol,
+                        strategy_id=str(selected_by_symbol.get(symbol) or "") or None,
+                    )
+                )
+
+            selected_strategy_id = str(selected_by_symbol.get(symbol) or "").strip()
+            selected_input = next(
+                (
+                    item for item in inputs
+                    if str(item.get("strategy_id") or "").strip() == selected_strategy_id
+                ),
+                None,
+            )
+
+            if not selected_strategy_id:
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="selected_strategy_missing",
+                        message=f"{symbol} no tiene una estrategia seleccionada para consolidar decision neta",
+                        symbol=symbol,
+                    )
+                )
+            elif not isinstance(selected_input, dict):
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="selected_strategy_not_found",
+                        message=f"{selected_strategy_id} no aparece entre los inputs elegibles de {symbol}",
+                        symbol=symbol,
+                        strategy_id=selected_strategy_id,
+                    )
+                )
+            elif str(selected_input.get("status") or "error") != "valid":
+                item_errors.extend(
+                    issue
+                    for issue in (selected_input.get("errors") or [])
+                    if isinstance(issue, dict)
+                )
+
+            net_action = None
+            net_side = None
+            net_reason = None
+            net_criterion = None
+            if not item_errors and isinstance(selected_input, dict):
+                net_action = str(selected_input.get("action") or "").strip() or None
+                net_side = str(selected_input.get("side") or "").strip() or None
+                net_reason = str(selected_input.get("reason") or "").strip() or None
+                source_criterion = str(selected_input.get("criterion") or "").strip() or None
+                net_criterion = (
+                    f"selected_strategy:{source_criterion}"
+                    if source_criterion
+                    else "selected_strategy"
+                )
+
+            for issue in item_errors:
+                code = str(issue.get("reason_code") or "").strip()
+                message = str(issue.get("message") or "").strip()
+                if code:
+                    reason_codes.add(code)
+                if message:
+                    errors.append(message)
+
+            item_payload = {
+                "symbol": str(symbol),
+                "selected_strategy_id": selected_strategy_id or None,
+                "eligible_strategy_ids": eligible_strategy_ids,
+                "participating_strategy_ids": [
+                    str(item.get("strategy_id") or "")
+                    for item in inputs
+                    if str(item.get("strategy_id") or "").strip()
+                ],
+                "inputs": inputs,
+                "input_summary": input_summary,
+                "net_action": net_action,
+                "net_side": net_side,
+                "net_strategy_id": selected_strategy_id or None,
+                "net_reason": net_reason,
+                "net_criterion": net_criterion,
+                "status": "valid" if not item_errors else "error",
+                "errors": item_errors,
+            }
+            items.append(item_payload)
+            if net_action and not item_errors:
+                net_decision_by_symbol[str(symbol)] = {
+                    "symbol": str(symbol),
+                    "action": net_action,
+                    "side": net_side,
+                    "selected_strategy_id": selected_strategy_id or None,
+                    "criterion": net_criterion,
+                    "reason": net_reason,
+                    "input_count": int(input_summary["total_inputs"]),
+                    "agreement_status": str(input_summary["agreement_status"]),
+                }
+
+        deduped_errors = list(dict.fromkeys(message for message in errors if message))
+        return {
+            "contract_version": BOT_SIGNAL_CONSOLIDATION_CONTRACT_VERSION,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": registry_status,
+            "universe_name": str(selection.get("universe_name") or ""),
+            "universe_family": selection.get("universe_family"),
+            "symbols": symbols,
+            "pool_strategy_ids": [str(item) for item in (selection.get("pool_strategy_ids") or []) if str(item).strip()],
+            "selected_strategy_by_symbol": selected_by_symbol,
+            "net_decision_by_symbol": net_decision_by_symbol,
+            "items": items,
+            "criteria": list(BOT_SIGNAL_CONSOLIDATION_CRITERIA),
+            "reason_codes": sorted(code for code in reason_codes if code),
+            "status": "valid" if not deduped_errors else "error",
+            "errors": deduped_errors,
+            "storage_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    def bot_signal_consolidation_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_signal_consolidation_payload(bot)
+
     def bot_multi_symbol_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
         return self._bot_multi_symbol_payload(bot)
@@ -5302,6 +5728,7 @@ def risk_hooks(context):
                 "multi_symbol_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
                 "strategy_eligibility_fields": list(BOT_STRATEGY_ELIGIBILITY_STORAGE_FIELDS),
                 "strategy_selection_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
+                "signal_consolidation_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
             },
             "api": dict(BOT_REGISTRY_API_SURFACE),
             "defaults": {
@@ -5423,6 +5850,27 @@ def risk_hooks(context):
                     "pool_strategy_ids",
                     "strategy_selection_by_symbol",
                     "selected_strategy_by_symbol",
+                    "items",
+                    "criteria",
+                    "reason_codes",
+                    "status",
+                    "errors",
+                ],
+            },
+            "signal_consolidation": {
+                "contract_version": BOT_SIGNAL_CONSOLIDATION_CONTRACT_VERSION,
+                "storage_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
+                "criteria": list(BOT_SIGNAL_CONSOLIDATION_CRITERIA),
+                "reason_codes": list(BOT_SIGNAL_CONSOLIDATION_REASON_CODES),
+                "fields": [
+                    "domain_type",
+                    "registry_status",
+                    "universe_name",
+                    "universe_family",
+                    "symbols",
+                    "pool_strategy_ids",
+                    "selected_strategy_by_symbol",
+                    "net_decision_by_symbol",
                     "items",
                     "criteria",
                     "reason_codes",
@@ -6400,6 +6848,11 @@ def risk_hooks(context):
                 universe_index=universe_index,
             )
             payload["strategy_selection"] = self._bot_strategy_selection_payload(
+                row,
+                strategies_index=by_id,
+                universe_index=universe_index,
+            )
+            payload["signal_consolidation"] = self._bot_signal_consolidation_payload(
                 row,
                 strategies_index=by_id,
                 universe_index=universe_index,
@@ -14091,6 +14544,13 @@ def create_app() -> FastAPI:
         )
         _invalidate_bots_overview_cache()
         return {"ok": True, "bot_id": bot_id, "strategy_selection": strategy_selection}
+
+    @app.get("/api/v1/bots/{bot_id}/signal-consolidation")
+    def bot_signal_consolidation(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "signal_consolidation": store.bot_signal_consolidation_or_404(bot_id),
+        }
 
     @app.post("/api/v1/bots/{bot_id}/archive")
     def archive_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

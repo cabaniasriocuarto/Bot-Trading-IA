@@ -2,6 +2,55 @@
 
 Fecha de actualizacion: 2026-04-18
 
+## RTLOPS-75 - consolidacion de señales y decision neta por simbolo - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de **consolidacion / decision neta por simbolo** sobre la base cerrada por `RTLOPS-72 + RTLOPS-73 + RTLOPS-74`;
+  - la nueva surface derivada vive en `signal_consolidation` y ya no obliga al frontend a inferir la decision final desde textos sueltos ni a multiplicar caminos por estrategia;
+  - la decision final por simbolo queda anclada a la **estrategia seleccionada por simbolo** ya resuelta en `RTLOPS-74`, pero deja visibles los inputs elegibles que participaron en esa consolidacion.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/signal-consolidation`
+  - `signal_consolidation` agregado al payload canonico de bots y al `registry-contract`
+  - `contract_version` del Bot Registry elevada a `rtlops75/v1`
+  - `net_decision_by_symbol` expuesto con:
+    - `action`
+    - `side`
+    - `selected_strategy_id`
+    - `criterion`
+    - `reason`
+    - `agreement_status`
+  - criterios explicitados:
+    - `selected_strategy`
+    - `action_override`
+    - `side_override`
+    - `defensive_tags_flat`
+    - `meanreversion_tags_sell`
+    - `trend_tags_buy`
+  - reason codes canonicos:
+    - `bot_archived`
+    - `strategy_selection_invalid`
+    - `selected_strategy_missing`
+    - `selected_strategy_not_found`
+    - `selected_strategy_disabled`
+    - `selected_strategy_symbol_mismatch`
+    - `selected_strategy_signal_unresolved`
+- Regla canonica reafirmada:
+  - `RTLOPS-75` no ejecuta ordenes remotas ni enchufa todavia la runtime real a esta decision;
+  - deja resuelta la **decision neta canónica por símbolo** para que el runtime posterior no multiplique ordenes por estrategia ni mantenga caminos paralelos opacos;
+  - si la seleccion previa, el estado archivado o la metadata de la estrategia no permiten derivar una decision coherente, el sistema queda fail-closed y no inventa una señal.
+- Surface minima real integrada:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - ya muestra la decision neta por simbolo
+    - ya muestra inputs participantes, acuerdo/conflicto y criterio final
+    - sigue operando sobre universe + elegibilidad + seleccion persistidos
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - ejecucion remota real por estrategia
+  - subcuentas
+
 ## RTLOPS-74 - seleccion de estrategia por simbolo - 2026-04-18
 
 - Estado real confirmado en esta rama:

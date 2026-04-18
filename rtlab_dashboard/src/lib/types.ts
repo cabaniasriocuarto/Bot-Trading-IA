@@ -355,6 +355,85 @@ export interface BotStrategySelectionResponse {
   strategy_selection: BotStrategySelectionModel;
 }
 
+export interface BotSignalConsolidationIssue {
+  reason_code: string;
+  message: string;
+  symbol?: string | null;
+  strategy_id?: string | null;
+}
+
+export interface BotSignalConsolidationInput {
+  strategy_id: string;
+  strategy_name: string;
+  symbol: string;
+  action?: "trade" | "flat" | string | null;
+  side?: "BUY" | "SELL" | string | null;
+  criterion?: string | null;
+  reason?: string | null;
+  status: "valid" | "error" | string;
+  errors: BotSignalConsolidationIssue[];
+}
+
+export interface BotSignalConsolidationItem {
+  symbol: string;
+  selected_strategy_id?: string | null;
+  eligible_strategy_ids: string[];
+  participating_strategy_ids: string[];
+  inputs: BotSignalConsolidationInput[];
+  input_summary: {
+    total_inputs: number;
+    valid_inputs: number;
+    buy_signals: number;
+    sell_signals: number;
+    flat_signals: number;
+    agreement_status: "single" | "aligned" | "conflicted" | string;
+  };
+  net_action?: "trade" | "flat" | string | null;
+  net_side?: "BUY" | "SELL" | string | null;
+  net_strategy_id?: string | null;
+  net_reason?: string | null;
+  net_criterion?: string | null;
+  status: "valid" | "error" | string;
+  errors: BotSignalConsolidationIssue[];
+}
+
+export interface BotSignalConsolidationModel {
+  contract_version: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  pool_strategy_ids: string[];
+  selected_strategy_by_symbol: Record<string, string>;
+  net_decision_by_symbol: Record<
+    string,
+    {
+      symbol: string;
+      action: "trade" | "flat" | string;
+      side?: "BUY" | "SELL" | string | null;
+      selected_strategy_id?: string | null;
+      criterion?: string | null;
+      reason?: string | null;
+      input_count: number;
+      agreement_status: "single" | "aligned" | "conflicted" | string;
+    }
+  >;
+  items: BotSignalConsolidationItem[];
+  criteria: string[];
+  reason_codes: string[];
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotSignalConsolidationResponse {
+  bot_id: string;
+  signal_consolidation: BotSignalConsolidationModel;
+}
+
 export interface BotInstance {
   id: string;
   bot_id?: string;
@@ -396,6 +475,7 @@ export interface BotInstance {
   multi_symbol?: BotMultiSymbolModel;
   strategy_eligibility?: BotStrategyEligibilityModel;
   strategy_selection?: BotStrategySelectionModel;
+  signal_consolidation?: BotSignalConsolidationModel;
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -438,6 +518,7 @@ export interface BotRegistryContractResponse {
     multi_symbol_fields: string[];
     strategy_eligibility_fields: string[];
     strategy_selection_fields: string[];
+    signal_consolidation_fields: string[];
   };
   api: {
     list_path: string;
@@ -447,6 +528,7 @@ export interface BotRegistryContractResponse {
     multi_symbol_path: string;
     symbol_strategy_eligibility_path: string;
     symbol_strategy_selection_path: string;
+    signal_consolidation_path: string;
     archive_path: string;
     restore_path: string;
     policy_state_path: string;
@@ -522,6 +604,7 @@ export interface BotRegistryContractResponse {
     strategy_pool: string[];
     strategy_eligibility: string[];
     strategy_selection: string[];
+    signal_consolidation: string[];
     policy_state: string[];
     governance: string[];
     trace: string[];
@@ -544,6 +627,13 @@ export interface BotRegistryContractResponse {
     fields: string[];
   };
   strategy_selection: {
+    contract_version: string;
+    storage_fields: string[];
+    criteria: string[];
+    reason_codes: string[];
+    fields: string[];
+  };
+  signal_consolidation: {
     contract_version: string;
     storage_fields: string[];
     criteria: string[];
