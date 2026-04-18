@@ -2,6 +2,35 @@
 
 Fecha de actualizacion: 2026-04-18
 
+## Microbloque tecnico - canonizacion del type-check frio del dashboard - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo del dashboard;
+  - `rtlab_dashboard/next.config.ts` NO define `typescript.tsconfigPath`, NO activa `ignoreBuildErrors`, NO usa `typedRoutes`, NO usa `typedEnv` y NO redefine `distDir`;
+  - el dashboard ya pasa type-check en frio sin depender de `next build` ni de `next typegen`.
+- Definicion operativa de `en frio` usada:
+  - `rtlab_dashboard` sin `.next`
+  - `rtlab_dashboard` sin `tsconfig.tsbuildinfo`
+  - cada comando corrido en una shell nueva
+- Matriz real validada:
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+  - `npm.cmd exec next -- typegen` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- Verdad tecnica canonica:
+  - la opcion correcta para este repo es **type-check directo**, no una dependencia obligatoria de `next typegen`;
+  - el comando canonico formalizado en repo pasa a ser:
+    - `npm.cmd run typecheck`
+    - implementado como `tsc --noEmit --incremental false`
+  - `next typegen` queda como paso compatible pero no requerido para validar el proyecto.
+- Motivo de canonizacion:
+  - `tsc --noEmit` directo ya pasa en frio;
+  - `--incremental false` evita dejar `tsconfig.tsbuildinfo` residual y endurece el flujo para uso estable/CI.
+- Limite honesto:
+  - no quedo reconstruida con certeza la causa historica exacta de los FAIL observados en sesiones anteriores;
+  - la mejor inferencia actual es que se trataba de un estado transitorio o de observaciones tomadas mientras `.next/types` estaba siendo mutado por otros comandos.
+
 ## RTLOPS-73 - mapping simbolo↔estrategias elegibles del pool - 2026-04-18
 
 - Estado real confirmado en esta rama:
@@ -34,7 +63,7 @@ Fecha de actualizacion: 2026-04-18
     - live console
     - net/consolidation execution
 
-## Microbloque tecnico - validacion y cierre honesto del caveat de `tsc --noEmit` - 2026-04-18
+## Microbloque tecnico - validacion inicial del caveat de `tsc --noEmit` - 2026-04-18
 
 - Estado real confirmado en esta rama:
   - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo del dashboard;
@@ -50,10 +79,9 @@ Fecha de actualizacion: 2026-04-18
   - `npm.cmd run build` -> PASS
   - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
   - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
-- Conclusion tecnica confirmada:
-  - la narrativa de `FAIL en frio por includes .next/types` ya NO reproduce en esta punta;
-  - `next typegen` regenera tipos de rutas, pero no corrige un fallo activo del type-check standalone porque el `tsc` directo ya pasa sin depender de esa generacion previa;
-  - en este microbloque no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`.
+- Conclusion tecnica de esa validacion inicial:
+  - la narrativa de `FAIL en frio por includes .next/types` no reprodujo de forma estable en esa punta;
+  - esa validacion ya fue superada por el microbloque posterior de canonizacion, que formalizo `npm.cmd run typecheck` como comando canónico del repo.
 - Limite honesto:
   - no quedo reconstruida con certeza la causa historica exacta de los FAIL reportados en sesiones anteriores; solo quedo confirmado que ya no son el estado real actual de esta linea.
 - Observacion superada por validacion posterior del mismo dia:

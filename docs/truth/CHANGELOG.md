@@ -2,6 +2,32 @@
 
 ## 2026-04-18
 
+### Microbloque tecnico - canonizacion del type-check frio del dashboard
+- Cambio real aplicado en tooling/documentacion:
+  - `rtlab_dashboard/package.json`
+    - agrega script canónico `typecheck: tsc --noEmit --incremental false`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Comandos validados con reproduccion real:
+  - `npm.cmd run typecheck` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+  - `npm.cmd exec next -- typegen` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- Definicion operativa de `en frio`:
+  - sin `.next`
+  - sin `tsconfig.tsbuildinfo`
+  - shell nueva por comando
+- Conclusion tecnica:
+  - el repo NO requiere `next typegen` como paso obligatorio para type-check estable;
+  - el comando canónico correcto pasa a ser `npm.cmd run typecheck`;
+  - `next typegen` queda como paso compatible, no como prerequisito obligatorio.
+- Limite honesto:
+  - no quedo reconstruida con certeza la causa historica exacta de los FAIL observados antes;
+  - la inferencia mas fuerte es estado transitorio/parcial de `.next/types` o medicion tomada mientras otro flujo mutaba artefactos.
+
 ### RTLOPS-73 - mapping simbolo↔estrategias elegibles del pool
 - Cambio real aplicado en backend/API/frontend minimo:
   - `rtlab_autotrader/rtlab_core/web/app.py`

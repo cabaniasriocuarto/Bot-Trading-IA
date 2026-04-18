@@ -2,6 +2,23 @@
 
 Fecha: 2026-04-18
 
+## Siguiente paso exacto despues de la canonizacion del type-check frio - 2026-04-18
+- [x] Reproducir el comportamiento real del dashboard en frio:
+  - sin `.next`
+  - sin `tsconfig.tsbuildinfo`
+  - shell nueva por comando
+- [x] Validar la verdad tecnica correcta:
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- [x] Formalizar el comando canonico del repo:
+  - `npm.cmd run typecheck`
+  - implementado como `tsc --noEmit --incremental false`
+- [ ] Siguiente paso exacto recomendado:
+  - volver al frente funcional y abrir `RTLOPS-74` sobre la linea viva actual
+  - mantener fuera de ese bloque cualquier re-auditoria de tooling salvo que aparezca una regresion nueva y reproducible
+
 ## Siguiente paso exacto despues de RTLOPS-73 - 2026-04-18
 - [x] Fundar elegibilidad canonica simbolo↔estrategia sobre el pool del bot:
   - persistencia `strategy_eligibility_by_symbol`
@@ -12,15 +29,11 @@ Fecha: 2026-04-18
   - sin tocar backend live
   - sin abrir `RTLOPS-74+`
   - sin tocar lifecycle ni live console
-- [ ] Caveat tecnico pendiente antes del siguiente bloque de producto:
-  - revalidar de nuevo el comportamiento en frio de `npm.cmd exec tsc -- --noEmit`
-  - hoy el flujo real observado es:
-    - `tsc --noEmit` -> FAIL inicial por `.next/types/cache-life.d.ts` faltante
-    - `npm.cmd run build` -> PASS
-    - `npm.cmd exec next -- typegen` -> PASS
-    - `npm.cmd exec tsc -- --noEmit` despues -> PASS
+- [x] Caveat tecnico derivado ya cerrado:
+  - el microbloque posterior de canonizacion confirmo que el comando canónico correcto del repo es `npm.cmd run typecheck`
+  - `next typegen` no es prerequisito obligatorio para el type-check del dashboard
 - [ ] Siguiente paso exacto recomendado:
-  - tomar un microbloque tecnico corto para cerrar o acotar honestamente ese caveat de type-check frio antes de abrir `RTLOPS-74`
+  - volver al frente funcional y abrir `RTLOPS-74`
 
 ## Siguiente paso exacto despues del microbloque tecnico de `tsc --noEmit` - 2026-04-18
 - [x] Revalidar el caveat tecnico con reproduccion real:
@@ -31,10 +44,9 @@ Fecha: 2026-04-18
 - [x] Cerrar la narrativa falsa:
   - el `tsc` standalone ya pasa tambien en frio en esta punta
   - `next typegen` no cambia el resultado del type-check actual
-  - no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`
+  - en esta validacion inicial no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`
 - [ ] Siguiente paso exacto recomendado:
-  - volver a priorizacion tecnica/producto sin mantener este caveat como bloqueo activo
-  - si se quiere endurecer ergonomia de tooling, tomar mas adelante un microbloque opcional para agregar un script explicito `typecheck`, pero no es un bloqueo tecnico vigente
+  - bloque ya superado por la canonizacion posterior del mismo dia
 
 ## Siguiente paso exacto despues de RTLOPS-71 subbloque 2 - 2026-04-18
 - [x] Normalizar identidad visible del bot en `backtests/page.tsx`:
