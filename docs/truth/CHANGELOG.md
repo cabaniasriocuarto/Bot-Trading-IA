@@ -2,6 +2,27 @@
 
 ## 2026-04-17
 
+### RTLOPS-71 - subbloque 1 de strategy detail canonico
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`
+    - elimina el fallback que reconstruia `truth` desde `/api/v1/strategies`
+    - elimina el fallback que reconstruia `evidence` desde `/api/v1/backtests/runs`
+    - agrega carga honesta con:
+      - error explicito si falta `truth` canonica
+      - aviso explicito si falta `evidence` canonica
+    - deja de presentar `backtests/trades` como fallback legacy de `truth/evidence`
+- Tests corridos:
+  - `npm.cmd run lint -- "src/app/(app)/strategies/[id]/page.tsx"` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL en frio por `.next/types` ausentes
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` despues de `build` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+  - cleanup transversal de naming legacy fuera del detail de estrategia
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+
 ### Auditoria de deuda real - lote 1 de reparacion RTLOPS-24 + RTLOPS-34
 - Cambio real aplicado en frontend operatorio:
   - `rtlab_dashboard/src/app/(app)/execution/page.tsx`

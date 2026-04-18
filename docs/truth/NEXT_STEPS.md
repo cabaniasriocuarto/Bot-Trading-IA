@@ -2,6 +2,22 @@
 
 Fecha: 2026-04-17
 
+## Siguiente paso exacto despues de RTLOPS-71 subbloque 1 - 2026-04-17
+- [x] Endurecer el strategy detail para depender del contrato canonico:
+  - quitar fallback frontend que reconstruia `truth/evidence`
+  - fallar de forma honesta si falta `truth` canonica
+  - mostrar aviso explicito si falta `evidence` canonica
+- [x] Mantener el bloque quirurgico:
+  - sin tocar `backtests/page.tsx` por defecto
+  - sin abrir `RTLOPS-73+`
+  - sin cleanup transversal del dashboard
+- [ ] Siguiente paso exacto recomendado:
+  - validar si corresponde un segundo subbloque chico de `RTLOPS-71` sobre surfaces derivadas:
+    - naming legacy visible en `backtests/page.tsx`
+    - textos/helpers de strategy frontend que todavia sobrevivan fuera de `strategies/[id]`
+  - si esa validacion no confirma un subbloque chico y coherente:
+    - volver a priorizacion antes de abrir producto nuevo
+
 ## Siguiente lote exacto despues del lote 1 de reparacion execution vs registry - 2026-04-17
 - [x] Corregir deuda real de surface operatoria en `execution`:
   - quitar `DELETE /api/v1/bots/{bot_id}` de la UI

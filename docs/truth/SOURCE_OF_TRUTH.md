@@ -2,6 +2,33 @@
 
 Fecha de actualizacion: 2026-04-17
 
+## RTLOPS-71 - subbloque 1 de strategy detail canonico - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx` ya no reconstruye `truth/evidence` desde contratos legacy del frontend;
+  - la vista depende del contrato canonico:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+- Cambio real aplicado en frontend:
+  - se elimina el fallback que armaba `StrategyTruth` desde `/api/v1/strategies`;
+  - se elimina el fallback que armaba `StrategyEvidenceResponse` desde `/api/v1/backtests/runs`;
+  - si falta el contrato canonico:
+    - `truth` falla con error explicito de surface;
+    - `evidence` deja aviso explicito y la vista no simula evidence legacy;
+  - el texto de detalle deja de presentar `backtests/trades` como fallback legacy de `truth/evidence` y pasa a describirlos como expansion de evidence derivada.
+- Regla canonica reafirmada:
+  - `truth/evidence` del detail de estrategia ya no deben reconstruirse del lado del frontend;
+  - si el backend no expone el contrato canonico, la vista debe fallar de forma honesta y no maquillar el dominio.
+- Fuera de alcance mantenido a proposito:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+  - cleanup transversal de naming legacy en otras surfaces
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+- Conclusion operativa:
+  - el nucleo mas confirmado de `RTLOPS-71` ya quedo absorbido en strategy detail;
+  - todavia puede quedar un segundo subbloque chico de `RTLOPS-71` para surfaces derivadas si se confirma contra repo/Linear, pero ya no en este bloque.
+
 ## Auditoria de deuda real - lote 1 de reparacion RTLOPS-24 + RTLOPS-34 - 2026-04-17
 
 - Estado real confirmado en esta rama:
