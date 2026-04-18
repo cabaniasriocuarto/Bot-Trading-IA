@@ -2,6 +2,31 @@
 
 ## 2026-04-17
 
+### RTLOPS-71 - subbloque 2 de identidad canonica en backtests
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - normaliza la identidad visible del bot a `display_name + bot_id`
+    - aplica esa identidad en:
+      - selector de bot para mass backtest
+      - mensaje de carga de pool
+      - resumen `Bot filtrado`
+      - vista centrica por bot
+      - badges/lista de related bots
+- Tests corridos:
+  - `npm.cmd run lint -- "src/app/(app)/backtests/page.tsx"` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL preexistente por includes `.next/types/**/*.ts` faltantes en `tsconfig.json`
+- Fuera de alcance mantenido a proposito:
+  - `strategies/page.tsx`
+  - `strategies/[id]/page.tsx`
+  - `rtlab_dashboard/src/lib/types.ts`
+  - `legacy_json_id`
+  - comparador legacy
+  - evidence `trusted / legacy / quarantine`
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+
 ### RTLOPS-71 - subbloque 1 de strategy detail canonico
 - Cambio real aplicado en frontend:
   - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`

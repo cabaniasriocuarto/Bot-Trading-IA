@@ -2,6 +2,21 @@
 
 Fecha: 2026-04-17
 
+## Siguiente paso exacto despues de RTLOPS-71 subbloque 2 - 2026-04-18
+- [x] Normalizar identidad visible del bot en `backtests/page.tsx`:
+  - `display_name + bot_id` en selector, mensajes, resumen filtrado, vista centrica y related bots
+- [x] Mantener el bloque quirurgico:
+  - sin tocar backend
+  - sin tocar `strategies/page.tsx`
+  - sin tocar `strategies/[id]/page.tsx`
+  - sin tocar comparador legacy ni evidence status
+- [ ] Pendiente tecnico honesto:
+  - `npm.cmd exec tsc -- --noEmit` sigue fallando por includes `.next/types/**/*.ts` faltantes; no se corrigio en este subbloque porque quedaba fuera de alcance
+- [ ] Siguiente paso exacto recomendado:
+  - revalidar priorizacion antes de abrir otro frente:
+    - si hace falta, tomar un microbloque tecnico aparte para el caveat de `tsc`
+    - si no, volver a decidir entre producto nuevo y/o deuda real remanente con una validacion chica
+
 ## Siguiente paso exacto despues de RTLOPS-71 subbloque 1 - 2026-04-17
 - [x] Endurecer el strategy detail para depender del contrato canonico:
   - quitar fallback frontend que reconstruia `truth/evidence`

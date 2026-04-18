@@ -2,6 +2,31 @@
 
 Fecha de actualizacion: 2026-04-17
 
+## RTLOPS-71 - subbloque 2 de identidad canonica en backtests - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx` ya no expone identidad visible del bot apoyada solo en `name` o `id` internos;
+  - la surface de backtests muestra identidad canonica por `display_name + bot_id` en los puntos operatorios principales del bloque.
+- Cambio real aplicado en frontend:
+  - selector de bot para mass backtest
+  - mensaje de carga del pool del bot
+  - resumen `Bot filtrado`
+  - vista centrica por bot
+  - badges/lista de related bots
+- Regla canonica reafirmada:
+  - la identidad visible del bot en surfaces operatorias debe seguir el registry canonico;
+  - `name` puede seguir existiendo como dato legacy/compatibilidad, pero no debe seguir siendo la identidad visible primaria donde el registry ya expone `display_name + bot_id`.
+- Fuera de alcance mantenido a proposito:
+  - comparador legacy
+  - `legacy_json_id`
+  - evidence `trusted / legacy / quarantine`
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+- Caveat tecnico vigente:
+  - `npm.cmd exec tsc -- --noEmit` sigue fallando en esta punta por includes `.next/types/**/*.ts` que no existen en frio;
+  - ese caveat no se corrigio en este subbloque porque excedia el alcance validado.
+
 ## RTLOPS-71 - subbloque 1 de strategy detail canonico - 2026-04-17
 
 - Estado real confirmado en esta rama:

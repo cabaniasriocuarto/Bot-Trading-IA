@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/c
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { getBotDisplayName } from "@/lib/bot-registry";
 import { apiGet, apiPatch, apiPost } from "@/lib/client-api";
 import type {
   BacktestRun,
@@ -130,6 +131,25 @@ const GRADE_CLASS: Record<MetricGrade, string> = {
   bueno: "bg-yellow-500/25 text-yellow-50 border border-yellow-400/40",
   excelente: "bg-green-600/25 text-green-100 border border-green-500/40",
 };
+
+type BotIdentityLike = {
+  id: string;
+  name?: string | null;
+  display_name?: string | null;
+  bot_id?: string | null;
+};
+
+function getCanonicalBotId(bot: Pick<BotIdentityLike, "id" | "bot_id">): string {
+  return String(bot.bot_id || bot.id || "").trim();
+}
+
+function getVisibleBotIdentity(bot: BotIdentityLike): string {
+  const displayName = getBotDisplayName({
+    display_name: String(bot.display_name || ""),
+    name: String(bot.name || ""),
+  } as Pick<BotInstance, "display_name" | "name">);
+  return `${displayName} (${getCanonicalBotId(bot)})`;
+}
 
 function gradeMetric(key: string, rawValue: number | undefined): MetricGrade | null {
   if (typeof rawValue !== "number" || Number.isNaN(rawValue)) return null;
@@ -982,7 +1002,7 @@ export default function BacktestsPage() {
     if (firstUniverseSymbol) {
       setForm((prev) => ({ ...prev, symbol: String(firstUniverseSymbol).replace("/", "").replace("-", "").toUpperCase() }));
     }
-    setMassMessage(`Pool del bot ${selectedMassBot.name} cargado: ${poolIds.length} estrategias.`);
+    setMassMessage(`Pool del bot ${getVisibleBotIdentity(selectedMassBot)} cargado: ${poolIds.length} estrategias.`);
   }, [selectedMassBot, strategies]);
 
   const beastEnabledState = useMemo(() => {
@@ -2412,7 +2432,7 @@ export default function BacktestsPage() {
               <p className="text-xs text-slate-400">Quick Backtest: {quickRunsCount} | Child de Research Batch: {batchChildrenCount}</p>
               {selectedCatalogBot ? (
                 <p className="text-xs text-slate-400">
-                  Bot filtrado: {selectedCatalogBot.name} ({selectedCatalogBot.id}) Â· pool actual: {selectedCatalogBot.pool_strategy_ids.length} estrategias
+                  Bot filtrado: {getVisibleBotIdentity(selectedCatalogBot)} Â· pool actual: {selectedCatalogBot.pool_strategy_ids.length} estrategias
                 </p>
               ) : null}
               <p className="text-xs text-slate-400">
@@ -2470,13 +2490,14 @@ export default function BacktestsPage() {
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="text-xs uppercase tracking-wide text-slate-400">Vista centrica por bot</p>
-                  <Badge variant="info">{selectedCatalogBot.id}</Badge>
+                  <Badge variant="info">{getCanonicalBotId(selectedCatalogBot)}</Badge>
                   <Badge variant={selectedCatalogBot.status === "active" ? "success" : selectedCatalogBot.status === "paused" ? "warn" : "danger"}>
                     {selectedCatalogBot.status}
                   </Badge>
                 </div>
-                <p className="mt-2 text-sm font-semibold text-slate-100">{selectedCatalogBot.name}</p>
+                <p className="mt-2 text-sm font-semibold text-slate-100">{getBotDisplayName(selectedCatalogBot)}</p>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                  <p>Bot ID: <span className="text-slate-100">{getCanonicalBotId(selectedCatalogBot)}</span></p>
                   <p>Engine: <span className="text-slate-100">{selectedCatalogBot.engine}</span></p>
                   <p>Modo: <span className="text-slate-100">{selectedCatalogBot.mode}</span></p>
                   <p>Pool actual: <span className="text-slate-100">{selectedCatalogBot.pool_strategy_ids.length}</span></p>
@@ -2696,7 +2717,7 @@ export default function BacktestsPage() {
                                 key={`${row.run_id}-bot-${bot.id}`}
                                 variant={catalogFilters.bot_id && bot.id === catalogFilters.bot_id ? "info" : bot.status === "active" ? "success" : bot.status === "paused" ? "warn" : "danger"}
                               >
-                                {bot.name}
+                                {getVisibleBotIdentity(bot)}
                               </Badge>
                             ))
                           ) : (
@@ -2705,7 +2726,7 @@ export default function BacktestsPage() {
                         </div>
                         {(row.related_bots || []).length ? (
                           <p className="mt-1 text-[11px] text-slate-500">
-                            {(row.related_bots || []).map((bot) => bot.id).join(", ")}
+                            {(row.related_bots || []).map((bot) => getCanonicalBotId(bot)).join(", ")}
                           </p>
                         ) : null}
                       </TD>
@@ -3463,7 +3484,7 @@ export default function BacktestsPage() {
                     <option value="">ElegÃ­ un bot del registry</option>
                     {bots.map((bot) => (
                       <option key={`mass-bot-${bot.id}`} value={bot.id}>
-                        {`${bot.name} | ${bot.mode.toUpperCase()} | ${bot.status}`}
+                        {`${getBotDisplayName(bot)} | ${getCanonicalBotId(bot)} | ${bot.mode.toUpperCase()} | ${bot.status}`}
                       </option>
                     ))}
                   </Select>
@@ -3480,7 +3501,7 @@ export default function BacktestsPage() {
                 {selectedMassBot ? (
                   <div className="mt-2 space-y-1 text-xs text-slate-300">
                     <p>
-                      <strong>{selectedMassBot.name}</strong> usa modo <strong>{selectedMassBot.mode.toUpperCase()}</strong> y engine{" "}
+                      <strong>{getVisibleBotIdentity(selectedMassBot)}</strong> usa modo <strong>{selectedMassBot.mode.toUpperCase()}</strong> y engine{" "}
                       <strong>{selectedMassBot.engine}</strong>.
                     </p>
                     <p>
