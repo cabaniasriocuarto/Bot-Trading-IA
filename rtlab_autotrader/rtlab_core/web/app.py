@@ -803,6 +803,7 @@ class BotCreateBody(BaseModel):
     status: Literal["active", "paused", "archived"] = "active"
     pool_strategy_ids: list[str] | None = None
     strategy_eligibility_by_symbol: dict[str, list[str]] | None = None
+    strategy_selection_by_symbol: dict[str, str] | None = None
     universe: list[str] | None = None
     notes: str | None = None
 
@@ -829,6 +830,7 @@ class BotPatchBody(BaseModel):
     status: Literal["active", "paused", "archived"] | None = None
     pool_strategy_ids: list[str] | None = None
     strategy_eligibility_by_symbol: dict[str, list[str]] | None = None
+    strategy_selection_by_symbol: dict[str, str] | None = None
     universe: list[str] | None = None
     notes: str | None = None
 
@@ -851,6 +853,10 @@ class BotMultiSymbolPatchBody(BaseModel):
 
 class BotStrategyEligibilityPatchBody(BaseModel):
     strategy_eligibility_by_symbol: dict[str, list[str]] | None = None
+
+
+class BotStrategySelectionPatchBody(BaseModel):
+    strategy_selection_by_symbol: dict[str, str] | None = None
 
 
 class BotBulkPatchBody(BaseModel):
@@ -884,6 +890,19 @@ BOT_STRATEGY_ELIGIBILITY_REASON_CODES = (
     "strategy_not_effective_in_pool",
     "no_eligible_strategy_for_symbol",
 )
+BOT_STRATEGY_SELECTION_CONTRACT_VERSION = "rtlops74/v1"
+BOT_STRATEGY_SELECTION_STORAGE_FIELDS = ("strategy_selection_by_symbol",)
+BOT_STRATEGY_SELECTION_REASON_CODES = (
+    "strategy_eligibility_invalid",
+    "selected_strategy_not_eligible",
+    "no_strategy_selected_for_symbol",
+)
+BOT_STRATEGY_SELECTION_CRITERIA = (
+    "explicit",
+    "single_eligible",
+    "primary_strategy",
+    "pool_order",
+)
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -913,7 +932,7 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
-BOT_REGISTRY_CONTRACT_VERSION = "rtlops73/v1"
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops74/v1"
 BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
 BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
 BOT_REGISTRY_DEFAULT_MODE = "paper"
@@ -930,6 +949,7 @@ BOT_REGISTRY_API_SURFACE = {
     "patch_path": "/api/v1/bots/{bot_id}",
     "multi_symbol_path": "/api/v1/bots/{bot_id}/multi-symbol",
     "symbol_strategy_eligibility_path": "/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    "symbol_strategy_selection_path": "/api/v1/bots/{bot_id}/strategy-selection",
     "archive_path": "/api/v1/bots/{bot_id}/archive",
     "restore_path": "/api/v1/bots/{bot_id}/restore",
     "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
@@ -964,6 +984,10 @@ BOT_REGISTRY_FIELD_GROUPS = {
     "strategy_eligibility": [
         "strategy_eligibility_by_symbol",
         "strategy_eligibility",
+    ],
+    "strategy_selection": [
+        "strategy_selection_by_symbol",
+        "strategy_selection",
     ],
     "policy_state": ["engine", "mode", "status", "notes"],
     "governance": ["registry_status", "archived_at"],
@@ -4063,6 +4087,19 @@ def risk_hooks(context):
         return out
 
     @staticmethod
+    def _normalize_bot_strategy_selection_map(value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, str] = {}
+        for raw_symbol, raw_strategy_id in value.items():
+            symbol = str(raw_symbol or "").strip().upper()
+            strategy_id = str(raw_strategy_id or "").strip()
+            if not symbol or not strategy_id:
+                continue
+            out[symbol] = strategy_id
+        return out
+
+    @staticmethod
     def _default_bot_strategy_eligibility(
         *,
         symbols: list[str],
@@ -4481,6 +4518,92 @@ def risk_hooks(context):
             pool_strategy_ids=candidate_pool_ids,
         )
 
+    def _resolve_bot_strategy_selection(
+        self,
+        *,
+        current: dict[str, Any] | None = None,
+        row: dict[str, Any],
+        strategy_selection_by_symbol: dict[str, str] | None = None,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, str]:
+        candidate_symbols = self._normalize_bot_assigned_symbols(row.get("universe"))
+        candidate_symbol_set = set(candidate_symbols)
+        current_row = current if isinstance(current, dict) else {}
+        current_mapping = self._normalize_bot_strategy_selection_map(
+            current_row.get("strategy_selection_by_symbol")
+        )
+        eligibility = self._bot_strategy_eligibility_payload(
+            row,
+            strategies_index=strategies_index,
+        )
+        if str(eligibility.get("status") or "error") != "valid":
+            detail = "; ".join(
+                str(item)
+                for item in (eligibility.get("errors") or [])
+                if str(item).strip()
+            ) or "strategy_eligibility inválida"
+            raise HTTPException(
+                status_code=400,
+                detail=f"strategy_selection_by_symbol requiere strategy_eligibility válida: {detail}",
+            )
+        eligible_ids_by_symbol = {
+            str(symbol): [
+                str(strategy_id)
+                for strategy_id in (raw_ids or [])
+                if str(strategy_id).strip()
+            ]
+            for symbol, raw_ids in ((eligibility.get("eligible_strategy_ids_by_symbol") or {}).items())
+        }
+
+        if strategy_selection_by_symbol is not None:
+            if not isinstance(strategy_selection_by_symbol, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="strategy_selection_by_symbol debe ser un objeto symbol -> strategy_id",
+                )
+            provided_map = self._normalize_bot_strategy_selection_map(strategy_selection_by_symbol)
+            extra_symbols = sorted(symbol for symbol in provided_map.keys() if symbol not in candidate_symbol_set)
+            if extra_symbols:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "strategy_selection_by_symbol contiene símbolos fuera del universe actual: "
+                        + ", ".join(extra_symbols)
+                    ),
+                )
+            resolved_map: dict[str, str] = {}
+            for symbol, strategy_id in provided_map.items():
+                eligible_ids = eligible_ids_by_symbol.get(symbol) or []
+                if strategy_id not in eligible_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"strategy_selection_by_symbol[{symbol}] contiene una estrategia no elegible "
+                            f"bajo el mapping actual: {strategy_id}"
+                        ),
+                    )
+                resolved_map[symbol] = strategy_id
+            return resolved_map
+
+        if current_mapping:
+            reconciled: dict[str, str] = {}
+            for symbol, strategy_id in current_mapping.items():
+                if symbol not in candidate_symbol_set:
+                    continue
+                eligible_ids = eligible_ids_by_symbol.get(symbol) or []
+                if strategy_id not in eligible_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"strategy_selection_by_symbol[{symbol}] deja de ser válida tras el cambio "
+                            "de pool/eligibility; envía un mapping explícito coherente"
+                        ),
+                    )
+                reconciled[symbol] = strategy_id
+            return reconciled
+
+        return {}
+
     def _bot_strategy_eligibility_payload(
         self,
         row: dict[str, Any],
@@ -4636,6 +4759,175 @@ def risk_hooks(context):
             "archived_at": str(payload.get("archived_at") or "").strip() or None,
         }
 
+    @staticmethod
+    def _strategy_selection_issue(
+        *,
+        reason_code: str,
+        message: str,
+        symbol: str | None = None,
+        configured_strategy_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "reason_code": str(reason_code or "").strip(),
+            "message": str(message or "").strip(),
+            "symbol": str(symbol or "").strip().upper() or None,
+            "configured_strategy_id": str(configured_strategy_id or "").strip() or None,
+        }
+
+    @staticmethod
+    def _primary_strategy_from_candidates(
+        strategy_ids: list[str],
+        *,
+        strategies_index: dict[str, dict[str, Any]],
+    ) -> str | None:
+        for strategy_id in strategy_ids:
+            row = strategies_index.get(strategy_id) or {}
+            if bool(row.get("is_primary", False)):
+                return strategy_id
+        return None
+
+    def _bot_strategy_selection_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        strategy_map = (
+            strategies_index
+            if isinstance(strategies_index, dict)
+            else self._strategy_index_by_id(self.list_strategies())
+        )
+        eligibility = self._bot_strategy_eligibility_payload(
+            payload,
+            strategies_index=strategy_map,
+            universe_index=universe_index,
+        )
+        symbols = [str(item) for item in (eligibility.get("symbols") or []) if str(item).strip()]
+        explicit_map = self._normalize_bot_strategy_selection_map(payload.get("strategy_selection_by_symbol"))
+        assigned_symbol_set = set(symbols)
+        reason_codes: set[str] = set()
+        errors: list[str] = []
+        items: list[dict[str, Any]] = []
+
+        if str(eligibility.get("status") or "error") != "valid":
+            reason_codes.add("strategy_eligibility_invalid")
+            errors.extend(
+                str(item)
+                for item in (eligibility.get("errors") or [])
+                if str(item).strip()
+            )
+
+        for symbol in symbols:
+            eligible_strategy_ids = [
+                str(item)
+                for item in ((eligibility.get("eligible_strategy_ids_by_symbol") or {}).get(symbol) or [])
+                if str(item).strip()
+            ]
+            configured_strategy_id = explicit_map.get(symbol)
+            symbol_errors: list[dict[str, Any]] = []
+            selected_strategy_id: str | None = None
+            selection_source = "derived"
+            selection_criterion: str | None = None
+            explicit_selection_invalid = False
+
+            if configured_strategy_id:
+                if configured_strategy_id not in eligible_strategy_ids:
+                    explicit_selection_invalid = True
+                    selection_source = "explicit"
+                    symbol_errors.append(
+                        self._strategy_selection_issue(
+                            reason_code="selected_strategy_not_eligible",
+                            symbol=symbol,
+                            configured_strategy_id=configured_strategy_id,
+                            message=(
+                                f"{configured_strategy_id} no es elegible para {symbol} bajo el mapping actual"
+                            ),
+                        )
+                    )
+                else:
+                    selected_strategy_id = configured_strategy_id
+                    selection_source = "explicit"
+                    selection_criterion = "explicit"
+
+            if selected_strategy_id is None and eligible_strategy_ids and not explicit_selection_invalid:
+                if len(eligible_strategy_ids) == 1:
+                    selected_strategy_id = eligible_strategy_ids[0]
+                    selection_criterion = "single_eligible"
+                else:
+                    primary_strategy_id = self._primary_strategy_from_candidates(
+                        eligible_strategy_ids,
+                        strategies_index=strategy_map,
+                    )
+                    if primary_strategy_id:
+                        selected_strategy_id = primary_strategy_id
+                        selection_criterion = "primary_strategy"
+                    else:
+                        selected_strategy_id = eligible_strategy_ids[0]
+                        selection_criterion = "pool_order"
+
+            if selected_strategy_id is None:
+                symbol_errors.append(
+                    self._strategy_selection_issue(
+                        reason_code="no_strategy_selected_for_symbol",
+                        symbol=symbol,
+                        configured_strategy_id=configured_strategy_id,
+                        message=f"{symbol} no tiene una estrategia seleccionable bajo el estado actual del bot",
+                    )
+                )
+
+            for issue in symbol_errors:
+                reason_codes.add(str(issue.get("reason_code") or "").strip())
+                message = str(issue.get("message") or "").strip()
+                if message:
+                    errors.append(message)
+
+            items.append(
+                {
+                    "symbol": symbol,
+                    "configured_strategy_id": configured_strategy_id,
+                    "selected_strategy_id": selected_strategy_id,
+                    "eligible_strategy_ids": eligible_strategy_ids,
+                    "selection_source": selection_source,
+                    "selection_criterion": selection_criterion,
+                    "status": "valid" if not symbol_errors else "error",
+                    "errors": symbol_errors,
+                }
+            )
+
+        configured_by_symbol = {
+            symbol: strategy_id
+            for symbol, strategy_id in explicit_map.items()
+            if symbol in assigned_symbol_set
+        }
+        selected_by_symbol = {
+            str(item["symbol"]): str(item["selected_strategy_id"])
+            for item in items
+            if str(item.get("symbol") or "").strip() in assigned_symbol_set
+            and str(item.get("selected_strategy_id") or "").strip()
+        }
+        deduped_errors = list(dict.fromkeys(errors))
+        return {
+            "contract_version": BOT_STRATEGY_SELECTION_CONTRACT_VERSION,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "universe_name": str(eligibility.get("universe_name") or ""),
+            "universe_family": eligibility.get("universe_family"),
+            "symbols": symbols,
+            "pool_strategy_ids": [str(item) for item in (eligibility.get("pool_strategy_ids") or []) if str(item).strip()],
+            "strategy_selection_by_symbol": configured_by_symbol,
+            "selected_strategy_by_symbol": selected_by_symbol,
+            "items": items,
+            "criteria": list(BOT_STRATEGY_SELECTION_CRITERIA),
+            "reason_codes": sorted(code for code in reason_codes if code),
+            "status": "valid" if not deduped_errors else "error",
+            "errors": deduped_errors,
+            "storage_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
     def bot_strategy_eligibility_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
         return self._bot_strategy_eligibility_payload(bot)
@@ -4655,6 +4947,26 @@ def risk_hooks(context):
             change_source=change_source,
         )
         return self._bot_strategy_eligibility_payload(bot)
+
+    def bot_strategy_selection_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_strategy_selection_payload(bot)
+
+    def patch_bot_strategy_selection(
+        self,
+        bot_id: str,
+        *,
+        strategy_selection_by_symbol: dict[str, str] | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_strategy_selection_api",
+    ) -> dict[str, Any]:
+        bot = self.patch_bot_instance(
+            bot_id,
+            strategy_selection_by_symbol=strategy_selection_by_symbol,
+            actor=actor,
+            change_source=change_source,
+        )
+        return self._bot_strategy_selection_payload(bot)
 
     def bot_multi_symbol_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
@@ -4933,6 +5245,9 @@ def risk_hooks(context):
             "strategy_eligibility_by_symbol": self._normalize_bot_strategy_eligibility_map(
                 row.get("strategy_eligibility_by_symbol")
             ),
+            "strategy_selection_by_symbol": self._normalize_bot_strategy_selection_map(
+                row.get("strategy_selection_by_symbol")
+            ),
             "universe_name": universe_name,
             "universe": universe,
             "max_live_symbols": max_live_symbols,
@@ -4986,6 +5301,7 @@ def risk_hooks(context):
                 "trace_fields": list(BOT_REGISTRY_FIELD_GROUPS["trace"]),
                 "multi_symbol_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
                 "strategy_eligibility_fields": list(BOT_STRATEGY_ELIGIBILITY_STORAGE_FIELDS),
+                "strategy_selection_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
             },
             "api": dict(BOT_REGISTRY_API_SURFACE),
             "defaults": {
@@ -5001,6 +5317,7 @@ def risk_hooks(context):
                 "universe": [],
                 "pool_strategy_ids": [],
                 "strategy_eligibility_by_symbol": {},
+                "strategy_selection_by_symbol": {},
                 "max_live_symbols": 1,
                 "capital_base_usd": float(BOT_DEFAULT_CAPITAL_BASE_USD),
                 "risk_profile": BOT_DEFAULT_RISK_PROFILE,
@@ -5087,6 +5404,27 @@ def risk_hooks(context):
                     "strategy_eligibility_by_symbol",
                     "eligible_strategy_ids_by_symbol",
                     "items",
+                    "reason_codes",
+                    "status",
+                    "errors",
+                ],
+            },
+            "strategy_selection": {
+                "contract_version": BOT_STRATEGY_SELECTION_CONTRACT_VERSION,
+                "storage_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
+                "criteria": list(BOT_STRATEGY_SELECTION_CRITERIA),
+                "reason_codes": list(BOT_STRATEGY_SELECTION_REASON_CODES),
+                "fields": [
+                    "domain_type",
+                    "registry_status",
+                    "universe_name",
+                    "universe_family",
+                    "symbols",
+                    "pool_strategy_ids",
+                    "strategy_selection_by_symbol",
+                    "selected_strategy_by_symbol",
+                    "items",
+                    "criteria",
                     "reason_codes",
                     "status",
                     "errors",
@@ -6061,6 +6399,11 @@ def risk_hooks(context):
                 strategies_index=by_id,
                 universe_index=universe_index,
             )
+            payload["strategy_selection"] = self._bot_strategy_selection_payload(
+                row,
+                strategies_index=by_id,
+                universe_index=universe_index,
+            )
             bot_id = str(row.get("id") or "")
             payload["metrics"] = self._bot_metrics(
                 dict(row, pool_strategy_ids=effective_pool_ids),
@@ -6108,6 +6451,7 @@ def risk_hooks(context):
         status: str = "active",
         pool_strategy_ids: list[str] | None = None,
         strategy_eligibility_by_symbol: dict[str, list[str]] | None = None,
+        strategy_selection_by_symbol: dict[str, str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
         actor: str | None = None,
@@ -6160,6 +6504,12 @@ def risk_hooks(context):
             row=candidate_row,
             strategy_eligibility_by_symbol=strategy_eligibility_by_symbol,
         )
+        candidate_row["strategy_eligibility_by_symbol"] = resolved_strategy_eligibility
+        resolved_strategy_selection = self._resolve_bot_strategy_selection(
+            row=candidate_row,
+            strategy_selection_by_symbol=strategy_selection_by_symbol,
+            strategies_index=strategy_index,
+        )
         row = self._normalize_bot_row(
             {
                 "id": self._next_bot_id(rows),
@@ -6175,6 +6525,7 @@ def risk_hooks(context):
                 "status": effective_status,
                 "pool_strategy_ids": validated_pool_strategy_ids,
                 "strategy_eligibility_by_symbol": resolved_strategy_eligibility,
+                "strategy_selection_by_symbol": resolved_strategy_selection,
                 "universe_name": symbol_assignment["universe_name"],
                 "universe": symbol_assignment["universe"],
                 "max_live_symbols": symbol_assignment["max_live_symbols"],
@@ -6219,6 +6570,7 @@ def risk_hooks(context):
                     for item in (row.get("strategy_eligibility_by_symbol") or {}).values()
                     if isinstance(item, list)
                 ),
+                "selection_symbols": len(row.get("strategy_selection_by_symbol") or {}),
                 "actor": self._normalize_bot_change_actor(actor),
                 "change_type": row.get("last_change_type"),
                 "change_summary": row.get("last_change_summary"),
@@ -6252,6 +6604,7 @@ def risk_hooks(context):
         status: str | None = None,
         pool_strategy_ids: list[str] | None = None,
         strategy_eligibility_by_symbol: dict[str, list[str]] | None = None,
+        strategy_selection_by_symbol: dict[str, str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
         actor: str | None = None,
@@ -6284,6 +6637,7 @@ def risk_hooks(context):
                     status,
                     pool_strategy_ids,
                     strategy_eligibility_by_symbol,
+                    strategy_selection_by_symbol,
                     universe_name,
                     universe,
                     max_live_symbols,
@@ -6370,6 +6724,7 @@ def risk_hooks(context):
             )
         if (
             strategy_eligibility_by_symbol is not None
+            or strategy_selection_by_symbol is not None
             or pool_strategy_ids is not None
             or domain_type is not None
             or universe_name is not None
@@ -6380,6 +6735,21 @@ def risk_hooks(context):
                 current=current,
                 row=patched,
                 strategy_eligibility_by_symbol=strategy_eligibility_by_symbol,
+            )
+        if (
+            strategy_selection_by_symbol is not None
+            or strategy_eligibility_by_symbol is not None
+            or pool_strategy_ids is not None
+            or domain_type is not None
+            or universe_name is not None
+            or universe is not None
+            or max_live_symbols is not None
+        ):
+            patched["strategy_selection_by_symbol"] = self._resolve_bot_strategy_selection(
+                current=current,
+                row=patched,
+                strategy_selection_by_symbol=strategy_selection_by_symbol,
+                strategies_index=strategy_index,
             )
         if notes is not None:
             patched["notes"] = notes
@@ -6439,6 +6809,7 @@ def risk_hooks(context):
                     for item in (rows[idx].get("strategy_eligibility_by_symbol") or {}).values()
                     if isinstance(item, list)
                 ),
+                "selection_symbols": len(rows[idx].get("strategy_selection_by_symbol") or {}),
                 "actor": self._normalize_bot_change_actor(actor),
                 "change_type": rows[idx].get("last_change_type"),
                 "change_summary": rows[idx].get("last_change_summary"),
@@ -13593,6 +13964,7 @@ def create_app() -> FastAPI:
             status=body.status,
             pool_strategy_ids=body.pool_strategy_ids,
             strategy_eligibility_by_symbol=body.strategy_eligibility_by_symbol,
+            strategy_selection_by_symbol=body.strategy_selection_by_symbol,
             universe=body.universe,
             notes=body.notes,
             actor=user.get("username", "admin"),
@@ -13630,6 +14002,7 @@ def create_app() -> FastAPI:
             status=body.status,
             pool_strategy_ids=body.pool_strategy_ids,
             strategy_eligibility_by_symbol=body.strategy_eligibility_by_symbol,
+            strategy_selection_by_symbol=body.strategy_selection_by_symbol,
             universe=body.universe,
             notes=body.notes,
             actor=user.get("username", "admin"),
@@ -13694,6 +14067,30 @@ def create_app() -> FastAPI:
         )
         _invalidate_bots_overview_cache()
         return {"ok": True, "bot_id": bot_id, "strategy_eligibility": strategy_eligibility}
+
+    @app.get("/api/v1/bots/{bot_id}/strategy-selection")
+    def bot_strategy_selection(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "strategy_selection": store.bot_strategy_selection_or_404(bot_id),
+        }
+
+    @app.patch("/api/v1/bots/{bot_id}/strategy-selection")
+    def patch_bot_strategy_selection(
+        bot_id: str,
+        body: BotStrategySelectionPatchBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        if body.strategy_selection_by_symbol is None:
+            raise HTTPException(status_code=400, detail="strategy_selection_by_symbol es requerido")
+        strategy_selection = store.patch_bot_strategy_selection(
+            bot_id,
+            strategy_selection_by_symbol=body.strategy_selection_by_symbol,
+            actor=user.get("username", "admin"),
+            change_source="bot_strategy_selection_api",
+        )
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "bot_id": bot_id, "strategy_selection": strategy_selection}
 
     @app.post("/api/v1/bots/{bot_id}/archive")
     def archive_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:

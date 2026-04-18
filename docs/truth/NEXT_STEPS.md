@@ -2,6 +2,29 @@
 
 Fecha: 2026-04-18
 
+## Siguiente paso exacto despues de RTLOPS-74 - 2026-04-18
+- [x] Fundar seleccion canonica de estrategia por simbolo:
+  - persistencia `strategy_selection_by_symbol`
+  - `GET/PATCH /api/v1/bots/{bot_id}/strategy-selection`
+  - resolucion deterministica `selected_strategy_by_symbol`
+  - criterios minimos `explicit / single_eligible / primary_strategy / pool_order`
+  - UI minima util en `strategies/page.tsx`
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir `RTLOPS-75/76/77`
+  - sin tocar lifecycle
+  - sin tocar live console
+  - sin abrir execution neta por simbolo
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-75` y resolver solo la consolidacion de señales y la decision neta por simbolo sobre la base ya cerrada de:
+    - `RTLOPS-72`
+    - `RTLOPS-73`
+    - `RTLOPS-74`
+  - mantener fuera de ese bloque:
+    - `RTLOPS-76`
+    - `RTLOPS-77`
+    - lifecycle
+    - live console
+
 ## Siguiente paso exacto despues de la canonizacion del type-check frio - 2026-04-18
 - [x] Reproducir el comportamiento real del dashboard en frio:
   - sin `.next`

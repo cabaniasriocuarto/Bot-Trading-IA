@@ -2,6 +2,43 @@
 
 Fecha de actualizacion: 2026-04-18
 
+## RTLOPS-74 - seleccion de estrategia por simbolo - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de **seleccion por simbolo** sobre la elegibilidad fundada por `RTLOPS-73`;
+  - la seleccion explicita persistida vive en `strategy_selection_by_symbol`;
+  - la seleccion efectiva visible por API/UI vive en `selected_strategy_by_symbol` y ya no depende de texto libre ni de inferencia opaca del frontend.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/strategy-selection`
+  - `PATCH /api/v1/bots/{bot_id}/strategy-selection`
+  - `contract_version` del Bot Registry elevada a `rtlops74/v1`
+  - nueva seccion canonica `strategy_selection` en `/api/v1/bots/registry-contract`
+  - criterios de resolucion explicitados:
+    - `explicit`
+    - `single_eligible`
+    - `primary_strategy`
+    - `pool_order`
+  - reason codes canonicos:
+    - `strategy_eligibility_invalid`
+    - `selected_strategy_not_eligible`
+    - `no_strategy_selected_for_symbol`
+- Regla canonica reafirmada:
+  - `RTLOPS-74` no ejecuta ni consolida señales;
+  - solo deja resuelto **que estrategia queda seleccionada por simbolo** dentro del pool y universe ya persistidos;
+  - si un mapping explicito deja de ser elegible, el sistema falla cerrado y no deriva otra estrategia en silencio.
+- Surface minima real integrada:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - ya permite ver la seleccion efectiva por simbolo
+    - ya permite fijar/limpiar seleccion explicita por simbolo
+    - sigue operando sobre universe + pool + elegibilidad persistidos
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - net/consolidation execution
+
 ## Microbloque tecnico - canonizacion del type-check frio del dashboard - 2026-04-18
 
 - Estado real confirmado en esta rama:

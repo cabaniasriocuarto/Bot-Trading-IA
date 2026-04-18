@@ -2,6 +2,43 @@
 
 ## 2026-04-18
 
+### RTLOPS-74 - seleccion de estrategia por simbolo
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega persistencia canonica `strategy_selection_by_symbol`
+    - agrega `GET/PATCH /api/v1/bots/{bot_id}/strategy-selection`
+    - agrega resolucion deterministica `selected_strategy_by_symbol`
+    - agrega criterios y reason codes canonicos del contrato `rtlops74/v1`
+    - endurece invalidacion fail-closed cuando un mapping explicito deja de ser elegible
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre contrato `rtlops74/v1`
+    - cubre surface dedicada de seleccion
+    - cubre criterios `explicit` y `single_eligible`
+    - cubre invalidaciones fail-closed y guard de archivado
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `strategy_selection` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza fixture del contrato canonico a `rtlops74/v1`
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - agrega surface minima para ver/editar seleccion por simbolo dentro del mismo panel de registry
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`12 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/strategies/page.tsx"` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Observacion operativa honesta:
+  - el primer `build` fallo por `EPERM` al limpiar `.next` dentro de OneDrive;
+  - se resolvio con limpieza segura de `.next` (solo artefacto generado no trackeado), sin tocar archivos del repo.
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - execution net/consolidation
+
 ### Microbloque tecnico - canonizacion del type-check frio del dashboard
 - Cambio real aplicado en tooling/documentacion:
   - `rtlab_dashboard/package.json`

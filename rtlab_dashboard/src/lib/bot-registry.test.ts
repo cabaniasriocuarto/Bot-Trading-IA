@@ -9,7 +9,7 @@ import {
 import type { BotRegistryContractResponse } from "@/lib/types";
 
 const CONTRACT_FIXTURE: BotRegistryContractResponse = {
-  contract_version: "rtlops73/v1",
+  contract_version: "rtlops74/v1",
   storage: {
     kind: "json_file",
     path: "learning/bots.json",
@@ -18,6 +18,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     trace_fields: ["created_at", "updated_at", "last_change_type", "last_change_summary", "last_changed_by", "last_change_source"],
     multi_symbol_fields: ["universe_name", "universe", "max_live_symbols"],
     strategy_eligibility_fields: ["strategy_eligibility_by_symbol"],
+    strategy_selection_fields: ["strategy_selection_by_symbol"],
   },
   api: {
     list_path: "/api/v1/bots",
@@ -26,6 +27,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     patch_path: "/api/v1/bots/{bot_id}",
     multi_symbol_path: "/api/v1/bots/{bot_id}/multi-symbol",
     symbol_strategy_eligibility_path: "/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    symbol_strategy_selection_path: "/api/v1/bots/{bot_id}/strategy-selection",
     archive_path: "/api/v1/bots/{bot_id}/archive",
     restore_path: "/api/v1/bots/{bot_id}/restore",
     policy_state_path: "/api/v1/bots/{bot_id}/policy-state",
@@ -44,6 +46,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     universe: [],
     pool_strategy_ids: [],
     strategy_eligibility_by_symbol: {},
+    strategy_selection_by_symbol: {},
     max_live_symbols: 1,
     capital_base_usd: 10000,
     max_total_exposure_pct: 65,
@@ -116,6 +119,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     symbol_assignment: ["universe_name", "universe", "max_live_symbols", "symbol_assignment_status", "symbol_assignment_errors"],
     strategy_pool: ["pool_strategy_ids", "pool_strategies", "strategy_pool_status", "strategy_pool_errors", "max_pool_strategies"],
     strategy_eligibility: ["strategy_eligibility_by_symbol", "strategy_eligibility"],
+    strategy_selection: ["strategy_selection_by_symbol", "strategy_selection"],
     policy_state: ["engine", "mode", "status", "notes"],
     governance: ["registry_status", "archived_at"],
     trace: ["created_at", "updated_at", "last_change_type", "last_change_summary", "last_changed_by", "last_change_source"],
@@ -163,6 +167,31 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
       "strategy_eligibility_by_symbol",
       "eligible_strategy_ids_by_symbol",
       "items",
+      "reason_codes",
+      "status",
+      "errors",
+    ],
+  },
+  strategy_selection: {
+    contract_version: "rtlops74/v1",
+    storage_fields: ["strategy_selection_by_symbol"],
+    criteria: ["explicit", "single_eligible", "primary_strategy", "pool_order"],
+    reason_codes: [
+      "strategy_eligibility_invalid",
+      "selected_strategy_not_eligible",
+      "no_strategy_selected_for_symbol",
+    ],
+    fields: [
+      "domain_type",
+      "registry_status",
+      "universe_name",
+      "universe_family",
+      "symbols",
+      "pool_strategy_ids",
+      "strategy_selection_by_symbol",
+      "selected_strategy_by_symbol",
+      "items",
+      "criteria",
       "reason_codes",
       "status",
       "errors",

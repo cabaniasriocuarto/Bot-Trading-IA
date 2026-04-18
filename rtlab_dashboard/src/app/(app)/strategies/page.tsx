@@ -28,6 +28,7 @@ import type {
   BotInstance,
   BotRegistryContractResponse,
   BotStrategyEligibilityResponse,
+  BotStrategySelectionResponse,
   InstrumentUniverseItem,
   InstrumentUniverseSummaryResponse,
   LearningExperienceSummaryResponse,
@@ -185,6 +186,22 @@ function buildBotStrategyEligibilityDraft(bot: Partial<BotInstance> | null | und
   return out;
 }
 
+function normalizeStrategySelectionDraftMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [rawSymbol, rawStrategyId] of Object.entries(value as Record<string, unknown>)) {
+    const symbol = String(rawSymbol || "").trim().toUpperCase();
+    const strategyId = String(rawStrategyId || "").trim();
+    if (!symbol || !strategyId) continue;
+    out[symbol] = strategyId;
+  }
+  return out;
+}
+
+function buildBotStrategySelectionDraft(bot: Partial<BotInstance> | null | undefined): Record<string, string> {
+  return normalizeStrategySelectionDraftMap(bot?.strategy_selection?.strategy_selection_by_symbol);
+}
+
 function selectedValuesFromOptions(options: HTMLOptionsCollection): string[] {
   return Array.from(options)
     .filter((option) => option.selected)
@@ -229,6 +246,7 @@ export default function StrategiesPage() {
   const [botRegistryDraft, setBotRegistryDraft] = useState<BotRegistryDraft>(EMPTY_BOT_REGISTRY_DRAFT);
   const [botRegistryDraftsById, setBotRegistryDraftsById] = useState<Record<string, BotRegistryDraft>>({});
   const [botStrategyEligibilityDraftsById, setBotStrategyEligibilityDraftsById] = useState<Record<string, Record<string, string[]>>>({});
+  const [botStrategySelectionDraftsById, setBotStrategySelectionDraftsById] = useState<Record<string, Record<string, string>>>({});
   const [botRegistryDraftInitialized, setBotRegistryDraftInitialized] = useState(false);
   const [botRegistryFilter, setBotRegistryFilter] = useState<"all" | "active" | "archived">("active");
   const [learningBusy, setLearningBusy] = useState(false);
@@ -347,6 +365,14 @@ export default function StrategiesPage() {
     setBotStrategyEligibilityDraftsById(
       Object.fromEntries(
         bots.map((bot) => [bot.id, buildBotStrategyEligibilityDraft(bot)]),
+      ),
+    );
+  }, [bots]);
+
+  useEffect(() => {
+    setBotStrategySelectionDraftsById(
+      Object.fromEntries(
+        bots.map((bot) => [bot.id, buildBotStrategySelectionDraft(bot)]),
       ),
     );
   }, [bots]);
@@ -521,6 +547,38 @@ export default function StrategiesPage() {
       ...prev,
       [bot.id]: next,
     }));
+  };
+
+  const syncBotStrategySelectionDraft = (bot: BotInstance) => {
+    setBotStrategySelectionDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: buildBotStrategySelectionDraft(bot),
+    }));
+  };
+
+  const clearBotStrategySelectionDraft = (bot: BotInstance) => {
+    setBotStrategySelectionDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: {},
+    }));
+  };
+
+  const updateBotStrategySelection = (bot: BotInstance, symbol: string, strategyId: string) => {
+    const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+    const normalizedStrategyId = String(strategyId || "").trim();
+    if (!normalizedSymbol) return;
+    setBotStrategySelectionDraftsById((prev) => {
+      const current = { ...(prev[bot.id] || buildBotStrategySelectionDraft(bot)) };
+      if (!normalizedStrategyId) {
+        delete current[normalizedSymbol];
+      } else {
+        current[normalizedSymbol] = normalizedStrategyId;
+      }
+      return {
+        ...prev,
+        [bot.id]: current,
+      };
+    });
   };
 
   const toggleBotStrategyEligibility = (bot: BotInstance, symbol: string, strategyId: string) => {
@@ -1234,6 +1292,38 @@ export default function StrategiesPage() {
       await refresh();
     } catch (err) {
       setError(formatBotRegistryError(err, "No se pudo guardar la elegibilidad por símbolo."));
+    } finally {
+      setBotActionBusyId(null);
+    }
+  };
+
+  const saveBotStrategySelection = async (bot: BotInstance) => {
+    const selectionModel = bot.strategy_selection;
+    const symbols = (selectionModel?.symbols || bot.strategy_eligibility?.symbols || bot.universe || [])
+      .map((item) => String(item || "").trim().toUpperCase())
+      .filter((item) => item.length > 0);
+    const currentDraft = botStrategySelectionDraftsById[bot.id] || buildBotStrategySelectionDraft(bot);
+    const payload = Object.fromEntries(
+      symbols
+        .map((symbol) => [symbol, String(currentDraft[symbol] || "").trim()] as const)
+        .filter(([, strategyId]) => strategyId.length > 0),
+    );
+    setBotActionBusyId(bot.id);
+    setError("");
+    setUploadMsg("");
+    try {
+      const res = await apiPatch<BotStrategySelectionResponse & { ok: boolean }>(
+        `/api/v1/bots/${bot.id}/strategy-selection`,
+        { strategy_selection_by_symbol: payload },
+      );
+      setBotStrategySelectionDraftsById((prev) => ({
+        ...prev,
+        [bot.id]: normalizeStrategySelectionDraftMap(res.strategy_selection.strategy_selection_by_symbol),
+      }));
+      setUploadMsg(`Selección por símbolo actualizada para ${getBotDisplayName(bot)}.`);
+      await refresh();
+    } catch (err) {
+      setError(formatBotRegistryError(err, "No se pudo guardar la selección por símbolo."));
     } finally {
       setBotActionBusyId(null);
     }
@@ -2404,6 +2494,13 @@ export default function StrategiesPage() {
                       const emptyEligibilitySymbols = eligibilitySymbols.filter(
                         (symbol) => normalizeStrategyEligibilityIds(eligibilityDraft[symbol] || []).length === 0,
                       );
+                      const selectionModel = bot.strategy_selection;
+                      const selectionDraft = botStrategySelectionDraftsById[bot.id] || buildBotStrategySelectionDraft(bot);
+                      const selectionSymbols = (selectionModel?.symbols || eligibilitySymbols || bot.universe || [])
+                        .map((item) => String(item || "").trim().toUpperCase())
+                        .filter((item) => item.length > 0);
+                      const selectionExplicitCount = Object.keys(selectionModel?.strategy_selection_by_symbol || {}).length;
+                      const selectionResolvedCount = Object.keys(selectionModel?.selected_strategy_by_symbol || {}).length;
                       const registryDraftUniverse = (registryDraft.universe || [])
                         .map((item) => String(item || "").trim().toUpperCase())
                         .filter((item) => item.length > 0)
@@ -2442,6 +2539,9 @@ export default function StrategiesPage() {
                               </p>
                               <p className={`text-[10px] ${eligibilityModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
                                 Elegibilidad: {eligibilityModel?.status === "valid" ? `${eligibilityPairs} pares válidos` : "fail-closed"}
+                              </p>
+                              <p className={`text-[10px] ${selectionModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                Selección: {selectionModel?.status === "valid" ? `${selectionResolvedCount} símbolos resueltos` : "fail-closed"}
                               </p>
                               {bot.symbol_assignment_errors?.length ? (
                                 <p className="text-[10px] text-amber-300" title={bot.symbol_assignment_errors.join(" | ")}>
@@ -3041,6 +3141,128 @@ export default function StrategiesPage() {
                                       onClick={() => resetBotStrategyEligibilityDraftToPool(bot)}
                                     >
                                       Usar pool completo
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="rounded border border-slate-800 bg-slate-950/50 p-2">
+                                  <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                                    <span className="uppercase tracking-wide">Selección estrategia ↔ símbolo</span>
+                                    <span>{selectionExplicitCount} explícitas · {selectionResolvedCount} resueltas</span>
+                                  </div>
+                                  <p className={`mt-1 text-[10px] ${selectionModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                    Estado: {selectionModel?.status === "valid" ? "válido" : "error de configuración"}
+                                  </p>
+                                  {eligibilityScopeDirty ? (
+                                    <p className="mt-1 text-[10px] text-amber-200">
+                                      La selección opera sobre el universe, pool y elegibilidad persistidos. Guardá primero esos cambios si acabás de editarlos.
+                                    </p>
+                                  ) : null}
+                                  {selectionModel?.errors?.length ? (
+                                    <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                      {selectionModel.errors.map((item) => (
+                                        <p key={`${bot.id}-selection-error-${item}`}>{item}</p>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {selectionSymbols.length ? (
+                                    <div className="mt-2 space-y-2">
+                                      {selectionSymbols.map((symbol) => {
+                                        const selectionItem = selectionModel?.items?.find((item) => item.symbol === symbol);
+                                        const eligibleIds = normalizeStrategyEligibilityIds(
+                                          selectionItem?.eligible_strategy_ids
+                                            || eligibilityModel?.eligible_strategy_ids_by_symbol?.[symbol]
+                                            || [],
+                                        );
+                                        const selectedStrategyId = String(selectionDraft[symbol] || "");
+                                        const selectedStrategy = eligibilityPoolRows.find((strategy) => strategy.id === selectedStrategyId) || null;
+                                        const resolvedStrategyId = String(selectionItem?.selected_strategy_id || "");
+                                        const resolvedStrategy = eligibilityPoolRows.find((strategy) => strategy.id === resolvedStrategyId) || null;
+                                        return (
+                                          <div key={`${bot.id}-selection-${symbol}`} className="rounded border border-slate-800 px-2 py-2">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                              <p className="font-semibold text-slate-100">{symbol}</p>
+                                              <span className="text-[10px] text-slate-400">
+                                                {selectionItem?.selection_source === "explicit"
+                                                  ? "explícita"
+                                                  : selectionItem?.selection_criterion
+                                                    ? `auto:${selectionItem.selection_criterion}`
+                                                    : "sin selección"}
+                                              </span>
+                                            </div>
+                                            <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                                              <Select
+                                                value={selectedStrategyId}
+                                                disabled={role !== "admin" || busy || registryArchived || eligibilityScopeDirty || !eligibleIds.length}
+                                                onChange={(e) => updateBotStrategySelection(bot, symbol, e.target.value)}
+                                              >
+                                                <option value="">
+                                                  {resolvedStrategyId
+                                                    ? `Auto (${selectionItem?.selection_criterion || "criterio canónico"})`
+                                                    : "Sin selección disponible"}
+                                                </option>
+                                                {eligibleIds.map((strategyId) => {
+                                                  const strategy = eligibilityPoolRows.find((row) => row.id === strategyId);
+                                                  return (
+                                                    <option key={`${bot.id}-${symbol}-selection-${strategyId}`} value={strategyId}>
+                                                      {strategy?.name || strategyId}
+                                                    </option>
+                                                  );
+                                                })}
+                                              </Select>
+                                              <div className="text-[10px] text-slate-400">
+                                                <p>
+                                                  Actual: <strong className="text-slate-200">{resolvedStrategy?.name || resolvedStrategyId || "sin resolver"}</strong>
+                                                </p>
+                                                <p>
+                                                  Draft: <strong className="text-slate-200">{selectedStrategy?.name || selectedStrategyId || "auto"}</strong>
+                                                </p>
+                                              </div>
+                                            </div>
+                                            {selectionItem?.errors?.length ? (
+                                              <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                                {selectionItem.errors.map((issue) => (
+                                                  <p key={`${bot.id}-${symbol}-${issue.reason_code}-${issue.configured_strategy_id || "scope"}`}>
+                                                    {issue.message}
+                                                  </p>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : (
+                                    <p className="mt-2 text-[10px] text-slate-500">
+                                      Guardá elegibilidad válida para resolver la estrategia seleccionada por símbolo.
+                                    </p>
+                                  )}
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy || registryArchived || eligibilityScopeDirty || !selectionSymbols.length}
+                                      onClick={() => void saveBotStrategySelection(bot)}
+                                    >
+                                      Guardar selección
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy}
+                                      onClick={() => syncBotStrategySelectionDraft(bot)}
+                                    >
+                                      Resetear
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy || registryArchived || eligibilityScopeDirty || !selectionSymbols.length}
+                                      onClick={() => clearBotStrategySelectionDraft(bot)}
+                                    >
+                                      Usar criterio automático
                                     </Button>
                                   </div>
                                 </div>
