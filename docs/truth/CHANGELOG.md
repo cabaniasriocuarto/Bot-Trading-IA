@@ -2,6 +2,41 @@
 
 ## 2026-04-18
 
+### RTLOPS-73 - mapping simbolo↔estrategias elegibles del pool
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega persistencia canonica `strategy_eligibility_by_symbol`
+    - agrega `GET/PATCH /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+    - agrega reconciliacion fail-closed entre pool, universe y elegibilidad efectiva
+    - eleva el contrato del registry a `rtlops73/v1`
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre contrato canonico
+    - cubre surface dedicada de elegibilidad
+    - cubre invalidaciones fail-closed y guard de archivado
+  - `rtlab_dashboard/src/lib/types.ts`
+    - expone el contrato `strategy_eligibility`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza fixture del contrato canonico
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - agrega surface minima para ver/editar elegibilidad por simbolo sobre pool persistido
+- Tests corridos:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/strategies/page.tsx"` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL inicial en frio por `.next/types/cache-life.d.ts` faltante
+  - `npm.cmd exec next -- typegen` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` despues del build/typegen -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-74`
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - execution net/consolidation
+
 ### Microbloque tecnico - validacion y cierre honesto del caveat de `tsc --noEmit`
 - Revalidacion real de tooling:
   - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo;
@@ -23,6 +58,10 @@
   - la narrativa previa de `FAIL en frio por includes .next/types` no reproduce en esta punta;
   - `next typegen` no cambia el resultado del type-check standalone actual: regenera tipos, pero no corrige un fallo activo;
   - no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`.
+- Observacion corregida por evidencia posterior del mismo dia:
+  - durante el cierre real de `RTLOPS-73` reaparecio un `FAIL` inicial en frio de `npm.cmd exec tsc -- --noEmit`;
+  - ese `FAIL` desaparece despues de `npm.cmd run build` y con `next typegen` disponible;
+  - no tomar esta entrada como cierre definitivo del caveat sin esa salvedad.
 
 ## 2026-04-17
 

@@ -272,6 +272,46 @@ export interface BotMultiSymbolResponse {
   multi_symbol: BotMultiSymbolModel;
 }
 
+export interface BotStrategyEligibilityIssue {
+  reason_code: string;
+  message: string;
+  symbol?: string | null;
+  strategy_id?: string | null;
+}
+
+export interface BotStrategyEligibilityItem {
+  symbol: string;
+  configured_strategy_ids: string[];
+  eligible_strategy_ids: string[];
+  source: "explicit" | "pool_default" | string;
+  status: "valid" | "error" | string;
+  errors: BotStrategyEligibilityIssue[];
+}
+
+export interface BotStrategyEligibilityModel {
+  contract_version: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  pool_strategy_ids: string[];
+  strategy_eligibility_by_symbol: Record<string, string[]>;
+  eligible_strategy_ids_by_symbol: Record<string, string[]>;
+  items: BotStrategyEligibilityItem[];
+  reason_codes: string[];
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotStrategyEligibilityResponse {
+  bot_id: string;
+  strategy_eligibility: BotStrategyEligibilityModel;
+}
+
 export interface BotInstance {
   id: string;
   bot_id?: string;
@@ -298,6 +338,7 @@ export interface BotInstance {
   mode: BotPolicyMode;
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
+  strategy_eligibility_by_symbol?: Record<string, string[]>;
   pool_strategies?: BotInstanceStrategyRef[];
   strategy_pool_status?: "valid" | "error" | string;
   strategy_pool_errors?: string[];
@@ -309,6 +350,7 @@ export interface BotInstance {
   symbol_assignment_status?: "valid" | "error" | string;
   symbol_assignment_errors?: string[];
   multi_symbol?: BotMultiSymbolModel;
+  strategy_eligibility?: BotStrategyEligibilityModel;
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -349,6 +391,7 @@ export interface BotRegistryContractResponse {
     supports_soft_archive: boolean;
     trace_fields: string[];
     multi_symbol_fields: string[];
+    strategy_eligibility_fields: string[];
   };
   api: {
     list_path: string;
@@ -356,6 +399,7 @@ export interface BotRegistryContractResponse {
     detail_path: string;
     patch_path: string;
     multi_symbol_path: string;
+    symbol_strategy_eligibility_path: string;
     archive_path: string;
     restore_path: string;
     policy_state_path: string;
@@ -373,6 +417,7 @@ export interface BotRegistryContractResponse {
     universe_name: string;
     universe: string[];
     pool_strategy_ids: string[];
+    strategy_eligibility_by_symbol: Record<string, string[]>;
     max_live_symbols: number;
     capital_base_usd: number;
     max_total_exposure_pct: number;
@@ -427,6 +472,7 @@ export interface BotRegistryContractResponse {
     base_config: string[];
     symbol_assignment: string[];
     strategy_pool: string[];
+    strategy_eligibility: string[];
     policy_state: string[];
     governance: string[];
     trace: string[];
@@ -440,6 +486,12 @@ export interface BotRegistryContractResponse {
       max_active_symbols_min: number;
       max_active_symbols_max: number;
     };
+    fields: string[];
+  };
+  strategy_eligibility: {
+    contract_version: string;
+    storage_fields: string[];
+    reason_codes: string[];
     fields: string[];
   };
 }

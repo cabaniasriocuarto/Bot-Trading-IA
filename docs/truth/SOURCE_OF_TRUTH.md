@@ -2,6 +2,38 @@
 
 Fecha de actualizacion: 2026-04-18
 
+## RTLOPS-73 - mapping simbolo↔estrategias elegibles del pool - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de elegibilidad `simbolo -> estrategias elegibles` por bot;
+  - la elegibilidad queda persistida en `strategy_eligibility_by_symbol` y ya no depende de texto libre ni de heuristicas por tags;
+  - la surface minima del registry en `rtlab_dashboard/src/app/(app)/strategies/page.tsx` ya permite ver y editar esa elegibilidad sobre el universe y pool persistidos.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+  - `PATCH /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+  - `contract_version` del Bot Registry elevada a `rtlops73/v1`
+  - reconciliacion fail-closed cuando cambia pool/universe y algun simbolo quedaria sin estrategias elegibles
+  - reason codes canonicos:
+    - `symbol_assignment_invalid`
+    - `strategy_pool_invalid`
+    - `symbol_not_in_universe`
+    - `strategy_not_in_pool`
+    - `strategy_not_effective_in_pool`
+    - `no_eligible_strategy_for_symbol`
+- Regla canonica reafirmada:
+  - el strategy pool del bot sigue definiendo el conjunto maximo de estrategias posibles;
+  - `RTLOPS-73` funda el mapping explicito por simbolo dentro de ese pool;
+  - si pool o universe invalidan el mapping persistido, el sistema falla cerrado y exige recomputacion coherente.
+- Limite honesto del bloque:
+  - no se abre todavia:
+    - `RTLOPS-74`
+    - `RTLOPS-75`
+    - `RTLOPS-76`
+    - `RTLOPS-77`
+    - lifecycle
+    - live console
+    - net/consolidation execution
+
 ## Microbloque tecnico - validacion y cierre honesto del caveat de `tsc --noEmit` - 2026-04-18
 
 - Estado real confirmado en esta rama:
@@ -24,6 +56,10 @@ Fecha de actualizacion: 2026-04-18
   - en este microbloque no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`.
 - Limite honesto:
   - no quedo reconstruida con certeza la causa historica exacta de los FAIL reportados en sesiones anteriores; solo quedo confirmado que ya no son el estado real actual de esta linea.
+- Observacion superada por validacion posterior del mismo dia:
+  - durante el cierre de `RTLOPS-73` reaparecio un `FAIL` inicial de `npm.cmd exec tsc -- --noEmit` antes del `build`, con error por `.next/types/cache-life.d.ts` faltante;
+  - despues de `npm.cmd run build`, `npm.cmd exec next -- typegen` y un segundo `npm.cmd exec tsc -- --noEmit`, el type-check volvio a `PASS`;
+  - por lo tanto, esta seccion ya no debe leerse como cierre definitivo del caveat, sino como un estado intermedio luego contradicho por evidencia posterior.
 
 ## RTLOPS-71 - subbloque 2 de identidad canonica en backtests - 2026-04-18
 

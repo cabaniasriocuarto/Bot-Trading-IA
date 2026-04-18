@@ -27,6 +27,7 @@ import type {
   BacktestRun,
   BotInstance,
   BotRegistryContractResponse,
+  BotStrategyEligibilityResponse,
   InstrumentUniverseItem,
   InstrumentUniverseSummaryResponse,
   LearningExperienceSummaryResponse,
@@ -139,6 +140,51 @@ function universeFamilyMatchesDomain(domainType: BotInstance["domain_type"], fam
   return family === "spot";
 }
 
+function normalizeStrategyEligibilityIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => String(item || "").trim())
+        .filter((item) => item.length > 0),
+    ),
+  );
+}
+
+function normalizeStrategyEligibilityDraftMap(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, string[]> = {};
+  for (const [rawSymbol, rawStrategyIds] of Object.entries(value as Record<string, unknown>)) {
+    const symbol = String(rawSymbol || "").trim().toUpperCase();
+    if (!symbol) continue;
+    out[symbol] = normalizeStrategyEligibilityIds(rawStrategyIds);
+  }
+  return out;
+}
+
+function buildBotStrategyEligibilityDraft(bot: Partial<BotInstance> | null | undefined): Record<string, string[]> {
+  const explicit = normalizeStrategyEligibilityDraftMap(bot?.strategy_eligibility?.strategy_eligibility_by_symbol);
+  if (Object.keys(explicit).length) return explicit;
+  const symbols = Array.isArray(bot?.strategy_eligibility?.symbols)
+    ? bot.strategy_eligibility.symbols
+    : Array.isArray(bot?.universe)
+      ? bot.universe
+      : [];
+  const poolStrategyIds = Array.isArray(bot?.strategy_eligibility?.pool_strategy_ids)
+    ? bot.strategy_eligibility.pool_strategy_ids
+    : Array.isArray(bot?.pool_strategy_ids)
+      ? bot.pool_strategy_ids
+      : [];
+  const normalizedPool = normalizeStrategyEligibilityIds(poolStrategyIds);
+  const out: Record<string, string[]> = {};
+  for (const rawSymbol of symbols) {
+    const symbol = String(rawSymbol || "").trim().toUpperCase();
+    if (!symbol) continue;
+    out[symbol] = [...normalizedPool];
+  }
+  return out;
+}
+
 function selectedValuesFromOptions(options: HTMLOptionsCollection): string[] {
   return Array.from(options)
     .filter((option) => option.selected)
@@ -182,6 +228,7 @@ export default function StrategiesPage() {
   const [botRegistryContract, setBotRegistryContract] = useState<BotRegistryContractResponse | null>(null);
   const [botRegistryDraft, setBotRegistryDraft] = useState<BotRegistryDraft>(EMPTY_BOT_REGISTRY_DRAFT);
   const [botRegistryDraftsById, setBotRegistryDraftsById] = useState<Record<string, BotRegistryDraft>>({});
+  const [botStrategyEligibilityDraftsById, setBotStrategyEligibilityDraftsById] = useState<Record<string, Record<string, string[]>>>({});
   const [botRegistryDraftInitialized, setBotRegistryDraftInitialized] = useState(false);
   const [botRegistryFilter, setBotRegistryFilter] = useState<"all" | "active" | "archived">("active");
   const [learningBusy, setLearningBusy] = useState(false);
@@ -296,6 +343,14 @@ export default function StrategiesPage() {
     });
   }, [bots, botRegistryContract]);
 
+  useEffect(() => {
+    setBotStrategyEligibilityDraftsById(
+      Object.fromEntries(
+        bots.map((bot) => [bot.id, buildBotStrategyEligibilityDraft(bot)]),
+      ),
+    );
+  }, [bots]);
+
   const activeRegistryBots = useMemo(
     () => bots.filter((bot) => String(bot.registry_status || "active") === "active"),
     [bots],
@@ -376,6 +431,10 @@ export default function StrategiesPage() {
       ...prev,
       [bot.id]: buildBotRegistryDraft(bot, botRegistryContract),
     }));
+    setBotStrategyEligibilityDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: buildBotStrategyEligibilityDraft(bot),
+    }));
   };
 
   const updateBotRegistryDraftField = <K extends keyof BotRegistryDraft>(field: K, value: BotRegistryDraft[K]) => {
@@ -440,6 +499,47 @@ export default function StrategiesPage() {
       ...prev,
       [bot.id]: removeDraftPoolStrategy(prev[bot.id] || (botRegistryContract ? buildBotRegistryDraft(bot, botRegistryContract) : EMPTY_BOT_REGISTRY_DRAFT), strategyId),
     }));
+  };
+
+  const syncBotStrategyEligibilityDraft = (bot: BotInstance) => {
+    setBotStrategyEligibilityDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: buildBotStrategyEligibilityDraft(bot),
+    }));
+  };
+
+  const resetBotStrategyEligibilityDraftToPool = (bot: BotInstance) => {
+    const symbols = Array.isArray(bot.strategy_eligibility?.symbols) ? bot.strategy_eligibility.symbols : (bot.universe || []);
+    const poolStrategyIds = normalizeStrategyEligibilityIds(bot.strategy_eligibility?.pool_strategy_ids || bot.pool_strategy_ids || []);
+    const next: Record<string, string[]> = {};
+    for (const rawSymbol of symbols) {
+      const symbol = String(rawSymbol || "").trim().toUpperCase();
+      if (!symbol) continue;
+      next[symbol] = [...poolStrategyIds];
+    }
+    setBotStrategyEligibilityDraftsById((prev) => ({
+      ...prev,
+      [bot.id]: next,
+    }));
+  };
+
+  const toggleBotStrategyEligibility = (bot: BotInstance, symbol: string, strategyId: string) => {
+    const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+    const normalizedStrategyId = String(strategyId || "").trim();
+    if (!normalizedSymbol || !normalizedStrategyId) return;
+    setBotStrategyEligibilityDraftsById((prev) => {
+      const current = prev[bot.id] || buildBotStrategyEligibilityDraft(bot);
+      const currentIds = normalizeStrategyEligibilityIds(current[normalizedSymbol] || []);
+      return {
+        ...prev,
+        [bot.id]: {
+          ...current,
+          [normalizedSymbol]: currentIds.includes(normalizedStrategyId)
+            ? currentIds.filter((item) => item !== normalizedStrategyId)
+            : [...currentIds, normalizedStrategyId],
+        },
+      };
+    });
   };
 
   const syncUniverseSelection = (
@@ -1096,6 +1196,44 @@ export default function StrategiesPage() {
       await refresh();
     } catch (err) {
       setError(formatBotRegistryError(err, "No se pudo guardar el registry del bot."));
+    } finally {
+      setBotActionBusyId(null);
+    }
+  };
+
+  const saveBotStrategyEligibility = async (bot: BotInstance) => {
+    const symbols = (bot.strategy_eligibility?.symbols || bot.universe || [])
+      .map((item) => String(item || "").trim().toUpperCase())
+      .filter((item) => item.length > 0);
+    const poolStrategyIds = normalizeStrategyEligibilityIds(bot.strategy_eligibility?.pool_strategy_ids || bot.pool_strategy_ids || []);
+    const currentDraft = botStrategyEligibilityDraftsById[bot.id] || buildBotStrategyEligibilityDraft(bot);
+    const payload = Object.fromEntries(
+      symbols.map((symbol) => [
+        symbol,
+        normalizeStrategyEligibilityIds(currentDraft[symbol] || []).filter((strategyId) => poolStrategyIds.includes(strategyId)),
+      ]),
+    );
+    const missingSymbols = symbols.filter((symbol) => (payload[symbol] || []).length === 0);
+    if (missingSymbols.length) {
+      setError(`Cada símbolo debe conservar al menos una estrategia elegible. Falta cubrir: ${missingSymbols.join(", ")}`);
+      return;
+    }
+    setBotActionBusyId(bot.id);
+    setError("");
+    setUploadMsg("");
+    try {
+      const res = await apiPatch<BotStrategyEligibilityResponse & { ok: boolean }>(
+        `/api/v1/bots/${bot.id}/symbol-strategy-eligibility`,
+        { strategy_eligibility_by_symbol: payload },
+      );
+      setBotStrategyEligibilityDraftsById((prev) => ({
+        ...prev,
+        [bot.id]: normalizeStrategyEligibilityDraftMap(res.strategy_eligibility.strategy_eligibility_by_symbol),
+      }));
+      setUploadMsg(`Elegibilidad por símbolo actualizada para ${getBotDisplayName(bot)}.`);
+      await refresh();
+    } catch (err) {
+      setError(formatBotRegistryError(err, "No se pudo guardar la elegibilidad por símbolo."));
     } finally {
       setBotActionBusyId(null);
     }
@@ -2241,6 +2379,38 @@ export default function StrategiesPage() {
                       const poolDraftRows = poolDraftIds
                         .map((strategyId) => strategyById.get(strategyId) || bot.pool_strategies?.find((row) => row.id === strategyId))
                         .filter((row): row is PoolStrategyLite => Boolean(row));
+                      const eligibilityModel = bot.strategy_eligibility;
+                      const eligibilityDraft = botStrategyEligibilityDraftsById[bot.id] || buildBotStrategyEligibilityDraft(bot);
+                      const eligibilitySymbols = (eligibilityModel?.symbols || bot.universe || [])
+                        .map((item) => String(item || "").trim().toUpperCase())
+                        .filter((item) => item.length > 0);
+                      const eligibilityPoolIds = normalizeStrategyEligibilityIds(eligibilityModel?.pool_strategy_ids || bot.pool_strategy_ids || []);
+                      const eligibilityPoolRows = eligibilityPoolIds.map((strategyId) => (
+                        strategyById.get(strategyId)
+                        || bot.pool_strategies?.find((row) => row.id === strategyId)
+                        || {
+                          id: strategyId,
+                          name: strategyId,
+                          allow_learning: true,
+                          enabled_for_trading: true,
+                          is_primary: false,
+                          status: "active",
+                        }
+                      ));
+                      const eligibilityPairs = Object.values(eligibilityModel?.eligible_strategy_ids_by_symbol || {}).reduce(
+                        (total, ids) => total + ids.length,
+                        0,
+                      );
+                      const emptyEligibilitySymbols = eligibilitySymbols.filter(
+                        (symbol) => normalizeStrategyEligibilityIds(eligibilityDraft[symbol] || []).length === 0,
+                      );
+                      const registryDraftUniverse = (registryDraft.universe || [])
+                        .map((item) => String(item || "").trim().toUpperCase())
+                        .filter((item) => item.length > 0)
+                        .sort();
+                      const registryDraftPoolIds = normalizeDraftPoolIds(registryDraft.pool_strategy_ids || []).sort();
+                      const eligibilityScopeDirty = JSON.stringify(registryDraftUniverse) !== JSON.stringify([...eligibilitySymbols].sort())
+                        || JSON.stringify(registryDraftPoolIds) !== JSON.stringify([...eligibilityPoolIds].sort());
                       return (
                         <TR key={bot.id} className="align-top">
                           <TD className="max-w-[180px]">
@@ -2269,6 +2439,9 @@ export default function StrategiesPage() {
                               </p>
                               <p className={`text-[10px] ${bot.strategy_pool_status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
                                 Pool: {bot.pool_strategy_ids.length}/{(bot.max_pool_strategies ?? registryContractMaxPoolStrategies) || "-"} · {bot.strategy_pool_status === "valid" ? "válido" : "error de configuración"}
+                              </p>
+                              <p className={`text-[10px] ${eligibilityModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                Elegibilidad: {eligibilityModel?.status === "valid" ? `${eligibilityPairs} pares válidos` : "fail-closed"}
                               </p>
                               {bot.symbol_assignment_errors?.length ? (
                                 <p className="text-[10px] text-amber-300" title={bot.symbol_assignment_errors.join(" | ")}>
@@ -2764,6 +2937,113 @@ export default function StrategiesPage() {
                                     ))}
                                   </div>
                                 ) : null}
+                                <div className="rounded border border-slate-800 bg-slate-950/50 p-2">
+                                  <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                                    <span className="uppercase tracking-wide">Elegibilidad símbolo ↔ estrategia</span>
+                                    <span>{eligibilitySymbols.length} símbolos · {eligibilityPairs} pares válidos</span>
+                                  </div>
+                                  <p className={`mt-1 text-[10px] ${eligibilityModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
+                                    Estado: {eligibilityModel?.status === "valid" ? "válido" : "error de configuración"}
+                                  </p>
+                                  {eligibilityScopeDirty ? (
+                                    <p className="mt-1 text-[10px] text-amber-200">
+                                      La elegibilidad opera sobre el universe y pool persistidos. Guardá primero el registry/pool si acabás de cambiarlos.
+                                    </p>
+                                  ) : null}
+                                  {emptyEligibilitySymbols.length ? (
+                                    <p className="mt-1 text-[10px] text-amber-200">
+                                      Draft inválido: cada símbolo debe conservar al menos una estrategia elegible. Falta cubrir: {emptyEligibilitySymbols.join(", ")}.
+                                    </p>
+                                  ) : null}
+                                  {eligibilityModel?.errors?.length ? (
+                                    <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                      {eligibilityModel.errors.map((item) => (
+                                        <p key={`${bot.id}-eligibility-error-${item}`}>{item}</p>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {eligibilitySymbols.length && eligibilityPoolRows.length ? (
+                                    <div className="mt-2 space-y-2">
+                                      {eligibilitySymbols.map((symbol) => {
+                                        const currentIds = normalizeStrategyEligibilityIds(eligibilityDraft[symbol] || []);
+                                        const symbolItem = eligibilityModel?.items?.find((item) => item.symbol === symbol);
+                                        return (
+                                          <div key={`${bot.id}-eligibility-${symbol}`} className="rounded border border-slate-800 px-2 py-2">
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                              <p className="font-semibold text-slate-100">{symbol}</p>
+                                              <span className="text-[10px] text-slate-400">
+                                                {currentIds.length}/{eligibilityPoolRows.length} elegibles
+                                              </span>
+                                            </div>
+                                            <div className="mt-2 grid gap-1">
+                                              {eligibilityPoolRows.map((strategy) => {
+                                                const checked = currentIds.includes(strategy.id);
+                                                return (
+                                                  <label
+                                                    key={`${bot.id}-${symbol}-${strategy.id}`}
+                                                    className="flex items-center justify-between gap-2 rounded border border-slate-800 px-2 py-1"
+                                                  >
+                                                    <span className="truncate text-slate-200" title={strategy.name}>
+                                                      {strategy.name}
+                                                    </span>
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={checked}
+                                                      disabled={role !== "admin" || busy || registryArchived || eligibilityScopeDirty}
+                                                      onChange={() => toggleBotStrategyEligibility(bot, symbol, strategy.id)}
+                                                    />
+                                                  </label>
+                                                );
+                                              })}
+                                            </div>
+                                            {symbolItem?.errors?.length ? (
+                                              <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                                {symbolItem.errors.map((issue) => (
+                                                  <p key={`${bot.id}-${symbol}-${issue.reason_code}-${issue.strategy_id || "scope"}`}>
+                                                    {issue.message}
+                                                  </p>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : (
+                                    <p className="mt-2 text-[10px] text-slate-500">
+                                      Guardá un universe y pool válidos para editar elegibilidad por símbolo.
+                                    </p>
+                                  )}
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy || registryArchived || eligibilityScopeDirty || !eligibilitySymbols.length || !eligibilityPoolRows.length}
+                                      onClick={() => void saveBotStrategyEligibility(bot)}
+                                    >
+                                      Guardar elegibilidad
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy}
+                                      onClick={() => syncBotStrategyEligibilityDraft(bot)}
+                                    >
+                                      Resetear
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[11px]"
+                                      disabled={role !== "admin" || busy || registryArchived || eligibilityScopeDirty || !eligibilitySymbols.length || !eligibilityPoolRows.length}
+                                      onClick={() => resetBotStrategyEligibilityDraftToPool(bot)}
+                                    >
+                                      Usar pool completo
+                                    </Button>
+                                  </div>
+                                </div>
                                 <div className="flex flex-wrap gap-2">
                                   <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || busy || registryArchived} onClick={() => void saveBotRegistryIdentity(bot)}>
                                     Guardar pool

@@ -2,6 +2,26 @@
 
 Fecha: 2026-04-18
 
+## Siguiente paso exacto despues de RTLOPS-73 - 2026-04-18
+- [x] Fundar elegibilidad canonica simbolo↔estrategia sobre el pool del bot:
+  - persistencia `strategy_eligibility_by_symbol`
+  - `GET/PATCH /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+  - reconciliacion fail-closed contra pool/universe
+  - UI minima util en `strategies/page.tsx`
+- [x] Mantener el bloque profesional y acotado:
+  - sin tocar backend live
+  - sin abrir `RTLOPS-74+`
+  - sin tocar lifecycle ni live console
+- [ ] Caveat tecnico pendiente antes del siguiente bloque de producto:
+  - revalidar de nuevo el comportamiento en frio de `npm.cmd exec tsc -- --noEmit`
+  - hoy el flujo real observado es:
+    - `tsc --noEmit` -> FAIL inicial por `.next/types/cache-life.d.ts` faltante
+    - `npm.cmd run build` -> PASS
+    - `npm.cmd exec next -- typegen` -> PASS
+    - `npm.cmd exec tsc -- --noEmit` despues -> PASS
+- [ ] Siguiente paso exacto recomendado:
+  - tomar un microbloque tecnico corto para cerrar o acotar honestamente ese caveat de type-check frio antes de abrir `RTLOPS-74`
+
 ## Siguiente paso exacto despues del microbloque tecnico de `tsc --noEmit` - 2026-04-18
 - [x] Revalidar el caveat tecnico con reproduccion real:
   - `npm.cmd exec tsc -- --noEmit` directo
