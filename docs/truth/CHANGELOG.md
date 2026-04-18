@@ -1,5 +1,29 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-18
+
+### Microbloque tecnico - validacion y cierre honesto del caveat de `tsc --noEmit`
+- Revalidacion real de tooling:
+  - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo;
+  - `rtlab_dashboard/next.config.ts` no usa `typescript.tsconfigPath`;
+  - `ignoreBuildErrors` sigue inactivo;
+  - no existe script `typecheck` en `package.json`.
+- Definicion operativa de `en frio` usada en esta validacion:
+  - borrar solo artefactos no trackeados:
+    - `rtlab_dashboard/.next`
+    - `rtlab_dashboard/tsconfig.tsbuildinfo`
+  - correr cada comando en una shell nueva
+- Comandos validados:
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+- Conclusion tecnica:
+  - la narrativa previa de `FAIL en frio por includes .next/types` no reproduce en esta punta;
+  - `next typegen` no cambia el resultado del type-check standalone actual: regenera tipos, pero no corrige un fallo activo;
+  - no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`.
+
 ## 2026-04-17
 
 ### RTLOPS-71 - subbloque 2 de identidad canonica en backtests
@@ -15,7 +39,7 @@
 - Tests corridos:
   - `npm.cmd run lint -- "src/app/(app)/backtests/page.tsx"` -> PASS
   - `npm.cmd run build` -> PASS
-  - `npm.cmd exec tsc -- --noEmit` -> FAIL preexistente por includes `.next/types/**/*.ts` faltantes en `tsconfig.json`
+  - `npm.cmd exec tsc -- --noEmit` -> observacion historica luego revalidada en el microbloque tecnico del 2026-04-18; no tomar como estado actual
 - Fuera de alcance mantenido a proposito:
   - `strategies/page.tsx`
   - `strategies/[id]/page.tsx`
@@ -38,7 +62,7 @@
     - deja de presentar `backtests/trades` como fallback legacy de `truth/evidence`
 - Tests corridos:
   - `npm.cmd run lint -- "src/app/(app)/strategies/[id]/page.tsx"` -> PASS
-  - `npm.cmd exec tsc -- --noEmit` -> FAIL en frio por `.next/types` ausentes
+  - `npm.cmd exec tsc -- --noEmit` -> observacion historica luego revalidada en el microbloque tecnico del 2026-04-18; no tomar como estado actual
   - `npm.cmd run build` -> PASS
   - `npm.cmd exec tsc -- --noEmit` despues de `build` -> PASS
 - Fuera de alcance mantenido a proposito:

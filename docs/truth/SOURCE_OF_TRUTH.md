@@ -1,6 +1,29 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-17
+Fecha de actualizacion: 2026-04-18
+
+## Microbloque tecnico - validacion y cierre honesto del caveat de `tsc --noEmit` - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo del dashboard;
+  - `rtlab_dashboard/next.config.ts` NO define `typescript.tsconfigPath`, NO activa `ignoreBuildErrors`, NO usa `typedRoutes`, NO usa `typedEnv` y NO redefine `distDir`;
+  - no existe un script canonico `typecheck` en `rtlab_dashboard/package.json`, pero el comando real validado `npm.cmd exec tsc -- --noEmit` ya pasa tambien en frio.
+- Definicion operativa usada para `en frio`:
+  - `rtlab_dashboard` sin `.next`
+  - `rtlab_dashboard` sin `tsconfig.tsbuildinfo`
+  - cada comando corrido en una invocacion nueva de shell
+- Matriz real validada:
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+- Conclusion tecnica confirmada:
+  - la narrativa de `FAIL en frio por includes .next/types` ya NO reproduce en esta punta;
+  - `next typegen` regenera tipos de rutas, pero no corrige un fallo activo del type-check standalone porque el `tsc` directo ya pasa sin depender de esa generacion previa;
+  - en este microbloque no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`.
+- Limite honesto:
+  - no quedo reconstruida con certeza la causa historica exacta de los FAIL reportados en sesiones anteriores; solo quedo confirmado que ya no son el estado real actual de esta linea.
 
 ## RTLOPS-71 - subbloque 2 de identidad canonica en backtests - 2026-04-18
 
@@ -23,9 +46,9 @@ Fecha de actualizacion: 2026-04-17
   - `RTLOPS-73+`
   - lifecycle
   - live console
-- Caveat tecnico vigente:
-  - `npm.cmd exec tsc -- --noEmit` sigue fallando en esta punta por includes `.next/types/**/*.ts` que no existen en frio;
-  - ese caveat no se corrigio en este subbloque porque excedia el alcance validado.
+- Caveat tecnico reportado en ese momento:
+  - durante el cierre del subbloque quedo asentada una hipotesis de `FAIL` en frio para `npm.cmd exec tsc -- --noEmit`;
+  - esa hipotesis quedo revalidada y cerrada despues en el microbloque tecnico de 2026-04-18.
 
 ## RTLOPS-71 - subbloque 1 de strategy detail canonico - 2026-04-17
 

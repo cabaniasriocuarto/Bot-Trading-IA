@@ -1,6 +1,20 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-17
+Fecha: 2026-04-18
+
+## Siguiente paso exacto despues del microbloque tecnico de `tsc --noEmit` - 2026-04-18
+- [x] Revalidar el caveat tecnico con reproduccion real:
+  - `npm.cmd exec tsc -- --noEmit` directo
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit`
+  - `npm.cmd run build`
+  - reproduccion en frio sin `.next` ni `tsconfig.tsbuildinfo`
+- [x] Cerrar la narrativa falsa:
+  - el `tsc` standalone ya pasa tambien en frio en esta punta
+  - `next typegen` no cambia el resultado del type-check actual
+  - no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`
+- [ ] Siguiente paso exacto recomendado:
+  - volver a priorizacion tecnica/producto sin mantener este caveat como bloqueo activo
+  - si se quiere endurecer ergonomia de tooling, tomar mas adelante un microbloque opcional para agregar un script explicito `typecheck`, pero no es un bloqueo tecnico vigente
 
 ## Siguiente paso exacto despues de RTLOPS-71 subbloque 2 - 2026-04-18
 - [x] Normalizar identidad visible del bot en `backtests/page.tsx`:
@@ -10,12 +24,10 @@ Fecha: 2026-04-17
   - sin tocar `strategies/page.tsx`
   - sin tocar `strategies/[id]/page.tsx`
   - sin tocar comparador legacy ni evidence status
-- [ ] Pendiente tecnico honesto:
-  - `npm.cmd exec tsc -- --noEmit` sigue fallando por includes `.next/types/**/*.ts` faltantes; no se corrigio en este subbloque porque quedaba fuera de alcance
+- [x] Caveat tecnico revalidado despues:
+  - el microbloque tecnico del 2026-04-18 confirmo que `npm.cmd exec tsc -- --noEmit` ya pasa tambien en frio y que la narrativa de FAIL no describe el estado actual
 - [ ] Siguiente paso exacto recomendado:
-  - revalidar priorizacion antes de abrir otro frente:
-    - si hace falta, tomar un microbloque tecnico aparte para el caveat de `tsc`
-    - si no, volver a decidir entre producto nuevo y/o deuda real remanente con una validacion chica
+  - volver a priorizacion tecnica/producto ahora que el caveat quedo cerrado honestamente
 
 ## Siguiente paso exacto despues de RTLOPS-71 subbloque 1 - 2026-04-17
 - [x] Endurecer el strategy detail para depender del contrato canonico:
