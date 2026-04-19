@@ -8,6 +8,11 @@ export type LegacyMockRuntimeAlias = "MOCK";
 export type TradingMode = RuntimeMode | LegacyMockRuntimeAlias;
 export type BotPolicyMode = "shadow" | "paper" | "testnet" | "live";
 export type ResearchEvidenceMode = "backtest" | "shadow" | "paper" | "testnet";
+export type BotRegistryDomainType = "spot" | "futures";
+export type BotRegistryStatus = "active" | "archived";
+export type BotRegistryChangeType = "created" | "updated" | "archived" | "reactivated" | string;
+export type BotRiskProfile = "conservative" | "medium" | "aggressive";
+export type InstrumentUniverseFamily = "spot" | "margin" | "usdm_futures" | "coinm_futures" | string;
 
 export interface HealthResponse {
   ok: boolean;
@@ -242,17 +247,235 @@ export interface BotInstanceStrategyRef {
   allow_learning?: boolean;
   enabled_for_trading?: boolean;
   is_primary?: boolean;
+  status?: "active" | "disabled" | "archived" | string;
+}
+
+export interface BotMultiSymbolModel {
+  contract_version: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  configured_symbols_count: number;
+  max_configured_symbols: number;
+  max_active_symbols?: number | null;
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotMultiSymbolResponse {
+  bot_id: string;
+  multi_symbol: BotMultiSymbolModel;
+}
+
+export interface BotStrategyEligibilityIssue {
+  reason_code: string;
+  message: string;
+  symbol?: string | null;
+  strategy_id?: string | null;
+}
+
+export interface BotStrategyEligibilityItem {
+  symbol: string;
+  configured_strategy_ids: string[];
+  eligible_strategy_ids: string[];
+  source: "explicit" | "pool_default" | string;
+  status: "valid" | "error" | string;
+  errors: BotStrategyEligibilityIssue[];
+}
+
+export interface BotStrategyEligibilityModel {
+  contract_version: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  pool_strategy_ids: string[];
+  strategy_eligibility_by_symbol: Record<string, string[]>;
+  eligible_strategy_ids_by_symbol: Record<string, string[]>;
+  items: BotStrategyEligibilityItem[];
+  reason_codes: string[];
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotStrategyEligibilityResponse {
+  bot_id: string;
+  strategy_eligibility: BotStrategyEligibilityModel;
+}
+
+export interface BotStrategySelectionIssue {
+  reason_code: string;
+  message: string;
+  symbol?: string | null;
+  configured_strategy_id?: string | null;
+}
+
+export interface BotStrategySelectionItem {
+  symbol: string;
+  configured_strategy_id?: string | null;
+  selected_strategy_id?: string | null;
+  eligible_strategy_ids: string[];
+  selection_source: "explicit" | "derived" | string;
+  selection_criterion?: "explicit" | "single_eligible" | "primary_strategy" | "pool_order" | string | null;
+  status: "valid" | "error" | string;
+  errors: BotStrategySelectionIssue[];
+}
+
+export interface BotStrategySelectionModel {
+  contract_version: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  pool_strategy_ids: string[];
+  strategy_selection_by_symbol: Record<string, string>;
+  selected_strategy_by_symbol: Record<string, string>;
+  items: BotStrategySelectionItem[];
+  criteria: string[];
+  reason_codes: string[];
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotStrategySelectionResponse {
+  bot_id: string;
+  strategy_selection: BotStrategySelectionModel;
+}
+
+export interface BotSignalConsolidationIssue {
+  reason_code: string;
+  message: string;
+  symbol?: string | null;
+  strategy_id?: string | null;
+}
+
+export interface BotSignalConsolidationInput {
+  strategy_id: string;
+  strategy_name: string;
+  symbol: string;
+  action?: "trade" | "flat" | string | null;
+  side?: "BUY" | "SELL" | string | null;
+  criterion?: string | null;
+  reason?: string | null;
+  status: "valid" | "error" | string;
+  errors: BotSignalConsolidationIssue[];
+}
+
+export interface BotSignalConsolidationItem {
+  symbol: string;
+  selected_strategy_id?: string | null;
+  eligible_strategy_ids: string[];
+  participating_strategy_ids: string[];
+  inputs: BotSignalConsolidationInput[];
+  input_summary: {
+    total_inputs: number;
+    valid_inputs: number;
+    buy_signals: number;
+    sell_signals: number;
+    flat_signals: number;
+    agreement_status: "single" | "aligned" | "conflicted" | string;
+  };
+  net_action?: "trade" | "flat" | string | null;
+  net_side?: "BUY" | "SELL" | string | null;
+  net_strategy_id?: string | null;
+  net_reason?: string | null;
+  net_criterion?: string | null;
+  status: "valid" | "error" | string;
+  errors: BotSignalConsolidationIssue[];
+}
+
+export interface BotSignalConsolidationModel {
+  contract_version: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  pool_strategy_ids: string[];
+  selected_strategy_by_symbol: Record<string, string>;
+  net_decision_by_symbol: Record<
+    string,
+    {
+      symbol: string;
+      action: "trade" | "flat" | string;
+      side?: "BUY" | "SELL" | string | null;
+      selected_strategy_id?: string | null;
+      criterion?: string | null;
+      reason?: string | null;
+      input_count: number;
+      agreement_status: "single" | "aligned" | "conflicted" | string;
+    }
+  >;
+  items: BotSignalConsolidationItem[];
+  criteria: string[];
+  reason_codes: string[];
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotSignalConsolidationResponse {
+  bot_id: string;
+  signal_consolidation: BotSignalConsolidationModel;
 }
 
 export interface BotInstance {
   id: string;
+  bot_id?: string;
+  display_name: string;
+  alias?: string | null;
+  description?: string | null;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  archived_at?: string | null;
+  last_change_type?: BotRegistryChangeType;
+  last_change_summary?: string | null;
+  last_changed_by?: string | null;
+  last_change_source?: string | null;
+  capital_base_usd: number;
+  max_total_exposure_pct: number;
+  max_asset_exposure_pct: number;
+  risk_profile: BotRiskProfile;
+  risk_per_trade_pct: number;
+  max_daily_loss_pct: number;
+  max_drawdown_pct: number;
+  max_positions: number;
   name: string;
   engine: string;
   mode: BotPolicyMode;
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
+  strategy_eligibility_by_symbol?: Record<string, string[]>;
+  strategy_selection_by_symbol?: Record<string, string>;
   pool_strategies?: BotInstanceStrategyRef[];
+  strategy_pool_status?: "valid" | "error" | string;
+  strategy_pool_errors?: string[];
+  max_pool_strategies?: number | null;
+  universe_name?: string | null;
+  universe_family?: InstrumentUniverseFamily | null;
   universe?: string[];
+  max_live_symbols?: number | null;
+  symbol_assignment_status?: "valid" | "error" | string;
+  symbol_assignment_errors?: string[];
+  multi_symbol?: BotMultiSymbolModel;
+  strategy_eligibility?: BotStrategyEligibilityModel;
+  strategy_selection?: BotStrategySelectionModel;
+  signal_consolidation?: BotSignalConsolidationModel;
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -264,15 +487,177 @@ export interface BotPolicyState {
   mode: BotPolicyMode;
   status: "active" | "paused" | "archived";
   pool_strategy_ids: string[];
+  strategy_pool_status?: "valid" | "error" | string;
+  strategy_pool_errors?: string[];
+  max_pool_strategies?: number | null;
+  universe_name?: string;
   universe: string[];
+  max_live_symbols?: number | null;
   notes: string;
   created_at: string;
   updated_at: string;
+  last_change_type?: BotRegistryChangeType;
+  last_change_summary?: string | null;
+  last_changed_by?: string | null;
+  last_change_source?: string | null;
 }
 
 export interface BotPolicyStateResponse {
   bot_id: string;
   policy_state: BotPolicyState;
+}
+
+export interface BotRegistryContractResponse {
+  contract_version: string;
+  storage: {
+    kind: string;
+    path: string;
+    stable_id_field: string;
+    supports_soft_archive: boolean;
+    trace_fields: string[];
+    multi_symbol_fields: string[];
+    strategy_eligibility_fields: string[];
+    strategy_selection_fields: string[];
+    signal_consolidation_fields: string[];
+  };
+  api: {
+    list_path: string;
+    create_path: string;
+    detail_path: string;
+    patch_path: string;
+    multi_symbol_path: string;
+    symbol_strategy_eligibility_path: string;
+    symbol_strategy_selection_path: string;
+    signal_consolidation_path: string;
+    archive_path: string;
+    restore_path: string;
+    policy_state_path: string;
+    decision_log_path: string;
+  };
+  defaults: {
+    display_name: string;
+    alias: string;
+    description: string;
+    domain_type: BotRegistryDomainType;
+    registry_status: BotRegistryStatus;
+    engine: string;
+    mode: BotPolicyMode;
+    status: "active" | "paused" | "archived";
+    universe_name: string;
+    universe: string[];
+    pool_strategy_ids: string[];
+    strategy_eligibility_by_symbol: Record<string, string[]>;
+    strategy_selection_by_symbol: Record<string, string>;
+    max_live_symbols: number;
+    capital_base_usd: number;
+    max_total_exposure_pct: number;
+    max_asset_exposure_pct: number;
+    risk_profile: BotRiskProfile;
+    risk_per_trade_pct: number;
+    max_daily_loss_pct: number;
+    max_drawdown_pct: number;
+    max_positions: number;
+    notes: string;
+  };
+  limits: {
+    max_instances: number;
+    display_name_min_length: number;
+    display_name_max_length: number;
+    alias_max_length: number;
+    description_max_length: number;
+    notes_max_length: number;
+    universe_min_size: number;
+    pool_strategy_ids_min_size: number;
+    max_live_symbols_min: number;
+    max_live_symbols: number;
+    max_pool_strategies: number;
+    capital_base_usd_min: number;
+    percentage_min: number;
+    percentage_max: number;
+    max_positions_min: number;
+  };
+  enums: {
+    domain_types: BotRegistryDomainType[];
+    registry_statuses: BotRegistryStatus[];
+    risk_profiles: BotRiskProfile[];
+    modes: BotPolicyMode[];
+    statuses: Array<"active" | "paused" | "archived">;
+    engines: string[];
+    change_types: BotRegistryChangeType[];
+  };
+  risk_profiles: Record<
+    BotRiskProfile,
+    {
+      risk_profile: BotRiskProfile;
+      max_total_exposure_pct: number;
+      max_asset_exposure_pct: number;
+      risk_per_trade_pct: number;
+      max_daily_loss_pct: number;
+      max_drawdown_pct: number;
+      max_positions: number;
+    }
+  >;
+  fields: {
+    identity: string[];
+    base_config: string[];
+    symbol_assignment: string[];
+    strategy_pool: string[];
+    strategy_eligibility: string[];
+    strategy_selection: string[];
+    signal_consolidation: string[];
+    policy_state: string[];
+    governance: string[];
+    trace: string[];
+  };
+  multi_symbol: {
+    contract_version: string;
+    storage_fields: string[];
+    limits: {
+      configured_symbols_min: number;
+      configured_symbols_max: number;
+      max_active_symbols_min: number;
+      max_active_symbols_max: number;
+    };
+    fields: string[];
+  };
+  strategy_eligibility: {
+    contract_version: string;
+    storage_fields: string[];
+    reason_codes: string[];
+    fields: string[];
+  };
+  strategy_selection: {
+    contract_version: string;
+    storage_fields: string[];
+    criteria: string[];
+    reason_codes: string[];
+    fields: string[];
+  };
+  signal_consolidation: {
+    contract_version: string;
+    storage_fields: string[];
+    criteria: string[];
+    reason_codes: string[];
+    fields: string[];
+  };
+}
+
+export interface InstrumentUniverseItem {
+  name: string;
+  venue: string;
+  family: InstrumentUniverseFamily;
+  size: number;
+  symbols: string[];
+  sample_symbols: string[];
+  fresh: boolean;
+  stale: boolean;
+  capability_required: boolean;
+  capability_available: boolean;
+}
+
+export interface InstrumentUniverseSummaryResponse {
+  items: InstrumentUniverseItem[];
+  policy_source?: Record<string, unknown>;
 }
 
 export interface StrategyComparison {

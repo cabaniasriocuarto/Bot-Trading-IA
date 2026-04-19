@@ -9,7 +9,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
-import { ApiError, apiDelete, apiGet, apiPatch, apiPost } from "@/lib/client-api";
+import { ApiError, apiGet, apiPatch, apiPost } from "@/lib/client-api";
+import {
+  botRegistryStatusVariant,
+  botRuntimeStatusVariant,
+  getExecutionBotLabel,
+  isExecutionBotArchived,
+  matchesExecutionBotStatusFilter,
+  type ExecutionBotStatusFilter,
+} from "@/lib/execution-bots";
+import { getBotDisplayName } from "@/lib/bot-registry";
 import type {
   BotDecisionLogResponse,
   BotInstance,
@@ -91,7 +100,7 @@ export default function ExecutionPage() {
   const [selectedBotDomainError, setSelectedBotDomainError] = useState("");
   const [selectedBotDomainNotice, setSelectedBotDomainNotice] = useState("");
   const [botModeFilter, setBotModeFilter] = useState<"all" | "shadow" | "paper" | "testnet" | "live">("all");
-  const [botStatusFilter, setBotStatusFilter] = useState<"all" | "active" | "paused" | "archived">("all");
+  const [botStatusFilter, setBotStatusFilter] = useState<ExecutionBotStatusFilter>("all");
   const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
   const [selectedExecutionBotId, setSelectedExecutionBotId] = useState("");
   const [botBulkBusy, setBotBulkBusy] = useState(false);
@@ -360,13 +369,25 @@ export default function ExecutionPage() {
   const botRowsFiltered = useMemo(() => {
     return botInstances.filter((row) => {
       if (botModeFilter !== "all" && String(row.mode) !== botModeFilter) return false;
-      if (botStatusFilter !== "all" && String(row.status) !== botStatusFilter) return false;
+      if (!matchesExecutionBotStatusFilter(row, botStatusFilter)) return false;
       return true;
     });
   }, [botInstances, botModeFilter, botStatusFilter]);
 
   const visibleBotIds = useMemo(() => botRowsFiltered.map((row) => String(row.id)), [botRowsFiltered]);
   const selectedBotIdsSet = useMemo(() => new Set(botSelectedIds), [botSelectedIds]);
+  const selectedBotRows = useMemo(
+    () => botInstances.filter((row) => selectedBotIdsSet.has(String(row.id))),
+    [botInstances, selectedBotIdsSet],
+  );
+  const selectionHasArchivedBots = useMemo(
+    () => selectedBotRows.some((row) => isExecutionBotArchived(row)),
+    [selectedBotRows],
+  );
+  const selectionHasActiveRegistryBots = useMemo(
+    () => selectedBotRows.some((row) => !isExecutionBotArchived(row)),
+    [selectedBotRows],
+  );
   const selectedExecutionBot = useMemo(
     () => botInstances.find((row) => row.id === selectedExecutionBotId) || null,
     [botInstances, selectedExecutionBotId],
@@ -480,49 +501,73 @@ export default function ExecutionPage() {
     }
   };
 
-  const deleteBot = async (bot: BotInstance) => {
-    if (!window.confirm(`Eliminar bot "${bot.name}"? Esta accion borra su registro activo.`)) return;
+  const applySingleBotRegistryAction = async (bot: BotInstance, action: "archive" | "restore") => {
+    const actionLabel = action === "archive" ? "archivar" : "restaurar";
+    if (!window.confirm(`${action === "archive" ? "Archivar" : "Restaurar"} bot "${getBotDisplayName(bot)}"?`)) return;
     setBotBulkBusy(true);
     setControlError("");
     setMessage("");
     try {
-      await apiDelete(`/api/v1/bots/${encodeURIComponent(bot.id)}`);
-      setBotSelectedIds((prev) => prev.filter((id) => id !== bot.id));
-      if (selectedExecutionBotId === bot.id) setSelectedExecutionBotId("");
-      setMessage(`Bot "${bot.name}" eliminado.`);
+      await apiPost(`/api/v1/bots/${encodeURIComponent(bot.id)}/${action}`);
+      setMessage(`Bot ${action === "archive" ? "archivado" : "restaurado"}: ${getBotDisplayName(bot)}.`);
       await refreshAll(false);
     } catch (err) {
-      setControlError(err instanceof Error ? err.message : "No se pudo borrar el bot.");
+      setControlError(err instanceof Error ? err.message : `No se pudo ${actionLabel} el bot.`);
     } finally {
       setBotBulkBusy(false);
     }
   };
 
-  const deleteBotsBulk = async () => {
+  const applyBotsBulkRegistryAction = async (action: "archive" | "restore") => {
     if (role !== "admin") return;
     if (!botSelectedIds.length) {
-      setControlError("Selecciona al menos un bot para borrar.");
+      setControlError(`Selecciona al menos un bot para ${action === "archive" ? "archivar" : "restaurar"}.`);
       return;
     }
-    if (!window.confirm(`Borrar ${botSelectedIds.length} bot(s) seleccionado(s)? Esta accion es irreversible.`)) return;
+    const applicableIds = selectedBotRows
+      .filter((bot) => (action === "archive" ? !isExecutionBotArchived(bot) : isExecutionBotArchived(bot)))
+      .map((bot) => String(bot.id));
+    if (!applicableIds.length) {
+      setControlError(
+        action === "archive"
+          ? "La selección no tiene bots activos del registry para archivar."
+          : "La selección no tiene bots archivados para restaurar.",
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        `${action === "archive" ? "Archivar" : "Restaurar"} ${applicableIds.length} bot(s) seleccionado(s)?`,
+      )
+    ) {
+      return;
+    }
     setBotBulkBusy(true);
     setControlError("");
     setMessage("");
     try {
       let okCount = 0;
       let errCount = 0;
-      for (const id of botSelectedIds) {
+      for (const id of applicableIds) {
         try {
-          await apiDelete(`/api/v1/bots/${encodeURIComponent(id)}`);
+          await apiPost(`/api/v1/bots/${encodeURIComponent(id)}/${action}`);
           okCount++;
         } catch {
           errCount++;
         }
       }
-      setBotSelectedIds([]);
-      if (botSelectedIds.includes(selectedExecutionBotId)) setSelectedExecutionBotId("");
-      setMessage(`Borrados: ${okCount} bot(s)${errCount ? ` · Errores: ${errCount}` : ""}.`);
+      setMessage(
+        `${action === "archive" ? "Archivados" : "Restaurados"}: ${okCount} bot(s)${
+          errCount ? ` · Errores: ${errCount}` : ""
+        }.`,
+      );
       await refreshAll(false);
+    } catch (err) {
+      setControlError(
+        err instanceof Error
+          ? err.message
+          : `No se pudieron ${action === "archive" ? "archivar" : "restaurar"} los bots.`,
+      );
     } finally {
       setBotBulkBusy(false);
     }
@@ -586,8 +631,9 @@ export default function ExecutionPage() {
     }
     if (selectedExecutionBotId && botInstances.some((row) => row.id === selectedExecutionBotId)) return;
     const preferred =
-      botInstances.find((row) => row.status === "active" && row.mode === runtimeModeKey) ||
-      botInstances.find((row) => row.status === "active") ||
+      botInstances.find((row) => !isExecutionBotArchived(row) && row.status === "active" && row.mode === runtimeModeKey) ||
+      botInstances.find((row) => !isExecutionBotArchived(row) && row.status === "active") ||
+      botInstances.find((row) => !isExecutionBotArchived(row)) ||
       botInstances[0];
     if (preferred) setSelectedExecutionBotId(preferred.id);
   }, [botInstances, botSelectedIds, runtimeModeKey, selectedExecutionBotId]);
@@ -629,7 +675,7 @@ export default function ExecutionPage() {
             setSelectedBotPolicyState(buildLegacyPolicyState(selectedBot));
             setSelectedBotDecisionLog(buildLegacyDecisionLog(selectedBot.id, logsRows));
             setSelectedBotDomainNotice(
-              "Compatibilidad legacy activa: policy_state se reconstruye desde /api/v1/bots y decision_log desde /api/v1/logs mientras RTLRESE-14 no este integrado.",
+              "Compatibilidad transicional: el backend no expuso los contratos canonicos del bot y la UI reconstruyo policy_state desde /api/v1/bots y decision_log desde /api/v1/logs.",
             );
           } catch (fallbackErr) {
             if (cancelled) return;
@@ -737,7 +783,7 @@ export default function ExecutionPage() {
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <ActionButton
                 label={actionLoading === "/api/v1/bot/start" ? "Iniciando..." : "Iniciar"}
-                help={selectedExecutionBot ? `Inicia usando el pool del bot: ${selectedExecutionBot.name}` : "Inicia el bot con la estrategia principal del modo actual."}
+                help={selectedExecutionBot ? `Inicia usando el pool del bot: ${getBotDisplayName(selectedExecutionBot)}` : "Inicia el bot con la estrategia principal del modo actual."}
                 disabled={role !== "admin" || !!actionLoading}
                 onClick={() => void runControlAction("/api/v1/bot/start", selectedExecutionBotId ? { bot_id: selectedExecutionBotId } : undefined, { successMessage: "Bot iniciado." })}
               />
@@ -757,7 +803,7 @@ export default function ExecutionPage() {
               />
               <ActionButton
                 label={actionLoading === "/api/v1/control/resume" ? "Reanudando..." : "Reanudar"}
-                help={selectedExecutionBot ? `Reanuda usando el pool del bot: ${selectedExecutionBot.name}` : "Reanuda la operativa usando la estrategia principal del modo actual."}
+                help={selectedExecutionBot ? `Reanuda usando el pool del bot: ${getBotDisplayName(selectedExecutionBot)}` : "Reanuda la operativa usando la estrategia principal del modo actual."}
                 disabled={role !== "admin" || !!actionLoading}
                 onClick={() => void runControlAction("/api/v1/control/resume", selectedExecutionBotId ? { bot_id: selectedExecutionBotId } : undefined, { successMessage: "Bot reanudado." })}
               />
@@ -820,9 +866,14 @@ export default function ExecutionPage() {
                   </p>
                 </div>
                 {selectedExecutionBot ? (
-                  <Badge variant={selectedExecutionBot.status === "active" ? "success" : selectedExecutionBot.status === "paused" ? "warn" : "neutral"}>
-                    {selectedExecutionBot.status}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={botRuntimeStatusVariant(selectedExecutionBot.status)}>
+                      runtime:{selectedExecutionBot.status}
+                    </Badge>
+                    <Badge variant={botRegistryStatusVariant(selectedExecutionBot.registry_status)}>
+                      registry:{selectedExecutionBot.registry_status || "active"}
+                    </Badge>
+                  </div>
                 ) : (
                   <Badge variant="neutral">sin bot</Badge>
                 )}
@@ -834,7 +885,7 @@ export default function ExecutionPage() {
                     <option value="">Seleccionar bot...</option>
                     {botInstances.map((bot) => (
                       <option key={`execution-bot-${bot.id}`} value={bot.id}>
-                        {`${bot.name} | ${bot.mode.toUpperCase()} | ${bot.status}`}
+                        {getExecutionBotLabel(bot)}
                       </option>
                     ))}
                   </Select>
@@ -851,7 +902,7 @@ export default function ExecutionPage() {
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button
                       variant="outline"
-                      disabled={role !== "admin" || botBulkBusy}
+                      disabled={role !== "admin" || botBulkBusy || isExecutionBotArchived(selectedExecutionBot)}
                       onClick={() =>
                         void patchSingleBot(
                           selectedExecutionBot.id,
@@ -862,25 +913,43 @@ export default function ExecutionPage() {
                     >
                       {selectedExecutionBot.status === "active" ? "Pausar bot" : "Activar bot"}
                     </Button>
-                    <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "shadow" }, "Cambiar bot a SHADOW")}>
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || botBulkBusy || isExecutionBotArchived(selectedExecutionBot)}
+                      onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "shadow" }, "Cambiar bot a SHADOW")}
+                    >
                       Modo SHADOW
                     </Button>
-                    <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "paper" }, "Cambiar bot a PAPER")}>
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || botBulkBusy || isExecutionBotArchived(selectedExecutionBot)}
+                      onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "paper" }, "Cambiar bot a PAPER")}
+                    >
                       Modo PAPER
                     </Button>
-                    <Button variant="outline" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "testnet" }, "Cambiar bot a TESTNET")}>
+                    <Button
+                      variant="outline"
+                      disabled={role !== "admin" || botBulkBusy || isExecutionBotArchived(selectedExecutionBot)}
+                      onClick={() => void patchSingleBot(selectedExecutionBot.id, { mode: "testnet" }, "Cambiar bot a TESTNET")}
+                    >
                       Modo TESTNET
                     </Button>
-                    <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(selectedExecutionBot.id, { status: "archived" }, "Archivar bot")}>
-                      Archivar bot
-                    </Button>
-                    <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void deleteBot(selectedExecutionBot)}>
-                      Borrar bot
-                    </Button>
+                    {isExecutionBotArchived(selectedExecutionBot) ? (
+                      <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void applySingleBotRegistryAction(selectedExecutionBot, "restore")}>
+                        Restaurar bot
+                      </Button>
+                    ) : (
+                      <Button variant="danger" disabled={role !== "admin" || botBulkBusy} onClick={() => void applySingleBotRegistryAction(selectedExecutionBot, "archive")}>
+                        Archivar bot
+                      </Button>
+                    )}
                     <Button variant="ghost" className="text-[11px]" onClick={() => { window.location.href = "/strategies"; }}>
                       Editar pool →
                     </Button>
                   </div>
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Runtime `status` y registry `registry_status` se muestran por separado. El registry usa soft-archive; esta consola ya no ofrece borrado destructivo.
+                  </p>
                   <p className="mt-2 text-[11px] text-slate-400">
                     Policy pool: <strong>{selectedBotPolicyState?.policy_state.pool_strategy_ids.length ?? selectedExecutionBot.pool_strategy_ids.length}</strong> estrategias
                     {selectedExecutionBot.metrics?.last_run_at ? ` · último run ${new Date(selectedExecutionBot.metrics.last_run_at).toLocaleString()}` : ""}
@@ -1192,11 +1261,11 @@ export default function ExecutionPage() {
             </div>
             <div>
               <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Filtro estado</label>
-              <Select value={botStatusFilter} onChange={(e) => setBotStatusFilter(e.target.value as "all" | "active" | "paused" | "archived")}>
+              <Select value={botStatusFilter} onChange={(e) => setBotStatusFilter(e.target.value as ExecutionBotStatusFilter)}>
                 <option value="all">Todos</option>
                 <option value="active">active</option>
                 <option value="paused">paused</option>
-                <option value="archived">archived</option>
+                <option value="archived">archived (registry)</option>
               </Select>
             </div>
             <div className="flex items-end">
@@ -1213,7 +1282,7 @@ export default function ExecutionPage() {
               <Button
                 variant="outline"
                 className="w-full"
-                onClick={() => selectBotsWhere((row) => String(row.status) === "active")}
+                onClick={() => selectBotsWhere((row) => !isExecutionBotArchived(row) && String(row.status) === "active")}
                 disabled={!botRowsFiltered.length}
               >
                 Seleccionar activos
@@ -1238,31 +1307,55 @@ export default function ExecutionPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "active" }, "Activar operadores")}>
+            <Button
+              variant="outline"
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || selectionHasArchivedBots}
+              onClick={() => void runBotsBulkPatch({ status: "active" }, "Activar operadores")}
+            >
               Activar
             </Button>
-            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "paused" }, "Pausar operadores")}>
+            <Button
+              variant="outline"
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || selectionHasArchivedBots}
+              onClick={() => void runBotsBulkPatch({ status: "paused" }, "Pausar operadores")}
+            >
               Pausar
             </Button>
-            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ mode: "paper" }, "Cambiar modo a PAPER")}>
+            <Button
+              variant="outline"
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || selectionHasArchivedBots}
+              onClick={() => void runBotsBulkPatch({ mode: "paper" }, "Cambiar modo a PAPER")}
+            >
               Modo PAPER
             </Button>
-            <Button variant="outline" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ mode: "testnet" }, "Cambiar modo a TESTNET")}>
+            <Button
+              variant="outline"
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || selectionHasArchivedBots}
+              onClick={() => void runBotsBulkPatch({ mode: "testnet" }, "Cambiar modo a TESTNET")}
+            >
               Modo TESTNET
             </Button>
             <Button
               variant="outline"
-              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || liveBotsBlocked}
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || liveBotsBlocked || selectionHasArchivedBots}
               title={liveBotsBlocked ? `Bloqueado: ${liveBotsBlockedReason}` : "Cambiar modo de operadores a LIVE"}
               onClick={() => void runBotsBulkPatch({ mode: "live" }, "Cambiar modo a LIVE")}
             >
               Modo LIVE
             </Button>
-            <Button variant="danger" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void runBotsBulkPatch({ status: "archived" }, "Archivar operadores")}>
+            <Button
+              variant="danger"
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || !selectionHasActiveRegistryBots}
+              onClick={() => void applyBotsBulkRegistryAction("archive")}
+            >
               Archivar
             </Button>
-            <Button variant="danger" disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length} onClick={() => void deleteBotsBulk()}>
-              Borrar
+            <Button
+              variant="outline"
+              disabled={role !== "admin" || botBulkBusy || !botSelectedIds.length || !selectionHasArchivedBots}
+              onClick={() => void applyBotsBulkRegistryAction("restore")}
+            >
+              Restaurar
             </Button>
           </div>
 
@@ -1300,13 +1393,18 @@ export default function ExecutionPage() {
                       </TD>
                       <TD>
                         <div className="max-w-[180px]">
-                          <p className="truncate font-semibold text-slate-100" title={bot.name}>{bot.name}</p>
-                          <p className="truncate text-[11px] text-slate-400" title={bot.id}>{bot.id}</p>
+                          <p className="truncate font-semibold text-slate-100" title={getBotDisplayName(bot)}>{getBotDisplayName(bot)}</p>
+                          <p className="truncate text-[11px] text-slate-400" title={bot.bot_id || bot.id}>{bot.bot_id || bot.id}</p>
                         </div>
                       </TD>
                       <TD>{bot.engine}</TD>
                       <TD><Badge variant={bot.mode === "live" ? "warn" : bot.mode === "testnet" ? "info" : "neutral"}>{bot.mode}</Badge></TD>
-                      <TD><Badge variant={bot.status === "active" ? "success" : bot.status === "paused" ? "warn" : "neutral"}>{bot.status}</Badge></TD>
+                      <TD>
+                        <div className="flex flex-col gap-1">
+                          <Badge variant={botRuntimeStatusVariant(bot.status)}>{`runtime:${bot.status}`}</Badge>
+                          <Badge variant={botRegistryStatusVariant(bot.registry_status)}>{`registry:${bot.registry_status || "active"}`}</Badge>
+                        </div>
+                      </TD>
                       <TD>{m?.strategy_count ?? bot.pool_strategy_ids.length}</TD>
                       <TD>{m?.trade_count ?? 0}</TD>
                       <TD>{fmtPct(m?.winrate ?? 0)}</TD>
@@ -1319,15 +1417,27 @@ export default function ExecutionPage() {
                       </TD>
                       <TD>
                         <div className="flex flex-wrap gap-1">
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void patchSingleBot(bot.id, { status: bot.status === "active" ? "paused" : "active" }, bot.status === "active" ? "Pausar operador" : "Activar operador")}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-[11px]"
+                            disabled={role !== "admin" || botBulkBusy || isExecutionBotArchived(bot)}
+                            onClick={() => void patchSingleBot(bot.id, { status: bot.status === "active" ? "paused" : "active" }, bot.status === "active" ? "Pausar operador" : "Activar operador")}
+                          >
                             {bot.status === "active" ? "Pausar" : "Activar"}
                           </Button>
                           <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => { window.location.href = "/strategies"; }}>
                             Pool →
                           </Button>
-                          <Button size="sm" variant="danger" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void deleteBot(bot)}>
-                            Borrar
-                          </Button>
+                          {isExecutionBotArchived(bot) ? (
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void applySingleBotRegistryAction(bot, "restore")}>
+                              Restaurar
+                            </Button>
+                          ) : (
+                            <Button size="sm" variant="danger" className="h-7 px-2 text-[11px]" disabled={role !== "admin" || botBulkBusy} onClick={() => void applySingleBotRegistryAction(bot, "archive")}>
+                              Archivar
+                            </Button>
+                          )}
                         </div>
                       </TD>
                     </TR>

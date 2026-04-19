@@ -1,6 +1,295 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-08
+Fecha: 2026-04-18
+
+## Siguiente paso exacto despues de RTLOPS-75 - 2026-04-18
+- [x] Fundar la consolidacion canonica y la decision neta por simbolo:
+  - `GET /api/v1/bots/{bot_id}/signal-consolidation`
+  - `signal_consolidation` derivado sobre `RTLOPS-72 + RTLOPS-73 + RTLOPS-74`
+  - `net_decision_by_symbol` con trazabilidad minima de inputs
+  - `contract_version` del Bot Registry elevada a `rtlops75/v1`
+  - surface minima de lectura en `strategies/page.tsx`
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir `RTLOPS-76/77`
+  - sin tocar lifecycle
+  - sin tocar live console
+  - sin tocar ejecucion remota real por estrategia
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-76` y resolver solo los contratos minimos de runtime/storage/API para colgar la decision neta por simbolo ya canonica de:
+    - `RTLOPS-72`
+    - `RTLOPS-73`
+    - `RTLOPS-74`
+    - `RTLOPS-75`
+  - mantener fuera de ese bloque:
+    - `RTLOPS-77`
+    - lifecycle
+    - live console
+    - cualquier ejecucion separada por estrategia o por subcuenta
+
+## Siguiente paso exacto despues de RTLOPS-74 - 2026-04-18
+- [x] Fundar seleccion canonica de estrategia por simbolo:
+  - persistencia `strategy_selection_by_symbol`
+  - `GET/PATCH /api/v1/bots/{bot_id}/strategy-selection`
+  - resolucion deterministica `selected_strategy_by_symbol`
+  - criterios minimos `explicit / single_eligible / primary_strategy / pool_order`
+  - UI minima util en `strategies/page.tsx`
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir `RTLOPS-75/76/77`
+  - sin tocar lifecycle
+  - sin tocar live console
+  - sin abrir execution neta por simbolo
+- [x] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-75` y resolver solo la consolidacion de señales y la decision neta por simbolo sobre la base ya cerrada de:
+    - `RTLOPS-72`
+    - `RTLOPS-73`
+    - `RTLOPS-74`
+  - mantener fuera de ese bloque:
+    - `RTLOPS-76`
+    - `RTLOPS-77`
+    - lifecycle
+    - live console
+
+## Siguiente paso exacto despues de la canonizacion del type-check frio - 2026-04-18
+- [x] Reproducir el comportamiento real del dashboard en frio:
+  - sin `.next`
+  - sin `tsconfig.tsbuildinfo`
+  - shell nueva por comando
+- [x] Validar la verdad tecnica correcta:
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- [x] Formalizar el comando canonico del repo:
+  - `npm.cmd run typecheck`
+  - implementado como `tsc --noEmit --incremental false`
+- [x] Siguiente paso exacto recomendado:
+  - volver al frente funcional y abrir `RTLOPS-74` sobre la linea viva actual
+  - mantener fuera de ese bloque cualquier re-auditoria de tooling salvo que aparezca una regresion nueva y reproducible
+
+## Siguiente paso exacto despues de RTLOPS-73 - 2026-04-18
+- [x] Fundar elegibilidad canonica simbolo↔estrategia sobre el pool del bot:
+  - persistencia `strategy_eligibility_by_symbol`
+  - `GET/PATCH /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+  - reconciliacion fail-closed contra pool/universe
+  - UI minima util en `strategies/page.tsx`
+- [x] Mantener el bloque profesional y acotado:
+  - sin tocar backend live
+  - sin abrir `RTLOPS-74+`
+  - sin tocar lifecycle ni live console
+- [x] Caveat tecnico derivado ya cerrado:
+  - el microbloque posterior de canonizacion confirmo que el comando canónico correcto del repo es `npm.cmd run typecheck`
+  - `next typegen` no es prerequisito obligatorio para el type-check del dashboard
+- [ ] Siguiente paso exacto recomendado:
+  - volver al frente funcional y abrir `RTLOPS-74`
+
+## Siguiente paso exacto despues del microbloque tecnico de `tsc --noEmit` - 2026-04-18
+- [x] Revalidar el caveat tecnico con reproduccion real:
+  - `npm.cmd exec tsc -- --noEmit` directo
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit`
+  - `npm.cmd run build`
+  - reproduccion en frio sin `.next` ni `tsconfig.tsbuildinfo`
+- [x] Cerrar la narrativa falsa:
+  - el `tsc` standalone ya pasa tambien en frio en esta punta
+  - `next typegen` no cambia el resultado del type-check actual
+  - en esta validacion inicial no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`
+- [ ] Siguiente paso exacto recomendado:
+  - bloque ya superado por la canonizacion posterior del mismo dia
+
+## Siguiente paso exacto despues de RTLOPS-71 subbloque 2 - 2026-04-18
+- [x] Normalizar identidad visible del bot en `backtests/page.tsx`:
+  - `display_name + bot_id` en selector, mensajes, resumen filtrado, vista centrica y related bots
+- [x] Mantener el bloque quirurgico:
+  - sin tocar backend
+  - sin tocar `strategies/page.tsx`
+  - sin tocar `strategies/[id]/page.tsx`
+  - sin tocar comparador legacy ni evidence status
+- [x] Caveat tecnico revalidado despues:
+  - el microbloque tecnico del 2026-04-18 confirmo que `npm.cmd exec tsc -- --noEmit` ya pasa tambien en frio y que la narrativa de FAIL no describe el estado actual
+- [ ] Siguiente paso exacto recomendado:
+  - volver a priorizacion tecnica/producto ahora que el caveat quedo cerrado honestamente
+
+## Siguiente paso exacto despues de RTLOPS-71 subbloque 1 - 2026-04-17
+- [x] Endurecer el strategy detail para depender del contrato canonico:
+  - quitar fallback frontend que reconstruia `truth/evidence`
+  - fallar de forma honesta si falta `truth` canonica
+  - mostrar aviso explicito si falta `evidence` canonica
+- [x] Mantener el bloque quirurgico:
+  - sin tocar `backtests/page.tsx` por defecto
+  - sin abrir `RTLOPS-73+`
+  - sin cleanup transversal del dashboard
+- [ ] Siguiente paso exacto recomendado:
+  - validar si corresponde un segundo subbloque chico de `RTLOPS-71` sobre surfaces derivadas:
+    - naming legacy visible en `backtests/page.tsx`
+    - textos/helpers de strategy frontend que todavia sobrevivan fuera de `strategies/[id]`
+  - si esa validacion no confirma un subbloque chico y coherente:
+    - volver a priorizacion antes de abrir producto nuevo
+
+## Siguiente lote exacto despues del lote 1 de reparacion execution vs registry - 2026-04-17
+- [x] Corregir deuda real de surface operatoria en `execution`:
+  - quitar `DELETE /api/v1/bots/{bot_id}` de la UI
+  - usar soft-archive / restore reales del registry
+  - separar `status` runtime de `registry_status`
+  - mostrar identidad canonica (`display_name` + `bot_id`) en selector y tabla
+- [x] Mantener una reparacion chica y profesional:
+  - sin tocar el core de execution/live safety
+  - sin abrir `RTLOPS-73+`
+  - sin mezclar admin con codigo
+- [ ] Siguiente lote exacto recomendado:
+  - abrir `RTLOPS-71` y resolver solo deuda fina de strategy/frontend ya absorbido:
+    - surfaces que todavia viven de fallback o naming legacy
+    - QA fino donde el frontend moderno todavia esta subrepresentado
+  - mantener fuera de ese lote:
+    - `RTLOPS-73+`
+    - lifecycle
+    - live console
+    - refactor global del dashboard
+
+## Siguiente bloque exacto despues de RTLOPS-72 - 2026-04-17
+- [x] Fundar el modelo canonico multi-symbol por bot:
+  - storage reutilizando `universe_name`, `universe` y `max_live_symbols`
+  - `GET/PATCH /api/v1/bots/{bot_id}/multi-symbol`
+  - limites base explicitos y fail-closed por catalogo/registry
+- [x] Mantener una implementacion minima-profesional:
+  - sin mapping estrategia<->simbolo
+  - sin consolidacion de señales
+  - sin lifecycle
+  - sin live console
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-73` y resolver solo:
+    - mapping/elegibilidad base de estrategias por simbolo sobre el modelo canonico multi-symbol ya persistido
+    - sin abrir todavia consolidacion, net execution, lifecycle ni live console
+
+## Siguiente bloque exacto despues de RTLRESE-31 - 2026-04-17
+- [x] Consolidar el Bot Registry como surface minima canonica:
+  - `GET /api/v1/bots/registry-contract`
+  - defaults/limites/enums del registry definidos en backend y consumidos por frontend
+  - storage real (`learning/bots.json`) visible sin crear una segunda verdad
+- [x] Mantener una implementacion minima-profesional:
+  - sin reabrir identidad, config base, symbols assignment, strategy pool ni gobierno basico
+  - sin tocar runtime live, lifecycle ni live console
+  - con frontend y API alineados sobre el mismo shape administrativo
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-72` como primer bloque del frente `RTLOPS-72+` y resolver solo runtime multi-symbol sobre el registry ya cerrado
+  - mantener fuera de ese bloque:
+    - lifecycle
+    - live console
+    - refactor global del registry
+    - cleanup Git adicional
+
+## Siguiente bloque exacto despues de RTLRESE-30 - 2026-04-16
+- [x] Endurecer Bot Registry con gobierno basico y trazabilidad minima:
+  - `last_change_type`
+  - `last_change_summary`
+  - `last_changed_by`
+  - `last_change_source`
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - reactivacion fail-closed contra el registry actual
+  - soft-archive sin borrado destructivo
+  - visibilidad real de trazabilidad y errores de reactivacion
+  - reuse del `decision_log` existente sin abrir auditoria paralela
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-31` y resolver solo:
+    - contratos minimos de storage/API/frontend para el Bot Registry ya endurecido
+    - sin reabrir identidad, config base, symbols assignment, strategy pool o gobierno basico ya cerrados en `RTLRESE-26/27/28/29/30`
+  - mantener fuera de ese bloque:
+    - runtime multi-symbol (`RTLOPS-72+`)
+    - lifecycle
+    - live console
+    - elegibilidad estrategia<->simbolo
+
+## Siguiente bloque exacto despues de RTLRESE-29 - 2026-04-16
+- [x] Extender Bot Registry con strategy pool asignado por bot:
+  - `pool_strategy_ids`
+  - `pool_strategies`
+  - `strategy_pool_status`
+  - `strategy_pool_errors`
+  - `max_pool_strategies`
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - persistencia real sobre el registry ya existente
+  - fuente canonica apoyada en `strategy registry / truth`
+  - validaciones explicitas de minimo, duplicados, ids invalidos y cap `15`
+  - estado fail-closed visible si el pool deja de ser valido
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-30` y resolver solo:
+    - gobierno avanzado / restricciones siguientes del Bot Registry sobre la base ya persistida
+    - sin reabrir pool, simbolos o config base ya cerrados en `RTLRESE-27/28/29`
+  - mantener fuera de ese bloque:
+    - elegibilidad estrategia<->simbolo
+    - runtime multi-symbol (`RTLOPS-72+`)
+    - lifecycle
+    - live console
+
+## Siguiente bloque exacto despues de RTLRESE-28 - 2026-04-16
+- [x] Extender Bot Registry con asignacion manual de simbolos por bot:
+  - `universe_name`
+  - `universe`
+  - `max_live_symbols`
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - persistencia real sobre el registry ya existente
+  - universo valido reutilizando el catalogo real del sistema
+  - validaciones explicitas de dominio, duplicados y cap live
+  - estado fail-closed visible si la asignacion deja de ser valida
+- [x] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-29` y resolver solo:
+    - strategy pool asignado por bot
+    - persistencia real del pool
+    - limites minimos del pool dentro del registry
+  - mantener fuera de ese bloque:
+    - elegibilidad estrategia<->simbolo
+    - runtime multi-symbol (`RTLOPS-72+`)
+    - lifecycle
+    - live console
+
+## Siguiente bloque exacto despues de RTLRESE-27 - 2026-04-16
+- [x] Extender Bot Registry con configuracion base operativa por bot:
+  - `capital_base_usd`
+  - `risk_profile`
+  - limites minimos de exposicion, perdida y capacidad
+  - wiring real en backend/API/UI
+- [x] Mantener una implementacion minima-profesional:
+  - persistencia real en el registry ya existente
+  - validaciones explicitas
+  - UI minima conectada al backend real
+  - tests reales del bloque
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-28` y resolver solo:
+    - asignacion de simbolos por bot
+    - validaciones minimas de simbolos segun `domain_type`
+    - superficie minima de UI para ver/agregar/quitar simbolos del bot
+  - mantener fuera de ese bloque:
+    - strategy pool (`RTLRESE-29`)
+    - lifecycle (`RTLRESE-25`)
+    - multi-symbol runtime (`RTLOPS-72+`)
+    - live console
+    - reglas avanzadas de portfolio por simbolo
+
+## Siguiente bloque exacto despues de RTLRESE-26 - 2026-04-14
+- [x] Dejar Bot Registry con identidad real y persistente:
+  - `bot_id` estable
+  - `display_name` editable
+  - `alias`
+  - `description`
+  - `domain_type=spot|futures`
+  - `registry_status=active|archived`
+  - create/list/get/patch/archive/restore reales
+- [x] Conectar UI minima al backend real:
+  - alta desde registry
+  - listado con identidad canonica
+  - edicion inline
+  - archivar / restaurar
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLRESE-27` y resolver solo:
+    - capital / budget base por bot
+    - risk profile base por bot
+    - flags/config minima para que el bot exista como entidad configurable mas alla de su identidad
+  - mantener fuera de ese bloque:
+    - symbols assignment (`RTLRESE-28`)
+    - strategy pool (`RTLRESE-29`)
+    - lifecycle (`RTLRESE-25`)
+    - multi-symbol runtime (`RTLOPS-72+`)
 
 ## Opcion 2 exacta: Binance LIVE readiness real, despues de dejar PAPER canonico - 2026-04-08
 - [x] Dejar production online y fail-closed:
@@ -309,34 +598,23 @@ Fecha: 2026-04-08
   - `strategy_evidence`
   - `bot_policy_state`
   - `bot_decision_log`
-- [x] Compatibilidad razonable mantenida mientras RTLRESE-14 no este integrado en `main`.
-- [ ] Cuando RTLRESE-14 quede integrado en la base real:
-  - retirar fallbacks legacy de `strategies/[id]`, `strategies/page` y `execution/page`;
-  - dejar solo contratos de dominio.
-- [ ] Reejecutar validacion frontend real cuando el entorno tenga Node:
-  - `next lint`
-  - `tsc --noEmit`
-  - `next build`
+- [x] Dominios y endpoints canonicos ya absorbidos en la base real:
+  - `rtlab_autotrader/rtlab_core/domains/*.py` ya esta trackeado
+  - `GET /api/v1/strategies/{id}/truth`
+  - `GET /api/v1/strategies/{id}/evidence`
+  - `GET/PATCH /api/v1/bots/{id}/policy-state`
+  - `GET /api/v1/bots/{id}/decision-log`
+- [x] Reejecutar validacion frontend real con Node disponible:
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS tambien en frio tras limpieza controlada de artefactos locales (`.next/types`, `.next/dev/types`, `tsconfig.tsbuildinfo`)
 - [ ] Si aparece una pagina dedicada de bots en RTLRESE-16:
   - conservar la misma separacion semantica ya aplicada en `Execution`;
   - no volver a mezclar runtime global con `policy_state` del bot.
-- [x] Queda explicitado que RTLRESE-13/14/15 se cerraron en ramas dedicadas, pero no aparecen integradas en esta base activa.
-- [ ] Siguiente paso chico 1:
-  - mergear o recrear sobre la base actual el split backend de RTLRESE-13 y verificar que `rtlab_autotrader/rtlab_core/domains/*.py` quede trackeado.
-- [ ] Siguiente paso chico 2:
-  - mergear o recrear sobre la base actual el split API de RTLRESE-14 y verificar presencia real de:
-    - `GET /api/v1/strategies/{id}/truth`
-    - `GET /api/v1/strategies/{id}/evidence`
-    - `GET /api/v1/bots/{id}/policy-state`
-    - `PATCH /api/v1/bots/{id}/policy-state`
-    - `GET /api/v1/bots/{id}/decision-log`
-- [ ] Siguiente paso chico 3:
-  - mergear o recrear sobre la base actual el split frontend de RTLRESE-15 y verificar que:
-    - `rtlab_dashboard/src/lib/types.ts` ya no use `last_oos` como eje principal de lectura;
-    - `strategies/[id]` separe `truth` de `evidence`;
-    - `execution` separe `policy_state` de `decision_log`.
-- [ ] Siguiente paso chico 4:
-  - retirar etiquetas o contratos legacy solo despues de que 13/14/15 esten efectivamente integradas y validadas en la base real.
+- [x] Frontend base ya opera sobre esos contratos en `strategies/[id]` y `execution`.
+- [x] Ajustar los mensajes legacy que seguian diciendo que RTLRESE-14 no estaba integrada.
+- [ ] Pendiente chico residual:
+  - si reaparece un backend remoto viejo sin contratos de dominio, degradar con mensaje transicional honesto;
+  - no volver a presentar esa degradacion como si `RTLRESE-13/14/15` siguieran sin absorberse en la base real.
 
 ## Siguiente bloque chico tras RTLRESE-7
 - [x] Clasificacion minima `trusted/legacy/quarantine` en `strategy_evidence`.

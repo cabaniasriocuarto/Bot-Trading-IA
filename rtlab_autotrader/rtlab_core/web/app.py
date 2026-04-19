@@ -782,21 +782,55 @@ class RunsBulkBody(BaseModel):
 
 
 class BotCreateBody(BaseModel):
+    display_name: str | None = None
+    alias: str | None = None
+    description: str | None = None
+    domain_type: str | None = None
+    registry_status: str | None = None
+    capital_base_usd: float | None = None
+    max_total_exposure_pct: float | None = None
+    max_asset_exposure_pct: float | None = None
+    risk_profile: str | None = None
+    risk_per_trade_pct: float | None = None
+    max_daily_loss_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    max_positions: int | None = None
+    universe_name: str | None = None
+    max_live_symbols: int | None = None
     name: str | None = None
     engine: str = "bandit_thompson"
     mode: Literal["shadow", "paper", "testnet", "live"] = "paper"
     status: Literal["active", "paused", "archived"] = "active"
     pool_strategy_ids: list[str] | None = None
+    strategy_eligibility_by_symbol: dict[str, list[str]] | None = None
+    strategy_selection_by_symbol: dict[str, str] | None = None
     universe: list[str] | None = None
     notes: str | None = None
 
 
 class BotPatchBody(BaseModel):
+    display_name: str | None = None
+    alias: str | None = None
+    description: str | None = None
+    domain_type: str | None = None
+    registry_status: str | None = None
+    capital_base_usd: float | None = None
+    max_total_exposure_pct: float | None = None
+    max_asset_exposure_pct: float | None = None
+    risk_profile: str | None = None
+    risk_per_trade_pct: float | None = None
+    max_daily_loss_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    max_positions: int | None = None
+    universe_name: str | None = None
+    max_live_symbols: int | None = None
     name: str | None = None
     engine: str | None = None
     mode: Literal["shadow", "paper", "testnet", "live"] | None = None
     status: Literal["active", "paused", "archived"] | None = None
     pool_strategy_ids: list[str] | None = None
+    strategy_eligibility_by_symbol: dict[str, list[str]] | None = None
+    strategy_selection_by_symbol: dict[str, str] | None = None
     universe: list[str] | None = None
     notes: str | None = None
 
@@ -806,8 +840,23 @@ class BotPolicyStatePatchBody(BaseModel):
     mode: Literal["shadow", "paper", "testnet", "live"] | None = None
     status: Literal["active", "paused", "archived"] | None = None
     pool_strategy_ids: list[str] | None = None
+    strategy_eligibility_by_symbol: dict[str, list[str]] | None = None
     universe: list[str] | None = None
     notes: str | None = None
+
+
+class BotMultiSymbolPatchBody(BaseModel):
+    universe_name: str | None = None
+    symbols: list[str] | None = None
+    max_active_symbols: int | None = None
+
+
+class BotStrategyEligibilityPatchBody(BaseModel):
+    strategy_eligibility_by_symbol: dict[str, list[str]] | None = None
+
+
+class BotStrategySelectionPatchBody(BaseModel):
+    strategy_selection_by_symbol: dict[str, str] | None = None
 
 
 class BotBulkPatchBody(BaseModel):
@@ -822,6 +871,158 @@ class BotBulkPatchBody(BaseModel):
 
 class BotStartBody(BaseModel):
     bot_id: str | None = None
+
+
+BOT_DEFAULT_CAPITAL_BASE_USD = 10000.0
+BOT_DEFAULT_RISK_PROFILE = "medium"
+BOT_MAX_LIVE_SYMBOLS = 12
+BOT_MAX_POOL_STRATEGIES = 15
+BOT_MULTI_SYMBOL_CONTRACT_VERSION = "rtlops72/v1"
+BOT_MULTI_SYMBOL_STORAGE_FIELDS = ("universe_name", "universe", "max_live_symbols")
+BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS = BOT_MAX_LIVE_SYMBOLS
+BOT_STRATEGY_ELIGIBILITY_CONTRACT_VERSION = "rtlops73/v1"
+BOT_STRATEGY_ELIGIBILITY_STORAGE_FIELDS = ("strategy_eligibility_by_symbol",)
+BOT_STRATEGY_ELIGIBILITY_REASON_CODES = (
+    "symbol_assignment_invalid",
+    "strategy_pool_invalid",
+    "symbol_not_in_universe",
+    "strategy_not_in_pool",
+    "strategy_not_effective_in_pool",
+    "no_eligible_strategy_for_symbol",
+)
+BOT_STRATEGY_SELECTION_CONTRACT_VERSION = "rtlops74/v1"
+BOT_STRATEGY_SELECTION_STORAGE_FIELDS = ("strategy_selection_by_symbol",)
+BOT_STRATEGY_SELECTION_REASON_CODES = (
+    "strategy_eligibility_invalid",
+    "selected_strategy_not_eligible",
+    "no_strategy_selected_for_symbol",
+)
+BOT_STRATEGY_SELECTION_CRITERIA = (
+    "explicit",
+    "single_eligible",
+    "primary_strategy",
+    "pool_order",
+)
+BOT_SIGNAL_CONSOLIDATION_CONTRACT_VERSION = "rtlops75/v1"
+BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS: tuple[str, ...] = ()
+BOT_SIGNAL_CONSOLIDATION_REASON_CODES = (
+    "bot_archived",
+    "strategy_selection_invalid",
+    "selected_strategy_missing",
+    "selected_strategy_not_found",
+    "selected_strategy_disabled",
+    "selected_strategy_symbol_mismatch",
+    "selected_strategy_signal_unresolved",
+)
+BOT_SIGNAL_CONSOLIDATION_CRITERIA = (
+    "selected_strategy",
+    "action_override",
+    "side_override",
+    "defensive_tags_flat",
+    "meanreversion_tags_sell",
+    "trend_tags_buy",
+)
+BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
+    "conservative": {
+        "risk_profile": "conservative",
+        "max_total_exposure_pct": 40.0,
+        "max_asset_exposure_pct": 15.0,
+        "risk_per_trade_pct": 0.25,
+        "max_daily_loss_pct": 1.0,
+        "max_drawdown_pct": 8.0,
+        "max_positions": 5,
+    },
+    "medium": {
+        "risk_profile": "medium",
+        "max_total_exposure_pct": 65.0,
+        "max_asset_exposure_pct": 25.0,
+        "risk_per_trade_pct": 0.5,
+        "max_daily_loss_pct": 3.0,
+        "max_drawdown_pct": 15.0,
+        "max_positions": 10,
+    },
+    "aggressive": {
+        "risk_profile": "aggressive",
+        "max_total_exposure_pct": 85.0,
+        "max_asset_exposure_pct": 35.0,
+        "risk_per_trade_pct": 1.0,
+        "max_daily_loss_pct": 5.0,
+        "max_drawdown_pct": 22.0,
+        "max_positions": 20,
+    },
+}
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops75/v1"
+BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
+BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
+BOT_REGISTRY_DEFAULT_MODE = "paper"
+BOT_REGISTRY_DEFAULT_STATUS = "active"
+BOT_REGISTRY_ALLOWED_POLICY_STATUSES = ("active", "paused", "archived")
+BOT_REGISTRY_ALLOWED_REGISTRY_STATUSES = ("active", "archived")
+BOT_REGISTRY_ALLOWED_DOMAIN_TYPES = ("spot", "futures")
+BOT_REGISTRY_ALLOWED_ENGINES = ("fixed_rules", "bandit_thompson", "bandit_ucb1")
+BOT_REGISTRY_ALLOWED_CHANGE_TYPES = ("created", "updated", "archived", "reactivated")
+BOT_REGISTRY_API_SURFACE = {
+    "list_path": "/api/v1/bots",
+    "create_path": "/api/v1/bots",
+    "detail_path": "/api/v1/bots/{bot_id}",
+    "patch_path": "/api/v1/bots/{bot_id}",
+    "multi_symbol_path": "/api/v1/bots/{bot_id}/multi-symbol",
+    "symbol_strategy_eligibility_path": "/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    "symbol_strategy_selection_path": "/api/v1/bots/{bot_id}/strategy-selection",
+    "signal_consolidation_path": "/api/v1/bots/{bot_id}/signal-consolidation",
+    "archive_path": "/api/v1/bots/{bot_id}/archive",
+    "restore_path": "/api/v1/bots/{bot_id}/restore",
+    "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
+    "decision_log_path": "/api/v1/bots/{bot_id}/decision-log",
+}
+BOT_REGISTRY_FIELD_GROUPS = {
+    "identity": ["id", "bot_id", "display_name", "alias", "description", "domain_type"],
+    "base_config": [
+        "capital_base_usd",
+        "risk_profile",
+        "max_total_exposure_pct",
+        "max_asset_exposure_pct",
+        "risk_per_trade_pct",
+        "max_daily_loss_pct",
+        "max_drawdown_pct",
+        "max_positions",
+    ],
+    "symbol_assignment": [
+        "universe_name",
+        "universe",
+        "max_live_symbols",
+        "symbol_assignment_status",
+        "symbol_assignment_errors",
+    ],
+    "strategy_pool": [
+        "pool_strategy_ids",
+        "pool_strategies",
+        "strategy_pool_status",
+        "strategy_pool_errors",
+        "max_pool_strategies",
+    ],
+    "strategy_eligibility": [
+        "strategy_eligibility_by_symbol",
+        "strategy_eligibility",
+    ],
+    "strategy_selection": [
+        "strategy_selection_by_symbol",
+        "strategy_selection",
+    ],
+    "signal_consolidation": [
+        "signal_consolidation",
+    ],
+    "policy_state": ["engine", "mode", "status", "notes"],
+    "governance": ["registry_status", "archived_at"],
+    "trace": [
+        "created_at",
+        "updated_at",
+        "last_change_type",
+        "last_change_summary",
+        "last_changed_by",
+        "last_change_source",
+    ],
+}
 
 
 class LivePreflightRunBody(BaseModel):
@@ -3628,14 +3829,1751 @@ def risk_hooks(context):
     @staticmethod
     def _normalize_bot_status(value: str | None) -> str:
         status = str(value or "active").strip().lower()
-        if status not in {"active", "paused", "archived"}:
+        if status not in BOT_REGISTRY_ALLOWED_POLICY_STATUSES:
             return "active"
         return status
 
     @staticmethod
+    def _normalize_bot_registry_status(value: str | None) -> str:
+        status = str(value or "active").strip().lower()
+        if status not in BOT_REGISTRY_ALLOWED_REGISTRY_STATUSES:
+            return "active"
+        return status
+
+    @staticmethod
+    def _normalize_bot_domain_type(value: str | None) -> str:
+        domain = str(value or "spot").strip().lower()
+        if domain not in BOT_REGISTRY_ALLOWED_DOMAIN_TYPES:
+            return "spot"
+        return domain
+
+    @staticmethod
+    def _normalize_bot_risk_profile(value: str | None) -> str:
+        profile = str(value or BOT_DEFAULT_RISK_PROFILE).strip().lower()
+        if profile not in BOT_RISK_PROFILE_DEFAULTS:
+            return BOT_DEFAULT_RISK_PROFILE
+        return profile
+
+    @classmethod
+    def _bot_risk_profile_defaults(cls, risk_profile: str | None) -> dict[str, float | int | str]:
+        profile = cls._normalize_bot_risk_profile(risk_profile)
+        return dict(BOT_RISK_PROFILE_DEFAULTS.get(profile) or BOT_RISK_PROFILE_DEFAULTS[BOT_DEFAULT_RISK_PROFILE])
+
+    @staticmethod
     def _normalize_bot_engine(value: str | None) -> str:
-        engine = str(value or "bandit_thompson").strip()
-        return engine or "bandit_thompson"
+        engine = str(value or BOT_REGISTRY_DEFAULT_ENGINE).strip()
+        return engine or BOT_REGISTRY_DEFAULT_ENGINE
+
+    @staticmethod
+    def _validate_bot_display_name(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="display_name es requerido")
+        if len(text) < 3:
+            raise HTTPException(status_code=400, detail="display_name debe tener al menos 3 caracteres")
+        if len(text) > 80:
+            raise HTTPException(status_code=400, detail="display_name no puede superar 80 caracteres")
+        return text
+
+    @staticmethod
+    def _validate_bot_alias(value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if len(text) > 40:
+            raise HTTPException(status_code=400, detail="alias no puede superar 40 caracteres")
+        return text
+
+    @staticmethod
+    def _validate_bot_description(value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if len(text) > 280:
+            raise HTTPException(status_code=400, detail="description no puede superar 280 caracteres")
+        return text
+
+    def _validate_bot_domain_type(self, value: Any) -> str:
+        domain = str(value or "").strip().lower()
+        if not domain:
+            raise HTTPException(status_code=400, detail="domain_type es requerido")
+        normalized = self._normalize_bot_domain_type(domain)
+        if normalized != domain:
+            raise HTTPException(status_code=400, detail="domain_type debe ser 'spot' o 'futures'")
+        return normalized
+
+    def _validate_bot_registry_status(self, value: Any) -> str:
+        status = str(value or "").strip().lower()
+        if not status:
+            raise HTTPException(status_code=400, detail="registry_status es requerido")
+        normalized = self._normalize_bot_registry_status(status)
+        if normalized != status:
+            raise HTTPException(status_code=400, detail="registry_status debe ser 'active' o 'archived'")
+        return normalized
+
+    def _validate_bot_risk_profile(self, value: Any) -> str:
+        profile = str(value or "").strip().lower()
+        if not profile:
+            raise HTTPException(status_code=400, detail="risk_profile es requerido")
+        normalized = self._normalize_bot_risk_profile(profile)
+        if normalized != profile:
+            raise HTTPException(status_code=400, detail="risk_profile debe ser 'conservative', 'medium' o 'aggressive'")
+        return normalized
+
+    @staticmethod
+    def _validate_bot_positive_number(value: Any, *, field_name: str) -> float:
+        try:
+            number = float(value)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser numerico")
+        if number <= 0:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser > 0")
+        return float(number)
+
+    @staticmethod
+    def _validate_bot_percentage(value: Any, *, field_name: str) -> float:
+        try:
+            number = float(value)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser numerico")
+        if number < 0 or number > 100:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe estar entre 0 y 100")
+        if number == 0:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser > 0")
+        return float(number)
+
+    @staticmethod
+    def _validate_bot_positive_int(value: Any, *, field_name: str) -> int:
+        try:
+            number = int(value)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser entero")
+        if number < 1:
+            raise HTTPException(status_code=400, detail=f"{field_name} debe ser >= 1")
+        return int(number)
+
+    @staticmethod
+    def _bot_float_or_default(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _bot_int_or_default(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    def _resolve_bot_registry_base_config(
+        self,
+        *,
+        current: dict[str, Any] | None = None,
+        capital_base_usd: Any = None,
+        max_total_exposure_pct: Any = None,
+        max_asset_exposure_pct: Any = None,
+        risk_profile: Any = None,
+        risk_per_trade_pct: Any = None,
+        max_daily_loss_pct: Any = None,
+        max_drawdown_pct: Any = None,
+        max_positions: Any = None,
+    ) -> dict[str, Any]:
+        current_row = current if isinstance(current, dict) else {}
+        profile = (
+            self._validate_bot_risk_profile(risk_profile)
+            if risk_profile is not None
+            else self._normalize_bot_risk_profile(str(current_row.get("risk_profile") or BOT_DEFAULT_RISK_PROFILE))
+        )
+        defaults = self._bot_risk_profile_defaults(profile)
+        resolved = {
+            "risk_profile": profile,
+            "capital_base_usd": self._validate_bot_positive_number(
+                capital_base_usd if capital_base_usd is not None else current_row.get("capital_base_usd", BOT_DEFAULT_CAPITAL_BASE_USD),
+                field_name="capital_base_usd",
+            ),
+            "max_total_exposure_pct": self._validate_bot_percentage(
+                max_total_exposure_pct
+                if max_total_exposure_pct is not None
+                else current_row.get("max_total_exposure_pct", defaults.get("max_total_exposure_pct")),
+                field_name="max_total_exposure_pct",
+            ),
+            "max_asset_exposure_pct": self._validate_bot_percentage(
+                max_asset_exposure_pct
+                if max_asset_exposure_pct is not None
+                else current_row.get("max_asset_exposure_pct", defaults.get("max_asset_exposure_pct")),
+                field_name="max_asset_exposure_pct",
+            ),
+            "risk_per_trade_pct": self._validate_bot_percentage(
+                risk_per_trade_pct
+                if risk_per_trade_pct is not None
+                else current_row.get("risk_per_trade_pct", defaults.get("risk_per_trade_pct")),
+                field_name="risk_per_trade_pct",
+            ),
+            "max_daily_loss_pct": self._validate_bot_percentage(
+                max_daily_loss_pct
+                if max_daily_loss_pct is not None
+                else current_row.get("max_daily_loss_pct", defaults.get("max_daily_loss_pct")),
+                field_name="max_daily_loss_pct",
+            ),
+            "max_drawdown_pct": self._validate_bot_percentage(
+                max_drawdown_pct
+                if max_drawdown_pct is not None
+                else current_row.get("max_drawdown_pct", defaults.get("max_drawdown_pct")),
+                field_name="max_drawdown_pct",
+            ),
+            "max_positions": self._validate_bot_positive_int(
+                max_positions if max_positions is not None else current_row.get("max_positions", defaults.get("max_positions")),
+                field_name="max_positions",
+            ),
+        }
+        if float(resolved["max_asset_exposure_pct"]) > float(resolved["max_total_exposure_pct"]):
+            raise HTTPException(
+                status_code=400,
+                detail="max_asset_exposure_pct no puede superar max_total_exposure_pct",
+            )
+        return resolved
+
+    @staticmethod
+    def _normalize_bot_universe_name(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    @staticmethod
+    def _normalize_bot_assigned_symbols(value: Any) -> list[str]:
+        raw = value if isinstance(value, list) else []
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            symbol = str(item or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+        return symbols
+
+    @staticmethod
+    def _normalize_bot_max_live_symbols(value: Any) -> int | None:
+        if value is None or str(value).strip() == "":
+            return None
+        try:
+            number = int(value)
+        except Exception:
+            return None
+        if number < 1:
+            return None
+        return number
+
+    @staticmethod
+    def _bot_allowed_universe_families(domain_type: str) -> set[str]:
+        normalized = str(domain_type or "").strip().lower()
+        if normalized == "futures":
+            return {"usdm_futures", "coinm_futures"}
+        return {"spot"}
+
+    def _instrument_universe_index(self) -> dict[str, dict[str, Any]]:
+        summary = self.instrument_universes.summary()
+        items = summary.get("items") if isinstance(summary.get("items"), list) else []
+        out: dict[str, dict[str, Any]] = {}
+        for row in items:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if name:
+                out[name] = row
+        return out
+
+    @staticmethod
+    def _normalize_bot_pool_strategy_ids(value: Any) -> list[str]:
+        raw = value if isinstance(value, list) else []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            strategy_id = str(item or "").strip()
+            if not strategy_id or strategy_id in seen:
+                continue
+            seen.add(strategy_id)
+            out.append(strategy_id)
+        return out
+
+    @classmethod
+    def _normalize_bot_strategy_eligibility_map(cls, value: Any) -> dict[str, list[str]]:
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, list[str]] = {}
+        for raw_symbol, raw_strategy_ids in value.items():
+            symbol = str(raw_symbol or "").strip().upper()
+            if not symbol:
+                continue
+            strategy_ids = cls._normalize_bot_pool_strategy_ids(raw_strategy_ids)
+            out[symbol] = strategy_ids
+        return out
+
+    @staticmethod
+    def _normalize_bot_strategy_selection_map(value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, str] = {}
+        for raw_symbol, raw_strategy_id in value.items():
+            symbol = str(raw_symbol or "").strip().upper()
+            strategy_id = str(raw_strategy_id or "").strip()
+            if not symbol or not strategy_id:
+                continue
+            out[symbol] = strategy_id
+        return out
+
+    @staticmethod
+    def _default_bot_strategy_eligibility(
+        *,
+        symbols: list[str],
+        pool_strategy_ids: list[str],
+    ) -> dict[str, list[str]]:
+        normalized_pool = [str(item) for item in pool_strategy_ids if str(item).strip()]
+        return {
+            str(symbol): list(normalized_pool)
+            for symbol in symbols
+            if str(symbol).strip()
+        }
+
+    @staticmethod
+    def _bot_pool_duplicate_ids(value: Any) -> list[str]:
+        raw = value if isinstance(value, list) else []
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for item in raw:
+            strategy_id = str(item or "").strip()
+            if not strategy_id:
+                continue
+            if strategy_id in seen:
+                duplicates.add(strategy_id)
+                continue
+            seen.add(strategy_id)
+        return sorted(duplicates)
+
+    @staticmethod
+    def _strategy_index_by_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        return {
+            str(row.get("id") or ""): row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("id") or "").strip()
+        }
+
+    def _bot_strategy_pool_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        raw_pool = payload.get("pool_strategy_ids") if isinstance(payload.get("pool_strategy_ids"), list) else []
+        pool_ids = self._normalize_bot_pool_strategy_ids(raw_pool)
+        duplicate_ids = self._bot_pool_duplicate_ids(raw_pool)
+        strategy_map = (
+            strategies_index
+            if isinstance(strategies_index, dict)
+            else self._strategy_index_by_id(self.list_strategies())
+        )
+        errors: list[str] = []
+        pool_meta: list[dict[str, Any]] = []
+        effective_pool_ids: list[str] = []
+
+        if not pool_ids:
+            errors.append("pool_strategy_ids debe contener al menos 1 estrategia asignada")
+        if len(pool_ids) > BOT_MAX_POOL_STRATEGIES:
+            errors.append(f"pool_strategy_ids no puede superar {BOT_MAX_POOL_STRATEGIES} estrategias")
+        if duplicate_ids:
+            errors.append(f"pool_strategy_ids no admite duplicados: {', '.join(duplicate_ids)}")
+
+        for strategy_id in pool_ids:
+            strategy = strategy_map.get(strategy_id)
+            if not isinstance(strategy, dict):
+                errors.append(f"strategy_id inexistente en strategy registry/truth: {strategy_id}")
+                continue
+            enabled_for_trading = bool(strategy.get("enabled_for_trading", strategy.get("enabled", False)))
+            allow_learning = bool(strategy.get("allow_learning", True))
+            status = str(strategy.get("status") or ("active" if enabled_for_trading else "disabled")).strip().lower() or "disabled"
+            pool_meta.append(
+                {
+                    "id": strategy_id,
+                    "name": str(strategy.get("name") or strategy_id),
+                    "allow_learning": allow_learning,
+                    "enabled_for_trading": enabled_for_trading,
+                    "is_primary": bool(strategy.get("is_primary", False)),
+                    "status": status,
+                }
+            )
+            if status == "archived":
+                errors.append(f"strategy_id archivada y no elegible para pool: {strategy_id}")
+                continue
+            if status != "active":
+                errors.append(f"strategy_id inactiva para pool: {strategy_id}")
+                continue
+            if not enabled_for_trading:
+                errors.append(f"strategy_id deshabilitada para trading: {strategy_id}")
+                continue
+            if not allow_learning:
+                errors.append(f"strategy_id no elegible para pool (allow_learning=false): {strategy_id}")
+                continue
+            effective_pool_ids.append(strategy_id)
+
+        return {
+            "pool_strategy_ids": pool_ids,
+            "pool_strategies": pool_meta,
+            "strategy_pool_status": "valid" if not errors else "error",
+            "strategy_pool_errors": errors,
+            "max_pool_strategies": BOT_MAX_POOL_STRATEGIES,
+            "effective_pool_strategy_ids": effective_pool_ids if not errors else [],
+        }
+
+    def _validate_bot_strategy_pool(
+        self,
+        pool_strategy_ids: Any,
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> list[str]:
+        if not isinstance(pool_strategy_ids, list):
+            raise HTTPException(status_code=400, detail="pool_strategy_ids debe ser una lista de strategy ids")
+        pool_payload = self._bot_strategy_pool_payload(
+            {"pool_strategy_ids": pool_strategy_ids},
+            strategies_index=strategies_index,
+        )
+        if str(pool_payload.get("strategy_pool_status") or "error") != "valid":
+            detail = "; ".join(
+                str(item)
+                for item in (pool_payload.get("strategy_pool_errors") or [])
+                if str(item).strip()
+            )
+            raise HTTPException(status_code=400, detail=detail or "pool_strategy_ids invalido")
+        return [str(item) for item in (pool_payload.get("pool_strategy_ids") or []) if str(item).strip()]
+
+    def _resolve_bot_symbol_assignment(
+        self,
+        *,
+        current: dict[str, Any] | None = None,
+        domain_type: str,
+        universe_name: Any = None,
+        universe: Any = None,
+        max_live_symbols: Any = None,
+    ) -> dict[str, Any]:
+        if universe is not None and not isinstance(universe, list):
+            raise HTTPException(status_code=400, detail="universe debe ser una lista de simbolos")
+        current_row = current if isinstance(current, dict) else {}
+        effective_universe_name = (
+            self._normalize_bot_universe_name(universe_name)
+            if universe_name is not None
+            else self._normalize_bot_universe_name(current_row.get("universe_name"))
+        )
+        raw_universe = universe if universe is not None else current_row.get("universe")
+        raw_symbols = raw_universe if isinstance(raw_universe, list) else []
+        if not effective_universe_name:
+            raise HTTPException(status_code=400, detail="universe_name es requerido")
+        if not raw_symbols:
+            raise HTTPException(status_code=400, detail="universe debe contener al menos 1 simbolo asignado")
+
+        assigned_symbols: list[str] = []
+        seen_symbols: set[str] = set()
+        duplicate_symbols: list[str] = []
+        for item in raw_symbols:
+            symbol = str(item or "").strip().upper()
+            if not symbol:
+                continue
+            if symbol in seen_symbols:
+                duplicate_symbols.append(symbol)
+                continue
+            seen_symbols.add(symbol)
+            assigned_symbols.append(symbol)
+        if duplicate_symbols:
+            duplicates_label = ", ".join(sorted(set(duplicate_symbols)))
+            raise HTTPException(status_code=400, detail=f"universe no admite simbolos duplicados: {duplicates_label}")
+        if not assigned_symbols:
+            raise HTTPException(status_code=400, detail="universe debe contener al menos 1 simbolo asignado")
+        if len(assigned_symbols) > BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe no puede superar {BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS} simbolos configurados",
+            )
+
+        effective_max_live_symbols = max_live_symbols if max_live_symbols is not None else current_row.get("max_live_symbols")
+        live_cap = self._validate_bot_positive_int(effective_max_live_symbols, field_name="max_live_symbols")
+        if live_cap > BOT_MAX_LIVE_SYMBOLS:
+            raise HTTPException(status_code=400, detail=f"max_live_symbols no puede superar {BOT_MAX_LIVE_SYMBOLS}")
+        if live_cap > len(assigned_symbols):
+            raise HTTPException(status_code=400, detail="max_live_symbols no puede superar la cantidad de simbolos asignados")
+
+        universe_index = self._instrument_universe_index()
+        universe_payload = universe_index.get(effective_universe_name)
+        if not universe_payload:
+            raise HTTPException(status_code=400, detail=f"universe_name invalido: {effective_universe_name}")
+        universe_family = str(universe_payload.get("family") or "").strip().lower()
+        if universe_family not in self._bot_allowed_universe_families(domain_type):
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe_name {effective_universe_name} no es compatible con domain_type={domain_type}",
+            )
+        valid_symbols = {
+            str(item or "").strip().upper()
+            for item in (universe_payload.get("symbols") or [])
+            if str(item or "").strip()
+        }
+        if not valid_symbols:
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe_name {effective_universe_name} no tiene simbolos validos en el catalogo activo",
+            )
+        invalid_symbols = [symbol for symbol in assigned_symbols if symbol not in valid_symbols]
+        if invalid_symbols:
+            invalid_label = ", ".join(invalid_symbols)
+            raise HTTPException(
+                status_code=400,
+                detail=f"universe contiene simbolos fuera del catalogo valido para {effective_universe_name}: {invalid_label}",
+            )
+        return {
+            "universe_name": effective_universe_name,
+            "universe_family": universe_family,
+            "universe": assigned_symbols,
+            "max_live_symbols": live_cap,
+        }
+
+    def _bot_symbol_assignment_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        domain_type = self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot"))
+        universe_name = self._normalize_bot_universe_name(payload.get("universe_name"))
+        assigned_symbols = self._normalize_bot_assigned_symbols(payload.get("universe"))
+        max_live_symbols = self._normalize_bot_max_live_symbols(payload.get("max_live_symbols"))
+        universe_map = universe_index if isinstance(universe_index, dict) else self._instrument_universe_index()
+        errors: list[str] = []
+        universe_family: str | None = None
+
+        if not universe_name:
+            errors.append("universe_name pendiente en registry")
+        if not assigned_symbols:
+            errors.append("universe debe contener al menos 1 simbolo asignado")
+        elif len(assigned_symbols) > BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS:
+            errors.append(
+                f"universe no puede superar {BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS} simbolos configurados"
+            )
+        if max_live_symbols is None:
+            errors.append("max_live_symbols pendiente en registry")
+        elif max_live_symbols > BOT_MAX_LIVE_SYMBOLS:
+            errors.append(f"max_live_symbols no puede superar {BOT_MAX_LIVE_SYMBOLS}")
+        elif max_live_symbols > len(assigned_symbols):
+            errors.append("max_live_symbols no puede superar la cantidad de simbolos asignados")
+
+        universe_payload = universe_map.get(universe_name or "") if universe_name else None
+        if universe_name and universe_payload is None:
+            errors.append(f"universe_name invalido: {universe_name}")
+        if universe_payload is not None:
+            universe_family = str(universe_payload.get("family") or "").strip().lower() or None
+            if universe_family not in self._bot_allowed_universe_families(domain_type):
+                errors.append(f"universe_name {universe_name} no es compatible con domain_type={domain_type}")
+            valid_symbols = {
+                str(item or "").strip().upper()
+                for item in (universe_payload.get("symbols") or [])
+                if str(item or "").strip()
+            }
+            if not valid_symbols:
+                errors.append(f"universe_name {universe_name} no tiene simbolos validos en el catalogo activo")
+            else:
+                invalid_symbols = [symbol for symbol in assigned_symbols if symbol not in valid_symbols]
+                if invalid_symbols:
+                    errors.append(f"simbolos fuera del catalogo valido: {', '.join(invalid_symbols)}")
+
+        return {
+            "universe_name": universe_name,
+            "universe_family": universe_family,
+            "universe": assigned_symbols,
+            "max_live_symbols": max_live_symbols,
+            "symbol_assignment_status": "valid" if not errors else "error",
+            "symbol_assignment_errors": errors,
+        }
+
+    def _bot_multi_symbol_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        assignment = self._bot_symbol_assignment_payload(payload, universe_index=universe_index)
+        errors = [
+            self._normalize_multi_symbol_error_message(str(item))
+            for item in (assignment.get("symbol_assignment_errors") or [])
+            if str(item).strip()
+        ]
+        symbols = [str(item) for item in (assignment.get("universe") or []) if str(item).strip()]
+        max_active_symbols = self._normalize_bot_max_live_symbols(assignment.get("max_live_symbols"))
+        return {
+            "contract_version": BOT_MULTI_SYMBOL_CONTRACT_VERSION,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "universe_name": str(assignment.get("universe_name") or ""),
+            "universe_family": assignment.get("universe_family"),
+            "symbols": symbols,
+            "configured_symbols_count": len(symbols),
+            "max_configured_symbols": int(BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS),
+            "max_active_symbols": max_active_symbols,
+            "status": "valid" if not errors else "error",
+            "errors": errors,
+            "storage_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    @staticmethod
+    def _strategy_eligibility_issue(
+        *,
+        reason_code: str,
+        message: str,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "reason_code": str(reason_code or "").strip(),
+            "message": str(message or "").strip(),
+            "symbol": str(symbol or "").strip().upper() or None,
+            "strategy_id": str(strategy_id or "").strip() or None,
+        }
+
+    def _resolve_bot_strategy_eligibility(
+        self,
+        *,
+        current: dict[str, Any] | None = None,
+        row: dict[str, Any],
+        strategy_eligibility_by_symbol: dict[str, list[str]] | None = None,
+    ) -> dict[str, list[str]]:
+        candidate_symbols = self._normalize_bot_assigned_symbols(row.get("universe"))
+        candidate_pool_ids = self._normalize_bot_pool_strategy_ids(row.get("pool_strategy_ids"))
+        current_row = current if isinstance(current, dict) else {}
+        current_mapping = self._normalize_bot_strategy_eligibility_map(
+            current_row.get("strategy_eligibility_by_symbol")
+        )
+
+        if strategy_eligibility_by_symbol is not None:
+            if not isinstance(strategy_eligibility_by_symbol, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="strategy_eligibility_by_symbol debe ser un objeto symbol -> [strategy_id]",
+                )
+            provided_map = self._normalize_bot_strategy_eligibility_map(strategy_eligibility_by_symbol)
+            provided_symbols = set(provided_map.keys())
+            candidate_symbol_set = set(candidate_symbols)
+            missing_symbols = [symbol for symbol in candidate_symbols if symbol not in provided_symbols]
+            extra_symbols = sorted(symbol for symbol in provided_symbols if symbol not in candidate_symbol_set)
+            if missing_symbols or extra_symbols:
+                errors: list[str] = []
+                if missing_symbols:
+                    errors.append(
+                        "strategy_eligibility_by_symbol debe cubrir todos los símbolos configurados: "
+                        + ", ".join(missing_symbols)
+                    )
+                if extra_symbols:
+                    errors.append(
+                        "strategy_eligibility_by_symbol contiene símbolos fuera del universe actual: "
+                        + ", ".join(extra_symbols)
+                    )
+                raise HTTPException(status_code=400, detail="; ".join(errors))
+            candidate_pool_set = set(candidate_pool_ids)
+            resolved_map: dict[str, list[str]] = {}
+            for symbol in candidate_symbols:
+                raw_ids = strategy_eligibility_by_symbol.get(symbol)
+                if not isinstance(raw_ids, list):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"strategy_eligibility_by_symbol[{symbol}] debe ser una lista de strategy ids",
+                    )
+                duplicate_ids = self._bot_pool_duplicate_ids(raw_ids)
+                if duplicate_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"strategy_eligibility_by_symbol[{symbol}] no admite duplicados: "
+                            + ", ".join(duplicate_ids)
+                        ),
+                    )
+                strategy_ids = provided_map.get(symbol) or []
+                if not strategy_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"strategy_eligibility_by_symbol[{symbol}] debe contener al menos 1 estrategia elegible",
+                    )
+                invalid_ids = [strategy_id for strategy_id in strategy_ids if strategy_id not in candidate_pool_set]
+                if invalid_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"strategy_eligibility_by_symbol[{symbol}] contiene estrategias fuera del pool actual: "
+                            + ", ".join(invalid_ids)
+                        ),
+                    )
+                resolved_map[symbol] = list(strategy_ids)
+            return resolved_map
+
+        if current_mapping:
+            candidate_pool_set = set(candidate_pool_ids)
+            reconciled: dict[str, list[str]] = {}
+            for symbol in candidate_symbols:
+                if symbol not in current_mapping:
+                    reconciled[symbol] = list(candidate_pool_ids)
+                    continue
+                filtered_ids = [
+                    strategy_id
+                    for strategy_id in current_mapping.get(symbol, [])
+                    if strategy_id in candidate_pool_set
+                ]
+                if not filtered_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"strategy_eligibility_by_symbol[{symbol}] queda sin estrategias elegibles "
+                            "tras el cambio de pool/universe; envía un mapping explícito coherente"
+                        ),
+                    )
+                reconciled[symbol] = filtered_ids
+            return reconciled
+
+        return self._default_bot_strategy_eligibility(
+            symbols=candidate_symbols,
+            pool_strategy_ids=candidate_pool_ids,
+        )
+
+    def _resolve_bot_strategy_selection(
+        self,
+        *,
+        current: dict[str, Any] | None = None,
+        row: dict[str, Any],
+        strategy_selection_by_symbol: dict[str, str] | None = None,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, str]:
+        candidate_symbols = self._normalize_bot_assigned_symbols(row.get("universe"))
+        candidate_symbol_set = set(candidate_symbols)
+        current_row = current if isinstance(current, dict) else {}
+        current_mapping = self._normalize_bot_strategy_selection_map(
+            current_row.get("strategy_selection_by_symbol")
+        )
+        eligibility = self._bot_strategy_eligibility_payload(
+            row,
+            strategies_index=strategies_index,
+        )
+        if str(eligibility.get("status") or "error") != "valid":
+            detail = "; ".join(
+                str(item)
+                for item in (eligibility.get("errors") or [])
+                if str(item).strip()
+            ) or "strategy_eligibility inválida"
+            raise HTTPException(
+                status_code=400,
+                detail=f"strategy_selection_by_symbol requiere strategy_eligibility válida: {detail}",
+            )
+        eligible_ids_by_symbol = {
+            str(symbol): [
+                str(strategy_id)
+                for strategy_id in (raw_ids or [])
+                if str(strategy_id).strip()
+            ]
+            for symbol, raw_ids in ((eligibility.get("eligible_strategy_ids_by_symbol") or {}).items())
+        }
+
+        if strategy_selection_by_symbol is not None:
+            if not isinstance(strategy_selection_by_symbol, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="strategy_selection_by_symbol debe ser un objeto symbol -> strategy_id",
+                )
+            provided_map = self._normalize_bot_strategy_selection_map(strategy_selection_by_symbol)
+            extra_symbols = sorted(symbol for symbol in provided_map.keys() if symbol not in candidate_symbol_set)
+            if extra_symbols:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "strategy_selection_by_symbol contiene símbolos fuera del universe actual: "
+                        + ", ".join(extra_symbols)
+                    ),
+                )
+            resolved_map: dict[str, str] = {}
+            for symbol, strategy_id in provided_map.items():
+                eligible_ids = eligible_ids_by_symbol.get(symbol) or []
+                if strategy_id not in eligible_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"strategy_selection_by_symbol[{symbol}] contiene una estrategia no elegible "
+                            f"bajo el mapping actual: {strategy_id}"
+                        ),
+                    )
+                resolved_map[symbol] = strategy_id
+            return resolved_map
+
+        if current_mapping:
+            reconciled: dict[str, str] = {}
+            for symbol, strategy_id in current_mapping.items():
+                if symbol not in candidate_symbol_set:
+                    continue
+                eligible_ids = eligible_ids_by_symbol.get(symbol) or []
+                if strategy_id not in eligible_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"strategy_selection_by_symbol[{symbol}] deja de ser válida tras el cambio "
+                            "de pool/eligibility; envía un mapping explícito coherente"
+                        ),
+                    )
+                reconciled[symbol] = strategy_id
+            return reconciled
+
+        return {}
+
+    def _bot_strategy_eligibility_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        assignment = self._bot_symbol_assignment_payload(payload, universe_index=universe_index)
+        pool_payload = self._bot_strategy_pool_payload(payload, strategies_index=strategies_index)
+        assigned_symbols = [str(item) for item in (assignment.get("universe") or []) if str(item).strip()]
+        raw_pool_ids = [str(item) for item in (pool_payload.get("pool_strategy_ids") or []) if str(item).strip()]
+        effective_pool_ids = [
+            str(item)
+            for item in (pool_payload.get("effective_pool_strategy_ids") or [])
+            if str(item).strip()
+        ]
+        explicit_map = self._normalize_bot_strategy_eligibility_map(payload.get("strategy_eligibility_by_symbol"))
+        configured_map = explicit_map or self._default_bot_strategy_eligibility(
+            symbols=assigned_symbols,
+            pool_strategy_ids=raw_pool_ids,
+        )
+        assignment_valid = str(assignment.get("symbol_assignment_status") or "error") == "valid"
+        pool_valid = str(pool_payload.get("strategy_pool_status") or "error") == "valid"
+        assigned_symbol_set = set(assigned_symbols)
+        raw_pool_set = set(raw_pool_ids)
+        effective_pool_set = set(effective_pool_ids)
+        reason_codes: set[str] = set()
+        errors: list[str] = []
+        items: list[dict[str, Any]] = []
+
+        if not assignment_valid:
+            reason_codes.add("symbol_assignment_invalid")
+            errors.extend(
+                str(item)
+                for item in (assignment.get("symbol_assignment_errors") or [])
+                if str(item).strip()
+            )
+        if not pool_valid:
+            reason_codes.add("strategy_pool_invalid")
+            errors.extend(
+                str(item)
+                for item in (pool_payload.get("strategy_pool_errors") or [])
+                if str(item).strip()
+            )
+
+        symbol_order = [
+            *assigned_symbols,
+            *[
+                symbol
+                for symbol in configured_map.keys()
+                if symbol not in assigned_symbol_set
+            ],
+        ]
+        seen_symbols: set[str] = set()
+        for symbol in symbol_order:
+            if symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
+            configured_strategy_ids = list(configured_map.get(symbol) or [])
+            eligible_strategy_ids: list[str] = []
+            symbol_errors: list[dict[str, Any]] = []
+
+            if symbol not in assigned_symbol_set:
+                symbol_errors.append(
+                    self._strategy_eligibility_issue(
+                        reason_code="symbol_not_in_universe",
+                        symbol=symbol,
+                        message=f"Símbolo fuera del universe actual: {symbol}",
+                    )
+                )
+
+            for strategy_id in configured_strategy_ids:
+                if strategy_id not in raw_pool_set:
+                    symbol_errors.append(
+                        self._strategy_eligibility_issue(
+                            reason_code="strategy_not_in_pool",
+                            symbol=symbol,
+                            strategy_id=strategy_id,
+                            message=(
+                                f"{strategy_id} no pertenece al pool actual del bot para {symbol}"
+                            ),
+                        )
+                    )
+                    continue
+                if strategy_id not in effective_pool_set:
+                    symbol_errors.append(
+                        self._strategy_eligibility_issue(
+                            reason_code="strategy_not_effective_in_pool",
+                            symbol=symbol,
+                            strategy_id=strategy_id,
+                            message=(
+                                f"{strategy_id} ya no es elegible en el pool efectivo para {symbol}"
+                            ),
+                        )
+                    )
+                    continue
+                eligible_strategy_ids.append(strategy_id)
+
+            if symbol in assigned_symbol_set and not eligible_strategy_ids:
+                symbol_errors.append(
+                    self._strategy_eligibility_issue(
+                        reason_code="no_eligible_strategy_for_symbol",
+                        symbol=symbol,
+                        message=f"{symbol} no tiene estrategias elegibles dentro del pool actual",
+                    )
+                )
+
+            for issue in symbol_errors:
+                reason_codes.add(str(issue.get("reason_code") or "").strip())
+                message = str(issue.get("message") or "").strip()
+                if message:
+                    errors.append(message)
+
+            items.append(
+                {
+                    "symbol": symbol,
+                    "configured_strategy_ids": configured_strategy_ids,
+                    "eligible_strategy_ids": eligible_strategy_ids,
+                    "source": "explicit" if symbol in explicit_map else "pool_default",
+                    "status": "valid" if not symbol_errors else "error",
+                    "errors": symbol_errors,
+                }
+            )
+
+        deduped_errors = list(dict.fromkeys(errors))
+        configured_by_symbol = {
+            str(item["symbol"]): list(item["configured_strategy_ids"])
+            for item in items
+            if str(item.get("symbol") or "").strip() in assigned_symbol_set
+        }
+        eligible_by_symbol = {
+            str(item["symbol"]): list(item["eligible_strategy_ids"])
+            for item in items
+            if str(item.get("symbol") or "").strip() in assigned_symbol_set
+        }
+        return {
+            "contract_version": BOT_STRATEGY_ELIGIBILITY_CONTRACT_VERSION,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "universe_name": str(assignment.get("universe_name") or ""),
+            "universe_family": assignment.get("universe_family"),
+            "symbols": assigned_symbols,
+            "pool_strategy_ids": raw_pool_ids,
+            "strategy_eligibility_by_symbol": configured_by_symbol,
+            "eligible_strategy_ids_by_symbol": eligible_by_symbol,
+            "items": items,
+            "reason_codes": sorted(code for code in reason_codes if code),
+            "status": "valid" if not deduped_errors else "error",
+            "errors": deduped_errors,
+            "storage_fields": list(BOT_STRATEGY_ELIGIBILITY_STORAGE_FIELDS),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    @staticmethod
+    def _strategy_selection_issue(
+        *,
+        reason_code: str,
+        message: str,
+        symbol: str | None = None,
+        configured_strategy_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "reason_code": str(reason_code or "").strip(),
+            "message": str(message or "").strip(),
+            "symbol": str(symbol or "").strip().upper() or None,
+            "configured_strategy_id": str(configured_strategy_id or "").strip() or None,
+        }
+
+    @staticmethod
+    def _primary_strategy_from_candidates(
+        strategy_ids: list[str],
+        *,
+        strategies_index: dict[str, dict[str, Any]],
+    ) -> str | None:
+        for strategy_id in strategy_ids:
+            row = strategies_index.get(strategy_id) or {}
+            if bool(row.get("is_primary", False)):
+                return strategy_id
+        return None
+
+    def _bot_strategy_selection_payload(
+        self,
+        row: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(row or {})
+        strategy_map = (
+            strategies_index
+            if isinstance(strategies_index, dict)
+            else self._strategy_index_by_id(self.list_strategies())
+        )
+        eligibility = self._bot_strategy_eligibility_payload(
+            payload,
+            strategies_index=strategy_map,
+            universe_index=universe_index,
+        )
+        symbols = [str(item) for item in (eligibility.get("symbols") or []) if str(item).strip()]
+        explicit_map = self._normalize_bot_strategy_selection_map(payload.get("strategy_selection_by_symbol"))
+        assigned_symbol_set = set(symbols)
+        reason_codes: set[str] = set()
+        errors: list[str] = []
+        items: list[dict[str, Any]] = []
+
+        if str(eligibility.get("status") or "error") != "valid":
+            reason_codes.add("strategy_eligibility_invalid")
+            errors.extend(
+                str(item)
+                for item in (eligibility.get("errors") or [])
+                if str(item).strip()
+            )
+
+        for symbol in symbols:
+            eligible_strategy_ids = [
+                str(item)
+                for item in ((eligibility.get("eligible_strategy_ids_by_symbol") or {}).get(symbol) or [])
+                if str(item).strip()
+            ]
+            configured_strategy_id = explicit_map.get(symbol)
+            symbol_errors: list[dict[str, Any]] = []
+            selected_strategy_id: str | None = None
+            selection_source = "derived"
+            selection_criterion: str | None = None
+            explicit_selection_invalid = False
+
+            if configured_strategy_id:
+                if configured_strategy_id not in eligible_strategy_ids:
+                    explicit_selection_invalid = True
+                    selection_source = "explicit"
+                    symbol_errors.append(
+                        self._strategy_selection_issue(
+                            reason_code="selected_strategy_not_eligible",
+                            symbol=symbol,
+                            configured_strategy_id=configured_strategy_id,
+                            message=(
+                                f"{configured_strategy_id} no es elegible para {symbol} bajo el mapping actual"
+                            ),
+                        )
+                    )
+                else:
+                    selected_strategy_id = configured_strategy_id
+                    selection_source = "explicit"
+                    selection_criterion = "explicit"
+
+            if selected_strategy_id is None and eligible_strategy_ids and not explicit_selection_invalid:
+                if len(eligible_strategy_ids) == 1:
+                    selected_strategy_id = eligible_strategy_ids[0]
+                    selection_criterion = "single_eligible"
+                else:
+                    primary_strategy_id = self._primary_strategy_from_candidates(
+                        eligible_strategy_ids,
+                        strategies_index=strategy_map,
+                    )
+                    if primary_strategy_id:
+                        selected_strategy_id = primary_strategy_id
+                        selection_criterion = "primary_strategy"
+                    else:
+                        selected_strategy_id = eligible_strategy_ids[0]
+                        selection_criterion = "pool_order"
+
+            if selected_strategy_id is None:
+                symbol_errors.append(
+                    self._strategy_selection_issue(
+                        reason_code="no_strategy_selected_for_symbol",
+                        symbol=symbol,
+                        configured_strategy_id=configured_strategy_id,
+                        message=f"{symbol} no tiene una estrategia seleccionable bajo el estado actual del bot",
+                    )
+                )
+
+            for issue in symbol_errors:
+                reason_codes.add(str(issue.get("reason_code") or "").strip())
+                message = str(issue.get("message") or "").strip()
+                if message:
+                    errors.append(message)
+
+            items.append(
+                {
+                    "symbol": symbol,
+                    "configured_strategy_id": configured_strategy_id,
+                    "selected_strategy_id": selected_strategy_id,
+                    "eligible_strategy_ids": eligible_strategy_ids,
+                    "selection_source": selection_source,
+                    "selection_criterion": selection_criterion,
+                    "status": "valid" if not symbol_errors else "error",
+                    "errors": symbol_errors,
+                }
+            )
+
+        configured_by_symbol = {
+            symbol: strategy_id
+            for symbol, strategy_id in explicit_map.items()
+            if symbol in assigned_symbol_set
+        }
+        selected_by_symbol = {
+            str(item["symbol"]): str(item["selected_strategy_id"])
+            for item in items
+            if str(item.get("symbol") or "").strip() in assigned_symbol_set
+            and str(item.get("selected_strategy_id") or "").strip()
+        }
+        deduped_errors = list(dict.fromkeys(errors))
+        return {
+            "contract_version": BOT_STRATEGY_SELECTION_CONTRACT_VERSION,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "universe_name": str(eligibility.get("universe_name") or ""),
+            "universe_family": eligibility.get("universe_family"),
+            "symbols": symbols,
+            "pool_strategy_ids": [str(item) for item in (eligibility.get("pool_strategy_ids") or []) if str(item).strip()],
+            "strategy_selection_by_symbol": configured_by_symbol,
+            "selected_strategy_by_symbol": selected_by_symbol,
+            "items": items,
+            "criteria": list(BOT_STRATEGY_SELECTION_CRITERIA),
+            "reason_codes": sorted(code for code in reason_codes if code),
+            "status": "valid" if not deduped_errors else "error",
+            "errors": deduped_errors,
+            "storage_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    def bot_strategy_eligibility_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_strategy_eligibility_payload(bot)
+
+    def patch_bot_strategy_eligibility(
+        self,
+        bot_id: str,
+        *,
+        strategy_eligibility_by_symbol: dict[str, list[str]] | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_strategy_eligibility_api",
+    ) -> dict[str, Any]:
+        bot = self.patch_bot_instance(
+            bot_id,
+            strategy_eligibility_by_symbol=strategy_eligibility_by_symbol,
+            actor=actor,
+            change_source=change_source,
+        )
+        return self._bot_strategy_eligibility_payload(bot)
+
+    def bot_strategy_selection_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_strategy_selection_payload(bot)
+
+    def patch_bot_strategy_selection(
+        self,
+        bot_id: str,
+        *,
+        strategy_selection_by_symbol: dict[str, str] | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_strategy_selection_api",
+    ) -> dict[str, Any]:
+        bot = self.patch_bot_instance(
+            bot_id,
+            strategy_selection_by_symbol=strategy_selection_by_symbol,
+            actor=actor,
+            change_source=change_source,
+        )
+        return self._bot_strategy_selection_payload(bot)
+
+    @staticmethod
+    def _signal_consolidation_issue(
+        *,
+        reason_code: str,
+        message: str,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "reason_code": str(reason_code or "").strip(),
+            "message": str(message or "").strip(),
+            "symbol": str(symbol or "").strip().upper() or None,
+            "strategy_id": str(strategy_id or "").strip() or None,
+        }
+
+    def _strategy_signal_candidate(
+        self,
+        *,
+        strategy_id: str,
+        symbol: str,
+        strategies_index: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        strategy_id_n = str(strategy_id or "").strip()
+        symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+        strategy = strategies_index.get(strategy_id_n) if isinstance(strategies_index, dict) else None
+        if not isinstance(strategy, dict):
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_not_found",
+                message=f"{strategy_id_n} no existe en strategy registry/truth para {symbol_n}",
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_id_n,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        strategy_name = str(strategy.get("name") or strategy_id_n).strip() or strategy_id_n
+        enabled_for_trading = bool(strategy.get("enabled_for_trading", strategy.get("enabled", False)))
+        if not enabled_for_trading:
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_disabled",
+                message=f"{strategy_id_n} no esta habilitada para trading en {symbol_n}",
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_name,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        params = strategy.get("params") if isinstance(strategy.get("params"), dict) else {}
+        configured_symbol = RuntimeBridge._sanitize_exchange_symbol(
+            params.get("runtime_symbol")
+            or params.get("symbol")
+            or params.get("pair")
+            or params.get("market_symbol")
+        )
+        if configured_symbol and configured_symbol != symbol_n:
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_symbol_mismatch",
+                message=(
+                    f"{strategy_id_n} fija {configured_symbol} y no coincide con el simbolo consolidado {symbol_n}"
+                ),
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_name,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        action_override = str(params.get("runtime_action") or params.get("action") or "").strip().lower()
+        side_override = str(params.get("runtime_side") or params.get("side") or "").strip().upper()
+        tags = {
+            str(tag or "").strip().lower()
+            for tag in (strategy.get("tags") or [])
+            if str(tag or "").strip()
+        }
+        action: str | None = None
+        side: str | None = None
+        criterion: str | None = None
+        reason: str | None = None
+
+        if action_override in {"flat", "hold", "none", "pause"}:
+            action = "flat"
+            criterion = "action_override"
+            reason = "strategy_action_override_flat"
+        elif action_override in {"buy", "long"}:
+            action = "trade"
+            side = "BUY"
+            criterion = "action_override"
+            reason = "strategy_action_override_buy"
+        elif action_override in {"sell", "short"}:
+            action = "trade"
+            side = "SELL"
+            criterion = "action_override"
+            reason = "strategy_action_override_sell"
+        elif action_override == "trade":
+            if side_override in {"BUY", "SELL"}:
+                action = "trade"
+                side = side_override
+                criterion = "action_override"
+                reason = "strategy_action_override_trade"
+        elif side_override in {"BUY", "SELL"}:
+            action = "trade"
+            side = side_override
+            criterion = "side_override"
+            reason = "strategy_side_override"
+        else:
+            defensive_tags = {"defensive", "liquidity", "cash", "safe_mode", "capital_preservation"}
+            meanrev_tags = {"meanreversion", "mean_reversion", "reversion", "range"}
+            trend_tags = {"trend", "breakout", "momentum", "orderflow", "trend_scanning"}
+            if tags & defensive_tags:
+                action = "flat"
+                criterion = "defensive_tags_flat"
+                reason = "strategy_tags_defensive_flat"
+            elif tags & meanrev_tags:
+                action = "trade"
+                side = "SELL"
+                criterion = "meanreversion_tags_sell"
+                reason = "strategy_tags_meanreversion"
+            elif tags & trend_tags:
+                action = "trade"
+                side = "BUY"
+                criterion = "trend_tags_buy"
+                reason = "strategy_tags_trend"
+
+        if action is None:
+            issue = self._signal_consolidation_issue(
+                reason_code="selected_strategy_signal_unresolved",
+                message=(
+                    f"{strategy_id_n} no expone override/tag canonico para derivar decision neta en {symbol_n}"
+                ),
+                symbol=symbol_n,
+                strategy_id=strategy_id_n,
+            )
+            return {
+                "strategy_id": strategy_id_n,
+                "strategy_name": strategy_name,
+                "symbol": symbol_n,
+                "action": None,
+                "side": None,
+                "criterion": None,
+                "reason": None,
+                "status": "error",
+                "errors": [issue],
+            }
+
+        return {
+            "strategy_id": strategy_id_n,
+            "strategy_name": strategy_name,
+            "symbol": symbol_n,
+            "action": action,
+            "side": side if action == "trade" else None,
+            "criterion": criterion,
+            "reason": reason,
+            "status": "valid",
+            "errors": [],
+        }
+
+    def _bot_signal_consolidation_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        strategy_map = (
+            strategies_index
+            if isinstance(strategies_index, dict)
+            else self._strategy_index_by_id(self.list_strategies())
+        )
+        selection = self._bot_strategy_selection_payload(
+            payload,
+            strategies_index=strategy_map,
+            universe_index=universe_index,
+        )
+        symbols = [str(item) for item in (selection.get("symbols") or []) if str(item).strip()]
+        selected_by_symbol = {
+            str(symbol): str(strategy_id)
+            for symbol, strategy_id in ((selection.get("selected_strategy_by_symbol") or {}).items())
+            if str(symbol).strip() and str(strategy_id).strip()
+        }
+        reason_codes: set[str] = set()
+        errors: list[str] = []
+        items: list[dict[str, Any]] = []
+        net_decision_by_symbol: dict[str, dict[str, Any]] = {}
+        registry_status = self._normalize_bot_registry_status(str(payload.get("registry_status") or "active"))
+
+        if registry_status == "archived":
+            reason_codes.add("bot_archived")
+            errors.append("Bot archivado: la decision neta por simbolo queda fail-closed hasta reactivacion valida.")
+        if str(selection.get("status") or "error") != "valid":
+            reason_codes.add("strategy_selection_invalid")
+            errors.extend(
+                str(item)
+                for item in (selection.get("errors") or [])
+                if str(item).strip()
+            )
+
+        for symbol in symbols:
+            selection_item = next(
+                (
+                    item
+                    for item in (selection.get("items") or [])
+                    if str((item or {}).get("symbol") or "").strip().upper() == str(symbol).strip().upper()
+                ),
+                {},
+            )
+            eligible_strategy_ids = [
+                str(item)
+                for item in ((selection_item.get("eligible_strategy_ids") or []) if isinstance(selection_item, dict) else [])
+                if str(item).strip()
+            ]
+            inputs = [
+                self._strategy_signal_candidate(
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    strategies_index=strategy_map,
+                )
+                for strategy_id in eligible_strategy_ids
+            ]
+            valid_inputs = [
+                item for item in inputs if str(item.get("status") or "error") == "valid"
+            ]
+            signatures = {
+                f"{str(item.get('action') or '')}:{str(item.get('side') or '')}"
+                for item in valid_inputs
+            }
+            input_summary = {
+                "total_inputs": len(inputs),
+                "valid_inputs": len(valid_inputs),
+                "buy_signals": sum(
+                    1 for item in valid_inputs if str(item.get("action") or "") == "trade" and str(item.get("side") or "") == "BUY"
+                ),
+                "sell_signals": sum(
+                    1 for item in valid_inputs if str(item.get("action") or "") == "trade" and str(item.get("side") or "") == "SELL"
+                ),
+                "flat_signals": sum(
+                    1 for item in valid_inputs if str(item.get("action") or "") == "flat"
+                ),
+                "agreement_status": (
+                    "single"
+                    if len(valid_inputs) <= 1
+                    else "aligned"
+                    if len(signatures) <= 1
+                    else "conflicted"
+                ),
+            }
+            item_errors: list[dict[str, Any]] = []
+            if registry_status == "archived":
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="bot_archived",
+                        message=f"{symbol} no puede consolidarse mientras el bot permanezca archivado",
+                        symbol=symbol,
+                    )
+                )
+            if str(selection.get("status") or "error") != "valid":
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="strategy_selection_invalid",
+                        message=f"{symbol} depende de una seleccion por simbolo valida antes de consolidar",
+                        symbol=symbol,
+                        strategy_id=str(selected_by_symbol.get(symbol) or "") or None,
+                    )
+                )
+
+            selected_strategy_id = str(selected_by_symbol.get(symbol) or "").strip()
+            selected_input = next(
+                (
+                    item for item in inputs
+                    if str(item.get("strategy_id") or "").strip() == selected_strategy_id
+                ),
+                None,
+            )
+
+            if not selected_strategy_id:
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="selected_strategy_missing",
+                        message=f"{symbol} no tiene una estrategia seleccionada para consolidar decision neta",
+                        symbol=symbol,
+                    )
+                )
+            elif not isinstance(selected_input, dict):
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="selected_strategy_not_found",
+                        message=f"{selected_strategy_id} no aparece entre los inputs elegibles de {symbol}",
+                        symbol=symbol,
+                        strategy_id=selected_strategy_id,
+                    )
+                )
+            elif str(selected_input.get("status") or "error") != "valid":
+                item_errors.extend(
+                    issue
+                    for issue in (selected_input.get("errors") or [])
+                    if isinstance(issue, dict)
+                )
+
+            net_action = None
+            net_side = None
+            net_reason = None
+            net_criterion = None
+            if not item_errors and isinstance(selected_input, dict):
+                net_action = str(selected_input.get("action") or "").strip() or None
+                net_side = str(selected_input.get("side") or "").strip() or None
+                net_reason = str(selected_input.get("reason") or "").strip() or None
+                source_criterion = str(selected_input.get("criterion") or "").strip() or None
+                net_criterion = (
+                    f"selected_strategy:{source_criterion}"
+                    if source_criterion
+                    else "selected_strategy"
+                )
+
+            for issue in item_errors:
+                code = str(issue.get("reason_code") or "").strip()
+                message = str(issue.get("message") or "").strip()
+                if code:
+                    reason_codes.add(code)
+                if message:
+                    errors.append(message)
+
+            item_payload = {
+                "symbol": str(symbol),
+                "selected_strategy_id": selected_strategy_id or None,
+                "eligible_strategy_ids": eligible_strategy_ids,
+                "participating_strategy_ids": [
+                    str(item.get("strategy_id") or "")
+                    for item in inputs
+                    if str(item.get("strategy_id") or "").strip()
+                ],
+                "inputs": inputs,
+                "input_summary": input_summary,
+                "net_action": net_action,
+                "net_side": net_side,
+                "net_strategy_id": selected_strategy_id or None,
+                "net_reason": net_reason,
+                "net_criterion": net_criterion,
+                "status": "valid" if not item_errors else "error",
+                "errors": item_errors,
+            }
+            items.append(item_payload)
+            if net_action and not item_errors:
+                net_decision_by_symbol[str(symbol)] = {
+                    "symbol": str(symbol),
+                    "action": net_action,
+                    "side": net_side,
+                    "selected_strategy_id": selected_strategy_id or None,
+                    "criterion": net_criterion,
+                    "reason": net_reason,
+                    "input_count": int(input_summary["total_inputs"]),
+                    "agreement_status": str(input_summary["agreement_status"]),
+                }
+
+        deduped_errors = list(dict.fromkeys(message for message in errors if message))
+        return {
+            "contract_version": BOT_SIGNAL_CONSOLIDATION_CONTRACT_VERSION,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": registry_status,
+            "universe_name": str(selection.get("universe_name") or ""),
+            "universe_family": selection.get("universe_family"),
+            "symbols": symbols,
+            "pool_strategy_ids": [str(item) for item in (selection.get("pool_strategy_ids") or []) if str(item).strip()],
+            "selected_strategy_by_symbol": selected_by_symbol,
+            "net_decision_by_symbol": net_decision_by_symbol,
+            "items": items,
+            "criteria": list(BOT_SIGNAL_CONSOLIDATION_CRITERIA),
+            "reason_codes": sorted(code for code in reason_codes if code),
+            "status": "valid" if not deduped_errors else "error",
+            "errors": deduped_errors,
+            "storage_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    def bot_signal_consolidation_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_signal_consolidation_payload(bot)
+
+    def bot_multi_symbol_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_multi_symbol_payload(bot)
+
+    @staticmethod
+    def _normalize_multi_symbol_error_message(message: str) -> str:
+        normalized = str(message or "")
+        replacements = (
+            ("max_live_symbols", "max_active_symbols"),
+            ("cantidad de simbolos asignados", "cantidad de simbolos configurados"),
+            ("universe contiene simbolos duplicados", "symbols contiene simbolos duplicados"),
+            ("universe contiene simbolos fuera del catalogo valido para", "symbols contiene simbolos fuera del catalogo valido para"),
+            ("universe no puede quedar vacio", "symbols no puede quedar vacio"),
+            ("universe es requerido", "symbols es requerido"),
+            ("universe pendiente en registry", "symbols pendiente en registry"),
+            ("universe no puede superar", "symbols no puede superar"),
+        )
+        for source, target in replacements:
+            normalized = normalized.replace(source, target)
+        return normalized
+
+    def patch_bot_multi_symbol(
+        self,
+        bot_id: str,
+        *,
+        universe_name: str | None = None,
+        symbols: list[str] | None = None,
+        max_active_symbols: int | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_multi_symbol_api",
+    ) -> dict[str, Any]:
+        try:
+            bot = self.patch_bot_instance(
+                bot_id,
+                universe_name=universe_name,
+                universe=symbols,
+                max_live_symbols=max_active_symbols,
+                actor=actor,
+                change_source=change_source,
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=self._normalize_multi_symbol_error_message(str(exc.detail)),
+            ) from exc
+        return self._bot_multi_symbol_payload(bot)
+
+    @staticmethod
+    def _ensure_bot_operational_patch_allowed(current: dict[str, Any], *, has_operational_changes: bool) -> None:
+        if not has_operational_changes:
+            return
+        if str((current or {}).get("registry_status") or "active").strip().lower() != "archived":
+            return
+        raise HTTPException(
+            status_code=409,
+            detail="Bot archivado no admite edicion operativa; restauralo primero",
+        )
+
+    @staticmethod
+    def _normalize_bot_change_type(value: Any) -> str:
+        change_type = str(value or "").strip().lower()
+        if change_type not in {"created", "updated", "archived", "reactivated"}:
+            return "updated"
+        return change_type
+
+    @staticmethod
+    def _normalize_bot_change_summary(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text[:280] or None
+
+    @staticmethod
+    def _normalize_bot_change_actor(value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:120] or "system"
+
+    @staticmethod
+    def _normalize_bot_change_source(value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:80] or "registry_legacy"
+
+    @classmethod
+    def _bot_changed_fields(cls, current: dict[str, Any] | None, updated: dict[str, Any]) -> list[str]:
+        if not isinstance(current, dict):
+            return []
+        tracked_fields = (
+            "display_name",
+            "alias",
+            "description",
+            "domain_type",
+            "registry_status",
+            "capital_base_usd",
+            "max_total_exposure_pct",
+            "max_asset_exposure_pct",
+            "risk_profile",
+            "risk_per_trade_pct",
+            "max_daily_loss_pct",
+            "max_drawdown_pct",
+            "max_positions",
+            "engine",
+            "mode",
+            "status",
+            "pool_strategy_ids",
+            "strategy_eligibility_by_symbol",
+            "universe_name",
+            "universe",
+            "max_live_symbols",
+            "notes",
+        )
+        return [field for field in tracked_fields if current.get(field) != updated.get(field)]
+
+    @classmethod
+    def _bot_change_summary(
+        cls,
+        *,
+        change_type: str,
+        row: dict[str, Any],
+        changed_fields: list[str],
+    ) -> str:
+        display_name = str(row.get("display_name") or row.get("name") or row.get("id") or "bot")
+        if change_type == "created":
+            return (
+                f"Bot creado: {display_name} | "
+                f"pool={len(row.get('pool_strategy_ids') or [])} | "
+                f"symbols={len(row.get('universe') or [])}"
+            )[:280]
+        if change_type == "archived":
+            return "Bot archivado sin borrado destructivo"
+        if change_type == "reactivated":
+            if changed_fields:
+                return ("Bot reactivado tras validar registry actual; cambios: " + ", ".join(changed_fields[:8]))[:280]
+            return "Bot reactivado tras validar registry actual"
+        if changed_fields:
+            return ("Campos actualizados: " + ", ".join(changed_fields[:8]))[:280]
+        return "Actualizacion del registry sin cambios materiales visibles"
+
+    @classmethod
+    def _bot_trace_payload(
+        cls,
+        *,
+        change_type: str,
+        change_summary: str,
+        actor: str | None,
+        source: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "last_change_type": cls._normalize_bot_change_type(change_type),
+            "last_change_summary": cls._normalize_bot_change_summary(change_summary),
+            "last_changed_by": cls._normalize_bot_change_actor(actor),
+            "last_change_source": cls._normalize_bot_change_source(source),
+        }
+
+    def _ensure_bot_reactivation_allowed(
+        self,
+        row: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        errors: list[str] = []
+        assignment_payload = self._bot_symbol_assignment_payload(row)
+        pool_payload = self._bot_strategy_pool_payload(row, strategies_index=strategies_index)
+        errors.extend(
+            str(item)
+            for item in (assignment_payload.get("symbol_assignment_errors") or [])
+            if str(item).strip()
+        )
+        errors.extend(
+            str(item)
+            for item in (pool_payload.get("strategy_pool_errors") or [])
+            if str(item).strip()
+        )
+        if str(row.get("mode") or "").strip().lower() == "live":
+            gates_payload = evaluate_gates("live")
+            allowed, reason = live_can_be_enabled(gates_payload)
+            if not allowed:
+                errors.append(f"modo live no habilitado para reactivacion: {reason}")
+        if errors:
+            raise HTTPException(
+                status_code=409,
+                detail="No se puede reactivar bot archivado con registry invalido: " + "; ".join(errors),
+            )
 
     def _next_bot_id(self, rows: list[dict[str, Any]]) -> str:
         max_n = 0
@@ -3650,55 +5588,114 @@ def risk_hooks(context):
                 continue
         return f"BOT-{max_n + 1:06d}"
 
-    def _normalize_bot_row(self, row: dict[str, Any], *, strategy_ids: set[str] | None = None) -> dict[str, Any]:
+    def _normalize_bot_row(self, row: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(row, dict):
             row = {}
-        sid_allow = strategy_ids if isinstance(strategy_ids, set) else None
-        pool_ids_raw = row.get("pool_strategy_ids") if isinstance(row.get("pool_strategy_ids"), list) else []
-        pool_strategy_ids: list[str] = []
-        seen_pool: set[str] = set()
-        for item in pool_ids_raw:
-            sid = str(item or "").strip()
-            if not sid or sid in seen_pool:
-                continue
-            if sid_allow is not None and sid not in sid_allow:
-                continue
-            seen_pool.add(sid)
-            pool_strategy_ids.append(sid)
-        universe_raw = row.get("universe") if isinstance(row.get("universe"), list) else []
-        universe: list[str] = []
-        seen_universe: set[str] = set()
-        for item in universe_raw:
-            val = str(item or "").strip().upper()
-            if not val or val in seen_universe:
-                continue
-            seen_universe.add(val)
-            universe.append(val)
+        risk_profile = self._normalize_bot_risk_profile(str(row.get("risk_profile") or BOT_DEFAULT_RISK_PROFILE))
+        risk_defaults = self._bot_risk_profile_defaults(risk_profile)
+        pool_strategy_ids = self._normalize_bot_pool_strategy_ids(row.get("pool_strategy_ids"))
+        universe_name = self._normalize_bot_universe_name(row.get("universe_name"))
+        universe = self._normalize_bot_assigned_symbols(row.get("universe"))
+        max_live_symbols = self._normalize_bot_max_live_symbols(row.get("max_live_symbols"))
         now_iso = utc_now_iso()
+        bot_id = str(row.get("id") or "").strip() or "BOT-000000"
+        display_name = str(row.get("display_name") or row.get("name") or "").strip()
+        if len(display_name) < 3:
+            display_name = bot_id
+        display_name = display_name[:80] or bot_id
+        alias = str(row.get("alias") or "").strip()[:40] or None
+        description = str(row.get("description") or "").strip()[:280] or None
+        legacy_status = self._normalize_bot_status(str(row.get("status") or "active"))
+        archived_at_raw = str(row.get("archived_at") or "").strip()
+        registry_status = self._normalize_bot_registry_status(
+            str(
+                row.get("registry_status")
+                or ("archived" if legacy_status == "archived" or archived_at_raw else "active")
+            )
+        )
+        if registry_status == "archived":
+            legacy_status = "archived"
+        archived_at = archived_at_raw or (str(row.get("updated_at") or now_iso) if registry_status == "archived" else None)
+        last_change_type = self._normalize_bot_change_type(
+            row.get("last_change_type") or ("archived" if registry_status == "archived" else "updated")
+        )
+        last_change_summary = self._normalize_bot_change_summary(
+            row.get("last_change_summary")
+            or (
+                "Metadata legacy del registry; detalle fino no disponible"
+                if row.get("last_change_type") is None
+                else None
+            )
+        )
+        total_exposure_pct = min(
+            100.0,
+            max(0.01, self._bot_float_or_default(row.get("max_total_exposure_pct"), float(risk_defaults.get("max_total_exposure_pct") or 65.0))),
+        )
         return {
-            "id": str(row.get("id") or "").strip() or "BOT-000000",
-            "name": str(row.get("name") or "AutoBot").strip()[:120] or "AutoBot",
+            "id": bot_id,
+            "bot_id": bot_id,
+            "display_name": display_name,
+            "name": display_name,
+            "alias": alias,
+            "description": description,
+            "domain_type": self._normalize_bot_domain_type(str(row.get("domain_type") or "spot")),
+            "registry_status": registry_status,
+            "archived_at": archived_at,
+            "capital_base_usd": round(max(0.01, self._bot_float_or_default(row.get("capital_base_usd"), BOT_DEFAULT_CAPITAL_BASE_USD)), 6),
+            "max_total_exposure_pct": round(total_exposure_pct, 4),
+            "max_asset_exposure_pct": round(
+                min(
+                    total_exposure_pct,
+                    max(0.01, self._bot_float_or_default(row.get("max_asset_exposure_pct"), float(risk_defaults.get("max_asset_exposure_pct") or 25.0))),
+                ),
+                4,
+            ),
+            "risk_profile": risk_profile,
+            "risk_per_trade_pct": round(
+                min(100.0, max(0.0001, self._bot_float_or_default(row.get("risk_per_trade_pct"), float(risk_defaults.get("risk_per_trade_pct") or 0.5)))),
+                4,
+            ),
+            "max_daily_loss_pct": round(
+                min(100.0, max(0.0001, self._bot_float_or_default(row.get("max_daily_loss_pct"), float(risk_defaults.get("max_daily_loss_pct") or 3.0)))),
+                4,
+            ),
+            "max_drawdown_pct": round(
+                min(100.0, max(0.0001, self._bot_float_or_default(row.get("max_drawdown_pct"), float(risk_defaults.get("max_drawdown_pct") or 15.0)))),
+                4,
+            ),
+            "max_positions": max(1, self._bot_int_or_default(row.get("max_positions"), int(risk_defaults.get("max_positions") or 10))),
             "engine": self._normalize_bot_engine(str(row.get("engine") or "bandit_thompson")),
             "mode": self._normalize_bot_mode(str(row.get("mode") or "paper")),
-            "status": self._normalize_bot_status(str(row.get("status") or "active")),
+            "status": legacy_status,
             "pool_strategy_ids": pool_strategy_ids,
+            "strategy_eligibility_by_symbol": self._normalize_bot_strategy_eligibility_map(
+                row.get("strategy_eligibility_by_symbol")
+            ),
+            "strategy_selection_by_symbol": self._normalize_bot_strategy_selection_map(
+                row.get("strategy_selection_by_symbol")
+            ),
+            "universe_name": universe_name,
             "universe": universe,
+            "max_live_symbols": max_live_symbols,
             "notes": str(row.get("notes") or "")[:500],
             "created_at": str(row.get("created_at") or now_iso),
             "updated_at": str(row.get("updated_at") or now_iso),
+            "last_change_type": last_change_type,
+            "last_change_summary": last_change_summary,
+            "last_changed_by": self._normalize_bot_change_actor(row.get("last_changed_by")),
+            "last_change_source": self._normalize_bot_change_source(row.get("last_change_source")),
         }
 
     def load_bots(self) -> list[dict[str, Any]]:
         payload = self.policy_state.load_bot_rows()
         if not isinstance(payload, list):
             payload = []
-        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
         normalized: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         changed = False
         for idx, raw in enumerate(payload):
             before = dict(raw) if isinstance(raw, dict) else {}
-            row = self._normalize_bot_row(before, strategy_ids=valid_strategy_ids)
+            row = self._normalize_bot_row(before)
             if not row["id"] or row["id"] == "BOT-000000" or row["id"] in seen_ids:
                 row["id"] = self._next_bot_id(normalized)
                 changed = True
@@ -3713,6 +5710,176 @@ def risk_hooks(context):
     def save_bots(self, rows: list[dict[str, Any]]) -> None:
         self.policy_state.save_bot_rows(rows)
 
+    def bot_registry_contract(self) -> dict[str, Any]:
+        try:
+            storage_path = self.policy_state.bots_path.relative_to(USER_DATA_DIR)
+            storage_label = storage_path.as_posix()
+        except Exception:
+            storage_label = str(self.policy_state.bots_path)
+        defaults = self._bot_risk_profile_defaults(BOT_DEFAULT_RISK_PROFILE)
+        return {
+            "contract_version": BOT_REGISTRY_CONTRACT_VERSION,
+            "storage": {
+                "kind": "json_file",
+                "path": storage_label,
+                "stable_id_field": "bot_id",
+                "supports_soft_archive": True,
+                "trace_fields": list(BOT_REGISTRY_FIELD_GROUPS["trace"]),
+                "multi_symbol_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
+                "strategy_eligibility_fields": list(BOT_STRATEGY_ELIGIBILITY_STORAGE_FIELDS),
+                "strategy_selection_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
+                "signal_consolidation_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
+            },
+            "api": dict(BOT_REGISTRY_API_SURFACE),
+            "defaults": {
+                "display_name": "",
+                "alias": "",
+                "description": "",
+                "domain_type": BOT_REGISTRY_DEFAULT_DOMAIN_TYPE,
+                "registry_status": "active",
+                "engine": BOT_REGISTRY_DEFAULT_ENGINE,
+                "mode": BOT_REGISTRY_DEFAULT_MODE,
+                "status": BOT_REGISTRY_DEFAULT_STATUS,
+                "universe_name": "",
+                "universe": [],
+                "pool_strategy_ids": [],
+                "strategy_eligibility_by_symbol": {},
+                "strategy_selection_by_symbol": {},
+                "max_live_symbols": 1,
+                "capital_base_usd": float(BOT_DEFAULT_CAPITAL_BASE_USD),
+                "risk_profile": BOT_DEFAULT_RISK_PROFILE,
+                "max_total_exposure_pct": float(defaults.get("max_total_exposure_pct") or 65.0),
+                "max_asset_exposure_pct": float(defaults.get("max_asset_exposure_pct") or 25.0),
+                "risk_per_trade_pct": float(defaults.get("risk_per_trade_pct") or 0.5),
+                "max_daily_loss_pct": float(defaults.get("max_daily_loss_pct") or 3.0),
+                "max_drawdown_pct": float(defaults.get("max_drawdown_pct") or 15.0),
+                "max_positions": int(defaults.get("max_positions") or 10),
+                "notes": "",
+            },
+            "limits": {
+                "max_instances": int(BOTS_MAX_INSTANCES),
+                "display_name_min_length": 3,
+                "display_name_max_length": 80,
+                "alias_max_length": 40,
+                "description_max_length": 280,
+                "notes_max_length": 500,
+                "universe_min_size": 1,
+                "pool_strategy_ids_min_size": 1,
+                "max_live_symbols_min": 1,
+                "max_live_symbols": int(BOT_MAX_LIVE_SYMBOLS),
+                "max_pool_strategies": int(BOT_MAX_POOL_STRATEGIES),
+                "capital_base_usd_min": 0.01,
+                "percentage_min": 0.01,
+                "percentage_max": 100.0,
+                "max_positions_min": 1,
+            },
+            "enums": {
+                "domain_types": list(BOT_REGISTRY_ALLOWED_DOMAIN_TYPES),
+                "registry_statuses": list(BOT_REGISTRY_ALLOWED_REGISTRY_STATUSES),
+                "risk_profiles": list(BOT_RISK_PROFILE_DEFAULTS.keys()),
+                "modes": ["shadow", "paper", "testnet", "live"],
+                "statuses": list(BOT_REGISTRY_ALLOWED_POLICY_STATUSES),
+                "engines": list(BOT_REGISTRY_ALLOWED_ENGINES),
+                "change_types": list(BOT_REGISTRY_ALLOWED_CHANGE_TYPES),
+            },
+            "risk_profiles": {
+                profile: {
+                    "risk_profile": str(payload.get("risk_profile") or profile),
+                    "max_total_exposure_pct": float(payload.get("max_total_exposure_pct") or 0.0),
+                    "max_asset_exposure_pct": float(payload.get("max_asset_exposure_pct") or 0.0),
+                    "risk_per_trade_pct": float(payload.get("risk_per_trade_pct") or 0.0),
+                    "max_daily_loss_pct": float(payload.get("max_daily_loss_pct") or 0.0),
+                    "max_drawdown_pct": float(payload.get("max_drawdown_pct") or 0.0),
+                    "max_positions": int(payload.get("max_positions") or 0),
+                }
+                for profile, payload in BOT_RISK_PROFILE_DEFAULTS.items()
+            },
+            "fields": {key: list(values) for key, values in BOT_REGISTRY_FIELD_GROUPS.items()},
+            "multi_symbol": {
+                "contract_version": BOT_MULTI_SYMBOL_CONTRACT_VERSION,
+                "storage_fields": list(BOT_MULTI_SYMBOL_STORAGE_FIELDS),
+                "limits": {
+                    "configured_symbols_min": 1,
+                    "configured_symbols_max": int(BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS),
+                    "max_active_symbols_min": 1,
+                    "max_active_symbols_max": int(BOT_MAX_LIVE_SYMBOLS),
+                },
+                "fields": [
+                    "domain_type",
+                    "registry_status",
+                    "universe_name",
+                    "universe_family",
+                    "symbols",
+                    "configured_symbols_count",
+                    "max_configured_symbols",
+                    "max_active_symbols",
+                    "status",
+                    "errors",
+                ],
+            },
+            "strategy_eligibility": {
+                "contract_version": BOT_STRATEGY_ELIGIBILITY_CONTRACT_VERSION,
+                "storage_fields": list(BOT_STRATEGY_ELIGIBILITY_STORAGE_FIELDS),
+                "reason_codes": list(BOT_STRATEGY_ELIGIBILITY_REASON_CODES),
+                "fields": [
+                    "domain_type",
+                    "registry_status",
+                    "universe_name",
+                    "universe_family",
+                    "symbols",
+                    "pool_strategy_ids",
+                    "strategy_eligibility_by_symbol",
+                    "eligible_strategy_ids_by_symbol",
+                    "items",
+                    "reason_codes",
+                    "status",
+                    "errors",
+                ],
+            },
+            "strategy_selection": {
+                "contract_version": BOT_STRATEGY_SELECTION_CONTRACT_VERSION,
+                "storage_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
+                "criteria": list(BOT_STRATEGY_SELECTION_CRITERIA),
+                "reason_codes": list(BOT_STRATEGY_SELECTION_REASON_CODES),
+                "fields": [
+                    "domain_type",
+                    "registry_status",
+                    "universe_name",
+                    "universe_family",
+                    "symbols",
+                    "pool_strategy_ids",
+                    "strategy_selection_by_symbol",
+                    "selected_strategy_by_symbol",
+                    "items",
+                    "criteria",
+                    "reason_codes",
+                    "status",
+                    "errors",
+                ],
+            },
+            "signal_consolidation": {
+                "contract_version": BOT_SIGNAL_CONSOLIDATION_CONTRACT_VERSION,
+                "storage_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
+                "criteria": list(BOT_SIGNAL_CONSOLIDATION_CRITERIA),
+                "reason_codes": list(BOT_SIGNAL_CONSOLIDATION_REASON_CODES),
+                "fields": [
+                    "domain_type",
+                    "registry_status",
+                    "universe_name",
+                    "universe_family",
+                    "symbols",
+                    "pool_strategy_ids",
+                    "selected_strategy_by_symbol",
+                    "net_decision_by_symbol",
+                    "items",
+                    "criteria",
+                    "reason_codes",
+                    "status",
+                    "errors",
+                ],
+            },
+        }
+
     def bot_or_404(self, bot_id: str) -> dict[str, Any]:
         bot_id_n = str(bot_id or "").strip()
         for row in self.load_bots():
@@ -3721,20 +5888,32 @@ def risk_hooks(context):
         raise HTTPException(status_code=404, detail="BotInstance not found")
 
     @staticmethod
-    def _bot_policy_state_payload(bot: dict[str, Any]) -> dict[str, Any]:
+    def _bot_policy_state_payload(bot: dict[str, Any], *, pool_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        resolved_pool = pool_payload if isinstance(pool_payload, dict) else {}
         return {
             "engine": str(bot.get("engine") or "bandit_thompson"),
             "mode": str(bot.get("mode") or "paper"),
             "status": str(bot.get("status") or "active"),
-            "pool_strategy_ids": [str(item) for item in (bot.get("pool_strategy_ids") or []) if str(item).strip()],
+            "pool_strategy_ids": [str(item) for item in (resolved_pool.get("pool_strategy_ids") or []) if str(item).strip()],
+            "strategy_pool_status": str(resolved_pool.get("strategy_pool_status") or "error"),
+            "strategy_pool_errors": [str(item) for item in (resolved_pool.get("strategy_pool_errors") or []) if str(item).strip()],
+            "max_pool_strategies": int(resolved_pool.get("max_pool_strategies") or BOT_MAX_POOL_STRATEGIES),
+            "universe_name": str(bot.get("universe_name") or ""),
             "universe": [str(item) for item in (bot.get("universe") or []) if str(item).strip()],
+            "max_live_symbols": bot.get("max_live_symbols"),
             "notes": str(bot.get("notes") or ""),
             "created_at": str(bot.get("created_at") or ""),
             "updated_at": str(bot.get("updated_at") or ""),
+            "last_change_type": ConsoleStore._normalize_bot_change_type(bot.get("last_change_type")),
+            "last_change_summary": ConsoleStore._normalize_bot_change_summary(bot.get("last_change_summary")),
+            "last_changed_by": ConsoleStore._normalize_bot_change_actor(bot.get("last_changed_by")),
+            "last_change_source": ConsoleStore._normalize_bot_change_source(bot.get("last_change_source")),
         }
 
     def bot_policy_state_or_404(self, bot_id: str) -> dict[str, Any]:
-        return self._bot_policy_state_payload(self.bot_or_404(bot_id))
+        bot = self.bot_or_404(bot_id)
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        return self._bot_policy_state_payload(bot, pool_payload=pool_payload)
 
     def patch_bot_policy_state(
         self,
@@ -3746,6 +5925,8 @@ def risk_hooks(context):
         pool_strategy_ids: list[str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_policy_state_api",
     ) -> dict[str, Any]:
         bot = self.patch_bot_instance(
             bot_id,
@@ -3755,8 +5936,11 @@ def risk_hooks(context):
             pool_strategy_ids=pool_strategy_ids,
             universe=universe,
             notes=notes,
+            actor=actor,
+            change_source=change_source,
         )
-        return self._bot_policy_state_payload(bot)
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        return self._bot_policy_state_payload(bot, pool_payload=pool_payload)
 
     def _ensure_default_bots(self) -> None:
         rows = self.load_bots()
@@ -3766,24 +5950,33 @@ def risk_hooks(context):
         pool_ids = [
             str(row.get("id"))
             for row in strategies
-            if str(row.get("status") or "") != "archived" and bool(row.get("allow_learning", True))
+            if (
+                str(row.get("status") or "").strip().lower() == "active"
+                and bool(row.get("enabled_for_trading", row.get("enabled", False)))
+                and bool(row.get("allow_learning", True))
+            )
         ]
+        pool_ids = pool_ids[:BOT_MAX_POOL_STRATEGIES]
         if not pool_ids:
             pool_ids = [str(row.get("id")) for row in strategies[:1] if row.get("id")]
         default_row = self._normalize_bot_row(
             {
                 "id": "BOT-000001",
-                "name": "AutoBot Principal",
+                "display_name": "Bot Principal",
+                "name": "Bot Principal",
+                "domain_type": "spot",
+                "registry_status": "active",
                 "engine": "bandit_thompson",
                 "mode": "paper",
                 "status": "active",
                 "pool_strategy_ids": pool_ids,
+                "universe_name": "core_spot_usdt",
                 "universe": ["BTCUSDT", "ETHUSDT"],
+                "max_live_symbols": 2,
                 "notes": "Bot base (Opcion B): propone cambios y requiere aprobacion humana.",
                 "created_at": utc_now_iso(),
                 "updated_at": utc_now_iso(),
             },
-            strategy_ids={str(row.get("id") or "") for row in strategies},
         )
         self.save_bots([default_row])
 
@@ -3800,7 +5993,11 @@ def risk_hooks(context):
                 continue
             ref = {
                 "id": bot_id,
-                "name": str(bot.get("name") or bot_id),
+                "bot_id": bot_id,
+                "display_name": str(bot.get("display_name") or bot.get("name") or bot_id),
+                "name": str(bot.get("display_name") or bot.get("name") or bot_id),
+                "domain_type": self._normalize_bot_domain_type(str(bot.get("domain_type") or "spot")),
+                "registry_status": self._normalize_bot_registry_status(str(bot.get("registry_status") or "active")),
                 "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
                 "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
                 "status": self._normalize_bot_status(str(bot.get("status") or "")),
@@ -3812,7 +6009,7 @@ def risk_hooks(context):
                 refs = out.setdefault(sid, [])
                 refs.append(ref)
         for strategy_id, refs in out.items():
-            refs.sort(key=lambda row: (str(row.get("name") or ""), str(row.get("id") or "")))
+            refs.sort(key=lambda row: (str(row.get("display_name") or row.get("name") or ""), str(row.get("id") or "")))
             out[strategy_id] = refs
         return out
 
@@ -3886,7 +6083,11 @@ def risk_hooks(context):
                 continue
             bots_by_id[bid] = {
                 "id": bid,
-                "name": str(bot.get("name") or bid),
+                "bot_id": bid,
+                "display_name": str(bot.get("display_name") or bot.get("name") or bid),
+                "name": str(bot.get("display_name") or bot.get("name") or bid),
+                "domain_type": self._normalize_bot_domain_type(str(bot.get("domain_type") or "spot")),
+                "registry_status": self._normalize_bot_registry_status(str(bot.get("registry_status") or "active")),
                 "engine": self._normalize_bot_engine(str(bot.get("engine") or "")),
                 "mode": self._normalize_bot_mode(str(bot.get("mode") or "")),
                 "status": self._normalize_bot_status(str(bot.get("status") or "")),
@@ -3905,7 +6106,11 @@ def risk_hooks(context):
                             bid,
                             {
                                 "id": bid,
+                                "bot_id": bid,
+                                "display_name": bid,
                                 "name": bid,
+                                "domain_type": "spot",
+                                "registry_status": "active",
                                 "engine": "unknown",
                                 "mode": "unknown",
                                 "status": "unknown",
@@ -4171,15 +6376,19 @@ def risk_hooks(context):
         perf_stages["strategies_count"] = len(strategies_rows)
         perf_stages["runs_count"] = len(runs_rows)
         perf_stages["recommendations_count"] = len(rec_rows)
-        strategy_by_id = {str(row.get("id") or ""): row for row in strategies_rows if str(row.get("id") or "")}
+        strategy_by_id = self._strategy_index_by_id(strategies_rows)
 
         t_stage = time.perf_counter()
         bot_pool_ids: dict[str, list[str]] = {}
         strategy_ids_in_pool: set[str] = set()
         for bot in bots_rows:
             bid = str(bot.get("id") or "")
-            pool_ids = [sid for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategy_by_id]
-            normalized_pool = [str(sid) for sid in pool_ids]
+            pool_payload = self._bot_strategy_pool_payload(bot, strategies_index=strategy_by_id)
+            normalized_pool = [
+                str(sid)
+                for sid in (pool_payload.get("effective_pool_strategy_ids") or [])
+                if str(sid).strip()
+            ]
             bot_pool_ids[bid] = normalized_pool
             strategy_ids_in_pool.update(normalized_pool)
         perf_stages["stage_pool_index_ms"] = round((time.perf_counter() - t_stage) * 1000.0, 3)
@@ -4608,7 +6817,7 @@ def risk_hooks(context):
             overview_perf["logs_per_bot_effective"] = int(effective_recent_logs_per_bot)
         strategies = self.list_strategies()
         runs = self.load_runs()
-        by_id = {str(s.get("id") or ""): s for s in strategies}
+        by_id = self._strategy_index_by_id(strategies)
         overview = self.get_bots_overview(
             recommendations=recommendations,
             bots=rows,
@@ -4618,61 +6827,176 @@ def risk_hooks(context):
             recent_logs_per_bot=effective_recent_logs_per_bot,
             perf=overview_perf,
         )
+        universe_index = self._instrument_universe_index()
         out: list[dict[str, Any]] = []
         for row in rows:
-            pool_ids = [sid for sid in (row.get("pool_strategy_ids") or []) if sid in by_id]
-            pool_meta = [
-                {
-                    "id": sid,
-                    "name": str(by_id[sid].get("name") or sid),
-                    "allow_learning": bool(by_id[sid].get("allow_learning", True)),
-                    "enabled_for_trading": bool(by_id[sid].get("enabled_for_trading", by_id[sid].get("enabled", False))),
-                    "is_primary": bool(by_id[sid].get("is_primary", False)),
-                }
-                for sid in pool_ids
+            pool_payload = self._bot_strategy_pool_payload(row, strategies_index=by_id)
+            effective_pool_ids = [
+                str(sid)
+                for sid in (pool_payload.get("effective_pool_strategy_ids") or [])
+                if str(sid).strip()
             ]
             payload = dict(row)
-            payload["pool_strategy_ids"] = pool_ids
-            payload["pool_strategies"] = pool_meta
+            payload["pool_strategy_ids"] = [str(sid) for sid in (pool_payload.get("pool_strategy_ids") or []) if str(sid).strip()]
+            payload["pool_strategies"] = list(pool_payload.get("pool_strategies") or [])
+            payload["strategy_pool_status"] = str(pool_payload.get("strategy_pool_status") or "error")
+            payload["strategy_pool_errors"] = [str(item) for item in (pool_payload.get("strategy_pool_errors") or []) if str(item).strip()]
+            payload["max_pool_strategies"] = int(pool_payload.get("max_pool_strategies") or BOT_MAX_POOL_STRATEGIES)
+            payload["strategy_eligibility"] = self._bot_strategy_eligibility_payload(
+                row,
+                strategies_index=by_id,
+                universe_index=universe_index,
+            )
+            payload["strategy_selection"] = self._bot_strategy_selection_payload(
+                row,
+                strategies_index=by_id,
+                universe_index=universe_index,
+            )
+            payload["signal_consolidation"] = self._bot_signal_consolidation_payload(
+                row,
+                strategies_index=by_id,
+                universe_index=universe_index,
+            )
             bot_id = str(row.get("id") or "")
-            payload["metrics"] = self._bot_metrics(dict(row, pool_strategy_ids=pool_ids), recommendations=recommendations, overview=overview)
+            payload["metrics"] = self._bot_metrics(
+                dict(row, pool_strategy_ids=effective_pool_ids),
+                recommendations=recommendations,
+                overview=overview,
+            )
             payload["recent_logs"] = (
                 ((overview.get(bot_id) or {}).get("recent_logs"))
                 if isinstance(overview.get(bot_id), dict)
                 else []
             ) or []
+            payload.update(self._bot_symbol_assignment_payload(row, universe_index=universe_index))
+            payload["multi_symbol"] = self._bot_multi_symbol_payload(row, universe_index=universe_index)
             out.append(payload)
-        out.sort(key=lambda item: (0 if str(item.get("status")) == "active" else 1, item.get("name", ""), item.get("id", "")))
+        out.sort(
+            key=lambda item: (
+                0 if str(item.get("registry_status") or "active") == "active" else 1,
+                str(item.get("display_name") or item.get("name") or ""),
+                str(item.get("id") or ""),
+            )
+        )
         return out
 
     def create_bot_instance(
         self,
         *,
-        name: str | None,
-        engine: str,
-        mode: str,
-        status: str,
-        pool_strategy_ids: list[str] | None,
-        universe: list[str] | None,
-        notes: str | None,
+        display_name: str | None = None,
+        alias: str | None = None,
+        description: str | None = None,
+        domain_type: str | None = None,
+        registry_status: str | None = None,
+        capital_base_usd: float | None = None,
+        max_total_exposure_pct: float | None = None,
+        max_asset_exposure_pct: float | None = None,
+        risk_profile: str | None = None,
+        risk_per_trade_pct: float | None = None,
+        max_daily_loss_pct: float | None = None,
+        max_drawdown_pct: float | None = None,
+        max_positions: int | None = None,
+        universe_name: str | None = None,
+        max_live_symbols: int | None = None,
+        name: str | None = None,
+        engine: str = "bandit_thompson",
+        mode: str = "paper",
+        status: str = "active",
+        pool_strategy_ids: list[str] | None = None,
+        strategy_eligibility_by_symbol: dict[str, list[str]] | None = None,
+        strategy_selection_by_symbol: dict[str, str] | None = None,
+        universe: list[str] | None = None,
+        notes: str | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
     ) -> dict[str, Any]:
         rows = self.load_bots()
-        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
+        strategy_rows = self.list_strategies()
+        strategy_index = self._strategy_index_by_id(strategy_rows)
         now_iso = utc_now_iso()
+        identity_name = self._validate_bot_display_name(display_name if display_name is not None else name)
+        identity_alias = self._validate_bot_alias(alias)
+        identity_description = self._validate_bot_description(description)
+        identity_domain = self._validate_bot_domain_type(domain_type or "spot")
+        effective_registry_status = (
+            self._validate_bot_registry_status(registry_status)
+            if registry_status is not None
+            else ("archived" if self._normalize_bot_status(status) == "archived" else "active")
+        )
+        effective_status = self._normalize_bot_status(status)
+        if effective_registry_status == "archived":
+            effective_status = "archived"
+        base_config = self._resolve_bot_registry_base_config(
+            capital_base_usd=capital_base_usd,
+            max_total_exposure_pct=max_total_exposure_pct,
+            max_asset_exposure_pct=max_asset_exposure_pct,
+            risk_profile=risk_profile,
+            risk_per_trade_pct=risk_per_trade_pct,
+            max_daily_loss_pct=max_daily_loss_pct,
+            max_drawdown_pct=max_drawdown_pct,
+            max_positions=max_positions,
+        )
+        symbol_assignment = self._resolve_bot_symbol_assignment(
+            domain_type=identity_domain,
+            universe_name=universe_name,
+            universe=universe,
+            max_live_symbols=max_live_symbols,
+        )
+        validated_pool_strategy_ids = self._validate_bot_strategy_pool(
+            pool_strategy_ids if pool_strategy_ids is not None else [],
+            strategies_index=strategy_index,
+        )
+        candidate_row = {
+            "domain_type": identity_domain,
+            "pool_strategy_ids": validated_pool_strategy_ids,
+            "universe_name": symbol_assignment["universe_name"],
+            "universe": symbol_assignment["universe"],
+            "max_live_symbols": symbol_assignment["max_live_symbols"],
+        }
+        resolved_strategy_eligibility = self._resolve_bot_strategy_eligibility(
+            row=candidate_row,
+            strategy_eligibility_by_symbol=strategy_eligibility_by_symbol,
+        )
+        candidate_row["strategy_eligibility_by_symbol"] = resolved_strategy_eligibility
+        resolved_strategy_selection = self._resolve_bot_strategy_selection(
+            row=candidate_row,
+            strategy_selection_by_symbol=strategy_selection_by_symbol,
+            strategies_index=strategy_index,
+        )
         row = self._normalize_bot_row(
             {
                 "id": self._next_bot_id(rows),
-                "name": name or f"AutoBot {len(rows) + 1}",
+                "display_name": identity_name,
+                "name": identity_name,
+                "alias": identity_alias,
+                "description": identity_description,
+                "domain_type": identity_domain,
+                "registry_status": effective_registry_status,
+                "archived_at": now_iso if effective_registry_status == "archived" else None,
                 "engine": engine,
                 "mode": mode,
-                "status": status,
-                "pool_strategy_ids": pool_strategy_ids or [],
-                "universe": universe or [],
+                "status": effective_status,
+                "pool_strategy_ids": validated_pool_strategy_ids,
+                "strategy_eligibility_by_symbol": resolved_strategy_eligibility,
+                "strategy_selection_by_symbol": resolved_strategy_selection,
+                "universe_name": symbol_assignment["universe_name"],
+                "universe": symbol_assignment["universe"],
+                "max_live_symbols": symbol_assignment["max_live_symbols"],
                 "notes": notes or "",
+                **base_config,
                 "created_at": now_iso,
                 "updated_at": now_iso,
+                **self._bot_trace_payload(
+                    change_type="created",
+                    change_summary=(
+                        f"Bot creado: {identity_name} | "
+                        f"pool={len(validated_pool_strategy_ids)} | "
+                        f"symbols={len(symbol_assignment['universe'])}"
+                    ),
+                    actor=actor,
+                    source=change_source,
+                ),
             },
-            strategy_ids=valid_strategy_ids,
         )
         rows.append(row)
         self.save_bots(rows)
@@ -4680,9 +7004,31 @@ def risk_hooks(context):
             event_type="bot_instance",
             severity="info",
             module="learning",
-            message=f"Bot creado: {row['id']} ({row['name']})",
+            message=f"Bot creado: {row['id']} ({row['display_name']})",
             related_ids=[row["id"]],
-            payload={"engine": row["engine"], "mode": row["mode"], "pool_size": len(row["pool_strategy_ids"])},
+            payload={
+                "engine": row["engine"],
+                "mode": row["mode"],
+                "pool_size": len(row["pool_strategy_ids"]),
+                "domain_type": row["domain_type"],
+                "registry_status": row["registry_status"],
+                "risk_profile": row["risk_profile"],
+                "capital_base_usd": row["capital_base_usd"],
+                "universe_name": row.get("universe_name"),
+                "assigned_symbols": len(row.get("universe") or []),
+                "max_live_symbols": row.get("max_live_symbols"),
+                "eligibility_symbols": len(row.get("strategy_eligibility_by_symbol") or {}),
+                "eligibility_pairs": sum(
+                    len(item)
+                    for item in (row.get("strategy_eligibility_by_symbol") or {}).values()
+                    if isinstance(item, list)
+                ),
+                "selection_symbols": len(row.get("strategy_selection_by_symbol") or {}),
+                "actor": self._normalize_bot_change_actor(actor),
+                "change_type": row.get("last_change_type"),
+                "change_summary": row.get("last_change_summary"),
+                "change_source": row.get("last_change_source"),
+            },
         )
         return row
 
@@ -4690,39 +7036,208 @@ def risk_hooks(context):
         self,
         bot_id: str,
         *,
+        display_name: str | None = None,
+        alias: str | None = None,
+        description: str | None = None,
+        domain_type: str | None = None,
+        registry_status: str | None = None,
+        capital_base_usd: float | None = None,
+        max_total_exposure_pct: float | None = None,
+        max_asset_exposure_pct: float | None = None,
+        risk_profile: str | None = None,
+        risk_per_trade_pct: float | None = None,
+        max_daily_loss_pct: float | None = None,
+        max_drawdown_pct: float | None = None,
+        max_positions: int | None = None,
+        universe_name: str | None = None,
+        max_live_symbols: int | None = None,
         name: str | None = None,
         engine: str | None = None,
         mode: str | None = None,
         status: str | None = None,
         pool_strategy_ids: list[str] | None = None,
+        strategy_eligibility_by_symbol: dict[str, list[str]] | None = None,
+        strategy_selection_by_symbol: dict[str, str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
     ) -> dict[str, Any]:
         rows = self.load_bots()
         idx = next((i for i, row in enumerate(rows) if str(row.get("id")) == bot_id), None)
         if idx is None:
             raise HTTPException(status_code=404, detail="BotInstance not found")
-        valid_strategy_ids = {str(row.get("id") or "") for row in self.list_strategies() if str(row.get("id") or "")}
+        strategy_rows = self.list_strategies()
+        strategy_index = self._strategy_index_by_id(strategy_rows)
         current = dict(rows[idx])
         patched = dict(current)
-        if name is not None:
-            patched["name"] = name
+        self._ensure_bot_operational_patch_allowed(
+            current,
+            has_operational_changes=any(
+                value is not None
+                for value in (
+                    domain_type,
+                    capital_base_usd,
+                    max_total_exposure_pct,
+                    max_asset_exposure_pct,
+                    risk_profile,
+                    risk_per_trade_pct,
+                    max_daily_loss_pct,
+                    max_drawdown_pct,
+                    max_positions,
+                    engine,
+                    mode,
+                    status,
+                    pool_strategy_ids,
+                    strategy_eligibility_by_symbol,
+                    strategy_selection_by_symbol,
+                    universe_name,
+                    universe,
+                    max_live_symbols,
+                    notes,
+                )
+            ),
+        )
+        if display_name is not None or name is not None:
+            next_display_name = display_name if display_name is not None else name
+            validated_display_name = self._validate_bot_display_name(next_display_name)
+            patched["display_name"] = validated_display_name
+            patched["name"] = validated_display_name
+        if alias is not None:
+            patched["alias"] = self._validate_bot_alias(alias)
+        if description is not None:
+            patched["description"] = self._validate_bot_description(description)
+        if domain_type is not None:
+            patched["domain_type"] = self._validate_bot_domain_type(domain_type)
         if engine is not None:
             patched["engine"] = engine
         if mode is not None:
             patched["mode"] = mode
         if status is not None:
-            patched["status"] = status
+            effective_status = self._normalize_bot_status(status)
+            patched["status"] = effective_status
+            patched["registry_status"] = "archived" if effective_status == "archived" else "active"
+            patched["archived_at"] = utc_now_iso() if effective_status == "archived" else None
+        if registry_status is not None:
+            effective_registry_status = self._validate_bot_registry_status(registry_status)
+            patched["registry_status"] = effective_registry_status
+            if effective_registry_status == "archived":
+                patched["status"] = "archived"
+                patched["archived_at"] = utc_now_iso()
+            else:
+                if str(patched.get("status") or "").strip().lower() == "archived":
+                    patched["status"] = "active"
+                patched["archived_at"] = None
+        if any(
+            value is not None
+            for value in (
+                capital_base_usd,
+                max_total_exposure_pct,
+                max_asset_exposure_pct,
+                risk_profile,
+                risk_per_trade_pct,
+                max_daily_loss_pct,
+                max_drawdown_pct,
+                max_positions,
+            )
+        ):
+            patched.update(
+                self._resolve_bot_registry_base_config(
+                    current=current,
+                    capital_base_usd=capital_base_usd,
+                    max_total_exposure_pct=max_total_exposure_pct,
+                    max_asset_exposure_pct=max_asset_exposure_pct,
+                    risk_profile=risk_profile,
+                    risk_per_trade_pct=risk_per_trade_pct,
+                    max_daily_loss_pct=max_daily_loss_pct,
+                    max_drawdown_pct=max_drawdown_pct,
+                    max_positions=max_positions,
+                )
+            )
+        if (
+            domain_type is not None
+            or universe_name is not None
+            or universe is not None
+            or max_live_symbols is not None
+        ):
+            symbol_assignment = self._resolve_bot_symbol_assignment(
+                current=patched,
+                domain_type=str(patched.get("domain_type") or "spot"),
+                universe_name=universe_name,
+                universe=universe,
+                max_live_symbols=max_live_symbols,
+            )
+            patched["universe_name"] = symbol_assignment["universe_name"]
+            patched["universe"] = symbol_assignment["universe"]
+            patched["max_live_symbols"] = symbol_assignment["max_live_symbols"]
         if pool_strategy_ids is not None:
-            patched["pool_strategy_ids"] = pool_strategy_ids
-        if universe is not None:
-            patched["universe"] = universe
+            patched["pool_strategy_ids"] = self._validate_bot_strategy_pool(
+                pool_strategy_ids,
+                strategies_index=strategy_index,
+            )
+        if (
+            strategy_eligibility_by_symbol is not None
+            or strategy_selection_by_symbol is not None
+            or pool_strategy_ids is not None
+            or domain_type is not None
+            or universe_name is not None
+            or universe is not None
+            or max_live_symbols is not None
+        ):
+            patched["strategy_eligibility_by_symbol"] = self._resolve_bot_strategy_eligibility(
+                current=current,
+                row=patched,
+                strategy_eligibility_by_symbol=strategy_eligibility_by_symbol,
+            )
+        if (
+            strategy_selection_by_symbol is not None
+            or strategy_eligibility_by_symbol is not None
+            or pool_strategy_ids is not None
+            or domain_type is not None
+            or universe_name is not None
+            or universe is not None
+            or max_live_symbols is not None
+        ):
+            patched["strategy_selection_by_symbol"] = self._resolve_bot_strategy_selection(
+                current=current,
+                row=patched,
+                strategy_selection_by_symbol=strategy_selection_by_symbol,
+                strategies_index=strategy_index,
+            )
         if notes is not None:
             patched["notes"] = notes
+        current_registry_status = self._normalize_bot_registry_status(str(current.get("registry_status") or "active"))
         patched["id"] = bot_id
         patched["created_at"] = str(current.get("created_at") or utc_now_iso())
-        patched["updated_at"] = utc_now_iso()
-        rows[idx] = self._normalize_bot_row(patched, strategy_ids=valid_strategy_ids)
+        now_iso = utc_now_iso()
+        patched["updated_at"] = now_iso
+        normalized_candidate = self._normalize_bot_row(patched)
+        next_registry_status = self._normalize_bot_registry_status(str(normalized_candidate.get("registry_status") or "active"))
+        if current_registry_status == "archived" and next_registry_status == "active":
+            self._ensure_bot_reactivation_allowed(normalized_candidate, strategies_index=strategy_index)
+        change_type = (
+            "archived"
+            if current_registry_status != "archived" and next_registry_status == "archived"
+            else "reactivated"
+            if current_registry_status == "archived" and next_registry_status == "active"
+            else "updated"
+        )
+        changed_fields = self._bot_changed_fields(current, normalized_candidate)
+        change_summary = self._bot_change_summary(
+            change_type=change_type,
+            row=normalized_candidate,
+            changed_fields=changed_fields,
+        )
+        normalized_candidate.update(
+            self._bot_trace_payload(
+                change_type=change_type,
+                change_summary=change_summary,
+                actor=actor,
+                source=change_source,
+            )
+        )
+        normalized_candidate["updated_at"] = now_iso
+        rows[idx] = normalized_candidate
         self.save_bots(rows)
         self.add_log(
             event_type="bot_instance",
@@ -4730,9 +7245,78 @@ def risk_hooks(context):
             module="learning",
             message=f"Bot actualizado: {bot_id}",
             related_ids=[bot_id],
-            payload={"status": rows[idx].get("status"), "mode": rows[idx].get("mode"), "engine": rows[idx].get("engine")},
+            payload={
+                "status": rows[idx].get("status"),
+                "registry_status": rows[idx].get("registry_status"),
+                "mode": rows[idx].get("mode"),
+                "engine": rows[idx].get("engine"),
+                "domain_type": rows[idx].get("domain_type"),
+                "risk_profile": rows[idx].get("risk_profile"),
+                "capital_base_usd": rows[idx].get("capital_base_usd"),
+                "universe_name": rows[idx].get("universe_name"),
+                "assigned_symbols": len(rows[idx].get("universe") or []),
+                "max_live_symbols": rows[idx].get("max_live_symbols"),
+                "eligibility_symbols": len(rows[idx].get("strategy_eligibility_by_symbol") or {}),
+                "eligibility_pairs": sum(
+                    len(item)
+                    for item in (rows[idx].get("strategy_eligibility_by_symbol") or {}).values()
+                    if isinstance(item, list)
+                ),
+                "selection_symbols": len(rows[idx].get("strategy_selection_by_symbol") or {}),
+                "actor": self._normalize_bot_change_actor(actor),
+                "change_type": rows[idx].get("last_change_type"),
+                "change_summary": rows[idx].get("last_change_summary"),
+                "change_source": rows[idx].get("last_change_source"),
+                "changed_fields": changed_fields,
+            },
         )
         return rows[idx]
+
+    def get_bot_instance(
+        self,
+        bot_id: str,
+        *,
+        recommendations: list[dict[str, Any]] | None = None,
+        include_recent_logs: bool | None = False,
+        recent_logs_per_bot: int | None = 0,
+    ) -> dict[str, Any]:
+        items = self.list_bot_instances(
+            recommendations=recommendations,
+            include_recent_logs=include_recent_logs,
+            recent_logs_per_bot=recent_logs_per_bot,
+        )
+        item = next((row for row in items if str(row.get("id") or "") == str(bot_id or "").strip()), None)
+        if not item:
+            raise HTTPException(status_code=404, detail="BotInstance not found")
+        return item
+
+    def archive_bot_instance(
+        self,
+        bot_id: str,
+        *,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
+    ) -> dict[str, Any]:
+        return self.patch_bot_instance(
+            bot_id,
+            registry_status="archived",
+            actor=actor,
+            change_source=change_source,
+        )
+
+    def restore_bot_instance(
+        self,
+        bot_id: str,
+        *,
+        actor: str | None = None,
+        change_source: str = "bot_registry_api",
+    ) -> dict[str, Any]:
+        return self.patch_bot_instance(
+            bot_id,
+            registry_status="active",
+            actor=actor,
+            change_source=change_source,
+        )
 
     def delete_bot_instance(self, bot_id: str) -> dict[str, Any]:
         rows = self.load_bots()
@@ -8761,15 +11345,20 @@ class ShadowRunCoordinator:
         strategies = {str(row.get("id") or ""): row for row in self.store.list_strategies() if str(row.get("id") or "")}
         targets: list[dict[str, Any]] = []
         for bot in eligible_bots:
-            pool_ids = [str(sid) for sid in (bot.get("pool_strategy_ids") or []) if str(sid) in strategies]
-            allowed_ids: list[str] = []
-            for strategy_id in pool_ids:
-                strategy = strategies.get(strategy_id) or {}
-                if str(strategy.get("status") or "active").strip().lower() == "archived":
-                    continue
-                if not bool(strategy.get("allow_learning", True)):
-                    continue
-                allowed_ids.append(strategy_id)
+            pool_payload = self.store._bot_strategy_pool_payload(bot, strategies_index=strategies)
+            if str(pool_payload.get("strategy_pool_status") or "error") != "valid":
+                detail = "; ".join(
+                    str(item)
+                    for item in (pool_payload.get("strategy_pool_errors") or [])
+                    if str(item).strip()
+                )
+                warnings.append(f"{bot.get('id')}: pool inválido en registry ({detail})")
+                continue
+            allowed_ids = [
+                str(strategy_id)
+                for strategy_id in (pool_payload.get("effective_pool_strategy_ids") or [])
+                if str(strategy_id).strip()
+            ]
             if not allowed_ids:
                 warnings.append(f"{bot.get('id')}: sin estrategias Pool=true para shadow.")
                 continue
@@ -11706,10 +14295,15 @@ def create_app() -> FastAPI:
         strategy = store.update_strategy_params(strategy_id, params_yaml)
         return {"ok": True, "strategy": strategy}
 
+    @app.get("/api/v1/bots/registry-contract")
+    def bot_registry_contract(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return store.bot_registry_contract()
+
     @app.get("/api/v1/bots")
     def list_bots(
         response: Response,
         debug_perf: bool = Query(default=False),
+        registry_status: Literal["all", "active", "archived"] = Query(default="all"),
         recent_logs: bool | None = Query(default=None),
         recent_logs_per_bot: int | None = Query(default=None, ge=0, le=50),
         _: dict[str, str] = Depends(current_user),
@@ -11752,9 +14346,19 @@ def create_app() -> FastAPI:
                     },
                 )
 
+        filtered_payload = dict(payload)
+        if registry_status != "all":
+            filtered_items = [
+                row
+                for row in (payload.get("items") or [])
+                if str((row or {}).get("registry_status") or "active") == registry_status
+            ]
+            filtered_payload["items"] = filtered_items
+            filtered_payload["total"] = len(filtered_items)
+
         if not debug_perf:
-            return payload
-        out = dict(payload)
+            return filtered_payload
+        out = dict(filtered_payload)
         out["perf"] = {
             "cache": cache_state,
             "latency_ms": round(total_ms, 3),
@@ -11788,17 +14392,36 @@ def create_app() -> FastAPI:
             )
 
     @app.post("/api/v1/bots")
-    def create_bot(body: BotCreateBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def create_bot(body: BotCreateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         ensure_bot_live_mode_allowed(body.mode)
         ensure_bot_capacity_available()
         bot = store.create_bot_instance(
+            display_name=body.display_name,
+            alias=body.alias,
+            description=body.description,
+            domain_type=body.domain_type,
+            registry_status=body.registry_status,
+            capital_base_usd=body.capital_base_usd,
+            max_total_exposure_pct=body.max_total_exposure_pct,
+            max_asset_exposure_pct=body.max_asset_exposure_pct,
+            risk_profile=body.risk_profile,
+            risk_per_trade_pct=body.risk_per_trade_pct,
+            max_daily_loss_pct=body.max_daily_loss_pct,
+            max_drawdown_pct=body.max_drawdown_pct,
+            max_positions=body.max_positions,
+            universe_name=body.universe_name,
+            max_live_symbols=body.max_live_symbols,
             name=body.name,
             engine=body.engine,
             mode=body.mode,
             status=body.status,
             pool_strategy_ids=body.pool_strategy_ids,
+            strategy_eligibility_by_symbol=body.strategy_eligibility_by_symbol,
+            strategy_selection_by_symbol=body.strategy_selection_by_symbol,
             universe=body.universe,
             notes=body.notes,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
         )
         _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
@@ -11807,17 +14430,36 @@ def create_app() -> FastAPI:
         return {"ok": True, "bot": enriched}
 
     @app.patch("/api/v1/bots/{bot_id}")
-    def patch_bot(bot_id: str, body: BotPatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def patch_bot(bot_id: str, body: BotPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         ensure_bot_live_mode_allowed(body.mode)
         bot = store.patch_bot_instance(
             bot_id,
+            display_name=body.display_name,
+            alias=body.alias,
+            description=body.description,
+            domain_type=body.domain_type,
+            registry_status=body.registry_status,
+            capital_base_usd=body.capital_base_usd,
+            max_total_exposure_pct=body.max_total_exposure_pct,
+            max_asset_exposure_pct=body.max_asset_exposure_pct,
+            risk_profile=body.risk_profile,
+            risk_per_trade_pct=body.risk_per_trade_pct,
+            max_daily_loss_pct=body.max_daily_loss_pct,
+            max_drawdown_pct=body.max_drawdown_pct,
+            max_positions=body.max_positions,
+            universe_name=body.universe_name,
+            max_live_symbols=body.max_live_symbols,
             name=body.name,
             engine=body.engine,
             mode=body.mode,
             status=body.status,
             pool_strategy_ids=body.pool_strategy_ids,
+            strategy_eligibility_by_symbol=body.strategy_eligibility_by_symbol,
+            strategy_selection_by_symbol=body.strategy_selection_by_symbol,
             universe=body.universe,
             notes=body.notes,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
         )
         _invalidate_bots_overview_cache()
         recs = learning_service.load_all_recommendations()
@@ -11825,12 +14467,131 @@ def create_app() -> FastAPI:
         enriched = next((row for row in items if str(row.get("id")) == str(bot.get("id"))), bot)
         return {"ok": True, "bot": enriched}
 
+    @app.get("/api/v1/bots/{bot_id}")
+    def get_bot(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        recs = learning_service.load_all_recommendations()
+        bot = store.get_bot_instance(
+            bot_id,
+            recommendations=recs,
+            include_recent_logs=False,
+            recent_logs_per_bot=0,
+        )
+        return {"bot": bot}
+
+    @app.get("/api/v1/bots/{bot_id}/multi-symbol")
+    def bot_multi_symbol(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {"bot_id": bot_id, "multi_symbol": store.bot_multi_symbol_or_404(bot_id)}
+
+    @app.patch("/api/v1/bots/{bot_id}/multi-symbol")
+    def patch_bot_multi_symbol(bot_id: str, body: BotMultiSymbolPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        if body.universe_name is None and body.symbols is None and body.max_active_symbols is None:
+            raise HTTPException(status_code=400, detail="At least one multi_symbol field is required")
+        multi_symbol = store.patch_bot_multi_symbol(
+            bot_id,
+            universe_name=body.universe_name,
+            symbols=body.symbols,
+            max_active_symbols=body.max_active_symbols,
+            actor=user.get("username", "admin"),
+            change_source="bot_multi_symbol_api",
+        )
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "bot_id": bot_id, "multi_symbol": multi_symbol}
+
+    @app.get("/api/v1/bots/{bot_id}/symbol-strategy-eligibility")
+    def bot_symbol_strategy_eligibility(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "strategy_eligibility": store.bot_strategy_eligibility_or_404(bot_id),
+        }
+
+    @app.patch("/api/v1/bots/{bot_id}/symbol-strategy-eligibility")
+    def patch_bot_symbol_strategy_eligibility(
+        bot_id: str,
+        body: BotStrategyEligibilityPatchBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        if body.strategy_eligibility_by_symbol is None:
+            raise HTTPException(status_code=400, detail="strategy_eligibility_by_symbol es requerido")
+        strategy_eligibility = store.patch_bot_strategy_eligibility(
+            bot_id,
+            strategy_eligibility_by_symbol=body.strategy_eligibility_by_symbol,
+            actor=user.get("username", "admin"),
+            change_source="bot_symbol_strategy_eligibility_api",
+        )
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "bot_id": bot_id, "strategy_eligibility": strategy_eligibility}
+
+    @app.get("/api/v1/bots/{bot_id}/strategy-selection")
+    def bot_strategy_selection(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "strategy_selection": store.bot_strategy_selection_or_404(bot_id),
+        }
+
+    @app.patch("/api/v1/bots/{bot_id}/strategy-selection")
+    def patch_bot_strategy_selection(
+        bot_id: str,
+        body: BotStrategySelectionPatchBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        if body.strategy_selection_by_symbol is None:
+            raise HTTPException(status_code=400, detail="strategy_selection_by_symbol es requerido")
+        strategy_selection = store.patch_bot_strategy_selection(
+            bot_id,
+            strategy_selection_by_symbol=body.strategy_selection_by_symbol,
+            actor=user.get("username", "admin"),
+            change_source="bot_strategy_selection_api",
+        )
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "bot_id": bot_id, "strategy_selection": strategy_selection}
+
+    @app.get("/api/v1/bots/{bot_id}/signal-consolidation")
+    def bot_signal_consolidation(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "signal_consolidation": store.bot_signal_consolidation_or_404(bot_id),
+        }
+
+    @app.post("/api/v1/bots/{bot_id}/archive")
+    def archive_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        bot = store.archive_bot_instance(
+            bot_id,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
+        )
+        _invalidate_bots_overview_cache()
+        recs = learning_service.load_all_recommendations()
+        enriched = store.get_bot_instance(
+            bot_id,
+            recommendations=recs,
+            include_recent_logs=False,
+            recent_logs_per_bot=0,
+        )
+        return {"ok": True, "bot": enriched, "archived": bot.get("archived_at")}
+
+    @app.post("/api/v1/bots/{bot_id}/restore")
+    def restore_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+        store.restore_bot_instance(
+            bot_id,
+            actor=user.get("username", "admin"),
+            change_source="bot_registry_api",
+        )
+        _invalidate_bots_overview_cache()
+        recs = learning_service.load_all_recommendations()
+        enriched = store.get_bot_instance(
+            bot_id,
+            recommendations=recs,
+            include_recent_logs=False,
+            recent_logs_per_bot=0,
+        )
+        return {"ok": True, "bot": enriched}
+
     @app.get("/api/v1/bots/{bot_id}/policy-state")
     def bot_policy_state(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return {"bot_id": bot_id, "policy_state": store.bot_policy_state_or_404(bot_id)}
 
     @app.patch("/api/v1/bots/{bot_id}/policy-state")
-    def patch_bot_policy_state(bot_id: str, body: BotPolicyStatePatchBody, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
+    def patch_bot_policy_state(bot_id: str, body: BotPolicyStatePatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         if (
             body.engine is None
             and body.mode is None
@@ -11849,6 +14610,8 @@ def create_app() -> FastAPI:
             pool_strategy_ids=body.pool_strategy_ids,
             universe=body.universe,
             notes=body.notes,
+            actor=user.get("username", "admin"),
+            change_source="bot_policy_state_api",
         )
         _invalidate_bots_overview_cache()
         return {"ok": True, "bot_id": bot_id, "policy_state": policy_state}
@@ -11876,9 +14639,13 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/v1/bots/{bot_id}")
     def delete_bot(bot_id: str, _: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
-        deleted = store.delete_bot_instance(bot_id)
-        _invalidate_bots_overview_cache()
-        return {"ok": True, "deleted": deleted, "remaining": len(store.load_bots())}
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Bot registry usa soft-archive; no se permite borrado destructivo en este bloque. "
+                f"Usa /api/v1/bots/{bot_id}/archive."
+            ),
+        )
 
     @app.post("/api/v1/bots/bulk-patch")
     def patch_bots_bulk(body: BotBulkPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
@@ -14839,7 +17606,15 @@ def create_app() -> FastAPI:
             bots = store.load_bots()
             bot_row = next((b for b in bots if str(b.get("id") or "") == active_bot_id), None)
             if bot_row:
-                pool = bot_row.get("pool_strategy_ids") or []
+                pool_payload = store._bot_strategy_pool_payload(bot_row)
+                if str(pool_payload.get("strategy_pool_status") or "error") != "valid":
+                    detail = "; ".join(
+                        str(item)
+                        for item in (pool_payload.get("strategy_pool_errors") or [])
+                        if str(item).strip()
+                    )
+                    raise HTTPException(status_code=400, detail=f"Bot {active_bot_id} con pool inválido: {detail}")
+                pool = pool_payload.get("effective_pool_strategy_ids") or []
                 if pool:
                     strategy_name = str(pool[0])
         if not strategy_name:

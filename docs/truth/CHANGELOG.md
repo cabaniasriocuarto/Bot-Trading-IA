@@ -1,5 +1,589 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-18
+
+### Microbloque de seguridad - desbloqueo de `Security CI` en PR #35
+- Cambio real aplicado en dependencias:
+  - `requirements-runtime.txt`
+    - sube `python-multipart` de `0.0.22` a `0.0.26` para cubrir el advisory `CVE-2026-40347` / `GHSA-mj87-hwqh-73pj`
+  - `requirements-research.txt`
+    - no requiere edicion directa; sigue heredando el runtime mediante `-r requirements-runtime.txt`
+  - `rtlab_autotrader/uv.lock`
+    - se regenera de forma minima para reflejar `python-multipart==0.0.26` en el lock del backend
+- Validacion real ejecutada:
+  - `uv lock -P python-multipart==0.0.26` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`14 passed`)
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL en frio por caveat preexistente de `.next/types` faltantes; `npm.cmd run typecheck` post-build -> PASS
+  - validacion puntual del paquete corregido: `uvx pip-audit -r <tmp python-multipart==0.0.26>` -> PASS (`No known vulnerabilities found`)
+- Limites honestos:
+  - `scripts/security_scan.ps1 -Strict` no pudo reproducirse localmente porque faltan `pip-audit` y `gitleaks` en `PATH`
+  - `uvx pip-audit -r requirements-runtime.txt` y `-r requirements-research.txt` no cerraron localmente por resolucion/metadata de `numpy` en Windows sin toolchain C; el desbloqueo definitivo del gate queda pendiente del rerun server-side de GitHub Actions
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-76`
+  - producto funcional
+  - Railway/Vercel prod
+
+### RTLOPS-75 - consolidacion de señales y decision neta por simbolo
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo derivado `signal_consolidation`
+    - agrega `GET /api/v1/bots/{bot_id}/signal-consolidation`
+    - agrega `net_decision_by_symbol` con trazabilidad minima de inputs por simbolo
+    - eleva el contrato del registry a `rtlops75/v1`
+    - deja fail-closed la consolidacion cuando la seleccion previa o la metadata de la estrategia no permiten derivar una decision coherente
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops75/v1`
+    - cubre la decision neta por simbolo y la trazabilidad de inputs
+    - cubre el fail-closed cuando la estrategia seleccionada no expone una señal canónica derivable
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `signal_consolidation`, `net_decision_by_symbol` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops75/v1`
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - agrega una surface minima de lectura para ver decision neta, inputs participantes y acuerdo/conflicto por simbolo
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`14 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/strategies/page.tsx"` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Observacion operativa honesta:
+  - el primer `build` volvio a fallar por `EPERM` al limpiar `.next` dentro de OneDrive;
+  - se resolvio con limpieza segura de `.next` (solo artefacto generado no trackeado), sin tocar archivos tracked del repo.
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - ejecucion remota real por estrategia
+  - subcuentas
+
+### RTLOPS-74 - seleccion de estrategia por simbolo
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega persistencia canonica `strategy_selection_by_symbol`
+    - agrega `GET/PATCH /api/v1/bots/{bot_id}/strategy-selection`
+    - agrega resolucion deterministica `selected_strategy_by_symbol`
+    - agrega criterios y reason codes canonicos del contrato `rtlops74/v1`
+    - endurece invalidacion fail-closed cuando un mapping explicito deja de ser elegible
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre contrato `rtlops74/v1`
+    - cubre surface dedicada de seleccion
+    - cubre criterios `explicit` y `single_eligible`
+    - cubre invalidaciones fail-closed y guard de archivado
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `strategy_selection` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza fixture del contrato canonico a `rtlops74/v1`
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - agrega surface minima para ver/editar seleccion por simbolo dentro del mismo panel de registry
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`12 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/strategies/page.tsx"` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Observacion operativa honesta:
+  - el primer `build` fallo por `EPERM` al limpiar `.next` dentro de OneDrive;
+  - se resolvio con limpieza segura de `.next` (solo artefacto generado no trackeado), sin tocar archivos del repo.
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - execution net/consolidation
+
+### Microbloque tecnico - canonizacion del type-check frio del dashboard
+- Cambio real aplicado en tooling/documentacion:
+  - `rtlab_dashboard/package.json`
+    - agrega script canónico `typecheck: tsc --noEmit --incremental false`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+  - `docs/truth/CHANGELOG.md`
+  - `docs/truth/NEXT_STEPS.md`
+- Comandos validados con reproduccion real:
+  - `npm.cmd run typecheck` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+  - `npm.cmd exec next -- typegen` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- Definicion operativa de `en frio`:
+  - sin `.next`
+  - sin `tsconfig.tsbuildinfo`
+  - shell nueva por comando
+- Conclusion tecnica:
+  - el repo NO requiere `next typegen` como paso obligatorio para type-check estable;
+  - el comando canónico correcto pasa a ser `npm.cmd run typecheck`;
+  - `next typegen` queda como paso compatible, no como prerequisito obligatorio.
+- Limite honesto:
+  - no quedo reconstruida con certeza la causa historica exacta de los FAIL observados antes;
+  - la inferencia mas fuerte es estado transitorio/parcial de `.next/types` o medicion tomada mientras otro flujo mutaba artefactos.
+
+### RTLOPS-73 - mapping simbolo↔estrategias elegibles del pool
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega persistencia canonica `strategy_eligibility_by_symbol`
+    - agrega `GET/PATCH /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+    - agrega reconciliacion fail-closed entre pool, universe y elegibilidad efectiva
+    - eleva el contrato del registry a `rtlops73/v1`
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre contrato canonico
+    - cubre surface dedicada de elegibilidad
+    - cubre invalidaciones fail-closed y guard de archivado
+  - `rtlab_dashboard/src/lib/types.ts`
+    - expone el contrato `strategy_eligibility`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza fixture del contrato canonico
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - agrega surface minima para ver/editar elegibilidad por simbolo sobre pool persistido
+- Tests corridos:
+  - `python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/strategies/page.tsx"` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL inicial en frio por `.next/types/cache-life.d.ts` faltante
+  - `npm.cmd exec next -- typegen` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` despues del build/typegen -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-74`
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - execution net/consolidation
+
+### Microbloque tecnico - validacion y cierre honesto del caveat de `tsc --noEmit`
+- Revalidacion real de tooling:
+  - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo;
+  - `rtlab_dashboard/next.config.ts` no usa `typescript.tsconfigPath`;
+  - `ignoreBuildErrors` sigue inactivo;
+  - no existe script `typecheck` en `package.json`.
+- Definicion operativa de `en frio` usada en esta validacion:
+  - borrar solo artefactos no trackeados:
+    - `rtlab_dashboard/.next`
+    - `rtlab_dashboard/tsconfig.tsbuildinfo`
+  - correr cada comando en una shell nueva
+- Comandos validados:
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+- Conclusion tecnica:
+  - la narrativa previa de `FAIL en frio por includes .next/types` no reproduce en esta punta;
+  - `next typegen` no cambia el resultado del type-check standalone actual: regenera tipos, pero no corrige un fallo activo;
+  - no hizo falta tocar `tsconfig.json`, `package.json` ni `next.config.ts`.
+- Observacion corregida por evidencia posterior del mismo dia:
+  - durante el cierre real de `RTLOPS-73` reaparecio un `FAIL` inicial en frio de `npm.cmd exec tsc -- --noEmit`;
+  - ese `FAIL` desaparece despues de `npm.cmd run build` y con `next typegen` disponible;
+  - no tomar esta entrada como cierre definitivo del caveat sin esa salvedad.
+
+## 2026-04-17
+
+### RTLOPS-71 - subbloque 2 de identidad canonica en backtests
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - normaliza la identidad visible del bot a `display_name + bot_id`
+    - aplica esa identidad en:
+      - selector de bot para mass backtest
+      - mensaje de carga de pool
+      - resumen `Bot filtrado`
+      - vista centrica por bot
+      - badges/lista de related bots
+- Tests corridos:
+  - `npm.cmd run lint -- "src/app/(app)/backtests/page.tsx"` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> observacion historica luego revalidada en el microbloque tecnico del 2026-04-18; no tomar como estado actual
+- Fuera de alcance mantenido a proposito:
+  - `strategies/page.tsx`
+  - `strategies/[id]/page.tsx`
+  - `rtlab_dashboard/src/lib/types.ts`
+  - `legacy_json_id`
+  - comparador legacy
+  - evidence `trusted / legacy / quarantine`
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+
+### RTLOPS-71 - subbloque 1 de strategy detail canonico
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`
+    - elimina el fallback que reconstruia `truth` desde `/api/v1/strategies`
+    - elimina el fallback que reconstruia `evidence` desde `/api/v1/backtests/runs`
+    - agrega carga honesta con:
+      - error explicito si falta `truth` canonica
+      - aviso explicito si falta `evidence` canonica
+    - deja de presentar `backtests/trades` como fallback legacy de `truth/evidence`
+- Tests corridos:
+  - `npm.cmd run lint -- "src/app/(app)/strategies/[id]/page.tsx"` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> observacion historica luego revalidada en el microbloque tecnico del 2026-04-18; no tomar como estado actual
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` despues de `build` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+  - cleanup transversal de naming legacy fuera del detail de estrategia
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+
+### Auditoria de deuda real - lote 1 de reparacion RTLOPS-24 + RTLOPS-34
+- Cambio real aplicado en frontend operatorio:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - deja de usar `DELETE /api/v1/bots/{bot_id}` desde UI
+    - usa archive/restore reales del registry
+    - separa badges y filtros de:
+      - `status` runtime
+      - `registry_status`
+    - muestra identidad canonica por `display_name` y `bot_id`
+- Cambio real aplicado en helper/test:
+  - `rtlab_dashboard/src/lib/execution-bots.ts`
+    - helper canonico para labels, filtros y badges del panel operatorio
+  - `rtlab_dashboard/src/lib/execution-bots.test.ts`
+    - cubre filtro archived por registry, label canonico y badges separados
+- Tests corridos:
+  - `npm.cmd test -- src/lib/bot-registry.test.ts src/lib/execution-bots.test.ts` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`8 passed`)
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-73`
+  - `RTLOPS-74`
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - cleanup administrativo de Linear
+
+### RTLOPS-72 - Bot Multi-Symbol con modelo canonico de simbolos por bot y limites base
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega `GET /api/v1/bots/{bot_id}/multi-symbol`
+    - agrega `PATCH /api/v1/bots/{bot_id}/multi-symbol`
+    - expone `multi_symbol` dentro del contrato canonico del registry y dentro de la respuesta de bots
+    - endurece el limite de simbolos configurados por bot con cap base `12`
+    - traduce errores del surface multi-symbol a naming canonico (`symbols`, `max_active_symbols`) sin romper el storage existente
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `BotMultiSymbolModel`, `BotMultiSymbolResponse` y el surface extendido del contrato
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - valida el cap de simbolos configurados usando el contrato canonico
+    - toma el limite activo desde `multi_symbol.limits.max_active_symbols_max`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cubre el cap de simbolos configurados y el contrato actualizado `rtlops72/v1`
+- Cambio real aplicado en tests backend:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre `GET /api/v1/bots/{bot_id}/multi-symbol`
+    - cubre `PATCH /api/v1/bots/{bot_id}/multi-symbol`
+    - cubre duplicados, cap configurado, cap activo, fail-closed por catalogo y guard de bot archivado
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`8 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS (`4 passed`)
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-73`
+  - `RTLOPS-74`
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+
+### Auditoria global + cleanup controlado de residuos live/legacy
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - la ayuda de `mode=live` deja de expresar `NO GO` global y pasa a describir gating real por `preflight/readiness/gates`
+  - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx`
+    - el fallback de `truth/evidence` deja de decir que `RTLRESE-14` no esta integrada
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - el fallback de `policy_state/decision_log` deja de decir que `RTLRESE-14` no esta integrada
+- Cambio real aplicado en docs/truth:
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+    - corrige el estado actual de integracion de `RTLRESE-13/14/15` en la base real
+    - deja explicitado que `LIVE` sigue bloqueado por guardrails reales y no por un slogan viejo
+  - `docs/truth/NEXT_STEPS.md`
+    - elimina pendientes falsos de "mergear o recrear" `RTLRESE-13/14/15`
+    - deja solo pendiente residual de compatibilidad transicional contra backends remotos viejos
+- Verificacion real aplicada:
+  - `rtlab_autotrader/rtlab_core/domains/*.py` ya esta trackeado en repo
+  - `rtlab_autotrader/rtlab_core/web/app.py` ya expone:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+    - `GET/PATCH /api/v1/bots/{id}/policy-state`
+    - `GET /api/v1/bots/{id}/decision-log`
+  - no se removio ningun guardrail real de `LIVE`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "bots_live_mode_blocked_by_gates or bots_creation_respects_max_instances_limit or bots_overview_cache_hit_and_invalidation_on_create or log_bot_refs_table_is_populated_and_used_in_overview or bots_overview_scopes_kills_by_bot_and_mode" -q` -> PASS (`5 passed`)
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS tambien en frio tras limpieza controlada de artefactos locales (`.next/types`, `.next/dev/types`, `tsconfig.tsbuildinfo`)
+
+### RTLRESE-31 - Bot Registry con contratos minimos de storage, API y frontend
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega `GET /api/v1/bots/registry-contract`
+    - expone version, storage, defaults, limites, enums y grupos de campos del registry
+  - el storage real del bot sigue en `learning/bots.json`; este bloque no crea persistencia paralela.
+- Cambio real aplicado en API:
+  - el registry ahora tiene una surface minima canonica separada y consultable por frontend:
+    - `GET /api/v1/bots/registry-contract`
+  - se mantienen consistentes sin renombre arbitrario:
+    - `GET /api/v1/bots`
+    - `GET /api/v1/bots/{bot_id}`
+    - `PATCH /api/v1/bots/{bot_id}`
+    - `POST /api/v1/bots/{bot_id}/archive`
+    - `POST /api/v1/bots/{bot_id}/restore`
+    - `GET/PATCH /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/decision-log`
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - deja de hardcodear defaults/limits del registry
+    - consume `BotRegistryContractResponse` para construir y validar drafts
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - carga el contrato canonico del registry
+    - usa defaults/limits/enums del backend para crear/editar bots
+    - muestra contract version y storage real del registry
+  - `rtlab_dashboard/src/lib/types.ts`
+    - agrega typing del contrato minimo del registry
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre la surface API nueva `/api/v1/bots/registry-contract`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cubre que el draft/validacion del frontend dependen del contrato canonico y no de limites duros
+- Tests corridos:
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`6 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS (`4 passed`)
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL preexistente por include roto de `.next/types` en `tsconfig.json`; no fue introducido por `RTLRESE-31`
+- Fuera de alcance mantenido a proposito:
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - mapping estrategia<->simbolo
+  - lifecycle
+  - live console
+  - nuevas features de negocio del bot
+
+## 2026-04-16
+
+### RTLRESE-30 - Bot Registry con edicion, archivado/reactivacion y gobierno basico con trazabilidad
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` endurece el registry del bot con:
+    - `last_change_type`
+    - `last_change_summary`
+    - `last_changed_by`
+    - `last_change_source`
+  - create/edit/archive/restore/policy-state ahora persisten trazabilidad minima coherente en el mismo bot;
+  - `restore` deja de aceptar bots invalidos silenciosamente y pasa a rechazar:
+    - symbols assignment invalido contra el catalogo actual
+    - strategy pool invalido contra strategy registry/truth
+    - `mode=live` no habilitado por gates actuales
+  - el backend sigue reutilizando `decision_log` como respaldo auditable del cambio, sin abrir un subsistema paralelo.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots`, `PATCH /api/v1/bots/{bot_id}`, `POST /api/v1/bots/{bot_id}/archive`, `POST /api/v1/bots/{bot_id}/restore` y `PATCH /api/v1/bots/{bot_id}/policy-state` ahora registran actor/source/tipo/resumen del cambio;
+  - `GET /api/v1/bots`, `GET /api/v1/bots/{bot_id}` y `GET /api/v1/bots/{bot_id}/policy-state` devuelven la metadata minima de trazabilidad;
+  - `GET /api/v1/bots/{bot_id}/decision-log` sigue siendo la vista auditable historica del bot.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - muestra trazabilidad minima por bot
+    - muestra `updated_at` / `archived_at`
+    - expone errores reales de restauracion invalida
+    - deja visible que la reactivacion exige registry valido
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` y `BotPolicyState` tipados con metadata minima de cambio
+- Tests corridos:
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`5 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL por desalineacion preexistente de `tsconfig.json` con `.next/types` faltantes; no fue introducido por `RTLRESE-30`
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-31`
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - lifecycle
+  - live console
+  - elegibilidad estrategia<->simbolo
+
+### RTLRESE-29 - Bot Registry con strategy pool asignado, persistencia y limites
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` introduce:
+    - `BOT_MAX_POOL_STRATEGIES = 15`
+    - helper canonico para validar/resolver `pool_strategy_ids`
+    - `strategy_pool_status`
+    - `strategy_pool_errors`
+    - `max_pool_strategies`
+  - el backend ya no elimina `strategy_id` invalidas en silencio al normalizar bots;
+  - crea validacion explicita contra la fuente real de `list_strategies()` y rechaza:
+    - pool vacio
+    - duplicados
+    - ids inexistentes
+    - estrategias `archived`
+    - estrategias `disabled/inactive`
+    - estrategias con `allow_learning=false`
+  - si un bot ya persistido queda desalineado por cambios del strategy registry/truth, el pool queda fail-closed con error visible por API.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots` y `PATCH /api/v1/bots/{bot_id}` ahora validan `pool_strategy_ids` con cap `15`;
+  - `GET /api/v1/bots`, `GET /api/v1/bots/{bot_id}` y `GET /api/v1/bots/{bot_id}/policy-state` devuelven estado, errores y limite del pool;
+  - `PATCH /api/v1/bots/{bot_id}/policy-state` y `bulk-patch` reutilizan la misma validacion del pool.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta con selector real de strategy pool
+    - edicion de pool por bot sobre el mismo draft del registry
+    - visualizacion del cap `15`
+    - errores reales de pool y estado fail-closed por bot
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema/helpers del draft extendidos con `pool_strategy_ids`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstanceStrategyRef`, `BotInstance` y `BotPolicyState` tipados con estado del pool
+- Tests corridos:
+  - `C:\Users\walte\OneDrive\Desktop\Compu Vieja\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA-rtlrese-26-bot-registry\rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS (`4 passed`)
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL por desalineacion preexistente de `tsconfig.json` con `.next/types` faltantes; no bloquea `next build` y no fue introducido por `RTLRESE-29`
+- Fuera de alcance mantenido a proposito:
+  - elegibilidad estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - consolidacion / runtime multi-symbol (`RTLOPS-72+`)
+  - lifecycle
+  - live console
+
+### RTLRESE-28 - Bot Registry con simbolos asignados, universo valido y cap live
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` extiende el registry del bot con:
+    - `universe_name`
+    - `universe`
+    - `max_live_symbols`
+    - `symbol_assignment_status`
+    - `symbol_assignment_errors`
+  - el backend persiste esos campos en la misma capa canonica de bots;
+  - reutiliza `InstrumentUniverseService` y `config/policies/universes.yaml` como fuente real del catalogo;
+  - valida duplicados, existencia real de simbolos, compatibilidad con `domain_type` y limite `max_live_symbols <= len(universe)`;
+  - si el catalogo deja invalida una asignacion ya persistida, el bot queda fail-closed con error de configuracion visible por API.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots` y `PATCH /api/v1/bots/{bot_id}` ahora aceptan y validan `universe_name`, `universe` y `max_live_symbols`;
+  - `GET /api/v1/bots` y `GET /api/v1/bots/{bot_id}` devuelven el estado de asignacion;
+  - el registry se apoya en `GET /api/v1/instruments/universes` como catalogo canonico del universo valido.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta y edicion inline con universo valido, simbolos asignados y `cap live`
+    - errores reales de validacion de asignacion
+    - resumen por bot de universo, cantidad de simbolos, `cap live` y estado de validez
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema y validaciones cruzadas para duplicados y `max_live_symbols`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con estado de asignacion y errores
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cobertura minima para simbolos duplicados y `cap live`
+- Tests corridos:
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "api_expensive_rate_limit_guard or bots_multi_instance_endpoints or bots_overview_cache_hit_and_invalidation_on_create or bots_overview_auto_disables_recent_logs_for_large_default_polling_but_keeps_explicit_override or log_bot_refs_table_is_populated_and_used_in_overview or bots_overview_scopes_kills_by_bot_and_mode or bots_live_mode_blocked_by_gates or bots_creation_respects_max_instances_limit"` -> PASS
+  - `npm.cmd exec vitest run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> FAIL por desalineacion preexistente de `.next/types` en el repo; `next build` si paso con el bloque nuevo
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-29` strategy pool
+  - elegibilidad estrategia<->simbolo
+  - `RTLOPS-72+` runtime multi-symbol
+  - lifecycle y live console
+
+### RTLRESE-27 - Bot Registry con capital base, perfil de riesgo y configuracion minima por bot
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` extiende el registry del bot con:
+    - `capital_base_usd`
+    - `risk_profile = conservative|medium|aggressive`
+    - `max_total_exposure_pct`
+    - `max_asset_exposure_pct`
+    - `risk_per_trade_pct`
+    - `max_daily_loss_pct`
+    - `max_drawdown_pct`
+    - `max_positions`
+  - el backend persiste esos campos en la misma capa canonica de bots;
+  - agrega validaciones server-side para montos, porcentajes, enteros y consistencia entre exposicion total y exposicion por activo;
+  - cuando faltan limites explicitos, aplica defaults minimos coherentes con el `risk_profile`.
+- Cambio real aplicado en API:
+  - `POST /api/v1/bots` y `PATCH /api/v1/bots/{bot_id}` ahora aceptan capital/risk/base config minima;
+  - `GET /api/v1/bots` y `GET /api/v1/bots/{bot_id}` devuelven esos campos persistidos.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - formulario minimo de alta con capital base y limites de riesgo
+    - edicion inline de esos campos
+    - resumen visual de capital/risk profile por bot
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema y helpers para el draft extendido
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con los nuevos campos
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - cobertura minima para normalizacion numerica y validacion de exposicion
+- Tests corridos:
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "test_bots_multi_instance_endpoints"` -> PASS
+  - `npm.cmd exec vitest run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-28` symbols assignment
+  - `RTLRESE-29` strategy pool
+  - `RTLRESE-30` gobierno avanzado
+  - `RTLRESE-31` contratos extensos adicionales
+  - `RTLOPS-72+` multi-symbol/runtime
+  - lifecycle y live console
+
+## 2026-04-14
+
+### RTLRESE-26 - Bot Registry con identidad editable, dominio y archivado persistente
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py` ahora modela identidad canonica de bot con:
+    - `bot_id`
+    - `display_name`
+    - `alias`
+    - `description`
+    - `domain_type = spot|futures`
+    - `registry_status = active|archived`
+    - `archived_at`
+  - se preserva `bot_id` estable aunque el nombre visible cambie;
+  - `archive` y `restore` pasan a operar como soft-archive real, sin borrado destructivo.
+- Cambio real aplicado en API:
+  - `GET /api/v1/bots`
+    - ahora soporta `registry_status=all|active|archived`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - `DELETE /api/v1/bots/{bot_id}`
+    - queda explicitamente bloqueado con `409` para no permitir borrado destructivo en un bloque de soft-archive
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta de bot por registry minimo
+    - edicion inline de identidad
+    - badges de dominio y estado de registry
+    - archivado/restauracion visibles
+    - las altas nuevas ya no dependen de nombres pobres tipo `AutoBot N`
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema y helpers de validacion del formulario de registry
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con campos canonicos de registry
+- Tests corridos:
+  - `uv run --project rtlab_autotrader --link-mode=copy python -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `uv run --project rtlab_autotrader --link-mode=copy --extra dev python -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py rtlab_autotrader/tests/test_web_live_ready.py -k "test_bot_registry_identity_crud_and_filters or test_bot_registry_identity_validations or test_bots_multi_instance_endpoints"` -> PASS
+  - la suite de `RTLRESE-26` ahora cubre explicitamente que `DELETE /api/v1/bots/{bot_id}` devuelve `409` y obliga a usar `archive`
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd exec vitest run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+- Fuera de alcance mantenido a proposito:
+  - `RTLRESE-27` capital/risk profile
+  - `RTLRESE-28` symbols assignment
+  - `RTLRESE-29` strategy pool
+  - `RTLRESE-30` gobierno avanzado
+  - `RTLRESE-31` contracts extensos
+  - `RTLOPS-72+` multi-symbol/runtime
+
 ## 2026-04-08
 
 ### Produccion: PAPER canonico con LIVE bloqueado de forma honesta

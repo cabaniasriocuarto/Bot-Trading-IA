@@ -28,60 +28,68 @@ export default function StrategyDetailPage() {
   const [backtests, setBacktests] = useState<BacktestRun[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [compareId, setCompareId] = useState("");
-  const [compatibilityNotice, setCompatibilityNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [pageError, setPageError] = useState("");
+  const [evidenceError, setEvidenceError] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
-      const [allStrategies, allBacktests, allTrades] = await Promise.all([
-        apiGet<Strategy[]>("/api/v1/strategies"),
-        apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
-        apiGet<Trade[]>(`/api/v1/trades?strategy_id=${strategyId}`),
-      ]);
-      const fallbackStrategy =
-        allStrategies.find((row) => row.id === strategyId) ||
-        (await apiGet<Strategy>(`/api/v1/strategies/${strategyId}`).catch(() => null));
-      const strategyBacktests = allBacktests
-        .filter((row) => row.strategy_id === strategyId)
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-
-      let truthRes: StrategyTruth;
-      let evidenceRes: StrategyEvidenceResponse;
-      let legacyNotice = "";
-
       try {
-        truthRes = await apiGet<StrategyTruth>(`/api/v1/strategies/${strategyId}/truth`);
-      } catch (err) {
-        if (!isMissingRouteError(err) || !fallbackStrategy) throw err;
-        truthRes = strategyTruthFromLegacy(fallbackStrategy);
-        legacyNotice =
-          "Compatibilidad legacy activa: strategy truth/evidence se reconstruyen desde /api/v1/strategies y /api/v1/backtests/runs mientras RTLRESE-14 no este integrado.";
-      }
+        setLoading(true);
+        setPageError("");
+        setEvidenceError("");
+        const truthRes = await apiGet<StrategyTruth>(`/api/v1/strategies/${strategyId}/truth`);
+        const [allStrategiesRes, allBacktestsRes, allTradesRes, evidenceRes] = await Promise.allSettled([
+          apiGet<Strategy[]>("/api/v1/strategies"),
+          apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
+          apiGet<Trade[]>(`/api/v1/trades?strategy_id=${strategyId}`),
+          apiGet<StrategyEvidenceResponse>(`/api/v1/strategies/${strategyId}/evidence?limit=12`),
+        ]);
 
-      try {
-        evidenceRes = await apiGet<StrategyEvidenceResponse>(`/api/v1/strategies/${strategyId}/evidence?limit=12`);
-      } catch (err) {
-        if (!isMissingRouteError(err) || !fallbackStrategy) throw err;
-        evidenceRes = strategyEvidenceFromLegacy(fallbackStrategy, strategyBacktests);
-        legacyNotice =
-          "Compatibilidad legacy activa: strategy truth/evidence se reconstruyen desde /api/v1/strategies y /api/v1/backtests/runs mientras RTLRESE-14 no este integrado.";
-      }
+        if (cancelled) return;
 
-      setTruth(truthRes);
-      setEvidence(evidenceRes);
-      setStrategies(allStrategies);
-      setCompatibilityNotice(legacyNotice);
-      setAllBacktests(
-        [...allBacktests].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
-      );
-      setBacktests(strategyBacktests);
-      setTrades(allTrades);
-      const compareCandidate =
-        allStrategies.find((row) => row.id !== strategyId && row.name === truthRes.name) ||
-        allStrategies.find((row) => row.id !== strategyId) ||
-        null;
-      setCompareId(compareCandidate?.id || "");
+        const allStrategies = allStrategiesRes.status === "fulfilled" ? allStrategiesRes.value : [];
+        const allBacktests =
+          allBacktestsRes.status === "fulfilled"
+            ? [...allBacktestsRes.value].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            : [];
+        const allTrades = allTradesRes.status === "fulfilled" ? allTradesRes.value : [];
+        const evidencePayload = evidenceRes.status === "fulfilled" ? evidenceRes.value : null;
+        const strategyBacktests = allBacktests.filter((row) => row.strategy_id === strategyId);
+        const compareCandidate =
+          allStrategies.find((row) => row.id !== strategyId && row.name === truthRes.name) ||
+          allStrategies.find((row) => row.id !== strategyId) ||
+          null;
+
+        setTruth(truthRes);
+        setEvidence(evidencePayload);
+        setStrategies(allStrategies);
+        setAllBacktests(allBacktests);
+        setBacktests(strategyBacktests);
+        setTrades(allTrades);
+        setCompareId(compareCandidate?.id || "");
+        setEvidenceError(
+          evidenceRes.status === "rejected" ? describeStrategyDetailContractError(evidenceRes.reason, "evidence") : "",
+        );
+      } catch (err) {
+        if (cancelled) return;
+        setTruth(null);
+        setEvidence(null);
+        setStrategies([]);
+        setAllBacktests([]);
+        setBacktests([]);
+        setTrades([]);
+        setCompareId("");
+        setPageError(describeStrategyDetailContractError(err, "truth"));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     };
     void load();
+    return () => {
+      cancelled = true;
+    };
   }, [strategyId]);
 
   const latestEvidenceRun = evidence?.latest_run || null;
@@ -180,8 +188,27 @@ export default function StrategyDetailPage() {
     ];
   }, [latestCompareDetailedBacktest, latestCurrentBacktest]);
 
-  if (!truth) {
+  if (loading) {
     return <p className="text-sm text-slate-400">Cargando estrategia...</p>;
+  }
+
+  if (pageError) {
+    return (
+      <Card>
+        <CardTitle>No se pudo cargar la estrategia</CardTitle>
+        <CardDescription>Esta vista ya depende del contrato canónico de truth/evidence y no reconstruye fallback legacy.</CardDescription>
+        <CardContent>
+          <p className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-100">{pageError}</p>
+          <Link href="/strategies" className="mt-4 inline-block text-xs text-cyan-300 hover:text-cyan-200">
+            Volver a Strategies
+          </Link>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!truth) {
+    return <p className="text-sm text-slate-400">La estrategia no devolvió truth canónica.</p>;
   }
 
   return (
@@ -201,7 +228,6 @@ export default function StrategyDetailPage() {
         <CardDescription>
           Separacion por dominio: arriba se muestra la definicion de la estrategia (truth) y debajo la evidencia observada que la respalda.
         </CardDescription>
-        {compatibilityNotice ? <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">{compatibilityNotice}</p> : null}
       </Card>
 
       <section className="grid gap-4 xl:grid-cols-2">
@@ -238,6 +264,11 @@ export default function StrategyDetailPage() {
           <CardTitle>Strategy Evidence</CardTitle>
           <CardDescription>Evidence derivada de runs y observacion historica. No forma parte de la verdad base de la estrategia.</CardDescription>
           <CardContent className="space-y-3">
+            {evidenceError ? (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                {evidenceError}
+              </div>
+            ) : null}
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <EvidenceMetric label="Runs observados" value={String(evidence?.run_count || 0)} />
               <EvidenceMetric label="Ultimo run" value={latestEvidenceRun?.created_at ? new Date(latestEvidenceRun.created_at).toLocaleString() : "sin runs"} />
@@ -248,7 +279,7 @@ export default function StrategyDetailPage() {
             </div>
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">
               Evidence visible: {latestEvidenceRun ? `run ${latestEvidenceRun.run_id}` : "sin corrida visible"}.
-              {" "}Si necesitas series detalladas, los graficos de abajo usan endpoints legacy de backtests/trades pero siguen etiquetados como evidence derivada.
+              {" "}Si necesitas series detalladas, los graficos de abajo expanden esta evidence con runs y trades detallados; siguen siendo evidence derivada, no truth base.
             </div>
             {latestEvidenceRun ? (
               <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-300">
@@ -460,51 +491,14 @@ function EvidenceMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function isMissingRouteError(err: unknown) {
-  return err instanceof ApiError && err.status === 404;
-}
-
-function strategyTruthFromLegacy(strategy: Strategy): StrategyTruth {
-  return {
-    id: strategy.id,
-    name: strategy.name,
-    version: strategy.version,
-    enabled: strategy.enabled,
-    enabled_for_trading: strategy.enabled_for_trading,
-    allow_learning: strategy.allow_learning,
-    is_primary: strategy.is_primary,
-    primary: strategy.primary,
-    source: strategy.source,
-    status: strategy.status,
-    params: strategy.params,
-    params_yaml: strategy.defaults_yaml,
-    parameters_schema: strategy.schema,
-    created_at: strategy.created_at,
-    updated_at: strategy.updated_at,
-    notes: strategy.notes,
-    tags: strategy.tags,
-    last_run_at: strategy.last_run_at,
-    primary_for_modes: strategy.primary_for_modes,
-  };
-}
-
-function strategyEvidenceFromLegacy(strategy: Strategy, backtests: BacktestRun[]): StrategyEvidenceResponse {
-  const items = backtests.slice(0, 12).map((row) => ({
-    run_id: row.id,
-    mode: "backtest",
-    created_at: row.created_at,
-    metrics: row.metrics,
-    tags: strategy.tags || [],
-    notes: "Evidence derivada desde /api/v1/backtests/runs (legacy fallback).",
-    validation_mode: "legacy-backtest",
-  }));
-  return {
-    strategy_id: strategy.id,
-    strategy_version: strategy.version,
-    last_run_at: strategy.last_run_at,
-    run_count: backtests.length,
-    last_oos: strategy.last_oos || items[0]?.metrics || null,
-    latest_run: items[0] || null,
-    items,
-  };
+function describeStrategyDetailContractError(err: unknown, surface: "truth" | "evidence") {
+  const contractPath =
+    surface === "truth" ? "/api/v1/strategies/{id}/truth" : "/api/v1/strategies/{id}/evidence";
+  if (err instanceof ApiError && err.status === 404) {
+    return `El backend no expuso ${contractPath}. Esta surface ya no reconstruye ${surface} desde contratos legacy.`;
+  }
+  if (err instanceof ApiError) {
+    return err.message || `No se pudo cargar ${surface} canónica de la estrategia.`;
+  }
+  return err instanceof Error ? err.message : `No se pudo cargar ${surface} canónica de la estrategia.`;
 }

@@ -1,6 +1,708 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-08
+Fecha de actualizacion: 2026-04-18
+
+## RTLOPS-75 - consolidacion de señales y decision neta por simbolo - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de **consolidacion / decision neta por simbolo** sobre la base cerrada por `RTLOPS-72 + RTLOPS-73 + RTLOPS-74`;
+  - la nueva surface derivada vive en `signal_consolidation` y ya no obliga al frontend a inferir la decision final desde textos sueltos ni a multiplicar caminos por estrategia;
+  - la decision final por simbolo queda anclada a la **estrategia seleccionada por simbolo** ya resuelta en `RTLOPS-74`, pero deja visibles los inputs elegibles que participaron en esa consolidacion.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/signal-consolidation`
+  - `signal_consolidation` agregado al payload canonico de bots y al `registry-contract`
+  - `contract_version` del Bot Registry elevada a `rtlops75/v1`
+  - `net_decision_by_symbol` expuesto con:
+    - `action`
+    - `side`
+    - `selected_strategy_id`
+    - `criterion`
+    - `reason`
+    - `agreement_status`
+  - criterios explicitados:
+    - `selected_strategy`
+    - `action_override`
+    - `side_override`
+    - `defensive_tags_flat`
+    - `meanreversion_tags_sell`
+    - `trend_tags_buy`
+  - reason codes canonicos:
+    - `bot_archived`
+    - `strategy_selection_invalid`
+    - `selected_strategy_missing`
+    - `selected_strategy_not_found`
+    - `selected_strategy_disabled`
+    - `selected_strategy_symbol_mismatch`
+    - `selected_strategy_signal_unresolved`
+- Regla canonica reafirmada:
+  - `RTLOPS-75` no ejecuta ordenes remotas ni enchufa todavia la runtime real a esta decision;
+  - deja resuelta la **decision neta canónica por símbolo** para que el runtime posterior no multiplique ordenes por estrategia ni mantenga caminos paralelos opacos;
+  - si la seleccion previa, el estado archivado o la metadata de la estrategia no permiten derivar una decision coherente, el sistema queda fail-closed y no inventa una señal.
+- Surface minima real integrada:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - ya muestra la decision neta por simbolo
+    - ya muestra inputs participantes, acuerdo/conflicto y criterio final
+    - sigue operando sobre universe + elegibilidad + seleccion persistidos
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - ejecucion remota real por estrategia
+  - subcuentas
+
+## RTLOPS-74 - seleccion de estrategia por simbolo - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de **seleccion por simbolo** sobre la elegibilidad fundada por `RTLOPS-73`;
+  - la seleccion explicita persistida vive en `strategy_selection_by_symbol`;
+  - la seleccion efectiva visible por API/UI vive en `selected_strategy_by_symbol` y ya no depende de texto libre ni de inferencia opaca del frontend.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/strategy-selection`
+  - `PATCH /api/v1/bots/{bot_id}/strategy-selection`
+  - `contract_version` del Bot Registry elevada a `rtlops74/v1`
+  - nueva seccion canonica `strategy_selection` en `/api/v1/bots/registry-contract`
+  - criterios de resolucion explicitados:
+    - `explicit`
+    - `single_eligible`
+    - `primary_strategy`
+    - `pool_order`
+  - reason codes canonicos:
+    - `strategy_eligibility_invalid`
+    - `selected_strategy_not_eligible`
+    - `no_strategy_selected_for_symbol`
+- Regla canonica reafirmada:
+  - `RTLOPS-74` no ejecuta ni consolida señales;
+  - solo deja resuelto **que estrategia queda seleccionada por simbolo** dentro del pool y universe ya persistidos;
+  - si un mapping explicito deja de ser elegible, el sistema falla cerrado y no deriva otra estrategia en silencio.
+- Surface minima real integrada:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - ya permite ver la seleccion efectiva por simbolo
+    - ya permite fijar/limpiar seleccion explicita por simbolo
+    - sigue operando sobre universe + pool + elegibilidad persistidos
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-75`
+  - `RTLOPS-76`
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - net/consolidation execution
+
+## Microbloque tecnico - canonizacion del type-check frio del dashboard - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo del dashboard;
+  - `rtlab_dashboard/next.config.ts` NO define `typescript.tsconfigPath`, NO activa `ignoreBuildErrors`, NO usa `typedRoutes`, NO usa `typedEnv` y NO redefine `distDir`;
+  - el dashboard ya pasa type-check en frio sin depender de `next build` ni de `next typegen`.
+- Definicion operativa de `en frio` usada:
+  - `rtlab_dashboard` sin `.next`
+  - `rtlab_dashboard` sin `tsconfig.tsbuildinfo`
+  - cada comando corrido en una shell nueva
+- Matriz real validada:
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+  - `npm.cmd exec next -- typegen` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+- Verdad tecnica canonica:
+  - la opcion correcta para este repo es **type-check directo**, no una dependencia obligatoria de `next typegen`;
+  - el comando canonico formalizado en repo pasa a ser:
+    - `npm.cmd run typecheck`
+    - implementado como `tsc --noEmit --incremental false`
+  - `next typegen` queda como paso compatible pero no requerido para validar el proyecto.
+- Motivo de canonizacion:
+  - `tsc --noEmit` directo ya pasa en frio;
+  - `--incremental false` evita dejar `tsconfig.tsbuildinfo` residual y endurece el flujo para uso estable/CI.
+- Limite honesto:
+  - no quedo reconstruida con certeza la causa historica exacta de los FAIL observados en sesiones anteriores;
+  - la mejor inferencia actual es que se trataba de un estado transitorio o de observaciones tomadas mientras `.next/types` estaba siendo mutado por otros comandos.
+
+## RTLOPS-73 - mapping simbolo↔estrategias elegibles del pool - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de elegibilidad `simbolo -> estrategias elegibles` por bot;
+  - la elegibilidad queda persistida en `strategy_eligibility_by_symbol` y ya no depende de texto libre ni de heuristicas por tags;
+  - la surface minima del registry en `rtlab_dashboard/src/app/(app)/strategies/page.tsx` ya permite ver y editar esa elegibilidad sobre el universe y pool persistidos.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+  - `PATCH /api/v1/bots/{bot_id}/symbol-strategy-eligibility`
+  - `contract_version` del Bot Registry elevada a `rtlops73/v1`
+  - reconciliacion fail-closed cuando cambia pool/universe y algun simbolo quedaria sin estrategias elegibles
+  - reason codes canonicos:
+    - `symbol_assignment_invalid`
+    - `strategy_pool_invalid`
+    - `symbol_not_in_universe`
+    - `strategy_not_in_pool`
+    - `strategy_not_effective_in_pool`
+    - `no_eligible_strategy_for_symbol`
+- Regla canonica reafirmada:
+  - el strategy pool del bot sigue definiendo el conjunto maximo de estrategias posibles;
+  - `RTLOPS-73` funda el mapping explicito por simbolo dentro de ese pool;
+  - si pool o universe invalidan el mapping persistido, el sistema falla cerrado y exige recomputacion coherente.
+- Limite honesto del bloque:
+  - no se abre todavia:
+    - `RTLOPS-74`
+    - `RTLOPS-75`
+    - `RTLOPS-76`
+    - `RTLOPS-77`
+    - lifecycle
+    - live console
+    - net/consolidation execution
+
+## Microbloque tecnico - validacion inicial del caveat de `tsc --noEmit` - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/tsconfig.json` sigue siendo el unico `tsconfig` efectivo del dashboard;
+  - `rtlab_dashboard/next.config.ts` NO define `typescript.tsconfigPath`, NO activa `ignoreBuildErrors`, NO usa `typedRoutes`, NO usa `typedEnv` y NO redefine `distDir`;
+  - no existe un script canonico `typecheck` en `rtlab_dashboard/package.json`, pero el comando real validado `npm.cmd exec tsc -- --noEmit` ya pasa tambien en frio.
+- Definicion operativa usada para `en frio`:
+  - `rtlab_dashboard` sin `.next`
+  - `rtlab_dashboard` sin `tsconfig.tsbuildinfo`
+  - cada comando corrido en una invocacion nueva de shell
+- Matriz real validada:
+  - `npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd exec next -- typegen && npm.cmd exec tsc -- --noEmit` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd exec tsc -- --noEmit` en frio -> PASS
+  - `npm.cmd exec tsc -- --noEmit --incremental false` en frio -> PASS
+- Conclusion tecnica de esa validacion inicial:
+  - la narrativa de `FAIL en frio por includes .next/types` no reprodujo de forma estable en esa punta;
+  - esa validacion ya fue superada por el microbloque posterior de canonizacion, que formalizo `npm.cmd run typecheck` como comando canónico del repo.
+- Limite honesto:
+  - no quedo reconstruida con certeza la causa historica exacta de los FAIL reportados en sesiones anteriores; solo quedo confirmado que ya no son el estado real actual de esta linea.
+- Observacion superada por validacion posterior del mismo dia:
+  - durante el cierre de `RTLOPS-73` reaparecio un `FAIL` inicial de `npm.cmd exec tsc -- --noEmit` antes del `build`, con error por `.next/types/cache-life.d.ts` faltante;
+  - despues de `npm.cmd run build`, `npm.cmd exec next -- typegen` y un segundo `npm.cmd exec tsc -- --noEmit`, el type-check volvio a `PASS`;
+  - por lo tanto, esta seccion ya no debe leerse como cierre definitivo del caveat, sino como un estado intermedio luego contradicho por evidencia posterior.
+
+## RTLOPS-71 - subbloque 2 de identidad canonica en backtests - 2026-04-18
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx` ya no expone identidad visible del bot apoyada solo en `name` o `id` internos;
+  - la surface de backtests muestra identidad canonica por `display_name + bot_id` en los puntos operatorios principales del bloque.
+- Cambio real aplicado en frontend:
+  - selector de bot para mass backtest
+  - mensaje de carga del pool del bot
+  - resumen `Bot filtrado`
+  - vista centrica por bot
+  - badges/lista de related bots
+- Regla canonica reafirmada:
+  - la identidad visible del bot en surfaces operatorias debe seguir el registry canonico;
+  - `name` puede seguir existiendo como dato legacy/compatibilidad, pero no debe seguir siendo la identidad visible primaria donde el registry ya expone `display_name + bot_id`.
+- Fuera de alcance mantenido a proposito:
+  - comparador legacy
+  - `legacy_json_id`
+  - evidence `trusted / legacy / quarantine`
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+- Caveat tecnico reportado en ese momento:
+  - durante el cierre del subbloque quedo asentada una hipotesis de `FAIL` en frio para `npm.cmd exec tsc -- --noEmit`;
+  - esa hipotesis quedo revalidada y cerrada despues en el microbloque tecnico de 2026-04-18.
+
+## RTLOPS-71 - subbloque 1 de strategy detail canonico - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/strategies/[id]/page.tsx` ya no reconstruye `truth/evidence` desde contratos legacy del frontend;
+  - la vista depende del contrato canonico:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+- Cambio real aplicado en frontend:
+  - se elimina el fallback que armaba `StrategyTruth` desde `/api/v1/strategies`;
+  - se elimina el fallback que armaba `StrategyEvidenceResponse` desde `/api/v1/backtests/runs`;
+  - si falta el contrato canonico:
+    - `truth` falla con error explicito de surface;
+    - `evidence` deja aviso explicito y la vista no simula evidence legacy;
+  - el texto de detalle deja de presentar `backtests/trades` como fallback legacy de `truth/evidence` y pasa a describirlos como expansion de evidence derivada.
+- Regla canonica reafirmada:
+  - `truth/evidence` del detail de estrategia ya no deben reconstruirse del lado del frontend;
+  - si el backend no expone el contrato canonico, la vista debe fallar de forma honesta y no maquillar el dominio.
+- Fuera de alcance mantenido a proposito:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+  - cleanup transversal de naming legacy en otras surfaces
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+- Conclusion operativa:
+  - el nucleo mas confirmado de `RTLOPS-71` ya quedo absorbido en strategy detail;
+  - todavia puede quedar un segundo subbloque chico de `RTLOPS-71` para surfaces derivadas si se confirma contra repo/Linear, pero ya no en este bloque.
+
+## Auditoria de deuda real - lote 1 de reparacion RTLOPS-24 + RTLOPS-34 - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - la surface operatoria de `execution` ya no contradice al Bot Registry canonico en dos puntos criticos:
+    - deja de ofrecer borrado destructivo de bots;
+    - deja de mezclar `status` runtime con `registry_status` como si fueran lo mismo.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - usa identidad canonica del registry (`display_name` + `bot_id`) en selector, tabla y acciones;
+    - muestra por separado:
+      - `runtime:<status>`
+      - `registry:<registry_status>`
+    - reemplaza acciones stale de `DELETE /api/v1/bots/{bot_id}` por:
+      - `POST /api/v1/bots/{bot_id}/archive`
+      - `POST /api/v1/bots/{bot_id}/restore`
+    - evita edicion operativa sobre bots archivados desde esta surface.
+  - `rtlab_dashboard/src/lib/execution-bots.ts`
+    - helper canonico para labels, filtros y badges del frente operatorio
+  - `rtlab_dashboard/src/lib/execution-bots.test.ts`
+    - cubre identity label, filtro `archived` por registry y badges separados.
+- Regla canonica reafirmada:
+  - `registry_status=archived` pertenece al gobierno del registry;
+  - `status=active|paused|...` sigue siendo estado operativo/runtime;
+  - `execution` no debe volver a presentar `DELETE` como camino valido mientras el backend mantenga soft-archive fail-closed.
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-73+`
+  - lifecycle
+  - live console
+  - refactor del core de execution
+  - reescritura de surfaces research/backtests
+- Conclusion operativa:
+  - la consola operatoria principal ya no empuja al usuario a un contrato API invalidado por el backend;
+  - el siguiente lote de deuda real conviene ir sobre frontend fino de estrategia/surfaces derivadas, no sobre execution core.
+
+## RTLOPS-72 - Bot Multi-Symbol con modelo canonico de simbolos por bot y limites base - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - el runtime multi-symbol todavia NO esta resuelto;
+  - pero el registry del bot ya expone un modelo canonico minimo para representar multi-symbol sin texto libre ni storage paralelo.
+- Fuente de verdad real usada por este bloque:
+  - la persistencia multi-symbol sigue viviendo en el mismo storage canonico del registry (`learning/bots.json`);
+  - este bloque reutiliza exactamente los campos ya persistidos por `RTLRESE-28`:
+    - `universe_name`
+    - `universe`
+    - `max_live_symbols`
+  - no se crea una `v2` del registry ni un storage separado para multi-symbol.
+- Contratos reales expuestos por API despues de este bloque:
+  - sigue vigente `GET /api/v1/bots/registry-contract`, ahora versionado como `rtlops72/v1`;
+  - nuevo surface minimo canonico:
+    - `GET /api/v1/bots/{bot_id}/multi-symbol`
+    - `PATCH /api/v1/bots/{bot_id}/multi-symbol`
+  - el contrato del registry ahora deja visible:
+    - `storage.multi_symbol_fields`
+    - `api.multi_symbol_path`
+    - `multi_symbol.contract_version = rtlops72/v1`
+    - limites y fields del modelo multi-symbol.
+- Reglas canonicas fijadas en este bloque:
+  - `symbols` se apoyan en el universo/catalogo real del registry;
+  - no se aceptan simbolos duplicados;
+  - `configured_symbols_count >= 1`;
+  - `configured_symbols_count <= 12`;
+  - `max_active_symbols >= 1`;
+  - `max_active_symbols <= 12`;
+  - `max_active_symbols` no puede superar la cantidad de simbolos configurados;
+  - si el catalogo/universe real deja invalida una configuracion persistida, el bot queda fail-closed con:
+    - `multi_symbol.status = error`
+    - `multi_symbol.errors[]`
+  - un bot archivado no admite edicion operativa via `/multi-symbol`.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa el modelo y la respuesta canonica `multi_symbol`
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - valida el cap de simbolos configurados contra el contrato canonico
+    - sigue usando el mismo formulario del registry ya existente
+  - este bloque NO abre una UI nueva ni una live console para multi-symbol.
+- Lo que este bloque NO implementa:
+  - `RTLOPS-73`
+  - mapping estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - consolidacion de señales
+  - net execution
+  - lifecycle
+  - live console
+- Conclusion operativa:
+  - desde este bloque, el sistema ya tiene una base canonica y persistida para colgar el runtime multi-symbol;
+  - el siguiente bloque ya puede enfocarse en elegibilidad/mapping por simbolo, no en volver a fundar el modelo.
+
+## Auditoria global + cleanup controlado de residuos live/legacy - 2026-04-17
+
+- Estado real revalidado contra repo + docs/truth + Linear:
+  - `RTLRESE-13` backend domains y `RTLRESE-14` API contracts ya aparecen absorbidas en esta base real:
+    - `rtlab_autotrader/rtlab_core/domains/*.py` esta trackeado
+    - `GET /api/v1/strategies/{strategy_id}/truth`
+    - `GET /api/v1/strategies/{strategy_id}/evidence`
+    - `GET/PATCH /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/decision-log`
+  - `RTLRESE-15` frontend domains ya opera sobre esos contratos canonicos; los fallbacks legacy que sobreviven son transicionales y no deben volver a presentarse como si `RTLRESE-14` siguiera sin integrar.
+  - `LIVE` global sigue bloqueado por guardrails reales y pendientes operativos de preflight/readiness/credenciales/canary; no se removio ninguna proteccion real.
+- Cleanup controlado aplicado en este bloque:
+  - la ayuda de `mode=live` en `Strategies` deja de expresarse como `NO GO` global y pasa a describir gating real por readiness/gates;
+  - los notices de fallback en `strategies/[id]` y `execution` dejan de decir que `RTLRESE-14` no esta integrada y pasan a describir degradacion transicional por contrato ausente.
+
+## RTLRESE-31 - Bot Registry con contratos minimos de storage, API y frontend - 2026-04-17
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no depende de defaults/limits hardcodeados en frontend para operar su surface minima;
+  - ahora tiene un contrato canonico explicito que alinea storage, API y frontend sobre el mismo shape administrativo del bot.
+- Fuente de verdad real consolidada en este bloque:
+  - el storage real sigue viviendo en `learning/bots.json`, administrado por `BotPolicyStateRepository` / `ConsoleStore`;
+  - no se creo un storage paralelo ni una `v2` del registry;
+  - la surface canonica nueva sale por `GET /api/v1/bots/registry-contract`.
+- Contratos reales expuestos por API despues de este bloque:
+  - siguen vigentes:
+    - `GET /api/v1/bots`
+    - `POST /api/v1/bots`
+    - `GET /api/v1/bots/{bot_id}`
+    - `PATCH /api/v1/bots/{bot_id}`
+    - `POST /api/v1/bots/{bot_id}/archive`
+    - `POST /api/v1/bots/{bot_id}/restore`
+    - `GET /api/v1/bots/{bot_id}/policy-state`
+    - `PATCH /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/decision-log`
+  - nuevo contrato minimo canonico:
+    - `GET /api/v1/bots/registry-contract`
+      - version de contrato
+      - storage real del registry
+      - surface API minima
+      - defaults canonicos
+      - limites canonicos
+      - enums canonicos
+      - grupos de campos del registry
+- Reglas canonicas fijadas en este bloque:
+  - frontend deja de definir por su cuenta:
+    - cap del pool
+    - cap live
+    - defaults de capital/risk profile/base config
+    - enums base del registry
+  - la UI del registry consume el contrato canonico del backend para:
+    - crear drafts
+    - validar drafts
+    - mostrar capacidad/storage/version del registry
+  - `bot_id` sigue siendo la identidad estable y el soft-archive sigue siendo la semantica valida del storage.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - helpers del draft consumen `BotRegistryContractResponse`
+    - validacion Zod deja de apoyarse en limites hardcodeados
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - carga `GET /api/v1/bots/registry-contract`
+    - crea/edita bots usando defaults/limits/enums canónicos
+    - muestra version y storage del registry en UI
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa el contrato canonico del registry
+- Lo que este bloque NO implementa:
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - mapping estrategia<->simbolo
+  - lifecycle
+  - live console
+  - nuevas features de negocio del bot
+- Conclusion operativa:
+  - desde este bloque, el Bot Registry queda cerrado como dominio minimo profesional y util;
+  - el siguiente frente ya no necesita consolidar contratos del registry y puede arrancar sobre runtime multi-symbol.
+
+## RTLRESE-30 - Bot Registry con edicion, archivado/reactivacion y gobierno basico con trazabilidad - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no solo persiste identidad/config/pool;
+  - ahora endurece el gobierno basico del bot con trazabilidad minima persistida y reglas explicitas de reactivacion.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `last_change_type`
+    - `created`
+    - `updated`
+    - `archived`
+    - `reactivated`
+  - `last_change_summary`
+  - `last_changed_by`
+  - `last_change_source`
+  - `updated_at` y `archived_at` siguen siendo timestamps canonicos del registry.
+- Fuente de verdad real usada por este bloque:
+  - la persistencia del bot sigue viviendo en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - la trazabilidad minima se persiste en el mismo registro del bot, sin abrir una auditoria enterprise paralela;
+  - la auditabilidad historica se apoya en el `decision_log` ya existente (`/api/v1/bots/{bot_id}/decision-log`), no en una segunda fuente de verdad.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - `GET /api/v1/bots/{bot_id}/policy-state`
+  - `PATCH /api/v1/bots/{bot_id}/policy-state`
+  - `GET /api/v1/bots/{bot_id}/decision-log`
+  - los contratos del registry ahora devuelven metadata minima de cambio junto al estado del bot.
+- Reglas canonicas fijadas en este bloque:
+  - `bot_id` sigue siendo inmutable y no se rompe por rename/display changes;
+  - `archive` sigue siendo soft-archive y no borrado destructivo;
+  - un bot archivado sigue sin admitir edicion operativa mientras siga archivado;
+  - `restore` ahora falla de forma explicita si el bot quedo invalido contra el registry actual:
+    - symbols assignment invalido
+    - strategy pool invalido
+    - `mode=live` no habilitado por gates actuales
+  - los cambios relevantes del registry dejan:
+    - tipo de cambio
+    - resumen
+    - actor
+    - source
+    - timestamp visible via `updated_at`.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - muestra trazabilidad minima por bot
+    - muestra `updated_at` / `archived_at`
+    - muestra ultimo tipo/resumen de cambio
+    - expone errores reales al intentar restaurar un bot invalido
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` y `BotPolicyState` tipados con metadata minima de trazabilidad
+- Lo que este bloque NO implementa:
+  - lifecycle completo entre entornos
+  - runtime multi-symbol
+  - elegibilidad estrategia<->simbolo
+  - consolidacion de señales
+  - live console
+  - contratos globales/minimos amplios de `RTLRESE-31`
+- Conclusion operativa:
+  - desde este bloque, el Bot Registry ya puede editar, archivar y reactivar con trazabilidad minima util y reactivacion fail-closed;
+  - el siguiente bloque ya puede enfocarse en contratos/minimos transversales del registry, no en volver a resolver gobierno basico.
+
+## RTLRESE-29 - Bot Registry con strategy pool asignado, persistencia y limites - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no trata `pool_strategy_ids` como lista informal o derivada;
+  - ahora el pool asignado es una configuracion canonica del registry con validacion, persistencia y cap explicito por bot.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `pool_strategy_ids`
+    - lista declarativa de estrategias asignadas al bot
+  - `pool_strategies`
+    - metadata resuelta contra la fuente real del `strategy registry / truth`
+  - `strategy_pool_status`
+    - `valid`
+    - `error`
+  - `strategy_pool_errors`
+  - `max_pool_strategies`
+    - cap inicial canonico `15`
+- Fuente de verdad real usada por este bloque:
+  - la persistencia del bot sigue viviendo en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - el pool NO define estrategias por texto libre ni crea una fuente paralela dentro del registry del bot;
+  - la validacion reutiliza `store.list_strategies()` como vista canonica del `strategy registry / truth`, incluyendo `status`, `enabled_for_trading` y `allow_learning`.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `GET /api/v1/bots/{bot_id}/policy-state`
+  - `PATCH /api/v1/bots/{bot_id}/policy-state`
+  - los contratos del registry ahora devuelven pool asignado, metadata del pool, limite explicito y estado fail-closed del pool.
+- Reglas canonicas fijadas en este bloque:
+  - `pool_strategy_ids` debe tener al menos `1` estrategia
+  - `pool_strategy_ids` no puede superar `15` estrategias
+  - no se aceptan duplicados
+  - cada `strategy_id` debe existir en la fuente real del `strategy registry / truth`
+  - solo se aceptan estrategias:
+    - `status=active`
+    - `enabled_for_trading=true`
+    - `allow_learning=true`
+  - si una estrategia previamente persistida deja de ser valida, el bot queda fail-closed con:
+    - `strategy_pool_status = error`
+    - `strategy_pool_errors[]` visibles por API/UI
+  - el sistema ya no borra estrategias invalidas en silencio al normalizar el bot.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - alta con selector real de strategy pool
+    - edicion operativa del pool por bot
+    - resumen del cap `15`
+    - errores reales del pool visibles por bot
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema zod real para `pool_strategy_ids`
+    - validaciones de minimo, duplicados y cap `15`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` y `BotPolicyState` tipados con estado/errores del pool
+- Lo que este bloque NO implementa:
+  - elegibilidad estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - consolidacion de señales
+  - runtime multi-symbol (`RTLOPS-72+`)
+  - lifecycle entre entornos
+  - live console
+- Conclusion operativa:
+  - desde este bloque, el lado registry del bot ya puede expresar un pool de estrategias persistente y acotado sin inventar runtime multi-symbol;
+  - el siguiente bloque del frente bots ya no necesita abrir persistencia base de pool, sino gobierno/capas siguientes sobre esta base.
+
+## RTLRESE-28 - Bot Registry con asignacion de simbolos, universo valido y cap live - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya no conserva solo identidad y config base;
+  - ahora tambien persiste la asignacion manual de simbolos por bot, el universo valido desde el que salen esos simbolos y un `cap live` inicial.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `universe_name`
+  - `universe`
+    - lista de simbolos asignados al bot
+  - `max_live_symbols`
+  - `symbol_assignment_status`
+    - `valid`
+    - `error`
+  - `symbol_assignment_errors`
+- Fuente de verdad real usada por este bloque:
+  - la persistencia del bot sigue viviendo en la misma capa canonica de `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - el universo valido NO se redefine dentro del registry del bot;
+  - la validacion reutiliza el catalogo real expuesto por `InstrumentUniverseService` y la policy canonica de universos (`config/policies/universes.yaml`).
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `GET /api/v1/instruments/universes`
+  - los endpoints del registry ahora aceptan y devuelven identidad + config base + asignacion de simbolos en un mismo contrato coherente.
+- Reglas canonicas fijadas en este bloque:
+  - `universe` debe tener al menos `1` simbolo
+  - no se aceptan simbolos duplicados
+  - todos los simbolos deben existir en un universo real del catalogo
+  - `max_live_symbols` debe ser entero en `1..12`
+  - `max_live_symbols` no puede exceder la cantidad de simbolos asignados
+  - bots `spot` solo aceptan universos `spot`
+  - bots `futures` solo aceptan universos `usdm_futures|coinm_futures`
+  - si un simbolo previamente asignado deja de existir o deja de ser valido en el catalogo real, el bot queda en estado fail-closed de configuracion:
+    - `symbol_assignment_status = error`
+    - `symbol_assignment_errors[]` con el detalle
+  - un bot archivado no acepta edicion operativa de asignacion/cap/universo.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - selector de universo valido por bot
+    - multi-select de simbolos asignados desde ese universo
+    - input real de `cap live`
+    - badges y mensajes de error cuando la asignacion queda invalida
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema zod real para `universe`, `universe_name` y `max_live_symbols`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con estado de asignacion y errores
+- Lo que este bloque NO implementa:
+  - strategy pool
+  - elegibilidad estrategia<->simbolo
+  - seleccion de estrategia por simbolo
+  - runtime multi-symbol
+  - routing / consolidacion / net execution
+  - lifecycle entre entornos
+  - live console
+- Conclusion operativa:
+  - desde este bloque, el lado registry del bot ya puede expresar un universo valido, una lista asignada de simbolos y un limite live inicial sin inventar runtime multi-symbol;
+  - el siguiente bloque debe apoyarse sobre esta base para abrir `strategy pool`, no volver a redefinir simbolos/universos/cap live.
+
+## RTLRESE-27 - Bot Registry con capital base, risk profile y configuracion operativa minima por bot - 2026-04-16
+
+- Estado real confirmado en esta rama:
+  - la entidad `Bot` ya no conserva solo identidad persistente;
+  - ahora tambien persiste una configuracion base operativa por bot para capital, riesgo y limites minimos previos a `RTLRESE-28+`.
+- Campos nuevos persistidos y expuestos por este bloque:
+  - `capital_base_usd`
+  - `risk_profile`
+    - `conservative`
+    - `medium`
+    - `aggressive`
+  - `max_total_exposure_pct`
+  - `max_asset_exposure_pct`
+  - `risk_per_trade_pct`
+  - `max_daily_loss_pct`
+  - `max_drawdown_pct`
+  - `max_positions`
+- Fuente de persistencia real usada por este bloque:
+  - se mantiene la misma capa ya usada por `RTLRESE-26` en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - no se crea storage paralelo ni tablas nuevas para el registry del bot.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - los endpoints del registry ahora aceptan y devuelven identidad + capital/risk/base config minima en un mismo contrato coherente.
+- Reglas canonicas fijadas en este bloque:
+  - `capital_base_usd > 0`
+  - `risk_profile` queda acotado a `conservative|medium|aggressive`
+  - `max_total_exposure_pct`, `max_asset_exposure_pct`, `risk_per_trade_pct`, `max_daily_loss_pct` y `max_drawdown_pct` deben quedar en `0 < x <= 100`
+  - `max_positions >= 1`
+  - `max_asset_exposure_pct` no puede exceder `max_total_exposure_pct`
+  - el registry resuelve defaults minimos coherentes con el perfil de riesgo elegido cuando el payload no trae todos los limites explicitos.
+- Configuracion base operativa usada en este bloque:
+  - `engine`, `mode` y `status` siguen siendo la base operativa ya existente del repo;
+  - este bloque no reemplaza esa base: la complementa con presupuesto y limites minimos por bot.
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - formulario de alta con `risk_profile`, capital base y limites minimos
+    - listado visible con resumen de capital/riesgo por bot
+    - edicion inline de la configuracion base del registry
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - schema zod real con coercion numerica y validacion cruzada de exposicion
+  - `rtlab_dashboard/src/lib/types.ts`
+    - `BotInstance` tipado con la nueva base canonica de configuracion por bot
+- Lo que este bloque NO implementa:
+  - symbols assignment
+  - strategy pool
+  - seleccion por simbolo
+  - multi-symbol runtime
+  - lifecycle entre entornos
+  - live console
+  - configuracion avanzada de capital/riesgo por simbolo o por estrategia
+- Conclusion operativa:
+  - desde este bloque, el bot ya existe como entidad configurable minima mas alla de su identidad;
+  - el siguiente bloque debe colgarse de esta base para abrir asignacion de simbolos, no volver a redefinir budget/risk base.
+
+## RTLRESE-26 - Bot Registry canonico con identidad persistente y soft-archive - 2026-04-14
+
+- Estado real confirmado en esta rama:
+  - ya existe una entidad `Bot` persistente en registry con identidad separada de su nombre interno legado pobre;
+  - el backend conserva `bot_id` estable y expone identidad visible editable sin perder trazabilidad historica.
+- Campos canonicos que quedan persistidos y visibles:
+  - `bot_id`
+  - `display_name`
+  - `alias`
+  - `description`
+  - `domain_type`
+    - `spot`
+    - `futures`
+  - `registry_status`
+    - `active`
+    - `archived`
+  - `created_at`
+  - `updated_at`
+  - `archived_at`
+- Fuente de persistencia real usada por este bloque:
+  - la misma capa ya existente de bots en `learning/bots.json`, administrada por `BotPolicyStateRepository` / `ConsoleStore`;
+  - no se creo una persistencia paralela ni un storage nuevo fuera del patron actual del repo.
+- Contratos reales expuestos por API despues de este bloque:
+  - `GET /api/v1/bots`
+  - `POST /api/v1/bots`
+  - `GET /api/v1/bots/{bot_id}`
+  - `PATCH /api/v1/bots/{bot_id}`
+  - `POST /api/v1/bots/{bot_id}/archive`
+  - `POST /api/v1/bots/{bot_id}/restore`
+  - `DELETE /api/v1/bots/{bot_id}` queda bloqueado en este bloque con `409` para sostener soft-archive y evitar borrado destructivo accidental.
+- Reglas canonicas fijadas en este bloque:
+  - `display_name` es requerido, editable y visible para el usuario;
+  - `bot_id` no se reemplaza por el nombre visible;
+  - `domain_type` queda acotado a `spot|futures`;
+  - `registry_status` queda acotado a `active|archived`;
+  - el archivado es soft-archive y no borrado destructivo.
+- Validaciones reales aplicadas server-side y en la UI:
+  - `display_name`
+    - trim
+    - minimo `3`
+    - maximo `80`
+  - `alias`
+    - trim
+    - maximo `40`
+  - `description`
+    - trim
+    - maximo `280`
+  - `domain_type`
+    - enum estricto `spot|futures`
+  - `registry_status`
+    - enum estricto `active|archived`
+- Superficie frontend real integrada en este bloque:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - formulario minimo para crear bots con identidad real
+    - listado mostrando `display_name`, `bot_id`, `domain_type` y `registry_status`
+    - edicion inline de identidad
+    - acciones visibles de archivar / restaurar
+  - el panel sigue conviviendo con `policy_state`/evidence existentes, pero este bloque no expande lifecycle, pool ni multi-symbol.
+- Lo que este bloque NO implementa:
+  - capital/risk profile
+  - symbols assignment
+  - strategy pool como dominio canonico
+  - lifecycle `backtest/shadow/paper/testnet/live`
+  - multi-symbol runtime
+  - live console
+  - metricas avanzadas del bot
+- Conclusion operativa:
+  - desde este bloque, el registry del bot ya no depende de nombres pobres tipo `AutoBot N` como identidad de producto;
+  - la identidad canonica del bot ya existe de forma persistente y auditable;
+  - los siguientes bloques deben colgarse de esta base, no volver a inventarla.
 
 ## Produccion online, pero la postura canonica de runtime debe quedar en PAPER hasta cerrar LIVE readiness - 2026-04-08
 
@@ -602,20 +1304,24 @@ Cuando codigo, docs y configuracion discrepan:
     - rama dedicada: `feature/rtlrese-15-frontend-domains`
     - commit de cierre: `1443789`
     - resultado documentado: separacion visual y de tipos en frontend con fallback legacy acotado.
-- Estado real de integracion en ESTA base (`feature/rtlrese-16-docs-finalization`, misma base que `main` actual):
-  - el backend trackeado todavia expone contratos legacy visibles, por ejemplo:
-    - `POST /api/v1/bots/bulk-patch`
-    - `GET /api/v1/logs`
-  - el frontend trackeado todavia conserva mezcla legacy visible, por ejemplo:
-    - `Strategy.last_oos` en `rtlab_dashboard/src/lib/types.ts`
-    - `GET /api/v1/strategies/{id}` como contrato mixto en `strategies/[id]`
-    - tablas y cards de `strategies` / `execution` todavia no separadas por dominio en esta base.
-  - `rtlab_autotrader/rtlab_core/domains/` no aparece como arbol fuente trackeado en esta rama; solo se observaron residuos locales (`__pycache__`), no la integracion final del split.
+- Estado real de integracion en la base activa al 2026-04-17:
+  - `rtlab_autotrader/rtlab_core/domains/` ya aparece trackeado como arbol fuente real:
+    - `truth/`
+    - `evidence/`
+    - `policy_state/`
+    - `decision_log/`
+  - el backend ya expone contratos canonicos visibles:
+    - `GET /api/v1/strategies/{id}/truth`
+    - `GET /api/v1/strategies/{id}/evidence`
+    - `GET/PATCH /api/v1/bots/{id}/policy-state`
+    - `GET /api/v1/bots/{id}/decision-log`
+  - el frontend base ya consume esos contratos en `strategies/[id]` y `execution`;
+  - todavia sobreviven fallbacks transicionales para degradar con honestidad si un backend remoto no expone el contrato esperado, pero eso ya no equivale a decir que `RTLRESE-14` no este integrada.
 - Conclusión operativa honesta:
-  - la frontera nueva ya quedo decidida y cerrada en ramas dedicadas 13/14/15;
-  - la compatibilidad legacy sigue vigente desde el punto de vista de integracion, porque esas ramas todavia no aparecen absorbidas por la base actual;
+  - la frontera 13/14/15 ya quedo absorbida de forma usable en la base real;
+  - cualquier pendiente restante ya no es "mergear RTLRESE-13/14/15", sino seguir achicando compatibilidad transicional sin romper consumidores remotos atrasados;
   - por lo tanto, cualquier lectura de `SOURCE_OF_TRUTH` debe distinguir:
-    - frontera canonica objetivo/cerrada
+    - cierre historico de frontera
     - estado efectivamente integrado hoy en la base activa
 - Criterio documental adoptado desde RTLRESE-16:
   - no volver a describir `Sharpe`, `Max DD`, `WinRate`, `trades` o `confidence` runtime como si fueran parte de `strategy_truth`;
@@ -775,7 +1481,7 @@ Cuando codigo, docs y configuracion discrepan:
     - `shadow`
     - `paper`
     - `testnet`
-    - `live` visible solo como referencia, NO GO
+    - `live` visible como modo gated: si `preflight/readiness/gates` no pasan, queda bloqueado fail-closed
 - Frontend `Backtests`:
   - agrega selector de bot para research batch
   - agrega accion `Usar pool del bot`
