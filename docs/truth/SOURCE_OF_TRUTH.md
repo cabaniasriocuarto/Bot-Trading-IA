@@ -31,6 +31,12 @@ Fecha de actualizacion: 2026-04-20
   - `RTLOPS-77` no prioriza ni elige un subset de simbolos para ejecutar cuando el neto excede caps;
   - en ese escenario falla cerrado, deja `execution_ready=false` y explicita el rechazo en `guardrails`;
   - la decision neta derivada puede seguir visible para auditoria, pero ya no queda vendida como ejecutable en silencio.
+- Conclusion canonica posterior al preflight:
+  - la sucesora correcta inmediata de `RTLOPS-77` no es un `lifecycle` minimo;
+  - antes corresponde cerrar el bloque chico de subset ejecutable y priorizacion deterministica bajo caps sobre `rtlops77/v1`;
+  - abrir `lifecycle` antes de ese cierre mezclaria en el mismo slice dos decisiones distintas:
+    - que simbolos quedan habilitados bajo caps
+    - como progresa su lifecycle operativo
 - Fuera de alcance mantenido a proposito:
   - lifecycle
   - live console

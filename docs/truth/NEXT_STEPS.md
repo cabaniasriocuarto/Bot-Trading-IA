@@ -13,10 +13,15 @@ Fecha: 2026-04-20
   - sin tocar live console
   - sin abrir ejecucion remota LIVE lateral por simbolo
   - sin refactor transversal
+- [x] Preflight fail-closed posterior ya resuelto:
+  - repo + docs/truth + Linear revalidados sobre la punta real de `RTLOPS-77`
+  - `live console` sigue fuera de alcance
+  - abrir `lifecycle` ahora mezclaria de mas la politica de priorizacion bajo caps con el lifecycle operativo
+  - el gap dominante real queda en la falta de un subset ejecutable y priorizacion deterministica cuando el neto excede caps
 - [ ] Siguiente paso exacto recomendado:
-  - abrir un preflight fail-closed del siguiente slice que consuma `rtlops77/v1`
-  - revalidar ahi, con repo + docs/truth, si corresponde recien abrir lifecycle minimo del frente multi-symbol
-  - mantener fuera de ese preflight:
+  - abrir `RTLOPS-79` y resolver solo el subset ejecutable y la priorizacion deterministica bajo caps sobre `rtlops77/v1`
+  - mantener fuera de ese bloque:
+    - lifecycle
     - live console
     - ejecucion LIVE lateral
     - cualquier cleanup administrativo no necesario

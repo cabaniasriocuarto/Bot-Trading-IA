@@ -2,6 +2,20 @@
 
 ## 2026-04-20
 
+### Preflight posterior a RTLOPS-77 - sucesora canonizada
+- Verdad documental alineada:
+  - repo + docs/truth + Linear revalidados sobre la punta real que cierra `RTLOPS-77`
+  - se fija como sucesora explicita `RTLOPS-79`:
+    - `Bot Multi-Symbol — subset ejecutable y priorización determinística bajo caps`
+  - se descarta abrir `lifecycle` como siguiente bloque inmediato porque hoy mezclaría de más la priorización bajo caps con el lifecycle operativo
+- Documentos actualizados:
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Limites honestos:
+  - no se implementa producto en este bloque
+  - no se abre lifecycle
+  - no se abre live console
+
 ### RTLOPS-77 - guardrails, caps y rechazos de configuracion
 - Cambio real aplicado en backend/API/frontend minimo:
   - `rtlab_autotrader/rtlab_core/web/app.py`
