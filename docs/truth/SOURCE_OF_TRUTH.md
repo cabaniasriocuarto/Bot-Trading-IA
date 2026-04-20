@@ -2,6 +2,38 @@
 
 Fecha de actualizacion: 2026-04-20
 
+## RTLOPS-79 - subset ejecutable y priorizacion deterministica bajo caps - 2026-04-20
+
+- Estado real confirmado en esta rama:
+  - sobre `rtlops77/v1`, el runtime multi-symbol ya no falla cerrado por completo cuando `trade_decisions_count > max_live_symbols` y la configuracion base sigue siendo coherente;
+  - en ese escenario ahora canoniza un subset ejecutable deterministico por orden canonico de `symbols` del bot;
+  - la incoherencia dura `max_live_symbols > max_positions` se mantiene fail-closed como error y no entra en priorizacion.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/runtime`
+    - conserva `net_decision_by_symbol` completo para auditoria;
+    - pasa `guardrails.status` a `warning` cuando aplica priorizacion bajo caps sin incoherencia de configuracion;
+    - deja `guardrails.execution_ready=true` cuando la consolidacion sigue valida y el subset ejecutable ya cae dentro del cap live;
+    - expone `allowed_trade_symbols` y `rejected_trade_symbols` como subset permitido vs rechazado por priorizacion;
+    - agrega `guardrails.prioritization_criterion=symbol_order`;
+    - marca los simbolos rechazados a nivel `items[*].errors` con `reason_code=trade_decisions_exceed_live_cap` y `priority_rank` auditable en el mensaje.
+- Regla canonica reafirmada:
+  - `RTLOPS-79` no abre lifecycle;
+  - no abre live console;
+  - no abre ejecucion remota LIVE lateral por simbolo;
+  - no introduce un motor nuevo de scheduling ni cambia la decision neta ya canonica: solo recorta el subset ejecutable bajo caps.
+- Validacion real ejecutada:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> PASS despues de regenerar `.next/types` con `build`
+- Fuera de alcance mantenido a proposito:
+  - lifecycle
+  - live console
+  - ejecucion remota LIVE lateral por simbolo
+  - refactor transversal
+  - features sin dependencia directa del contrato `rtlops77/v1`
+
 ## RTLOPS-77 - guardrails, caps y rechazos de configuracion - 2026-04-20
 
 - Estado real confirmado en esta rama:

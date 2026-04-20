@@ -2,6 +2,31 @@
 
 Fecha: 2026-04-20
 
+## Siguiente paso exacto despues de RTLOPS-79 - 2026-04-20
+- [x] Fundar el subset ejecutable y la priorizacion deterministica bajo caps sobre `rtlops77/v1`:
+  - cuando `trade_decisions_count > max_live_symbols`, el runtime deja de bloquear todo el neto y prioriza un subset ejecutable por orden canonico de `symbols`
+  - `guardrails.status` pasa a `warning` cuando aplica priorizacion sin incoherencia de configuracion
+  - `allowed_trade_symbols` y `rejected_trade_symbols` pasan a reflejar el subset permitido vs rechazado por priorizacion
+  - `guardrails.prioritization_criterion` queda expuesto como `symbol_order`
+  - los simbolos rechazados por priorizacion quedan explicitados a nivel item con `reason_code=trade_decisions_exceed_live_cap`
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir lifecycle
+  - sin tocar live console
+  - sin abrir ejecucion remota LIVE lateral por simbolo
+  - sin refactor transversal
+- [x] Revalidacion minima real del bloque:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> PASS despues de regenerar `.next/types` con `build`
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un preflight fail-closed del lifecycle minimo multi-symbol que consuma el subset ejecutable ya canonizado sobre `rtlops77/v1`
+  - revalidar ahi, con repo + docs/truth + Linear, si corresponde recien abrir la implementacion minima de lifecycle
+  - mantener fuera de ese preflight:
+    - live console
+    - ejecucion LIVE lateral
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
+
 ## Siguiente paso exacto despues de RTLOPS-77 - 2026-04-20
 - [x] Endurecer el runtime multi-symbol con guardrails y caps explicitos:
   - `runtime.contract_version` elevada a `rtlops77/v1`
@@ -18,7 +43,7 @@ Fecha: 2026-04-20
   - `live console` sigue fuera de alcance
   - abrir `lifecycle` ahora mezclaria de mas la politica de priorizacion bajo caps con el lifecycle operativo
   - el gap dominante real queda en la falta de un subset ejecutable y priorizacion deterministica cuando el neto excede caps
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - abrir `RTLOPS-79` y resolver solo el subset ejecutable y la priorizacion deterministica bajo caps sobre `rtlops77/v1`
   - mantener fuera de ese bloque:
     - lifecycle

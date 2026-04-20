@@ -5505,28 +5505,47 @@ def risk_hooks(context):
         }
         max_live_symbols = self._normalize_bot_max_live_symbols(payload.get("max_live_symbols"))
         max_positions = max(1, self._bot_int_or_default(payload.get("max_positions"), 1))
-        trade_symbols = [
-            str(symbol)
-            for symbol, decision in net_decision_by_symbol.items()
-            if str((decision or {}).get("action") or "").strip() == "trade"
-        ]
+        trade_symbols: list[str] = []
+        for symbol in symbols:
+            symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+            decision = net_decision_by_symbol.get(symbol_n, {})
+            if str((decision or {}).get("action") or "").strip() == "trade":
+                trade_symbols.append(symbol_n)
+        trade_priority_rank = {
+            symbol: idx + 1
+            for idx, symbol in enumerate(trade_symbols)
+        }
         guardrail_reason_codes: set[str] = set()
-        guardrail_errors: list[str] = []
+        blocking_guardrail_errors: list[str] = []
+        prioritization_messages: list[str] = []
+        prioritization_applied = False
+        allowed_trade_symbols = list(trade_symbols)
+        rejected_trade_symbols: list[str] = []
         if max_live_symbols is not None and max_live_symbols > max_positions:
             guardrail_reason_codes.add("live_cap_exceeds_max_positions")
-            guardrail_errors.append(
+            blocking_guardrail_errors.append(
                 f"max_live_symbols={max_live_symbols} no puede superar max_positions={max_positions} para una ejecucion multi-symbol coherente."
             )
-        if max_live_symbols is not None and len(trade_symbols) > max_live_symbols:
+        if (
+            not blocking_guardrail_errors
+            and max_live_symbols is not None
+            and len(trade_symbols) > max_live_symbols
+        ):
             guardrail_reason_codes.add("trade_decisions_exceed_live_cap")
-            guardrail_errors.append(
-                f"El runtime derivo {len(trade_symbols)} decisiones trade pero el cap live permitido es {max_live_symbols}."
+            prioritization_applied = True
+            allowed_trade_symbols = trade_symbols[:max_live_symbols]
+            rejected_trade_symbols = trade_symbols[max_live_symbols:]
+            prioritization_messages.append(
+                f"El runtime derivo {len(trade_symbols)} decisiones trade pero el cap live permitido es {max_live_symbols}; se prioriza el subset ejecutable por orden canonico de symbols."
             )
-        if guardrail_errors:
+        if blocking_guardrail_errors:
             reason_codes.update(guardrail_reason_codes)
-            errors.extend(guardrail_errors)
-        rejected_trade_symbols = trade_symbols if guardrail_errors else []
-        allowed_trade_symbols = trade_symbols if not guardrail_errors else []
+            errors.extend(blocking_guardrail_errors)
+            allowed_trade_symbols = []
+            rejected_trade_symbols = list(trade_symbols)
+        elif prioritization_applied:
+            reason_codes.update(guardrail_reason_codes)
+            errors.extend(prioritization_messages)
         caps = {
             "configured_symbols_count": len(symbols),
             "trade_decisions_count": len(trade_symbols),
@@ -5534,16 +5553,24 @@ def risk_hooks(context):
             "max_positions": int(max_positions),
         }
         guardrails = {
-            "status": "valid" if not guardrail_errors else "error",
+            "status": (
+                "error"
+                if blocking_guardrail_errors
+                else "warning"
+                if prioritization_applied
+                else "valid"
+            ),
             "execution_ready": (
                 str(resolved_consolidation.get("status") or "error") == "valid"
-                and not guardrail_errors
+                and not blocking_guardrail_errors
             ),
             "allowed_trade_symbols": allowed_trade_symbols,
             "rejected_trade_symbols": rejected_trade_symbols,
             "reason_codes": sorted(guardrail_reason_codes),
-            "errors": list(dict.fromkeys(guardrail_errors)),
+            "errors": list(dict.fromkeys(blocking_guardrail_errors + prioritization_messages)),
+            "prioritization_criterion": "symbol_order" if prioritization_applied else None,
         }
+        rejected_trade_symbol_set = set(rejected_trade_symbols)
         items: list[dict[str, Any]] = []
         for symbol in symbols:
             symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
@@ -5554,7 +5581,7 @@ def risk_hooks(context):
                 for issue in (consolidation_item.get("errors") or [])
                 if isinstance(issue, dict)
             ]
-            if guardrail_errors:
+            if blocking_guardrail_errors:
                 if "live_cap_exceeds_max_positions" in guardrail_reason_codes and str(decision.get("action") or "").strip() == "trade":
                     item_errors.append(
                         self._signal_consolidation_issue(
@@ -5566,17 +5593,21 @@ def risk_hooks(context):
                             symbol=symbol_n,
                         )
                     )
-                if "trade_decisions_exceed_live_cap" in guardrail_reason_codes and str(decision.get("action") or "").strip() == "trade":
-                    item_errors.append(
-                        self._signal_consolidation_issue(
-                            reason_code="trade_decisions_exceed_live_cap",
-                            message=(
-                                f"{symbol_n} queda bloqueado: el runtime excede el cap live "
-                                f"({len(trade_symbols)} decisiones trade para max_live_symbols={max_live_symbols})"
-                            ),
-                            symbol=symbol_n,
-                        )
+            elif (
+                prioritization_applied
+                and symbol_n in rejected_trade_symbol_set
+                and str(decision.get("action") or "").strip() == "trade"
+            ):
+                item_errors.append(
+                    self._signal_consolidation_issue(
+                        reason_code="trade_decisions_exceed_live_cap",
+                        message=(
+                            f"{symbol_n} queda fuera del subset ejecutable priorizado por orden canonico de symbols "
+                            f"(priority_rank={trade_priority_rank.get(symbol_n)}, max_live_symbols={max_live_symbols})"
+                        ),
+                        symbol=symbol_n,
                     )
+                )
             runtime_symbol_id = self._runtime_symbol_ref(bot_id, symbol_n)
             items.append(
                 {
@@ -5632,9 +5663,11 @@ def risk_hooks(context):
             "items": items,
             "reason_codes": sorted(reason_codes),
             "status": (
-                "valid"
-                if str(resolved_consolidation.get("status") or "error") == "valid" and not guardrail_errors
-                else "error"
+                "error"
+                if str(resolved_consolidation.get("status") or "error") != "valid" or blocking_guardrail_errors
+                else "warning"
+                if prioritization_applied
+                else "valid"
             ),
             "errors": list(dict.fromkeys(errors)),
             "storage_fields": list(BOT_RUNTIME_STORAGE_FIELDS),

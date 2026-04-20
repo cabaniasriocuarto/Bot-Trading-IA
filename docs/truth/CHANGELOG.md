@@ -2,6 +2,29 @@
 
 ## 2026-04-20
 
+### RTLOPS-79 - subset ejecutable y priorización determinística bajo caps
+- Cambio real aplicado en backend/API minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - mantiene el contrato sobre `rtlops77/v1`
+    - prioriza el subset ejecutable por orden canonico de `symbols` cuando `trade_decisions_count > max_live_symbols`
+    - deja `guardrails.status=warning` cuando la priorizacion resuelve el overflow sin incoherencia de configuracion
+    - mantiene `live_cap_exceeds_max_positions` como bloqueo fail-closed
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el subset permitido vs rechazado por priorizacion
+    - cubre el criterio deterministico `symbol_order`
+    - revalida que `max_live_symbols > max_positions` sigue en `error`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+- Limites honestos:
+  - no se abre lifecycle
+  - no se abre live console
+  - no se abre ejecucion LIVE lateral
+  - no se introduce un scheduler o engine nuevo fuera del contrato runtime ya canonico
+
 ### Preflight posterior a RTLOPS-77 - sucesora canonizada
 - Verdad documental alineada:
   - repo + docs/truth + Linear revalidados sobre la punta real que cierra `RTLOPS-77`

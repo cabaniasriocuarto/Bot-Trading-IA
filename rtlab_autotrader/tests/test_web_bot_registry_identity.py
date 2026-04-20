@@ -1146,6 +1146,7 @@ def test_bot_runtime_surface_is_canonical_and_traceable(tmp_path: Path, monkeypa
     "rejected_trade_symbols": [],
     "reason_codes": [],
     "errors": [],
+    "prioritization_criterion": None,
   }
   assert runtime["storage"]["registry"]["path"] == "learning/bots.json"
   assert runtime["storage"]["decision_log"]["path"] == "console_api.sqlite3"
@@ -1240,7 +1241,7 @@ def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_
   assert any(issue["reason_code"] == "selected_strategy_signal_unresolved" for issue in runtime_item["errors"])
 
 
-def test_bot_runtime_guardrails_fail_closed_when_trade_decisions_exceed_live_cap(tmp_path: Path, monkeypatch) -> None:
+def test_bot_runtime_prioritizes_trade_subset_when_trade_decisions_exceed_live_cap(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -1255,7 +1256,7 @@ def test_bot_runtime_guardrails_fail_closed_when_trade_decisions_exceed_live_cap
       "display_name": "Bot Runtime Guardrails Live Cap",
       "domain_type": "spot",
       "universe_name": "core_spot_usdt",
-      "universe": ["BTCUSDT", "ETHUSDT"],
+      "universe": ["ETHUSDT", "BTCUSDT"],
       "max_live_symbols": 1,
       "max_positions": 2,
       "pool_strategy_ids": pool_ids,
@@ -1304,7 +1305,7 @@ def test_bot_runtime_guardrails_fail_closed_when_trade_decisions_exceed_live_cap
   assert runtime_res.status_code == 200, runtime_res.text
   runtime = runtime_res.json()["runtime"]
   assert runtime["contract_version"] == "rtlops77/v1"
-  assert runtime["status"] == "error"
+  assert runtime["status"] == "warning"
   assert "trade_decisions_exceed_live_cap" in runtime["reason_codes"]
   assert runtime["caps"] == {
     "configured_symbols_count": 2,
@@ -1313,21 +1314,26 @@ def test_bot_runtime_guardrails_fail_closed_when_trade_decisions_exceed_live_cap
     "max_positions": 2,
   }
   assert runtime["guardrails"] == {
-    "status": "error",
-    "execution_ready": False,
-    "allowed_trade_symbols": [],
-    "rejected_trade_symbols": ["BTCUSDT", "ETHUSDT"],
+    "status": "warning",
+    "execution_ready": True,
+    "allowed_trade_symbols": ["ETHUSDT"],
+    "rejected_trade_symbols": ["BTCUSDT"],
     "reason_codes": ["trade_decisions_exceed_live_cap"],
     "errors": [
-      "El runtime derivo 2 decisiones trade pero el cap live permitido es 1."
+      "El runtime derivo 2 decisiones trade pero el cap live permitido es 1; se prioriza el subset ejecutable por orden canonico de symbols."
     ],
+    "prioritization_criterion": "symbol_order",
   }
+  assert runtime["errors"] == [
+    "El runtime derivo 2 decisiones trade pero el cap live permitido es 1; se prioriza el subset ejecutable por orden canonico de symbols."
+  ]
   assert len(runtime["net_decision_by_symbol"]) == 2
   items = {str(item["symbol"]): item for item in runtime["items"]}
+  assert items["ETHUSDT"]["status"] == "valid"
+  assert items["ETHUSDT"]["errors"] == []
   assert items["BTCUSDT"]["status"] == "error"
-  assert items["ETHUSDT"]["status"] == "error"
   assert any(issue["reason_code"] == "trade_decisions_exceed_live_cap" for issue in items["BTCUSDT"]["errors"])
-  assert any(issue["reason_code"] == "trade_decisions_exceed_live_cap" for issue in items["ETHUSDT"]["errors"])
+  assert any("priority_rank=2" in str(issue["message"] or "") for issue in items["BTCUSDT"]["errors"])
 
 
 def test_bot_runtime_flags_legacy_live_cap_above_max_positions_fail_closed(tmp_path: Path, monkeypatch) -> None:
@@ -1412,6 +1418,7 @@ def test_bot_runtime_flags_legacy_live_cap_above_max_positions_fail_closed(tmp_p
   assert runtime["guardrails"]["execution_ready"] is False
   assert runtime["guardrails"]["allowed_trade_symbols"] == []
   assert runtime["guardrails"]["rejected_trade_symbols"] == ["BTCUSDT", "ETHUSDT"]
+  assert runtime["guardrails"]["prioritization_criterion"] is None
   assert "live_cap_exceeds_max_positions" in runtime["guardrails"]["reason_codes"]
   assert any("max_live_symbols=2 no puede superar max_positions=1" in err for err in runtime["guardrails"]["errors"])
 
