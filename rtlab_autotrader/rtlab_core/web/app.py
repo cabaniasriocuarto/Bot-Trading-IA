@@ -922,11 +922,16 @@ BOT_SIGNAL_CONSOLIDATION_CRITERIA = (
     "meanreversion_tags_sell",
     "trend_tags_buy",
 )
-BOT_RUNTIME_CONTRACT_VERSION = "rtlops76/v1"
+BOT_RUNTIME_CONTRACT_VERSION = "rtlops77/v1"
 BOT_RUNTIME_STORAGE_FIELDS: tuple[str, ...] = ()
+BOT_RUNTIME_GUARDRAIL_REASON_CODES = (
+    "live_cap_exceeds_max_positions",
+    "trade_decisions_exceed_live_cap",
+)
 BOT_RUNTIME_REASON_CODES = (
     *BOT_SIGNAL_CONSOLIDATION_REASON_CODES,
     "signal_consolidation_invalid",
+    *BOT_RUNTIME_GUARDRAIL_REASON_CODES,
 )
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
@@ -957,7 +962,7 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
-BOT_REGISTRY_CONTRACT_VERSION = "rtlops76/v1"
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops77/v1"
 BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
 BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
 BOT_REGISTRY_DEFAULT_MODE = "paper"
@@ -4045,6 +4050,14 @@ def risk_hooks(context):
         return resolved
 
     @staticmethod
+    def _ensure_bot_runtime_caps_coherent(*, max_live_symbols: int, max_positions: int) -> None:
+        if int(max_live_symbols) > int(max_positions):
+            raise HTTPException(
+                status_code=400,
+                detail="max_live_symbols no puede superar max_positions para una ejecucion multi-symbol coherente",
+            )
+
+    @staticmethod
     def _normalize_bot_universe_name(value: Any) -> str | None:
         text = str(value or "").strip()
         return text or None
@@ -5490,6 +5503,47 @@ def risk_hooks(context):
             for item in (resolved_consolidation.get("items") or [])
             if isinstance(item, dict) and str((item or {}).get("symbol") or "").strip()
         }
+        max_live_symbols = self._normalize_bot_max_live_symbols(payload.get("max_live_symbols"))
+        max_positions = max(1, self._bot_int_or_default(payload.get("max_positions"), 1))
+        trade_symbols = [
+            str(symbol)
+            for symbol, decision in net_decision_by_symbol.items()
+            if str((decision or {}).get("action") or "").strip() == "trade"
+        ]
+        guardrail_reason_codes: set[str] = set()
+        guardrail_errors: list[str] = []
+        if max_live_symbols is not None and max_live_symbols > max_positions:
+            guardrail_reason_codes.add("live_cap_exceeds_max_positions")
+            guardrail_errors.append(
+                f"max_live_symbols={max_live_symbols} no puede superar max_positions={max_positions} para una ejecucion multi-symbol coherente."
+            )
+        if max_live_symbols is not None and len(trade_symbols) > max_live_symbols:
+            guardrail_reason_codes.add("trade_decisions_exceed_live_cap")
+            guardrail_errors.append(
+                f"El runtime derivo {len(trade_symbols)} decisiones trade pero el cap live permitido es {max_live_symbols}."
+            )
+        if guardrail_errors:
+            reason_codes.update(guardrail_reason_codes)
+            errors.extend(guardrail_errors)
+        rejected_trade_symbols = trade_symbols if guardrail_errors else []
+        allowed_trade_symbols = trade_symbols if not guardrail_errors else []
+        caps = {
+            "configured_symbols_count": len(symbols),
+            "trade_decisions_count": len(trade_symbols),
+            "max_live_symbols": max_live_symbols,
+            "max_positions": int(max_positions),
+        }
+        guardrails = {
+            "status": "valid" if not guardrail_errors else "error",
+            "execution_ready": (
+                str(resolved_consolidation.get("status") or "error") == "valid"
+                and not guardrail_errors
+            ),
+            "allowed_trade_symbols": allowed_trade_symbols,
+            "rejected_trade_symbols": rejected_trade_symbols,
+            "reason_codes": sorted(guardrail_reason_codes),
+            "errors": list(dict.fromkeys(guardrail_errors)),
+        }
         items: list[dict[str, Any]] = []
         for symbol in symbols:
             symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
@@ -5500,6 +5554,29 @@ def risk_hooks(context):
                 for issue in (consolidation_item.get("errors") or [])
                 if isinstance(issue, dict)
             ]
+            if guardrail_errors:
+                if "live_cap_exceeds_max_positions" in guardrail_reason_codes and str(decision.get("action") or "").strip() == "trade":
+                    item_errors.append(
+                        self._signal_consolidation_issue(
+                            reason_code="live_cap_exceeds_max_positions",
+                            message=(
+                                f"{symbol_n} queda bloqueado: max_live_symbols={max_live_symbols} "
+                                f"no puede superar max_positions={max_positions}"
+                            ),
+                            symbol=symbol_n,
+                        )
+                    )
+                if "trade_decisions_exceed_live_cap" in guardrail_reason_codes and str(decision.get("action") or "").strip() == "trade":
+                    item_errors.append(
+                        self._signal_consolidation_issue(
+                            reason_code="trade_decisions_exceed_live_cap",
+                            message=(
+                                f"{symbol_n} queda bloqueado: el runtime excede el cap live "
+                                f"({len(trade_symbols)} decisiones trade para max_live_symbols={max_live_symbols})"
+                            ),
+                            symbol=symbol_n,
+                        )
+                    )
             runtime_symbol_id = self._runtime_symbol_ref(bot_id, symbol_n)
             items.append(
                 {
@@ -5550,9 +5627,15 @@ def risk_hooks(context):
             ],
             "selected_strategy_by_symbol": selected_by_symbol,
             "net_decision_by_symbol": net_decision_by_symbol,
+            "caps": caps,
+            "guardrails": guardrails,
             "items": items,
             "reason_codes": sorted(reason_codes),
-            "status": "valid" if str(resolved_consolidation.get("status") or "error") == "valid" else "error",
+            "status": (
+                "valid"
+                if str(resolved_consolidation.get("status") or "error") == "valid" and not guardrail_errors
+                else "error"
+            ),
             "errors": list(dict.fromkeys(errors)),
             "storage_fields": list(BOT_RUNTIME_STORAGE_FIELDS),
             "storage": {
@@ -6107,6 +6190,8 @@ def risk_hooks(context):
                     "symbols",
                     "selected_strategy_by_symbol",
                     "net_decision_by_symbol",
+                    "caps",
+                    "guardrails",
                     "items",
                     "storage",
                     "api",
@@ -7191,6 +7276,10 @@ def risk_hooks(context):
             universe=universe,
             max_live_symbols=max_live_symbols,
         )
+        self._ensure_bot_runtime_caps_coherent(
+            max_live_symbols=int(symbol_assignment["max_live_symbols"]),
+            max_positions=int(base_config["max_positions"]),
+        )
         validated_pool_strategy_ids = self._validate_bot_strategy_pool(
             pool_strategy_ids if pool_strategy_ids is not None else [],
             strategies_index=strategy_index,
@@ -7419,6 +7508,20 @@ def risk_hooks(context):
             patched["universe_name"] = symbol_assignment["universe_name"]
             patched["universe"] = symbol_assignment["universe"]
             patched["max_live_symbols"] = symbol_assignment["max_live_symbols"]
+        if any(
+            value is not None
+            for value in (
+                max_positions,
+                domain_type,
+                universe_name,
+                universe,
+                max_live_symbols,
+            )
+        ):
+            self._ensure_bot_runtime_caps_coherent(
+                max_live_symbols=int(patched.get("max_live_symbols") or 0),
+                max_positions=int(patched.get("max_positions") or 0),
+            )
         if pool_strategy_ids is not None:
             patched["pool_strategy_ids"] = self._validate_bot_strategy_pool(
                 pool_strategy_ids,

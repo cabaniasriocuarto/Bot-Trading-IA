@@ -2,6 +2,37 @@
 
 ## 2026-04-20
 
+### RTLOPS-77 - guardrails, caps y rechazos de configuracion
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - eleva el contrato runtime y del Bot Registry a `rtlops77/v1`
+    - agrega la capa explicita `caps + guardrails` sobre el runtime multi-symbol derivado
+    - rechaza configuraciones incoherentes cuando `max_live_symbols > max_positions`
+    - deja fail-closed el runtime cuando el neto por simbolo excede el cap live o cuando reaparece drift legacy entre `max_live_symbols` y `max_positions`
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops77/v1`
+    - cubre rechazos de configuracion incoherente en create/patch multi-symbol
+    - cubre guardrails fail-closed cuando el runtime deriva mas decisiones `trade` que el cap live
+    - cubre drift legacy donde `max_live_symbols` supera `max_positions`
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - agrega rechazo frontend coherente para `max_live_symbols > max_positions`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `runtime.caps` y `runtime.guardrails`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture canonico a `rtlops77/v1`
+    - cubre los nuevos reason codes y fields de runtime
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - `RTLOPS-77` no abre lifecycle ni live console
+  - no agrega ejecucion remota LIVE lateral por simbolo
+  - no introduce una politica de priorizacion/seleccion de subset cuando el runtime excede caps: falla cerrado y deja el rechazo explicito
+  - `next build` sigue emitiendo warnings no bloqueantes de chart sizing ya visibles en la base, sin romper el resultado `PASS`
+
 ### RTLOPS-76 - contratos minimos de runtime, storage y API
 - Cambio real aplicado en backend/API/frontend minimo:
   - `rtlab_autotrader/rtlab_core/web/app.py`

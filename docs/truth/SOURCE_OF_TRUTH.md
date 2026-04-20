@@ -2,6 +2,42 @@
 
 Fecha de actualizacion: 2026-04-20
 
+## RTLOPS-77 - guardrails, caps y rechazos de configuracion - 2026-04-20
+
+- Estado real confirmado en esta rama:
+  - el runtime multi-symbol ya no queda solo como surface derivada auditable: ahora expone una capa explicita de **guardrails + caps** para bloquear la ejecucion cuando la configuracion o el neto por simbolo no sostienen una operacion coherente;
+  - el contrato del Bot Registry y del runtime queda elevado a `rtlops77/v1`;
+  - el slice consume la base ya cerrada por `RTLOPS-72 + RTLOPS-73 + RTLOPS-74 + RTLOPS-75 + RTLOPS-76`, sin abrir lifecycle ni live console.
+- Cambio real aplicado en backend/API:
+  - `POST/PATCH /api/v1/bots` y `PATCH /api/v1/bots/{bot_id}/multi-symbol`
+    - rechazan configuraciones incoherentes cuando `max_live_symbols > max_positions`;
+  - `GET /api/v1/bots/{bot_id}/runtime`
+    - agrega `caps` con:
+      - `configured_symbols_count`
+      - `trade_decisions_count`
+      - `max_live_symbols`
+      - `max_positions`
+    - agrega `guardrails` con:
+      - `status`
+      - `execution_ready`
+      - `allowed_trade_symbols`
+      - `rejected_trade_symbols`
+      - `reason_codes`
+      - `errors`
+    - agrega reason codes canonicos:
+      - `live_cap_exceeds_max_positions`
+      - `trade_decisions_exceed_live_cap`
+- Regla canonica reafirmada:
+  - `RTLOPS-77` no prioriza ni elige un subset de simbolos para ejecutar cuando el neto excede caps;
+  - en ese escenario falla cerrado, deja `execution_ready=false` y explicita el rechazo en `guardrails`;
+  - la decision neta derivada puede seguir visible para auditoria, pero ya no queda vendida como ejecutable en silencio.
+- Fuera de alcance mantenido a proposito:
+  - lifecycle
+  - live console
+  - ejecucion remota LIVE lateral por simbolo
+  - refactor transversal
+  - features sin dependencia directa del contrato `rtlops76/v1`
+
 ## RTLOPS-76 - contratos minimos de runtime, storage y API - 2026-04-20
 
 - Estado real confirmado en esta rama:

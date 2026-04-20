@@ -2,6 +2,26 @@
 
 Fecha: 2026-04-20
 
+## Siguiente paso exacto despues de RTLOPS-77 - 2026-04-20
+- [x] Endurecer el runtime multi-symbol con guardrails y caps explicitos:
+  - `runtime.contract_version` elevada a `rtlops77/v1`
+  - `caps` y `guardrails` agregados al runtime canonico
+  - rechazo de configuracion incoherente cuando `max_live_symbols > max_positions`
+  - fail-closed cuando el runtime deriva mas decisiones `trade` que el cap live permitido
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir lifecycle
+  - sin tocar live console
+  - sin abrir ejecucion remota LIVE lateral por simbolo
+  - sin refactor transversal
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un preflight fail-closed del siguiente slice que consuma `rtlops77/v1`
+  - revalidar ahi, con repo + docs/truth, si corresponde recien abrir lifecycle minimo del frente multi-symbol
+  - mantener fuera de ese preflight:
+    - live console
+    - ejecucion LIVE lateral
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
+
 ## Siguiente paso exacto despues de RTLOPS-76 - 2026-04-20
 - [x] Fundar los contratos minimos de runtime/storage/API:
   - `GET /api/v1/bots/{bot_id}/runtime`
@@ -17,7 +37,7 @@ Fecha: 2026-04-20
   - sin tocar lifecycle
   - sin tocar live console
   - sin abrir ejecucion remota real por simbolo
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - abrir `RTLOPS-77` y resolver solo guardrails, caps y rechazos de configuracion sobre el contrato `rtlops76/v1`
   - mantener fuera de ese bloque:
     - lifecycle

@@ -454,6 +454,22 @@ export interface BotRuntimeItem {
   errors: BotSignalConsolidationIssue[];
 }
 
+export interface BotRuntimeCaps {
+  configured_symbols_count: number;
+  trade_decisions_count: number;
+  max_live_symbols?: number | null;
+  max_positions: number;
+}
+
+export interface BotRuntimeGuardrails {
+  status: "valid" | "error" | string;
+  execution_ready: boolean;
+  allowed_trade_symbols: string[];
+  rejected_trade_symbols: string[];
+  reason_codes: string[];
+  errors: string[];
+}
+
 export interface BotRuntimeModel {
   contract_version: string;
   bot_id: string;
@@ -466,6 +482,8 @@ export interface BotRuntimeModel {
   pool_strategy_ids: string[];
   selected_strategy_by_symbol: Record<string, string>;
   net_decision_by_symbol: BotSignalConsolidationModel["net_decision_by_symbol"];
+  caps: BotRuntimeCaps;
+  guardrails: BotRuntimeGuardrails;
   items: BotRuntimeItem[];
   reason_codes: string[];
   status: "valid" | "error" | string;

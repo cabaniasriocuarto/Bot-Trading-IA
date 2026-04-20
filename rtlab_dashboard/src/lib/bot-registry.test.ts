@@ -9,7 +9,7 @@ import {
 import type { BotRegistryContractResponse } from "@/lib/types";
 
 const CONTRACT_FIXTURE: BotRegistryContractResponse = {
-  contract_version: "rtlops76/v1",
+  contract_version: "rtlops77/v1",
   storage: {
     kind: "json_file",
     path: "learning/bots.json",
@@ -240,7 +240,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     ],
   },
   runtime: {
-    contract_version: "rtlops76/v1",
+    contract_version: "rtlops77/v1",
     storage_fields: [],
     reason_codes: [
       "bot_archived",
@@ -251,6 +251,8 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
       "selected_strategy_symbol_mismatch",
       "selected_strategy_signal_unresolved",
       "signal_consolidation_invalid",
+      "live_cap_exceeds_max_positions",
+      "trade_decisions_exceed_live_cap",
     ],
     fields: [
       "bot_id",
@@ -260,6 +262,8 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
       "symbols",
       "selected_strategy_by_symbol",
       "net_decision_by_symbol",
+      "caps",
+      "guardrails",
       "items",
       "storage",
       "api",
@@ -387,6 +391,18 @@ describe("bot-registry helpers", () => {
         max_live_symbols: "2",
       }, CONTRACT_FIXTURE),
     ).toThrow("cap live");
+
+    expect(() =>
+      normalizeBotRegistryDraft({
+        ...buildDefaultBotRegistryDraft(CONTRACT_FIXTURE),
+        display_name: "Bot válido",
+        universe_name: "core_spot_usdt",
+        universe: ["BTCUSDT", "ETHUSDT"],
+        pool_strategy_ids: ["trend_pullback_orderflow_confirm_v1"],
+        max_live_symbols: "2",
+        max_positions: "1",
+      }, CONTRACT_FIXTURE),
+    ).toThrow("max_positions");
 
     expect(() =>
       normalizeBotRegistryDraft({
