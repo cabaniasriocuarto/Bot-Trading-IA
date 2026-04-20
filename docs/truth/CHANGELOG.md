@@ -1,5 +1,40 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-20
+
+### RTLOPS-76 - contratos minimos de runtime, storage y API
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo derivado `runtime`
+    - agrega `GET /api/v1/bots/{bot_id}/runtime`
+    - eleva el contrato del Bot Registry a `rtlops76/v1`
+    - expone referencias minimas de storage/API para colgar el runtime multi-symbol sobre la verdad ya canonica de:
+      - `RTLOPS-72`
+      - `RTLOPS-73`
+      - `RTLOPS-74`
+      - `RTLOPS-75`
+    - mantiene fail-closed el contrato runtime cuando `signal_consolidation` no queda valida
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops76/v1`
+    - cubre la surface `GET /api/v1/bots/{bot_id}/runtime`
+    - cubre trazabilidad minima por simbolo (`runtime_symbol_id`, `selection_key`, `net_decision_key`, `decision_log_scope`)
+    - cubre el fail-closed cuando la consolidacion upstream no permite exponer decision neta por simbolo
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `runtime`, `runtime_path` y la extension del contrato canonico del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops76/v1`
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - `RTLOPS-76` no abre lifecycle ni live console
+  - no agrega ejecucion remota real por simbolo
+  - no abre `RTLOPS-77`
+  - `next build` sigue emitiendo warnings no bloqueantes de chart sizing ya visibles en la base, sin romper el resultado `PASS`
+
 ## 2026-04-18
 
 ### Microbloque de seguridad - desbloqueo de `Security CI` en PR #35

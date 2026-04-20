@@ -1,6 +1,41 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-18
+Fecha de actualizacion: 2026-04-20
+
+## RTLOPS-76 - contratos minimos de runtime, storage y API - 2026-04-20
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de **runtime multi-symbol** derivada sobre la verdad ya cerrada por `RTLOPS-72 + RTLOPS-73 + RTLOPS-74 + RTLOPS-75`;
+  - el nuevo shape `runtime` no introduce una segunda verdad ni inventa persistencia paralela: cuelga de la asignacion multi-symbol, la seleccion por simbolo, la decision neta por simbolo y las referencias de storage ya existentes;
+  - el runtime queda listo para que bloques posteriores consuman ids/keys estables por simbolo sin abrir todavia lifecycle ni live console.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/runtime`
+  - `runtime` agregado al payload canonico de bots y al `registry-contract`
+  - `contract_version` del Bot Registry elevada a `rtlops76/v1`
+  - referencias minimas de storage/API expuestas con:
+    - registry: `learning/bots.json`
+    - runtime state global: `logs/bot_state.json`
+    - decision log: `console_api.sqlite3`
+    - paths API concretos para `detail`, `runtime`, `signal-consolidation`, `policy-state` y `decision-log`
+  - trazabilidad minima por simbolo expuesta con:
+    - `runtime_symbol_id`
+    - `selection_key`
+    - `net_decision_key`
+    - `decision_log_scope`
+    - `decision_action`
+    - `decision_side`
+    - `decision_criterion`
+    - `decision_reason`
+- Regla canonica reafirmada:
+  - `RTLOPS-76` no abre ejecucion remota real ni lifecycle;
+  - deja fundado el **contrato de runtime/storage/API** para colgar la decision neta por simbolo ya canonica;
+  - si `signal_consolidation` queda invalida, el runtime cae fail-closed con `signal_consolidation_invalid` y no publica una decision neta utilizable en silencio.
+- Fuera de alcance mantenido a proposito:
+  - `RTLOPS-77`
+  - lifecycle
+  - live console
+  - ejecucion remota real por simbolo
+  - features laterales fuera del dominio runtime/storage/API minimo
 
 ## RTLOPS-75 - consolidacion de señales y decision neta por simbolo - 2026-04-18
 

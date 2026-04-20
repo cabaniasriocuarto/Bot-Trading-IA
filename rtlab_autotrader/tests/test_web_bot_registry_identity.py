@@ -515,7 +515,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert res.status_code == 200, res.text
   payload = res.json()
 
-  assert payload["contract_version"] == "rtlops75/v1"
+  assert payload["contract_version"] == "rtlops76/v1"
   assert payload["storage"]["kind"] == "json_file"
   assert payload["storage"]["path"] == "learning/bots.json"
   assert payload["storage"]["stable_id_field"] == "bot_id"
@@ -525,12 +525,14 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["storage"]["strategy_eligibility_fields"] == ["strategy_eligibility_by_symbol"]
   assert payload["storage"]["strategy_selection_fields"] == ["strategy_selection_by_symbol"]
   assert payload["storage"]["signal_consolidation_fields"] == []
+  assert payload["storage"]["runtime_fields"] == []
   assert payload["api"]["list_path"] == "/api/v1/bots"
   assert payload["api"]["patch_path"] == "/api/v1/bots/{bot_id}"
   assert payload["api"]["multi_symbol_path"] == "/api/v1/bots/{bot_id}/multi-symbol"
   assert payload["api"]["symbol_strategy_eligibility_path"] == "/api/v1/bots/{bot_id}/symbol-strategy-eligibility"
   assert payload["api"]["symbol_strategy_selection_path"] == "/api/v1/bots/{bot_id}/strategy-selection"
   assert payload["api"]["signal_consolidation_path"] == "/api/v1/bots/{bot_id}/signal-consolidation"
+  assert payload["api"]["runtime_path"] == "/api/v1/bots/{bot_id}/runtime"
   assert payload["api"]["policy_state_path"] == "/api/v1/bots/{bot_id}/policy-state"
   assert payload["api"]["decision_log_path"] == "/api/v1/bots/{bot_id}/decision-log"
   assert payload["defaults"]["domain_type"] == "spot"
@@ -552,6 +554,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "strategy_eligibility_by_symbol" in payload["fields"]["strategy_eligibility"]
   assert "strategy_selection_by_symbol" in payload["fields"]["strategy_selection"]
   assert payload["fields"]["signal_consolidation"] == ["signal_consolidation"]
+  assert payload["fields"]["runtime"] == ["runtime"]
   assert "bot_id" in payload["fields"]["identity"]
   assert "last_change_source" in payload["fields"]["trace"]
   assert payload["multi_symbol"]["contract_version"] == "rtlops72/v1"
@@ -573,6 +576,11 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "selected_strategy" in payload["signal_consolidation"]["criteria"]
   assert "selected_strategy_signal_unresolved" in payload["signal_consolidation"]["reason_codes"]
   assert "net_decision_by_symbol" in payload["signal_consolidation"]["fields"]
+  assert payload["runtime"]["contract_version"] == "rtlops76/v1"
+  assert payload["runtime"]["storage_fields"] == []
+  assert "signal_consolidation_invalid" in payload["runtime"]["reason_codes"]
+  assert "policy_state" in payload["runtime"]["fields"]
+  assert "net_decision_by_symbol" in payload["runtime"]["fields"]
 
 
 def test_bot_multi_symbol_surface_is_canonical_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
@@ -1045,6 +1053,99 @@ def test_bot_signal_consolidation_surface_is_canonical_and_traceable(tmp_path: P
   assert detail_bot["signal_consolidation"]["net_decision_by_symbol"]["ETHUSDT"]["selected_strategy_id"] == pool_ids[1]
 
 
+def test_bot_runtime_surface_is_canonical_and_traceable(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Runtime Canonico",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT", "ETHUSDT"],
+      "max_live_symbols": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0], pool_ids[1]],
+        "ETHUSDT": [pool_ids[0], pool_ids[1]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+        "ETHUSDT": pool_ids[1],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {"runtime_side": "BUY"}
+      row["tags"] = []
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["mean_reversion", "range"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  runtime_res = client.get(f"/api/v1/bots/{bot_id}/runtime", headers=headers)
+  assert runtime_res.status_code == 200, runtime_res.text
+  runtime = runtime_res.json()["runtime"]
+  assert runtime["contract_version"] == "rtlops76/v1"
+  assert runtime["status"] == "valid"
+  assert runtime["storage_fields"] == []
+  assert runtime["storage"]["registry"]["path"] == "learning/bots.json"
+  assert runtime["storage"]["decision_log"]["path"] == "console_api.sqlite3"
+  assert runtime["storage"]["runtime_state"]["path"] == "logs/bot_state.json"
+  assert runtime["api"]["runtime_path"] == f"/api/v1/bots/{bot_id}/runtime"
+  assert runtime["api"]["signal_consolidation_path"] == f"/api/v1/bots/{bot_id}/signal-consolidation"
+  assert runtime["selected_strategy_by_symbol"] == {
+    "BTCUSDT": pool_ids[0],
+    "ETHUSDT": pool_ids[1],
+  }
+  assert runtime["net_decision_by_symbol"]["BTCUSDT"]["selected_strategy_id"] == pool_ids[0]
+  assert runtime["net_decision_by_symbol"]["ETHUSDT"]["selected_strategy_id"] == pool_ids[1]
+  items = {str(item["symbol"]): item for item in runtime["items"]}
+  assert items["BTCUSDT"]["runtime_symbol_id"] == f"{bot_id}:BTCUSDT"
+  assert items["BTCUSDT"]["selection_key"] == f"{bot_id}:BTCUSDT:selection"
+  assert items["BTCUSDT"]["net_decision_key"] == f"{bot_id}:BTCUSDT:net_decision"
+  assert items["BTCUSDT"]["decision_action"] == "trade"
+  assert items["BTCUSDT"]["decision_side"] == "BUY"
+  assert items["BTCUSDT"]["decision_log_scope"] == {"bot_id": bot_id, "symbol": "BTCUSDT"}
+  assert items["ETHUSDT"]["decision_reason"] == "strategy_tags_meanreversion"
+  assert items["ETHUSDT"]["agreement_status"] == "conflicted"
+
+  detail_res = client.get(f"/api/v1/bots/{bot_id}", headers=headers)
+  assert detail_res.status_code == 200, detail_res.text
+  detail_bot = detail_res.json()["bot"]
+  assert detail_bot["runtime"]["contract_version"] == "rtlops76/v1"
+  assert detail_bot["runtime"]["items"][0]["runtime_symbol_id"].startswith(f"{bot_id}:")
+
+
 def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_unresolved(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)
@@ -1097,6 +1198,17 @@ def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_
   assert item["net_action"] is None
   assert any(issue["reason_code"] == "selected_strategy_signal_unresolved" for issue in item["errors"])
   assert consolidation["net_decision_by_symbol"] == {}
+
+  runtime_res = client.get(f"/api/v1/bots/{bot_id}/runtime", headers=headers)
+  assert runtime_res.status_code == 200, runtime_res.text
+  runtime = runtime_res.json()["runtime"]
+  assert runtime["status"] == "error"
+  assert "signal_consolidation_invalid" in runtime["reason_codes"]
+  assert runtime["net_decision_by_symbol"] == {}
+  runtime_item = runtime["items"][0]
+  assert runtime_item["status"] == "error"
+  assert runtime_item["decision_action"] is None
+  assert any(issue["reason_code"] == "selected_strategy_signal_unresolved" for issue in runtime_item["errors"])
 
 
 def test_bot_multi_symbol_patch_validates_limits_and_archive_guard(tmp_path: Path, monkeypatch) -> None:

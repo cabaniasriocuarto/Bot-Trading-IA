@@ -922,6 +922,12 @@ BOT_SIGNAL_CONSOLIDATION_CRITERIA = (
     "meanreversion_tags_sell",
     "trend_tags_buy",
 )
+BOT_RUNTIME_CONTRACT_VERSION = "rtlops76/v1"
+BOT_RUNTIME_STORAGE_FIELDS: tuple[str, ...] = ()
+BOT_RUNTIME_REASON_CODES = (
+    *BOT_SIGNAL_CONSOLIDATION_REASON_CODES,
+    "signal_consolidation_invalid",
+)
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -951,7 +957,7 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
-BOT_REGISTRY_CONTRACT_VERSION = "rtlops75/v1"
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops76/v1"
 BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
 BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
 BOT_REGISTRY_DEFAULT_MODE = "paper"
@@ -970,6 +976,7 @@ BOT_REGISTRY_API_SURFACE = {
     "symbol_strategy_eligibility_path": "/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
     "symbol_strategy_selection_path": "/api/v1/bots/{bot_id}/strategy-selection",
     "signal_consolidation_path": "/api/v1/bots/{bot_id}/signal-consolidation",
+    "runtime_path": "/api/v1/bots/{bot_id}/runtime",
     "archive_path": "/api/v1/bots/{bot_id}/archive",
     "restore_path": "/api/v1/bots/{bot_id}/restore",
     "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
@@ -1011,6 +1018,9 @@ BOT_REGISTRY_FIELD_GROUPS = {
     ],
     "signal_consolidation": [
         "signal_consolidation",
+    ],
+    "runtime": [
+        "runtime",
     ],
     "policy_state": ["engine", "mode", "status", "notes"],
     "governance": ["registry_status", "archived_at"],
@@ -5394,6 +5404,209 @@ def risk_hooks(context):
         bot = self.bot_or_404(bot_id)
         return self._bot_signal_consolidation_payload(bot)
 
+    @staticmethod
+    def _runtime_symbol_ref(bot_id: str, symbol: str) -> str:
+        return f"{str(bot_id or '').strip()}:{RuntimeBridge._sanitize_exchange_symbol(symbol)}"
+
+    def _bot_runtime_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        strategies_index: dict[str, dict[str, Any]] | None = None,
+        universe_index: dict[str, dict[str, Any]] | None = None,
+        pool_payload: dict[str, Any] | None = None,
+        policy_state: dict[str, Any] | None = None,
+        selection: dict[str, Any] | None = None,
+        signal_consolidation: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        bot_id = str(payload.get("id") or "").strip()
+        strategy_map = (
+            strategies_index
+            if isinstance(strategies_index, dict)
+            else self._strategy_index_by_id(self.list_strategies())
+        )
+        resolved_pool = (
+            pool_payload
+            if isinstance(pool_payload, dict)
+            else self._bot_strategy_pool_payload(payload, strategies_index=strategy_map)
+        )
+        resolved_policy_state = (
+            policy_state
+            if isinstance(policy_state, dict)
+            else self._bot_policy_state_payload(payload, pool_payload=resolved_pool)
+        )
+        resolved_selection = (
+            selection
+            if isinstance(selection, dict)
+            else self._bot_strategy_selection_payload(
+                payload,
+                strategies_index=strategy_map,
+                universe_index=universe_index,
+            )
+        )
+        resolved_consolidation = (
+            signal_consolidation
+            if isinstance(signal_consolidation, dict)
+            else self._bot_signal_consolidation_payload(
+                payload,
+                strategies_index=strategy_map,
+                universe_index=universe_index,
+            )
+        )
+        symbols = [
+            str(item)
+            for item in (resolved_consolidation.get("symbols") or resolved_selection.get("symbols") or [])
+            if str(item).strip()
+        ]
+        selected_by_symbol = {
+            str(symbol): str(strategy_id)
+            for symbol, strategy_id in ((resolved_selection.get("selected_strategy_by_symbol") or {}).items())
+            if str(symbol).strip() and str(strategy_id).strip()
+        }
+        net_decision_by_symbol = {
+            str(symbol): dict(decision)
+            for symbol, decision in ((resolved_consolidation.get("net_decision_by_symbol") or {}).items())
+            if str(symbol).strip() and isinstance(decision, dict)
+        }
+        reason_codes = {
+            str(code)
+            for code in (resolved_consolidation.get("reason_codes") or [])
+            if str(code).strip()
+        }
+        errors = [
+            str(item)
+            for item in (resolved_consolidation.get("errors") or [])
+            if str(item).strip()
+        ]
+        if str(resolved_consolidation.get("status") or "error") != "valid":
+            reason_codes.add("signal_consolidation_invalid")
+            if not errors:
+                errors.append(
+                    "El contrato runtime requiere una consolidacion valida antes de exponer decision neta por simbolo."
+                )
+
+        consolidation_items = {
+            str((item or {}).get("symbol") or "").strip().upper(): item
+            for item in (resolved_consolidation.get("items") or [])
+            if isinstance(item, dict) and str((item or {}).get("symbol") or "").strip()
+        }
+        items: list[dict[str, Any]] = []
+        for symbol in symbols:
+            symbol_n = RuntimeBridge._sanitize_exchange_symbol(symbol)
+            consolidation_item = consolidation_items.get(symbol_n, {})
+            decision = net_decision_by_symbol.get(symbol_n, {})
+            item_errors = [
+                dict(issue)
+                for issue in (consolidation_item.get("errors") or [])
+                if isinstance(issue, dict)
+            ]
+            runtime_symbol_id = self._runtime_symbol_ref(bot_id, symbol_n)
+            items.append(
+                {
+                    "symbol": symbol_n,
+                    "runtime_symbol_id": runtime_symbol_id,
+                    "selection_key": f"{runtime_symbol_id}:selection",
+                    "net_decision_key": f"{runtime_symbol_id}:net_decision",
+                    "decision_log_scope": {
+                        "bot_id": bot_id,
+                        "symbol": symbol_n,
+                    },
+                    "selected_strategy_id": (
+                        str(selected_by_symbol.get(symbol_n) or "").strip()
+                        or str(consolidation_item.get("selected_strategy_id") or "").strip()
+                        or None
+                    ),
+                    "decision_action": str(decision.get("action") or "").strip() or None,
+                    "decision_side": str(decision.get("side") or "").strip() or None,
+                    "decision_criterion": str(decision.get("criterion") or "").strip() or None,
+                    "decision_reason": str(decision.get("reason") or "").strip() or None,
+                    "input_count": int(
+                        decision.get("input_count")
+                        or ((consolidation_item.get("input_summary") or {}).get("total_inputs") or 0)
+                    ),
+                    "agreement_status": (
+                        str(decision.get("agreement_status") or "").strip()
+                        or str((consolidation_item.get("input_summary") or {}).get("agreement_status") or "").strip()
+                        or "single"
+                    ),
+                    "status": "valid" if not item_errors else "error",
+                    "errors": item_errors,
+                }
+            )
+
+        return {
+            "contract_version": BOT_RUNTIME_CONTRACT_VERSION,
+            "bot_id": bot_id,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "policy_state": resolved_policy_state,
+            "universe_name": str(resolved_selection.get("universe_name") or ""),
+            "universe_family": resolved_selection.get("universe_family"),
+            "symbols": symbols,
+            "pool_strategy_ids": [
+                str(item)
+                for item in (resolved_selection.get("pool_strategy_ids") or [])
+                if str(item).strip()
+            ],
+            "selected_strategy_by_symbol": selected_by_symbol,
+            "net_decision_by_symbol": net_decision_by_symbol,
+            "items": items,
+            "reason_codes": sorted(reason_codes),
+            "status": "valid" if str(resolved_consolidation.get("status") or "error") == "valid" else "error",
+            "errors": list(dict.fromkeys(errors)),
+            "storage_fields": list(BOT_RUNTIME_STORAGE_FIELDS),
+            "storage": {
+                "registry": {
+                    "kind": "json_file",
+                    "path": self._display_storage_path(self.policy_state.bots_path),
+                    "stable_id_field": "bot_id",
+                    "fields": [
+                        "universe_name",
+                        "universe",
+                        "max_live_symbols",
+                        "pool_strategy_ids",
+                        "strategy_eligibility_by_symbol",
+                        "strategy_selection_by_symbol",
+                    ],
+                },
+                "runtime_state": {
+                    "kind": "json_file",
+                    "path": self._display_storage_path(self.policy_state.bot_state_path),
+                    "scope": "global_runtime",
+                    "fields": [
+                        "mode",
+                        "runtime_engine",
+                        "runtime_contract_version",
+                        "runtime_telemetry_source",
+                        "runtime_last_signal_action",
+                        "runtime_last_signal_reason",
+                        "runtime_last_signal_strategy_id",
+                        "runtime_last_signal_symbol",
+                        "runtime_last_signal_side",
+                    ],
+                },
+                "decision_log": {
+                    "kind": "sqlite",
+                    "path": self._display_storage_path(self.decision_log.path),
+                    "scope": "bot_decision_log",
+                    "ref_fields": ["bot_id", "symbol"],
+                },
+            },
+            "api": {
+                "detail_path": f"/api/v1/bots/{bot_id}",
+                "runtime_path": f"/api/v1/bots/{bot_id}/runtime",
+                "signal_consolidation_path": f"/api/v1/bots/{bot_id}/signal-consolidation",
+                "policy_state_path": f"/api/v1/bots/{bot_id}/policy-state",
+                "decision_log_path": f"/api/v1/bots/{bot_id}/decision-log",
+            },
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    def bot_runtime_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        return self._bot_runtime_payload(bot)
+
     def bot_multi_symbol_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
         return self._bot_multi_symbol_payload(bot)
@@ -5710,12 +5923,15 @@ def risk_hooks(context):
     def save_bots(self, rows: list[dict[str, Any]]) -> None:
         self.policy_state.save_bot_rows(rows)
 
-    def bot_registry_contract(self) -> dict[str, Any]:
+    @staticmethod
+    def _display_storage_path(path: Path) -> str:
         try:
-            storage_path = self.policy_state.bots_path.relative_to(USER_DATA_DIR)
-            storage_label = storage_path.as_posix()
+            return Path(path).relative_to(USER_DATA_DIR).as_posix()
         except Exception:
-            storage_label = str(self.policy_state.bots_path)
+            return str(path)
+
+    def bot_registry_contract(self) -> dict[str, Any]:
+        storage_label = self._display_storage_path(self.policy_state.bots_path)
         defaults = self._bot_risk_profile_defaults(BOT_DEFAULT_RISK_PROFILE)
         return {
             "contract_version": BOT_REGISTRY_CONTRACT_VERSION,
@@ -5729,6 +5945,7 @@ def risk_hooks(context):
                 "strategy_eligibility_fields": list(BOT_STRATEGY_ELIGIBILITY_STORAGE_FIELDS),
                 "strategy_selection_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
                 "signal_consolidation_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
+                "runtime_fields": list(BOT_RUNTIME_STORAGE_FIELDS),
             },
             "api": dict(BOT_REGISTRY_API_SURFACE),
             "defaults": {
@@ -5874,6 +6091,25 @@ def risk_hooks(context):
                     "items",
                     "criteria",
                     "reason_codes",
+                    "status",
+                    "errors",
+                ],
+            },
+            "runtime": {
+                "contract_version": BOT_RUNTIME_CONTRACT_VERSION,
+                "storage_fields": list(BOT_RUNTIME_STORAGE_FIELDS),
+                "reason_codes": list(BOT_RUNTIME_REASON_CODES),
+                "fields": [
+                    "bot_id",
+                    "domain_type",
+                    "registry_status",
+                    "policy_state",
+                    "symbols",
+                    "selected_strategy_by_symbol",
+                    "net_decision_by_symbol",
+                    "items",
+                    "storage",
+                    "api",
                     "status",
                     "errors",
                 ],
@@ -6842,20 +7078,33 @@ def risk_hooks(context):
             payload["strategy_pool_status"] = str(pool_payload.get("strategy_pool_status") or "error")
             payload["strategy_pool_errors"] = [str(item) for item in (pool_payload.get("strategy_pool_errors") or []) if str(item).strip()]
             payload["max_pool_strategies"] = int(pool_payload.get("max_pool_strategies") or BOT_MAX_POOL_STRATEGIES)
-            payload["strategy_eligibility"] = self._bot_strategy_eligibility_payload(
+            policy_state = self._bot_policy_state_payload(row, pool_payload=pool_payload)
+            strategy_eligibility = self._bot_strategy_eligibility_payload(
                 row,
                 strategies_index=by_id,
                 universe_index=universe_index,
             )
-            payload["strategy_selection"] = self._bot_strategy_selection_payload(
+            strategy_selection = self._bot_strategy_selection_payload(
                 row,
                 strategies_index=by_id,
                 universe_index=universe_index,
             )
-            payload["signal_consolidation"] = self._bot_signal_consolidation_payload(
+            signal_consolidation = self._bot_signal_consolidation_payload(
                 row,
                 strategies_index=by_id,
                 universe_index=universe_index,
+            )
+            payload["strategy_eligibility"] = strategy_eligibility
+            payload["strategy_selection"] = strategy_selection
+            payload["signal_consolidation"] = signal_consolidation
+            payload["runtime"] = self._bot_runtime_payload(
+                row,
+                strategies_index=by_id,
+                universe_index=universe_index,
+                pool_payload=pool_payload,
+                policy_state=policy_state,
+                selection=strategy_selection,
+                signal_consolidation=signal_consolidation,
             )
             bot_id = str(row.get("id") or "")
             payload["metrics"] = self._bot_metrics(
@@ -14550,6 +14799,13 @@ def create_app() -> FastAPI:
         return {
             "bot_id": bot_id,
             "signal_consolidation": store.bot_signal_consolidation_or_404(bot_id),
+        }
+
+    @app.get("/api/v1/bots/{bot_id}/runtime")
+    def bot_runtime(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "runtime": store.bot_runtime_or_404(bot_id),
         }
 
     @app.post("/api/v1/bots/{bot_id}/archive")

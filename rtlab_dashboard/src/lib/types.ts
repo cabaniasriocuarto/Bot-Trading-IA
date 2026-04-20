@@ -434,6 +434,79 @@ export interface BotSignalConsolidationResponse {
   signal_consolidation: BotSignalConsolidationModel;
 }
 
+export interface BotRuntimeItem {
+  symbol: string;
+  runtime_symbol_id: string;
+  selection_key: string;
+  net_decision_key: string;
+  decision_log_scope: {
+    bot_id: string;
+    symbol: string;
+  };
+  selected_strategy_id?: string | null;
+  decision_action?: "trade" | "flat" | string | null;
+  decision_side?: "BUY" | "SELL" | string | null;
+  decision_criterion?: string | null;
+  decision_reason?: string | null;
+  input_count: number;
+  agreement_status: "single" | "aligned" | "conflicted" | string;
+  status: "valid" | "error" | string;
+  errors: BotSignalConsolidationIssue[];
+}
+
+export interface BotRuntimeModel {
+  contract_version: string;
+  bot_id: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  policy_state: BotPolicyState;
+  universe_name: string;
+  universe_family?: InstrumentUniverseFamily | null;
+  symbols: string[];
+  pool_strategy_ids: string[];
+  selected_strategy_by_symbol: Record<string, string>;
+  net_decision_by_symbol: BotSignalConsolidationModel["net_decision_by_symbol"];
+  items: BotRuntimeItem[];
+  reason_codes: string[];
+  status: "valid" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  storage: {
+    registry: {
+      kind: string;
+      path: string;
+      stable_id_field: string;
+      fields: string[];
+    };
+    runtime_state: {
+      kind: string;
+      path: string;
+      scope: string;
+      fields: string[];
+    };
+    decision_log: {
+      kind: string;
+      path: string;
+      scope: string;
+      ref_fields: string[];
+    };
+  };
+  api: {
+    detail_path: string;
+    runtime_path: string;
+    signal_consolidation_path: string;
+    policy_state_path: string;
+    decision_log_path: string;
+  };
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotRuntimeResponse {
+  bot_id: string;
+  runtime: BotRuntimeModel;
+}
+
 export interface BotInstance {
   id: string;
   bot_id?: string;
@@ -476,6 +549,7 @@ export interface BotInstance {
   strategy_eligibility?: BotStrategyEligibilityModel;
   strategy_selection?: BotStrategySelectionModel;
   signal_consolidation?: BotSignalConsolidationModel;
+  runtime?: BotRuntimeModel;
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -519,6 +593,7 @@ export interface BotRegistryContractResponse {
     strategy_eligibility_fields: string[];
     strategy_selection_fields: string[];
     signal_consolidation_fields: string[];
+    runtime_fields: string[];
   };
   api: {
     list_path: string;
@@ -529,6 +604,7 @@ export interface BotRegistryContractResponse {
     symbol_strategy_eligibility_path: string;
     symbol_strategy_selection_path: string;
     signal_consolidation_path: string;
+    runtime_path: string;
     archive_path: string;
     restore_path: string;
     policy_state_path: string;
@@ -605,6 +681,7 @@ export interface BotRegistryContractResponse {
     strategy_eligibility: string[];
     strategy_selection: string[];
     signal_consolidation: string[];
+    runtime: string[];
     policy_state: string[];
     governance: string[];
     trace: string[];
@@ -637,6 +714,12 @@ export interface BotRegistryContractResponse {
     contract_version: string;
     storage_fields: string[];
     criteria: string[];
+    reason_codes: string[];
+    fields: string[];
+  };
+  runtime: {
+    contract_version: string;
+    storage_fields: string[];
     reason_codes: string[];
     fields: string[];
   };

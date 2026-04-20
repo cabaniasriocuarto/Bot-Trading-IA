@@ -1,6 +1,29 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-18
+Fecha: 2026-04-20
+
+## Siguiente paso exacto despues de RTLOPS-76 - 2026-04-20
+- [x] Fundar los contratos minimos de runtime/storage/API:
+  - `GET /api/v1/bots/{bot_id}/runtime`
+  - `runtime` derivado sobre `RTLOPS-72 + RTLOPS-73 + RTLOPS-74 + RTLOPS-75`
+  - `contract_version` del Bot Registry elevada a `rtlops76/v1`
+  - trazabilidad minima por simbolo con:
+    - `runtime_symbol_id`
+    - `selection_key`
+    - `net_decision_key`
+    - `decision_log_scope`
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir `RTLOPS-77`
+  - sin tocar lifecycle
+  - sin tocar live console
+  - sin abrir ejecucion remota real por simbolo
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-77` y resolver solo el consumo operativo del runtime multi-symbol ya canonico para lifecycle/live console
+  - mantener fuera de ese bloque:
+    - cualquier refactor transversal
+    - cualquier cleanup administrativo no necesario
+    - ejecucion remota LIVE fuera del slice ya delimitado
+    - features laterales sin dependencia directa de este contrato
 
 ## Siguiente paso exacto despues de RTLOPS-75 - 2026-04-18
 - [x] Fundar la consolidacion canonica y la decision neta por simbolo:

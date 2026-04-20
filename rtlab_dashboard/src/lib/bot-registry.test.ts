@@ -9,7 +9,7 @@ import {
 import type { BotRegistryContractResponse } from "@/lib/types";
 
 const CONTRACT_FIXTURE: BotRegistryContractResponse = {
-  contract_version: "rtlops75/v1",
+  contract_version: "rtlops76/v1",
   storage: {
     kind: "json_file",
     path: "learning/bots.json",
@@ -20,6 +20,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     strategy_eligibility_fields: ["strategy_eligibility_by_symbol"],
     strategy_selection_fields: ["strategy_selection_by_symbol"],
     signal_consolidation_fields: [],
+    runtime_fields: [],
   },
   api: {
     list_path: "/api/v1/bots",
@@ -30,6 +31,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     symbol_strategy_eligibility_path: "/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
     symbol_strategy_selection_path: "/api/v1/bots/{bot_id}/strategy-selection",
     signal_consolidation_path: "/api/v1/bots/{bot_id}/signal-consolidation",
+    runtime_path: "/api/v1/bots/{bot_id}/runtime",
     archive_path: "/api/v1/bots/{bot_id}/archive",
     restore_path: "/api/v1/bots/{bot_id}/restore",
     policy_state_path: "/api/v1/bots/{bot_id}/policy-state",
@@ -123,6 +125,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     strategy_eligibility: ["strategy_eligibility_by_symbol", "strategy_eligibility"],
     strategy_selection: ["strategy_selection_by_symbol", "strategy_selection"],
     signal_consolidation: ["signal_consolidation"],
+    runtime: ["runtime"],
     policy_state: ["engine", "mode", "status", "notes"],
     governance: ["registry_status", "archived_at"],
     trace: ["created_at", "updated_at", "last_change_type", "last_change_summary", "last_changed_by", "last_change_source"],
@@ -232,6 +235,34 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
       "items",
       "criteria",
       "reason_codes",
+      "status",
+      "errors",
+    ],
+  },
+  runtime: {
+    contract_version: "rtlops76/v1",
+    storage_fields: [],
+    reason_codes: [
+      "bot_archived",
+      "strategy_selection_invalid",
+      "selected_strategy_missing",
+      "selected_strategy_not_found",
+      "selected_strategy_disabled",
+      "selected_strategy_symbol_mismatch",
+      "selected_strategy_signal_unresolved",
+      "signal_consolidation_invalid",
+    ],
+    fields: [
+      "bot_id",
+      "domain_type",
+      "registry_status",
+      "policy_state",
+      "symbols",
+      "selected_strategy_by_symbol",
+      "net_decision_by_symbol",
+      "items",
+      "storage",
+      "api",
       "status",
       "errors",
     ],
