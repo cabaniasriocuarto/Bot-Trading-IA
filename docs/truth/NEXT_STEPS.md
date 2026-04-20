@@ -2,6 +2,30 @@
 
 Fecha: 2026-04-20
 
+## Preflight fail-closed posterior a RTLOPS-79 - lifecycle minimo multi-symbol - 2026-04-20
+- [x] Revalidar que la base real ya sostiene abrir lifecycle minimo:
+  - repo + docs/truth quedaron coherentes sobre la punta que cierra `RTLOPS-79`
+  - `GET /api/v1/bots/{bot_id}/runtime` ya expone `guardrails.execution_ready`, `allowed_trade_symbols`, `rejected_trade_symbols` y `guardrails.prioritization_criterion`
+  - el runtime ya expone trazabilidad por simbolo con `runtime_symbol_id`, `selection_key`, `net_decision_key` y `decision_log_scope`
+  - `GET /api/v1/bots/{bot_id}/policy-state` ya sostiene el contexto minimo de `mode/status` del bot sin abrir live console
+- [x] Revalidar Linear sin maquillaje:
+  - `RTLOPS-79` quedo sincronizada a `Done` con comentario de cierre real repo/docs/tests
+  - no aparece todavia una hija explicita y limpia para `lifecycle minimo multi-symbol`
+  - `RTLRESE-25` sigue siendo un bloque mas grande de lifecycle completo y no corresponde usarlo como sucesora directa de este slice
+- [ ] Siguiente paso exacto recomendado:
+  - abrir la implementacion minima de `lifecycle multi-symbol` consumiendo el subset ejecutable ya canonizado sobre `rtlops77/v1`
+  - resolver ahi solo:
+    - progresion minima sobre `allowed_trade_symbols`
+    - exclusion explicita de `rejected_trade_symbols` por priorizacion
+    - trazabilidad por simbolo reutilizando `runtime_symbol_id`, `selection_key`, `net_decision_key` y `decision_log_scope`
+    - consumo minimo de `policy_state.mode/status` del bot
+  - mantener fuera de ese bloque:
+    - live console
+    - ejecucion LIVE lateral
+    - lifecycle completo entre entornos
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
+
 ## Siguiente paso exacto despues de RTLOPS-79 - 2026-04-20
 - [x] Fundar el subset ejecutable y la priorizacion deterministica bajo caps sobre `rtlops77/v1`:
   - cuando `trade_decisions_count > max_live_symbols`, el runtime deja de bloquear todo el neto y prioriza un subset ejecutable por orden canonico de `symbols`

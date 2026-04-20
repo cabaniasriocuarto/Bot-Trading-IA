@@ -2,6 +2,24 @@
 
 ## 2026-04-20
 
+### Preflight posterior a RTLOPS-79 - lifecycle mínimo multi-symbol
+- Revalidación real:
+  - repo + docs/truth confirman que `RTLOPS-79` ya dejó canonizado el subset ejecutable bajo caps sobre `rtlops77/v1`
+  - el contrato vigente ya expone `guardrails.execution_ready`, `allowed_trade_symbols`, `rejected_trade_symbols` y trazabilidad estable por símbolo
+  - `policy_state` ya aporta `mode/status` mínimo del bot para que el siguiente slice consuma esa base sin abrir live console
+- Sync administrativo:
+  - `RTLOPS-79` pasó a `Done` en Linear
+  - se dejó comentario con evidencia real repo/docs/tests
+  - no aparece todavía una hija explícita para `lifecycle mínimo multi-symbol`
+  - `RTLRESE-25` se mantiene fuera como issue más grande de lifecycle completo
+- Siguiente paso exacto fijado:
+  - abrir implementación mínima de lifecycle multi-symbol consumiendo el subset ejecutable ya canonizado
+  - mantener fuera live console, ejecución LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Límites honestos:
+  - este bloque no implementa lifecycle todavía
+  - no toca producto
+  - solo fija el siguiente slice correcto y alinea la verdad documental/administrativa
+
 ### RTLOPS-79 - subset ejecutable y priorización determinística bajo caps
 - Cambio real aplicado en backend/API minimo:
   - `rtlab_autotrader/rtlab_core/web/app.py`

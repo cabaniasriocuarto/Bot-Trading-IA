@@ -2,6 +2,30 @@
 
 Fecha de actualizacion: 2026-04-20
 
+## Preflight posterior a RTLOPS-79 - lifecycle minimo multi-symbol - 2026-04-20
+
+- Estado real confirmado en esta rama:
+  - el contrato actual ya sostiene abrir un `lifecycle minimo multi-symbol` sin reabrir antes subset/priorizacion;
+  - la base minima sale de combinar:
+    - `GET /api/v1/bots/{bot_id}/runtime`
+    - `guardrails.execution_ready`
+    - `allowed_trade_symbols`
+    - `rejected_trade_symbols`
+    - `runtime_symbol_id`
+    - `selection_key`
+    - `net_decision_key`
+    - `decision_log_scope`
+    - `GET /api/v1/bots/{bot_id}/policy-state` para `mode/status` del bot
+  - con esa base, el siguiente bloque puede acotarse a progresion minima sobre el subset ejecutable ya canonico y dejar explicitamente afuera los simbolos rechazados por priorizacion.
+- Regla canonica resultante:
+  - el siguiente slice correcto posterior a `RTLOPS-79` si puede ser `lifecycle minimo multi-symbol`;
+  - ese slice no necesita abrir live console;
+  - no necesita abrir ejecucion LIVE lateral por simbolo;
+  - tampoco necesita reutilizar el issue amplio `RTLRESE-25`, porque ese issue modela lifecycle completo y sobrealcanza este frente.
+- Estado administrativo revalidado:
+  - `RTLOPS-79` quedo sincronizada a `Done` en Linear con comentario de cierre real repo/docs/tests;
+  - no existe todavia una hija explicita para este lifecycle minimo dentro del frente `RTLOPS-68`.
+
 ## RTLOPS-79 - subset ejecutable y priorizacion deterministica bajo caps - 2026-04-20
 
 - Estado real confirmado en esta rama:
