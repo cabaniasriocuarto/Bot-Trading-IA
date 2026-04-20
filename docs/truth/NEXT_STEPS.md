@@ -18,8 +18,10 @@ Fecha: 2026-04-20
   - sin tocar live console
   - sin abrir ejecucion remota real por simbolo
 - [ ] Siguiente paso exacto recomendado:
-  - abrir `RTLOPS-77` y resolver solo el consumo operativo del runtime multi-symbol ya canonico para lifecycle/live console
+  - abrir `RTLOPS-77` y resolver solo guardrails, caps y rechazos de configuracion sobre el contrato `rtlops76/v1`
   - mantener fuera de ese bloque:
+    - lifecycle
+    - live console
     - cualquier refactor transversal
     - cualquier cleanup administrativo no necesario
     - ejecucion remota LIVE fuera del slice ya delimitado
