@@ -2,6 +2,30 @@
 
 ## 2026-04-21
 
+### RTLOPS-82 - primer consumidor real de lifecycle_operational
+- Cambio real aplicado en frontend mínimo:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - consume `GET /api/v1/bots/{bot_id}/lifecycle-operational`
+    - expone una surface minima operativa en el bloque del bot seleccionado
+    - muestra `allowed_trade_symbols`, `rejected_trade_symbols`, `progressing_symbols`, `blocked_symbols`
+    - muestra trazabilidad minima por simbolo con `runtime_symbol_id`, `selection_key` y `net_decision_key`
+    - consume `PATCH /api/v1/bots/{bot_id}/lifecycle-operational` para pausar/reanudar simbolos sin abrir otro dominio
+  - `rtlab_dashboard/src/lib/execution-bots.ts`
+    - agrega helpers minimos para derivar la accion operativa valida por simbolo
+    - normaliza el patch para persistir solo overrides `paused`
+  - `rtlab_dashboard/src/lib/execution-bots.test.ts`
+    - cubre el wiring minimo del primer consumidor real
+- Tests corridos:
+  - `npm.cmd test -- --run src/lib/execution-bots.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre LIVE lateral
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se introduce un scheduler/engine nuevo
+
 ### Canonizacion posterior a RTLOPS-81
 - Revalidacion real:
   - repo + docs/truth + Linear confirman el cierre de `RTLOPS-81`

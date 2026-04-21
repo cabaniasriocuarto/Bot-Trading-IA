@@ -2,6 +2,40 @@
 
 Fecha: 2026-04-20
 
+## Siguiente paso exacto despues de RTLOPS-82 - 2026-04-21
+- [x] Fundar el primer consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
+  - `execution/page.tsx` ahora consume `GET /api/v1/bots/{bot_id}/lifecycle-operational`
+  - la surface minima operativa expone:
+    - `allowed_trade_symbols`
+    - `rejected_trade_symbols`
+    - `progressing_symbols`
+    - `blocked_symbols`
+    - `lifecycle_operational_by_symbol`
+  - por simbolo muestra trazabilidad reutilizando:
+    - `runtime_symbol_id`
+    - `selection_key`
+    - `net_decision_key`
+  - habilita pausa/reanudacion minima por simbolo via `PATCH /api/v1/bots/{bot_id}/lifecycle-operational`
+  - solo persiste overrides `paused`; reanudar vuelve al default implicito sin abrir una segunda verdad paralela
+- [x] Mantener el bloque profesional y acotado:
+  - sin tocar `live console`
+  - sin abrir LIVE lateral
+  - sin abrir lifecycle completo entre entornos
+  - sin refactor transversal
+- [x] Revalidacion minima real del bloque:
+  - `npm.cmd test -- --run src/lib/execution-bots.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un preflight fail-closed posterior a `RTLOPS-82` para decidir el siguiente slice minimo correcto sobre `rtlops81/v1`
+  - mantener fuera de ese preflight:
+    - `live console`
+    - LIVE lateral
+    - lifecycle completo entre entornos
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
+
 ## Siguiente paso exacto despues de RTLOPS-81 - 2026-04-20
 - [x] Fundar los contratos minimos de lifecycle operativo por simbolo sobre `rtlops80/v1`:
   - `GET /api/v1/bots/{bot_id}/lifecycle-operational`

@@ -1,6 +1,38 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-20
+Fecha de actualizacion: 2026-04-21
+
+## RTLOPS-82 - primer consumidor real de lifecycle_operational - 2026-04-21
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx` ya consume de forma real `lifecycle_operational` sobre `rtlops81/v1`;
+  - el primer consumidor operativo queda colgado en la surface ya existente de `Execution`, sin abrir `live console`;
+  - la UI selecciona un bot del registry, lee `GET /api/v1/bots/{bot_id}/lifecycle-operational` y consume:
+    - `allowed_trade_symbols`
+    - `rejected_trade_symbols`
+    - `progressing_symbols`
+    - `blocked_symbols`
+    - `lifecycle_operational_by_symbol`
+    - `items[*].runtime_symbol_id`
+    - `items[*].selection_key`
+    - `items[*].net_decision_key`
+- Cambio real aplicado en frontend/API:
+  - el bloque operativo del bot seleccionado ahora expone una tarjeta canonica de `lifecycle_operational`;
+  - esa tarjeta muestra el subset permitido vs rechazado, el estado de progresion y los overrides persistidos;
+  - por simbolo permite:
+    - pausar cuando el simbolo sigue dentro del subset `allowed_trade_symbols`
+    - reanudar quitando el override persistido y volviendo al default implicito `active`
+  - el wiring frontend usa `GET/PATCH /api/v1/bots/{bot_id}/lifecycle-operational` sin abrir scheduler, engine nuevo ni ejecucion LIVE lateral.
+- Regla canonica reafirmada:
+  - `RTLOPS-82` no abre `live console`;
+  - no abre LIVE lateral;
+  - no abre lifecycle completo `backtest/shadow/paper/testnet/live`;
+  - no cambia la verdad de `rtlops81/v1`: solo agrega el primer consumidor real y minimo del contrato ya canonico.
+- Validacion real ejecutada:
+  - `npm.cmd test -- --run src/lib/execution-bots.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
 
 ## RTLOPS-81 - contratos minimos de lifecycle operativo por simbolo - 2026-04-20
 

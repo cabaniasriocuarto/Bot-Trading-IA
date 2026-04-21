@@ -1,5 +1,5 @@
 import { getBotDisplayName } from "@/lib/bot-registry";
-import type { BotInstance } from "@/lib/types";
+import type { BotInstance, BotLifecycleOperationalItem } from "@/lib/types";
 
 export type ExecutionBotStatusFilter = "all" | "active" | "paused" | "archived";
 
@@ -31,4 +31,55 @@ export function botRuntimeStatusVariant(status: string | null | undefined): "suc
 
 export function botRegistryStatusVariant(status: string | null | undefined): "success" | "neutral" {
   return String(status || "active").trim().toLowerCase() === "archived" ? "neutral" : "success";
+}
+
+export type LifecycleOperationalSymbolAction = {
+  label: "Pausar símbolo" | "Reanudar símbolo";
+  nextStatus: "active" | "paused";
+};
+
+export function getLifecycleOperationalSymbolAction(
+  item: Pick<BotLifecycleOperationalItem, "symbol" | "operational_status" | "base_lifecycle_state">,
+  allowedTradeSymbols: readonly string[],
+): LifecycleOperationalSymbolAction | null {
+  const symbol = String(item.symbol || "").trim().toUpperCase();
+  if (!symbol) return null;
+  if (String(item.operational_status || "").trim().toLowerCase() === "paused") {
+    return { label: "Reanudar símbolo", nextStatus: "active" };
+  }
+  const allowedSet = new Set(allowedTradeSymbols.map((entry) => String(entry || "").trim().toUpperCase()).filter(Boolean));
+  if (!allowedSet.has(symbol)) return null;
+  if (String(item.base_lifecycle_state || "").trim().toLowerCase() !== "progressing") return null;
+  return { label: "Pausar símbolo", nextStatus: "paused" };
+}
+
+export function buildLifecycleOperationalPatch(
+  currentMapping: Record<string, string> | null | undefined,
+  symbol: string,
+  nextStatus: "active" | "paused" | string,
+): Record<string, "paused"> {
+  const out: Record<string, "paused"> = {};
+  for (const [rawSymbol, rawStatus] of Object.entries(currentMapping || {})) {
+    const normalizedSymbol = String(rawSymbol || "").trim().toUpperCase();
+    const normalizedStatus = String(rawStatus || "").trim().toLowerCase();
+    if (!normalizedSymbol || normalizedStatus !== "paused") continue;
+    out[normalizedSymbol] = "paused";
+  }
+
+  const normalizedTarget = String(symbol || "").trim().toUpperCase();
+  if (!normalizedTarget) return sortPausedSymbolMap(out);
+
+  if (String(nextStatus || "").trim().toLowerCase() === "paused") {
+    out[normalizedTarget] = "paused";
+  } else {
+    delete out[normalizedTarget];
+  }
+
+  return sortPausedSymbolMap(out);
+}
+
+function sortPausedSymbolMap(mapping: Record<string, "paused">): Record<string, "paused"> {
+  return Object.fromEntries(
+    Object.entries(mapping).sort(([left], [right]) => left.localeCompare(right)),
+  ) as Record<string, "paused">;
 }

@@ -11,8 +11,10 @@ import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { ApiError, apiGet, apiPatch, apiPost } from "@/lib/client-api";
 import {
+  buildLifecycleOperationalPatch,
   botRegistryStatusVariant,
   botRuntimeStatusVariant,
+  getLifecycleOperationalSymbolAction,
   getExecutionBotLabel,
   isExecutionBotArchived,
   matchesExecutionBotStatusFilter,
@@ -22,6 +24,8 @@ import { getBotDisplayName } from "@/lib/bot-registry";
 import type {
   BotDecisionLogResponse,
   BotInstance,
+  BotLifecycleOperationalModel,
+  BotLifecycleOperationalResponse,
   BotPolicyStateResponse,
   BotStatusResponse,
   ExchangeDiagnoseResponse,
@@ -52,6 +56,12 @@ type LogsResponse = {
   total: number;
   page: number;
   page_size: number;
+};
+
+type BotLifecycleOperationalPatchResponse = {
+  ok: boolean;
+  bot_id: string;
+  lifecycle_operational: BotLifecycleOperationalModel;
 };
 
 type ControlActionPath =
@@ -96,9 +106,11 @@ export default function ExecutionPage() {
   const [botInstances, setBotInstances] = useState<BotInstance[]>([]);
   const [selectedBotPolicyState, setSelectedBotPolicyState] = useState<BotPolicyStateResponse | null>(null);
   const [selectedBotDecisionLog, setSelectedBotDecisionLog] = useState<BotDecisionLogResponse | null>(null);
+  const [selectedBotLifecycleOperational, setSelectedBotLifecycleOperational] = useState<BotLifecycleOperationalResponse | null>(null);
   const [selectedBotDomainLoading, setSelectedBotDomainLoading] = useState(false);
   const [selectedBotDomainError, setSelectedBotDomainError] = useState("");
   const [selectedBotDomainNotice, setSelectedBotDomainNotice] = useState("");
+  const [selectedBotLifecycleBusySymbol, setSelectedBotLifecycleBusySymbol] = useState<string | null>(null);
   const [botModeFilter, setBotModeFilter] = useState<"all" | "shadow" | "paper" | "testnet" | "live">("all");
   const [botStatusFilter, setBotStatusFilter] = useState<ExecutionBotStatusFilter>("all");
   const [botSelectedIds, setBotSelectedIds] = useState<string[]>([]);
@@ -392,6 +404,7 @@ export default function ExecutionPage() {
     () => botInstances.find((row) => row.id === selectedExecutionBotId) || null,
     [botInstances, selectedExecutionBotId],
   );
+  const selectedBotOperational = selectedBotLifecycleOperational?.lifecycle_operational || null;
 
   const statusVariant = botStatus
     ? botStatus.bot_status === "RUNNING"
@@ -498,6 +511,47 @@ export default function ExecutionPage() {
       setControlError(err instanceof Error ? err.message : `No se pudo ejecutar: ${label}`);
     } finally {
       setBotBulkBusy(false);
+    }
+  };
+
+  const patchSelectedBotLifecycleOperational = async (symbol: string, nextStatus: "active" | "paused") => {
+    if (role !== "admin" || !selectedExecutionBotId || !selectedBotOperational) return;
+    setSelectedBotLifecycleBusySymbol(symbol);
+    setControlError("");
+    setMessage("");
+    try {
+      const lifecycleOperationalBySymbol = buildLifecycleOperationalPatch(
+        selectedBotOperational.lifecycle_operational_by_symbol,
+        symbol,
+        nextStatus,
+      );
+      const response = await apiPatch<BotLifecycleOperationalPatchResponse>(
+        `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/lifecycle-operational`,
+        {
+          lifecycle_operational_by_symbol: lifecycleOperationalBySymbol,
+        },
+      );
+      setSelectedBotLifecycleOperational({
+        bot_id: response.bot_id,
+        lifecycle_operational: response.lifecycle_operational,
+      });
+      setBotInstances((prev) =>
+        prev.map((row) =>
+          row.id === selectedExecutionBotId
+            ? {
+                ...row,
+                lifecycle_operational: response.lifecycle_operational,
+              }
+            : row,
+        ),
+      );
+      setMessage(
+        `Lifecycle operativo actualizado: ${symbol} ${nextStatus === "paused" ? "pausado" : "reanudado"}.`,
+      );
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : `No se pudo actualizar lifecycle_operational para ${symbol}.`);
+    } finally {
+      setSelectedBotLifecycleBusySymbol(null);
     }
   };
 
@@ -644,9 +698,11 @@ export default function ExecutionPage() {
     if (!selectedExecutionBotId) {
       setSelectedBotPolicyState(null);
       setSelectedBotDecisionLog(null);
+      setSelectedBotLifecycleOperational(null);
       setSelectedBotDomainError("");
       setSelectedBotDomainNotice("");
       setSelectedBotDomainLoading(false);
+      setSelectedBotLifecycleBusySymbol(null);
       return () => {
         cancelled = true;
       };
@@ -657,39 +713,52 @@ export default function ExecutionPage() {
       setSelectedBotDomainError("");
       setSelectedBotDomainNotice("");
       try {
-        const [policyState, decisionLog] = await Promise.all([
-          apiGet<BotPolicyStateResponse>(`/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/policy-state`),
-          apiGet<BotDecisionLogResponse>(`/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/decision-log?page_size=8`),
-        ]);
+        let policyState: BotPolicyStateResponse | null = null;
+        let decisionLog: BotDecisionLogResponse | null = null;
+        try {
+          [policyState, decisionLog] = await Promise.all([
+            apiGet<BotPolicyStateResponse>(`/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/policy-state`),
+            apiGet<BotDecisionLogResponse>(`/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/decision-log?page_size=8`),
+          ]);
+        } catch (err) {
+          if (cancelled) return;
+          const selectedBot = botInstances.find((row) => row.id === selectedExecutionBotId) || null;
+          if (isMissingRouteError(err) && selectedBot) {
+            try {
+              const logsPayload = await apiGet<LogEvent[] | LogsResponse>("/api/v1/logs?page=1&page_size=100");
+              const logsRows = Array.isArray(logsPayload) ? logsPayload : logsPayload.items;
+              if (cancelled) return;
+              policyState = buildLegacyPolicyState(selectedBot);
+              decisionLog = buildLegacyDecisionLog(selectedBot.id, logsRows);
+              setSelectedBotDomainNotice(
+                "Compatibilidad transicional: el backend no expuso los contratos canonicos del bot y la UI reconstruyo policy_state desde /api/v1/bots y decision_log desde /api/v1/logs.",
+              );
+            } catch (fallbackErr) {
+              if (cancelled) return;
+              policyState = buildLegacyPolicyState(selectedBot);
+              decisionLog = buildLegacyDecisionLog(selectedBot.id, []);
+              setSelectedBotDomainNotice(
+                "Compatibilidad legacy parcial: policy_state se reconstruye desde /api/v1/bots. No hubo logs legacy disponibles para este bot.",
+              );
+              setSelectedBotDomainError(fallbackErr instanceof Error ? fallbackErr.message : "No se pudieron cargar logs legacy del bot seleccionado.");
+            }
+          } else {
+            throw err;
+          }
+        }
+
+        const lifecycleOperational = await apiGet<BotLifecycleOperationalResponse>(
+          `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/lifecycle-operational`,
+        );
         if (cancelled) return;
         setSelectedBotPolicyState(policyState);
         setSelectedBotDecisionLog(decisionLog);
+        setSelectedBotLifecycleOperational(lifecycleOperational);
       } catch (err) {
         if (cancelled) return;
-        const selectedBot = botInstances.find((row) => row.id === selectedExecutionBotId) || null;
-        if (isMissingRouteError(err) && selectedBot) {
-          try {
-            const logsPayload = await apiGet<LogEvent[] | LogsResponse>("/api/v1/logs?page=1&page_size=100");
-            const logsRows = Array.isArray(logsPayload) ? logsPayload : logsPayload.items;
-            if (cancelled) return;
-            setSelectedBotPolicyState(buildLegacyPolicyState(selectedBot));
-            setSelectedBotDecisionLog(buildLegacyDecisionLog(selectedBot.id, logsRows));
-            setSelectedBotDomainNotice(
-              "Compatibilidad transicional: el backend no expuso los contratos canonicos del bot y la UI reconstruyo policy_state desde /api/v1/bots y decision_log desde /api/v1/logs.",
-            );
-          } catch (fallbackErr) {
-            if (cancelled) return;
-            setSelectedBotPolicyState(buildLegacyPolicyState(selectedBot));
-            setSelectedBotDecisionLog(buildLegacyDecisionLog(selectedBot.id, []));
-            setSelectedBotDomainNotice(
-              "Compatibilidad legacy parcial: policy_state se reconstruye desde /api/v1/bots. No hubo logs legacy disponibles para este bot.",
-            );
-            setSelectedBotDomainError(fallbackErr instanceof Error ? fallbackErr.message : "No se pudieron cargar logs legacy del bot seleccionado.");
-          }
-          return;
-        }
         setSelectedBotPolicyState(null);
         setSelectedBotDecisionLog(null);
+        setSelectedBotLifecycleOperational(null);
         setSelectedBotDomainError(err instanceof Error ? err.message : "No se pudieron cargar los dominios del bot seleccionado.");
       } finally {
         if (!cancelled) setSelectedBotDomainLoading(false);
@@ -957,7 +1026,7 @@ export default function ExecutionPage() {
                       ? ` · shadow ${selectedExecutionBot.metrics.experience_by_source.shadow?.episode_count ?? 0} / backtest ${selectedExecutionBot.metrics.experience_by_source.backtest?.episode_count ?? 0}`
                       : ""}
                   </p>
-                  <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                  <div className="mt-3 grid gap-3 xl:grid-cols-3">
                     <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
@@ -994,6 +1063,131 @@ export default function ExecutionPage() {
                         </div>
                       ) : (
                         <p className="mt-3 text-xs text-slate-400">Sin policy state detallado para este bot.</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bot lifecycle operational</p>
+                          <p className="text-[11px] text-slate-400">
+                            Primer consumidor real de <code>lifecycle_operational</code>. Solo pausa o reanuda símbolos del subset ya canónico.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge
+                            variant={
+                              selectedBotOperational?.status === "error"
+                                ? "danger"
+                                : selectedBotOperational?.status === "warning"
+                                  ? "warn"
+                                  : "success"
+                            }
+                          >
+                            {selectedBotOperational?.status || "sin datos"}
+                          </Badge>
+                          <Badge variant={selectedBotOperational?.progression_allowed ? "success" : "warn"}>
+                            {selectedBotOperational?.progression_allowed ? "progresa" : "sin progresión"}
+                          </Badge>
+                        </div>
+                      </div>
+                      {selectedBotDomainLoading && !selectedBotOperational ? (
+                        <p className="mt-3 text-xs text-slate-400">Cargando lifecycle_operational...</p>
+                      ) : selectedBotOperational ? (
+                        <div className="mt-3 space-y-3 text-xs text-slate-300">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="rounded border border-slate-800 p-2">Allowed: <strong>{selectedBotOperational.allowed_trade_symbols.length}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Rejected: <strong>{selectedBotOperational.rejected_trade_symbols.length}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Progressing: <strong>{selectedBotOperational.progressing_symbols.length}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Blocked: <strong>{selectedBotOperational.blocked_symbols.length}</strong></div>
+                          </div>
+
+                          <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">Subset canónico</p>
+                            <p className="mt-1 text-slate-200">
+                              Allowed: {selectedBotOperational.allowed_trade_symbols.length ? selectedBotOperational.allowed_trade_symbols.join(", ") : "none"}
+                            </p>
+                            <p className="mt-1 text-slate-400">
+                              Rejected: {selectedBotOperational.rejected_trade_symbols.length ? selectedBotOperational.rejected_trade_symbols.join(", ") : "none"}
+                            </p>
+                          </div>
+
+                          <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">Overrides persistidos</p>
+                            <p className="mt-1 text-slate-200">
+                              {Object.keys(selectedBotOperational.lifecycle_operational_by_symbol).length
+                                ? Object.entries(selectedBotOperational.lifecycle_operational_by_symbol)
+                                    .map(([symbol, status]) => `${symbol}:${status}`)
+                                    .join(", ")
+                                : "Sin símbolos pausados"}
+                            </p>
+                          </div>
+
+                          {selectedBotOperational.errors.length ? (
+                            <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-amber-100">
+                              {selectedBotOperational.errors.join(" · ")}
+                            </div>
+                          ) : null}
+
+                          <div className="space-y-2">
+                            {selectedBotOperational.items.length ? (
+                              selectedBotOperational.items.map((item) => {
+                                const action = getLifecycleOperationalSymbolAction(
+                                  item,
+                                  selectedBotOperational.allowed_trade_symbols,
+                                );
+                                return (
+                                  <div key={`lifecycle-operational-${item.symbol}`} className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                      <div>
+                                        <p className="font-semibold text-slate-100">{item.symbol}</p>
+                                        <p className="mt-1 text-[11px] text-slate-400">
+                                          trace: {item.runtime_symbol_id || "-"} · {item.selection_key || "-"} · {item.net_decision_key || "-"}
+                                        </p>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Badge variant={item.base_lifecycle_state === "progressing" ? "success" : item.base_lifecycle_state === "rejected" ? "neutral" : "warn"}>
+                                          base:{item.base_lifecycle_state}
+                                        </Badge>
+                                        <Badge variant={item.operational_status === "paused" ? "warn" : "success"}>
+                                          op:{item.operational_status}
+                                        </Badge>
+                                        <Badge variant={item.lifecycle_state === "progressing" ? "success" : item.lifecycle_state === "rejected" ? "neutral" : "warn"}>
+                                          lifecycle:{item.lifecycle_state}
+                                        </Badge>
+                                      </div>
+                                    </div>
+                                    <p className="mt-2 text-[11px] text-slate-400">
+                                      {item.progression_allowed ? "Progresión habilitada." : "Progresión bloqueada."}
+                                      {item.selected_strategy_id ? ` · estrategia ${item.selected_strategy_id}` : ""}
+                                      {item.decision_action ? ` · acción ${item.decision_action}` : ""}
+                                    </p>
+                                    {item.errors.length ? (
+                                      <p className="mt-2 text-[11px] text-amber-200">
+                                        {item.errors.map((issue) => issue.reason_code || issue.message).join(" · ")}
+                                      </p>
+                                    ) : null}
+                                    {action ? (
+                                      <div className="mt-2">
+                                        <Button
+                                          variant="outline"
+                                          disabled={role !== "admin" || !!selectedBotLifecycleBusySymbol || botBulkBusy}
+                                          onClick={() => void patchSelectedBotLifecycleOperational(item.symbol, action.nextStatus)}
+                                        >
+                                          {selectedBotLifecycleBusySymbol === item.symbol ? "Aplicando..." : action.label}
+                                        </Button>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              <p className="text-xs text-slate-400">Sin items de lifecycle_operational para este bot.</p>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-xs text-slate-400">Sin lifecycle_operational detallado para este bot.</p>
                       )}
                     </div>
 

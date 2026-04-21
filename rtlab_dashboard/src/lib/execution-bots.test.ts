@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildLifecycleOperationalPatch,
   botRegistryStatusVariant,
   botRuntimeStatusVariant,
   getExecutionBotLabel,
+  getLifecycleOperationalSymbolAction,
   isExecutionBotArchived,
   matchesExecutionBotStatusFilter,
 } from "@/lib/execution-bots";
@@ -48,5 +50,59 @@ describe("execution-bots", () => {
     expect(botRuntimeStatusVariant("unknown")).toBe("neutral");
     expect(botRegistryStatusVariant("active")).toBe("success");
     expect(botRegistryStatusVariant("archived")).toBe("neutral");
+  });
+
+  it("deriva acciones operativas solo para el subset permitido o pausado", () => {
+    expect(
+      getLifecycleOperationalSymbolAction(
+        {
+          symbol: "ETHUSDT",
+          operational_status: "active",
+          base_lifecycle_state: "progressing",
+        },
+        ["ETHUSDT"],
+      ),
+    ).toEqual({
+      label: "Pausar símbolo",
+      nextStatus: "paused",
+    });
+
+    expect(
+      getLifecycleOperationalSymbolAction(
+        {
+          symbol: "ETHUSDT",
+          operational_status: "paused",
+          base_lifecycle_state: "progressing",
+        },
+        ["ETHUSDT"],
+      ),
+    ).toEqual({
+      label: "Reanudar símbolo",
+      nextStatus: "active",
+    });
+
+    expect(
+      getLifecycleOperationalSymbolAction(
+        {
+          symbol: "BTCUSDT",
+          operational_status: "active",
+          base_lifecycle_state: "rejected",
+        },
+        [],
+      ),
+    ).toBeNull();
+  });
+
+  it("arma patches persistiendo solo overrides paused", () => {
+    expect(buildLifecycleOperationalPatch({ ETHUSDT: "paused" }, "BTCUSDT", "paused")).toEqual({
+      BTCUSDT: "paused",
+      ETHUSDT: "paused",
+    });
+
+    expect(buildLifecycleOperationalPatch({ BTCUSDT: "paused", ETHUSDT: "paused" }, "BTCUSDT", "active")).toEqual({
+      ETHUSDT: "paused",
+    });
+
+    expect(buildLifecycleOperationalPatch({ BTCUSDT: "active" }, "BTCUSDT", "active")).toEqual({});
   });
 });
