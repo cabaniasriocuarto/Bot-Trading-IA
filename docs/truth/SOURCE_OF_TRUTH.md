@@ -2,6 +2,55 @@
 
 Fecha de actualizacion: 2026-04-20
 
+## RTLOPS-80 - lifecycle minimo multi-symbol - 2026-04-20
+
+- Estado real confirmado en esta rama:
+  - el Bot Registry ya expone una capa canonica y auditable de `lifecycle` minimo multi-symbol sobre la base cerrada por `RTLOPS-79`;
+  - el nuevo contrato `rtlops80/v1` consume:
+    - `GET /api/v1/bots/{bot_id}/policy-state`
+    - `GET /api/v1/bots/{bot_id}/runtime`
+    - `runtime.guardrails.execution_ready`
+    - `allowed_trade_symbols`
+    - `rejected_trade_symbols`
+    - `runtime_symbol_id`
+    - `selection_key`
+    - `net_decision_key`
+    - `decision_log_scope`
+  - la progresion minima ocurre solo sobre `allowed_trade_symbols`;
+  - los simbolos rechazados por priorizacion quedan fuera de progresion con motivo visible;
+  - si `policy_state.status != active` o `runtime.guardrails.execution_ready=false`, el lifecycle no progresa simbolos y queda fail-closed.
+- Cambio real aplicado en backend/API:
+  - `GET /api/v1/bots/{bot_id}/lifecycle`
+  - `lifecycle` agregado al payload canonico de bots y al `registry-contract`
+  - `contract_version` del Bot Registry elevada a `rtlops80/v1`
+  - `runtime` conserva `rtlops77/v1` como contrato base consumido por este slice
+  - `lifecycle` expone:
+    - `execution_ready`
+    - `allowed_trade_symbols`
+    - `rejected_trade_symbols`
+    - `progressing_symbols`
+    - `blocked_symbols`
+    - `progression_allowed`
+    - `items[*].lifecycle_state`
+  - reason codes canonicos:
+    - `bot_status_paused`
+    - `bot_status_archived`
+    - `runtime_execution_not_ready`
+    - `trade_decisions_exceed_live_cap`
+    - mas los guardrails heredados del runtime
+- Regla canonica reafirmada:
+  - `RTLOPS-80` no abre live console;
+  - no abre ejecucion LIVE lateral por simbolo;
+  - no abre lifecycle completo `backtest/shadow/paper/testnet/live`;
+  - no introduce un motor nuevo de scheduling: solo progresa o bloquea el subset ya canonico.
+- Validacion real ejecutada:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "registry_contract_surface_is_canonical or lifecycle or runtime" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+
 ## Preflight posterior a RTLOPS-79 - lifecycle minimo multi-symbol - 2026-04-20
 
 - Estado real confirmado en esta rama:

@@ -9,7 +9,7 @@ import {
 import type { BotRegistryContractResponse } from "@/lib/types";
 
 const CONTRACT_FIXTURE: BotRegistryContractResponse = {
-  contract_version: "rtlops77/v1",
+  contract_version: "rtlops80/v1",
   storage: {
     kind: "json_file",
     path: "learning/bots.json",
@@ -21,6 +21,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     strategy_selection_fields: ["strategy_selection_by_symbol"],
     signal_consolidation_fields: [],
     runtime_fields: [],
+    lifecycle_fields: [],
   },
   api: {
     list_path: "/api/v1/bots",
@@ -32,6 +33,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     symbol_strategy_selection_path: "/api/v1/bots/{bot_id}/strategy-selection",
     signal_consolidation_path: "/api/v1/bots/{bot_id}/signal-consolidation",
     runtime_path: "/api/v1/bots/{bot_id}/runtime",
+    lifecycle_path: "/api/v1/bots/{bot_id}/lifecycle",
     archive_path: "/api/v1/bots/{bot_id}/archive",
     restore_path: "/api/v1/bots/{bot_id}/restore",
     policy_state_path: "/api/v1/bots/{bot_id}/policy-state",
@@ -126,6 +128,7 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
     strategy_selection: ["strategy_selection_by_symbol", "strategy_selection"],
     signal_consolidation: ["signal_consolidation"],
     runtime: ["runtime"],
+    lifecycle: ["lifecycle"],
     policy_state: ["engine", "mode", "status", "notes"],
     governance: ["registry_status", "archived_at"],
     trace: ["created_at", "updated_at", "last_change_type", "last_change_summary", "last_changed_by", "last_change_source"],
@@ -266,6 +269,32 @@ const CONTRACT_FIXTURE: BotRegistryContractResponse = {
       "guardrails",
       "items",
       "storage",
+      "api",
+      "status",
+      "errors",
+    ],
+  },
+  lifecycle: {
+    contract_version: "rtlops80/v1",
+    storage_fields: [],
+    reason_codes: [
+      "bot_status_paused",
+      "bot_status_archived",
+      "runtime_execution_not_ready",
+      "live_cap_exceeds_max_positions",
+      "trade_decisions_exceed_live_cap",
+    ],
+    fields: [
+      "bot_id",
+      "policy_state",
+      "runtime_contract_version",
+      "runtime_status",
+      "execution_ready",
+      "allowed_trade_symbols",
+      "rejected_trade_symbols",
+      "progressing_symbols",
+      "blocked_symbols",
+      "items",
       "api",
       "status",
       "errors",

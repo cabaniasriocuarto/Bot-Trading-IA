@@ -2,6 +2,40 @@
 
 Fecha: 2026-04-20
 
+## Siguiente paso exacto despues de RTLOPS-80 - 2026-04-20
+- [x] Fundar lifecycle minimo multi-symbol consumiendo el subset ejecutable ya canonizado:
+  - `GET /api/v1/bots/{bot_id}/lifecycle`
+  - `contract_version` del Bot Registry elevada a `rtlops80/v1`
+  - consumo minimo de `policy_state.mode/status` y `runtime.guardrails.execution_ready`
+  - progresion solo de `allowed_trade_symbols`
+  - exclusion explicita de `rejected_trade_symbols` con motivo visible
+  - reuse de trazabilidad por simbolo con:
+    - `runtime_symbol_id`
+    - `selection_key`
+    - `net_decision_key`
+    - `decision_log_scope`
+- [x] Mantener el bloque profesional y acotado:
+  - sin tocar `live console`
+  - sin abrir ejecucion LIVE lateral por simbolo
+  - sin abrir lifecycle completo entre entornos
+  - sin refactor transversal
+- [x] Revalidacion minima real del bloque:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "registry_contract_surface_is_canonical or lifecycle or runtime" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un preflight fail-closed posterior a `RTLOPS-80` para decidir el siguiente slice de lifecycle operativo multi-symbol sobre `rtlops80/v1`
+  - revalidar ahi, con repo + docs/truth + Linear, si corresponde ampliar la progresion minima ya cerrada sin abrir lifecycle completo
+  - mantener fuera de ese preflight:
+    - `live console`
+    - ejecucion LIVE lateral
+    - lifecycle completo entre entornos
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
+
 ## Preflight fail-closed posterior a RTLOPS-79 - lifecycle minimo multi-symbol - 2026-04-20
 - [x] Revalidar que la base real ya sostiene abrir lifecycle minimo:
   - repo + docs/truth quedaron coherentes sobre la punta que cierra `RTLOPS-79`
@@ -12,7 +46,7 @@ Fecha: 2026-04-20
   - `RTLOPS-79` quedo sincronizada a `Done` con comentario de cierre real repo/docs/tests
   - no aparece todavia una hija explicita y limpia para `lifecycle minimo multi-symbol`
   - `RTLRESE-25` sigue siendo un bloque mas grande de lifecycle completo y no corresponde usarlo como sucesora directa de este slice
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - abrir la implementacion minima de `lifecycle multi-symbol` consumiendo el subset ejecutable ya canonizado sobre `rtlops77/v1`
   - resolver ahi solo:
     - progresion minima sobre `allowed_trade_symbols`
@@ -42,7 +76,7 @@ Fecha: 2026-04-20
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
   - `npm.cmd run build` -> PASS
   - `npm.cmd run typecheck` -> PASS despues de regenerar `.next/types` con `build`
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - abrir un preflight fail-closed del lifecycle minimo multi-symbol que consuma el subset ejecutable ya canonizado sobre `rtlops77/v1`
   - revalidar ahi, con repo + docs/truth + Linear, si corresponde recien abrir la implementacion minima de lifecycle
   - mantener fuera de ese preflight:

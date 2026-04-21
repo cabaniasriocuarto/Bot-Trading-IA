@@ -526,7 +526,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert res.status_code == 200, res.text
   payload = res.json()
 
-  assert payload["contract_version"] == "rtlops77/v1"
+  assert payload["contract_version"] == "rtlops80/v1"
   assert payload["storage"]["kind"] == "json_file"
   assert payload["storage"]["path"] == "learning/bots.json"
   assert payload["storage"]["stable_id_field"] == "bot_id"
@@ -537,6 +537,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["storage"]["strategy_selection_fields"] == ["strategy_selection_by_symbol"]
   assert payload["storage"]["signal_consolidation_fields"] == []
   assert payload["storage"]["runtime_fields"] == []
+  assert payload["storage"]["lifecycle_fields"] == []
   assert payload["api"]["list_path"] == "/api/v1/bots"
   assert payload["api"]["patch_path"] == "/api/v1/bots/{bot_id}"
   assert payload["api"]["multi_symbol_path"] == "/api/v1/bots/{bot_id}/multi-symbol"
@@ -544,6 +545,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["api"]["symbol_strategy_selection_path"] == "/api/v1/bots/{bot_id}/strategy-selection"
   assert payload["api"]["signal_consolidation_path"] == "/api/v1/bots/{bot_id}/signal-consolidation"
   assert payload["api"]["runtime_path"] == "/api/v1/bots/{bot_id}/runtime"
+  assert payload["api"]["lifecycle_path"] == "/api/v1/bots/{bot_id}/lifecycle"
   assert payload["api"]["policy_state_path"] == "/api/v1/bots/{bot_id}/policy-state"
   assert payload["api"]["decision_log_path"] == "/api/v1/bots/{bot_id}/decision-log"
   assert payload["defaults"]["domain_type"] == "spot"
@@ -566,6 +568,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "strategy_selection_by_symbol" in payload["fields"]["strategy_selection"]
   assert payload["fields"]["signal_consolidation"] == ["signal_consolidation"]
   assert payload["fields"]["runtime"] == ["runtime"]
+  assert payload["fields"]["lifecycle"] == ["lifecycle"]
   assert "bot_id" in payload["fields"]["identity"]
   assert "last_change_source" in payload["fields"]["trace"]
   assert payload["multi_symbol"]["contract_version"] == "rtlops72/v1"
@@ -596,6 +599,14 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "net_decision_by_symbol" in payload["runtime"]["fields"]
   assert "caps" in payload["runtime"]["fields"]
   assert "guardrails" in payload["runtime"]["fields"]
+  assert payload["lifecycle"]["contract_version"] == "rtlops80/v1"
+  assert payload["lifecycle"]["storage_fields"] == []
+  assert "runtime_execution_not_ready" in payload["lifecycle"]["reason_codes"]
+  assert "trade_decisions_exceed_live_cap" in payload["lifecycle"]["reason_codes"]
+  assert "execution_ready" in payload["lifecycle"]["fields"]
+  assert "allowed_trade_symbols" in payload["lifecycle"]["fields"]
+  assert "rejected_trade_symbols" in payload["lifecycle"]["fields"]
+  assert "progressing_symbols" in payload["lifecycle"]["fields"]
 
 
 def test_bot_multi_symbol_surface_is_canonical_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
@@ -1240,6 +1251,24 @@ def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_
   assert runtime_item["decision_action"] is None
   assert any(issue["reason_code"] == "selected_strategy_signal_unresolved" for issue in runtime_item["errors"])
 
+  lifecycle_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle", headers=headers)
+  assert lifecycle_res.status_code == 200, lifecycle_res.text
+  lifecycle = lifecycle_res.json()["lifecycle"]
+  assert lifecycle["contract_version"] == "rtlops80/v1"
+  assert lifecycle["runtime_contract_version"] == "rtlops77/v1"
+  assert lifecycle["status"] == "error"
+  assert lifecycle["execution_ready"] is False
+  assert lifecycle["allowed_trade_symbols"] == []
+  assert lifecycle["rejected_trade_symbols"] == []
+  assert lifecycle["progressing_symbols"] == []
+  assert lifecycle["blocked_symbols"] == []
+  assert lifecycle["progression_allowed"] is False
+  assert "runtime_execution_not_ready" in lifecycle["reason_codes"]
+  lifecycle_item = lifecycle["items"][0]
+  assert lifecycle_item["lifecycle_state"] == "inactive"
+  assert lifecycle_item["progression_allowed"] is False
+  assert lifecycle_item["status"] == "valid"
+
 
 def test_bot_runtime_prioritizes_trade_subset_when_trade_decisions_exceed_live_cap(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
@@ -1334,6 +1363,113 @@ def test_bot_runtime_prioritizes_trade_subset_when_trade_decisions_exceed_live_c
   assert items["BTCUSDT"]["status"] == "error"
   assert any(issue["reason_code"] == "trade_decisions_exceed_live_cap" for issue in items["BTCUSDT"]["errors"])
   assert any("priority_rank=2" in str(issue["message"] or "") for issue in items["BTCUSDT"]["errors"])
+
+  lifecycle_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle", headers=headers)
+  assert lifecycle_res.status_code == 200, lifecycle_res.text
+  lifecycle = lifecycle_res.json()["lifecycle"]
+  assert lifecycle["contract_version"] == "rtlops80/v1"
+  assert lifecycle["runtime_contract_version"] == "rtlops77/v1"
+  assert lifecycle["policy_state"]["mode"] == "paper"
+  assert lifecycle["policy_state"]["status"] == "active"
+  assert lifecycle["status"] == "warning"
+  assert lifecycle["execution_ready"] is True
+  assert lifecycle["allowed_trade_symbols"] == ["ETHUSDT"]
+  assert lifecycle["rejected_trade_symbols"] == ["BTCUSDT"]
+  assert lifecycle["progressing_symbols"] == ["ETHUSDT"]
+  assert lifecycle["blocked_symbols"] == []
+  assert lifecycle["progression_allowed"] is True
+  assert lifecycle["api"]["lifecycle_path"] == f"/api/v1/bots/{bot_id}/lifecycle"
+  lifecycle_items = {str(item["symbol"]): item for item in lifecycle["items"]}
+  assert lifecycle_items["ETHUSDT"]["lifecycle_state"] == "progressing"
+  assert lifecycle_items["ETHUSDT"]["progression_allowed"] is True
+  assert lifecycle_items["ETHUSDT"]["status"] == "valid"
+  assert lifecycle_items["ETHUSDT"]["errors"] == []
+  assert lifecycle_items["BTCUSDT"]["lifecycle_state"] == "rejected"
+  assert lifecycle_items["BTCUSDT"]["progression_allowed"] is False
+  assert lifecycle_items["BTCUSDT"]["status"] == "warning"
+  assert any(issue["reason_code"] == "trade_decisions_exceed_live_cap" for issue in lifecycle_items["BTCUSDT"]["errors"])
+
+
+def test_bot_lifecycle_blocks_allowed_symbols_when_policy_state_is_paused(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:1]
+  assert len(pool_ids) == 1
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Lifecycle Policy Pause",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT"],
+      "max_live_symbols": 1,
+      "max_positions": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  policy_patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}/policy-state",
+    headers=headers,
+    json={"status": "paused"},
+  )
+  assert policy_patch_res.status_code == 200, policy_patch_res.text
+
+  lifecycle_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle", headers=headers)
+  assert lifecycle_res.status_code == 200, lifecycle_res.text
+  lifecycle = lifecycle_res.json()["lifecycle"]
+  assert lifecycle["policy_state"]["status"] == "paused"
+  assert lifecycle["execution_ready"] is True
+  assert lifecycle["status"] == "error"
+  assert lifecycle["allowed_trade_symbols"] == ["BTCUSDT"]
+  assert lifecycle["rejected_trade_symbols"] == []
+  assert lifecycle["progressing_symbols"] == []
+  assert lifecycle["blocked_symbols"] == ["BTCUSDT"]
+  assert lifecycle["progression_allowed"] is False
+  assert "bot_status_paused" in lifecycle["reason_codes"]
+  assert any("policy_state.status=paused" in str(item) for item in (lifecycle.get("errors") or []))
+  lifecycle_item = lifecycle["items"][0]
+  assert lifecycle_item["symbol"] == "BTCUSDT"
+  assert lifecycle_item["lifecycle_state"] == "blocked"
+  assert lifecycle_item["progression_allowed"] is False
+  assert lifecycle_item["status"] == "error"
+  assert any(issue["reason_code"] == "bot_status_paused" for issue in lifecycle_item["errors"])
 
 
 def test_bot_runtime_flags_legacy_live_cap_above_max_positions_fail_closed(tmp_path: Path, monkeypatch) -> None:

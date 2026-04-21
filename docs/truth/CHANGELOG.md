@@ -2,6 +2,40 @@
 
 ## 2026-04-20
 
+### RTLOPS-80 - lifecycle minimo multi-symbol
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo derivado `lifecycle`
+    - agrega `GET /api/v1/bots/{bot_id}/lifecycle`
+    - eleva el contrato del Bot Registry a `rtlops80/v1`
+    - consume `policy_state.mode/status` y `runtime.guardrails.execution_ready`
+    - progresa solo `allowed_trade_symbols`
+    - deja `rejected_trade_symbols` fuera de progresion con motivo visible
+    - reutiliza la trazabilidad por simbolo ya canonica (`runtime_symbol_id`, `selection_key`, `net_decision_key`, `decision_log_scope`)
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops80/v1`
+    - cubre el endpoint dedicado de lifecycle
+    - cubre progresion minima de simbolos permitidos
+    - cubre simbolos rechazados por priorizacion
+    - cubre bloqueo explicito cuando `policy_state.status=paused`
+    - cubre bloqueo explicito cuando `runtime.guardrails.execution_ready=false`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `lifecycle`, `lifecycle_path` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops80/v1`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "registry_contract_surface_is_canonical or lifecycle or runtime" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre ejecucion LIVE lateral por simbolo
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se introduce un scheduler o engine nuevo fuera del subset ya canonico
+
 ### Preflight posterior a RTLOPS-79 - lifecycle mínimo multi-symbol
 - Revalidación real:
   - repo + docs/truth confirman que `RTLOPS-79` ya dejó canonizado el subset ejecutable bajo caps sobre `rtlops77/v1`

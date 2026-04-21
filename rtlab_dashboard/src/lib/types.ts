@@ -512,6 +512,7 @@ export interface BotRuntimeModel {
   api: {
     detail_path: string;
     runtime_path: string;
+    lifecycle_path: string;
     signal_consolidation_path: string;
     policy_state_path: string;
     decision_log_path: string;
@@ -523,6 +524,65 @@ export interface BotRuntimeModel {
 export interface BotRuntimeResponse {
   bot_id: string;
   runtime: BotRuntimeModel;
+}
+
+export interface BotLifecycleIssue {
+  reason_code: string;
+  message: string;
+  symbol?: string | null;
+}
+
+export interface BotLifecycleItem {
+  symbol: string;
+  runtime_symbol_id: string;
+  selection_key: string;
+  net_decision_key: string;
+  decision_log_scope: {
+    bot_id: string;
+    symbol: string;
+  };
+  selected_strategy_id?: string | null;
+  decision_action?: "trade" | "flat" | string | null;
+  decision_side?: "BUY" | "SELL" | string | null;
+  lifecycle_state: "progressing" | "blocked" | "rejected" | "inactive" | string;
+  progression_allowed: boolean;
+  status: "valid" | "warning" | "error" | string;
+  errors: BotLifecycleIssue[];
+}
+
+export interface BotLifecycleModel {
+  contract_version: string;
+  bot_id: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  policy_state: BotPolicyState;
+  runtime_contract_version: string;
+  runtime_status: "valid" | "warning" | "error" | string;
+  execution_ready: boolean;
+  allowed_trade_symbols: string[];
+  rejected_trade_symbols: string[];
+  progressing_symbols: string[];
+  blocked_symbols: string[];
+  progression_allowed: boolean;
+  items: BotLifecycleItem[];
+  reason_codes: string[];
+  status: "valid" | "warning" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  api: {
+    detail_path: string;
+    lifecycle_path: string;
+    runtime_path: string;
+    policy_state_path: string;
+    decision_log_path: string;
+  };
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotLifecycleResponse {
+  bot_id: string;
+  lifecycle: BotLifecycleModel;
 }
 
 export interface BotInstance {
@@ -568,6 +628,7 @@ export interface BotInstance {
   strategy_selection?: BotStrategySelectionModel;
   signal_consolidation?: BotSignalConsolidationModel;
   runtime?: BotRuntimeModel;
+  lifecycle?: BotLifecycleModel;
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -612,6 +673,7 @@ export interface BotRegistryContractResponse {
     strategy_selection_fields: string[];
     signal_consolidation_fields: string[];
     runtime_fields: string[];
+    lifecycle_fields: string[];
   };
   api: {
     list_path: string;
@@ -623,6 +685,7 @@ export interface BotRegistryContractResponse {
     symbol_strategy_selection_path: string;
     signal_consolidation_path: string;
     runtime_path: string;
+    lifecycle_path: string;
     archive_path: string;
     restore_path: string;
     policy_state_path: string;
@@ -700,6 +763,7 @@ export interface BotRegistryContractResponse {
     strategy_selection: string[];
     signal_consolidation: string[];
     runtime: string[];
+    lifecycle: string[];
     policy_state: string[];
     governance: string[];
     trace: string[];
@@ -736,6 +800,12 @@ export interface BotRegistryContractResponse {
     fields: string[];
   };
   runtime: {
+    contract_version: string;
+    storage_fields: string[];
+    reason_codes: string[];
+    fields: string[];
+  };
+  lifecycle: {
     contract_version: string;
     storage_fields: string[];
     reason_codes: string[];

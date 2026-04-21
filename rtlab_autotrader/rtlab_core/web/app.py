@@ -933,6 +933,14 @@ BOT_RUNTIME_REASON_CODES = (
     "signal_consolidation_invalid",
     *BOT_RUNTIME_GUARDRAIL_REASON_CODES,
 )
+BOT_LIFECYCLE_MIN_CONTRACT_VERSION = "rtlops80/v1"
+BOT_LIFECYCLE_MIN_STORAGE_FIELDS: tuple[str, ...] = ()
+BOT_LIFECYCLE_MIN_REASON_CODES = (
+    "bot_status_paused",
+    "bot_status_archived",
+    "runtime_execution_not_ready",
+    *BOT_RUNTIME_GUARDRAIL_REASON_CODES,
+)
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -962,7 +970,7 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
-BOT_REGISTRY_CONTRACT_VERSION = "rtlops77/v1"
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops80/v1"
 BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
 BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
 BOT_REGISTRY_DEFAULT_MODE = "paper"
@@ -982,6 +990,7 @@ BOT_REGISTRY_API_SURFACE = {
     "symbol_strategy_selection_path": "/api/v1/bots/{bot_id}/strategy-selection",
     "signal_consolidation_path": "/api/v1/bots/{bot_id}/signal-consolidation",
     "runtime_path": "/api/v1/bots/{bot_id}/runtime",
+    "lifecycle_path": "/api/v1/bots/{bot_id}/lifecycle",
     "archive_path": "/api/v1/bots/{bot_id}/archive",
     "restore_path": "/api/v1/bots/{bot_id}/restore",
     "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
@@ -1026,6 +1035,9 @@ BOT_REGISTRY_FIELD_GROUPS = {
     ],
     "runtime": [
         "runtime",
+    ],
+    "lifecycle": [
+        "lifecycle",
     ],
     "policy_state": ["engine", "mode", "status", "notes"],
     "governance": ["registry_status", "archived_at"],
@@ -5711,7 +5723,207 @@ def risk_hooks(context):
             "api": {
                 "detail_path": f"/api/v1/bots/{bot_id}",
                 "runtime_path": f"/api/v1/bots/{bot_id}/runtime",
+                "lifecycle_path": f"/api/v1/bots/{bot_id}/lifecycle",
                 "signal_consolidation_path": f"/api/v1/bots/{bot_id}/signal-consolidation",
+                "policy_state_path": f"/api/v1/bots/{bot_id}/policy-state",
+                "decision_log_path": f"/api/v1/bots/{bot_id}/decision-log",
+            },
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    def _bot_lifecycle_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        policy_state: dict[str, Any],
+        runtime: dict[str, Any],
+    ) -> dict[str, Any]:
+        bot_id = str(payload.get("id") or "").strip()
+        resolved_policy_state = dict(policy_state or {})
+        resolved_runtime = dict(runtime or {})
+        guardrails = dict(resolved_runtime.get("guardrails") or {})
+        runtime_items = [
+            dict(item)
+            for item in (resolved_runtime.get("items") or [])
+            if isinstance(item, dict)
+        ]
+        policy_status = self._normalize_bot_status(
+            str(resolved_policy_state.get("status") or BOT_REGISTRY_DEFAULT_STATUS)
+        )
+        execution_ready = bool(guardrails.get("execution_ready", False))
+        allowed_trade_symbols = [
+            RuntimeBridge._sanitize_exchange_symbol(item)
+            for item in (guardrails.get("allowed_trade_symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(item)
+        ]
+        rejected_trade_symbols = [
+            RuntimeBridge._sanitize_exchange_symbol(item)
+            for item in (guardrails.get("rejected_trade_symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(item)
+        ]
+        rejected_trade_symbol_set = set(rejected_trade_symbols)
+        runtime_errors = [
+            str(item)
+            for item in (resolved_runtime.get("errors") or [])
+            if str(item).strip()
+        ]
+        guardrail_errors = [
+            str(item)
+            for item in (guardrails.get("errors") or [])
+            if str(item).strip()
+        ]
+        reason_codes: set[str] = set()
+        errors: list[str] = []
+        progressing_symbols: list[str] = []
+        blocked_symbols: list[str] = []
+        items: list[dict[str, Any]] = []
+
+        if policy_status == "paused":
+            reason_codes.add("bot_status_paused")
+            errors.append("El lifecycle minimo no progresa simbolos porque policy_state.status=paused.")
+        elif policy_status == "archived":
+            reason_codes.add("bot_status_archived")
+            errors.append("El lifecycle minimo no progresa simbolos porque policy_state.status=archived.")
+        if not execution_ready:
+            reason_codes.add("runtime_execution_not_ready")
+            errors.append(
+                "El lifecycle minimo no progresa simbolos permitidos porque runtime.guardrails.execution_ready=false."
+            )
+            errors.extend(guardrail_errors)
+            errors.extend(runtime_errors)
+        elif rejected_trade_symbols:
+            errors.extend(guardrail_errors or runtime_errors)
+
+        for runtime_item in runtime_items:
+            symbol = RuntimeBridge._sanitize_exchange_symbol(runtime_item.get("symbol"))
+            runtime_item_errors = [
+                dict(issue)
+                for issue in (runtime_item.get("errors") or [])
+                if isinstance(issue, dict)
+            ]
+            decision_action = str(runtime_item.get("decision_action") or "").strip()
+            lifecycle_errors: list[dict[str, Any]] = []
+            lifecycle_state = "inactive"
+            progression_allowed = False
+            item_status = "valid"
+
+            if symbol in rejected_trade_symbol_set:
+                lifecycle_state = "rejected"
+                progression_allowed = False
+                lifecycle_errors = runtime_item_errors or [
+                    self._signal_consolidation_issue(
+                        reason_code=(
+                            str(((guardrails.get("reason_codes") or ["trade_decisions_exceed_live_cap"])[0]) or "").strip()
+                            or "trade_decisions_exceed_live_cap"
+                        ),
+                        message=(
+                            (guardrail_errors[0] if guardrail_errors else None)
+                            or (runtime_errors[0] if runtime_errors else None)
+                            or f"{symbol} queda fuera de progresion por priorizacion o rechazo del runtime."
+                        ),
+                        symbol=symbol,
+                    )
+                ]
+                lifecycle_reason_codes = {
+                    str(issue.get("reason_code") or "").strip()
+                    for issue in lifecycle_errors
+                    if str(issue.get("reason_code") or "").strip()
+                }
+                item_status = "warning" if lifecycle_reason_codes == {"trade_decisions_exceed_live_cap"} else "error"
+            elif decision_action != "trade":
+                lifecycle_state = "inactive"
+                progression_allowed = False
+                item_status = "valid"
+            elif policy_status != "active":
+                lifecycle_state = "blocked"
+                progression_allowed = False
+                blocked_symbols.append(symbol)
+                item_status = "error"
+                lifecycle_errors = [
+                    self._signal_consolidation_issue(
+                        reason_code=f"bot_status_{policy_status}",
+                        message=f"{symbol} no progresa porque policy_state.status={policy_status}.",
+                        symbol=symbol,
+                    )
+                ]
+            elif not execution_ready:
+                lifecycle_state = "blocked"
+                progression_allowed = False
+                blocked_symbols.append(symbol)
+                item_status = "error"
+                lifecycle_errors = [
+                    self._signal_consolidation_issue(
+                        reason_code="runtime_execution_not_ready",
+                        message=(
+                            (guardrail_errors[0] if guardrail_errors else None)
+                            or (runtime_errors[0] if runtime_errors else None)
+                            or f"{symbol} no progresa porque runtime.guardrails.execution_ready=false."
+                        ),
+                        symbol=symbol,
+                    ),
+                    *runtime_item_errors,
+                ]
+            else:
+                lifecycle_state = "progressing"
+                progression_allowed = True
+                progressing_symbols.append(symbol)
+                item_status = "valid"
+
+            reason_codes.update(
+                str(issue.get("reason_code") or "").strip()
+                for issue in lifecycle_errors
+                if str(issue.get("reason_code") or "").strip()
+            )
+            items.append(
+                {
+                    "symbol": symbol,
+                    "runtime_symbol_id": str(runtime_item.get("runtime_symbol_id") or ""),
+                    "selection_key": str(runtime_item.get("selection_key") or ""),
+                    "net_decision_key": str(runtime_item.get("net_decision_key") or ""),
+                    "decision_log_scope": dict(runtime_item.get("decision_log_scope") or {}),
+                    "selected_strategy_id": (
+                        str(runtime_item.get("selected_strategy_id") or "").strip() or None
+                    ),
+                    "decision_action": decision_action or None,
+                    "decision_side": str(runtime_item.get("decision_side") or "").strip() or None,
+                    "lifecycle_state": lifecycle_state,
+                    "progression_allowed": progression_allowed,
+                    "status": item_status,
+                    "errors": lifecycle_errors,
+                }
+            )
+
+        status = (
+            "error"
+            if policy_status != "active" or not execution_ready
+            else "warning"
+            if rejected_trade_symbols
+            else "valid"
+        )
+        return {
+            "contract_version": BOT_LIFECYCLE_MIN_CONTRACT_VERSION,
+            "bot_id": bot_id,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "policy_state": resolved_policy_state,
+            "runtime_contract_version": str(resolved_runtime.get("contract_version") or BOT_RUNTIME_CONTRACT_VERSION),
+            "runtime_status": str(resolved_runtime.get("status") or "error"),
+            "execution_ready": execution_ready,
+            "allowed_trade_symbols": allowed_trade_symbols,
+            "rejected_trade_symbols": rejected_trade_symbols,
+            "progressing_symbols": progressing_symbols,
+            "blocked_symbols": blocked_symbols,
+            "progression_allowed": bool(progressing_symbols),
+            "items": items,
+            "reason_codes": sorted(reason_codes),
+            "status": status,
+            "errors": list(dict.fromkeys(item for item in errors if str(item).strip())),
+            "storage_fields": list(BOT_LIFECYCLE_MIN_STORAGE_FIELDS),
+            "api": {
+                "detail_path": f"/api/v1/bots/{bot_id}",
+                "lifecycle_path": f"/api/v1/bots/{bot_id}/lifecycle",
+                "runtime_path": f"/api/v1/bots/{bot_id}/runtime",
                 "policy_state_path": f"/api/v1/bots/{bot_id}/policy-state",
                 "decision_log_path": f"/api/v1/bots/{bot_id}/decision-log",
             },
@@ -5722,6 +5934,25 @@ def risk_hooks(context):
     def bot_runtime_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
         return self._bot_runtime_payload(bot)
+
+    def bot_lifecycle_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        policy_state = self._bot_policy_state_payload(bot, pool_payload=pool_payload)
+        strategy_selection = self._bot_strategy_selection_payload(bot)
+        signal_consolidation = self._bot_signal_consolidation_payload(bot)
+        runtime = self._bot_runtime_payload(
+            bot,
+            pool_payload=pool_payload,
+            policy_state=policy_state,
+            selection=strategy_selection,
+            signal_consolidation=signal_consolidation,
+        )
+        return self._bot_lifecycle_payload(
+            bot,
+            policy_state=policy_state,
+            runtime=runtime,
+        )
 
     def bot_multi_symbol_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
@@ -6062,6 +6293,7 @@ def risk_hooks(context):
                 "strategy_selection_fields": list(BOT_STRATEGY_SELECTION_STORAGE_FIELDS),
                 "signal_consolidation_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
                 "runtime_fields": list(BOT_RUNTIME_STORAGE_FIELDS),
+                "lifecycle_fields": list(BOT_LIFECYCLE_MIN_STORAGE_FIELDS),
             },
             "api": dict(BOT_REGISTRY_API_SURFACE),
             "defaults": {
@@ -6227,6 +6459,26 @@ def risk_hooks(context):
                     "guardrails",
                     "items",
                     "storage",
+                    "api",
+                    "status",
+                    "errors",
+                ],
+            },
+            "lifecycle": {
+                "contract_version": BOT_LIFECYCLE_MIN_CONTRACT_VERSION,
+                "storage_fields": list(BOT_LIFECYCLE_MIN_STORAGE_FIELDS),
+                "reason_codes": list(BOT_LIFECYCLE_MIN_REASON_CODES),
+                "fields": [
+                    "bot_id",
+                    "policy_state",
+                    "runtime_contract_version",
+                    "runtime_status",
+                    "execution_ready",
+                    "allowed_trade_symbols",
+                    "rejected_trade_symbols",
+                    "progressing_symbols",
+                    "blocked_symbols",
+                    "items",
                     "api",
                     "status",
                     "errors",
@@ -7215,7 +7467,7 @@ def risk_hooks(context):
             payload["strategy_eligibility"] = strategy_eligibility
             payload["strategy_selection"] = strategy_selection
             payload["signal_consolidation"] = signal_consolidation
-            payload["runtime"] = self._bot_runtime_payload(
+            runtime_payload = self._bot_runtime_payload(
                 row,
                 strategies_index=by_id,
                 universe_index=universe_index,
@@ -7223,6 +7475,12 @@ def risk_hooks(context):
                 policy_state=policy_state,
                 selection=strategy_selection,
                 signal_consolidation=signal_consolidation,
+            )
+            payload["runtime"] = runtime_payload
+            payload["lifecycle"] = self._bot_lifecycle_payload(
+                row,
+                policy_state=policy_state,
+                runtime=runtime_payload,
             )
             bot_id = str(row.get("id") or "")
             payload["metrics"] = self._bot_metrics(
@@ -14942,6 +15200,13 @@ def create_app() -> FastAPI:
         return {
             "bot_id": bot_id,
             "runtime": store.bot_runtime_or_404(bot_id),
+        }
+
+    @app.get("/api/v1/bots/{bot_id}/lifecycle")
+    def bot_lifecycle(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "lifecycle": store.bot_lifecycle_or_404(bot_id),
         }
 
     @app.post("/api/v1/bots/{bot_id}/archive")
