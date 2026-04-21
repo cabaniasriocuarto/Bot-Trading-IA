@@ -526,7 +526,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert res.status_code == 200, res.text
   payload = res.json()
 
-  assert payload["contract_version"] == "rtlops80/v1"
+  assert payload["contract_version"] == "rtlops81/v1"
   assert payload["storage"]["kind"] == "json_file"
   assert payload["storage"]["path"] == "learning/bots.json"
   assert payload["storage"]["stable_id_field"] == "bot_id"
@@ -538,6 +538,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["storage"]["signal_consolidation_fields"] == []
   assert payload["storage"]["runtime_fields"] == []
   assert payload["storage"]["lifecycle_fields"] == []
+  assert payload["storage"]["lifecycle_operational_fields"] == ["lifecycle_operational_by_symbol"]
   assert payload["api"]["list_path"] == "/api/v1/bots"
   assert payload["api"]["patch_path"] == "/api/v1/bots/{bot_id}"
   assert payload["api"]["multi_symbol_path"] == "/api/v1/bots/{bot_id}/multi-symbol"
@@ -546,12 +547,14 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["api"]["signal_consolidation_path"] == "/api/v1/bots/{bot_id}/signal-consolidation"
   assert payload["api"]["runtime_path"] == "/api/v1/bots/{bot_id}/runtime"
   assert payload["api"]["lifecycle_path"] == "/api/v1/bots/{bot_id}/lifecycle"
+  assert payload["api"]["lifecycle_operational_path"] == "/api/v1/bots/{bot_id}/lifecycle-operational"
   assert payload["api"]["policy_state_path"] == "/api/v1/bots/{bot_id}/policy-state"
   assert payload["api"]["decision_log_path"] == "/api/v1/bots/{bot_id}/decision-log"
   assert payload["defaults"]["domain_type"] == "spot"
   assert payload["defaults"]["risk_profile"] == "medium"
   assert payload["defaults"]["strategy_eligibility_by_symbol"] == {}
   assert payload["defaults"]["strategy_selection_by_symbol"] == {}
+  assert payload["defaults"]["lifecycle_operational_by_symbol"] == {}
   assert float(payload["defaults"]["capital_base_usd"]) == 10000.0
   assert float(payload["defaults"]["max_total_exposure_pct"]) == 65.0
   assert int(payload["defaults"]["max_positions"]) == 10
@@ -569,6 +572,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["fields"]["signal_consolidation"] == ["signal_consolidation"]
   assert payload["fields"]["runtime"] == ["runtime"]
   assert payload["fields"]["lifecycle"] == ["lifecycle"]
+  assert payload["fields"]["lifecycle_operational"] == ["lifecycle_operational"]
   assert "bot_id" in payload["fields"]["identity"]
   assert "last_change_source" in payload["fields"]["trace"]
   assert payload["multi_symbol"]["contract_version"] == "rtlops72/v1"
@@ -607,6 +611,11 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "allowed_trade_symbols" in payload["lifecycle"]["fields"]
   assert "rejected_trade_symbols" in payload["lifecycle"]["fields"]
   assert "progressing_symbols" in payload["lifecycle"]["fields"]
+  assert payload["lifecycle_operational"]["contract_version"] == "rtlops81/v1"
+  assert payload["lifecycle_operational"]["storage_fields"] == ["lifecycle_operational_by_symbol"]
+  assert payload["lifecycle_operational"]["statuses"] == ["active", "paused"]
+  assert "symbol_operational_paused" in payload["lifecycle_operational"]["reason_codes"]
+  assert "lifecycle_operational_by_symbol" in payload["lifecycle_operational"]["fields"]
 
 
 def test_bot_multi_symbol_surface_is_canonical_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
@@ -1470,6 +1479,111 @@ def test_bot_lifecycle_blocks_allowed_symbols_when_policy_state_is_paused(tmp_pa
   assert lifecycle_item["progression_allowed"] is False
   assert lifecycle_item["status"] == "error"
   assert any(issue["reason_code"] == "bot_status_paused" for issue in lifecycle_item["errors"])
+
+
+def test_bot_lifecycle_operational_surface_pauses_allowed_symbols_without_opening_live_lateral(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Lifecycle Operativo",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["ETHUSDT", "BTCUSDT"],
+      "max_live_symbols": 1,
+      "max_positions": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0]],
+        "ETHUSDT": [pool_ids[1]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+        "ETHUSDT": pool_ids[1],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["mean_reversion", "range"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  base_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle-operational", headers=headers)
+  assert base_res.status_code == 200, base_res.text
+  base_operational = base_res.json()["lifecycle_operational"]
+  assert base_operational["contract_version"] == "rtlops81/v1"
+  assert base_operational["lifecycle_contract_version"] == "rtlops80/v1"
+  assert base_operational["lifecycle_operational_by_symbol"] == {}
+  assert base_operational["progressing_symbols"] == ["ETHUSDT"]
+  assert base_operational["blocked_symbols"] == []
+  assert base_operational["api"]["lifecycle_operational_path"] == f"/api/v1/bots/{bot_id}/lifecycle-operational"
+
+  patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}/lifecycle-operational",
+    headers=headers,
+    json={
+      "lifecycle_operational_by_symbol": {
+        "ETHUSDT": "paused",
+      },
+    },
+  )
+  assert patch_res.status_code == 200, patch_res.text
+  operational = patch_res.json()["lifecycle_operational"]
+  assert operational["lifecycle_operational_by_symbol"] == {"ETHUSDT": "paused"}
+  assert operational["progressing_symbols"] == []
+  assert operational["blocked_symbols"] == ["ETHUSDT"]
+  assert operational["progression_allowed"] is False
+  assert operational["status"] == "warning"
+  assert "symbol_operational_paused" in operational["reason_codes"]
+  items = {str(item["symbol"]): item for item in operational["items"]}
+  assert items["ETHUSDT"]["base_lifecycle_state"] == "progressing"
+  assert items["ETHUSDT"]["operational_status"] == "paused"
+  assert items["ETHUSDT"]["lifecycle_state"] == "blocked"
+  assert items["ETHUSDT"]["progression_allowed"] is False
+  assert items["ETHUSDT"]["status"] == "warning"
+  assert any(issue["reason_code"] == "symbol_operational_paused" for issue in items["ETHUSDT"]["errors"])
+  assert items["BTCUSDT"]["base_lifecycle_state"] == "rejected"
+  assert items["BTCUSDT"]["lifecycle_state"] == "rejected"
+  assert items["BTCUSDT"]["operational_status"] == "active"
+
+  detail_res = client.get(f"/api/v1/bots/{bot_id}", headers=headers)
+  assert detail_res.status_code == 200, detail_res.text
+  detail_bot = detail_res.json()["bot"]
+  assert detail_bot["lifecycle_operational"]["contract_version"] == "rtlops81/v1"
+  assert detail_bot["lifecycle_operational"]["lifecycle_operational_by_symbol"] == {"ETHUSDT": "paused"}
 
 
 def test_bot_runtime_flags_legacy_live_cap_above_max_positions_fail_closed(tmp_path: Path, monkeypatch) -> None:

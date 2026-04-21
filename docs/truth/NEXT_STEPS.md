@@ -2,6 +2,39 @@
 
 Fecha: 2026-04-20
 
+## Siguiente paso exacto despues de RTLOPS-81 - 2026-04-20
+- [x] Fundar los contratos minimos de lifecycle operativo por simbolo sobre `rtlops80/v1`:
+  - `GET /api/v1/bots/{bot_id}/lifecycle-operational`
+  - `PATCH /api/v1/bots/{bot_id}/lifecycle-operational`
+  - `contract_version` del Bot Registry elevada a `rtlops81/v1`
+  - `lifecycle_operational_by_symbol` persistido como storage minimo en `learning/bots.json`
+  - solo persiste overrides `paused`; `active` sigue como default implicito para no abrir una segunda verdad paralela
+- [x] Mantener el bloque profesional y acotado:
+  - sin tocar `live console`
+  - sin abrir ejecucion LIVE lateral
+  - sin abrir lifecycle completo entre entornos
+  - sin refactor transversal
+- [x] Revalidacion minima real del bloque:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "registry_contract_surface_is_canonical or lifecycle_operational or lifecycle or runtime" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+- [x] Cierre exacto del gap contractual:
+  - `lifecycle_operational` consume `rtlops80/v1` y solo agrega pausa operativa minima por simbolo
+  - la continuidad sigue acotada al subset `allowed_trade_symbols`
+  - `rejected_trade_symbols` permanecen fuera de progresion con motivo visible
+  - se reutiliza la trazabilidad por simbolo con `runtime_symbol_id`, `selection_key`, `net_decision_key` y `decision_log_scope`
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un preflight fail-closed posterior a `RTLOPS-81` para decidir el siguiente slice de lifecycle operativo multi-symbol sobre `rtlops81/v1`
+  - mantener fuera de ese bloque:
+    - `live console`
+    - ejecucion LIVE lateral
+    - lifecycle completo entre entornos
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
+
 ## Siguiente paso exacto despues de RTLOPS-80 - 2026-04-20
 - [x] Fundar lifecycle minimo multi-symbol consumiendo el subset ejecutable ya canonizado:
   - `GET /api/v1/bots/{bot_id}/lifecycle`

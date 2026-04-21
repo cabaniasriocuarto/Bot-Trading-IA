@@ -2,6 +2,36 @@
 
 ## 2026-04-20
 
+### RTLOPS-81 - contratos minimos de lifecycle operativo por simbolo
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo `lifecycle_operational`
+    - agrega `GET /api/v1/bots/{bot_id}/lifecycle-operational`
+    - agrega `PATCH /api/v1/bots/{bot_id}/lifecycle-operational`
+    - eleva el contrato del Bot Registry a `rtlops81/v1`
+    - persiste solo `lifecycle_operational_by_symbol` como storage minimo
+    - mantiene `active` como default implicito y solo persiste overrides `paused`
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops81/v1`
+    - cubre el endpoint dedicado de lifecycle operativo
+    - cubre la pausa operativa de simbolos permitidos sin abrir ejecucion LIVE lateral
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `lifecycle_operational`, `lifecycle_operational_path` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops81/v1`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "registry_contract_surface_is_canonical or lifecycle_operational or lifecycle or runtime" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes; PASS al rerun despues de `build`
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre ejecucion LIVE lateral por simbolo
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se introduce un scheduler o engine nuevo fuera del contrato minimo
+
 ### Preflight posterior a RTLOPS-80 - sucesora canonizada
 - Revalidación real:
   - repo + docs/truth + Linear confirman el cierre de `RTLOPS-80`

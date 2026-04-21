@@ -859,6 +859,10 @@ class BotStrategySelectionPatchBody(BaseModel):
     strategy_selection_by_symbol: dict[str, str] | None = None
 
 
+class BotLifecycleOperationalPatchBody(BaseModel):
+    lifecycle_operational_by_symbol: dict[str, str] | None = None
+
+
 class BotBulkPatchBody(BaseModel):
     ids: list[str]
     engine: str | None = None
@@ -941,6 +945,13 @@ BOT_LIFECYCLE_MIN_REASON_CODES = (
     "runtime_execution_not_ready",
     *BOT_RUNTIME_GUARDRAIL_REASON_CODES,
 )
+BOT_LIFECYCLE_OPERATIONAL_CONTRACT_VERSION = "rtlops81/v1"
+BOT_LIFECYCLE_OPERATIONAL_STORAGE_FIELDS = ("lifecycle_operational_by_symbol",)
+BOT_LIFECYCLE_OPERATIONAL_STATUSES = ("active", "paused")
+BOT_LIFECYCLE_OPERATIONAL_REASON_CODES = (
+    "symbol_operational_paused",
+    *BOT_LIFECYCLE_MIN_REASON_CODES,
+)
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -970,7 +981,7 @@ BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
         "max_positions": 20,
     },
 }
-BOT_REGISTRY_CONTRACT_VERSION = "rtlops80/v1"
+BOT_REGISTRY_CONTRACT_VERSION = "rtlops81/v1"
 BOT_REGISTRY_DEFAULT_DOMAIN_TYPE = "spot"
 BOT_REGISTRY_DEFAULT_ENGINE = "bandit_thompson"
 BOT_REGISTRY_DEFAULT_MODE = "paper"
@@ -991,6 +1002,7 @@ BOT_REGISTRY_API_SURFACE = {
     "signal_consolidation_path": "/api/v1/bots/{bot_id}/signal-consolidation",
     "runtime_path": "/api/v1/bots/{bot_id}/runtime",
     "lifecycle_path": "/api/v1/bots/{bot_id}/lifecycle",
+    "lifecycle_operational_path": "/api/v1/bots/{bot_id}/lifecycle-operational",
     "archive_path": "/api/v1/bots/{bot_id}/archive",
     "restore_path": "/api/v1/bots/{bot_id}/restore",
     "policy_state_path": "/api/v1/bots/{bot_id}/policy-state",
@@ -1038,6 +1050,9 @@ BOT_REGISTRY_FIELD_GROUPS = {
     ],
     "lifecycle": [
         "lifecycle",
+    ],
+    "lifecycle_operational": [
+        "lifecycle_operational",
     ],
     "policy_state": ["engine", "mode", "status", "notes"],
     "governance": ["registry_status", "archived_at"],
@@ -4158,6 +4173,27 @@ def risk_hooks(context):
         return out
 
     @staticmethod
+    def _normalize_bot_lifecycle_operational_status(value: Any) -> str:
+        status = str(value or "").strip().lower()
+        if status not in BOT_LIFECYCLE_OPERATIONAL_STATUSES:
+            return "active"
+        return status
+
+    @classmethod
+    def _normalize_bot_lifecycle_operational_map(cls, value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, str] = {}
+        for raw_symbol, raw_status in value.items():
+            symbol = str(raw_symbol or "").strip().upper()
+            if not symbol:
+                continue
+            status = cls._normalize_bot_lifecycle_operational_status(raw_status)
+            if status == "paused":
+                out[symbol] = status
+        return out
+
+    @staticmethod
     def _default_bot_strategy_eligibility(
         *,
         symbols: list[str],
@@ -5923,6 +5959,7 @@ def risk_hooks(context):
             "api": {
                 "detail_path": f"/api/v1/bots/{bot_id}",
                 "lifecycle_path": f"/api/v1/bots/{bot_id}/lifecycle",
+                "lifecycle_operational_path": f"/api/v1/bots/{bot_id}/lifecycle-operational",
                 "runtime_path": f"/api/v1/bots/{bot_id}/runtime",
                 "policy_state_path": f"/api/v1/bots/{bot_id}/policy-state",
                 "decision_log_path": f"/api/v1/bots/{bot_id}/decision-log",
@@ -5934,6 +5971,150 @@ def risk_hooks(context):
     def bot_runtime_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
         return self._bot_runtime_payload(bot)
+
+    def _bot_lifecycle_operational_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        policy_state: dict[str, Any],
+        runtime: dict[str, Any],
+        lifecycle: dict[str, Any],
+    ) -> dict[str, Any]:
+        bot_id = str(payload.get("id") or "").strip()
+        resolved_policy_state = dict(policy_state or {})
+        resolved_runtime = dict(runtime or {})
+        resolved_lifecycle = dict(lifecycle or {})
+        lifecycle_items = [
+            dict(item)
+            for item in (resolved_lifecycle.get("items") or [])
+            if isinstance(item, dict)
+        ]
+        lifecycle_operational_by_symbol = self._normalize_bot_lifecycle_operational_map(
+            payload.get("lifecycle_operational_by_symbol")
+        )
+        progressing_symbols: list[str] = []
+        blocked_symbols: list[str] = []
+        items: list[dict[str, Any]] = []
+        errors = [
+            str(item)
+            for item in (resolved_lifecycle.get("errors") or [])
+            if str(item).strip()
+        ]
+        reason_codes = {
+            str(item).strip()
+            for item in (resolved_lifecycle.get("reason_codes") or [])
+            if str(item).strip()
+        }
+
+        for lifecycle_item in lifecycle_items:
+            symbol = RuntimeBridge._sanitize_exchange_symbol(lifecycle_item.get("symbol"))
+            base_lifecycle_state = str(lifecycle_item.get("lifecycle_state") or "inactive").strip() or "inactive"
+            operational_status = lifecycle_operational_by_symbol.get(symbol, "active")
+            item_errors = [
+                dict(issue)
+                for issue in (lifecycle_item.get("errors") or [])
+                if isinstance(issue, dict)
+            ]
+            lifecycle_state = base_lifecycle_state
+            progression_allowed = bool(lifecycle_item.get("progression_allowed", False))
+            item_status = str(lifecycle_item.get("status") or "valid")
+
+            if base_lifecycle_state == "progressing" and operational_status == "paused":
+                lifecycle_state = "blocked"
+                progression_allowed = False
+                item_status = "warning"
+                item_errors = [
+                    self._signal_consolidation_issue(
+                        reason_code="symbol_operational_paused",
+                        message=(
+                            f"{symbol} no progresa porque "
+                            f"lifecycle_operational_by_symbol[{symbol}]=paused."
+                        ),
+                        symbol=symbol,
+                    ),
+                    *item_errors,
+                ]
+                blocked_symbols.append(symbol)
+                reason_codes.add("symbol_operational_paused")
+                errors.append(
+                    f"{symbol} queda fuera de progresion operativa porque lifecycle_operational_by_symbol[{symbol}]=paused."
+                )
+            elif lifecycle_state == "progressing":
+                progressing_symbols.append(symbol)
+            elif lifecycle_state == "blocked":
+                blocked_symbols.append(symbol)
+
+            items.append(
+                {
+                    "symbol": symbol,
+                    "runtime_symbol_id": str(lifecycle_item.get("runtime_symbol_id") or ""),
+                    "selection_key": str(lifecycle_item.get("selection_key") or ""),
+                    "net_decision_key": str(lifecycle_item.get("net_decision_key") or ""),
+                    "decision_log_scope": dict(lifecycle_item.get("decision_log_scope") or {}),
+                    "selected_strategy_id": (
+                        str(lifecycle_item.get("selected_strategy_id") or "").strip() or None
+                    ),
+                    "decision_action": str(lifecycle_item.get("decision_action") or "").strip() or None,
+                    "decision_side": str(lifecycle_item.get("decision_side") or "").strip() or None,
+                    "base_lifecycle_state": base_lifecycle_state,
+                    "operational_status": operational_status,
+                    "lifecycle_state": lifecycle_state,
+                    "progression_allowed": progression_allowed,
+                    "status": item_status,
+                    "errors": item_errors,
+                }
+            )
+
+        lifecycle_status = str(resolved_lifecycle.get("status") or "error")
+        status = (
+            "error"
+            if lifecycle_status == "error"
+            else "warning"
+            if lifecycle_status == "warning" or lifecycle_operational_by_symbol
+            else "valid"
+        )
+        return {
+            "contract_version": BOT_LIFECYCLE_OPERATIONAL_CONTRACT_VERSION,
+            "bot_id": bot_id,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "policy_state": resolved_policy_state,
+            "runtime_contract_version": str(resolved_runtime.get("contract_version") or BOT_RUNTIME_CONTRACT_VERSION),
+            "lifecycle_contract_version": str(
+                resolved_lifecycle.get("contract_version") or BOT_LIFECYCLE_MIN_CONTRACT_VERSION
+            ),
+            "lifecycle_status": lifecycle_status,
+            "execution_ready": bool(resolved_lifecycle.get("execution_ready", False)),
+            "allowed_trade_symbols": [
+                str(item)
+                for item in (resolved_lifecycle.get("allowed_trade_symbols") or [])
+                if str(item).strip()
+            ],
+            "rejected_trade_symbols": [
+                str(item)
+                for item in (resolved_lifecycle.get("rejected_trade_symbols") or [])
+                if str(item).strip()
+            ],
+            "lifecycle_operational_by_symbol": dict(lifecycle_operational_by_symbol),
+            "progressing_symbols": progressing_symbols,
+            "blocked_symbols": blocked_symbols,
+            "progression_allowed": bool(progressing_symbols),
+            "items": items,
+            "reason_codes": sorted(reason_codes),
+            "status": status,
+            "errors": list(dict.fromkeys(item for item in errors if str(item).strip())),
+            "storage_fields": list(BOT_LIFECYCLE_OPERATIONAL_STORAGE_FIELDS),
+            "api": {
+                "detail_path": f"/api/v1/bots/{bot_id}",
+                "lifecycle_path": f"/api/v1/bots/{bot_id}/lifecycle",
+                "lifecycle_operational_path": f"/api/v1/bots/{bot_id}/lifecycle-operational",
+                "runtime_path": f"/api/v1/bots/{bot_id}/runtime",
+                "policy_state_path": f"/api/v1/bots/{bot_id}/policy-state",
+                "decision_log_path": f"/api/v1/bots/{bot_id}/decision-log",
+            },
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
 
     def bot_lifecycle_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
@@ -5952,6 +6133,31 @@ def risk_hooks(context):
             bot,
             policy_state=policy_state,
             runtime=runtime,
+        )
+
+    def bot_lifecycle_operational_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        policy_state = self._bot_policy_state_payload(bot, pool_payload=pool_payload)
+        strategy_selection = self._bot_strategy_selection_payload(bot)
+        signal_consolidation = self._bot_signal_consolidation_payload(bot)
+        runtime = self._bot_runtime_payload(
+            bot,
+            pool_payload=pool_payload,
+            policy_state=policy_state,
+            selection=strategy_selection,
+            signal_consolidation=signal_consolidation,
+        )
+        lifecycle = self._bot_lifecycle_payload(
+            bot,
+            policy_state=policy_state,
+            runtime=runtime,
+        )
+        return self._bot_lifecycle_operational_payload(
+            bot,
+            policy_state=policy_state,
+            runtime=runtime,
+            lifecycle=lifecycle,
         )
 
     def bot_multi_symbol_or_404(self, bot_id: str) -> dict[str, Any]:
@@ -6057,6 +6263,7 @@ def risk_hooks(context):
             "status",
             "pool_strategy_ids",
             "strategy_eligibility_by_symbol",
+            "lifecycle_operational_by_symbol",
             "universe_name",
             "universe",
             "max_live_symbols",
@@ -6234,6 +6441,9 @@ def risk_hooks(context):
             "strategy_selection_by_symbol": self._normalize_bot_strategy_selection_map(
                 row.get("strategy_selection_by_symbol")
             ),
+            "lifecycle_operational_by_symbol": self._normalize_bot_lifecycle_operational_map(
+                row.get("lifecycle_operational_by_symbol")
+            ),
             "universe_name": universe_name,
             "universe": universe,
             "max_live_symbols": max_live_symbols,
@@ -6294,6 +6504,7 @@ def risk_hooks(context):
                 "signal_consolidation_fields": list(BOT_SIGNAL_CONSOLIDATION_STORAGE_FIELDS),
                 "runtime_fields": list(BOT_RUNTIME_STORAGE_FIELDS),
                 "lifecycle_fields": list(BOT_LIFECYCLE_MIN_STORAGE_FIELDS),
+                "lifecycle_operational_fields": list(BOT_LIFECYCLE_OPERATIONAL_STORAGE_FIELDS),
             },
             "api": dict(BOT_REGISTRY_API_SURFACE),
             "defaults": {
@@ -6310,6 +6521,7 @@ def risk_hooks(context):
                 "pool_strategy_ids": [],
                 "strategy_eligibility_by_symbol": {},
                 "strategy_selection_by_symbol": {},
+                "lifecycle_operational_by_symbol": {},
                 "max_live_symbols": 1,
                 "capital_base_usd": float(BOT_DEFAULT_CAPITAL_BASE_USD),
                 "risk_profile": BOT_DEFAULT_RISK_PROFILE,
@@ -6476,6 +6688,29 @@ def risk_hooks(context):
                     "execution_ready",
                     "allowed_trade_symbols",
                     "rejected_trade_symbols",
+                    "progressing_symbols",
+                    "blocked_symbols",
+                    "items",
+                    "api",
+                    "status",
+                    "errors",
+                ],
+            },
+            "lifecycle_operational": {
+                "contract_version": BOT_LIFECYCLE_OPERATIONAL_CONTRACT_VERSION,
+                "storage_fields": list(BOT_LIFECYCLE_OPERATIONAL_STORAGE_FIELDS),
+                "statuses": list(BOT_LIFECYCLE_OPERATIONAL_STATUSES),
+                "reason_codes": list(BOT_LIFECYCLE_OPERATIONAL_REASON_CODES),
+                "fields": [
+                    "bot_id",
+                    "policy_state",
+                    "runtime_contract_version",
+                    "lifecycle_contract_version",
+                    "lifecycle_status",
+                    "execution_ready",
+                    "allowed_trade_symbols",
+                    "rejected_trade_symbols",
+                    "lifecycle_operational_by_symbol",
                     "progressing_symbols",
                     "blocked_symbols",
                     "items",
@@ -7477,10 +7712,17 @@ def risk_hooks(context):
                 signal_consolidation=signal_consolidation,
             )
             payload["runtime"] = runtime_payload
-            payload["lifecycle"] = self._bot_lifecycle_payload(
+            lifecycle_payload = self._bot_lifecycle_payload(
                 row,
                 policy_state=policy_state,
                 runtime=runtime_payload,
+            )
+            payload["lifecycle"] = lifecycle_payload
+            payload["lifecycle_operational"] = self._bot_lifecycle_operational_payload(
+                row,
+                policy_state=policy_state,
+                runtime=runtime_payload,
+                lifecycle=lifecycle_payload,
             )
             bot_id = str(row.get("id") or "")
             payload["metrics"] = self._bot_metrics(
@@ -7608,6 +7850,7 @@ def risk_hooks(context):
                 "pool_strategy_ids": validated_pool_strategy_ids,
                 "strategy_eligibility_by_symbol": resolved_strategy_eligibility,
                 "strategy_selection_by_symbol": resolved_strategy_selection,
+                "lifecycle_operational_by_symbol": {},
                 "universe_name": symbol_assignment["universe_name"],
                 "universe": symbol_assignment["universe"],
                 "max_live_symbols": symbol_assignment["max_live_symbols"],
@@ -7687,6 +7930,7 @@ def risk_hooks(context):
         pool_strategy_ids: list[str] | None = None,
         strategy_eligibility_by_symbol: dict[str, list[str]] | None = None,
         strategy_selection_by_symbol: dict[str, str] | None = None,
+        lifecycle_operational_by_symbol: dict[str, str] | None = None,
         universe: list[str] | None = None,
         notes: str | None = None,
         actor: str | None = None,
@@ -7720,6 +7964,7 @@ def risk_hooks(context):
                     pool_strategy_ids,
                     strategy_eligibility_by_symbol,
                     strategy_selection_by_symbol,
+                    lifecycle_operational_by_symbol,
                     universe_name,
                     universe,
                     max_live_symbols,
@@ -7847,6 +8092,17 @@ def risk_hooks(context):
                 strategy_selection_by_symbol=strategy_selection_by_symbol,
                 strategies_index=strategy_index,
             )
+        if (
+            lifecycle_operational_by_symbol is not None
+            or domain_type is not None
+            or universe_name is not None
+            or universe is not None
+            or max_live_symbols is not None
+        ):
+            patched["lifecycle_operational_by_symbol"] = self._resolve_bot_lifecycle_operational_map(
+                row=patched,
+                lifecycle_operational_by_symbol=lifecycle_operational_by_symbol,
+            )
         if notes is not None:
             patched["notes"] = notes
         current_registry_status = self._normalize_bot_registry_status(str(current.get("registry_status") or "active"))
@@ -7914,6 +8170,101 @@ def risk_hooks(context):
             },
         )
         return rows[idx]
+
+    def _resolve_bot_lifecycle_operational_map(
+        self,
+        *,
+        row: dict[str, Any],
+        lifecycle_operational_by_symbol: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        current_mapping = self._normalize_bot_lifecycle_operational_map(
+            row.get("lifecycle_operational_by_symbol")
+        )
+        candidate_symbols = self._normalize_bot_assigned_symbols(row.get("universe"))
+        candidate_symbol_set = set(candidate_symbols)
+        if lifecycle_operational_by_symbol is None:
+            return {
+                symbol: status
+                for symbol, status in current_mapping.items()
+                if symbol in candidate_symbol_set
+            }
+        if not isinstance(lifecycle_operational_by_symbol, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="lifecycle_operational_by_symbol debe ser un objeto symbol -> active|paused",
+            )
+        out: dict[str, str] = {}
+        invalid_symbols: list[str] = []
+        invalid_statuses: list[str] = []
+        for raw_symbol, raw_status in lifecycle_operational_by_symbol.items():
+            symbol = str(raw_symbol or "").strip().upper()
+            if not symbol:
+                continue
+            if symbol not in candidate_symbol_set:
+                invalid_symbols.append(symbol)
+                continue
+            status = str(raw_status or "").strip().lower()
+            if status not in BOT_LIFECYCLE_OPERATIONAL_STATUSES:
+                invalid_statuses.append(f"{symbol}={raw_status}")
+                continue
+            if status == "paused":
+                out[symbol] = status
+        if invalid_symbols:
+            invalid_label = ", ".join(sorted(set(invalid_symbols)))
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "lifecycle_operational_by_symbol contiene simbolos fuera del universe actual: "
+                    f"{invalid_label}"
+                ),
+            )
+        if invalid_statuses:
+            invalid_label = ", ".join(sorted(set(invalid_statuses)))
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "lifecycle_operational_by_symbol solo admite estados active|paused: "
+                    f"{invalid_label}"
+                ),
+            )
+        return out
+
+    def patch_bot_lifecycle_operational(
+        self,
+        bot_id: str,
+        *,
+        lifecycle_operational_by_symbol: dict[str, str] | None = None,
+        actor: str | None = None,
+        change_source: str = "bot_lifecycle_operational_api",
+    ) -> dict[str, Any]:
+        bot = self.patch_bot_instance(
+            bot_id,
+            lifecycle_operational_by_symbol=lifecycle_operational_by_symbol,
+            actor=actor,
+            change_source=change_source,
+        )
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        policy_state = self._bot_policy_state_payload(bot, pool_payload=pool_payload)
+        strategy_selection = self._bot_strategy_selection_payload(bot)
+        signal_consolidation = self._bot_signal_consolidation_payload(bot)
+        runtime = self._bot_runtime_payload(
+            bot,
+            pool_payload=pool_payload,
+            policy_state=policy_state,
+            selection=strategy_selection,
+            signal_consolidation=signal_consolidation,
+        )
+        lifecycle = self._bot_lifecycle_payload(
+            bot,
+            policy_state=policy_state,
+            runtime=runtime,
+        )
+        return self._bot_lifecycle_operational_payload(
+            bot,
+            policy_state=policy_state,
+            runtime=runtime,
+            lifecycle=lifecycle,
+        )
 
     def get_bot_instance(
         self,
@@ -15208,6 +15559,30 @@ def create_app() -> FastAPI:
             "bot_id": bot_id,
             "lifecycle": store.bot_lifecycle_or_404(bot_id),
         }
+
+    @app.get("/api/v1/bots/{bot_id}/lifecycle-operational")
+    def bot_lifecycle_operational(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "lifecycle_operational": store.bot_lifecycle_operational_or_404(bot_id),
+        }
+
+    @app.patch("/api/v1/bots/{bot_id}/lifecycle-operational")
+    def patch_bot_lifecycle_operational(
+        bot_id: str,
+        body: BotLifecycleOperationalPatchBody,
+        user: dict[str, str] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        if body.lifecycle_operational_by_symbol is None:
+            raise HTTPException(status_code=400, detail="lifecycle_operational_by_symbol es requerido")
+        lifecycle_operational = store.patch_bot_lifecycle_operational(
+            bot_id,
+            lifecycle_operational_by_symbol=body.lifecycle_operational_by_symbol,
+            actor=user.get("username", "admin"),
+            change_source="bot_lifecycle_operational_api",
+        )
+        _invalidate_bots_overview_cache()
+        return {"ok": True, "bot_id": bot_id, "lifecycle_operational": lifecycle_operational}
 
     @app.post("/api/v1/bots/{bot_id}/archive")
     def archive_bot(bot_id: str, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
