@@ -2,6 +2,27 @@
 
 ## 2026-04-21
 
+### Canonizacion posterior a RTLOPS-82
+- Revalidacion real:
+  - repo + docs/truth + Linear confirman el cierre de `RTLOPS-82`
+  - `rtlops81/v1` ya deja un primer consumidor real de `lifecycle_operational`
+  - no existia todavia una sucesora explicita posterior a `RTLOPS-82`
+- Canonizacion explicita:
+  - por decision humana del usuario se fija `RTLOPS-83`:
+    - `Bot Multi-Symbol — segundo consumidor mínimo de lifecycle_operational`
+  - el scope minimo queda acotado a una segunda surface minima operativa sobre `rtlops81/v1`, distinta de `execution/page.tsx`
+  - se mantienen fuera `live console`, LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Sync administrativo:
+  - se crea `RTLOPS-83` en Linear
+  - queda en `Backlog` como hija explicita de `RTLOPS-68`
+- Documentos actualizados:
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Limites honestos:
+  - este bloque no implementa producto
+  - no toca `main`
+  - solo canoniza la sucesora posterior a `RTLOPS-82`
+
 ### RTLOPS-82 - primer consumidor real de lifecycle_operational
 - Cambio real aplicado en frontend mínimo:
   - `rtlab_dashboard/src/app/(app)/execution/page.tsx`

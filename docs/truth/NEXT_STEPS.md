@@ -1,6 +1,36 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-20
+Fecha: 2026-04-21
+
+## Preflight posterior a RTLOPS-82 - sucesora canonizada - 2026-04-21
+- [x] Revalidar que `RTLOPS-82` ya cierra el primer consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
+  - `execution/page.tsx` ya consume `GET/PATCH /api/v1/bots/{bot_id}/lifecycle-operational`
+  - la primera surface minima operativa ya quedo absorbida en repo/docs/tests
+  - el contrato `rtlops81/v1` ya tiene un consumidor real y auditable sin abrir dominios mayores
+- [x] Revalidar que el siguiente gap minimo del frente sigue acotado:
+  - el siguiente delta ya no es `live console`
+  - no es LIVE lateral
+  - no es lifecycle completo entre entornos
+  - no requiere refactor transversal
+- [x] Canonizacion explicita de la sucesora:
+  - por decision humana explicita del usuario se fija `RTLOPS-83`:
+    - `Bot Multi-Symbol — segundo consumidor mínimo de lifecycle_operational`
+  - ese slice debe resolver solo:
+    - segundo consumidor minimo de `lifecycle_operational`
+    - segunda surface minima operativa distinta del primer consumidor en `execution/page.tsx`
+    - wiring minimo, chico y auditable sobre `rtlops81/v1`
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-83` y resolver solo el segundo consumidor minimo de `lifecycle_operational` sobre `rtlops81/v1`
+  - resolver ahi solo:
+    - segunda surface minima operativa distinta de `execution/page.tsx`
+    - lectura/consumo minimo y auditable de `lifecycle_operational`
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols` / `rejected_trade_symbols`)
+  - mantener fuera de ese bloque:
+    - `live console`
+    - LIVE lateral
+    - lifecycle completo entre entornos
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
 
 ## Siguiente paso exacto despues de RTLOPS-82 - 2026-04-21
 - [x] Fundar el primer consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
@@ -27,14 +57,10 @@ Fecha: 2026-04-20
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
   - `npm.cmd run typecheck` -> PASS
   - `npm.cmd run build` -> PASS
-- [ ] Siguiente paso exacto recomendado:
-  - abrir un preflight fail-closed posterior a `RTLOPS-82` para decidir el siguiente slice minimo correcto sobre `rtlops81/v1`
-  - mantener fuera de ese preflight:
-    - `live console`
-    - LIVE lateral
-    - lifecycle completo entre entornos
-    - cualquier cleanup administrativo no necesario
-    - cualquier refactor transversal
+- [x] Preflight fail-closed posterior ya resuelto:
+  - repo + docs/truth + Linear revalidados sobre la punta real que cierra `RTLOPS-82`
+  - no existia todavia una hija explicita posterior y la continuidad quedaba ambigua
+  - por decision humana explicita del usuario se canoniza `RTLOPS-83` como sucesora minima del frente
 
 ## Siguiente paso exacto despues de RTLOPS-81 - 2026-04-20
 - [x] Fundar los contratos minimos de lifecycle operativo por simbolo sobre `rtlops80/v1`:
