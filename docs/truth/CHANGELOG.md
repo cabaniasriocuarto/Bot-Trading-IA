@@ -2,6 +2,19 @@
 
 ## 2026-04-21
 
+### Preflight posterior a RTLOPS-84 - cadena minima cerrada
+- Revalidacion real:
+  - `rtlops81/v1` ya tiene tres consumidores reales y auditables en `execution/page.tsx`, `strategies/page.tsx` y `backtests/page.tsx`
+  - no aparece una cuarta surface natural comparable en el repo para seguir la cadena minima de `lifecycle_operational`
+  - por lo tanto, la cadena de consumidores minimos queda cerrada en `RTLOPS-84`
+- Dominio siguiente:
+  - Linear muestra `RTLOPS-69` (`live console`) como backlog real del mismo proyecto
+  - pero repo + `docs/truth` todavia no sostienen con honestidad que ese sea el siguiente dominio correcto del programa
+  - tampoco queda canonizado todavia otro dominio siguiente
+- Regla canonica:
+  - no se inventa `RTLOPS-85`
+  - el dominio siguiente queda fail-closed hasta nueva canonizacion explicita
+
 ### RTLOPS-84 - tercer consumidor minimo de lifecycle_operational
 - Cambio real aplicado en frontend minimo:
   - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`

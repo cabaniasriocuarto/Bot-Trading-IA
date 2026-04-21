@@ -2,6 +2,23 @@
 
 Fecha: 2026-04-21
 
+## Preflight posterior a RTLOPS-84 - cadena minima cerrada - 2026-04-21
+- [x] Revalidar el agotamiento de la cadena de consumidores minimos:
+  - `rtlops81/v1` ya tiene tres consumidores reales y auditables en:
+    - `execution/page.tsx`
+    - `strategies/page.tsx`
+    - `backtests/page.tsx`
+  - no aparece una cuarta surface natural comparable en el dashboard para seguir estirando la cadena minima de `lifecycle_operational`
+  - por lo tanto, la cadena de consumidores minimos queda cerrada en `RTLOPS-84`
+- [x] Revalidar el estado del dominio siguiente sin inventar backlog:
+  - Linear muestra `RTLOPS-69` (`live console`) como backlog real del mismo proyecto
+  - pero repo + `docs/truth` todavia no sostienen con honestidad que `live console` sea la sucesora inmediata del programa
+  - tampoco queda sostenido todavia un dominio siguiente alternativo en `monitoring / health / alerts`, lifecycle operativo mas amplio o lifecycle completo entre entornos
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un bloque de canonizacion del dominio posterior al cierre de la cadena minima
+  - decidir, con repo + `docs/truth` + Linear, si corresponde promover `RTLOPS-69` (`live console`) u otro dominio explicito del backlog real
+  - mantener fail-closed si ese dominio siguiente no queda sostenido con evidencia suficiente
+
 ## Siguiente paso exacto despues de RTLOPS-84 - 2026-04-21
 - [x] Fundar el tercer consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
   - `backtests/page.tsx` ya consume `selectedMassBot.lifecycle_operational` como tercera surface minima operativa distinta de `execution/page.tsx` y `strategies/page.tsx`
@@ -27,14 +44,10 @@ Fecha: 2026-04-21
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
   - `npm.cmd run typecheck` -> PASS
   - `npm.cmd run build` -> PASS
-- [ ] Siguiente paso exacto recomendado:
-  - abrir un preflight fail-closed posterior a `RTLOPS-84`
-  - decidir si corresponde un cuarto consumidor minimo de `lifecycle_operational` sobre `rtlops81/v1` o un recorte explicito distinto
-  - mantener fuera:
-    - `live console`
-    - LIVE lateral
-    - lifecycle completo entre entornos
-    - cualquier refactor transversal
+- [x] Siguiente paso exacto recomendado:
+  - se ejecuto el preflight fail-closed posterior a `RTLOPS-84`
+  - la cadena de consumidores minimos queda cerrada en `RTLOPS-84`
+  - el dominio siguiente del programa todavia no queda canonizado con honestidad
 
 ## Preflight posterior a RTLOPS-83 - sucesora canonizada - 2026-04-21
 - [x] Revalidar que `RTLOPS-83` ya cierra el segundo consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
