@@ -2,6 +2,39 @@
 
 Fecha: 2026-04-21
 
+## Preflight posterior a RTLOPS-83 - sucesora canonizada - 2026-04-21
+- [x] Revalidar que `RTLOPS-83` ya cierra el segundo consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
+  - `strategies/page.tsx` ya consume `bot.lifecycle_operational` como segunda surface minima operativa
+  - el contrato `rtlops81/v1` ya tiene dos consumidores reales y auditables sin abrir dominios mayores
+  - las surfaces vivas quedan hoy en:
+    - `execution/page.tsx`
+    - `strategies/page.tsx`
+- [x] Revalidar que el siguiente gap minimo del frente sigue acotado:
+  - el siguiente delta ya no es `live console`
+  - no es LIVE lateral
+  - no es lifecycle completo entre entornos
+  - no requiere refactor transversal
+- [x] Canonizacion explicita de la sucesora:
+  - por decision humana explicita del usuario se fija `RTLOPS-84`:
+    - `Bot Multi-Symbol — tercer consumidor mínimo de lifecycle_operational`
+  - ese slice debe resolver solo:
+    - tercer consumidor minimo de `lifecycle_operational`
+    - tercera surface minima operativa en `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - wiring minimo, chico y auditable sobre `rtlops81/v1`
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols` / `rejected_trade_symbols`)
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-84` y resolver solo el tercer consumidor minimo de `lifecycle_operational` sobre `rtlops81/v1`
+  - resolver ahi solo:
+    - surface minima operativa en `backtests/page.tsx`, distinta de `execution/page.tsx` y `strategies/page.tsx`
+    - lectura/consumo minimo y auditable de `lifecycle_operational`
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols` / `rejected_trade_symbols`)
+  - mantener fuera de ese bloque:
+    - `live console`
+    - LIVE lateral
+    - lifecycle completo entre entornos
+    - cualquier cleanup administrativo no necesario
+    - cualquier refactor transversal
+
 ## Siguiente paso exacto despues de RTLOPS-83 - 2026-04-21
 - [x] Fundar el segundo consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
   - `strategies/page.tsx` ahora consume `bot.lifecycle_operational` en una segunda surface minima operativa distinta de `execution/page.tsx`
@@ -32,14 +65,8 @@ Fecha: 2026-04-21
   - `npm.cmd run typecheck` -> PASS
   - `npm.cmd run build` -> PASS
 - [ ] Siguiente paso exacto recomendado:
-  - abrir un preflight fail-closed posterior a `RTLOPS-83` para decidir el siguiente slice minimo correcto sobre `rtlops81/v1`
-  - revalidar ahi, con repo + docs/truth + Linear, si corresponde abrir un tercer consumidor minimo o si el frente necesita otro recorte explicito
-  - mantener fuera de ese preflight:
-    - `live console`
-    - LIVE lateral
-    - lifecycle completo entre entornos
-    - cualquier cleanup administrativo no necesario
-    - cualquier refactor transversal
+  - el preflight fail-closed posterior a `RTLOPS-83` ya quedo resuelto
+  - por decision humana explicita del usuario se canoniza `RTLOPS-84` como sucesora minima del frente
 
 ## Preflight posterior a RTLOPS-82 - sucesora canonizada - 2026-04-21
 - [x] Revalidar que `RTLOPS-82` ya cierra el primer consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:

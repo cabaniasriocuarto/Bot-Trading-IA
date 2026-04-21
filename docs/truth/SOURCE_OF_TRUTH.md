@@ -2,6 +2,28 @@
 
 Fecha de actualizacion: 2026-04-21
 
+## Preflight posterior a RTLOPS-83 - sucesora canonizada - 2026-04-21
+
+- Estado real confirmado en esta rama:
+  - `RTLOPS-83` ya deja consumido `lifecycle_operational` en una segunda surface minima operativa sobre `rtlops81/v1`;
+  - repo + docs/truth + Linear sostienen el cierre de `RTLOPS-83`, pero no sostenian todavia una hija explicita posterior;
+  - para destrabar esa ambiguedad sin abrir un frente mayor, el usuario canoniza explicitamente la sucesora correcta del frente.
+- Regla canonica resultante:
+  - la sucesora correcta inmediata de `RTLOPS-83` es `RTLOPS-84`:
+    - `Bot Multi-Symbol — tercer consumidor mínimo de lifecycle_operational`;
+  - ese slice debe resolver solo:
+    - tercer consumidor minimo de `lifecycle_operational`;
+    - tercera surface minima operativa ubicada en `rtlab_dashboard/src/app/(app)/backtests/page.tsx`;
+    - wiring minimo, chico y auditable sobre `rtlops81/v1`;
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols` / `rejected_trade_symbols`).
+- Fuera de alcance mantenido a proposito:
+  - `live console`;
+  - LIVE lateral;
+  - lifecycle completo `backtest/shadow/paper/testnet/live`;
+  - refactor transversal.
+- Estado administrativo revalidado:
+  - `RTLOPS-84` queda creada en `Backlog` como hija explicita de `RTLOPS-68`.
+
 ## RTLOPS-83 - segundo consumidor minimo de lifecycle_operational - 2026-04-21
 
 - Estado real confirmado en esta rama:
