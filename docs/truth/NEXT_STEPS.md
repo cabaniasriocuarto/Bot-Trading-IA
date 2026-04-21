@@ -26,10 +26,20 @@ Fecha: 2026-04-20
   - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
   - `npm.cmd run build` -> PASS
   - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+- [x] Preflight fail-closed posterior ya resuelto:
+  - repo + docs/truth + Linear revalidados sobre la punta real que cierra `RTLOPS-80`
+  - `rtlops80/v1` ya resuelve `lifecycle` minimo derivado y auditable, pero el dominio sigue con `storage_fields=[]`
+  - `RTLOPS-69` (`live console`) y `RTLRESE-25` (lifecycle completo entre entornos) sobrealcanzan y no corresponden como sucesora directa
+  - el gap dominante real queda en contratos minimos de lifecycle operativo por simbolo sobre `rtlops80/v1`
 - [ ] Siguiente paso exacto recomendado:
-  - abrir un preflight fail-closed posterior a `RTLOPS-80` para decidir el siguiente slice de lifecycle operativo multi-symbol sobre `rtlops80/v1`
-  - revalidar ahi, con repo + docs/truth + Linear, si corresponde ampliar la progresion minima ya cerrada sin abrir lifecycle completo
-  - mantener fuera de ese preflight:
+  - abrir `RTLOPS-81` y resolver solo los contratos minimos de lifecycle operativo por simbolo sobre `rtlops80/v1`
+  - resolver ahi solo:
+    - shape minimo de estado operativo por simbolo
+    - storage/API minimo sin crear una segunda verdad paralela
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols`)
+    - exclusion explicita de `rejected_trade_symbols` con motivo visible
+    - reuse de trazabilidad por simbolo con `runtime_symbol_id`, `selection_key`, `net_decision_key` y `decision_log_scope`
+  - mantener fuera de ese bloque:
     - `live console`
     - ejecucion LIVE lateral
     - lifecycle completo entre entornos

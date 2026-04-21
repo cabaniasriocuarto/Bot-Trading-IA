@@ -2,6 +2,25 @@
 
 ## 2026-04-20
 
+### Preflight posterior a RTLOPS-80 - sucesora canonizada
+- Revalidación real:
+  - repo + docs/truth + Linear confirman el cierre de `RTLOPS-80`
+  - `rtlops80/v1` ya deja un `lifecycle` mínimo derivado y auditable
+  - el contrato actual sigue con `storage_fields=[]`, así que el gap mínimo restante no es visual ni cross-environment sino de lifecycle operativo por símbolo
+  - `RTLOPS-69` (`live console`) y `RTLRESE-25` (lifecycle completo entre entornos) se mantienen fuera por sobrealcance
+- Sync administrativo:
+  - se crea `RTLOPS-81` en Linear:
+    - `Bot Multi-Symbol — contratos mínimos de lifecycle operativo por símbolo`
+  - queda en `Backlog` como hija explícita de `RTLOPS-68`
+- Siguiente paso exacto fijado:
+  - abrir `RTLOPS-81`
+  - resolver solo shape mínimo + storage/API mínimo del lifecycle operativo por símbolo sobre `rtlops80/v1`
+  - mantener fuera `live console`, ejecución LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Límites honestos:
+  - este bloque no implementa producto
+  - no toca `main`
+  - solo canoniza la sucesora posterior a `RTLOPS-80`
+
 ### RTLOPS-80 - lifecycle minimo multi-symbol
 - Cambio real aplicado en backend/API/frontend minimo:
   - `rtlab_autotrader/rtlab_core/web/app.py`

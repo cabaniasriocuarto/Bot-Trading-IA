@@ -51,6 +51,31 @@ Fecha de actualizacion: 2026-04-20
   - `npm.cmd run build` -> PASS
   - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
 
+## Preflight posterior a RTLOPS-80 - sucesora canonizada - 2026-04-20
+
+- Estado real confirmado en esta rama:
+  - `RTLOPS-80` ya deja resuelto quien progresa, quien queda bloqueado y quien queda rechazado dentro del subset multi-symbol;
+  - el contrato `rtlops80/v1` ya es consumible, pero `lifecycle` sigue siendo una capa derivada y auditable con `storage_fields=[]`;
+  - el siguiente delta minimo del frente ya no es `live console` ni lifecycle completo entre entornos: es explicitar los contratos minimos de lifecycle operativo por simbolo sobre esa base.
+- Regla canonica resultante:
+  - la sucesora correcta inmediata de `RTLOPS-80` es `RTLOPS-81`:
+    - `Bot Multi-Symbol — contratos mínimos de lifecycle operativo por símbolo`;
+  - ese slice debe resolver solo:
+    - shape minimo de estado operativo por simbolo;
+    - storage/API minimo sin crear una segunda verdad paralela;
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols`);
+    - exclusion explicita de `rejected_trade_symbols` con motivo visible;
+    - reuse de `runtime_symbol_id`, `selection_key`, `net_decision_key` y `decision_log_scope`.
+- Fuera de alcance mantenido a proposito:
+  - `live console`;
+  - ejecucion LIVE lateral por simbolo;
+  - lifecycle completo `backtest/shadow/paper/testnet/live`;
+  - scheduler/engine nuevo por fuera del contrato actual;
+  - refactor transversal.
+- Estado administrativo revalidado:
+  - `RTLOPS-79` y `RTLOPS-80` siguen en `Done` en Linear;
+  - `RTLOPS-81` queda creada en `Backlog` como hija explicita de `RTLOPS-68`.
+
 ## Preflight posterior a RTLOPS-79 - lifecycle minimo multi-symbol - 2026-04-20
 
 - Estado real confirmado en esta rama:
