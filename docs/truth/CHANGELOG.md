@@ -2,6 +2,29 @@
 
 ## 2026-04-21
 
+### RTLOPS-83 - segundo consumidor minimo de lifecycle_operational
+- Cambio real aplicado en frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - consume `bot.lifecycle_operational` como segunda surface minima operativa distinta de `execution/page.tsx`
+    - expone `allowed_trade_symbols`, `rejected_trade_symbols`, `progressing_symbols` y `lifecycle_operational_by_symbol`
+    - muestra trazabilidad minima por simbolo con `runtime_symbol_id`, `selection_key` y `net_decision_key`
+    - deja visible `base_lifecycle_state`, `operational_status`, `lifecycle_state` y errores por simbolo
+    - deriva a `Execution` para overrides puntuales sin duplicar el primer consumidor
+  - `rtlab_dashboard/src/lib/lifecycle-operational.ts`
+    - agrega helpers puros para resumir y ordenar el contrato `lifecycle_operational`
+  - `rtlab_dashboard/src/lib/lifecycle-operational.test.ts`
+    - cubre el resumen canonico del segundo consumidor minimo
+- Tests corridos:
+  - `npm.cmd test -- --run src/lib/lifecycle-operational.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre LIVE lateral
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se cambia el contrato backend ya canonico
+
 ### Canonizacion posterior a RTLOPS-82
 - Revalidacion real:
   - repo + docs/truth + Linear confirman el cierre de `RTLOPS-82`

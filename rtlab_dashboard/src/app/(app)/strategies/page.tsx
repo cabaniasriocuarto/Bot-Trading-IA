@@ -23,6 +23,7 @@ import {
 } from "@/lib/bot-registry";
 import type { BotRegistryDraft } from "@/lib/bot-registry";
 import { apiGet, apiPatch, apiPost } from "@/lib/client-api";
+import { summarizeLifecycleOperational } from "@/lib/lifecycle-operational";
 import type {
   BacktestRun,
   BotInstance,
@@ -2503,6 +2504,7 @@ export default function StrategiesPage() {
                       const selectionResolvedCount = Object.keys(selectionModel?.selected_strategy_by_symbol || {}).length;
                       const signalConsolidationModel = bot.signal_consolidation;
                       const signalConsolidationResolvedCount = Object.keys(signalConsolidationModel?.net_decision_by_symbol || {}).length;
+                      const lifecycleOperationalSummary = summarizeLifecycleOperational(bot.lifecycle_operational);
                       const registryDraftUniverse = (registryDraft.universe || [])
                         .map((item) => String(item || "").trim().toUpperCase())
                         .filter((item) => item.length > 0)
@@ -2547,6 +2549,11 @@ export default function StrategiesPage() {
                               </p>
                               <p className={`text-[10px] ${signalConsolidationModel?.status === "valid" ? "text-emerald-300" : "text-amber-300"}`}>
                                 Consolidación: {signalConsolidationModel?.status === "valid" ? `${signalConsolidationResolvedCount} decisiones netas` : "fail-closed"}
+                              </p>
+                              <p className={`text-[10px] ${lifecycleOperationalSummary?.status === "valid" ? "text-emerald-300" : lifecycleOperationalSummary ? "text-amber-300" : "text-slate-500"}`}>
+                                Lifecycle operativo: {lifecycleOperationalSummary
+                                  ? `${lifecycleOperationalSummary.items.length} simbolos auditables · ${lifecycleOperationalSummary.pausedSymbols.length} pausados`
+                                  : "sin consumer visible"}
                               </p>
                               {bot.symbol_assignment_errors?.length ? (
                                 <p className="text-[10px] text-amber-300" title={bot.symbol_assignment_errors.join(" | ")}>
@@ -3365,6 +3372,122 @@ export default function StrategiesPage() {
                                   ) : (
                                     <p className="mt-2 text-[10px] text-slate-500">
                                       Guardá selección válida por símbolo para derivar una decisión neta auditable.
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="rounded border border-slate-800 bg-slate-950/50 p-2">
+                                  <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                                    <span className="uppercase tracking-wide">Lifecycle operativo por símbolo</span>
+                                    <div className="flex flex-wrap gap-2">
+                                      <Badge variant={lifecycleOperationalSummary?.statusVariant || "neutral"}>
+                                        {lifecycleOperationalSummary?.status || "sin datos"}
+                                      </Badge>
+                                      <Badge variant={lifecycleOperationalSummary?.progressionAllowed ? "success" : "warn"}>
+                                        {lifecycleOperationalSummary?.progressionAllowed ? "progresa" : "sin progresion"}
+                                      </Badge>
+                                    </div>
+                                  </div>
+                                  <p className="mt-1 text-[10px] text-slate-500">
+                                    Segundo consumidor minimo de <code>lifecycle_operational</code> sobre <code>rtlops81/v1</code>, distinto de <code>execution/page.tsx</code>.
+                                  </p>
+                                  {lifecycleOperationalSummary ? (
+                                    <div className="mt-2 space-y-2">
+                                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                        <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                                          Allowed: <strong>{lifecycleOperationalSummary.allowedSymbols.length}</strong>
+                                        </div>
+                                        <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                                          Rejected: <strong>{lifecycleOperationalSummary.rejectedSymbols.length}</strong>
+                                        </div>
+                                        <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                                          Progressing: <strong>{lifecycleOperationalSummary.progressingSymbols.length}</strong>
+                                        </div>
+                                        <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                                          Overrides paused: <strong>{lifecycleOperationalSummary.pausedSymbols.length}</strong>
+                                        </div>
+                                      </div>
+                                      <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-[10px] text-slate-400">
+                                        <p>
+                                          Allowed: <strong className="text-slate-200">
+                                            {lifecycleOperationalSummary.allowedSymbols.length
+                                              ? lifecycleOperationalSummary.allowedSymbols.join(", ")
+                                              : "none"}
+                                          </strong>
+                                        </p>
+                                        <p className="mt-1">
+                                          Rejected: <strong className="text-slate-200">
+                                            {lifecycleOperationalSummary.rejectedSymbols.length
+                                              ? lifecycleOperationalSummary.rejectedSymbols.join(", ")
+                                              : "none"}
+                                          </strong>
+                                        </p>
+                                        <p className="mt-1">
+                                          Paused: <strong className="text-slate-200">
+                                            {lifecycleOperationalSummary.pausedSymbols.length
+                                              ? lifecycleOperationalSummary.pausedSymbols.join(", ")
+                                              : "none"}
+                                          </strong>
+                                        </p>
+                                        <p className="mt-2">
+                                          <Link href="/execution" className="text-cyan-300 underline">
+                                            Abrir Execution para overrides puntuales
+                                          </Link>
+                                        </p>
+                                      </div>
+                                      {lifecycleOperationalSummary.errors.length ? (
+                                        <div className="rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                          {lifecycleOperationalSummary.errors.map((item) => (
+                                            <p key={`${bot.id}-lifecycle-operational-error-${item}`}>{item}</p>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                      {lifecycleOperationalSummary.items.length ? (
+                                        <div className="space-y-2">
+                                          {lifecycleOperationalSummary.items.map((item) => (
+                                            <div key={`${bot.id}-lifecycle-operational-${item.symbol}`} className="rounded border border-slate-800 px-2 py-2">
+                                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                                <div>
+                                                  <p className="font-semibold text-slate-100">{item.symbol}</p>
+                                                  <p className="mt-1 text-[10px] text-slate-400">
+                                                    trace: {item.runtimeSymbolId || "-"} · {item.selectionKey || "-"} · {item.netDecisionKey || "-"}
+                                                  </p>
+                                                </div>
+                                                <div className="flex flex-wrap gap-1">
+                                                  <Badge variant={item.baseLifecycleState === "progressing" ? "success" : item.baseLifecycleState === "rejected" ? "neutral" : "warn"}>
+                                                    base:{item.baseLifecycleState}
+                                                  </Badge>
+                                                  <Badge variant={item.operationalStatus === "paused" ? "warn" : "success"}>
+                                                    op:{item.operationalStatus}
+                                                  </Badge>
+                                                  <Badge variant={item.lifecycleState === "progressing" ? "success" : item.lifecycleState === "rejected" ? "neutral" : "warn"}>
+                                                    lifecycle:{item.lifecycleState}
+                                                  </Badge>
+                                                </div>
+                                              </div>
+                                              <p className="mt-2 text-[10px] text-slate-400">
+                                                {item.progressionAllowed ? "Progresion habilitada." : "Progresion bloqueada."}
+                                                {item.selectedStrategyId ? ` · estrategia ${item.selectedStrategyId}` : ""}
+                                                {item.decisionLabel ? ` · decision ${item.decisionLabel}` : ""}
+                                              </p>
+                                              {item.issues.length ? (
+                                                <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                                                  {item.issues.map((issue) => (
+                                                    <p key={`${bot.id}-${item.symbol}-${issue}`}>{issue}</p>
+                                                  ))}
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <p className="text-[10px] text-slate-500">
+                                          Sin items de lifecycle_operational para este bot.
+                                        </p>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <p className="mt-2 text-[10px] text-slate-500">
+                                      Sin lifecycle_operational detallado para este bot.
                                     </p>
                                   )}
                                 </div>

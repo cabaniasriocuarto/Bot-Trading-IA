@@ -2,6 +2,44 @@
 
 Fecha de actualizacion: 2026-04-21
 
+## RTLOPS-83 - segundo consumidor minimo de lifecycle_operational - 2026-04-21
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx` ya consume `bot.lifecycle_operational` como segunda surface minima operativa sobre `rtlops81/v1`;
+  - el segundo consumidor vive en la vista de `Strategies`, distinto del primer consumidor ya cerrado en `execution/page.tsx`;
+  - la UI deja visible, por bot:
+    - `allowed_trade_symbols`
+    - `rejected_trade_symbols`
+    - `progressing_symbols`
+    - `lifecycle_operational_by_symbol`
+    - `items[*].runtime_symbol_id`
+    - `items[*].selection_key`
+    - `items[*].net_decision_key`
+    - `base_lifecycle_state`
+    - `operational_status`
+    - `lifecycle_state`
+    - `selected_strategy_id`
+    - errores canonicos por simbolo
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - agrega la segunda surface minima operativa de `lifecycle_operational` dentro del detalle de cada bot;
+    - deja visible el subset permitido vs rechazado, los overrides pausados y la trazabilidad por simbolo;
+    - mantiene el segundo consumidor en modo lectura/auditoria y deriva a `Execution` para overrides puntuales sin duplicar controles;
+  - `rtlab_dashboard/src/lib/lifecycle-operational.ts`
+    - agrega helpers puros para resumir y ordenar `lifecycle_operational` de forma reusable;
+  - `rtlab_dashboard/src/lib/lifecycle-operational.test.ts`
+    - cubre el resumen canonico del segundo consumidor minimo.
+- Regla canonica reafirmada:
+  - `RTLOPS-83` no abre `live console`;
+  - no abre LIVE lateral;
+  - no abre lifecycle completo `backtest/shadow/paper/testnet/live`;
+  - no cambia el contrato de backend: solo agrega un segundo consumidor real y minimo del contrato ya canonico.
+- Validacion real ejecutada:
+  - `npm.cmd test -- --run src/lib/lifecycle-operational.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+
 ## Preflight posterior a RTLOPS-82 - sucesora canonizada - 2026-04-21
 
 - Estado real confirmado en esta rama:
