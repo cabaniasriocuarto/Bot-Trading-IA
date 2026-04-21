@@ -2,6 +2,40 @@
 
 Fecha: 2026-04-21
 
+## Siguiente paso exacto despues de RTLOPS-84 - 2026-04-21
+- [x] Fundar el tercer consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
+  - `backtests/page.tsx` ya consume `selectedMassBot.lifecycle_operational` como tercera surface minima operativa distinta de `execution/page.tsx` y `strategies/page.tsx`
+  - la surface vive dentro de `Research Batch` y audita, en modo solo lectura, el subset operativo del bot elegido antes de correr batch
+  - deja visible, sobre el universo del bot:
+    - `allowed_trade_symbols`
+    - `rejected_trade_symbols`
+    - `progressing_symbols`
+    - overrides `paused`
+    - simbolos sin dato operativo
+  - por simbolo muestra trazabilidad minima con:
+    - `runtime_symbol_id`
+    - `selected_strategy_id`
+    - issues canonicos por simbolo
+- [x] Mantener el bloque profesional y acotado:
+  - sin tocar el contrato backend ya canonico
+  - sin abrir `live console`
+  - sin abrir LIVE lateral
+  - sin abrir lifecycle completo entre entornos
+  - sin refactor transversal
+- [x] Revalidacion minima real del bloque:
+  - `npm.cmd test -- --run src/lib/lifecycle-operational.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un preflight fail-closed posterior a `RTLOPS-84`
+  - decidir si corresponde un cuarto consumidor minimo de `lifecycle_operational` sobre `rtlops81/v1` o un recorte explicito distinto
+  - mantener fuera:
+    - `live console`
+    - LIVE lateral
+    - lifecycle completo entre entornos
+    - cualquier refactor transversal
+
 ## Preflight posterior a RTLOPS-83 - sucesora canonizada - 2026-04-21
 - [x] Revalidar que `RTLOPS-83` ya cierra el segundo consumidor real de `lifecycle_operational` sobre `rtlops81/v1`:
   - `strategies/page.tsx` ya consume `bot.lifecycle_operational` como segunda surface minima operativa

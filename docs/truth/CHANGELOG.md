@@ -2,6 +2,30 @@
 
 ## 2026-04-21
 
+### RTLOPS-84 - tercer consumidor minimo de lifecycle_operational
+- Cambio real aplicado en frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - consume `selectedMassBot.lifecycle_operational` como tercera surface minima operativa distinta de `execution/page.tsx` y `strategies/page.tsx`
+    - expone el subset operativo del universo del bot con conteos `allowed`, `rejected`, `progressing`, `paused` y simbolos sin dato
+    - deja visible trazabilidad minima por simbolo con `runtime_symbol_id`, `selected_strategy_id` e issues canonicos
+    - mantiene el bloque en modo lectura y no agrega acciones operativas
+  - `rtlab_dashboard/src/lib/lifecycle-operational.ts`
+    - agrega `summarizeLifecycleOperationalUniverse` para resumir el contrato sobre el universo del bot
+  - `rtlab_dashboard/src/lib/lifecycle-operational.test.ts`
+    - cubre el resumen canonico del tercer consumidor minimo en `Backtests`
+- Tests corridos:
+  - `npm.cmd test -- --run src/lib/lifecycle-operational.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre LIVE lateral
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se cambia el contrato backend ya canonico
+- Siguiente paso exacto:
+  - abrir un preflight fail-closed posterior a `RTLOPS-84`
+
 ### Canonizacion posterior a RTLOPS-83
 - Revalidacion real:
   - repo + docs/truth + Linear confirman el cierre de `RTLOPS-83`

@@ -2,6 +2,35 @@
 
 Fecha de actualizacion: 2026-04-21
 
+## RTLOPS-84 - tercer consumidor minimo de lifecycle_operational - 2026-04-21
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx` ya consume `selectedMassBot.lifecycle_operational` como tercera surface minima operativa sobre `rtlops81/v1`;
+  - el tercer consumidor vive en la vista de `Backtests`, dentro del bloque `Research Batch`, y es distinto de los consumidores ya cerrados en `execution/page.tsx` y `strategies/page.tsx`;
+  - la UI deja visible, para el bot seleccionado:
+    - status canonico del lifecycle operativo;
+    - progreso permitido o bloqueado;
+    - conteos de `allowed`, `rejected`, `progressing`, `paused` y simbolos sin dato;
+    - trazabilidad minima por simbolo con `runtime_symbol_id`, `selected_strategy_id` e issues canonicos.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - agrega la tercera surface minima operativa de `lifecycle_operational` dentro del panel del bot usado para `Research Batch`;
+    - mantiene el consumidor en modo lectura/auditoria y no duplica controles operativos de `Execution`;
+  - `rtlab_dashboard/src/lib/lifecycle-operational.ts`
+    - agrega `summarizeLifecycleOperationalUniverse` para resumir el subset operativo sobre el universo del bot;
+  - `rtlab_dashboard/src/lib/lifecycle-operational.test.ts`
+    - cubre el resumen canonico del tercer consumidor minimo en `Backtests`.
+- Regla canonica reafirmada:
+  - `RTLOPS-84` no abre `live console`;
+  - no abre LIVE lateral;
+  - no abre lifecycle completo `backtest/shadow/paper/testnet/live`;
+  - no cambia el contrato backend: solo agrega un tercer consumidor real y minimo del contrato ya canonico.
+- Validacion real ejecutada:
+  - `npm.cmd test -- --run src/lib/lifecycle-operational.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+
 ## Preflight posterior a RTLOPS-83 - sucesora canonizada - 2026-04-21
 
 - Estado real confirmado en esta rama:
