@@ -1,5 +1,28 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-21
+
+### Canonizacion posterior a RTLOPS-81
+- Revalidacion real:
+  - repo + docs/truth + Linear confirman el cierre de `RTLOPS-81`
+  - `rtlops81/v1` ya deja `lifecycle_operational` como contrato valido del frente
+  - no existia todavia una sucesora explicita posterior a `RTLOPS-81`
+- Canonizacion explicita:
+  - por decision humana del usuario se fija `RTLOPS-82`:
+    - `Bot Multi-Symbol — primer consumidor real de lifecycle_operational`
+  - el scope minimo queda acotado a una surface minima operativa sobre `rtlops81/v1`
+  - se mantienen fuera `live console`, LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Sync administrativo:
+  - se crea `RTLOPS-82` en Linear
+  - queda en `Backlog` como hija explicita de `RTLOPS-68`
+- Documentos actualizados:
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Limites honestos:
+  - este bloque no implementa producto
+  - no toca `main`
+  - solo canoniza la sucesora posterior a `RTLOPS-81`
+
 ## 2026-04-20
 
 ### RTLOPS-81 - contratos minimos de lifecycle operativo por simbolo

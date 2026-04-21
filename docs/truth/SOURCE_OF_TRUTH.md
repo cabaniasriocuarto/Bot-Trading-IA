@@ -43,6 +43,28 @@ Fecha de actualizacion: 2026-04-20
   - `npm.cmd run build` -> PASS
   - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
 
+## Preflight posterior a RTLOPS-81 - sucesora canonizada - 2026-04-21
+
+- Estado real confirmado en esta rama:
+  - `RTLOPS-81` ya deja `lifecycle_operational` como capa canonica, auditable y consumible sobre `rtlops81/v1`;
+  - repo + docs/truth + Linear sostienen el cierre de `RTLOPS-81`, pero no sostenian todavia una hija explicita posterior;
+  - para destrabar esa ambiguedad sin abrir un frente mayor, el usuario canoniza explicitamente la sucesora correcta del frente.
+- Regla canonica resultante:
+  - la sucesora correcta inmediata de `RTLOPS-81` es `RTLOPS-82`:
+    - `Bot Multi-Symbol — primer consumidor real de lifecycle_operational`;
+  - ese slice debe resolver solo:
+    - primer consumidor real de `lifecycle_operational`;
+    - surface minima operativa sobre `rtlops81/v1`;
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols` / `rejected_trade_symbols`);
+    - consumo auditable sin abrir un scheduler o engine nuevo.
+- Fuera de alcance mantenido a proposito:
+  - `live console`;
+  - LIVE lateral;
+  - lifecycle completo `backtest/shadow/paper/testnet/live`;
+  - refactor transversal.
+- Estado administrativo revalidado:
+  - `RTLOPS-82` queda creada en `Backlog` como hija explicita de `RTLOPS-68`.
+
 ## RTLOPS-80 - lifecycle minimo multi-symbol - 2026-04-20
 
 - Estado real confirmado en esta rama:

@@ -26,11 +26,20 @@ Fecha: 2026-04-20
   - la continuidad sigue acotada al subset `allowed_trade_symbols`
   - `rejected_trade_symbols` permanecen fuera de progresion con motivo visible
   - se reutiliza la trazabilidad por simbolo con `runtime_symbol_id`, `selection_key`, `net_decision_key` y `decision_log_scope`
+- [x] Preflight fail-closed posterior ya resuelto:
+  - repo + docs/truth + Linear revalidados sobre la punta real que cierra `RTLOPS-81`
+  - `rtlops81/v1` ya deja `lifecycle_operational` como capa canonica y consumible
+  - no existia todavia una hija explicita posterior y la continuidad quedaba ambigua
+  - por decision humana explicita del usuario se canoniza `RTLOPS-82` como sucesora minima del frente
 - [ ] Siguiente paso exacto recomendado:
-  - abrir un preflight fail-closed posterior a `RTLOPS-81` para decidir el siguiente slice de lifecycle operativo multi-symbol sobre `rtlops81/v1`
+  - abrir `RTLOPS-82` y resolver solo el primer consumidor real de `lifecycle_operational` sobre `rtlops81/v1`
+  - resolver ahi solo:
+    - surface minima operativa que consuma `lifecycle_operational`
+    - continuidad acotada al subset ya canonico (`allowed_trade_symbols` / `rejected_trade_symbols`)
+    - consumo auditable sin abrir un scheduler o engine nuevo
   - mantener fuera de ese bloque:
     - `live console`
-    - ejecucion LIVE lateral
+    - LIVE lateral
     - lifecycle completo entre entornos
     - cualquier cleanup administrativo no necesario
     - cualquier refactor transversal
