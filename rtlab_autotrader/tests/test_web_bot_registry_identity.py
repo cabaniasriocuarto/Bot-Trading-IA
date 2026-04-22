@@ -437,6 +437,17 @@ def test_bot_registry_identity_validations(tmp_path: Path, monkeypatch) -> None:
       "no puede superar la cantidad de simbolos asignados",
     ),
     (
+      {
+        "display_name": "Bot Valido",
+        "domain_type": "spot",
+        "universe_name": "core_spot_usdt",
+        "universe": ["BTCUSDT", "ETHUSDT"],
+        "max_live_symbols": 2,
+        "max_positions": 1,
+      },
+      "max_live_symbols no puede superar max_positions",
+    ),
+    (
       {"display_name": "Bot Valido", "domain_type": "spot", "universe_name": "core_usdm_perps", "universe": ["BTCUSDT"], "max_live_symbols": 1},
       "no es compatible con domain_type=spot",
     ),
@@ -515,7 +526,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert res.status_code == 200, res.text
   payload = res.json()
 
-  assert payload["contract_version"] == "rtlops75/v1"
+  assert payload["contract_version"] == "rtlops81/v1"
   assert payload["storage"]["kind"] == "json_file"
   assert payload["storage"]["path"] == "learning/bots.json"
   assert payload["storage"]["stable_id_field"] == "bot_id"
@@ -525,18 +536,25 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["storage"]["strategy_eligibility_fields"] == ["strategy_eligibility_by_symbol"]
   assert payload["storage"]["strategy_selection_fields"] == ["strategy_selection_by_symbol"]
   assert payload["storage"]["signal_consolidation_fields"] == []
+  assert payload["storage"]["runtime_fields"] == []
+  assert payload["storage"]["lifecycle_fields"] == []
+  assert payload["storage"]["lifecycle_operational_fields"] == ["lifecycle_operational_by_symbol"]
   assert payload["api"]["list_path"] == "/api/v1/bots"
   assert payload["api"]["patch_path"] == "/api/v1/bots/{bot_id}"
   assert payload["api"]["multi_symbol_path"] == "/api/v1/bots/{bot_id}/multi-symbol"
   assert payload["api"]["symbol_strategy_eligibility_path"] == "/api/v1/bots/{bot_id}/symbol-strategy-eligibility"
   assert payload["api"]["symbol_strategy_selection_path"] == "/api/v1/bots/{bot_id}/strategy-selection"
   assert payload["api"]["signal_consolidation_path"] == "/api/v1/bots/{bot_id}/signal-consolidation"
+  assert payload["api"]["runtime_path"] == "/api/v1/bots/{bot_id}/runtime"
+  assert payload["api"]["lifecycle_path"] == "/api/v1/bots/{bot_id}/lifecycle"
+  assert payload["api"]["lifecycle_operational_path"] == "/api/v1/bots/{bot_id}/lifecycle-operational"
   assert payload["api"]["policy_state_path"] == "/api/v1/bots/{bot_id}/policy-state"
   assert payload["api"]["decision_log_path"] == "/api/v1/bots/{bot_id}/decision-log"
   assert payload["defaults"]["domain_type"] == "spot"
   assert payload["defaults"]["risk_profile"] == "medium"
   assert payload["defaults"]["strategy_eligibility_by_symbol"] == {}
   assert payload["defaults"]["strategy_selection_by_symbol"] == {}
+  assert payload["defaults"]["lifecycle_operational_by_symbol"] == {}
   assert float(payload["defaults"]["capital_base_usd"]) == 10000.0
   assert float(payload["defaults"]["max_total_exposure_pct"]) == 65.0
   assert int(payload["defaults"]["max_positions"]) == 10
@@ -552,6 +570,9 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "strategy_eligibility_by_symbol" in payload["fields"]["strategy_eligibility"]
   assert "strategy_selection_by_symbol" in payload["fields"]["strategy_selection"]
   assert payload["fields"]["signal_consolidation"] == ["signal_consolidation"]
+  assert payload["fields"]["runtime"] == ["runtime"]
+  assert payload["fields"]["lifecycle"] == ["lifecycle"]
+  assert payload["fields"]["lifecycle_operational"] == ["lifecycle_operational"]
   assert "bot_id" in payload["fields"]["identity"]
   assert "last_change_source" in payload["fields"]["trace"]
   assert payload["multi_symbol"]["contract_version"] == "rtlops72/v1"
@@ -573,6 +594,28 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert "selected_strategy" in payload["signal_consolidation"]["criteria"]
   assert "selected_strategy_signal_unresolved" in payload["signal_consolidation"]["reason_codes"]
   assert "net_decision_by_symbol" in payload["signal_consolidation"]["fields"]
+  assert payload["runtime"]["contract_version"] == "rtlops77/v1"
+  assert payload["runtime"]["storage_fields"] == []
+  assert "signal_consolidation_invalid" in payload["runtime"]["reason_codes"]
+  assert "live_cap_exceeds_max_positions" in payload["runtime"]["reason_codes"]
+  assert "trade_decisions_exceed_live_cap" in payload["runtime"]["reason_codes"]
+  assert "policy_state" in payload["runtime"]["fields"]
+  assert "net_decision_by_symbol" in payload["runtime"]["fields"]
+  assert "caps" in payload["runtime"]["fields"]
+  assert "guardrails" in payload["runtime"]["fields"]
+  assert payload["lifecycle"]["contract_version"] == "rtlops80/v1"
+  assert payload["lifecycle"]["storage_fields"] == []
+  assert "runtime_execution_not_ready" in payload["lifecycle"]["reason_codes"]
+  assert "trade_decisions_exceed_live_cap" in payload["lifecycle"]["reason_codes"]
+  assert "execution_ready" in payload["lifecycle"]["fields"]
+  assert "allowed_trade_symbols" in payload["lifecycle"]["fields"]
+  assert "rejected_trade_symbols" in payload["lifecycle"]["fields"]
+  assert "progressing_symbols" in payload["lifecycle"]["fields"]
+  assert payload["lifecycle_operational"]["contract_version"] == "rtlops81/v1"
+  assert payload["lifecycle_operational"]["storage_fields"] == ["lifecycle_operational_by_symbol"]
+  assert payload["lifecycle_operational"]["statuses"] == ["active", "paused"]
+  assert "symbol_operational_paused" in payload["lifecycle_operational"]["reason_codes"]
+  assert "lifecycle_operational_by_symbol" in payload["lifecycle_operational"]["fields"]
 
 
 def test_bot_multi_symbol_surface_is_canonical_and_fail_closed(tmp_path: Path, monkeypatch) -> None:
@@ -1045,6 +1088,114 @@ def test_bot_signal_consolidation_surface_is_canonical_and_traceable(tmp_path: P
   assert detail_bot["signal_consolidation"]["net_decision_by_symbol"]["ETHUSDT"]["selected_strategy_id"] == pool_ids[1]
 
 
+def test_bot_runtime_surface_is_canonical_and_traceable(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Runtime Canonico",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT", "ETHUSDT"],
+      "max_live_symbols": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0], pool_ids[1]],
+        "ETHUSDT": [pool_ids[0], pool_ids[1]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+        "ETHUSDT": pool_ids[1],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {"runtime_side": "BUY"}
+      row["tags"] = []
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["mean_reversion", "range"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  runtime_res = client.get(f"/api/v1/bots/{bot_id}/runtime", headers=headers)
+  assert runtime_res.status_code == 200, runtime_res.text
+  runtime = runtime_res.json()["runtime"]
+  assert runtime["contract_version"] == "rtlops77/v1"
+  assert runtime["status"] == "valid"
+  assert runtime["storage_fields"] == []
+  assert runtime["caps"] == {
+    "configured_symbols_count": 2,
+    "trade_decisions_count": 2,
+    "max_live_symbols": 2,
+    "max_positions": 10,
+  }
+  assert runtime["guardrails"] == {
+    "status": "valid",
+    "execution_ready": True,
+    "allowed_trade_symbols": ["BTCUSDT", "ETHUSDT"],
+    "rejected_trade_symbols": [],
+    "reason_codes": [],
+    "errors": [],
+    "prioritization_criterion": None,
+  }
+  assert runtime["storage"]["registry"]["path"] == "learning/bots.json"
+  assert runtime["storage"]["decision_log"]["path"] == "console_api.sqlite3"
+  assert runtime["storage"]["runtime_state"]["path"] == "logs/bot_state.json"
+  assert runtime["api"]["runtime_path"] == f"/api/v1/bots/{bot_id}/runtime"
+  assert runtime["api"]["signal_consolidation_path"] == f"/api/v1/bots/{bot_id}/signal-consolidation"
+  assert runtime["selected_strategy_by_symbol"] == {
+    "BTCUSDT": pool_ids[0],
+    "ETHUSDT": pool_ids[1],
+  }
+  assert runtime["net_decision_by_symbol"]["BTCUSDT"]["selected_strategy_id"] == pool_ids[0]
+  assert runtime["net_decision_by_symbol"]["ETHUSDT"]["selected_strategy_id"] == pool_ids[1]
+  items = {str(item["symbol"]): item for item in runtime["items"]}
+  assert items["BTCUSDT"]["runtime_symbol_id"] == f"{bot_id}:BTCUSDT"
+  assert items["BTCUSDT"]["selection_key"] == f"{bot_id}:BTCUSDT:selection"
+  assert items["BTCUSDT"]["net_decision_key"] == f"{bot_id}:BTCUSDT:net_decision"
+  assert items["BTCUSDT"]["decision_action"] == "trade"
+  assert items["BTCUSDT"]["decision_side"] == "BUY"
+  assert items["BTCUSDT"]["decision_log_scope"] == {"bot_id": bot_id, "symbol": "BTCUSDT"}
+  assert items["ETHUSDT"]["decision_reason"] == "strategy_tags_meanreversion"
+  assert items["ETHUSDT"]["agreement_status"] == "conflicted"
+
+  detail_res = client.get(f"/api/v1/bots/{bot_id}", headers=headers)
+  assert detail_res.status_code == 200, detail_res.text
+  detail_bot = detail_res.json()["bot"]
+  assert detail_bot["runtime"]["contract_version"] == "rtlops77/v1"
+  assert detail_bot["runtime"]["items"][0]["runtime_symbol_id"].startswith(f"{bot_id}:")
+
+
 def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_unresolved(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)
@@ -1097,6 +1248,429 @@ def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_
   assert item["net_action"] is None
   assert any(issue["reason_code"] == "selected_strategy_signal_unresolved" for issue in item["errors"])
   assert consolidation["net_decision_by_symbol"] == {}
+
+  runtime_res = client.get(f"/api/v1/bots/{bot_id}/runtime", headers=headers)
+  assert runtime_res.status_code == 200, runtime_res.text
+  runtime = runtime_res.json()["runtime"]
+  assert runtime["status"] == "error"
+  assert "signal_consolidation_invalid" in runtime["reason_codes"]
+  assert runtime["net_decision_by_symbol"] == {}
+  runtime_item = runtime["items"][0]
+  assert runtime_item["status"] == "error"
+  assert runtime_item["decision_action"] is None
+  assert any(issue["reason_code"] == "selected_strategy_signal_unresolved" for issue in runtime_item["errors"])
+
+  lifecycle_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle", headers=headers)
+  assert lifecycle_res.status_code == 200, lifecycle_res.text
+  lifecycle = lifecycle_res.json()["lifecycle"]
+  assert lifecycle["contract_version"] == "rtlops80/v1"
+  assert lifecycle["runtime_contract_version"] == "rtlops77/v1"
+  assert lifecycle["status"] == "error"
+  assert lifecycle["execution_ready"] is False
+  assert lifecycle["allowed_trade_symbols"] == []
+  assert lifecycle["rejected_trade_symbols"] == []
+  assert lifecycle["progressing_symbols"] == []
+  assert lifecycle["blocked_symbols"] == []
+  assert lifecycle["progression_allowed"] is False
+  assert "runtime_execution_not_ready" in lifecycle["reason_codes"]
+  lifecycle_item = lifecycle["items"][0]
+  assert lifecycle_item["lifecycle_state"] == "inactive"
+  assert lifecycle_item["progression_allowed"] is False
+  assert lifecycle_item["status"] == "valid"
+
+
+def test_bot_runtime_prioritizes_trade_subset_when_trade_decisions_exceed_live_cap(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Runtime Guardrails Live Cap",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["ETHUSDT", "BTCUSDT"],
+      "max_live_symbols": 1,
+      "max_positions": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0]],
+        "ETHUSDT": [pool_ids[1]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+        "ETHUSDT": pool_ids[1],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["mean_reversion", "range"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  runtime_res = client.get(f"/api/v1/bots/{bot_id}/runtime", headers=headers)
+  assert runtime_res.status_code == 200, runtime_res.text
+  runtime = runtime_res.json()["runtime"]
+  assert runtime["contract_version"] == "rtlops77/v1"
+  assert runtime["status"] == "warning"
+  assert "trade_decisions_exceed_live_cap" in runtime["reason_codes"]
+  assert runtime["caps"] == {
+    "configured_symbols_count": 2,
+    "trade_decisions_count": 2,
+    "max_live_symbols": 1,
+    "max_positions": 2,
+  }
+  assert runtime["guardrails"] == {
+    "status": "warning",
+    "execution_ready": True,
+    "allowed_trade_symbols": ["ETHUSDT"],
+    "rejected_trade_symbols": ["BTCUSDT"],
+    "reason_codes": ["trade_decisions_exceed_live_cap"],
+    "errors": [
+      "El runtime derivo 2 decisiones trade pero el cap live permitido es 1; se prioriza el subset ejecutable por orden canonico de symbols."
+    ],
+    "prioritization_criterion": "symbol_order",
+  }
+  assert runtime["errors"] == [
+    "El runtime derivo 2 decisiones trade pero el cap live permitido es 1; se prioriza el subset ejecutable por orden canonico de symbols."
+  ]
+  assert len(runtime["net_decision_by_symbol"]) == 2
+  items = {str(item["symbol"]): item for item in runtime["items"]}
+  assert items["ETHUSDT"]["status"] == "valid"
+  assert items["ETHUSDT"]["errors"] == []
+  assert items["BTCUSDT"]["status"] == "error"
+  assert any(issue["reason_code"] == "trade_decisions_exceed_live_cap" for issue in items["BTCUSDT"]["errors"])
+  assert any("priority_rank=2" in str(issue["message"] or "") for issue in items["BTCUSDT"]["errors"])
+
+  lifecycle_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle", headers=headers)
+  assert lifecycle_res.status_code == 200, lifecycle_res.text
+  lifecycle = lifecycle_res.json()["lifecycle"]
+  assert lifecycle["contract_version"] == "rtlops80/v1"
+  assert lifecycle["runtime_contract_version"] == "rtlops77/v1"
+  assert lifecycle["policy_state"]["mode"] == "paper"
+  assert lifecycle["policy_state"]["status"] == "active"
+  assert lifecycle["status"] == "warning"
+  assert lifecycle["execution_ready"] is True
+  assert lifecycle["allowed_trade_symbols"] == ["ETHUSDT"]
+  assert lifecycle["rejected_trade_symbols"] == ["BTCUSDT"]
+  assert lifecycle["progressing_symbols"] == ["ETHUSDT"]
+  assert lifecycle["blocked_symbols"] == []
+  assert lifecycle["progression_allowed"] is True
+  assert lifecycle["api"]["lifecycle_path"] == f"/api/v1/bots/{bot_id}/lifecycle"
+  lifecycle_items = {str(item["symbol"]): item for item in lifecycle["items"]}
+  assert lifecycle_items["ETHUSDT"]["lifecycle_state"] == "progressing"
+  assert lifecycle_items["ETHUSDT"]["progression_allowed"] is True
+  assert lifecycle_items["ETHUSDT"]["status"] == "valid"
+  assert lifecycle_items["ETHUSDT"]["errors"] == []
+  assert lifecycle_items["BTCUSDT"]["lifecycle_state"] == "rejected"
+  assert lifecycle_items["BTCUSDT"]["progression_allowed"] is False
+  assert lifecycle_items["BTCUSDT"]["status"] == "warning"
+  assert any(issue["reason_code"] == "trade_decisions_exceed_live_cap" for issue in lifecycle_items["BTCUSDT"]["errors"])
+
+
+def test_bot_lifecycle_blocks_allowed_symbols_when_policy_state_is_paused(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:1]
+  assert len(pool_ids) == 1
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Lifecycle Policy Pause",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT"],
+      "max_live_symbols": 1,
+      "max_positions": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  policy_patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}/policy-state",
+    headers=headers,
+    json={"status": "paused"},
+  )
+  assert policy_patch_res.status_code == 200, policy_patch_res.text
+
+  lifecycle_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle", headers=headers)
+  assert lifecycle_res.status_code == 200, lifecycle_res.text
+  lifecycle = lifecycle_res.json()["lifecycle"]
+  assert lifecycle["policy_state"]["status"] == "paused"
+  assert lifecycle["execution_ready"] is True
+  assert lifecycle["status"] == "error"
+  assert lifecycle["allowed_trade_symbols"] == ["BTCUSDT"]
+  assert lifecycle["rejected_trade_symbols"] == []
+  assert lifecycle["progressing_symbols"] == []
+  assert lifecycle["blocked_symbols"] == ["BTCUSDT"]
+  assert lifecycle["progression_allowed"] is False
+  assert "bot_status_paused" in lifecycle["reason_codes"]
+  assert any("policy_state.status=paused" in str(item) for item in (lifecycle.get("errors") or []))
+  lifecycle_item = lifecycle["items"][0]
+  assert lifecycle_item["symbol"] == "BTCUSDT"
+  assert lifecycle_item["lifecycle_state"] == "blocked"
+  assert lifecycle_item["progression_allowed"] is False
+  assert lifecycle_item["status"] == "error"
+  assert any(issue["reason_code"] == "bot_status_paused" for issue in lifecycle_item["errors"])
+
+
+def test_bot_lifecycle_operational_surface_pauses_allowed_symbols_without_opening_live_lateral(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Lifecycle Operativo",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["ETHUSDT", "BTCUSDT"],
+      "max_live_symbols": 1,
+      "max_positions": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0]],
+        "ETHUSDT": [pool_ids[1]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+        "ETHUSDT": pool_ids[1],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["mean_reversion", "range"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  base_res = client.get(f"/api/v1/bots/{bot_id}/lifecycle-operational", headers=headers)
+  assert base_res.status_code == 200, base_res.text
+  base_operational = base_res.json()["lifecycle_operational"]
+  assert base_operational["contract_version"] == "rtlops81/v1"
+  assert base_operational["lifecycle_contract_version"] == "rtlops80/v1"
+  assert base_operational["lifecycle_operational_by_symbol"] == {}
+  assert base_operational["progressing_symbols"] == ["ETHUSDT"]
+  assert base_operational["blocked_symbols"] == []
+  assert base_operational["api"]["lifecycle_operational_path"] == f"/api/v1/bots/{bot_id}/lifecycle-operational"
+
+  patch_res = client.patch(
+    f"/api/v1/bots/{bot_id}/lifecycle-operational",
+    headers=headers,
+    json={
+      "lifecycle_operational_by_symbol": {
+        "ETHUSDT": "paused",
+      },
+    },
+  )
+  assert patch_res.status_code == 200, patch_res.text
+  operational = patch_res.json()["lifecycle_operational"]
+  assert operational["lifecycle_operational_by_symbol"] == {"ETHUSDT": "paused"}
+  assert operational["progressing_symbols"] == []
+  assert operational["blocked_symbols"] == ["ETHUSDT"]
+  assert operational["progression_allowed"] is False
+  assert operational["status"] == "warning"
+  assert "symbol_operational_paused" in operational["reason_codes"]
+  items = {str(item["symbol"]): item for item in operational["items"]}
+  assert items["ETHUSDT"]["base_lifecycle_state"] == "progressing"
+  assert items["ETHUSDT"]["operational_status"] == "paused"
+  assert items["ETHUSDT"]["lifecycle_state"] == "blocked"
+  assert items["ETHUSDT"]["progression_allowed"] is False
+  assert items["ETHUSDT"]["status"] == "warning"
+  assert any(issue["reason_code"] == "symbol_operational_paused" for issue in items["ETHUSDT"]["errors"])
+  assert items["BTCUSDT"]["base_lifecycle_state"] == "rejected"
+  assert items["BTCUSDT"]["lifecycle_state"] == "rejected"
+  assert items["BTCUSDT"]["operational_status"] == "active"
+
+  detail_res = client.get(f"/api/v1/bots/{bot_id}", headers=headers)
+  assert detail_res.status_code == 200, detail_res.text
+  detail_bot = detail_res.json()["bot"]
+  assert detail_bot["lifecycle_operational"]["contract_version"] == "rtlops81/v1"
+  assert detail_bot["lifecycle_operational"]["lifecycle_operational_by_symbol"] == {"ETHUSDT": "paused"}
+
+
+def test_bot_runtime_flags_legacy_live_cap_above_max_positions_fail_closed(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Runtime Legacy Caps",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT", "ETHUSDT"],
+      "max_live_symbols": 2,
+      "max_positions": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0]],
+        "ETHUSDT": [pool_ids[1]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+        "ETHUSDT": pool_ids[1],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  rows = _module.store.load_bots()
+  for row in rows:
+    if str(row.get("id") or "") == bot_id:
+      row["max_positions"] = 1
+      break
+  _module.store.save_bots(rows)
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["mean_reversion", "range"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  runtime_res = client.get(f"/api/v1/bots/{bot_id}/runtime", headers=headers)
+  assert runtime_res.status_code == 200, runtime_res.text
+  runtime = runtime_res.json()["runtime"]
+  assert runtime["status"] == "error"
+  assert "live_cap_exceeds_max_positions" in runtime["reason_codes"]
+  assert runtime["caps"] == {
+    "configured_symbols_count": 2,
+    "trade_decisions_count": 2,
+    "max_live_symbols": 2,
+    "max_positions": 1,
+  }
+  assert runtime["guardrails"]["status"] == "error"
+  assert runtime["guardrails"]["execution_ready"] is False
+  assert runtime["guardrails"]["allowed_trade_symbols"] == []
+  assert runtime["guardrails"]["rejected_trade_symbols"] == ["BTCUSDT", "ETHUSDT"]
+  assert runtime["guardrails"]["prioritization_criterion"] is None
+  assert "live_cap_exceeds_max_positions" in runtime["guardrails"]["reason_codes"]
+  assert any("max_live_symbols=2 no puede superar max_positions=1" in err for err in runtime["guardrails"]["errors"])
 
 
 def test_bot_multi_symbol_patch_validates_limits_and_archive_guard(tmp_path: Path, monkeypatch) -> None:
@@ -1171,6 +1745,39 @@ def test_bot_multi_symbol_patch_validates_limits_and_archive_guard(tmp_path: Pat
   )
   assert archived_patch_res.status_code == 409, archived_patch_res.text
   assert "archivado" in str(archived_patch_res.json().get("detail") or "").lower()
+
+
+def test_bot_multi_symbol_patch_rejects_live_cap_above_max_positions(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Multi Symbol Config Guard",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT"],
+      "max_live_symbols": 1,
+      "max_positions": 1,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  res = client.patch(
+    f"/api/v1/bots/{bot_id}/multi-symbol",
+    headers=headers,
+    json={"symbols": ["BTCUSDT", "ETHUSDT"], "max_active_symbols": 2},
+  )
+  assert res.status_code == 400, res.text
+  assert "max_active_symbols no puede superar max_positions" in str(res.json().get("detail") or "")
 
 
 def test_bot_registry_strategy_pool_validation_and_fail_closed(tmp_path: Path, monkeypatch) -> None:

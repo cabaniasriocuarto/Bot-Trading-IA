@@ -1,5 +1,358 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-21
+
+### Preflight posterior a RTLOPS-84 - cadena minima cerrada
+- Revalidacion real:
+  - `rtlops81/v1` ya tiene tres consumidores reales y auditables en `execution/page.tsx`, `strategies/page.tsx` y `backtests/page.tsx`
+  - no aparece una cuarta surface natural comparable en el repo para seguir la cadena minima de `lifecycle_operational`
+  - por lo tanto, la cadena de consumidores minimos queda cerrada en `RTLOPS-84`
+- Dominio siguiente:
+  - Linear muestra `RTLOPS-69` (`live console`) como backlog real del mismo proyecto
+  - pero repo + `docs/truth` todavia no sostienen con honestidad que ese sea el siguiente dominio correcto del programa
+  - tampoco queda canonizado todavia otro dominio siguiente
+- Regla canonica:
+  - no se inventa `RTLOPS-85`
+  - el dominio siguiente queda fail-closed hasta nueva canonizacion explicita
+
+### RTLOPS-84 - tercer consumidor minimo de lifecycle_operational
+- Cambio real aplicado en frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - consume `selectedMassBot.lifecycle_operational` como tercera surface minima operativa distinta de `execution/page.tsx` y `strategies/page.tsx`
+    - expone el subset operativo del universo del bot con conteos `allowed`, `rejected`, `progressing`, `paused` y simbolos sin dato
+    - deja visible trazabilidad minima por simbolo con `runtime_symbol_id`, `selected_strategy_id` e issues canonicos
+    - mantiene el bloque en modo lectura y no agrega acciones operativas
+  - `rtlab_dashboard/src/lib/lifecycle-operational.ts`
+    - agrega `summarizeLifecycleOperationalUniverse` para resumir el contrato sobre el universo del bot
+  - `rtlab_dashboard/src/lib/lifecycle-operational.test.ts`
+    - cubre el resumen canonico del tercer consumidor minimo en `Backtests`
+- Tests corridos:
+  - `npm.cmd test -- --run src/lib/lifecycle-operational.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre LIVE lateral
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se cambia el contrato backend ya canonico
+- Siguiente paso exacto:
+  - abrir un preflight fail-closed posterior a `RTLOPS-84`
+
+### Canonizacion posterior a RTLOPS-83
+- Revalidacion real:
+  - repo + docs/truth + Linear confirman el cierre de `RTLOPS-83`
+  - `rtlops81/v1` ya deja dos consumidores reales de `lifecycle_operational`
+  - no existia todavia una sucesora explicita posterior a `RTLOPS-83`
+- Canonizacion explicita:
+  - por decision humana del usuario se fija `RTLOPS-84`:
+    - `Bot Multi-Symbol — tercer consumidor mínimo de lifecycle_operational`
+  - el scope minimo queda acotado a una tercera surface minima operativa en `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+  - se mantienen fuera `live console`, LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Sync administrativo:
+  - se crea `RTLOPS-84` en Linear
+  - queda en `Backlog` como hija explicita de `RTLOPS-68`
+- Documentos actualizados:
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Limites honestos:
+  - este bloque no implementa producto
+  - no toca `main`
+  - solo canoniza la sucesora posterior a `RTLOPS-83`
+
+### RTLOPS-83 - segundo consumidor minimo de lifecycle_operational
+- Cambio real aplicado en frontend minimo:
+  - `rtlab_dashboard/src/app/(app)/strategies/page.tsx`
+    - consume `bot.lifecycle_operational` como segunda surface minima operativa distinta de `execution/page.tsx`
+    - expone `allowed_trade_symbols`, `rejected_trade_symbols`, `progressing_symbols` y `lifecycle_operational_by_symbol`
+    - muestra trazabilidad minima por simbolo con `runtime_symbol_id`, `selection_key` y `net_decision_key`
+    - deja visible `base_lifecycle_state`, `operational_status`, `lifecycle_state` y errores por simbolo
+    - deriva a `Execution` para overrides puntuales sin duplicar el primer consumidor
+  - `rtlab_dashboard/src/lib/lifecycle-operational.ts`
+    - agrega helpers puros para resumir y ordenar el contrato `lifecycle_operational`
+  - `rtlab_dashboard/src/lib/lifecycle-operational.test.ts`
+    - cubre el resumen canonico del segundo consumidor minimo
+- Tests corridos:
+  - `npm.cmd test -- --run src/lib/lifecycle-operational.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre LIVE lateral
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se cambia el contrato backend ya canonico
+
+### Canonizacion posterior a RTLOPS-82
+- Revalidacion real:
+  - repo + docs/truth + Linear confirman el cierre de `RTLOPS-82`
+  - `rtlops81/v1` ya deja un primer consumidor real de `lifecycle_operational`
+  - no existia todavia una sucesora explicita posterior a `RTLOPS-82`
+- Canonizacion explicita:
+  - por decision humana del usuario se fija `RTLOPS-83`:
+    - `Bot Multi-Symbol — segundo consumidor mínimo de lifecycle_operational`
+  - el scope minimo queda acotado a una segunda surface minima operativa sobre `rtlops81/v1`, distinta de `execution/page.tsx`
+  - se mantienen fuera `live console`, LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Sync administrativo:
+  - se crea `RTLOPS-83` en Linear
+  - queda en `Backlog` como hija explicita de `RTLOPS-68`
+- Documentos actualizados:
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Limites honestos:
+  - este bloque no implementa producto
+  - no toca `main`
+  - solo canoniza la sucesora posterior a `RTLOPS-82`
+
+### RTLOPS-82 - primer consumidor real de lifecycle_operational
+- Cambio real aplicado en frontend mínimo:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - consume `GET /api/v1/bots/{bot_id}/lifecycle-operational`
+    - expone una surface minima operativa en el bloque del bot seleccionado
+    - muestra `allowed_trade_symbols`, `rejected_trade_symbols`, `progressing_symbols`, `blocked_symbols`
+    - muestra trazabilidad minima por simbolo con `runtime_symbol_id`, `selection_key` y `net_decision_key`
+    - consume `PATCH /api/v1/bots/{bot_id}/lifecycle-operational` para pausar/reanudar simbolos sin abrir otro dominio
+  - `rtlab_dashboard/src/lib/execution-bots.ts`
+    - agrega helpers minimos para derivar la accion operativa valida por simbolo
+    - normaliza el patch para persistir solo overrides `paused`
+  - `rtlab_dashboard/src/lib/execution-bots.test.ts`
+    - cubre el wiring minimo del primer consumidor real
+- Tests corridos:
+  - `npm.cmd test -- --run src/lib/execution-bots.test.ts` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k lifecycle_operational -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre LIVE lateral
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se introduce un scheduler/engine nuevo
+
+### Canonizacion posterior a RTLOPS-81
+- Revalidacion real:
+  - repo + docs/truth + Linear confirman el cierre de `RTLOPS-81`
+  - `rtlops81/v1` ya deja `lifecycle_operational` como contrato valido del frente
+  - no existia todavia una sucesora explicita posterior a `RTLOPS-81`
+- Canonizacion explicita:
+  - por decision humana del usuario se fija `RTLOPS-82`:
+    - `Bot Multi-Symbol — primer consumidor real de lifecycle_operational`
+  - el scope minimo queda acotado a una surface minima operativa sobre `rtlops81/v1`
+  - se mantienen fuera `live console`, LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Sync administrativo:
+  - se crea `RTLOPS-82` en Linear
+  - queda en `Backlog` como hija explicita de `RTLOPS-68`
+- Documentos actualizados:
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Limites honestos:
+  - este bloque no implementa producto
+  - no toca `main`
+  - solo canoniza la sucesora posterior a `RTLOPS-81`
+
+## 2026-04-20
+
+### RTLOPS-81 - contratos minimos de lifecycle operativo por simbolo
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo `lifecycle_operational`
+    - agrega `GET /api/v1/bots/{bot_id}/lifecycle-operational`
+    - agrega `PATCH /api/v1/bots/{bot_id}/lifecycle-operational`
+    - eleva el contrato del Bot Registry a `rtlops81/v1`
+    - persiste solo `lifecycle_operational_by_symbol` como storage minimo
+    - mantiene `active` como default implicito y solo persiste overrides `paused`
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops81/v1`
+    - cubre el endpoint dedicado de lifecycle operativo
+    - cubre la pausa operativa de simbolos permitidos sin abrir ejecucion LIVE lateral
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `lifecycle_operational`, `lifecycle_operational_path` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops81/v1`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "registry_contract_surface_is_canonical or lifecycle_operational or lifecycle or runtime" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes; PASS al rerun despues de `build`
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre ejecucion LIVE lateral por simbolo
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se introduce un scheduler o engine nuevo fuera del contrato minimo
+
+### Preflight posterior a RTLOPS-80 - sucesora canonizada
+- Revalidación real:
+  - repo + docs/truth + Linear confirman el cierre de `RTLOPS-80`
+  - `rtlops80/v1` ya deja un `lifecycle` mínimo derivado y auditable
+  - el contrato actual sigue con `storage_fields=[]`, así que el gap mínimo restante no es visual ni cross-environment sino de lifecycle operativo por símbolo
+  - `RTLOPS-69` (`live console`) y `RTLRESE-25` (lifecycle completo entre entornos) se mantienen fuera por sobrealcance
+- Sync administrativo:
+  - se crea `RTLOPS-81` en Linear:
+    - `Bot Multi-Symbol — contratos mínimos de lifecycle operativo por símbolo`
+  - queda en `Backlog` como hija explícita de `RTLOPS-68`
+- Siguiente paso exacto fijado:
+  - abrir `RTLOPS-81`
+  - resolver solo shape mínimo + storage/API mínimo del lifecycle operativo por símbolo sobre `rtlops80/v1`
+  - mantener fuera `live console`, ejecución LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Límites honestos:
+  - este bloque no implementa producto
+  - no toca `main`
+  - solo canoniza la sucesora posterior a `RTLOPS-80`
+
+### RTLOPS-80 - lifecycle minimo multi-symbol
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo derivado `lifecycle`
+    - agrega `GET /api/v1/bots/{bot_id}/lifecycle`
+    - eleva el contrato del Bot Registry a `rtlops80/v1`
+    - consume `policy_state.mode/status` y `runtime.guardrails.execution_ready`
+    - progresa solo `allowed_trade_symbols`
+    - deja `rejected_trade_symbols` fuera de progresion con motivo visible
+    - reutiliza la trazabilidad por simbolo ya canonica (`runtime_symbol_id`, `selection_key`, `net_decision_key`, `decision_log_scope`)
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops80/v1`
+    - cubre el endpoint dedicado de lifecycle
+    - cubre progresion minima de simbolos permitidos
+    - cubre simbolos rechazados por priorizacion
+    - cubre bloqueo explicito cuando `policy_state.status=paused`
+    - cubre bloqueo explicito cuando `runtime.guardrails.execution_ready=false`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `lifecycle`, `lifecycle_path` y el contrato extendido del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops80/v1`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "registry_contract_surface_is_canonical or lifecycle or runtime" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial en frio por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+- Limites honestos:
+  - no se abre `live console`
+  - no se abre ejecucion LIVE lateral por simbolo
+  - no se abre lifecycle completo `backtest/shadow/paper/testnet/live`
+  - no se introduce un scheduler o engine nuevo fuera del subset ya canonico
+
+### Preflight posterior a RTLOPS-79 - lifecycle mínimo multi-symbol
+- Revalidación real:
+  - repo + docs/truth confirman que `RTLOPS-79` ya dejó canonizado el subset ejecutable bajo caps sobre `rtlops77/v1`
+  - el contrato vigente ya expone `guardrails.execution_ready`, `allowed_trade_symbols`, `rejected_trade_symbols` y trazabilidad estable por símbolo
+  - `policy_state` ya aporta `mode/status` mínimo del bot para que el siguiente slice consuma esa base sin abrir live console
+- Sync administrativo:
+  - `RTLOPS-79` pasó a `Done` en Linear
+  - se dejó comentario con evidencia real repo/docs/tests
+  - no aparece todavía una hija explícita para `lifecycle mínimo multi-symbol`
+  - `RTLRESE-25` se mantiene fuera como issue más grande de lifecycle completo
+- Siguiente paso exacto fijado:
+  - abrir implementación mínima de lifecycle multi-symbol consumiendo el subset ejecutable ya canonizado
+  - mantener fuera live console, ejecución LIVE lateral, lifecycle completo entre entornos y refactor transversal
+- Límites honestos:
+  - este bloque no implementa lifecycle todavía
+  - no toca producto
+  - solo fija el siguiente slice correcto y alinea la verdad documental/administrativa
+
+### RTLOPS-79 - subset ejecutable y priorización determinística bajo caps
+- Cambio real aplicado en backend/API minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - mantiene el contrato sobre `rtlops77/v1`
+    - prioriza el subset ejecutable por orden canonico de `symbols` cuando `trade_decisions_count > max_live_symbols`
+    - deja `guardrails.status=warning` cuando la priorizacion resuelve el overflow sin incoherencia de configuracion
+    - mantiene `live_cap_exceeds_max_positions` como bloqueo fail-closed
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el subset permitido vs rechazado por priorizacion
+    - cubre el criterio deterministico `symbol_order`
+    - revalida que `max_live_symbols > max_positions` sigue en `error`
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- --run src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL inicial por `.next/types` faltantes en esta worktree; PASS al rerun despues de `build`
+- Limites honestos:
+  - no se abre lifecycle
+  - no se abre live console
+  - no se abre ejecucion LIVE lateral
+  - no se introduce un scheduler o engine nuevo fuera del contrato runtime ya canonico
+
+### Preflight posterior a RTLOPS-77 - sucesora canonizada
+- Verdad documental alineada:
+  - repo + docs/truth + Linear revalidados sobre la punta real que cierra `RTLOPS-77`
+  - se fija como sucesora explicita `RTLOPS-79`:
+    - `Bot Multi-Symbol — subset ejecutable y priorización determinística bajo caps`
+  - se descarta abrir `lifecycle` como siguiente bloque inmediato porque hoy mezclaría de más la priorización bajo caps con el lifecycle operativo
+- Documentos actualizados:
+  - `docs/truth/NEXT_STEPS.md`
+  - `docs/truth/SOURCE_OF_TRUTH.md`
+- Limites honestos:
+  - no se implementa producto en este bloque
+  - no se abre lifecycle
+  - no se abre live console
+
+### RTLOPS-77 - guardrails, caps y rechazos de configuracion
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - eleva el contrato runtime y del Bot Registry a `rtlops77/v1`
+    - agrega la capa explicita `caps + guardrails` sobre el runtime multi-symbol derivado
+    - rechaza configuraciones incoherentes cuando `max_live_symbols > max_positions`
+    - deja fail-closed el runtime cuando el neto por simbolo excede el cap live o cuando reaparece drift legacy entre `max_live_symbols` y `max_positions`
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops77/v1`
+    - cubre rechazos de configuracion incoherente en create/patch multi-symbol
+    - cubre guardrails fail-closed cuando el runtime deriva mas decisiones `trade` que el cap live
+    - cubre drift legacy donde `max_live_symbols` supera `max_positions`
+  - `rtlab_dashboard/src/lib/bot-registry.ts`
+    - agrega rechazo frontend coherente para `max_live_symbols > max_positions`
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `runtime.caps` y `runtime.guardrails`
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture canonico a `rtlops77/v1`
+    - cubre los nuevos reason codes y fields de runtime
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - `RTLOPS-77` no abre lifecycle ni live console
+  - no agrega ejecucion remota LIVE lateral por simbolo
+  - no introduce una politica de priorizacion/seleccion de subset cuando el runtime excede caps: falla cerrado y deja el rechazo explicito
+  - `next build` sigue emitiendo warnings no bloqueantes de chart sizing ya visibles en la base, sin romper el resultado `PASS`
+
+### RTLOPS-76 - contratos minimos de runtime, storage y API
+- Cambio real aplicado en backend/API/frontend minimo:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el submodelo derivado `runtime`
+    - agrega `GET /api/v1/bots/{bot_id}/runtime`
+    - eleva el contrato del Bot Registry a `rtlops76/v1`
+    - expone referencias minimas de storage/API para colgar el runtime multi-symbol sobre la verdad ya canonica de:
+      - `RTLOPS-72`
+      - `RTLOPS-73`
+      - `RTLOPS-74`
+      - `RTLOPS-75`
+    - mantiene fail-closed el contrato runtime cuando `signal_consolidation` no queda valida
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el contrato `rtlops76/v1`
+    - cubre la surface `GET /api/v1/bots/{bot_id}/runtime`
+    - cubre trazabilidad minima por simbolo (`runtime_symbol_id`, `selection_key`, `net_decision_key`, `decision_log_scope`)
+    - cubre el fail-closed cuando la consolidacion upstream no permite exponer decision neta por simbolo
+  - `rtlab_dashboard/src/lib/types.ts`
+    - tipa `runtime`, `runtime_path` y la extension del contrato canonico del registry
+  - `rtlab_dashboard/src/lib/bot-registry.test.ts`
+    - actualiza el fixture del contrato canonico a `rtlops76/v1`
+- Tests corridos:
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_bot_registry_identity.py` -> PASS
+  - `rtlab_autotrader\\.venv\\Scripts\\python.exe -m pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -q` -> PASS
+  - `npm.cmd test -- src/lib/bot-registry.test.ts` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - `RTLOPS-76` no abre lifecycle ni live console
+  - no agrega ejecucion remota real por simbolo
+  - no abre `RTLOPS-77`
+  - `next build` sigue emitiendo warnings no bloqueantes de chart sizing ya visibles en la base, sin romper el resultado `PASS`
+
 ## 2026-04-18
 
 ### Microbloque de seguridad - desbloqueo de `Security CI` en PR #35

@@ -218,6 +218,13 @@ function buildBotRegistryFormSchema(contract: BotRegistryContractResponse) {
         message: "El cap live no puede superar la cantidad de símbolos asignados.",
       });
     }
+    if (value.max_live_symbols > value.max_positions) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["max_live_symbols"],
+        message: "El cap live no puede superar max_positions para una ejecución multi-symbol coherente.",
+      });
+    }
     if (value.max_asset_exposure_pct > value.max_total_exposure_pct) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

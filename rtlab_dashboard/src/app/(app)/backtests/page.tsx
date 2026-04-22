@@ -12,6 +12,7 @@ import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { getBotDisplayName } from "@/lib/bot-registry";
 import { apiGet, apiPatch, apiPost } from "@/lib/client-api";
+import { summarizeLifecycleOperational, summarizeLifecycleOperationalUniverse } from "@/lib/lifecycle-operational";
 import type {
   BacktestRun,
   BacktestCatalogBatch,
@@ -957,6 +958,14 @@ export default function BacktestsPage() {
   const selectedMassBot = useMemo(
     () => bots.find((row) => row.id === selectedBotId) || null,
     [bots, selectedBotId],
+  );
+  const selectedMassBotLifecycleSummary = useMemo(
+    () => summarizeLifecycleOperational(selectedMassBot?.lifecycle_operational),
+    [selectedMassBot],
+  );
+  const selectedMassBotLifecycleUniverse = useMemo(
+    () => summarizeLifecycleOperationalUniverse(selectedMassBot?.lifecycle_operational, selectedMassBot?.universe || []),
+    [selectedMassBot],
   );
   const selectedCatalogBot = useMemo(
     () => bots.find((row) => row.id === catalogFilters.bot_id) || null,
@@ -3512,6 +3521,84 @@ export default function BacktestsPage() {
                     <p className="text-slate-400">
                       Backtest masivo evalÃºa ese pool con histÃ³rico. Shadow/mock mide experiencia en vivo sin Ã³rdenes. Son fuentes distintas y ambas alimentan aprendizaje.
                     </p>
+                    {selectedMassBotLifecycleSummary ? (
+                      <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <p className="text-[10px] uppercase tracking-wide text-cyan-300">Lifecycle operativo del bot</p>
+                            <p className="mt-1 text-[10px] text-slate-500">
+                              Tercer consumidor minimo de <code>lifecycle_operational</code> sobre <code>rtlops81/v1</code>. Solo lectura para auditar el subset actual antes de correr batch.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant={selectedMassBotLifecycleSummary.statusVariant}>
+                              {selectedMassBotLifecycleSummary.status}
+                            </Badge>
+                            <Badge variant={selectedMassBotLifecycleSummary.progressionAllowed ? "success" : "warn"}>
+                              {selectedMassBotLifecycleSummary.progressionAllowed ? "progresa" : "sin progresion"}
+                            </Badge>
+                          </div>
+                        </div>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                          <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                            Allowed: <strong>{selectedMassBotLifecycleUniverse?.allowedCount ?? 0}</strong>
+                          </div>
+                          <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                            Rejected: <strong>{selectedMassBotLifecycleUniverse?.rejectedCount ?? 0}</strong>
+                          </div>
+                          <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                            Progressing: <strong>{selectedMassBotLifecycleUniverse?.progressingCount ?? 0}</strong>
+                          </div>
+                          <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                            Paused: <strong>{selectedMassBotLifecycleUniverse?.pausedCount ?? 0}</strong>
+                          </div>
+                          <div className="rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-300">
+                            Sin dato: <strong>{selectedMassBotLifecycleUniverse?.untrackedCount ?? 0}</strong>
+                          </div>
+                        </div>
+                        {selectedMassBotLifecycleUniverse?.symbols.length ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {selectedMassBotLifecycleUniverse.symbols.map((item) => (
+                              <div
+                                key={`${selectedMassBot.id}-backtests-lifecycle-${item.symbol}`}
+                                className="rounded border border-slate-800 bg-slate-950/60 px-2 py-2 text-[10px] text-slate-300"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold text-slate-100">{item.symbol}</span>
+                                  <Badge variant={item.statusVariant}>{item.statusLabel}</Badge>
+                                </div>
+                                <p className="mt-1 text-slate-400">
+                                  {item.selectedStrategyId ? `strategy ${item.selectedStrategyId}` : "sin strategy seleccionada"}
+                                  {item.runtimeSymbolId ? ` · ${item.runtimeSymbolId}` : ""}
+                                  {item.progressionAllowed ? " · progresa" : ""}
+                                </p>
+                                {item.issues.length ? (
+                                  <p className="mt-1 text-amber-200">{item.issues.join(" · ")}</p>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-[10px] text-slate-500">
+                            Sin universo auditable en lifecycle_operational para este bot.
+                          </p>
+                        )}
+                        {selectedMassBotLifecycleSummary.errors.length ? (
+                          <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
+                            {selectedMassBotLifecycleSummary.errors.map((issue) => (
+                              <p key={`${selectedMassBot.id}-backtests-lifecycle-error-${issue}`}>{issue}</p>
+                            ))}
+                          </div>
+                        ) : null}
+                        <p className="mt-2 text-[10px] text-slate-500">
+                          Esta surface no modifica overrides ni reemplaza `Execution`: solo anticipa quÃ© subset operativo llega hoy a Backtests para el bot seleccionado.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-[10px] text-slate-500">
+                        Sin lifecycle_operational detallado para el bot seleccionado.
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="mt-2 text-xs text-slate-400">
