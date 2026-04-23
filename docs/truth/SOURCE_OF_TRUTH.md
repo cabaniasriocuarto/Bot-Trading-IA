@@ -1,6 +1,31 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-21
+Fecha de actualizacion: 2026-04-22
+
+## RTLRESE-32 - validacion independiente real por run - 2026-04-22
+
+- Estado real confirmado en esta rama:
+  - el backend ya persiste un contrato canonico `rtlrese32/v1` por run en `backtest_runs.independent_validation_json`;
+  - el contrato vive tanto en corridas simples creadas por `POST /api/v1/backtests/run` como en hijos persistidos por `mass_backtest_engine`;
+  - `GET /api/v1/runs/{run_id}` ya expone `independent_validation` como evidencia auditable por run;
+  - `POST /api/v1/runs/{run_id}/validate_promotion` ya consume esa evidencia con checks explicitos:
+    - `independent_validation_reusable`
+    - `independent_validation_target_stage`
+- Reuso real de backlog previo:
+  - `RTLRESE-5` queda absorbida via `PBO/CSCV` trazable por run dentro del contrato;
+  - `RTLRESE-6` queda absorbida via `PSR/DSR`, `review_reasons`, `rejection_reasons` y `promotion_stage_eligible`;
+  - `RTLRESE-4` no hizo falta en este bloque porque no aparecio un gap nuevo de provenance persistente fuera de lo ya disponible en catalogo/run payload.
+- Regla canonica resultante:
+  - `PBO`, `DSR` y `PSR` quedan visibles por run dentro del contrato `rtlrese32/v1`;
+  - si `DSR/PSR` salen solo de returns derivados y no de evidencia formal del run, quedan como auditoria `REVIEW` y no como evidencia reusable para promocion;
+  - un run solo queda reusable para `promotion_stage` cuando la validacion independiente queda en `PASS` y declara elegibilidad explicita por etapa;
+  - el bloque sigue fuera de:
+    - `live console`
+    - scorecard de produccion
+    - portfolio risk
+    - governance IA como dominio separado
+- Siguiente bloque exacto recomendado:
+  - `RTLOPS-28` - drift layer minimo y auditable sobre el estado ya cerrado por `RTLRESE-32`.
 
 ## Preflight posterior a RTLOPS-84 - cadena minima cerrada - 2026-04-21
 

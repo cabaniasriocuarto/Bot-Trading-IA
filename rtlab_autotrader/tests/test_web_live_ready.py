@@ -4042,6 +4042,49 @@ def test_backtests_run_supports_purged_cv_and_cpcv(tmp_path: Path, monkeypatch) 
   assert int(cpcv_summary.get("oos_bars") or 0) > 0
 
 
+def test_backtests_run_persists_independent_validation_contract(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  run_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": strategy_id,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "validation_mode": "cpcv",
+      "strict_strategy_id": True,
+      "costs_model": {"fees_bps": 5.0, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 0.0},
+    },
+  )
+  assert run_res.status_code == 200, run_res.text
+  run = run_res.json()["run"]
+  contract = run.get("independent_validation") or {}
+  assert contract["contract_version"] == "rtlrese32/v1"
+  assert contract["run_id"] == run["id"]
+  assert contract["dataset_hash"] == run["dataset_hash"]
+  assert contract["params_hash"] == run["strategy_config_hash"]
+  assert contract["pass_fail_status"] == "REVIEW"
+  assert "missing_pbo" in set(contract.get("review_reasons") or [])
+  assert contract["reusable_for_promotion"] is False
+
+  detail = client.get(f"/api/v1/runs/{run['id']}", headers=headers)
+  assert detail.status_code == 200, detail.text
+  detail_contract = (detail.json() or {}).get("independent_validation") or {}
+  assert detail_contract["contract_version"] == "rtlrese32/v1"
+  assert detail_contract["pass_fail_status"] == "REVIEW"
+  assert isinstance(((detail.json() or {}).get("kpis") or {}).get("dsr"), (int, float))
+  assert ((detail_contract.get("metric_assessment") or {}).get("psr") or {}).get("status") == "missing"
+
+
 def test_backtests_run_forwards_strict_strategy_id_flag(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="paper")
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -4164,6 +4207,56 @@ def test_validate_promotion_blocks_mixed_orderflow_feature_set(tmp_path: Path, m
   assert payload.get("rollout_ready") is False
 
 
+def test_validate_promotion_fail_closed_when_independent_validation_not_reusable(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(_module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  payload_common = {
+    "strategy_id": strategy_id,
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
+    "validation_mode": "walk-forward",
+    "use_orderflow_data": True,
+    "strict_strategy_id": True,
+  }
+
+  baseline_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**payload_common, "costs_model": {"fees_bps": 18.0, "spread_bps": 14.0, "slippage_bps": 10.0, "funding_bps": 1.0}},
+  )
+  assert baseline_res.status_code == 200, baseline_res.text
+  baseline_id = str(baseline_res.json()["run_id"])
+
+  candidate_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**payload_common, "costs_model": {"fees_bps": 5.0, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 0.5}},
+  )
+  assert candidate_res.status_code == 200, candidate_res.text
+  candidate_id = str(candidate_res.json()["run_id"])
+
+  validate_res = client.post(
+    f"/api/v1/runs/{candidate_id}/validate_promotion",
+    headers=headers,
+    json={"target_mode": "paper", "baseline_run_id": baseline_id},
+  )
+  assert validate_res.status_code == 200, validate_res.text
+  payload = validate_res.json()
+  independent_validation = payload.get("independent_validation") or {}
+  assert independent_validation["pass_fail_status"] == "REVIEW"
+  checks = {row["id"]: row for row in ((payload.get("constraints") or {}).get("checks") or [])}
+  assert bool((checks.get("independent_validation_reusable") or {}).get("ok")) is False
+  assert payload.get("rollout_ready") is False
+
+
 def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, *, source: str, include_bid_ask: bool = False) -> None:
   import json
 
@@ -4232,6 +4325,7 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
     row["status"] = "completed"
     row["data_source"] = "binance_public"
     row["dataset_hash"] = shared_hash
+    row["strategy_config_hash"] = str(row.get("strategy_config_hash") or f"cfg-{row.get('strategy_id')}")
     row["period"] = dict(shared_period)
     row["use_orderflow_data"] = True
     row["orderflow_feature_set"] = "orderflow_on"
@@ -4266,6 +4360,8 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
     provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
     provenance["strict_strategy_id"] = True
     provenance["orderflow_feature_set"] = "orderflow_on"
+    provenance["strategy_config_hash"] = str(row.get("strategy_config_hash") or f"cfg-{row.get('strategy_id')}")
+    provenance["dataset_hash"] = shared_hash
     row["provenance"] = provenance
 
   baseline_metrics = baseline_run.get("metrics") if isinstance(baseline_run.get("metrics"), dict) else {}
@@ -4280,6 +4376,7 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
   baseline_metrics["sharpe"] = 1.2
   baseline_metrics["pbo"] = 0.02
   baseline_metrics["dsr"] = 1.0
+  baseline_metrics["psr"] = 0.97
   baseline_run["metrics"] = baseline_metrics
 
   baseline_costs = baseline_run.get("costs_breakdown") if isinstance(baseline_run.get("costs_breakdown"), dict) else {}
@@ -4301,6 +4398,7 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
   candidate_metrics["sharpe"] = 1.45
   candidate_metrics["pbo"] = 0.02
   candidate_metrics["dsr"] = 1.08
+  candidate_metrics["psr"] = 0.98
   candidate_run["metrics"] = candidate_metrics
 
   candidate_costs = candidate_run.get("costs_breakdown") if isinstance(candidate_run.get("costs_breakdown"), dict) else {}

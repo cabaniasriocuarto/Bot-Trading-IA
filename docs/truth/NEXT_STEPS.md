@@ -1,6 +1,39 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-21
+Fecha: 2026-04-22
+
+## Siguiente paso exacto despues de RTLRESE-32 - 2026-04-22
+- [x] Fundar validacion independiente real por run sobre backend/catalogo:
+  - `rtlrese32/v1` ya existe como contrato persistido por run;
+  - la persistencia minima vive en `backtest_runs.independent_validation_json`;
+  - la contract queda disponible en `GET /api/v1/runs/{run_id}`;
+  - `validate_promotion` ya falla cerrado si la evidencia independiente no es reusable o no declara `promotion_stage_eligible`.
+- [x] Reusar backlog previo sin abrir sobrealcance:
+  - `RTLRESE-5` queda reutilizada para `PBO/CSCV`;
+  - `RTLRESE-6` queda reutilizada para `PSR/DSR`, rechazo/review y elegibilidad por etapa;
+  - `RTLRESE-4` no hizo falta tocarla porque no aparecio un gap nuevo de provenance persistente.
+- [x] Mantener el bloque profesional y acotado:
+  - sin abrir `live console`;
+  - sin abrir monitoring/drift como dominio principal todavia;
+  - sin abrir scorecard / portfolio risk;
+  - sin refactor transversal.
+- [x] Revalidacion minima real del bloque:
+  - `pytest rtlab_autotrader/tests/test_backtest_catalog_db.py -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "independent_validation_contract or independent_validation_not_reusable" -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_rollout_safe_update.py -k "gate_evaluator or compare_engine or rollout_manager" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-28` y resolver solo el drift layer minimo y auditable;
+  - resolver ahi solo:
+    - deteccion minima de drift sobre evidencia vigente;
+    - surface/contrato chico y auditable;
+    - continuidad del marco 10/10 sin abrir `live console`;
+  - mantener fuera de ese bloque:
+    - `RTLOPS-69 / live console`
+    - scorecard de produccion
+    - portfolio risk
+    - governance IA como dominio separado
 
 ## Preflight posterior a RTLOPS-84 - cadena minima cerrada - 2026-04-21
 - [x] Revalidar el agotamiento de la cadena de consumidores minimos:

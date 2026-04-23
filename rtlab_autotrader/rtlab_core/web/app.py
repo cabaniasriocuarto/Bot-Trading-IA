@@ -39,6 +39,7 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.backtest.independent_validation import build_independent_validation_contract
 from rtlab_core.execution import ExecutionRealityService
 from rtlab_core.execution.alerts import (
     DEFAULT_ALERT_SEVERITY_PRECEDENCE,
@@ -9404,6 +9405,23 @@ def risk_hooks(context):
                 "equity_curve_csv": f"/api/v1/backtests/runs/{run_id}?format=equity_curve_csv",
             },
         }
+        run["strategy_config_hash"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "strategy_id": strategy_id,
+                    "strategy_version": run["strategy_version"],
+                    "market": market_n,
+                    "symbol": symbol_n,
+                    "timeframe": timeframe_n,
+                    "period": run["period"],
+                    "dataset_hash": loaded.dataset_hash,
+                    "params_json": run["params_json"],
+                    "orderflow_feature_set": orderflow_feature_set,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:12]
         for trade in run.get("trades", []) or []:
             if isinstance(trade, dict) and not trade.get("regime_label"):
                 trade["regime_label"] = self._infer_trade_regime_label(trade, run, strategy=strategy)
@@ -9416,6 +9434,7 @@ def risk_hooks(context):
             "to": end,
             "dataset_source": loaded.source,
             "dataset_hash": loaded.dataset_hash,
+            "strategy_config_hash": run["strategy_config_hash"],
             "costs_used": run["costs_model"],
             "commit_hash": run["git_commit"],
             "fee_snapshot_id": run.get("fee_snapshot_id"),
@@ -9435,6 +9454,7 @@ def risk_hooks(context):
             "cpcv_max_paths": int(max(0, cpcv_max_paths)) if isinstance(cpcv_max_paths, int) else None,
             "created_at": run["created_at"],
         }
+        run["independent_validation"] = build_independent_validation_contract(run_payload=run, repo_root=MONOREPO_ROOT)
         artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
         run["artifacts_local"] = artifact_local
 
@@ -17369,6 +17389,25 @@ def create_app() -> FastAPI:
         report = _build_rollout_report_from_catalog_row(catalog_row)
         return report, catalog_row
 
+    def _resolve_independent_validation(
+        *,
+        report: dict[str, Any],
+        catalog_row: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        existing = (catalog_row or {}).get("independent_validation") if isinstance((catalog_row or {}).get("independent_validation"), dict) else {}
+        if existing and str(existing.get("contract_version") or "").strip():
+            return existing
+        contract = build_independent_validation_contract(run_payload=report, repo_root=MONOREPO_ROOT)
+        catalog_run_id = str((catalog_row or {}).get("run_id") or "").strip()
+        if catalog_run_id:
+            try:
+                patched = store.backtest_catalog.patch_run_independent_validation(catalog_run_id, contract)
+                if patched and isinstance(patched.get("independent_validation"), dict):
+                    return patched.get("independent_validation") or contract
+            except Exception:
+                pass
+        return contract
+
     def _pick_baseline_rollout_report(candidate_report: dict[str, Any], explicit_run_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
         if explicit_run_id:
             return _resolve_rollout_report_from_any_run_id(explicit_run_id)
@@ -17447,6 +17486,8 @@ def create_app() -> FastAPI:
         baseline_report["strategy_name"] = baseline_strategy.get("name")
         baseline_report["version"] = baseline_strategy.get("version")
         baseline_report["params"] = baseline_strategy.get("params")
+        candidate_independent_validation = _resolve_independent_validation(report=candidate_report, catalog_row=candidate_catalog)
+        candidate_report["independent_validation"] = candidate_independent_validation
 
         gates_result = rollout_gates.evaluate(candidate_report)
         candidate_feature_set, candidate_orderflow_enabled, candidate_feature_source = _infer_orderflow_feature_set(
@@ -17512,6 +17553,13 @@ def create_app() -> FastAPI:
         fund_allow_trade_raw = candidate_report.get("fund_allow_trade")
         fund_promotion_blocked = bool(candidate_report.get("fund_promotion_blocked", False))
         fund_warnings = candidate_report.get("fund_warnings") if isinstance(candidate_report.get("fund_warnings"), list) else []
+        independent_status = str(candidate_independent_validation.get("pass_fail_status") or "REVIEW").upper()
+        independent_reusable = bool(candidate_independent_validation.get("reusable_for_promotion"))
+        promotion_stage_eligible = [
+            str(x).strip().lower()
+            for x in (candidate_independent_validation.get("promotion_stage_eligible") or [])
+            if str(x).strip()
+        ]
         if not fund_promotion_blocked:
             fund_promotion_blocked = bool(flags.get("FUNDAMENTALS_PROMOTION_BLOCKED"))
         if fund_allow_trade_raw is None and isinstance(candidate_catalog, dict):
@@ -17590,6 +17638,26 @@ def create_app() -> FastAPI:
                     "catalog_run": has_catalog_provenance,
                 },
             },
+            {
+                "id": "independent_validation_reusable",
+                "ok": independent_reusable,
+                "reason": "Run debe tener validacion independiente reusable por promotion_stage",
+                "details": {
+                    "status": independent_status,
+                    "rejection_reasons": candidate_independent_validation.get("rejection_reasons") or [],
+                    "review_reasons": candidate_independent_validation.get("review_reasons") or [],
+                    "promotion_stage_eligible": promotion_stage_eligible,
+                },
+            },
+            {
+                "id": "independent_validation_target_stage",
+                "ok": str(target_mode or "paper").strip().lower() in set(promotion_stage_eligible),
+                "reason": "Run debe declarar elegibilidad explicita para el target_mode pedido",
+                "details": {
+                    "target_mode": str(target_mode or "paper").strip().lower(),
+                    "promotion_stage_eligible": promotion_stage_eligible,
+                },
+            },
         ]
         constraints_ok = all(bool(row["ok"]) for row in constraints_checks)
         promotion_ok = bool(constraints_ok and gates_result.get("passed") and compare_result.get("passed"))
@@ -17632,12 +17700,13 @@ def create_app() -> FastAPI:
                 "passed": constraints_ok,
                 "checks": constraints_checks,
             },
+            "independent_validation": candidate_independent_validation,
             "offline_gates": gates_result,
             "compare_vs_baseline": compare_result,
             "rollout_ready": promotion_ok,
             "allowed_targets": {
-                "paper": bool(promotion_ok),
-                "testnet": bool(promotion_ok),
+                "paper": bool(promotion_ok and "paper" in set(promotion_stage_eligible)),
+                "testnet": bool(promotion_ok and "testnet" in set(promotion_stage_eligible)),
                 "live": False,
             },
             "rollout_start_body": {
@@ -17704,6 +17773,16 @@ def create_app() -> FastAPI:
         annotated_rows = store.annotate_runs_with_related_bots([row])
         if annotated_rows:
             row = annotated_rows[0]
+        kpis = row.get("kpis") if isinstance(row.get("kpis"), dict) else {}
+        independent_validation = (
+            row.get("independent_validation") if isinstance(row.get("independent_validation"), dict) else {}
+        )
+        for metric_name in ("pbo", "dsr", "psr"):
+            metric_value = independent_validation.get(metric_name)
+            if kpis.get(metric_name) is None and isinstance(metric_value, (int, float)):
+                kpis[metric_name] = float(metric_value)
+        if kpis:
+            row["kpis"] = kpis
         row["artifacts_index"] = store.backtest_catalog.get_artifacts_for_run(str(row.get("run_id") or ""))
         legacy_id = str(row.get("legacy_json_id") or "")
         if legacy_id:

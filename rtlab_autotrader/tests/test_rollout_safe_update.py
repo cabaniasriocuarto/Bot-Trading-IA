@@ -26,6 +26,9 @@ def _sample_run(*, run_id: str, strategy_id: str, dataset_hash: str = "abc123", 
     "feature_set": "orderflow_on",
     "orderflow_feature_set": "orderflow_on",
     "use_orderflow_data": True,
+    "strategy_config_hash": f"cfg-{strategy_id}",
+    "params_json": {"execution_mode": "paper", "strict_strategy_id": True},
+    "provenance": {"dataset_hash": dataset_hash, "commit_hash": "deadbeef", "strict_strategy_id": True, "strategy_config_hash": f"cfg-{strategy_id}"},
     "flags": {"ORDERFLOW_FEATURE_SET": "orderflow_on", "ORDERFLOW_ENABLED": True},
     "metrics": {
       "trade_count": 200,
@@ -40,6 +43,7 @@ def _sample_run(*, run_id: str, strategy_id: str, dataset_hash: str = "abc123", 
       "expectancy_usd_per_trade": 12.0,
       "pbo": 0.02,
       "dsr": 1.05,
+      "psr": 0.97,
     },
     "costs_breakdown": {
       "gross_pnl_total": gross,
@@ -56,10 +60,11 @@ def _sample_run(*, run_id: str, strategy_id: str, dataset_hash: str = "abc123", 
   }
 
 
-def _set_required_anti_overfitting_metrics(run: dict, *, pbo: float = 0.02, dsr: float = 1.05) -> None:
+def _set_required_anti_overfitting_metrics(run: dict, *, pbo: float = 0.02, dsr: float = 1.05, psr: float = 0.97) -> None:
   metrics = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
   metrics["pbo"] = float(pbo)
   metrics["dsr"] = float(dsr)
+  metrics["psr"] = float(psr)
   run["metrics"] = metrics
 
 

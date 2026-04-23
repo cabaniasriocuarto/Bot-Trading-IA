@@ -104,6 +104,12 @@ def test_backtest_catalog_ids_and_run_record(tmp_path: Path) -> None:
   assert stored["fund_score"] == 100.0
   assert stored["slippage_model_params"]["mode"] == "dynamic_v2"
   assert stored["spread_model_params"]["used_bps"] == 4.0
+  independent_validation = stored.get("independent_validation") or {}
+  assert independent_validation["run_id"] == "BT-000999"
+  assert independent_validation["dataset_hash"] == "abc123"
+  assert independent_validation["params_hash"] == stored["strategy_config_hash"]
+  assert independent_validation["pass_fail_status"] in {"REVIEW", "REJECT"}
+  assert independent_validation["reusable_for_promotion"] is False
   assert db.latest_valid_fee_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == fee_snapshot["snapshot_id"]
   assert db.latest_valid_funding_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == funding_snapshot["snapshot_id"]
   assert db.latest_valid_fundamentals_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT", as_of="2026-02-26T00:30:00+00:00")["snapshot_id"] == fundamentals_snapshot["snapshot_id"]
