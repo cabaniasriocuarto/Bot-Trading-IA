@@ -4750,9 +4750,10 @@ def test_api_domain_contracts_split_truth_evidence_policy_state_and_decision_log
 
 
 def test_strategy_evidence_endpoint_prefers_trial_ledger_metadata(tmp_path: Path, monkeypatch) -> None:
-  _module, client = _build_app(tmp_path, monkeypatch)
+  module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  module.store.ensure_startup_maintenance(blocking=True)
 
   strategies = client.get("/api/v1/strategies", headers=headers)
   assert strategies.status_code == 200, strategies.text
@@ -4901,9 +4902,10 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
 
 
 def test_runs_detail_exposes_strategy_detail_preview_for_strategies_ui(tmp_path: Path, monkeypatch) -> None:
-  _module, client = _build_app(tmp_path, monkeypatch)
+  module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
   headers = _auth_headers(admin_token)
+  module.store.ensure_startup_maintenance(blocking=True)
 
   runs_res = client.get("/api/v1/runs?limit=20", headers=headers)
   assert runs_res.status_code == 200, runs_res.text
