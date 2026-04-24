@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from rtlab_core.src.data.runtime_path import runtime_path
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -102,7 +104,7 @@ def _hydrate_attestation_row(payload: dict[str, Any] | None) -> dict[str, Any] |
 
 class LivePreflightDB:
     def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path).resolve()
+        self.db_path = runtime_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 

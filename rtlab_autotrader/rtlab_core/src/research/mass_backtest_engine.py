@@ -19,6 +19,7 @@ from typing import Any, Callable
 import yaml
 
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.backtest.independent_validation import build_independent_validation_contract
 from rtlab_core.policy_paths import resolve_policy_root
 from rtlab_core.src.data.catalog import DataCatalog
 from rtlab_core.src.data.runtime_path import runtime_path
@@ -1474,6 +1475,110 @@ class MassBacktestEngine:
             status = "completed" if bool(row.get("hard_filters_pass")) else "completed_warn"
             symbols = [str(x) for x in (cfg.get("resolved_universe") or cfg.get("universe") or [])]
             timeframe = str(cfg.get("timeframe") or "5m")
+            params_payload = {
+                "bot_id": str(cfg.get("bot_id") or "").strip() or None,
+                "variant_id": row.get("variant_id"),
+                "params": params,
+                "batch_rank": idx,
+                "use_orderflow_data": bool(orderflow_enabled),
+                "orderflow_feature_set": orderflow_feature_set,
+                "surrogate_adjustments_enabled": surrogate_enabled,
+                "execution_mode": str(row.get("execution_mode") or cfg.get("execution_mode") or "research"),
+                "evaluation_mode": surrogate_eval_mode,
+                "strict_strategy_id": bool(row.get("strict_strategy_id")),
+            }
+            kpi_summary_payload = {
+                "sharpe": summary.get("sharpe_oos"),
+                "sortino": summary.get("sortino_oos"),
+                "calmar": summary.get("calmar_oos"),
+                "max_dd": (_f(summary.get("max_dd_oos_pct")) / 100.0),
+                "winrate": summary.get("winrate"),
+                "expectancy": summary.get("expectancy_net_usd"),
+                "expectancy_unit": "usd_per_trade",
+                "profit_factor": summary.get("profit_factor"),
+                "trade_count": summary.get("trade_count_oos"),
+                "roundtrips": summary.get("trade_count_oos"),
+                "robustness_score": round((_f(row.get("score"), 0.0) * 10) + 50, 4),
+                "pbo": ((gates_checks.get("pbo_cscv") or {}) if isinstance(gates_checks.get("pbo_cscv"), dict) else {}).get("value", pbo_fallback),
+                "dsr": ((gates_checks.get("dsr_deflated") or {}) if isinstance(gates_checks.get("dsr_deflated"), dict) else {}).get("value", dsr_fallback),
+                "vpin_cdf": micro_agg.get("vpin_cdf_oos"),
+                "micro_soft_kill_ratio": micro_agg.get("micro_soft_kill_ratio"),
+                "micro_hard_kill_ratio": micro_agg.get("micro_hard_kill_ratio"),
+                "fund_status": fund_meta.get("fund_status"),
+                "fund_score": fund_meta.get("fund_score"),
+            }
+            flags_payload = {
+                "OOS": True,
+                "WFA": True,
+                "PASO_GATES": bool(gates_eval.get("passed", bool(row.get("hard_filters_pass")))),
+                "BASELINE": False,
+                "FAVORITO": idx <= max(1, _i(cfg.get("top_n"), 10)),
+                "ARCHIVADO": False,
+                "DATA_WARNING": bool(len(summary.get("dataset_hashes") or []) > 1),
+                "MICRO_SOFT_KILL": bool(micro_symbol_kill.get("soft")),
+                "MICRO_HARD_KILL": bool(micro_symbol_kill.get("hard")),
+                "ROBUSTEZ": "Alta" if bool(gates_eval.get("passed")) else ("Media" if bool(row.get("hard_filters_pass")) else "Baja"),
+                "GATES_ADV_PASS": bool(gates_eval.get("passed")),
+                "ORDERFLOW_ENABLED": bool(orderflow_enabled),
+                "ORDERFLOW_FEATURE_SET": orderflow_feature_set,
+                "SURROGATE_ADJUSTMENTS": surrogate_enabled,
+                "EVALUATION_MODE": surrogate_eval_mode,
+            }
+            artifacts_payload = {
+                "batch_id": batch_id,
+                "variant_id": row.get("variant_id"),
+                "gates_eval": gates_eval,
+                "microstructure_debug": {
+                    "available": bool(micro.get("available")),
+                    "symbol_kill": micro_symbol_kill,
+                    "aggregate": micro_agg,
+                    "policy": (micro.get("policy") if isinstance(micro.get("policy"), dict) else {}),
+                },
+                "use_orderflow_data": bool(orderflow_enabled),
+                "orderflow_feature_set": orderflow_feature_set,
+                "surrogate_adjustments": surrogate_meta,
+                "strict_strategy_id": bool(row.get("strict_strategy_id")),
+                "anti_proxy": anti_proxy,
+                "anti_advanced": anti_advanced,
+            }
+            strategy_config_hash = _sha({"variant_id": row.get("variant_id"), "params": params})
+            dataset_source = str((cfg.get("data_provider") or {}).get("dataset_source") or cfg.get("dataset_source") or "dataset")
+            dataset_version = str((cfg.get("data_provider") or {}).get("dataset_version") or "batch_dataset")
+            dataset_hash = str(((summary.get("dataset_hashes") or [None])[0]) or (cfg.get("data_provider") or {}).get("dataset_hash") or "")
+            validation_summary_payload = {
+                "mode": str(cfg.get("validation_mode") or "walk-forward"),
+                "implemented": True,
+                "n_splits": int(((cfg.get("validation") or {}).get("cscv_slices")) or 0),
+                "paths_evaluated": int(summary.get("folds_total") or 0),
+                "note": "mass_backtest_batch_child",
+            }
+            independent_validation_payload = build_independent_validation_contract(
+                run_payload={
+                    "id": run_id,
+                    "catalog_run_id": run_id,
+                    "run_id": run_id,
+                    "strategy_id": str(row.get("strategy_id") or ""),
+                    "strategy_name": str(row.get("strategy_name") or row.get("strategy_id") or ""),
+                    "strategy_version": str(cfg.get("strategy_version") or "batch"),
+                    "strategy_config_hash": strategy_config_hash,
+                    "dataset_source": dataset_source,
+                    "dataset_hash": dataset_hash,
+                    "validation_mode": validation_summary_payload["mode"],
+                    "validation_summary": validation_summary_payload,
+                    "metrics": kpi_summary_payload,
+                    "params_json": params_payload,
+                    "flags": flags_payload,
+                    "status": status,
+                    "created_at": _utc_iso(),
+                    "provenance": {
+                        "dataset_hash": dataset_hash,
+                        "dataset_source": dataset_source,
+                        "commit_hash": str(cfg.get("commit_hash") or "local"),
+                        "strategy_config_hash": strategy_config_hash,
+                    },
+                },
+                repo_root=self.repo_root,
+            )
             record = self.backtest_catalog.upsert_backtest_run(
                 {
                     "run_id": run_id,
@@ -1489,11 +1594,11 @@ class MassBacktestEngine:
                     "strategy_id": str(row.get("strategy_id") or ""),
                     "strategy_name": str(row.get("strategy_name") or row.get("strategy_id") or ""),
                     "strategy_version": str(cfg.get("strategy_version") or "batch"),
-                    "strategy_config_hash": _sha({"variant_id": row.get("variant_id"), "params": params}),
+                    "strategy_config_hash": strategy_config_hash,
                     "code_commit_hash": str(cfg.get("commit_hash") or "local"),
-                    "dataset_source": str((cfg.get("data_provider") or {}).get("dataset_source") or cfg.get("dataset_source") or "dataset"),
-                    "dataset_version": str((cfg.get("data_provider") or {}).get("dataset_version") or "batch_dataset"),
-                    "dataset_hash": str(((summary.get("dataset_hashes") or [None])[0]) or (cfg.get("data_provider") or {}).get("dataset_hash") or ""),
+                    "dataset_source": dataset_source,
+                    "dataset_version": dataset_version,
+                    "dataset_hash": dataset_hash,
                     "symbols_json": json.dumps(symbols, ensure_ascii=True, sort_keys=True),
                     "timeframes_json": json.dumps([timeframe], ensure_ascii=True, sort_keys=True),
                     "timerange_from": str(cfg.get("start") or ""),
@@ -1517,22 +1622,7 @@ class MassBacktestEngine:
                     "initial_capital": _f(cfg.get("initial_capital"), 10000.0),
                     "position_sizing_profile": str(cfg.get("position_sizing_profile") or "default"),
                     "max_open_positions": _i(cfg.get("max_open_positions"), 1),
-                    "params_json": json.dumps(
-                        {
-                            "bot_id": str(cfg.get("bot_id") or "").strip() or None,
-                            "variant_id": row.get("variant_id"),
-                            "params": params,
-                            "batch_rank": idx,
-                            "use_orderflow_data": bool(orderflow_enabled),
-                            "orderflow_feature_set": orderflow_feature_set,
-                            "surrogate_adjustments_enabled": surrogate_enabled,
-                            "execution_mode": str(row.get("execution_mode") or cfg.get("execution_mode") or "research"),
-                            "evaluation_mode": surrogate_eval_mode,
-                            "strict_strategy_id": bool(row.get("strict_strategy_id")),
-                        },
-                        ensure_ascii=True,
-                        sort_keys=True,
-                    ),
+                    "params_json": json.dumps(params_payload, ensure_ascii=True, sort_keys=True),
                     "seed": _i(row.get("seed")) if row.get("seed") is not None else None,
                     "alias": None,
                     "tags_json": json.dumps(
@@ -1544,73 +1634,11 @@ class MassBacktestEngine:
                         ],
                         ensure_ascii=True,
                     ),
-                    "kpi_summary_json": json.dumps(
-                        {
-                            "sharpe": summary.get("sharpe_oos"),
-                            "sortino": summary.get("sortino_oos"),
-                            "calmar": summary.get("calmar_oos"),
-                            "max_dd": (_f(summary.get("max_dd_oos_pct")) / 100.0),
-                            "winrate": summary.get("winrate"),
-                            "expectancy": summary.get("expectancy_net_usd"),
-                            "expectancy_unit": "usd_per_trade",
-                            "profit_factor": summary.get("profit_factor"),
-                            "trade_count": summary.get("trade_count_oos"),
-                            "roundtrips": summary.get("trade_count_oos"),
-                            "robustness_score": round((_f(row.get("score"), 0.0) * 10) + 50, 4),
-                            "pbo": ((gates_checks.get("pbo_cscv") or {}) if isinstance(gates_checks.get("pbo_cscv"), dict) else {}).get("value", pbo_fallback),
-                            "dsr": ((gates_checks.get("dsr_deflated") or {}) if isinstance(gates_checks.get("dsr_deflated"), dict) else {}).get("value", dsr_fallback),
-                            "vpin_cdf": micro_agg.get("vpin_cdf_oos"),
-                            "micro_soft_kill_ratio": micro_agg.get("micro_soft_kill_ratio"),
-                            "micro_hard_kill_ratio": micro_agg.get("micro_hard_kill_ratio"),
-                            "fund_status": fund_meta.get("fund_status"),
-                            "fund_score": fund_meta.get("fund_score"),
-                        },
-                        ensure_ascii=True,
-                        sort_keys=True,
-                    ),
+                    "kpi_summary_json": json.dumps(kpi_summary_payload, ensure_ascii=True, sort_keys=True),
                     "regime_kpis_json": json.dumps(regime, ensure_ascii=True, sort_keys=True),
-                    "flags_json": json.dumps(
-                        {
-                            "OOS": True,
-                            "WFA": True,
-                            "PASO_GATES": bool(gates_eval.get("passed", bool(row.get("hard_filters_pass")))),
-                            "BASELINE": False,
-                            "FAVORITO": idx <= max(1, _i(cfg.get("top_n"), 10)),
-                            "ARCHIVADO": False,
-                            "DATA_WARNING": bool(len(summary.get("dataset_hashes") or []) > 1),
-                            "MICRO_SOFT_KILL": bool(micro_symbol_kill.get("soft")),
-                            "MICRO_HARD_KILL": bool(micro_symbol_kill.get("hard")),
-                            "ROBUSTEZ": "Alta" if bool(gates_eval.get("passed")) else ("Media" if bool(row.get("hard_filters_pass")) else "Baja"),
-                            "GATES_ADV_PASS": bool(gates_eval.get("passed")),
-                            "ORDERFLOW_ENABLED": bool(orderflow_enabled),
-                            "ORDERFLOW_FEATURE_SET": orderflow_feature_set,
-                            "SURROGATE_ADJUSTMENTS": surrogate_enabled,
-                            "EVALUATION_MODE": surrogate_eval_mode,
-                        },
-                        ensure_ascii=True,
-                        sort_keys=True,
-                    ),
-                    "artifacts_json": json.dumps(
-                        {
-                            "batch_id": batch_id,
-                            "variant_id": row.get("variant_id"),
-                            "gates_eval": gates_eval,
-                            "microstructure_debug": {
-                                "available": bool(micro.get("available")),
-                                "symbol_kill": micro_symbol_kill,
-                                "aggregate": micro_agg,
-                                "policy": (micro.get("policy") if isinstance(micro.get("policy"), dict) else {}),
-                            },
-                            "use_orderflow_data": bool(orderflow_enabled),
-                            "orderflow_feature_set": orderflow_feature_set,
-                            "surrogate_adjustments": surrogate_meta,
-                            "strict_strategy_id": bool(row.get("strict_strategy_id")),
-                            "anti_proxy": anti_proxy,
-                            "anti_advanced": anti_advanced,
-                        },
-                        ensure_ascii=True,
-                        sort_keys=True,
-                    ),
+                    "flags_json": json.dumps(flags_payload, ensure_ascii=True, sort_keys=True),
+                    "artifacts_json": json.dumps(artifacts_payload, ensure_ascii=True, sort_keys=True),
+                    "independent_validation_json": json.dumps(independent_validation_payload, ensure_ascii=True, sort_keys=True),
                 }
             )
             row["catalog_run_id"] = record["run_id"]

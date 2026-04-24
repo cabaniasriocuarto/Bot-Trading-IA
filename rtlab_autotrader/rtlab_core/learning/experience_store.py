@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from statistics import mean, pstdev
 from typing import Any
 
-from rtlab_core.learning.brain import deflated_sharpe_ratio
+from rtlab_core.learning.brain import deflated_sharpe_ratio, probabilistic_sharpe_ratio
 from rtlab_core.strategy_packs.registry_db import RegistryDB
 
 
@@ -125,16 +125,7 @@ def _simple_sortino(values: list[float]) -> float:
 
 
 def _psr(values: list[float]) -> float | None:
-    if len(values) < 3:
-        return None
-    sharpe = _simple_sharpe(values)
-    sigma = pstdev(values)
-    if sigma <= 1e-12:
-        return None
-    sr_std = math.sqrt((1.0 + 0.5 * (sharpe**2)) / max(1.0, len(values) - 1.0))
-    if sr_std <= 1e-12:
-        return None
-    return _normal_cdf(sharpe / sr_std)
+    return probabilistic_sharpe_ratio(values)
 
 
 class ExperienceStore:

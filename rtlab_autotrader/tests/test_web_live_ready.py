@@ -552,6 +552,43 @@ def test_startup_maintenance_records_decision_log_backfill_failure(tmp_path: Pat
   assert status["error"] == "decision log exploded"
   assert status.get("finished_at")
 
+def test_startup_db_wrappers_do_not_resolve_runtime_sqlite_paths(tmp_path: Path, monkeypatch) -> None:
+  import pathlib
+
+  from rtlab_core.execution.live_preflight import LivePreflightDB
+  from rtlab_core.execution.reality import ExecutionRealityDB
+  from rtlab_core.instruments.registry import BinanceInstrumentRegistryDB
+  from rtlab_core.reporting.service import ReportingBridgeDB
+  from rtlab_core.validation.service import ValidationDB
+
+  runtime_targets = {
+    tmp_path / "reporting" / "reporting.sqlite3",
+    tmp_path / "execution" / "execution.sqlite3",
+    tmp_path / "validation" / "validation.sqlite3",
+    tmp_path / "console" / "console.sqlite3",
+    tmp_path / "instruments" / "registry.sqlite3",
+  }
+  original_resolve = pathlib.Path.resolve
+
+  def _guard_resolve(self, *args, **kwargs):
+    if self in runtime_targets:
+      raise AssertionError(f"resolve() no debe tocar runtime sqlite path: {self}")
+    return original_resolve(self, *args, **kwargs)
+
+  monkeypatch.setattr(pathlib.Path, "resolve", _guard_resolve)
+
+  reporting = ReportingBridgeDB(tmp_path / "reporting" / "reporting.sqlite3")
+  execution = ExecutionRealityDB(tmp_path / "execution" / "execution.sqlite3")
+  validation = ValidationDB(tmp_path / "validation" / "validation.sqlite3")
+  live_preflight = LivePreflightDB(tmp_path / "console" / "console.sqlite3")
+  instruments = BinanceInstrumentRegistryDB(tmp_path / "instruments" / "registry.sqlite3")
+
+  assert reporting.db_path == tmp_path / "reporting" / "reporting.sqlite3"
+  assert execution.db_path == tmp_path / "execution" / "execution.sqlite3"
+  assert validation.db_path == tmp_path / "validation" / "validation.sqlite3"
+  assert live_preflight.db_path == tmp_path / "console" / "console.sqlite3"
+  assert instruments.db_path == tmp_path / "instruments" / "registry.sqlite3"
+
 
 def test_api_general_rate_limit_guard(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
@@ -4042,6 +4079,49 @@ def test_backtests_run_supports_purged_cv_and_cpcv(tmp_path: Path, monkeypatch) 
   assert int(cpcv_summary.get("oos_bars") or 0) > 0
 
 
+def test_backtests_run_persists_independent_validation_contract(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  run_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": strategy_id,
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "validation_mode": "cpcv",
+      "strict_strategy_id": True,
+      "costs_model": {"fees_bps": 5.0, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 0.0},
+    },
+  )
+  assert run_res.status_code == 200, run_res.text
+  run = run_res.json()["run"]
+  contract = run.get("independent_validation") or {}
+  assert contract["contract_version"] == "rtlrese32/v1"
+  assert contract["run_id"] == run["id"]
+  assert contract["dataset_hash"] == run["dataset_hash"]
+  assert contract["params_hash"] == run["strategy_config_hash"]
+  assert contract["pass_fail_status"] == "REVIEW"
+  assert "missing_pbo" in set(contract.get("review_reasons") or [])
+  assert contract["reusable_for_promotion"] is False
+
+  detail = client.get(f"/api/v1/runs/{run['id']}", headers=headers)
+  assert detail.status_code == 200, detail.text
+  detail_contract = (detail.json() or {}).get("independent_validation") or {}
+  assert detail_contract["contract_version"] == "rtlrese32/v1"
+  assert detail_contract["pass_fail_status"] == "REVIEW"
+  assert isinstance(((detail.json() or {}).get("kpis") or {}).get("dsr"), (int, float))
+  assert ((detail_contract.get("metric_assessment") or {}).get("psr") or {}).get("status") == "missing"
+
+
 def test_backtests_run_forwards_strict_strategy_id_flag(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch, mode="paper")
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -4164,6 +4244,56 @@ def test_validate_promotion_blocks_mixed_orderflow_feature_set(tmp_path: Path, m
   assert payload.get("rollout_ready") is False
 
 
+def test_validate_promotion_fail_closed_when_independent_validation_not_reusable(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  user_data_dir = Path(_module.USER_DATA_DIR)
+  _seed_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+  payload_common = {
+    "strategy_id": strategy_id,
+    "market": "crypto",
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "start": "2024-01-01",
+    "end": "2024-03-31",
+    "validation_mode": "walk-forward",
+    "use_orderflow_data": True,
+    "strict_strategy_id": True,
+  }
+
+  baseline_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**payload_common, "costs_model": {"fees_bps": 18.0, "spread_bps": 14.0, "slippage_bps": 10.0, "funding_bps": 1.0}},
+  )
+  assert baseline_res.status_code == 200, baseline_res.text
+  baseline_id = str(baseline_res.json()["run_id"])
+
+  candidate_res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={**payload_common, "costs_model": {"fees_bps": 5.0, "spread_bps": 4.0, "slippage_bps": 3.0, "funding_bps": 0.5}},
+  )
+  assert candidate_res.status_code == 200, candidate_res.text
+  candidate_id = str(candidate_res.json()["run_id"])
+
+  validate_res = client.post(
+    f"/api/v1/runs/{candidate_id}/validate_promotion",
+    headers=headers,
+    json={"target_mode": "paper", "baseline_run_id": baseline_id},
+  )
+  assert validate_res.status_code == 200, validate_res.text
+  payload = validate_res.json()
+  independent_validation = payload.get("independent_validation") or {}
+  assert independent_validation["pass_fail_status"] == "REVIEW"
+  checks = {row["id"]: row for row in ((payload.get("constraints") or {}).get("checks") or [])}
+  assert bool((checks.get("independent_validation_reusable") or {}).get("ok")) is False
+  assert payload.get("rollout_ready") is False
+
+
 def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, *, source: str, include_bid_ask: bool = False) -> None:
   import json
 
@@ -4223,6 +4353,55 @@ def _seed_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, 
   manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
+def _seed_legacy_local_backtest_dataset(user_data_dir: Path, market: str, symbol: str, *, source: str) -> None:
+  processed_dir = user_data_dir / "data" / market / "processed"
+  manifests_dir = user_data_dir / "data" / market / "manifests"
+  processed_dir.mkdir(parents=True, exist_ok=True)
+  manifests_dir.mkdir(parents=True, exist_ok=True)
+  timestamps = pd.date_range("2024-01-01", periods=2000, freq="1min", tz="UTC")
+  df = pd.DataFrame(
+    {
+      "timestamp": timestamps,
+      "open": np.linspace(100.0, 101.5, len(timestamps)),
+      "high": np.linspace(100.5, 102.0, len(timestamps)),
+      "low": np.linspace(99.5, 101.0, len(timestamps)),
+      "close": np.linspace(100.2, 101.7, len(timestamps)),
+      "volume": np.linspace(10.0, 20.0, len(timestamps)),
+    }
+  )
+  csv_path = processed_dir / f"{symbol}_1m.csv"
+  df.to_csv(csv_path, index=False)
+
+  import hashlib
+  digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+  legacy_csv = Path(
+    rf"C:\Users\Admin\Desktop\Nueva carpeta\VS Code\Trading IA\Bot-Trading-IA\rtlab_autotrader\user_data\data\{market}\processed\{symbol}_1m.csv"
+  )
+  manifest = {
+    "market": market,
+    "symbol": symbol,
+    "timeframe": "1m",
+    "source": source,
+    "start": str(df["timestamp"].min().isoformat()),
+    "end": str(df["timestamp"].max().isoformat()),
+    "files": [str(legacy_csv)],
+    "processed_path": str(legacy_csv),
+    "dataset_hash": digest,
+  }
+  (manifests_dir / f"{symbol}_1m.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+  summary = {
+    "market": market,
+    "symbol": symbol,
+    "timeframe": "1m",
+    "source": source,
+    "start": manifest["start"],
+    "end": manifest["end"],
+    "files": [str(legacy_csv)],
+    "dataset_hash": digest,
+  }
+  (manifests_dir / f"{symbol}_1m.summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
 def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
   shared_hash = str(candidate_run.get("dataset_hash") or baseline_run.get("dataset_hash") or "e2e-shared-hash")
   shared_period = candidate_run.get("period") if isinstance(candidate_run.get("period"), dict) else (
@@ -4232,6 +4411,7 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
     row["status"] = "completed"
     row["data_source"] = "binance_public"
     row["dataset_hash"] = shared_hash
+    row["strategy_config_hash"] = str(row.get("strategy_config_hash") or f"cfg-{row.get('strategy_id')}")
     row["period"] = dict(shared_period)
     row["use_orderflow_data"] = True
     row["orderflow_feature_set"] = "orderflow_on"
@@ -4266,6 +4446,8 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
     provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
     provenance["strict_strategy_id"] = True
     provenance["orderflow_feature_set"] = "orderflow_on"
+    provenance["strategy_config_hash"] = str(row.get("strategy_config_hash") or f"cfg-{row.get('strategy_id')}")
+    provenance["dataset_hash"] = shared_hash
     row["provenance"] = provenance
 
   baseline_metrics = baseline_run.get("metrics") if isinstance(baseline_run.get("metrics"), dict) else {}
@@ -4280,6 +4462,7 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
   baseline_metrics["sharpe"] = 1.2
   baseline_metrics["pbo"] = 0.02
   baseline_metrics["dsr"] = 1.0
+  baseline_metrics["psr"] = 0.97
   baseline_run["metrics"] = baseline_metrics
 
   baseline_costs = baseline_run.get("costs_breakdown") if isinstance(baseline_run.get("costs_breakdown"), dict) else {}
@@ -4301,6 +4484,7 @@ def _force_runs_rollout_ready(candidate_run: dict, baseline_run: dict) -> None:
   candidate_metrics["sharpe"] = 1.45
   candidate_metrics["pbo"] = 0.02
   candidate_metrics["dsr"] = 1.08
+  candidate_metrics["psr"] = 0.98
   candidate_run["metrics"] = candidate_metrics
 
   candidate_costs = candidate_run.get("costs_breakdown") if isinstance(candidate_run.get("costs_breakdown"), dict) else {}
@@ -4369,6 +4553,42 @@ def test_event_backtest_engine_runs_for_crypto_forex_equities(tmp_path: Path, mo
   assert status.status_code == 200
   payload = status.json()
   assert "available" in payload and "missing" in payload
+
+
+def test_backtests_and_data_status_relocate_legacy_manifest_paths(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch, mode="paper")
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  user_data_dir = Path(module.USER_DATA_DIR)
+  _seed_legacy_local_backtest_dataset(user_data_dir, "crypto", "BTCUSDT", source="binance_public")
+
+  status = client.get("/api/v1/data/status", headers=headers)
+  assert status.status_code == 200, status.text
+  payload = status.json()
+  assert payload["available_count"] == 1
+  assert len(payload["available"]) == 1
+  row = payload["available"][0]
+  assert str(row["processed_path"]).endswith("BTCUSDT_1m.csv")
+  assert not str(row["manifest_path"]).endswith(".summary.json")
+
+  res = client.post(
+    "/api/v1/backtests/run",
+    headers=headers,
+    json={
+      "strategy_id": "trend_pullback_orderflow_confirm_v1",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-01-01",
+      "validation_mode": "walk-forward",
+    },
+  )
+  assert res.status_code == 200, res.text
+  run = res.json()["run"]
+  assert run["data_source"] == "binance_public"
+  assert run["dataset_hash"]
 
 
 def test_strategy_registry_seeds_knowledge_pack_and_patch_flags(tmp_path: Path, monkeypatch) -> None:
@@ -4529,6 +4749,30 @@ def test_api_domain_contracts_split_truth_evidence_policy_state_and_decision_log
   assert any(str(row.get("reason") or "") == "rtlrese_14_smoke" for row in (decision_log_payload.get("breaker_events") or []))
 
 
+def test_strategy_evidence_endpoint_prefers_trial_ledger_metadata(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  module.store.ensure_startup_maintenance(blocking=True)
+
+  strategies = client.get("/api/v1/strategies", headers=headers)
+  assert strategies.status_code == 200, strategies.text
+  strategy_id = strategies.json()[0]["id"]
+
+  evidence_res = client.get(f"/api/v1/strategies/{strategy_id}/evidence?limit=3", headers=headers)
+  assert evidence_res.status_code == 200, evidence_res.text
+  evidence_payload = evidence_res.json()
+  assert evidence_payload["run_count"] >= 1
+  assert evidence_payload["items"]
+
+  first = evidence_payload["items"][0]
+  assert first["run_id"]
+  assert first["validation_mode"] == "walk-forward"
+  assert first["evidence_status"] == "legacy"
+  assert "missing_commit_hash" in first["evidence_flags"]
+  assert "trial ledger" in str(first["notes"]).lower()
+
+
 def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -4600,7 +4844,6 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   )
   assert bulk_delete.status_code == 200, bulk_delete.text
   assert bulk_delete.json()["deleted_count"] >= 1
-
   after_delete = client.get("/api/v1/runs", headers=headers)
   assert after_delete.status_code == 200
   assert all(row["run_id"] != first["run_id"] for row in after_delete.json()["items"])
@@ -4656,6 +4899,45 @@ def test_runs_batches_catalog_endpoints_smoke(tmp_path: Path, monkeypatch) -> No
   cfg_snapshot = (batch_detail.json().get("config") or {})
   assert isinstance(cfg_snapshot.get("policy_snapshot_summary"), dict)
   assert cfg_snapshot["policy_snapshot_summary"].get("pbo_reject_if_gt") == 0.05
+
+
+def test_runs_detail_exposes_strategy_detail_preview_for_strategies_ui(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  module.store.ensure_startup_maintenance(blocking=True)
+
+  runs_res = client.get("/api/v1/runs?limit=20", headers=headers)
+  assert runs_res.status_code == 200, runs_res.text
+  items = runs_res.json()["items"]
+  assert items
+  target = next((row for row in items if row.get("legacy_json_id")), items[0])
+
+  detail_res = client.get(f"/api/v1/runs/{target['run_id']}", headers=headers)
+  assert detail_res.status_code == 200, detail_res.text
+  detail_payload = detail_res.json()
+  strategy_detail = detail_payload.get("strategy_detail") or {}
+
+  assert strategy_detail["source"] in {"legacy_payload", "catalog_summary"}
+  assert isinstance(strategy_detail["series_available"], bool)
+  assert isinstance(strategy_detail["trades_available"], bool)
+  assert isinstance(strategy_detail["costs_available"], bool)
+  assert isinstance(strategy_detail["trade_count"], int)
+  assert "equity_curve" in strategy_detail
+  assert "drawdown_curve" in strategy_detail
+  assert "costs_model" in strategy_detail
+  assert "costs_breakdown" in strategy_detail
+  assert "artifacts_links" in strategy_detail
+
+  if target.get("legacy_json_id"):
+    assert strategy_detail["source"] == "legacy_payload"
+    assert strategy_detail["series_available"] is True
+    assert strategy_detail["trades_available"] is True
+    assert isinstance(strategy_detail["equity_curve"], list) and strategy_detail["equity_curve"]
+    assert isinstance(strategy_detail["costs_model"], dict)
+    assert "fees_bps" in strategy_detail["costs_model"]
+    assert isinstance(strategy_detail["artifacts_links"], dict)
+    assert "equity_curve_csv" in strategy_detail["artifacts_links"]
 
 
 def test_runs_validate_and_promote_endpoints_smoke(tmp_path: Path, monkeypatch) -> None:

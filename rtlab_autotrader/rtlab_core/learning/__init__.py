@@ -4,6 +4,7 @@ from .brain import (
     compute_normalized_reward,
     detect_drift,
     deflated_sharpe_ratio,
+    probabilistic_sharpe_ratio,
     pbo_cscv,
 )
 from .knowledge import KnowledgeLoader, KnowledgeValidationError
@@ -19,4 +20,5 @@ __all__ = [
     "detect_drift",
     "pbo_cscv",
     "deflated_sharpe_ratio",
+    "probabilistic_sharpe_ratio",
 ]

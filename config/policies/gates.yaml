@@ -12,6 +12,11 @@ gates:
     min_dsr: 0.95
     require_trials_stats: true
 
+  psr:
+    enabled: true
+    review_if_gte: 0.80
+    favorable_if_gte: 0.95
+
   walk_forward:
     enabled: true
     folds: 5

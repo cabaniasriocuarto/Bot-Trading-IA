@@ -1,5 +1,45 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-22
+
+### RTLRESE-32 - validacion independiente real por run
+- Cambio real aplicado en backend/catalogo minimo:
+  - `rtlab_autotrader/rtlab_core/backtest/independent_validation.py`
+    - agrega el builder canonico de `rtlrese32/v1`;
+    - carga thresholds reales desde `config/policies/gates.yaml`;
+    - clasifica `PASS / REVIEW / REJECT`, `rejection_reasons`, `review_reasons` y `promotion_stage_eligible`;
+  - `rtlab_autotrader/rtlab_core/backtest/catalog_db.py`
+    - persiste `independent_validation_json` en `backtest_runs`;
+    - expone `independent_validation` al leer corridas;
+    - agrega patch minimo para backfill del contrato persistido;
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - genera `strategy_config_hash` reproducible para quick backtests reales;
+    - persiste `independent_validation` en corridas simples;
+    - integra la validacion independiente a `validate_promotion` con fail-closed explicito;
+    - expone metrica derivada en `GET /api/v1/runs/{run_id}` solo como lectura auditada, sin convertirla en evidencia formal de promocion;
+  - `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`
+    - persiste `independent_validation_json` tambien en hijos de backtests masivos;
+  - `rtlab_autotrader/rtlab_core/learning/brain.py`
+    - agrega `probabilistic_sharpe_ratio`;
+  - `rtlab_autotrader/rtlab_core/learning/experience_store.py`
+    - reutiliza el helper canonico de `PSR`.
+- Reuso canonico de backlog:
+  - `RTLRESE-5` absorbida via `PBO/CSCV` trazable por run;
+  - `RTLRESE-6` absorbida via `PSR/DSR`, `review_reasons`, `rejection_reasons` y `promotion_stage_eligible`;
+  - `RTLRESE-4` no se toca porque no aparecio un gap nuevo de provenance persistente.
+- Tests corridos:
+  - `pytest rtlab_autotrader/tests/test_backtest_catalog_db.py -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k "independent_validation_contract or independent_validation_not_reusable" -q` -> PASS
+  - `pytest rtlab_autotrader/tests/test_rollout_safe_update.py -k "gate_evaluator or compare_engine or rollout_manager" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - `pytest rtlab_autotrader/tests/test_rollout_safe_update.py -q` sigue mostrando un FAIL preexistente del seed-run de rollout API;
+  - ese fail ya reproduce tambien en `origin/main`, asi que no lo abre `RTLRESE-32`;
+  - el bloque no abre `live console`, drift, scorecard, portfolio risk ni governance IA como dominio separado.
+- Siguiente paso exacto:
+  - abrir `RTLOPS-28` como drift layer minimo y auditable.
+
 ## 2026-04-21
 
 ### Preflight posterior a RTLOPS-84 - cadena minima cerrada
@@ -967,6 +1007,21 @@
   - si esa etapa falla, `startup_maintenance_status` ahora lo refleja con `decision_log_backfill_failed`.
 - Validacion local:
   - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k decision_log or startup_maintenance` -> PASS.
+
+### Auditoria implementada: startup maintenance y wrappers SQLite ya no se quedan en estado ambiguo ni resuelven runtime paths
+- Hallazgo real de review sobre lo implementado:
+  - el mantenimiento de startup podia romper antes del refresh de reporting y dejar `startup_maintenance_status` clavado en `running`;
+  - ademas seguian quedando wrappers SQLite del camino de arranque haciendo `Path.resolve()` sobre runtime paths:
+    - `ReportingBridgeDB`
+    - `ExecutionRealityDB`
+    - `ValidationDB`
+    - `LivePreflightDB`
+    - `BinanceInstrumentRegistryDB`
+- Cambio minimo/profesional aplicado en rama de auditoria:
+  - `_run_startup_maintenance()` ahora marca fallo explicito por etapa y siempre publica `finished_at`;
+  - esos wrappers SQLite pasan a `runtime_path(...)` en vez de `resolve()`.
+- Validacion local:
+  - `pytest rtlab_autotrader/tests/test_web_live_ready.py -k startup_maintenance_records_failure_status or startup_db_wrappers_do_not_resolve_runtime_sqlite_paths` -> PASS.
 
 ### Produccion Railway: startup deja de bloquearse por auth sqlite y mantenimiento de ConsoleStore
 - Diagnostico mas fuerte del `502` residual:

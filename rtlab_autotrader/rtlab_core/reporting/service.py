@@ -404,7 +404,7 @@ def reporting_exports_policy(repo_root: Path | None = None, *, explicit_root: Pa
 
 class ReportingBridgeDB:
     def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path).resolve()
+        self.db_path = runtime_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 

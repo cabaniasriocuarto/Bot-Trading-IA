@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from rtlab_core.backtest.independent_validation import build_independent_validation_contract
+
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -67,6 +69,7 @@ class BacktestCatalogDB:
                 "funding_snapshot_id": "TEXT",
                 "slippage_model_params": "TEXT NOT NULL DEFAULT '{}'",
                 "spread_model_params": "TEXT NOT NULL DEFAULT '{}'",
+                "independent_validation_json": "TEXT NOT NULL DEFAULT '{}'",
                 "fundamentals_snapshot_id": "TEXT",
                 "fund_status": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
                 "fund_allow_trade": "INTEGER NOT NULL DEFAULT 1",
@@ -151,6 +154,7 @@ class BacktestCatalogDB:
                   regime_kpis_json TEXT NOT NULL,
                   flags_json TEXT NOT NULL,
                   artifacts_json TEXT NOT NULL,
+                  independent_validation_json TEXT NOT NULL DEFAULT '{}',
 
                   updated_at TEXT NOT NULL
                 );
@@ -323,6 +327,7 @@ class BacktestCatalogDB:
             "regime_kpis_json": "{}",
             "flags_json": "{}",
             "artifacts_json": "{}",
+            "independent_validation_json": "{}",
             "updated_at": now,
         }
 
@@ -818,94 +823,113 @@ class BacktestCatalogDB:
         status = str(run.get("status") or "completed").lower()
         finished_at = str(run.get("finished_at") or "") or (str(run.get("created_at") or "") if status in {"completed", "failed"} else None)
         started_at = str(run.get("started_at") or "") or (str(run.get("created_at") or "") if status in {"running", "completed", "failed"} else None)
-        record = self.upsert_backtest_run(
-            {
+        strategy_config_hash = str(run.get("strategy_config_hash") or _short_hash(params_payload))
+        dataset_hash = str(run.get("dataset_hash") or provenance.get("dataset_hash") or "")
+        record_data = {
+            "run_id": run_id,
+            "legacy_json_id": raw_id or None,
+            "run_type": str(run.get("run_type") or "single"),
+            "batch_id": run.get("batch_id"),
+            "parent_run_id": run.get("parent_run_id"),
+            "status": status if status in {"queued", "preparing", "running", "completed", "completed_warn", "failed", "canceled", "archived"} else "completed",
+            "created_at": str(run.get("created_at") or _utc_iso()),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "created_by": str(run.get("created_by") or created_by),
+            "mode": str(run.get("mode") or "backtest"),
+            "strategy_id": str((strategy or {}).get("structured_id") or run.get("strategy_id") or ""),
+            "strategy_name": strategy_name,
+            "strategy_version": strategy_version,
+            "strategy_config_hash": strategy_config_hash,
+            "code_commit_hash": str(run.get("git_commit") or provenance.get("commit_hash") or "local"),
+            "dataset_source": data_source,
+            "dataset_version": dataset_version,
+            "dataset_hash": dataset_hash,
+            "symbols_json": _to_json(universe, []),
+            "timeframes_json": _to_json(timeframes, []),
+            "timerange_from": str(((run.get("period") or {}).get("start")) or provenance.get("from") or ""),
+            "timerange_to": str(((run.get("period") or {}).get("end")) or provenance.get("to") or ""),
+            "timezone": "UTC",
+            "missing_data_policy": str(run.get("missing_data_policy") or "warn_skip"),
+            "fee_model": str(run.get("fee_model") or f"maker_taker_bps:{float(costs.get('fees_bps', 0.0) or 0.0):.4f}"),
+            "spread_model": str(run.get("spread_model") or f"static:{float(costs.get('spread_bps', 0.0) or 0.0):.4f}"),
+            "slippage_model": str(run.get("slippage_model") or f"static:{float(costs.get('slippage_bps', 0.0) or 0.0):.4f}"),
+            "funding_model": str(run.get("funding_model") or f"static:{float(costs.get('funding_bps', 0.0) or 0.0):.4f}"),
+            "fee_snapshot_id": run.get("fee_snapshot_id") or provenance.get("fee_snapshot_id"),
+            "funding_snapshot_id": run.get("funding_snapshot_id") or provenance.get("funding_snapshot_id"),
+            "slippage_model_params": _to_json(
+                slippage_model_params if isinstance(slippage_model_params, dict) else (run.get("slippage_model_params") if isinstance(run.get("slippage_model_params"), dict) else {}),
+                {},
+            ),
+            "spread_model_params": _to_json(
+                spread_model_params if isinstance(spread_model_params, dict) else (run.get("spread_model_params") if isinstance(run.get("spread_model_params"), dict) else {}),
+                {},
+            ),
+            "fundamentals_snapshot_id": run.get("fundamentals_snapshot_id") or provenance.get("fundamentals_snapshot_id"),
+            "fund_status": str(run.get("fund_status") or provenance.get("fund_status") or "UNKNOWN"),
+            "fund_allow_trade": 1 if bool(run.get("fund_allow_trade", provenance.get("fund_allow_trade", True))) else 0,
+            "fund_risk_multiplier": float(run.get("fund_risk_multiplier", provenance.get("fund_risk_multiplier", 1.0)) or 1.0),
+            "fund_score": (
+                float(run.get("fund_score"))
+                if isinstance(run.get("fund_score"), (int, float))
+                else (
+                    float(provenance.get("fund_score"))
+                    if isinstance(provenance.get("fund_score"), (int, float))
+                    else None
+                )
+            ),
+            "fill_model": str(run.get("fill_model") or "market"),
+            "initial_capital": float(run.get("initial_capital") or 10000.0),
+            "position_sizing_profile": str(run.get("position_sizing_profile") or "default"),
+            "max_open_positions": int(run.get("max_open_positions") or 1),
+            "params_json": _to_json(run.get("params_json") or params_payload, {}),
+            "seed": run.get("seed"),
+            "hf_model_id": run.get("hf_model_id"),
+            "hf_revision": run.get("hf_revision"),
+            "hf_commit_hash": run.get("hf_commit_hash"),
+            "pipeline_task": run.get("pipeline_task"),
+            "inference_mode": run.get("inference_mode"),
+            "alias": run.get("alias"),
+            "tags_json": _to_json(run.get("tags") or [], []),
+            "pinned": 1 if bool(run.get("pinned")) else 0,
+            "kpi_summary_json": _to_json(metrics, {}),
+            "regime_kpis_json": _to_json(run.get("kpis_by_regime") or regime_rows, {}),
+            "flags_json": _to_json(
+                run.get("flags")
+                or {
+                    "IS": False,
+                    "OOS": bool(str(run.get("validation_mode") or "").lower().startswith("walk")),
+                    "WFA": bool(str(run.get("validation_mode") or "").lower() == "walk-forward"),
+                    "PASO_GATES": False,
+                    "BASELINE": False,
+                    "FAVORITO": bool(run.get("pinned")),
+                    "ARCHIVADO": status == "archived",
+                },
+                {},
+            ),
+            "artifacts_json": _to_json(run.get("artifacts_links") or {}, {}),
+        }
+        independent_validation = run.get("independent_validation") if isinstance(run.get("independent_validation"), dict) else build_independent_validation_contract(
+            run_payload={
+                **run,
+                "id": str(run.get("id") or run_id),
+                "catalog_run_id": run_id,
                 "run_id": run_id,
-                "legacy_json_id": raw_id or None,
-                "run_type": str(run.get("run_type") or "single"),
-                "batch_id": run.get("batch_id"),
-                "parent_run_id": run.get("parent_run_id"),
-                "status": status if status in {"queued", "preparing", "running", "completed", "completed_warn", "failed", "canceled", "archived"} else "completed",
-                "created_at": str(run.get("created_at") or _utc_iso()),
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "created_by": str(run.get("created_by") or created_by),
-                "mode": str(run.get("mode") or "backtest"),
-                "strategy_id": str((strategy or {}).get("structured_id") or run.get("strategy_id") or ""),
                 "strategy_name": strategy_name,
                 "strategy_version": strategy_version,
-                "strategy_config_hash": str(run.get("strategy_config_hash") or _short_hash(params_payload)),
-                "code_commit_hash": str(run.get("git_commit") or provenance.get("commit_hash") or "local"),
+                "strategy_config_hash": strategy_config_hash,
+                "dataset_hash": dataset_hash,
                 "dataset_source": data_source,
-                "dataset_version": dataset_version,
-                "dataset_hash": str(run.get("dataset_hash") or provenance.get("dataset_hash") or ""),
-                "symbols_json": _to_json(universe, []),
-                "timeframes_json": _to_json(timeframes, []),
-                "timerange_from": str(((run.get("period") or {}).get("start")) or provenance.get("from") or ""),
-                "timerange_to": str(((run.get("period") or {}).get("end")) or provenance.get("to") or ""),
-                "timezone": "UTC",
-                "missing_data_policy": str(run.get("missing_data_policy") or "warn_skip"),
-                "fee_model": str(run.get("fee_model") or f"maker_taker_bps:{float(costs.get('fees_bps', 0.0) or 0.0):.4f}"),
-                "spread_model": str(run.get("spread_model") or f"static:{float(costs.get('spread_bps', 0.0) or 0.0):.4f}"),
-                "slippage_model": str(run.get("slippage_model") or f"static:{float(costs.get('slippage_bps', 0.0) or 0.0):.4f}"),
-                "funding_model": str(run.get("funding_model") or f"static:{float(costs.get('funding_bps', 0.0) or 0.0):.4f}"),
-                "fee_snapshot_id": run.get("fee_snapshot_id") or provenance.get("fee_snapshot_id"),
-                "funding_snapshot_id": run.get("funding_snapshot_id") or provenance.get("funding_snapshot_id"),
-                "slippage_model_params": _to_json(
-                    slippage_model_params if isinstance(slippage_model_params, dict) else (run.get("slippage_model_params") if isinstance(run.get("slippage_model_params"), dict) else {}),
-                    {},
-                ),
-                "spread_model_params": _to_json(
-                    spread_model_params if isinstance(spread_model_params, dict) else (run.get("spread_model_params") if isinstance(run.get("spread_model_params"), dict) else {}),
-                    {},
-                ),
-                "fundamentals_snapshot_id": run.get("fundamentals_snapshot_id") or provenance.get("fundamentals_snapshot_id"),
-                "fund_status": str(run.get("fund_status") or provenance.get("fund_status") or "UNKNOWN"),
-                "fund_allow_trade": 1 if bool(run.get("fund_allow_trade", provenance.get("fund_allow_trade", True))) else 0,
-                "fund_risk_multiplier": float(run.get("fund_risk_multiplier", provenance.get("fund_risk_multiplier", 1.0)) or 1.0),
-                "fund_score": (
-                    float(run.get("fund_score"))
-                    if isinstance(run.get("fund_score"), (int, float))
-                    else (
-                        float(provenance.get("fund_score"))
-                        if isinstance(provenance.get("fund_score"), (int, float))
-                        else None
-                    )
-                ),
-                "fill_model": str(run.get("fill_model") or "market"),
-                "initial_capital": float(run.get("initial_capital") or 10000.0),
-                "position_sizing_profile": str(run.get("position_sizing_profile") or "default"),
-                "max_open_positions": int(run.get("max_open_positions") or 1),
-                "params_json": _to_json(run.get("params_json") or params_payload, {}),
-                "seed": run.get("seed"),
-                "hf_model_id": run.get("hf_model_id"),
-                "hf_revision": run.get("hf_revision"),
-                "hf_commit_hash": run.get("hf_commit_hash"),
-                "pipeline_task": run.get("pipeline_task"),
-                "inference_mode": run.get("inference_mode"),
-                "alias": run.get("alias"),
-                "tags_json": _to_json(run.get("tags") or [], []),
-                "pinned": 1 if bool(run.get("pinned")) else 0,
-                "kpi_summary_json": _to_json(metrics, {}),
-                "regime_kpis_json": _to_json(run.get("kpis_by_regime") or regime_rows, {}),
-                "flags_json": _to_json(
-                    run.get("flags")
-                    or {
-                        "IS": False,
-                        "OOS": bool(str(run.get("validation_mode") or "").lower().startswith("walk")),
-                        "WFA": bool(str(run.get("validation_mode") or "").lower() == "walk-forward"),
-                        "PASO_GATES": False,
-                        "BASELINE": False,
-                        "FAVORITO": bool(run.get("pinned")),
-                        "ARCHIVADO": status == "archived",
-                    },
-                    {},
-                ),
-                "artifacts_json": _to_json(run.get("artifacts_links") or {}, {}),
+                "status": record_data["status"],
+                "created_at": record_data["created_at"],
             }
         )
+        record_data["independent_validation_json"] = _to_json(independent_validation, {})
+        record = self.upsert_backtest_run(record_data)
         if not run.get("catalog_run_id"):
             run["catalog_run_id"] = record["run_id"]
+        if not isinstance(run.get("independent_validation"), dict):
+            run["independent_validation"] = independent_validation
         run["title_structured"] = record.get("title_structured")
         run["subtitle_structured"] = record.get("subtitle_structured")
         if str(run.get("id") or "").startswith("BT-") and run.get("id") != record["run_id"]:
@@ -923,6 +947,7 @@ class BacktestCatalogDB:
             "regime_kpis_json",
             "flags_json",
             "artifacts_json",
+            "independent_validation_json",
             "slippage_model_params",
             "spread_model_params",
         ]:
@@ -990,6 +1015,7 @@ class BacktestCatalogDB:
             "kpis_by_regime": raw.get("regime_kpis_json") or {},
             "flags": raw.get("flags_json") or {},
             "artifacts": raw.get("artifacts_json") or {},
+            "independent_validation": raw.get("independent_validation_json") or {},
             "updated_at": raw.get("updated_at"),
         }
         return out
@@ -1074,6 +1100,18 @@ class BacktestCatalogDB:
             conn.execute(
                 "UPDATE backtest_runs SET flags_json = ?, updated_at = ? WHERE run_id = ?",
                 (_to_json(flags, {}), _utc_iso(), str(run_id)),
+            )
+            conn.commit()
+        return self.get_run(run_id)
+
+    def patch_run_independent_validation(self, run_id: str, independent_validation: dict[str, Any]) -> dict[str, Any] | None:
+        current = self.get_run(run_id)
+        if not current:
+            return None
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE backtest_runs SET independent_validation_json = ?, updated_at = ? WHERE run_id = ?",
+                (_to_json(independent_validation, {}), _utc_iso(), str(run_id)),
             )
             conn.commit()
         return self.get_run(run_id)

@@ -39,6 +39,7 @@ from rtlab_core.domains import (
     StrategyTruthRepository,
 )
 from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FundamentalsCreditFilter
+from rtlab_core.backtest.independent_validation import build_independent_validation_contract
 from rtlab_core.execution import ExecutionRealityService
 from rtlab_core.execution.alerts import (
     DEFAULT_ALERT_SEVERITY_PRECEDENCE,
@@ -8414,28 +8415,76 @@ def risk_hooks(context):
 
     def strategy_evidence_or_404(self, strategy_id: str, *, limit: int = 10) -> dict[str, Any]:
         strategy = self.strategy_or_404(strategy_id)
-        rows = [row for row in self.load_runs() if str((row or {}).get("strategy_id") or "") == strategy_id]
-        rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        runs = [row for row in self.load_runs() if str((row or {}).get("strategy_id") or "") == strategy_id]
+        runs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        run_by_id = {str((row or {}).get("id") or "").strip(): row for row in runs if str((row or {}).get("id") or "").strip()}
+
+        ledger_rows = [row for row in _collect_research_trial_ledger_items() if str((row or {}).get("strategy_id") or "") == strategy_id]
+        ledger_rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+        combined_rows: list[tuple[dict[str, Any] | None, dict[str, Any] | None]] = []
+        seen_run_ids: set[str] = set()
+        for row in ledger_rows:
+            run_id = str((row or {}).get("run_id") or "").strip()
+            legacy_id = str((row or {}).get("legacy_json_id") or "").strip()
+            source_run = run_by_id.get(run_id) or (run_by_id.get(legacy_id) if legacy_id else None)
+            key = run_id or legacy_id
+            if key:
+                seen_run_ids.add(key)
+            combined_rows.append((row, source_run))
+        for row in runs:
+            run_id = str((row or {}).get("id") or "").strip()
+            if run_id and run_id in seen_run_ids:
+                continue
+            combined_rows.append((None, row))
+
         items: list[dict[str, Any]] = []
-        for row in rows[: max(1, int(limit))]:
+        for ledger_row, run_row in combined_rows[: max(1, int(limit))]:
+            row = run_row or ledger_row or {}
             params_json = row.get("params_json") if isinstance(row.get("params_json"), dict) else {}
+            validation_summary = row.get("validation_summary") if isinstance(row.get("validation_summary"), dict) else {}
+            evidence_status = _first_text((ledger_row or {}).get("evidence_status"))
+            evidence_flags = [str(flag) for flag in ((ledger_row or {}).get("evidence_flags") or []) if str(flag).strip()]
+            notes = _first_text(row.get("notes"))
+            if not notes and ledger_row:
+                notes = (
+                    f"Evidence {evidence_status} derivada del trial ledger."
+                    if evidence_status
+                    else "Evidence derivada del trial ledger."
+                )
+                if evidence_flags:
+                    notes = f"{notes} Flags: {', '.join(evidence_flags[:3])}."
+            validation_mode = _first_text(
+                row.get("validation_mode"),
+                validation_summary.get("mode"),
+                params_json.get("validation_mode"),
+                (ledger_row or {}).get("validation_quality"),
+            )
+            metrics = {}
+            if isinstance((ledger_row or {}).get("metrics"), dict):
+                metrics = (ledger_row or {}).get("metrics") or {}
+            elif isinstance(row.get("metrics"), dict):
+                metrics = row.get("metrics") or {}
             items.append(
                 {
-                    "run_id": str(row.get("id") or ""),
-                    "mode": str(row.get("mode") or "backtest"),
-                    "created_at": str(row.get("created_at") or ""),
-                    "metrics": row.get("metrics") if isinstance(row.get("metrics"), dict) else {},
-                    "tags": [str(tag) for tag in (row.get("tags") or []) if str(tag).strip()],
-                    "notes": str(row.get("notes") or ""),
-                    "validation_mode": str(params_json.get("validation_mode") or ""),
+                    "run_id": _first_text((ledger_row or {}).get("run_id"), row.get("id")),
+                    "mode": _first_text((ledger_row or {}).get("source"), row.get("mode"), "backtest"),
+                    "created_at": _first_text((ledger_row or {}).get("created_at"), row.get("created_at")),
+                    "metrics": metrics,
+                    "tags": [str(tag) for tag in ((row.get("tags") or strategy.get("tags") or [])) if str(tag).strip()],
+                    "notes": notes,
+                    "validation_mode": validation_mode,
+                    "evidence_status": evidence_status or None,
+                    "evidence_flags": evidence_flags,
+                    "candidate_stage": _first_text((ledger_row or {}).get("candidate_stage")),
                 }
             )
         latest = items[0] if items else None
         return {
             "strategy_id": strategy_id,
             "strategy_version": str(strategy.get("version") or "0.0.0"),
-            "last_run_at": strategy.get("last_run_at"),
-            "run_count": len(rows),
+            "last_run_at": _first_text(strategy.get("last_run_at"), (latest or {}).get("created_at")),
+            "run_count": len(combined_rows),
             "last_oos": (latest.get("metrics") if isinstance(latest, dict) else None),
             "latest_run": latest,
             "items": items,
@@ -9404,6 +9453,23 @@ def risk_hooks(context):
                 "equity_curve_csv": f"/api/v1/backtests/runs/{run_id}?format=equity_curve_csv",
             },
         }
+        run["strategy_config_hash"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "strategy_id": strategy_id,
+                    "strategy_version": run["strategy_version"],
+                    "market": market_n,
+                    "symbol": symbol_n,
+                    "timeframe": timeframe_n,
+                    "period": run["period"],
+                    "dataset_hash": loaded.dataset_hash,
+                    "params_json": run["params_json"],
+                    "orderflow_feature_set": orderflow_feature_set,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:12]
         for trade in run.get("trades", []) or []:
             if isinstance(trade, dict) and not trade.get("regime_label"):
                 trade["regime_label"] = self._infer_trade_regime_label(trade, run, strategy=strategy)
@@ -9416,6 +9482,7 @@ def risk_hooks(context):
             "to": end,
             "dataset_source": loaded.source,
             "dataset_hash": loaded.dataset_hash,
+            "strategy_config_hash": run["strategy_config_hash"],
             "costs_used": run["costs_model"],
             "commit_hash": run["git_commit"],
             "fee_snapshot_id": run.get("fee_snapshot_id"),
@@ -9435,6 +9502,7 @@ def risk_hooks(context):
             "cpcv_max_paths": int(max(0, cpcv_max_paths)) if isinstance(cpcv_max_paths, int) else None,
             "created_at": run["created_at"],
         }
+        run["independent_validation"] = build_independent_validation_contract(run_payload=run, repo_root=MONOREPO_ROOT)
         artifact_local = ArtifactReportEngine(USER_DATA_DIR).write_backtest_artifacts(run_id, run)
         run["artifacts_local"] = artifact_local
 
@@ -17327,6 +17395,30 @@ def create_app() -> FastAPI:
         report["metadata"] = metadata
         return report
 
+    def _build_strategy_run_detail_preview(catalog_row: dict[str, Any]) -> dict[str, Any]:
+        report = _build_rollout_report_from_catalog_row(catalog_row)
+        equity_curve = report.get("equity_curve") if isinstance(report.get("equity_curve"), list) else []
+        drawdown_curve = report.get("drawdown_curve") if isinstance(report.get("drawdown_curve"), list) else []
+        trades = report.get("trades") if isinstance(report.get("trades"), list) else []
+        costs_model = report.get("costs_model") if isinstance(report.get("costs_model"), dict) else {}
+        costs_breakdown = report.get("costs_breakdown") if isinstance(report.get("costs_breakdown"), dict) else {}
+        artifacts_links = report.get("artifacts_links") if isinstance(report.get("artifacts_links"), dict) else {}
+        metrics = report.get("metrics") if isinstance(report.get("metrics"), dict) else {}
+        legacy_id = str(catalog_row.get("legacy_json_id") or "").strip()
+        source = "legacy_payload" if legacy_id and (equity_curve or trades or artifacts_links) else "catalog_summary"
+        return {
+            "source": source,
+            "series_available": bool(equity_curve),
+            "trades_available": bool(trades),
+            "costs_available": bool(costs_model or costs_breakdown),
+            "trade_count": int(metrics.get("trade_count") or metrics.get("roundtrips") or len(trades) or 0),
+            "equity_curve": equity_curve,
+            "drawdown_curve": drawdown_curve,
+            "costs_model": costs_model or None,
+            "costs_breakdown": costs_breakdown or None,
+            "artifacts_links": artifacts_links or None,
+        }
+
     def _resolve_strategy_from_report_or_catalog(report: dict[str, Any], catalog_row: dict[str, Any] | None = None) -> dict[str, Any]:
         strategy_id = str(report.get("strategy_id") or "")
         if strategy_id and not strategy_id.startswith("ST-"):
@@ -17368,6 +17460,25 @@ def create_app() -> FastAPI:
         catalog_row = _catalog_run_or_404(run_id)
         report = _build_rollout_report_from_catalog_row(catalog_row)
         return report, catalog_row
+
+    def _resolve_independent_validation(
+        *,
+        report: dict[str, Any],
+        catalog_row: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        existing = (catalog_row or {}).get("independent_validation") if isinstance((catalog_row or {}).get("independent_validation"), dict) else {}
+        if existing and str(existing.get("contract_version") or "").strip():
+            return existing
+        contract = build_independent_validation_contract(run_payload=report, repo_root=MONOREPO_ROOT)
+        catalog_run_id = str((catalog_row or {}).get("run_id") or "").strip()
+        if catalog_run_id:
+            try:
+                patched = store.backtest_catalog.patch_run_independent_validation(catalog_run_id, contract)
+                if patched and isinstance(patched.get("independent_validation"), dict):
+                    return patched.get("independent_validation") or contract
+            except Exception:
+                pass
+        return contract
 
     def _pick_baseline_rollout_report(candidate_report: dict[str, Any], explicit_run_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any] | None]:
         if explicit_run_id:
@@ -17447,6 +17558,8 @@ def create_app() -> FastAPI:
         baseline_report["strategy_name"] = baseline_strategy.get("name")
         baseline_report["version"] = baseline_strategy.get("version")
         baseline_report["params"] = baseline_strategy.get("params")
+        candidate_independent_validation = _resolve_independent_validation(report=candidate_report, catalog_row=candidate_catalog)
+        candidate_report["independent_validation"] = candidate_independent_validation
 
         gates_result = rollout_gates.evaluate(candidate_report)
         candidate_feature_set, candidate_orderflow_enabled, candidate_feature_source = _infer_orderflow_feature_set(
@@ -17512,6 +17625,13 @@ def create_app() -> FastAPI:
         fund_allow_trade_raw = candidate_report.get("fund_allow_trade")
         fund_promotion_blocked = bool(candidate_report.get("fund_promotion_blocked", False))
         fund_warnings = candidate_report.get("fund_warnings") if isinstance(candidate_report.get("fund_warnings"), list) else []
+        independent_status = str(candidate_independent_validation.get("pass_fail_status") or "REVIEW").upper()
+        independent_reusable = bool(candidate_independent_validation.get("reusable_for_promotion"))
+        promotion_stage_eligible = [
+            str(x).strip().lower()
+            for x in (candidate_independent_validation.get("promotion_stage_eligible") or [])
+            if str(x).strip()
+        ]
         if not fund_promotion_blocked:
             fund_promotion_blocked = bool(flags.get("FUNDAMENTALS_PROMOTION_BLOCKED"))
         if fund_allow_trade_raw is None and isinstance(candidate_catalog, dict):
@@ -17590,6 +17710,26 @@ def create_app() -> FastAPI:
                     "catalog_run": has_catalog_provenance,
                 },
             },
+            {
+                "id": "independent_validation_reusable",
+                "ok": independent_reusable,
+                "reason": "Run debe tener validacion independiente reusable por promotion_stage",
+                "details": {
+                    "status": independent_status,
+                    "rejection_reasons": candidate_independent_validation.get("rejection_reasons") or [],
+                    "review_reasons": candidate_independent_validation.get("review_reasons") or [],
+                    "promotion_stage_eligible": promotion_stage_eligible,
+                },
+            },
+            {
+                "id": "independent_validation_target_stage",
+                "ok": str(target_mode or "paper").strip().lower() in set(promotion_stage_eligible),
+                "reason": "Run debe declarar elegibilidad explicita para el target_mode pedido",
+                "details": {
+                    "target_mode": str(target_mode or "paper").strip().lower(),
+                    "promotion_stage_eligible": promotion_stage_eligible,
+                },
+            },
         ]
         constraints_ok = all(bool(row["ok"]) for row in constraints_checks)
         promotion_ok = bool(constraints_ok and gates_result.get("passed") and compare_result.get("passed"))
@@ -17632,12 +17772,13 @@ def create_app() -> FastAPI:
                 "passed": constraints_ok,
                 "checks": constraints_checks,
             },
+            "independent_validation": candidate_independent_validation,
             "offline_gates": gates_result,
             "compare_vs_baseline": compare_result,
             "rollout_ready": promotion_ok,
             "allowed_targets": {
-                "paper": bool(promotion_ok),
-                "testnet": bool(promotion_ok),
+                "paper": bool(promotion_ok and "paper" in set(promotion_stage_eligible)),
+                "testnet": bool(promotion_ok and "testnet" in set(promotion_stage_eligible)),
                 "live": False,
             },
             "rollout_start_body": {
@@ -17704,7 +17845,18 @@ def create_app() -> FastAPI:
         annotated_rows = store.annotate_runs_with_related_bots([row])
         if annotated_rows:
             row = annotated_rows[0]
+        kpis = row.get("kpis") if isinstance(row.get("kpis"), dict) else {}
+        independent_validation = (
+            row.get("independent_validation") if isinstance(row.get("independent_validation"), dict) else {}
+        )
+        for metric_name in ("pbo", "dsr", "psr"):
+            metric_value = independent_validation.get(metric_name)
+            if kpis.get(metric_name) is None and isinstance(metric_value, (int, float)):
+                kpis[metric_name] = float(metric_value)
+        if kpis:
+            row["kpis"] = kpis
         row["artifacts_index"] = store.backtest_catalog.get_artifacts_for_run(str(row.get("run_id") or ""))
+        row["strategy_detail"] = _build_strategy_run_detail_preview(row)
         legacy_id = str(row.get("legacy_json_id") or "")
         if legacy_id:
             row["legacy_backtest_api"] = {

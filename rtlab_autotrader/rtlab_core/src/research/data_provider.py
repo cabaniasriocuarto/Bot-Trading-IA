@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from rtlab_core.src.data.catalog import relocate_user_data_path
 from rtlab_core.src.data.runtime_path import runtime_path
 
 
@@ -85,6 +86,45 @@ class DatasetModeDataProvider:
     def _standard_manifest(self, provider: str, market: str, symbol: str, timeframe: str) -> Path:
         return self._standard_dataset_dir(provider, market, symbol, timeframe) / "manifest.json"
 
+    def _normalize_manifest_paths(self, manifest: dict[str, Any]) -> tuple[list[str], bool]:
+        changed = False
+        files: list[str] = []
+        for item in manifest.get("files") or []:
+            if not isinstance(item, str):
+                continue
+            normalized = str(relocate_user_data_path(self.user_data_dir, item) or item)
+            if normalized != item:
+                changed = True
+            files.append(normalized)
+        unique_files = [str(x) for x in dict.fromkeys(files)]
+        if unique_files != [str(x) for x in (manifest.get("files") or []) if isinstance(x, str)]:
+            manifest["files"] = unique_files
+            changed = True
+
+        for key in ("processed_path", "raw_dir", "manifest_path"):
+            value = manifest.get(key)
+            if not isinstance(value, str):
+                continue
+            normalized = relocate_user_data_path(self.user_data_dir, value)
+            if normalized and normalized != value:
+                manifest[key] = normalized
+                changed = True
+
+        raw_files = manifest.get("raw_files")
+        if isinstance(raw_files, list):
+            normalized_raw = []
+            for item in raw_files:
+                if not isinstance(item, str):
+                    continue
+                normalized = str(relocate_user_data_path(self.user_data_dir, item) or item)
+                if normalized != item:
+                    changed = True
+                normalized_raw.append(normalized)
+            if normalized_raw != raw_files:
+                manifest["raw_files"] = normalized_raw
+                changed = True
+        return unique_files, changed
+
     def _build_standard_manifest_from_catalog(self, *, provider: str, market: str, symbol: str, timeframe: str, entry: Any) -> dict[str, Any]:
         files = []
         processed_path = str(getattr(entry, "processed_path", "") or "")
@@ -159,30 +199,35 @@ class DatasetModeDataProvider:
         std_manifest_path = self._standard_manifest(provider, mk, sym, tf)
         if std_manifest_path.exists():
             manifest = _json_load(std_manifest_path, {})
-            files = [str(x) for x in (manifest.get("files") or []) if isinstance(x, str)]
+            files, manifest_changed = self._normalize_manifest_paths(manifest)
+            existing_files = [Path(x) for x in files if Path(x).exists() and Path(x).is_file()]
             dataset_hash = str(manifest.get("dataset_hash") or "")
-            if not dataset_hash:
-                dataset_hash = _sha256_files([Path(x) for x in files]) or hashlib.sha256(std_manifest_path.read_bytes()).hexdigest()
+            if existing_files and not dataset_hash:
+                dataset_hash = _sha256_files(existing_files) or hashlib.sha256(std_manifest_path.read_bytes()).hexdigest()
                 manifest["dataset_hash"] = dataset_hash
+                manifest_changed = True
+            if manifest_changed:
                 self._persist_standard_manifest(manifest)
-            return DatasetResolution(
-                mode="dataset",
-                provider=provider,
-                market=mk,
-                symbol=sym,
-                timeframe=tf,
-                dataset_source=str(manifest.get("dataset_source") or manifest.get("source") or provider),
-                dataset_hash=dataset_hash,
-                start=str(manifest.get("start") or start),
-                end=str(manifest.get("end") or end),
-                manifest=manifest,
-                files=files,
-                public_downloadable=(mk == "crypto"),
-                api_keys_required=False,
-                ready=True,
-                warnings=[],
-                hints=[],
-            )
+            if existing_files:
+                return DatasetResolution(
+                    mode="dataset",
+                    provider=provider,
+                    market=mk,
+                    symbol=sym,
+                    timeframe=tf,
+                    dataset_source=str(manifest.get("dataset_source") or manifest.get("source") or provider),
+                    dataset_hash=dataset_hash,
+                    start=str(manifest.get("start") or start),
+                    end=str(manifest.get("end") or end),
+                    manifest=manifest,
+                    files=files,
+                    public_downloadable=(mk == "crypto"),
+                    api_keys_required=False,
+                    ready=True,
+                    warnings=[],
+                    hints=[],
+                )
+            warnings.append("Manifest estándar presente, pero sin archivos accesibles; se probará fallback al catálogo.")
 
         # 2) Fallback a catálogo existente (user_data/data/**/manifests)
         entry = self.catalog.find_entry(mk, sym, tf)
@@ -192,25 +237,29 @@ class DatasetModeDataProvider:
                 warnings.append(f"No existe dataset {tf} directo; se usará 1m y resample en runtime ({sym}).")
         if entry is not None:
             manifest = self._build_standard_manifest_from_catalog(provider=provider, market=mk, symbol=sym, timeframe=tf, entry=entry)
-            self._persist_standard_manifest(manifest)
-            return DatasetResolution(
-                mode="dataset",
-                provider=provider,
-                market=mk,
-                symbol=sym,
-                timeframe=tf,
-                dataset_source=str(manifest.get("dataset_source") or provider),
-                dataset_hash=str(manifest.get("dataset_hash") or ""),
-                start=str(manifest.get("start") or start),
-                end=str(manifest.get("end") or end),
-                manifest=manifest,
-                files=[str(x) for x in (manifest.get("files") or []) if isinstance(x, str)],
-                public_downloadable=(mk == "crypto"),
-                api_keys_required=False,
-                ready=True,
-                warnings=warnings,
-                hints=[],
-            )
+            files, _ = self._normalize_manifest_paths(manifest)
+            existing_files = [Path(x) for x in files if Path(x).exists() and Path(x).is_file()]
+            if existing_files:
+                self._persist_standard_manifest(manifest)
+                return DatasetResolution(
+                    mode="dataset",
+                    provider=provider,
+                    market=mk,
+                    symbol=sym,
+                    timeframe=tf,
+                    dataset_source=str(manifest.get("dataset_source") or provider),
+                    dataset_hash=str(manifest.get("dataset_hash") or ""),
+                    start=str(manifest.get("start") or start),
+                    end=str(manifest.get("end") or end),
+                    manifest=manifest,
+                    files=files,
+                    public_downloadable=(mk == "crypto"),
+                    api_keys_required=False,
+                    ready=True,
+                    warnings=warnings,
+                    hints=[],
+                )
+            warnings.append(f"El catálogo encontró {mk}/{sym}/{tf}, pero sus archivos no son accesibles desde este user_data_dir.")
 
         hints.extend(self._download_hints(mk))
         return DatasetResolution(

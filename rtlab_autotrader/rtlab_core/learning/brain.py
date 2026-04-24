@@ -222,6 +222,19 @@ def deflated_sharpe_ratio(returns: list[float], *, trials: int = 1) -> dict[str,
     return {"sharpe": round(sharpe, 6), "dsr": round(float(dsr), 6), "sr_deflated": round(float(sr_deflated), 6)}
 
 
+def probabilistic_sharpe_ratio(returns: list[float]) -> float | None:
+    if len(returns) < 3:
+        return None
+    sharpe = _simple_sharpe(returns)
+    sigma = pstdev(returns)
+    if sigma <= 1e-12:
+        return None
+    sr_std = math.sqrt((1.0 + 0.5 * (sharpe**2)) / max(1.0, len(returns) - 1.0))
+    if sr_std <= 1e-12:
+        return None
+    return round(float(_normal_cdf(sharpe / sr_std)), 6)
+
+
 def pbo_cscv(candidate_returns: dict[str, list[float]], *, slices: int = 8) -> dict[str, Any]:
     clean = {k: [float(x) for x in v if isinstance(x, (int, float))] for k, v in candidate_returns.items() if v}
     if len(clean) < 2:
