@@ -1,5 +1,27 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-24
+
+### RTLOPS-28 - cierre administrativo final sin split
+- Revalidacion final ejecutada con prioridad de evidencia:
+  - repo real
+  - `docs/truth`
+  - Linear
+- Estado canonico confirmado:
+  - `rtlops28/v1` ya habia absorbido el alcance tecnico real de la issue:
+    - `drift_not_blocking`
+    - `allow_review / hold / block`
+    - `missingness`
+    - `recommended_actions[]`
+  - no quedo sostenido un gap tecnico vivo de `PSI/KS` dentro de `RTLOPS-28`;
+  - no se abrio split nuevo.
+- Sync administrativo aplicado:
+  - `RTLOPS-28` queda cerrada en Linear (`Done`);
+  - `docs/truth` pasan a reflejar ese cierre canonico;
+  - cualquier `PSI/KS` futuro debe abrirse como issue nueva, chica y precisa.
+- Siguiente paso exacto:
+  - abrir un preflight limpio para decidir el dominio siguiente del programa, ya fuera de `RTLOPS-28`.
+
 ## 2026-04-22
 
 ### RTLRESE-32 - validacion independiente real por run
