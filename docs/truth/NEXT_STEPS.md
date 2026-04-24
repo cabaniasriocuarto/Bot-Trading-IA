@@ -1,6 +1,26 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-22
+Fecha: 2026-04-24
+
+## Siguiente paso exacto despues del cierre administrativo de RTLOPS-28 - 2026-04-24
+- [x] Revalidar repo + `docs/truth` + Linear:
+  - `RTLOPS-28` ya tenia absorbido su alcance tecnico real sobre `rtlops28/v1`;
+  - `drift_not_blocking`, `allow_review / hold / block`, `missingness` y `recommended_actions[]` ya estaban absorbidos.
+- [x] Cerrar administrativamente `RTLOPS-28` sin split:
+  - Linear ya la deja en `Done`;
+  - no queda un gap tecnico vivo de `PSI/KS` dentro de esta issue;
+  - cualquier `PSI/KS` futuro debera abrirse como issue nueva, chica y precisa.
+- [ ] Siguiente paso exacto recomendado:
+  - abrir un preflight limpio para decidir el dominio siguiente del programa, ya fuera de `RTLOPS-28`;
+  - resolver ahi solo:
+    - que dominio siguiente queda sostenido por repo + `docs/truth` + Linear;
+    - cual es el slice minimo y auditable de ese dominio;
+  - mantener fuera de ese bloque:
+    - drift nuevo por inercia
+    - `live console` si no queda canonizado por evidencia suficiente
+    - monitoring completo
+    - scorecard de produccion
+    - frontend cosmetico
 
 ## Siguiente paso exacto despues de RTLRESE-32 - 2026-04-22
 - [x] Fundar validacion independiente real por run sobre backend/catalogo:
@@ -23,17 +43,9 @@ Fecha: 2026-04-22
   - `pytest rtlab_autotrader/tests/test_rollout_safe_update.py -k "gate_evaluator or compare_engine or rollout_manager" -q` -> PASS
   - `npm.cmd run typecheck` -> PASS
   - `npm.cmd run build` -> PASS
-- [ ] Siguiente paso exacto recomendado:
-  - abrir `RTLOPS-28` y resolver solo el drift layer minimo y auditable;
-  - resolver ahi solo:
-    - deteccion minima de drift sobre evidencia vigente;
-    - surface/contrato chico y auditable;
-    - continuidad del marco 10/10 sin abrir `live console`;
-  - mantener fuera de ese bloque:
-    - `RTLOPS-69 / live console`
-    - scorecard de produccion
-    - portfolio risk
-    - governance IA como dominio separado
+- [x] Siguiente paso exacto recomendado:
+  - `RTLOPS-28` ya fue absorbida en repo/tests y cerrada administrativamente en Linear;
+  - el frente siguiente pasa a decidir el dominio siguiente del programa, ya fuera de `RTLOPS-28`.
 
 ## Preflight posterior a RTLOPS-84 - cadena minima cerrada - 2026-04-21
 - [x] Revalidar el agotamiento de la cadena de consumidores minimos:

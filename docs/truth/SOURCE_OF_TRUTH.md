@@ -1,6 +1,31 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-22
+Fecha de actualizacion: 2026-04-24
+
+## RTLOPS-28 - cierre administrativo final sobre alcance ya absorbido - 2026-04-24
+
+- Estado real revalidado con prioridad `repo -> docs/truth -> Linear`:
+  - el alcance tecnico real de `RTLOPS-28` ya quedo absorbido en repo/tests sobre `rtlops28/v1`;
+  - ese alcance ya incluye:
+    - `drift_not_blocking`
+    - mapping `allow_review / hold / block`
+    - `missingness`
+    - `recommended_actions[]`;
+  - Linear ya deja `RTLOPS-28` en `Done`;
+  - no se abrio split nuevo.
+- Regla canonica resultante:
+  - hoy no aparece un gap tecnico vivo de `PSI/KS` dentro de `RTLOPS-28`;
+  - cualquier `PSI/KS` futuro solo corresponde si vuelve a sostenerse con evidencia nueva en repo + `docs/truth` + Linear;
+  - si reaparece, debe abrirse como issue nueva, chica y precisa, y no reabrirse esta issue por memoria historica.
+- Siguiente bloque exacto recomendado:
+  - `RTLOPS-28` queda cerrada administrativamente y fuera de continuidad tecnica;
+  - el siguiente paso correcto pasa a ser un preflight limpio para decidir el dominio siguiente del programa, ya fuera de `RTLOPS-28`;
+  - mantener fuera de ese preflight:
+    - drift cosmetico nuevo
+    - `live console`
+    - monitoring completo
+    - scorecard de produccion
+    - UI nueva
 
 ## RTLRESE-32 - validacion independiente real por run - 2026-04-22
 
