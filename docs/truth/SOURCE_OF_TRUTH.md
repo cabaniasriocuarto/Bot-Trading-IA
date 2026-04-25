@@ -2,6 +2,85 @@
 
 Fecha de actualizacion: 2026-04-25
 
+## RTLOPS-93 - selector reusable Bot vs Estrategia + Trading Universe Scope auditable en Batch/Beast - 2026-04-25
+
+- Estado real confirmado en esta rama:
+  - `Research Batch` y `Beast` ya no dependen solo de `symbol` puntual para research;
+  - el backend ya canoniza un contrato `rtlops93/v1` de scope research via:
+    - `entity_type`
+    - `entity_id`
+    - `scope_source`
+    - `strategy_ids`
+    - `universe_name`
+    - `market_family`
+    - `quote_asset`
+    - `symbols_requested`
+    - `symbols_effective`
+    - `eligible_symbols`
+    - `ineligible_symbols`
+    - `blocking_reasons`;
+  - `POST /api/v1/research/dataset-preflight` ya devuelve ese scope auditable dentro de `research_scope`;
+  - `POST /api/v1/research/mass-backtest/start` y `POST /api/v1/research/beast/start` ya consumen el mismo carrier canonico:
+    - `entity_type=bot|strategy`
+    - `entity_id`
+    - `strategy_ids`
+    - `symbols[]`
+    - `universe_name`;
+  - cuando `entity_type=bot`:
+    - el backend resuelve el scope persistido del bot como fuente principal;
+    - valida que `strategy_ids` pertenezcan al pool del bot;
+    - bloquea simbolos fuera del scope del bot;
+  - cuando `entity_type=strategy`:
+    - research acepta scope portable manual;
+    - en `crypto` exige `universe_name` para multi-simbolo portable;
+    - no finge persistencia operativa nueva fuera del modelo bot-centrico existente;
+  - `MassBacktestEngine` ya ejecuta research multi-simbolo real:
+    - multiplica tareas por `variantes x folds x simbolos`;
+    - ejecuta cada fold por simbolo;
+    - agrega resumen canonico por fold sin perder trazabilidad por simbolo;
+  - el preflight ya integra readiness real por todo el scope:
+    - `dataset_hashes`
+    - `dataset_manifest_paths`
+    - `bootstrap_commands_by_symbol`
+    - `data_providers_by_symbol`;
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx` ya consume esa verdad backend y expone:
+    - selector explicito `Correr Bot` / `Correr Estrategias`;
+    - `Trading Universe Scope` multi-simbolo reusable para `Batch/Beast`;
+    - busqueda
+    - chips
+    - contador
+    - lista seleccionada
+    - universe crypto portable
+    - elegibles / no elegibles / bloqueos del preflight.
+- Regla canonica resultante:
+  - `Quick` sigue single-symbol;
+  - `Research Batch` y `Beast` ya soportan multi-simbolo real y auditable sobre el mismo contrato research;
+  - el cap inicial del scope research reutiliza `BOT_MAX_LIVE_SYMBOLS` via `RESEARCH_SCOPE_MAX_SYMBOLS`;
+  - no hay pruning silencioso:
+    - si el scope supera limites o mezcla simbolos incompatibles, el backend lo deja visible y lo bloquea fail-closed;
+  - `Backtests` no decide reglas de scope:
+    - solo envia carrier canonico
+    - renderiza el payload auditable;
+  - `Shadow / Paper / Testnet / Live` siguen fuera de este bloque.
+- Validacion real ejecutada:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "research_mass_backtest_start_rejects_missing_dataset or research_dataset_preflight_ready_payload or research_dataset_preflight_missing_blocks_cleanly or research_dataset_preflight_blocks_synthetic_even_with_real_dataset or research_dataset_preflight_bot_scope_multi_symbol_payload or research_dataset_preflight_strategy_scope_blocks_symbols_outside_universe or research_mass_backtest_start_forwards_bot_id or research_beast_endpoints_smoke or research_beast_start_rejects_missing_dataset or research_beast_start_accepts_orderflow_toggle" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL en esta worktree por resolucion de `.next/types/**/*.ts` en `tsconfig`, aun con archivos generados; el error queda acotado a infraestructura de typegen/tsconfig y no invalida la build del slice.
+- Limite honesto del bloque:
+  - no abre `RTLOPS-94`;
+  - no implementa `Shadow / Testnet / Live`;
+  - no funda un CRUD global de universos;
+  - no reescribe `Bot Registry` ni `Strategy Registry`;
+  - no cambia `Quick`.
+- Siguiente bloque exacto recomendado:
+  - abrir `RTLOPS-94` solo para reutilizar el `Trading Universe Scope` del bot en `Shadow / Paper / Testnet / Live`;
+  - mantener fuera de ese bloque:
+    - refactor transversal
+    - nueva UX de research
+    - CRUD global de symbol sets salvo evidencia nueva.
+
 ## Preflight de arquitectura multi-simbolo - entidad, scope y modos - 2026-04-25
 
 - Estado real confirmado en esta rama:

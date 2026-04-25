@@ -6650,6 +6650,131 @@ def test_research_dataset_preflight_blocks_synthetic_even_with_real_dataset(tmp_
   assert payload["ineligible_symbols"] == ["BTCUSDT"]
 
 
+def test_research_dataset_preflight_bot_scope_multi_symbol_payload(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  _seed_bot_registry_catalog(module)
+  _seed_local_backtest_dataset(tmp_path / "user_data", "crypto", "BTCUSDT", source="binance_public")
+  _seed_local_backtest_dataset(tmp_path / "user_data", "crypto", "ETHUSDT", source="binance_public")
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": False,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": False,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": False,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  create_bot = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json=_valid_bot_registry_payload(
+      display_name="Bot Research Scope",
+      universe_name="core_spot_usdt",
+      universe=["BTCUSDT", "ETHUSDT"],
+      max_live_symbols=2,
+      pool_strategy_ids=pool_ids,
+    ),
+  )
+  assert create_bot.status_code == 200, create_bot.text
+  bot_id = create_bot.json()["bot"]["id"]
+
+  preflight = client.post(
+    "/api/v1/research/dataset-preflight",
+    headers=headers,
+    json={
+      "mode": "batch",
+      "entity_type": "bot",
+      "entity_id": bot_id,
+      "strategy_ids": pool_ids,
+      "market": "crypto",
+      "symbols": ["BTCUSDT", "ETHUSDT"],
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "data_mode": "dataset",
+    },
+  )
+  assert preflight.status_code == 200, preflight.text
+  payload = preflight.json()
+  assert payload["dataset_ready"] is True
+  assert payload["entity_type"] == "bot"
+  assert payload["entity_id"] == bot_id
+  assert payload["scope_source"] == "bot_scope"
+  assert payload["universe_name"] == "core_spot_usdt"
+  assert payload["symbols_requested"] == ["BTCUSDT", "ETHUSDT"]
+  assert payload["symbols_effective"] == ["BTCUSDT", "ETHUSDT"]
+  assert payload["eligible_symbols"] == ["BTCUSDT", "ETHUSDT"]
+  assert payload["ineligible_symbols"] == []
+  assert payload["research_scope"]["market_family"] == "spot"
+  assert payload["research_scope"]["quote_asset"] == "USDT"
+
+
+def test_research_dataset_preflight_strategy_scope_blocks_symbols_outside_universe(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  _seed_bot_registry_catalog(module)
+  _seed_local_backtest_dataset(tmp_path / "user_data", "crypto", "BTCUSDT", source="binance_public")
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": False,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": False,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": False,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+  strategy_id = client.get("/api/v1/strategies", headers=headers).json()[0]["id"]
+
+  preflight = client.post(
+    "/api/v1/research/dataset-preflight",
+    headers=headers,
+    json={
+      "mode": "batch",
+      "entity_type": "strategy",
+      "strategy_ids": [strategy_id],
+      "market": "crypto",
+      "universe_name": "core_spot_usdt",
+      "symbols": ["BTCUSDT", "AAPL"],
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "data_mode": "dataset",
+    },
+  )
+  assert preflight.status_code == 200, preflight.text
+  payload = preflight.json()
+  assert payload["dataset_ready"] is False
+  assert payload["dataset_status"] == "invalid"
+  assert payload["entity_type"] == "strategy"
+  assert payload["scope_source"] == "manual_scope"
+  assert payload["symbols_requested"] == ["BTCUSDT", "AAPL"]
+  assert payload["symbols_effective"] == ["BTCUSDT"]
+  assert payload["eligible_symbols"] == ["BTCUSDT"]
+  assert payload["ineligible_symbols"] == ["AAPL"]
+  assert "scope manual permitido" in str(payload["blocking_reason"] or "")
+  assert "research_scope_invalid" in (payload["missing_reasons"] or [])
+
+
 def test_research_mass_backtest_start_forwards_bot_id(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -6661,15 +6786,31 @@ def test_research_mass_backtest_start_forwards_bot_id(tmp_path: Path, monkeypatc
     return {"ok": True, "run_id": "BX-TEST-BOT", "state": "QUEUED"}
 
   monkeypatch.setattr(module.mass_backtest_coordinator, "start_async", _fake_start_async)
+  _seed_bot_registry_catalog(module)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  create_bot = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json=_valid_bot_registry_payload(
+      display_name="Bot Test Mass",
+      universe_name="core_spot_usdt",
+      universe=["BTCUSDT", "ETHUSDT"],
+      max_live_symbols=2,
+      pool_strategy_ids=pool_ids,
+    ),
+  )
+  assert create_bot.status_code == 200, create_bot.text
+  bot_id = create_bot.json()["bot"]["id"]
 
   start = client.post(
     "/api/v1/research/mass-backtest/start",
     headers=headers,
     json={
-      "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
-      "bot_id": "BOT-TEST-MASS",
+      "entity_type": "bot",
+      "entity_id": bot_id,
+      "strategy_ids": pool_ids,
       "market": "crypto",
-      "symbol": "BTCUSDT",
+      "symbols": ["BTCUSDT", "ETHUSDT"],
       "timeframe": "5m",
       "start": "2024-01-01",
       "end": "2024-03-31",
@@ -6686,7 +6827,10 @@ def test_research_mass_backtest_start_forwards_bot_id(tmp_path: Path, monkeypatc
   assert start.status_code == 200, start.text
   assert start.json()["ok"] is True
   assert isinstance(captured.get("config"), dict)
-  assert str((captured["config"] or {}).get("bot_id") or "") == "BOT-TEST-MASS"
+  assert str((captured["config"] or {}).get("bot_id") or "") == bot_id
+  assert (captured["config"] or {}).get("entity_type") == "bot"
+  assert (captured["config"] or {}).get("scope_source") == "bot_scope"
+  assert (captured["config"] or {}).get("universe") == ["BTCUSDT", "ETHUSDT"]
 
 
 def test_mass_backtest_mark_candidate_requires_strict_strategy_id_non_demo(tmp_path: Path, monkeypatch) -> None:
@@ -6946,15 +7090,31 @@ def test_research_beast_start_rejects_missing_dataset(tmp_path: Path, monkeypatc
       "stop_at_budget_pct": 80,
     },
   )
+  _seed_bot_registry_catalog(module)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  create_bot = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json=_valid_bot_registry_payload(
+      display_name="Bot Test Beast",
+      universe_name="core_spot_usdt",
+      universe=["BTCUSDT", "ETHUSDT"],
+      max_live_symbols=2,
+      pool_strategy_ids=pool_ids,
+    ),
+  )
+  assert create_bot.status_code == 200, create_bot.text
+  bot_id = create_bot.json()["bot"]["id"]
 
   start = client.post(
     "/api/v1/research/beast/start",
     headers=headers,
     json={
-      "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
-      "bot_id": "BOT-TEST-BEAST",
+      "entity_type": "bot",
+      "entity_id": bot_id,
+      "strategy_ids": pool_ids,
       "market": "crypto",
-      "symbol": "BTCUSDT",
+      "symbols": ["BTCUSDT", "ETHUSDT"],
       "timeframe": "5m",
       "start": "2024-01-01",
       "end": "2024-03-31",
@@ -6992,15 +7152,31 @@ def test_research_beast_start_accepts_orderflow_toggle(tmp_path: Path, monkeypat
     }
 
   monkeypatch.setattr(module.mass_backtest_coordinator, "start_beast_async", _fake_start_beast_async)
+  _seed_bot_registry_catalog(module)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  create_bot = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json=_valid_bot_registry_payload(
+      display_name="Bot Test Orderflow",
+      universe_name="core_spot_usdt",
+      universe=["BTCUSDT", "ETHUSDT"],
+      max_live_symbols=2,
+      pool_strategy_ids=pool_ids,
+    ),
+  )
+  assert create_bot.status_code == 200, create_bot.text
+  bot_id = create_bot.json()["bot"]["id"]
 
   start = client.post(
     "/api/v1/research/beast/start",
     headers=headers,
     json={
-      "bot_id": "BOT-TEST-BEAST",
-      "strategy_ids": ["trend_pullback_orderflow_confirm_v1"],
+      "entity_type": "bot",
+      "entity_id": bot_id,
+      "strategy_ids": pool_ids,
       "market": "crypto",
-      "symbol": "BTCUSDT",
+      "symbols": ["BTCUSDT", "ETHUSDT"],
       "timeframe": "5m",
       "start": "2024-01-01",
       "end": "2024-03-31",
@@ -7020,7 +7196,9 @@ def test_research_beast_start_accepts_orderflow_toggle(tmp_path: Path, monkeypat
   assert start.json()["ok"] is True
   assert isinstance(captured.get("config"), dict)
   assert bool((captured["config"] or {}).get("use_orderflow_data")) is False
-  assert str((captured["config"] or {}).get("bot_id") or "") == "BOT-TEST-BEAST"
+  assert str((captured["config"] or {}).get("bot_id") or "") == bot_id
+  assert (captured["config"] or {}).get("scope_source") == "bot_scope"
+  assert (captured["config"] or {}).get("universe") == ["BTCUSDT", "ETHUSDT"]
 
 
 def test_batch_shortlist_save_and_load(tmp_path: Path, monkeypatch) -> None:
