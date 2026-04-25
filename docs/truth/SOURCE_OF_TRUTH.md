@@ -2,6 +2,86 @@
 
 Fecha de actualizacion: 2026-04-25
 
+## Preflight de arquitectura multi-simbolo - entidad, scope y modos - 2026-04-25
+
+- Estado real confirmado en esta rama:
+  - el `Bot Registry` ya persiste la base canonica del scope operativo por bot via:
+    - `universe_name`
+    - `universe`
+    - `max_live_symbols`
+    - `pool_strategy_ids`
+    - `strategy_eligibility_by_symbol`
+    - `strategy_selection_by_symbol`;
+  - `Strategies` ya es la surface canonica para editar ese scope del bot;
+  - `Execution` ya es la surface canonica para operar el bot y consumir:
+    - `policy_state`
+    - `runtime`
+    - `lifecycle`
+    - `lifecycle_operational`;
+  - `Backtests` ya quedo ordenada por modos, pero `Research Batch` y `Beast` todavia entran por `symbol` puntual aunque acepten `bot_id` como contexto;
+  - `MassBacktestEngine` ya soporta `universe` en config, pero `ResearchMassBacktestStartBody` y `ResearchBeastStartBody` siguen expuestos en API/UI con carrier principal `symbol`;
+  - `InstrumentUniverseService` ya resuelve universos/policies validos del catalogo, pero hoy no existe una entidad CRUD separada de `symbol set` reusable del usuario.
+- Decision canonica resultante:
+  - la separacion correcta del programa queda en tres dimensiones:
+    - `Entidad`
+      - `Bot`
+      - `Estrategia`
+    - `Trading Universe Scope`
+      - `universe_name`
+      - `symbols[]`
+      - `market_family`
+      - `quote_asset`
+      - `max_active_symbols`
+      - elegibilidad/preflight
+    - `Modo`
+      - `Quick`
+      - `Research Batch`
+      - `Beast`
+      - `Shadow`
+      - `Paper`
+      - `Testnet`
+      - `Live`;
+  - no corresponde abrir primero una entidad global nueva tipo `symbol set registry`;
+  - si corresponde fundar un contrato canonico reusable de `Trading Universe Scope`:
+    - persistido dentro del `Bot` para operacion;
+    - reusable como scope explicito en research;
+  - `Strategy` queda como alpha portable que consume scope, pero no como duena persistente del universe operativo.
+- Reglas operativas recomendadas:
+  - `Quick`
+    - sigue single-symbol;
+  - `Research Batch`
+    - debe aceptar multi-simbolo real sobre `Trading Universe Scope`;
+    - puede correr sobre:
+      - scope heredado de `Bot`
+      - scope manual de research;
+  - `Beast`
+    - reutiliza exactamente el mismo scope y el mismo preflight de `Research Batch`;
+  - `Shadow / Paper / Testnet / Live`
+    - usan el scope persistido del bot;
+    - no deben abrir un selector paralelo ad hoc dentro de `Execution`;
+  - limites iniciales canonicos:
+    - una sola `market_family` por scope;
+    - una sola `quote_asset` por scope;
+    - cap inicial de hasta `12` simbolos;
+    - `Batch/Beast` requieren preflight sobre todo el scope;
+    - en v1 no corresponde hacer pruning silencioso de simbolos invalidos.
+- Linear alineada para este frente:
+  - `RTLOPS-91`
+    - `Entidad + Trading Universe Scope multi-símbolo reusable entre Research y Deploy`;
+  - `RTLOPS-92`
+    - `Definir contrato canónico Trading Universe Scope y reglas de elegibilidad por modo`;
+  - `RTLOPS-93`
+    - `Research Batch / Beast — selector reusable Bot vs Estrategia + multi-símbolo auditable`;
+  - `RTLOPS-94`
+    - `Shadow / Paper / Testnet / Live — reutilizar Trading Universe Scope del bot sin mezclar research con operación`.
+- Siguiente bloque exacto recomendado:
+  - no corresponde saltar directo a refactor masivo ni a live console;
+  - corresponde programar primero `RTLOPS-93`, apoyandose en la decision ya cerrada por `RTLOPS-92`;
+  - mantener fuera de ese bloque:
+    - nueva entidad CRUD global de `symbol set`
+    - cambios live pesados
+    - refactor transversal de `Backtests`, `Strategies` o `Execution`.
+
 ## RTLOPS-90 - reordenamiento UX Backtests sin refactor masivo - 2026-04-25
 
 - Estado real confirmado en esta rama:

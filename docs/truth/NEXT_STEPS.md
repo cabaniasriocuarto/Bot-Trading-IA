@@ -2,6 +2,39 @@
 
 Fecha: 2026-04-25
 
+## Siguiente paso exacto despues del preflight de arquitectura multi-simbolo - 2026-04-25
+- [x] Revalidar repo + `docs/truth` + Linear antes de programar:
+  - el `Bot Registry` ya persiste el scope operativo multi-simbolo del bot;
+  - `Execution` ya consume ese scope de forma bot-centrica;
+  - `Research Batch` y `Beast` siguen entrando por `symbol` puntual;
+  - no existe hoy una entidad CRUD global de `symbol set`.
+- [x] Cerrar la decision canonica de arquitectura:
+  - separar:
+    - `Entidad`
+      - `Bot`
+      - `Estrategia`
+    - `Trading Universe Scope`
+    - `Modo`;
+  - no abrir primero un `symbol set registry` global;
+  - persistir el scope operativo dentro del `Bot`;
+  - permitir que research reutilice ese scope o use uno manual sin volver a hacer a `Strategy` duena del universe.
+- [x] Alinear Linear con el nuevo frente:
+  - `RTLOPS-91` issue madre;
+  - `RTLOPS-92` contrato y reglas por modo;
+  - `RTLOPS-93` implementacion research `Batch/Beast`;
+  - `RTLOPS-94` reuso operativo `Shadow/Paper/Testnet/Live`.
+- [ ] Siguiente paso exacto recomendado:
+  - abrir implementacion de `RTLOPS-93`;
+  - resolver ahi solo:
+    - selector explicito `Bot` vs `Estrategia` en research;
+    - `Trading Universe Scope` multi-simbolo reusable para `Batch/Beast`;
+    - preflight canonico sobre todo el scope;
+  - mantener fuera de `RTLOPS-93`:
+    - live console
+    - nueva entidad CRUD global de `symbol set`
+    - refactor transversal de `Strategies` / `Execution`
+    - cambios live pesados.
+
 ## Siguiente paso exacto despues de RTLOPS-90 - 2026-04-25
 - [x] Reordenar la surface principal de `Backtests` sin refactor masivo:
   - `Quick` queda separado del research masivo;
