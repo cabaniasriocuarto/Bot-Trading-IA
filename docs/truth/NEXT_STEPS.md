@@ -28,7 +28,11 @@ Fecha: 2026-04-25
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "research_mass_backtest_start_rejects_missing_dataset or research_dataset_preflight_ready_payload or research_dataset_preflight_missing_blocks_cleanly or research_dataset_preflight_blocks_synthetic_even_with_real_dataset or research_dataset_preflight_bot_scope_multi_symbol_payload or research_dataset_preflight_strategy_scope_blocks_symbols_outside_universe or research_mass_backtest_start_forwards_bot_id or research_beast_endpoints_smoke or research_beast_start_rejects_missing_dataset or research_beast_start_accepts_orderflow_toggle" -q` -> PASS
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
   - `npm.cmd run build` -> PASS
-  - `npm.cmd run typecheck` -> FAIL por resolucion existente de `.next/types/**/*.ts` en esta worktree, aun con archivos generados.
+  - `npm.cmd run typecheck` -> PASS en la rama limpia de integracion reconstruida desde `main`.
+- [x] Decision cerrada sobre `44a023e`:
+  - entra completo junto con `RTLOPS-93`;
+  - funciona como preflight/documentacion inmediata del slice ya implementado;
+  - no adelanta producto de `RTLOPS-94`.
 - [x] Mantener el bloque chico y profesional:
   - sin abrir `RTLOPS-94`
   - sin `Shadow / Testnet / Live`

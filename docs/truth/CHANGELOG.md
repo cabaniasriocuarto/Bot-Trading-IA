@@ -42,7 +42,11 @@
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "research_mass_backtest_start_rejects_missing_dataset or research_dataset_preflight_ready_payload or research_dataset_preflight_missing_blocks_cleanly or research_dataset_preflight_blocks_synthetic_even_with_real_dataset or research_dataset_preflight_bot_scope_multi_symbol_payload or research_dataset_preflight_strategy_scope_blocks_symbols_outside_universe or research_mass_backtest_start_forwards_bot_id or research_beast_endpoints_smoke or research_beast_start_rejects_missing_dataset or research_beast_start_accepts_orderflow_toggle" -q` -> PASS
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
   - `npm.cmd run build` -> PASS
-  - `npm.cmd run typecheck` -> FAIL por resolucion existente de `.next/types/**/*.ts` en esta worktree; no abre error de tipos del slice dentro de `next build`.
+  - `npm.cmd run typecheck` -> PASS en la rama limpia reconstruida desde `main`;
+  - el `FAIL` observado antes no reprodujo como error del codigo del slice y quedo explicado por artefactos locales de `.next`/espacio en disco en la worktree stacked.
+- Decision de integracion:
+  - `44a023e` se conserva completo en este frente;
+  - su contenido documental coincide con el slice implementado y sirve como preflight arquitectonico inmediato de `RTLOPS-93`, sin abrir `RTLOPS-94`.
 - Limites honestos:
   - no abre `RTLOPS-94`;
   - no toca `Shadow / Testnet / Live`;

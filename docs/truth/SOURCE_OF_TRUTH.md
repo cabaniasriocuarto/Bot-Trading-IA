@@ -67,7 +67,12 @@ Fecha de actualizacion: 2026-04-25
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "research_mass_backtest_start_rejects_missing_dataset or research_dataset_preflight_ready_payload or research_dataset_preflight_missing_blocks_cleanly or research_dataset_preflight_blocks_synthetic_even_with_real_dataset or research_dataset_preflight_bot_scope_multi_symbol_payload or research_dataset_preflight_strategy_scope_blocks_symbols_outside_universe or research_mass_backtest_start_forwards_bot_id or research_beast_endpoints_smoke or research_beast_start_rejects_missing_dataset or research_beast_start_accepts_orderflow_toggle" -q` -> PASS
   - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
   - `npm.cmd run build` -> PASS
-  - `npm.cmd run typecheck` -> FAIL en esta worktree por resolucion de `.next/types/**/*.ts` en `tsconfig`, aun con archivos generados; el error queda acotado a infraestructura de typegen/tsconfig y no invalida la build del slice.
+  - `npm.cmd run typecheck` -> PASS en la rama limpia de integracion reconstruida desde `main`;
+  - el `FAIL` previo no reprodujo como error del slice y quedo acotado a estado local/transitorio de artefactos Next (`.next`) y espacio en disco de la worktree stacked, no al codigo de `RTLOPS-93`.
+- Decision de integracion para `44a023e`:
+  - entra completo dentro de `RTLOPS-93`;
+  - fija el preflight de arquitectura (`RTLOPS-91/92/93/94`) que este slice implementa de forma efectiva;
+  - no adelanta producto nuevo de `RTLOPS-94`, solo deja asentada la separacion canonica `Entidad / Trading Universe Scope / Modo`.
 - Limite honesto del bloque:
   - no abre `RTLOPS-94`;
   - no implementa `Shadow / Testnet / Live`;
