@@ -2,6 +2,69 @@
 
 Fecha de actualizacion: 2026-04-25
 
+## RTLOPS-90 - reordenamiento UX Backtests sin refactor masivo - 2026-04-25
+
+- Estado real confirmado en esta rama:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx` ya deja de presentar `Backtests` como megapantalla plana sin jerarquia;
+  - la surface principal queda reordenada visualmente por modos reales de trabajo:
+    - `Quick`
+    - `Runs`
+    - `Comparador Profesional`
+    - `Research Batch`
+    - `Beast / Infra`;
+  - `Research Batch` y `Beast / Infra` ya no quedan mezclados dentro del mismo bloque principal;
+  - el disparador de `Modo Bestia` ya no vive dentro de la operatoria principal de `Research Batch`, sino en su card propio de infra;
+  - `Research Funnel y Trial Ledger` baja de jerarquia como auditoria secundaria;
+  - `Detalle de Corrida (Strategy Tester)` queda marcado como secundario;
+  - `Quick Backtest Legacy (Deprecado)` sigue disponible, pero queda fuera del flujo principal y al final de la pantalla.
+- Regla canonica resultante:
+  - `Backtests` ya no vende el mismo peso visual para:
+    - corrida puntual
+    - catalogo/comparacion de runs
+    - research masivo
+    - scheduler/infra
+    - legacy;
+  - `Runs` conserva el rol de catalogo operativo principal;
+  - `Comparador Profesional` conserva el rol de analisis comparativo principal sobre runs;
+  - `Research Batch` conserva:
+    - configuracion
+    - batches `BX`
+    - leaderboard
+    - variantes
+    - shortlist;
+  - `Beast / Infra` conserva:
+    - policy/runtime hints
+    - scheduler
+    - budget governor
+    - jobs recientes;
+  - `Research Funnel`, `Detalle de Corrida` y `Legacy` quedan como surfaces secundarias/auditables y no como caminos principales.
+- Dependencias backend reusadas y no reabiertas:
+  - `POST /api/v1/research/dataset-preflight` sigue siendo la verdad canonica de prerequisitos para `Research Batch` y `Beast`;
+  - no se reabre:
+    - `MassBacktestCoordinator.dataset_preflight(...)`
+    - `start_async(...)`
+    - `start_beast_async(...)`
+    - wiring backend de dataset/prereqs de `RTLOPS-89`;
+  - este bloque no agrega contratos backend nuevos ni cambia reglas fail-closed del preflight.
+- Surface minima real integrada:
+  - `Quick` queda separado del research masivo;
+  - `Runs` y `Comparador Profesional` quedan juntos como flujo principal de catalogo + analisis;
+  - `Research Batch` y `Beast / Infra` quedan separados como modos distintos;
+  - la copy principal queda en espanol y deja explicito que `Legacy`/auditoria no son el flujo oficial.
+- Validacion real ejecutada:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limite honesto del bloque:
+  - no cambia contratos backend;
+  - no hace refactor masivo;
+  - no reescribe `Research Funnel` ni `Strategy Tester` como dominios nuevos;
+  - no abre una UI nueva fuera de la pagina `Backtests`.
+- Siguiente bloque exacto recomendado:
+  - no corresponde abrir otro refactor UX grande a ciegas;
+  - la revalidacion con repo + `docs/truth` + Linear ya deja a `RTLOPS-87` absorbida y cerrada administrativamente;
+  - no corresponde abrir otro bloque de producto en `Backtests` por defecto;
+  - si aparece un gap nuevo real, abrir solo un microbloque chico sobre surfaces secundarias y no reabrir backend/prereqs.
+
 ## RTLOPS-89 - preflight canonico de dataset/prerequisitos para Batch/Beast - 2026-04-25
 
 - Estado real confirmado en esta rama:

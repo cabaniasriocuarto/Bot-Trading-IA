@@ -861,7 +861,7 @@ export default function BacktestsPage() {
   const catalogSortLabel = useCallback(
     (key: RunsListFilters["sort_by"]) => {
       if (catalogFilters.sort_by !== key) return "";
-      return catalogFilters.sort_dir === "desc" ? " â–¼" : " â–²";
+      return catalogFilters.sort_dir === "desc" ? " ↓" : " ↑";
     },
     [catalogFilters.sort_by, catalogFilters.sort_dir],
   );
@@ -1194,7 +1194,7 @@ export default function BacktestsPage() {
       setCatalogCompareSelection(catalogCompareIds.filter((id) => !affectedIds.has(id)));
       await Promise.all([refreshCatalogRuns(), refreshCatalogRankings(), refreshCatalogBatches()]);
     } catch (err) {
-      setCatalogBulkError(uiErrMsg(err, "No se pudo ejecutar la acciÃ³n masiva."));
+      setCatalogBulkError(uiErrMsg(err, "No se pudo ejecutar la acción masiva."));
     } finally {
       setCatalogBulkBusy(false);
     }
@@ -1205,10 +1205,10 @@ export default function BacktestsPage() {
       .filter((row) => String(row.dataset_source || "").toLowerCase().includes("synthetic"))
       .map((row) => row.run_id);
     if (!syntheticIds.length) {
-      setCatalogBulkError("No hay runs sintÃ©ticos en la vista actual.");
+      setCatalogBulkError("No hay runs sintéticos en la vista actual.");
       return;
     }
-    const ok = window.confirm(`Vas a borrar ${syntheticIds.length} runs sintÃ©ticos de la vista actual. Â¿Continuar?`);
+    const ok = window.confirm(`Vas a borrar ${syntheticIds.length} runs sintéticos de la vista actual. ¿Continuar?`);
     if (!ok) return;
     await bulkCatalogRunsAction("delete", syntheticIds);
   };
@@ -1249,12 +1249,12 @@ export default function BacktestsPage() {
       });
       setPromotionPreview(payload);
       if (payload.rollout_ready) {
-        setPromotionMessage(`ValidaciÃ³n OK: ${row.run_id} listo para iniciar rollout (OpciÃ³n B, sin auto-live).`);
+        setPromotionMessage(`Validación OK: ${row.run_id} listo para iniciar rollout (Opción B, sin auto-live).`);
       } else {
-        setPromotionError(`ValidaciÃ³n no apta para rollout: revisar constraints/gates/compare (${row.run_id}).`);
+        setPromotionError(`Validación no apta para rollout: revisar constraints/gates/compare (${row.run_id}).`);
       }
     } catch (err) {
-      setPromotionError(uiErrMsg(err, "No se pudo validar el run para promociÃ³n."));
+      setPromotionError(uiErrMsg(err, "No se pudo validar el run para promoción."));
     } finally {
       setPromotionBusyRunId(null);
     }
@@ -1269,7 +1269,7 @@ export default function BacktestsPage() {
       const payload = await apiPost<RunValidatePromotionResponse>(`/api/v1/runs/${encodeURIComponent(row.run_id)}/promote`, {
         baseline_run_id,
         target_mode: targetMode,
-        note: "Promovido desde Backtests / Runs (OpciÃ³n B)",
+        note: "Promovido desde Backtests / Runs (Opción B)",
       });
       setPromotionPreview(payload);
       setPromotionMessage(`Rollout iniciado desde ${row.run_id}. Siguiente paso: Settings -> Rollout / Gates.`);
@@ -1283,7 +1283,7 @@ export default function BacktestsPage() {
 
   const startMassBacktests = async () => {
     if (!massSelectedStrategies.length) {
-      setMassError("SeleccionÃ¡ al menos una estrategia para research masivo.");
+      setMassError("Seleccioná al menos una estrategia para research masivo.");
       return;
     }
     if (datasetPreflightLoading) {
@@ -1340,7 +1340,7 @@ export default function BacktestsPage() {
 
   const startBeastBatch = async () => {
     if (!massSelectedStrategies.length) {
-      setMassError("SeleccionÃ¡ al menos una estrategia para Modo Bestia.");
+      setMassError("Seleccioná al menos una estrategia para Modo Bestia.");
       return;
     }
     if (datasetPreflightLoading) {
@@ -1400,7 +1400,7 @@ export default function BacktestsPage() {
   };
 
   const beastStopAll = async () => {
-    if (!confirm("Â¿Stop All de Modo Bestia? Se cancela la cola y no se despachan nuevos jobs. Los jobs ya corriendo terminan.")) return;
+    if (!confirm("¿Stop All de Modo Bestia? Se cancela la cola y no se despachan nuevos jobs. Los jobs ya corriendo terminan.")) return;
     setBeastBusy(true);
     try {
       const res = await apiPost<{ note?: string }>("/api/v1/research/beast/stop-all", { reason: "ui_stop_all" });
@@ -1462,7 +1462,7 @@ export default function BacktestsPage() {
 
   const massSortLabel = (key: MassSortKey) => {
     if (massSortKey !== key) return "";
-    return massSortDir === "asc" ? " â–²" : " â–¼";
+    return massSortDir === "asc" ? " ↑" : " ↓";
   };
 
   const applyMassLeaderboardTab = (tab: MassLeaderboardTab) => {
@@ -1537,12 +1537,12 @@ export default function BacktestsPage() {
 
   const saveMassShortlistForBatch = async () => {
     if (!massRunId) {
-      setMassError("SeleccionÃ¡ un batch BX antes de guardar shortlist.");
+      setMassError("Seleccioná un batch BX antes de guardar shortlist.");
       return;
     }
     const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
     if (!selectedRows.length) {
-      setMassError("SeleccionÃ¡ variantes antes de guardar la shortlist.");
+      setMassError("Seleccioná variantes antes de guardar la shortlist.");
       return;
     }
     const items = selectedRows.map((row) => ({
@@ -1578,7 +1578,7 @@ export default function BacktestsPage() {
     const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
     const runIds = selectedRows.map((row) => String(row.catalog_run_id || "")).filter(Boolean);
     if (!runIds.length) {
-      setMassError("Las variantes seleccionadas no tienen run_id de catÃ¡logo para comparar.");
+      setMassError("Las variantes seleccionadas no tienen run_id de catálogo para comparar.");
       return;
     }
     setCatalogCompareSelection(runIds);
@@ -1610,7 +1610,7 @@ export default function BacktestsPage() {
         setCatalogCompareSelection(runIds);
         setMassMessage(`${options?.auto ? "Auto-shortlist" : "Top N"} cargado en Comparador de Runs: ${runIds.length} runs (${metric}).`);
       } else {
-        setMassError("Las variantes top seleccionadas no tienen run BT todavÃ­a para comparar.");
+        setMassError("Las variantes top seleccionadas no tienen run BT todavía para comparar.");
       }
     }
   };
@@ -1619,11 +1619,11 @@ export default function BacktestsPage() {
     const selectedRows = massSortedRows.filter((row) => massSelectedVariantIds.includes(row.variant_id));
     const runIds = selectedRows.map((row) => String(row.catalog_run_id || "")).filter(Boolean);
     if (!runIds.length) {
-      setMassError("SeleccionÃ¡ variantes con run de catÃ¡logo para aplicar acciÃ³n masiva.");
+      setMassError("Seleccioná variantes con run de catálogo para aplicar acción masiva.");
       return;
     }
     if (action === "delete") {
-      const ok = window.confirm(`Vas a borrar ${runIds.length} runs del catÃ¡logo (batch actual). Â¿Continuar?`);
+      const ok = window.confirm(`Vas a borrar ${runIds.length} runs del catálogo (batch actual). ¿Continuar?`);
       if (!ok) return;
     }
     try {
@@ -1634,7 +1634,7 @@ export default function BacktestsPage() {
       setMassSelectedVariantIds([]);
       await Promise.all([refreshMass(), refreshCatalogRuns(), refreshCatalogBatches(), refreshCatalogRankings()]);
     } catch (err) {
-      setMassError(uiErrMsg(err, "No se pudo ejecutar la acciÃ³n masiva sobre variantes."));
+      setMassError(uiErrMsg(err, "No se pudo ejecutar la acción masiva sobre variantes."));
     }
   };
 
@@ -1645,7 +1645,7 @@ export default function BacktestsPage() {
         variant_id: row.variant_id,
         note: "Marcado desde Backtests / Research Masivo",
       });
-      setMassMessage(`Draft OpciÃ³n B creado: ${res.recommendation_draft.id}`);
+      setMassMessage(`Draft Opción B creado: ${res.recommendation_draft.id}`);
     } catch (err) {
       setMassError(uiErrMsg(err, "No se pudo marcar candidato."));
     }
@@ -1942,7 +1942,7 @@ export default function BacktestsPage() {
     if (!massRunId) return;
     const state = String(massStatus?.state || "");
     if (state && state !== "COMPLETED") return;
-    // Auto-shortlist solo si todavÃ­a no hay selecciÃ³n activa para evitar pisar decisiones manuales.
+    // Auto-shortlist solo si todavía no hay selección activa para evitar pisar decisiones manuales.
     if (massSelectedVariantIds.length > 0) return;
     selectMassTopVariants(massTopSelectMetric, massTopSelectN, { auto: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1996,10 +1996,10 @@ export default function BacktestsPage() {
   }, [deepCompareLegacyRuns]);
 
   return (
-    <div className="space-y-4">
-      <Card>
+    <div className="flex flex-col gap-4">
+      <Card className="order-10">
         <CardTitle>Quick Backtest (opcional)</CardTitle>
-        <CardDescription>Corrida puntual para validar una idea. El flujo principal de investigaciÃ³n es Research Batch + ranking + comparaciÃ³n.</CardDescription>
+        <CardDescription>Corrida puntual para validar una idea. El flujo principal de investigación es Research Batch + ranking + comparación.</CardDescription>
         <CardContent>
           <form className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" onSubmit={launchRun}>
             <div className="space-y-1">
@@ -2086,39 +2086,47 @@ export default function BacktestsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardTitle>Â¿QuÃ© usa este modo?</CardTitle>
-        <CardDescription>Quick Backtest y Research Batch comparten identidad de runs; el batch es un contenedor que genera muchos runs.</CardDescription>
-        <CardContent className="grid gap-3 xl:grid-cols-2">
+      <Card className="order-20">
+        <CardTitle>Mapa operativo de Backtests</CardTitle>
+        <CardDescription>
+          La surface principal queda ordenada por modo real de trabajo: Quick, Runs, Research Batch y Beast / Infra. Legacy y auditoria quedan fuera del flujo principal.
+        </CardDescription>
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Quick Backtest (Single Backtest Run)</p>
-            <p className="mt-2 text-sm text-slate-200">Usa el motor de simulacion normal con tus costos/config del formulario. Ideal para iterar rapido y comparar pocos runs.</p>
-            <div className="mt-2 space-y-1 text-xs text-slate-400">
-              <p>Motor: simulacion del backend actual</p>
-              <p>Datos: reales (si faltan, devuelve error; no sintÃ©ticos)</p>
-              <p>Metricas: KPIs + costos netos + artifacts</p>
-              <p>Cuando usarlo: validar una idea puntual o rerun exacto</p>
-            </div>
+            <p className="text-xs uppercase tracking-wide text-slate-400">1. Quick</p>
+            <p className="mt-2 text-sm text-slate-200">Corrida puntual para validar una idea o repetir un run chico sin abrir research masivo.</p>
           </div>
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Research Batch (Batch Experiment)</p>
-            <p className="mt-2 text-sm text-slate-200">Lanza variantes/estrategias en lote (research offline) y genera multiples Backtest Runs hijos con score robusto y evidencia por regimen.</p>
-            <div className="mt-2 space-y-1 text-xs text-slate-400">
-              <p>Motor: Mass Backtest Engine (research)</p>
-              <p>Datos: dataset mode recomendado (publicos + hash)</p>
-              <p>Metricas: walk-forward, robustez, costos, ranking</p>
-              <p>Cuando usarlo: comparar muchas variantes y producir candidatos (Opcion B)</p>
-            </div>
+            <p className="text-xs uppercase tracking-wide text-slate-400">2. Runs</p>
+            <p className="mt-2 text-sm text-slate-200">Catalogo operativo de runs unificados, filtros, shortlist y comparacion profesional.</p>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-400">3. Research Batch</p>
+            <p className="mt-2 text-sm text-slate-200">Configuracion, batches BX, leaderboard y variantes reproducibles sobre dataset real.</p>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-400">4. Beast / Infra</p>
+            <p className="mt-2 text-sm text-slate-200">Scheduler, policy root, budget governor y cola de jobs del modo Bestia.</p>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <p className="text-xs uppercase tracking-wide text-slate-400">5. Secundario</p>
+            <p className="mt-2 text-sm text-slate-200">Research Funnel, detalle puntual y legacy quedan visibles, pero fuera del flujo principal.</p>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardTitle>Research Funnel y Trial Ledger</CardTitle>
+      <Card className="order-70">
+        <CardTitle className="flex items-center gap-2">
+          Research Funnel y Trial Ledger
+          <Badge variant="neutral">auditoria</Badge>
+        </CardTitle>
         <CardDescription>
-          Vista operativa del research offline. Separa runs catalogados, evidence confiable y evidencia degradada sin mezclar truth ni runtime.
+          Vista secundaria para auditar evidence y pipeline de research offline sin mezclarla con la operatoria principal de Quick, Runs o Batch.
         </CardDescription>
-        <CardContent className="space-y-4">
+        <CardContent>
+          <details className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+            <summary className="cursor-pointer list-none text-sm font-semibold text-slate-200">Abrir auditoria de funnel y trial ledger</summary>
+            <div className="mt-4 space-y-4">
           {researchError ? <p className="text-sm text-rose-300">{researchError}</p> : null}
 
           <div className="grid gap-3 xl:grid-cols-5">
@@ -2187,7 +2195,7 @@ export default function BacktestsPage() {
                       </div>
                       <p className="mt-2 text-slate-100">{row.strategy_name || row.run_id}</p>
                       <p className="text-slate-400">
-                        {row.asset || "-"} · {row.timeframe || "-"} · {row.run_id}
+                        {row.asset || "-"} ? {row.timeframe || "-"} ? {row.run_id}
                       </p>
                     </div>
                   ))
@@ -2237,7 +2245,7 @@ export default function BacktestsPage() {
                     </TD>
                     <TD>
                       <div className="space-y-1 text-xs text-slate-300">
-                        <p>{row.asset || "-"} · {row.timeframe || "-"}</p>
+                        <p>{row.asset || "-"} ? {row.timeframe || "-"}</p>
                         <p>Dataset: {row.dataset_source || "-"}</p>
                         <p>Hash: {shortHash(row.dataset_hash, 12)}</p>
                       </div>
@@ -2304,10 +2312,12 @@ export default function BacktestsPage() {
               </TBody>
             </Table>
           </div>
+            </div>
+          </details>
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="order-30">
         <CardTitle>Backtests / Runs</CardTitle>
         <CardDescription>
           Lista unificada de runs (Quick + Research Batch child) con identidad estructurada, filtros, chips y metadata reproducible.
@@ -2363,7 +2373,7 @@ export default function BacktestsPage() {
                 <option value="">Todos los bots</option>
                 {bots.map((row) => (
                   <option key={`cat-filter-bot-${row.id}`} value={row.id}>
-                    {row.name} Â· {row.id}
+                    {row.name} · {row.id}
                   </option>
                 ))}
               </Select>
@@ -2458,7 +2468,7 @@ export default function BacktestsPage() {
               <p className="text-xs text-slate-400">Quick Backtest: {quickRunsCount} | Child de Research Batch: {batchChildrenCount}</p>
               {selectedCatalogBot ? (
                 <p className="text-xs text-slate-400">
-                  Bot filtrado: {getVisibleBotIdentity(selectedCatalogBot)} Â· pool actual: {selectedCatalogBot.pool_strategy_ids.length} estrategias
+                  Bot filtrado: {getVisibleBotIdentity(selectedCatalogBot)} · pool actual: {selectedCatalogBot.pool_strategy_ids.length} estrategias
                 </p>
               ) : null}
               <p className="text-xs text-slate-400">
@@ -2489,7 +2499,7 @@ export default function BacktestsPage() {
               <div className="mt-2 space-y-1 text-xs text-slate-300">
                 {(catalogRankings?.items || []).slice(0, 3).map((row) => (
                   <p key={`rank-top-${row.run_id}`}>
-                    #{row.rank ?? "-"} {row.run_id} Â· {row.strategy_name} Â· score {fmtNum(row.composite_score ?? 0)}
+                    #{row.rank ?? "-"} {row.run_id} · {row.strategy_name} · score {fmtNum(row.composite_score ?? 0)}
                   </p>
                 ))}
                 {!catalogRankings?.items?.length ? <p className="text-slate-400">Sin ranking disponible.</p> : null}
@@ -2501,7 +2511,7 @@ export default function BacktestsPage() {
                 {recentBatches.length ? (
                   recentBatches.map((b) => (
                     <p key={`batch-mini-${b.batch_id}`}>
-                      {b.batch_id} Â· {b.status} Â· {b.run_count_done}/{b.run_count_total}
+                      {b.batch_id} · {b.status} · {b.run_count_done}/{b.run_count_total}
                     </p>
                   ))
                 ) : (
@@ -2619,7 +2629,7 @@ export default function BacktestsPage() {
                   variant="outline"
                   disabled={role !== "admin" || catalogBulkBusy || !catalogCompareIds.length}
                   onClick={() => {
-                    const ok = window.confirm(`Vas a borrar ${catalogCompareIds.length} runs seleccionados. Â¿Continuar?`);
+                    const ok = window.confirm(`Vas a borrar ${catalogCompareIds.length} runs seleccionados. ¿Continuar?`);
                     if (!ok) return;
                     void bulkCatalogRunsAction("delete", catalogCompareIds);
                   }}
@@ -2634,7 +2644,7 @@ export default function BacktestsPage() {
                   onClick={() => void deleteSyntheticLegacyCatalogRuns()}
                   title="Limpia runs synthetic_seeded / demo de la vista actual"
                 >
-                  Borrar runs sintÃ©ticos viejos
+                  Borrar runs sintéticos viejos
                 </Button>
               </div>
             </div>
@@ -2733,7 +2743,7 @@ export default function BacktestsPage() {
                       </TD>
                       <TD className="align-top">
                         <p className="text-xs text-slate-200">{row.strategy_name}</p>
-                        <p className="text-xs text-slate-400">{row.strategy_id} Â· v{row.strategy_version}</p>
+                        <p className="text-xs text-slate-400">{row.strategy_id} · v{row.strategy_version}</p>
                       </TD>
                       <TD className="align-top">
                         <div className="flex max-w-[220px] flex-wrap gap-1">
@@ -2762,7 +2772,7 @@ export default function BacktestsPage() {
                         <span className="text-slate-400">{tfs}</span>
                       </TD>
                       <TD className="text-xs">
-                        {row.timerange_from} â†’ {row.timerange_to}
+                        {row.timerange_from} · {row.timerange_to}
                       </TD>
                       <TD className="text-xs">
                         <p>{row.dataset_source}</p>
@@ -2963,16 +2973,16 @@ export default function BacktestsPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="order-40">
         <CardTitle>Comparador Profesional (Runs)</CardTitle>
         <CardDescription>
-          3 capas: shortlist (rÃ¡pida), tabla pro (hasta 500 en esta fase) y deep compare (2-4 runs). Ranking con constraints para evitar ganadores truchos.
+          3 capas: shortlist (rápida), tabla pro (hasta 500 en esta fase) y deep compare (2-4 runs). Ranking con constraints para evitar ganadores truchos.
         </CardDescription>
         <CardContent className="space-y-4">
           <div className="grid gap-4 xl:grid-cols-3">
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 xl:col-span-2">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs uppercase tracking-wide text-slate-400">D1 Â· Shortlist (selecciÃ³n rÃ¡pida)</p>
+                <p className="text-xs uppercase tracking-wide text-slate-400">D1 · Shortlist (selección rápida)</p>
                 <Badge variant="warn">{catalogCompareIds.length} seleccionados</Badge>
               </div>
               {catalogComparePreview?.warnings?.length ? (
@@ -2989,11 +2999,11 @@ export default function BacktestsPage() {
                       onClick={() => void toggleCatalogCompare(row.run_id)}
                       className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs text-cyan-200"
                     >
-                      {row.run_id} Â· {row.strategy_name} Â· S {fmtNum(Number((row.kpis || {}).sharpe || 0))}
+                      {row.run_id} · {row.strategy_name} · S {fmtNum(Number((row.kpis || {}).sharpe || 0))}
                     </button>
                   ))
                 ) : (
-                  <p className="text-sm text-slate-400">SeleccionÃ¡ runs en la lista para comparar.</p>
+                  <p className="text-sm text-slate-400">Seleccioná runs en la lista para comparar.</p>
                 )}
               </div>
             </div>
@@ -3023,7 +3033,7 @@ export default function BacktestsPage() {
               <div className="mt-3 space-y-1 text-xs text-slate-300">
                 {(catalogRankings?.items || []).slice(0, 5).map((row) => (
                   <p key={`ranking-side-${row.run_id}`}>
-                    #{row.rank ?? "-"} {row.run_id} Â· {fmtNum(row.composite_score ?? 0)}
+                    #{row.rank ?? "-"} {row.run_id} · {fmtNum(row.composite_score ?? 0)}
                   </p>
                 ))}
               </div>
@@ -3031,9 +3041,9 @@ export default function BacktestsPage() {
           </div>
 
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Research â†’ Validate â†’ Promote (OpciÃ³n B)</p>
+            <p className="text-xs uppercase tracking-wide text-slate-400">Research · Validate · Promote (Opción B)</p>
             <p className="mt-1 text-xs text-slate-400">
-              ValidÃ¡ un run con constraints + offline gates + compare vs baseline y, si pasa, iniciÃ¡ rollout (sin auto-live). El LIVE real sigue con canary + rollback + approve.
+              Validá un run con constraints + offline gates + compare vs baseline y, si pasa, iniciá rollout (sin auto-live). El LIVE real sigue con canary + rollback + approve.
             </p>
             {promotionMessage ? <p className="mt-2 text-sm text-emerald-300">{promotionMessage}</p> : null}
             {promotionError ? <p className="mt-2 text-sm text-rose-300">{promotionError}</p> : null}
@@ -3056,15 +3066,15 @@ export default function BacktestsPage() {
                   <p>Constraints: {promotionPreview.constraints?.passed ? "PASS" : "FAIL"}</p>
                   <p>Offline gates: {promotionPreview.offline_gates?.passed ? "PASS" : "FAIL"}</p>
                   <p>Compare vs baseline: {promotionPreview.compare_vs_baseline?.passed ? "PASS" : "FAIL"}</p>
-                  <p>Rollout ready: {promotionPreview.rollout_ready ? "SÃ­" : "No"}</p>
-                  <p className="text-slate-400">No auto-live: {promotionPreview.option_b_no_auto_live ? "SÃ­" : "No"}</p>
+                  <p>Rollout ready: {promotionPreview.rollout_ready ? "Sí" : "No"}</p>
+                  <p className="text-slate-400">No auto-live: {promotionPreview.option_b_no_auto_live ? "Sí" : "No"}</p>
                 </div>
 
                 <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs xl:col-span-1">
                   <p className="font-semibold text-slate-200">Constraints</p>
                   {(promotionPreview.constraints?.checks || []).map((check) => (
                     <p key={`promo-c-${check.id}`} className={check.ok ? "text-emerald-200" : "text-rose-200"}>
-                      {check.ok ? "PASS" : "FAIL"} Â· {check.id}
+                      {check.ok ? "PASS" : "FAIL"} · {check.id}
                     </p>
                   ))}
                 </div>
@@ -3072,7 +3082,7 @@ export default function BacktestsPage() {
                   <p className="font-semibold text-slate-200">Offline Gates</p>
                   {(promotionPreview.offline_gates?.checks || []).slice(0, 8).map((check) => (
                     <p key={`promo-g-${check.id}`} className={check.ok ? "text-emerald-200" : "text-rose-200"}>
-                      {check.ok ? "PASS" : "FAIL"} Â· {check.id}
+                      {check.ok ? "PASS" : "FAIL"} · {check.id}
                     </p>
                   ))}
                 </div>
@@ -3080,7 +3090,7 @@ export default function BacktestsPage() {
                   <p className="font-semibold text-slate-200">Compare vs Baseline</p>
                   {(promotionPreview.compare_vs_baseline?.checks || []).map((check) => (
                     <p key={`promo-b-${check.id}`} className={check.ok ? "text-emerald-200" : "text-rose-200"}>
-                      {check.ok ? "PASS" : "FAIL"} Â· {check.id}
+                      {check.ok ? "PASS" : "FAIL"} · {check.id}
                     </p>
                   ))}
                   {promotionPreview.rollout?.next_step ? <p className="mt-2 text-cyan-300">{promotionPreview.rollout.next_step}</p> : null}
@@ -3092,7 +3102,7 @@ export default function BacktestsPage() {
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-xs uppercase tracking-wide text-slate-400">D2 Â· Comparison Table Pro (50â€“500+)</p>
+                <p className="text-xs uppercase tracking-wide text-slate-400">D2 · Comparison Table Pro (50-500+)</p>
                 <p className="text-xs text-slate-400">
                   Tabla virtualizada activa: filtros/sort server-side + ventana visible.
                 </p>
@@ -3189,7 +3199,7 @@ export default function BacktestsPage() {
                         {catalogTableColumns.dates ? (
                           <TD className="text-xs">
                             <p>{compactDate(row.created_at)}</p>
-                            <p className="text-slate-400">{row.timerange_from} â†’ {row.timerange_to}</p>
+                            <p className="text-slate-400">{row.timerange_from} · {row.timerange_to}</p>
                           </TD>
                         ) : null}
                         {catalogTableColumns.market ? (
@@ -3220,7 +3230,7 @@ export default function BacktestsPage() {
                               <span className={gradeCellClass("max_dd", k.max_dd as number | undefined)}>DD {fmtPct((k.max_dd as number | undefined) ?? 0)}</span>
                               <span className={gradeCellClass("winrate", k.winrate as number | undefined)}>WR {fmtPct((k.winrate as number | undefined) ?? 0)}</span>
                               <span>Ret {fmtPct(ret)}</span>
-                              <span>PF {fmtNum((k.profit_factor as number | undefined) ?? 0)} Â· Trades {fmtNum((k.trade_count as number | undefined) ?? (k.roundtrips as number | undefined) ?? 0)}</span>
+                              <span>PF {fmtNum((k.profit_factor as number | undefined) ?? 0)} · Trades {fmtNum((k.trade_count as number | undefined) ?? (k.roundtrips as number | undefined) ?? 0)}</span>
                               <span>Exp {fmtNum((expectancyValue as number | undefined) ?? 0)} {String(k.expectancy_unit || "")}</span>
                             </div>
                           </TD>
@@ -3260,15 +3270,15 @@ export default function BacktestsPage() {
 
           <div className="grid gap-4 xl:grid-cols-3">
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 xl:col-span-2">
-              <p className="text-xs uppercase tracking-wide text-slate-400">D3 Â· Deep Compare (2-4 runs)</p>
+              <p className="text-xs uppercase tracking-wide text-slate-400">D3 · Deep Compare (2-4 runs)</p>
               <p className="mt-1 text-xs text-slate-400">
-                Usa runs del catÃ¡logo. Si existe `legacy_json_id`, muestra equity/DD; si no, compara KPIs/costos/rÃ©gimen igual.
+                Usa runs del catálogo. Si existe `legacy_json_id`, muestra equity/DD; si no, compara KPIs/costos/régimen igual.
               </p>
               {deepCompareRows.length >= 2 ? (
                 <div className="mt-3 space-y-3">
                   {catalogComparePreview && !catalogComparePreview.same_dataset ? (
                     <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200">
-                      Warning: datasets distintos ({catalogComparePreview.dataset_hashes.join(", ")}). ComparaciÃ³n Ãºtil, pero no â€œmanzanas con manzanasâ€.
+                      Warning: datasets distintos ({catalogComparePreview.dataset_hashes.join(", ")}). Comparación útil, pero no ¿manzanas con manzanas?.
                     </div>
                   ) : null}
                   <div className="overflow-x-auto">
@@ -3378,19 +3388,19 @@ export default function BacktestsPage() {
                   </div>
                 </div>
               ) : (
-                <p className="mt-3 text-sm text-slate-400">SeleccionÃ¡ 2 a 4 runs desde â€œBacktests / Runsâ€ para activar Deep Compare.</p>
+                <p className="mt-3 text-sm text-slate-400">Seleccioná 2 a 4 runs desde Backtests / Runs para activar Deep Compare.</p>
               )}
             </div>
 
             <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-400">Top predefinidos (mÃ©tricos, con constraints del filtro)</p>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Top predefinidos (métricos, con constraints del filtro)</p>
               <div className="mt-2 space-y-3 text-xs">
                 {rankingPresets.map((preset) => (
                   <div key={`metric-preset-${preset.id}`} className="rounded border border-slate-800 bg-slate-950/40 p-2">
                     <p className="font-semibold text-slate-200">{preset.label}</p>
                     {(preset.items || []).slice(0, 3).map((row) => (
                       <p key={`${preset.id}-${row.run_id}`} className="text-slate-300">
-                        {row.run_id} Â· {row.strategy_name}
+                        {row.run_id} · {row.strategy_name}
                       </p>
                     ))}
                     {!preset.items.length ? <p className="text-slate-500">Sin datos</p> : null}
@@ -3402,7 +3412,7 @@ export default function BacktestsPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="order-90">
         <CardTitle className="flex items-center gap-2">
           Quick Backtest Legacy (Deprecado)
           <Badge variant="warn">Deprecado</Badge>
@@ -3480,10 +3490,10 @@ export default function BacktestsPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="order-50">
         <CardTitle>Research Batch (Backtests Masivos)</CardTitle>
         <CardDescription>
-          Ejecuta variantes por estrategia con walk-forward, score robusto y evidencia por rÃ©gimen. OpciÃ³n B: genera drafts, no toca LIVE.
+          Ejecuta variantes por estrategia con walk-forward, score robusto y evidencia por régimen. Opción B: genera drafts, no toca LIVE.
         </CardDescription>
         <CardContent className="space-y-4">
           {massMessage ? <p className="text-sm text-emerald-300">{massMessage}</p> : null}
@@ -3493,7 +3503,7 @@ export default function BacktestsPage() {
           <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 1 Â· Crear Batch</p>
+                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 1 · Crear Batch</p>
                 <p className="text-xs text-slate-400">Configura parametros, estrategia y costos para lanzar un Research Batch reproducible.</p>
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
@@ -3507,7 +3517,7 @@ export default function BacktestsPage() {
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
                   <Select value={selectedBotId} onChange={(e) => setSelectedBotId(e.target.value)} disabled={!bots.length}>
-                    <option value="">ElegÃ­ un bot del registry</option>
+                    <option value="">Elegí un bot del registry</option>
                     {bots.map((bot) => (
                       <option key={`mass-bot-${bot.id}`} value={bot.id}>
                         {`${getBotDisplayName(bot)} | ${getCanonicalBotId(bot)} | ${bot.mode.toUpperCase()} | ${bot.status}`}
@@ -3519,7 +3529,7 @@ export default function BacktestsPage() {
                     variant="outline"
                     disabled={role !== "admin" || !selectedMassBot}
                     onClick={applyBotPoolToMass}
-                    title="Carga al batch el pool del bot seleccionado para medir cÃ³mo rendirÃ­a con histÃ³rico reproducible."
+                    title="Carga al batch el pool del bot seleccionado para medir cómo rendiría con histórico reproducible."
                   >
                     Usar pool del bot
                   </Button>
@@ -3531,12 +3541,12 @@ export default function BacktestsPage() {
                       <strong>{selectedMassBot.engine}</strong>.
                     </p>
                     <p>
-                      Pool: <strong>{selectedMassBot.pool_strategy_ids.length}</strong> estrategias Â· trades acumulados:{" "}
-                      <strong>{selectedMassBot.metrics?.trade_count ?? 0}</strong> Â· runs:{" "}
+                      Pool: <strong>{selectedMassBot.pool_strategy_ids.length}</strong> estrategias · trades acumulados:{" "}
+                      <strong>{selectedMassBot.metrics?.trade_count ?? 0}</strong> · runs:{" "}
                       <strong>{selectedMassBot.metrics?.run_count ?? 0}</strong>
                     </p>
                     <p className="text-slate-400">
-                      Backtest masivo evalÃºa ese pool con histÃ³rico. Shadow/mock mide experiencia en vivo sin Ã³rdenes. Son fuentes distintas y ambas alimentan aprendizaje.
+                      Backtest masivo evalúa ese pool con histórico. Shadow/mock mide experiencia en vivo sin órdenes. Son fuentes distintas y ambas alimentan aprendizaje.
                     </p>
                     {selectedMassBotLifecycleSummary ? (
                       <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
@@ -3608,7 +3618,7 @@ export default function BacktestsPage() {
                           </div>
                         ) : null}
                         <p className="mt-2 text-[10px] text-slate-500">
-                          Esta surface no modifica overrides ni reemplaza `Execution`: solo anticipa quÃ© subset operativo llega hoy a Backtests para el bot seleccionado.
+                          Esta surface no modifica overrides ni reemplaza `Execution`: solo anticipa qué subset operativo llega hoy a Backtests para el bot seleccionado.
                         </p>
                       </div>
                     ) : (
@@ -3619,7 +3629,7 @@ export default function BacktestsPage() {
                   </div>
                 ) : (
                   <p className="mt-2 text-xs text-slate-400">
-                    ElegÃ­ un bot si querÃ©s reproducir su pool actual en research batch y ver cÃ³mo rendirÃ­a por estrategia, activo y rÃ©gimen.
+                    Elegí un bot si querés reproducir su pool actual en research batch y ver cómo rendiría por estrategia, activo y régimen.
                   </p>
                 )}
               </div>
@@ -3635,7 +3645,7 @@ export default function BacktestsPage() {
                 <option value="">Seleccionar batch...</option>
                 {sortedBatchOptions.map((bx) => (
                   <option key={bx.batch_id} value={bx.batch_id}>
-                    {bx.batch_id} Â· {compactDate(bx.created_at)} Â· {bx.status} Â· runs {bx.run_count_done}/{bx.run_count_total}
+                    {bx.batch_id} · {compactDate(bx.created_at)} · {bx.status} · runs {bx.run_count_done}/{bx.run_count_total}
                   </option>
                 ))}
               </Select>
@@ -3643,13 +3653,13 @@ export default function BacktestsPage() {
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">Orden por defecto</label>
               <div className="h-10 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
-                WinRate OOS (desc) {massSortLabel("winrate").trim() || "â–¼"}
+                WinRate OOS (desc) {massSortLabel("winrate").trim() || "?"}
               </div>
             </div>
             <div className="space-y-1">
               <label className="text-xs uppercase tracking-wide text-slate-400">Vista</label>
               <div className="h-10 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
-                Primero elegÃ­s el batch (BX), luego ordenÃ¡s y comparÃ¡s variantes.
+                Primero elegís el batch (BX), luego ordenás y comparás variantes.
               </div>
             </div>
           </div>
@@ -3658,7 +3668,7 @@ export default function BacktestsPage() {
           <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 2 Â· Batches</p>
+                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 2 · Batches</p>
                 <p className="text-xs text-slate-400">Lista paginada de grupos BX para elegir rapido el experimento correcto y operar sus runs hijos.</p>
               </div>
               <div className="flex items-center gap-2 text-xs text-slate-300">
@@ -3742,7 +3752,7 @@ export default function BacktestsPage() {
                                 className="h-8 px-2"
                                 disabled={role !== "admin" || !childIds.length}
                                 onClick={() => {
-                                  const ok = window.confirm(`Vas a borrar ${childIds.length} runs BT del batch ${bx.batch_id}. Â¿Continuar?`);
+                                  const ok = window.confirm(`Vas a borrar ${childIds.length} runs BT del batch ${bx.batch_id}. ¿Continuar?`);
                                   if (!ok) return;
                                   void bulkCatalogRunsAction("delete", childIds);
                                 }}
@@ -3767,7 +3777,7 @@ export default function BacktestsPage() {
 
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
                 <div className="text-slate-400">
-                  Pagina {massBatchPageSafe}/{massBatchTotalPages} Â· Mostrando {sortedBatchOptions.length ? massBatchPageStart + 1 : 0}-{massBatchPageEnd} de {sortedBatchOptions.length}
+                  Página {massBatchPageSafe}/{massBatchTotalPages} · Mostrando {sortedBatchOptions.length ? massBatchPageStart + 1 : 0}-{massBatchPageEnd} de {sortedBatchOptions.length}
                 </div>
                 <div className="flex items-center gap-1">
                   <Button type="button" variant="outline" className="h-8 px-2" disabled={massBatchPageSafe <= 1} onClick={() => setMassBatchPage((p) => Math.max(1, p - 1))}>
@@ -3817,7 +3827,7 @@ export default function BacktestsPage() {
           <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/30 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 3 Â· Leaderboards</p>
+                <p className="text-xs uppercase tracking-wide text-cyan-300">Bloque 3 · Leaderboards</p>
                 <p className="text-xs text-slate-400">Vista principal por Score Neto y secundaria por WinRate, con la misma tabla de variantes para comparar.</p>
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
@@ -3876,11 +3886,11 @@ export default function BacktestsPage() {
                   <Input value={massForm.max_folds} onChange={(e) => setMassForm((p) => ({ ...p, max_folds: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs uppercase tracking-wide text-slate-400">Train dÃ­as</label>
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Train días</label>
                   <Input value={massForm.train_days} onChange={(e) => setMassForm((p) => ({ ...p, train_days: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs uppercase tracking-wide text-slate-400">Test dÃ­as</label>
+                  <label className="text-xs uppercase tracking-wide text-slate-400">Test días</label>
                   <Input value={massForm.test_days} onChange={(e) => setMassForm((p) => ({ ...p, test_days: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
@@ -3930,9 +3940,9 @@ export default function BacktestsPage() {
                       <div className="mt-2 space-y-1 text-[11px]">
                         <p className="text-slate-300">
                           Source type: <strong>{datasetPreflight.dataset_source_type}</strong>
-                          {" "}· market family: <strong>{datasetPreflight.market_family || "-"}</strong>
-                          {" "}· symbols: <strong>{datasetPreflight.symbols.join(", ") || "-"}</strong>
-                          {" "}· timeframe: <strong>{datasetPreflight.timeframe || "-"}</strong>
+                          {" · "}market family: <strong>{datasetPreflight.market_family || "-"}</strong>
+                          {" · "}symbols: <strong>{datasetPreflight.symbols.join(", ") || "-"}</strong>
+                          {" · "}timeframe: <strong>{datasetPreflight.timeframe || "-"}</strong>
                         </p>
                         {datasetPreflight.date_range ? (
                           <p className="text-slate-400">
@@ -4009,27 +4019,14 @@ export default function BacktestsPage() {
                 <Button disabled={role !== "admin" || massRunning || datasetPreflightLoading} onClick={startMassBacktests}>
                   {massRunning ? "Iniciando..." : "Ejecutar Backtests Masivos"}
                 </Button>
-                <Button
-                  variant="outline"
-                  disabled={role !== "admin" || beastBusy || datasetPreflightLoading}
-                  onClick={startBeastBatch}
-                  title={
-                    datasetPreflight && !datasetPreflight.can_run_beast
-                      ? buildPreflightBlockingMessage("beast")
-                      : beastEnabledState === "blocked"
-                        ? "Beast esta deshabilitado en beast_mode.yaml (enabled=false)."
-                        : beastEnabledState === "missing"
-                          ? "Este runtime no encontro config/policies para Beast. Corregi el root del deploy o el empaquetado."
-                        : "Encola el batch en Modo Bestia (scheduler local fase 1, con budget governor y limites de concurrencia)."
-                  }
-                >
-                  {beastBusy ? "Encolando Bestia..." : "Ejecutar en Modo Bestia"}
-                </Button>
                 <Button variant="outline" disabled={!massRunId} onClick={refreshMass}>
                   Refrescar Research Batch
                 </Button>
                 {massRunId ? <Badge variant="warn">run_id: {massRunId}</Badge> : null}
               </div>
+              <p className="text-xs text-slate-400">
+                Beast / Infra usa esta misma configuracion y el mismo preflight canonico, pero queda separado en el bloque siguiente para no mezclar operatoria de batch con scheduler/infra.
+              </p>
               {!massRunId ? (
                 <p className="text-xs text-slate-400">
                   Todavia no hay un batch BX seleccionado. Elegilo desde la lista de batches para inspeccionar estado/resultados y no confundir un fallo historico con el intento actual.
@@ -4038,154 +4035,7 @@ export default function BacktestsPage() {
             </div>
 
             <div className="space-y-3">
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-400">Modo Bestia (cola de jobs)</p>
-                    <p className="mt-1 text-xs text-slate-400">
-                      Scheduler local fase 1 (sin Celery/Redis todavia). Encola batches grandes con limites de concurrencia y budget diario.
-                    </p>
-                  </div>
-                  <Badge
-                    variant={
-                      beastEnabledState === "enabled"
-                        ? "success"
-                        : beastEnabledState === "blocked"
-                          ? "danger"
-                          : beastEnabledState === "missing"
-                            ? "warn"
-                            : "neutral"
-                    }
-                  >
-                    {beastEnabledState === "enabled"
-                      ? "habilitado"
-                      : beastEnabledState === "blocked"
-                        ? "bloqueado por policy"
-                        : beastEnabledState === "missing"
-                          ? "runtime sin policy"
-                          : "cargando policy"}
-                  </Badge>
-                </div>
-                <p className="mt-2 text-[11px] text-slate-400">
-                  {beastPolicyHint}
-                </p>
-                {beastStatus?.policy_source_root ? (
-                  <p className="mt-1 text-[11px] text-slate-500">Policy root runtime: {beastStatus.policy_source_root}</p>
-                ) : null}
-                {frontendBackendHint ? (
-                  <p className="mt-1 text-[11px] text-slate-500">Backend objetivo del frontend: {frontendBackendHint}</p>
-                ) : null}
-                {beastPanelError ? (
-                  <div className="mt-2 rounded border border-rose-500/30 bg-rose-500/10 p-2 text-[11px] text-rose-200">
-                    {beastPanelError}
-                  </div>
-                ) : null}
-                {beastStatus?.policy_warnings?.length ? (
-                  <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-200">
-                    {beastStatus.policy_warnings.join(" | ")}
-                  </div>
-                ) : null}
-
-                <div className="mt-3 grid gap-2 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <label className="text-xs uppercase tracking-wide text-slate-400">Tier Bestia</label>
-                    <Select
-                      value={beastTier}
-                      onChange={(e) => setBeastTier(e.target.value as "hobby" | "pro")}
-                      disabled={role !== "admin" || beastBusy}
-                    >
-                      <option value="hobby">Hobby</option>
-                      <option value="pro">Pro</option>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs uppercase tracking-wide text-slate-400">Acciones</label>
-                    <div className="flex h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-2">
-                      <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={() => void refreshBeastPanel()}>
-                        Refrescar
-                      </Button>
-                      <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={beastResume}>
-                        Reanudar
-                      </Button>
-                      <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={beastStopAll}>
-                        Stop All
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid gap-2 md:grid-cols-2">
-                  <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
-                    <p className="text-slate-400">Scheduler</p>
-                    <div className="mt-1 space-y-1 text-slate-200">
-                      <p>Thread: {beastStatus?.scheduler?.thread_alive ? "activo" : "inactivo"}</p>
-                      <p>Cola: {beastStatus?.scheduler?.queue_depth ?? 0}</p>
-                      <p>Workers activos: {beastStatus?.scheduler?.workers_active ?? 0}/{beastStatus?.scheduler?.max_concurrent_jobs ?? "-"}</p>
-                      <p>Stop solicitado: {beastStatus?.scheduler?.stop_requested ? "Si" : "No"}</p>
-                    </div>
-                    <p className="mt-2 text-[11px] text-slate-400">
-                      {beastStatus?.scheduler?.rate_limit_enabled
-                        ? `Rate limit policy: ${beastStatus?.scheduler?.max_requests_per_minute ?? "-"} req/min (aplica a la planificacion; limiter por exchange completo pendiente).`
-                        : "Rate limit policy deshabilitada en policy snapshot."}
-                    </p>
-                  </div>
-
-                  <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
-                    <p className="text-slate-400">Budget governor</p>
-                    <div className="mt-1 space-y-1 text-slate-200">
-                      <p>Tier: {beastStatus?.budget?.tier || beastTier}</p>
-                      <p>Cap diario: {beastStatus?.budget?.daily_cap ?? "-"}</p>
-                      <p>Stop al: {typeof beastStatus?.budget?.stop_at_budget_pct === "number" ? `${fmtNum(beastStatus.budget.stop_at_budget_pct)}%` : "-"}</p>
-                      <p>
-                        Uso: {beastStatus?.budget?.daily_jobs_started ?? 0}/{beastStatus?.budget?.daily_cap ?? "-"} jobs
-                        {typeof beastStatus?.budget?.usage_pct === "number" ? ` (${fmtNum(beastStatus.budget.usage_pct)}%)` : ""}
-                      </p>
-                      <p>
-                        Done/Fail: {beastStatus?.budget?.daily_jobs_completed ?? 0}/{beastStatus?.budget?.daily_jobs_failed ?? 0}
-                      </p>
-                    </div>
-                    {beastStatus?.requires_postgres ? (
-                      <p className="mt-2 text-[11px] text-amber-300">
-                        Policy marca Postgres como recomendado para Modo Bestia. Esta fase usa scheduler local con persistencia de estado JSON.
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="mt-3 rounded border border-slate-800 bg-slate-950/40 p-2">
-                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-                    <p className="uppercase tracking-wide text-slate-400">Jobs recientes</p>
-                    <Badge variant="warn">{beastJobs.length} visibles</Badge>
-                  </div>
-                  {beastJobs.length ? (
-                    <div className="max-h-48 space-y-1 overflow-auto text-xs">
-                      {beastJobs.slice(0, 12).map((job) => (
-                        <div key={`beast-job-${job.run_id}`} className="rounded border border-slate-800 bg-slate-900/60 px-2 py-1">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-slate-200">{job.run_id}</span>
-                              <Badge variant={statusVariant(String(job.state || ""))}>{runStatusLabel(String(job.state || ""))}</Badge>
-                              <Badge variant="warn">{String(job.tier || "-").toUpperCase()}</Badge>
-                            </div>
-                            <span className="text-slate-400" title={utcDateLabel(job.queued_at || job.started_at || job.finished_at)}>
-                              {compactDate(job.queued_at || job.started_at || job.finished_at)}
-                            </span>
-                          </div>
-                          <div className="mt-1 grid gap-1 md:grid-cols-2 text-slate-300">
-                            <p>{job.market || "-"} / {job.symbol || "-"} / {job.timeframe || "-"}</p>
-                            <p>strategies: {job.strategy_count ?? "-"} Â· units: {job.estimated_trial_units ?? "-"}</p>
-                          </div>
-                          {job.cancel_reason ? <p className="mt-1 text-rose-300">Cancelado: {job.cancel_reason}</p> : null}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-400">
-                      Todavia no hay jobs Beast. Usa â€œEjecutar en Modo Bestiaâ€ para encolar batches grandes (si la policy lo permite).
-                    </p>
-                  )}
-                </div>
-              </div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Estado del batch seleccionado</p>
 
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
                 <p className="text-xs uppercase tracking-wide text-slate-400">Estado</p>
@@ -4203,7 +4053,7 @@ export default function BacktestsPage() {
               </div>
 
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                <p className="text-xs uppercase tracking-wide text-slate-400">Logs (Ãºltimos)</p>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Logs (últimos)</p>
                 <div className="mt-2 max-h-40 space-y-1 overflow-auto text-xs text-slate-300">
                   {(massStatus?.logs || []).slice(-12).map((line, idx) => (
                     <p key={`mass-log-${idx}`} className="break-words">{line}</p>
@@ -4219,7 +4069,7 @@ export default function BacktestsPage() {
                       <p key={item.name} className="text-slate-300">{item.name} ({item.size} bytes)</p>
                     ))
                   ) : (
-                    <p className="text-slate-400">Sin artifacts todavÃ­a.</p>
+                    <p className="text-slate-400">Sin artifacts todavía.</p>
                   )}
                 </div>
               </div>
@@ -4233,11 +4083,11 @@ export default function BacktestsPage() {
                   {massRunId ? (
                     <>
                       <span className="font-semibold text-slate-100">{massRunId}</span>
-                      {" Â· "}
+                      {" · "}
                       Mostrando {massSortedRows.length ? massPageStart + 1 : 0}-{massPageEnd} de {massSortedRows.length} variantes
                     </>
                   ) : (
-                    "SeleccionÃ¡ un Research Batch (BX-...) para ver resultados."
+                    "Seleccioná un Research Batch (BX-...) para ver resultados."
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -4258,13 +4108,13 @@ export default function BacktestsPage() {
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
                   <Button type="button" variant="outline" onClick={selectMassPageVariants} disabled={!massPageRows.length}>
-                    Seleccionar pÃ¡gina (variantes)
+                    Seleccionar página (variantes)
                   </Button>
                   <Button type="button" variant="outline" onClick={selectMassAllVariants} disabled={!massSortedRows.length}>
                     Seleccionar todas (filtradas)
                   </Button>
                   <Button type="button" variant="outline" onClick={clearMassVariantSelection} disabled={!massSelectedVariantIds.length}>
-                    Limpiar selecciÃ³n
+                    Limpiar selección
                   </Button>
                   <Badge variant="warn">{massSelectedVariantIds.length} variantes</Badge>
                   <Badge variant="warn">{massSelectedRowsWithCatalogRun.length} con run BT</Badge>
@@ -4291,7 +4141,7 @@ export default function BacktestsPage() {
                     variant="outline"
                     disabled={!massSortedRows.length}
                     onClick={() => selectMassTopVariants(massTopSelectMetric, massTopSelectN)}
-                    title="Selecciona automÃ¡ticamente el Top N por la mÃ©trica elegida"
+                    title="Selecciona automáticamente el Top N por la métrica elegida"
                   >
                     Seleccionar Top N
                   </Button>
@@ -4302,7 +4152,7 @@ export default function BacktestsPage() {
                     onClick={() => selectMassTopVariants(massTopSelectMetric, massTopSelectN, { compareInRuns: true })}
                     title="Selecciona Top N y los carga en el Comparador de Runs"
                   >
-                    Auto-shortlist â†’ Comparar
+                    Auto-shortlist · Comparar
                   </Button>
                   <label className="flex items-center gap-2 rounded border border-slate-800 bg-slate-950/40 px-2 py-1">
                     <input type="checkbox" checked={massAutoShortlistEnabled} onChange={(e) => setMassAutoShortlistEnabled(e.target.checked)} />
@@ -4333,7 +4183,7 @@ export default function BacktestsPage() {
                     variant="outline"
                     disabled={role !== "admin" || !massSelectedRowsWithCatalogRun.length}
                     onClick={() => void bulkMassSelectedVariantsAction("delete")}
-                    title="Borra runs BT del catÃ¡logo para estas variantes"
+                    title="Borra runs BT del catálogo para estas variantes"
                   >
                     Borrar seleccionadas
                   </Button>
@@ -4366,7 +4216,7 @@ export default function BacktestsPage() {
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("strategy")}>Estrategia{massSortLabel("strategy")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("score")}>Score{massSortLabel("score")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("trades")}>Trades OOS{massSortLabel("trades")}</button></TH>
-                    <TH>MÃ­n trades/sÃ­mbolo</TH>
+                    <TH>Mín trades/símbolo</TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("winrate")}>WinRate{massSortLabel("winrate")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("sharpe")}>Sharpe{massSortLabel("sharpe")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("calmar")}>Calmar{massSortLabel("calmar")}</button></TH>
@@ -4374,8 +4224,8 @@ export default function BacktestsPage() {
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("maxdd")}>MaxDD%{massSortLabel("maxdd")}</button></TH>
                     <TH><button type="button" className="text-left hover:text-cyan-200" onClick={() => toggleMassSort("costs")}>CostsRatio{massSortLabel("costs")}</button></TH>
                     <TH>Gates</TH>
-                    <TH>RegÃ­menes</TH>
-                    <TH>AcciÃ³n</TH>
+                    <TH>Regímenes</TH>
+                    <TH>Acción</TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -4446,7 +4296,7 @@ export default function BacktestsPage() {
               </Table>
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
                 <div className="text-slate-400">
-                  PÃ¡gina {massPageSafe}/{massTotalPages}
+                  Página {massPageSafe}/{massTotalPages}
                 </div>
                 <div className="flex items-center gap-1">
                   <Button
@@ -4512,17 +4362,17 @@ export default function BacktestsPage() {
                   <p className="text-xs font-mono text-slate-400">{massSelectedRow.variant_id}</p>
                   <div className="grid gap-2 grid-cols-2 text-xs">
                     <div className="rounded border border-slate-800 p-2">Score: {fmtNum(massSelectedRow.score)}</div>
-                    <div className="rounded border border-slate-800 p-2">Promotable: {massSelectedRow.promotable ? "SÃ­" : "No"}</div>
+                    <div className="rounded border border-slate-800 p-2">Promotable: {massSelectedRow.promotable ? "Sí" : "No"}</div>
                     <div className="rounded border border-slate-800 p-2">Trades OOS: {massSelectedRow.summary?.trade_count_oos ?? 0}</div>
                     <div className="rounded border border-slate-800 p-2">
-                      MÃƒÂ­n trades/sÃƒÂ­mbolo: {massMinTradesPerSymbol(massSelectedRow)}
+                      Mín trades/símbolo: {massMinTradesPerSymbol(massSelectedRow)}
                       {massMinTradesPerSymbolRequired(massSelectedRow) != null ? ` (min req ${massMinTradesPerSymbolRequired(massSelectedRow)})` : ""}
                     </div>
                     <div className="rounded border border-slate-800 p-2">Stability: {fmtNum(massSelectedRow.summary?.stability ?? 0)}</div>
                   </div>
                   {Object.keys(massTradeCountBySymbol(massSelectedRow)).length ? (
                     <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
-                      <p className="font-semibold text-slate-300">Trades OOS por sÃƒÂ­mbolo</p>
+                      <p className="font-semibold text-slate-300">Trades OOS por símbolo</p>
                       <p className="mt-1 text-slate-400">
                         {Object.entries(massTradeCountBySymbol(massSelectedRow))
                           .sort((a, b) => b[1] - a[1])
@@ -4532,7 +4382,7 @@ export default function BacktestsPage() {
                     </div>
                   ) : null}
                   <div className="space-y-1 text-xs">
-                    <p className="font-semibold text-slate-300">Por rÃ©gimen</p>
+                    <p className="font-semibold text-slate-300">Por régimen</p>
                     {Object.entries(massSelectedRow.regime_metrics || {}).map(([regime, vals]) => (
                       <div key={regime} className="rounded border border-slate-800 p-2">
                         <p className="font-semibold text-slate-200">{regime}</p>
@@ -4609,7 +4459,7 @@ export default function BacktestsPage() {
                                 : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                           }`}
                         >
-                          Kill s?mbolo: {massSelectedRow.microstructure.symbol_kill?.hard ? "HARD" : massSelectedRow.microstructure.symbol_kill?.soft ? "SOFT" : "Sin kill"}
+                          Kill símbolo: {massSelectedRow.microstructure.symbol_kill?.hard ? "HARD" : massSelectedRow.microstructure.symbol_kill?.soft ? "SOFT" : "Sin kill"}
                           {massSelectedRow.microstructure.symbol_kill?.reasons?.length
                             ? ` ? Razones: ${massSelectedRow.microstructure.symbol_kill.reasons.join(", ")}`
                             : ""}
@@ -4636,19 +4486,199 @@ export default function BacktestsPage() {
                   </div>
                 </>
               ) : (
-                <p className="text-sm text-slate-400">Sin selecciÃ³n.</p>
+                <p className="text-sm text-slate-400">Sin selección.</p>
               )}
             </div>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardTitle>Detalle de Corrida (Strategy Tester)</CardTitle>
+      <Card className="order-60">
+        <CardTitle>Beast / Infra</CardTitle>
+        <CardDescription>
+          Infra operativa del modo Bestia. Usa la misma configuracion base y el mismo preflight canonico de dataset ya resuelto por RTLOPS-89, pero queda separado de Research Batch para no mezclar scheduler con analisis.
+        </CardDescription>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              disabled={role !== "admin" || beastBusy || datasetPreflightLoading}
+              onClick={startBeastBatch}
+              title={
+                datasetPreflight && !datasetPreflight.can_run_beast
+                  ? buildPreflightBlockingMessage("beast")
+                  : beastEnabledState === "blocked"
+                    ? "Beast esta deshabilitado en beast_mode.yaml (enabled=false)."
+                    : beastEnabledState === "missing"
+                      ? "Este runtime no encontro config/policies para Beast. Corregi el root del deploy o el empaquetado."
+                      : "Encola el batch en Modo Bestia (scheduler local fase 1, con budget governor y limites de concurrencia)."
+              }
+            >
+              {beastBusy ? "Encolando Bestia..." : "Ejecutar en Modo Bestia"}
+            </Button>
+            {massRunId ? <Badge variant="warn">batch activo: {massRunId}</Badge> : null}
+          </div>
+          <p className="text-xs text-slate-400">
+            Este bloque reutiliza el mismo preflight de dataset real que Research Batch. Si falta dataset reproducible o Beast queda bloqueado por policy, el flujo sigue fail-closed.
+          </p>
+
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Modo Bestia (cola de jobs)</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  Scheduler local fase 1 (sin Celery/Redis todavia). Encola batches grandes con limites de concurrencia y budget diario.
+                </p>
+              </div>
+              <Badge
+                variant={
+                  beastEnabledState === "enabled"
+                    ? "success"
+                    : beastEnabledState === "blocked"
+                      ? "danger"
+                      : beastEnabledState === "missing"
+                        ? "warn"
+                        : "neutral"
+                }
+              >
+                {beastEnabledState === "enabled"
+                  ? "habilitado"
+                  : beastEnabledState === "blocked"
+                    ? "bloqueado por policy"
+                    : beastEnabledState === "missing"
+                      ? "runtime sin policy"
+                      : "cargando policy"}
+              </Badge>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">{beastPolicyHint}</p>
+            {beastStatus?.policy_source_root ? (
+              <p className="mt-1 text-[11px] text-slate-500">Policy root runtime: {beastStatus.policy_source_root}</p>
+            ) : null}
+            {frontendBackendHint ? (
+              <p className="mt-1 text-[11px] text-slate-500">Backend objetivo del frontend: {frontendBackendHint}</p>
+            ) : null}
+            {beastPanelError ? (
+              <div className="mt-2 rounded border border-rose-500/30 bg-rose-500/10 p-2 text-[11px] text-rose-200">
+                {beastPanelError}
+              </div>
+            ) : null}
+            {beastStatus?.policy_warnings?.length ? (
+              <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+                {beastStatus.policy_warnings.join(" | ")}
+              </div>
+            ) : null}
+
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div className="space-y-1">
+                <label className="text-xs uppercase tracking-wide text-slate-400">Tier Bestia</label>
+                <Select
+                  value={beastTier}
+                  onChange={(e) => setBeastTier(e.target.value as "hobby" | "pro")}
+                  disabled={role !== "admin" || beastBusy}
+                >
+                  <option value="hobby">Hobby</option>
+                  <option value="pro">Pro</option>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs uppercase tracking-wide text-slate-400">Acciones</label>
+                <div className="flex h-10 items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-2">
+                  <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={() => void refreshBeastPanel()}>
+                    Refrescar
+                  </Button>
+                  <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={beastResume}>
+                    Reanudar
+                  </Button>
+                  <Button type="button" variant="outline" className="h-7 px-2" disabled={role !== "admin" || beastBusy} onClick={beastStopAll}>
+                    Stop All
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
+                <p className="text-slate-400">Scheduler</p>
+                <div className="mt-1 space-y-1 text-slate-200">
+                  <p>Thread: {beastStatus?.scheduler?.thread_alive ? "activo" : "inactivo"}</p>
+                  <p>Cola: {beastStatus?.scheduler?.queue_depth ?? 0}</p>
+                  <p>Workers activos: {beastStatus?.scheduler?.workers_active ?? 0}/{beastStatus?.scheduler?.max_concurrent_jobs ?? "-"}</p>
+                  <p>Stop solicitado: {beastStatus?.scheduler?.stop_requested ? "Si" : "No"}</p>
+                </div>
+                <p className="mt-2 text-[11px] text-slate-400">
+                  {beastStatus?.scheduler?.rate_limit_enabled
+                    ? `Rate limit policy: ${beastStatus?.scheduler?.max_requests_per_minute ?? "-"} req/min (aplica a la planificacion; limiter por exchange completo pendiente).`
+                    : "Rate limit policy deshabilitada en policy snapshot."}
+                </p>
+              </div>
+
+              <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs">
+                <p className="text-slate-400">Budget governor</p>
+                <div className="mt-1 space-y-1 text-slate-200">
+                  <p>Tier: {beastStatus?.budget?.tier || beastTier}</p>
+                  <p>Cap diario: {beastStatus?.budget?.daily_cap ?? "-"}</p>
+                  <p>Stop al: {typeof beastStatus?.budget?.stop_at_budget_pct === "number" ? `${fmtNum(beastStatus.budget.stop_at_budget_pct)}%` : "-"}</p>
+                  <p>
+                    Uso: {beastStatus?.budget?.daily_jobs_started ?? 0}/{beastStatus?.budget?.daily_cap ?? "-"} jobs
+                    {typeof beastStatus?.budget?.usage_pct === "number" ? ` (${fmtNum(beastStatus.budget.usage_pct)}%)` : ""}
+                  </p>
+                  <p>
+                    Done/Fail: {beastStatus?.budget?.daily_jobs_completed ?? 0}/{beastStatus?.budget?.daily_jobs_failed ?? 0}
+                  </p>
+                </div>
+                {beastStatus?.requires_postgres ? (
+                  <p className="mt-2 text-[11px] text-amber-300">
+                    Policy marca Postgres como recomendado para Modo Bestia. Esta fase usa scheduler local con persistencia de estado JSON.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mt-3 rounded border border-slate-800 bg-slate-950/40 p-2">
+              <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                <p className="uppercase tracking-wide text-slate-400">Jobs recientes</p>
+                <Badge variant="warn">{beastJobs.length} visibles</Badge>
+              </div>
+              {beastJobs.length ? (
+                <div className="max-h-48 space-y-1 overflow-auto text-xs">
+                  {beastJobs.slice(0, 12).map((job) => (
+                    <div key={`beast-job-${job.run_id}`} className="rounded border border-slate-800 bg-slate-900/60 px-2 py-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-slate-200">{job.run_id}</span>
+                          <Badge variant={statusVariant(String(job.state || ""))}>{runStatusLabel(String(job.state || ""))}</Badge>
+                          <Badge variant="warn">{String(job.tier || "-").toUpperCase()}</Badge>
+                        </div>
+                        <span className="text-slate-400" title={utcDateLabel(job.queued_at || job.started_at || job.finished_at)}>
+                          {compactDate(job.queued_at || job.started_at || job.finished_at)}
+                        </span>
+                      </div>
+                      <div className="mt-1 grid gap-1 md:grid-cols-2 text-slate-300">
+                        <p>{job.market || "-"} / {job.symbol || "-"} / {job.timeframe || "-"}</p>
+                        <p>strategies: {job.strategy_count ?? "-"} | units: {job.estimated_trial_units ?? "-"}</p>
+                      </div>
+                      {job.cancel_reason ? <p className="mt-1 text-rose-300">Cancelado: {job.cancel_reason}</p> : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  Todavia no hay jobs Beast. Usa "Ejecutar en Modo Bestia" para encolar batches grandes (si la policy lo permite).
+                </p>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="order-80">
+        <CardTitle className="flex items-center gap-2">
+          Detalle de Corrida (Strategy Tester)
+          <Badge variant="neutral">secundario</Badge>
+        </CardTitle>
         <CardDescription>
           {focusRun
-            ? `${focusRun.id} Â· ${focusRun.strategy_id} Â· ${focusRun.symbol || focusRun.universe?.[0] || "-"} Â· ${focusRun.timeframe || "-"}`
-            : "Sin corridas disponibles."}
+            ? `${focusRun.id} · ${focusRun.strategy_id} · ${focusRun.symbol || focusRun.universe?.[0] || "-"} · ${focusRun.timeframe || "-"}`
+            : "Detalle puntual fuera del flujo principal de Quick / Runs / Research Batch."}
         </CardDescription>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
@@ -4678,7 +4708,7 @@ export default function BacktestsPage() {
           {!focusRun ? (
             <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-300">
               <p className="font-semibold text-slate-100">Todavia no hay una corrida para mostrar</p>
-              <p className="mt-1">Ejecuta un Quick Backtest o selecciona una corrida existente para ver su detalle por pestaÃ±as.</p>
+              <p className="mt-1">Ejecuta un Quick Backtest o selecciona una corrida existente para ver su detalle por pestañas.</p>
             </div>
           ) : null}
 
@@ -4687,10 +4717,10 @@ export default function BacktestsPage() {
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 md:col-span-4">
                 <p className="text-xs uppercase tracking-wide text-slate-400">Metadata y datos</p>
                 <p className="text-sm text-slate-200">
-                  {focusRun.market || "-"} / {focusRun.symbol || focusRun.universe?.[0] || "-"} @ {focusRun.timeframe || "-"} Â· fuente {focusRun.data_source || "-"}
+                  {focusRun.market || "-"} / {focusRun.symbol || focusRun.universe?.[0] || "-"} @ {focusRun.timeframe || "-"} · fuente {focusRun.data_source || "-"}
                 </p>
                 <p className="text-xs text-slate-400">
-                  Rango: {focusRun.period.start} â†’ {focusRun.period.end} Â· Commit: <span className="font-mono">{shortHash(focusRun.git_commit, 12)}</span>
+                  Rango: {focusRun.period.start} · {focusRun.period.end} · Commit: <span className="font-mono">{shortHash(focusRun.git_commit, 12)}</span>
                 </p>
                 <p className="text-xs font-mono text-slate-400 break-all">Dataset hash: {focusRun.dataset_hash || "-"}</p>
               </div>
@@ -4718,10 +4748,10 @@ export default function BacktestsPage() {
                   {fmtNum(focusRun.costs_breakdown?.rollover_total ?? 0)}
                 </p>
                 <p className="text-xs text-slate-400">
-                  % sobre PnL bruto: fees {fmtPct(focusRun.costs_breakdown?.fees_pct_of_gross_pnl ?? 0)} Â· spread{" "}
-                  {fmtPct(focusRun.costs_breakdown?.spread_pct_of_gross_pnl ?? 0)} Â· slippage{" "}
-                  {fmtPct(focusRun.costs_breakdown?.slippage_pct_of_gross_pnl ?? 0)} Â· funding{" "}
-                  {fmtPct(focusRun.costs_breakdown?.funding_pct_of_gross_pnl ?? 0)} Â· rollover{" "}
+                  % sobre PnL bruto: fees {fmtPct(focusRun.costs_breakdown?.fees_pct_of_gross_pnl ?? 0)} · spread{" "}
+                  {fmtPct(focusRun.costs_breakdown?.spread_pct_of_gross_pnl ?? 0)} · slippage{" "}
+                  {fmtPct(focusRun.costs_breakdown?.slippage_pct_of_gross_pnl ?? 0)} · funding{" "}
+                  {fmtPct(focusRun.costs_breakdown?.funding_pct_of_gross_pnl ?? 0)} · rollover{" "}
                   {fmtPct(focusRun.costs_breakdown?.rollover_pct_of_gross_pnl ?? 0)}
                 </p>
               </div>
@@ -4911,7 +4941,7 @@ export default function BacktestsPage() {
           {focusRun && focusRunTab === "trades_list" ? (
             <div className="space-y-3">
               <p className="text-xs uppercase tracking-wide text-slate-400">
-                Listado de trades ({focusTrades.length}) Â· se muestran hasta 200 para mantener la UI fluida
+                Listado de trades ({focusTrades.length}) · se muestran hasta 200 para mantener la UI fluida
               </p>
               {focusTrades.length ? (
                 <div className="max-h-[32rem] overflow-auto rounded-lg border border-slate-800">
@@ -4953,7 +4983,7 @@ export default function BacktestsPage() {
               ) : (
                 <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-300">
                   <p className="font-semibold text-slate-100">Todavia no hay listado de trades</p>
-                  <p className="mt-1">Algunas corridas no guardan trades completos. Ejecuta una corrida con export de trades para poblar esta pestaÃ±a.</p>
+                  <p className="mt-1">Algunas corridas no guardan trades completos. Ejecuta una corrida con export de trades para poblar esta pestaña.</p>
                 </div>
               )}
             </div>

@@ -2,6 +2,34 @@
 
 Fecha: 2026-04-25
 
+## Siguiente paso exacto despues de RTLOPS-90 - 2026-04-25
+- [x] Reordenar la surface principal de `Backtests` sin refactor masivo:
+  - `Quick` queda separado del research masivo;
+  - `Backtests / Runs` y `Comparador Profesional` quedan como flujo principal de catalogo + analisis;
+  - `Research Batch` queda separado de `Beast / Infra`;
+  - `Legacy` queda al final y fuera del flujo principal.
+- [x] Bajar de jerarquia las surfaces secundarias sin ocultar evidencia:
+  - `Research Funnel y Trial Ledger` queda como auditoria secundaria;
+  - `Detalle de Corrida (Strategy Tester)` queda marcado como secundario;
+  - `Quick Backtest Legacy (Deprecado)` sigue disponible, pero ya no compite como surface principal.
+- [x] Reusar backend ya resuelto por `RTLOPS-89` sin reabrirlo:
+  - el preflight canonico de dataset/prereqs sigue siendo la verdad de `Research Batch` y `Beast`;
+  - no se agregan endpoints nuevos ni se cambia la logica fail-closed del backend.
+- [x] Revalidacion minima real del bloque:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- [x] Mantener el bloque chico y profesional:
+  - sin refactor transversal;
+  - sin backend nuevo;
+  - sin reabrir `RTLOPS-89`;
+  - sin redisenio cosmetico grande.
+- [x] Siguiente paso exacto recomendado:
+  - revalidar con repo + `docs/truth` + Linear si `RTLOPS-87` ya queda lista para cierre administrativo tras completar sus tres bloques;
+  - resultado de esa revalidacion:
+    - `RTLOPS-87` ya queda cerrada administrativamente;
+    - no corresponde abrir otro bloque de producto en `Backtests` por defecto;
+    - cualquier siguiente paso requiere un gap nuevo real y acotado.
+
 ## Siguiente paso exacto despues de RTLOPS-89 - 2026-04-25
 - [x] Cerrar el contrato canonico minimo de dataset/prerequisitos para Batch/Beast:
   - `POST /api/v1/research/dataset-preflight` ya existe como surface minima del backend;
