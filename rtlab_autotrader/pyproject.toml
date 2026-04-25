@@ -35,6 +35,7 @@ trading = [
 
 [project.scripts]
 rtbot = "rtlab_core.cli.main:app"
+linear-export = "rtlab_core.linear_audit_export.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
