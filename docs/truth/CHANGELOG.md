@@ -34,7 +34,8 @@
   - `Research Funnel` y `Strategy Tester` siguen existiendo, pero en rol secundario;
   - no se reabre `RTLOPS-89`.
 - Siguiente paso exacto:
-  - revalidar con repo + `docs/truth` + Linear si el frente `RTLOPS-87` ya queda listo para cierre administrativo;
+  - la revalidacion con repo + `docs/truth` + Linear ya deja a `RTLOPS-87` cerrada administrativamente;
+  - no corresponde abrir otro bloque de producto en `Backtests` por defecto;
   - si queda un gap nuevo real, abrir solo un microbloque UX chico sobre surfaces secundarias.
 
 ### RTLOPS-89 - preflight canonico de dataset/prerequisitos para Batch/Beast

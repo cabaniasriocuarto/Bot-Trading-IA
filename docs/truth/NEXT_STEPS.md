@@ -23,14 +23,12 @@ Fecha: 2026-04-25
   - sin backend nuevo;
   - sin reabrir `RTLOPS-89`;
   - sin redisenio cosmetico grande.
-- [ ] Siguiente paso exacto recomendado:
+- [x] Siguiente paso exacto recomendado:
   - revalidar con repo + `docs/truth` + Linear si `RTLOPS-87` ya queda lista para cierre administrativo tras completar sus tres bloques;
-  - si aparece un gap nuevo real, abrir solo un microbloque chico sobre surfaces secundarias (`Research Funnel` / `Detalle de Corrida`) sin reabrir backend ni hacer refactor masivo;
-  - mantener fuera de ese siguiente paso:
-    - backend nuevo de dataset/prereqs
-    - API grande nueva
-    - redisenio integral de `Backtests`
-    - refactor transversal
+  - resultado de esa revalidacion:
+    - `RTLOPS-87` ya queda cerrada administrativamente;
+    - no corresponde abrir otro bloque de producto en `Backtests` por defecto;
+    - cualquier siguiente paso requiere un gap nuevo real y acotado.
 
 ## Siguiente paso exacto despues de RTLOPS-89 - 2026-04-25
 - [x] Cerrar el contrato canonico minimo de dataset/prerequisitos para Batch/Beast:

@@ -61,10 +61,8 @@ Fecha de actualizacion: 2026-04-25
   - no abre una UI nueva fuera de la pagina `Backtests`.
 - Siguiente bloque exacto recomendado:
   - no corresponde abrir otro refactor UX grande a ciegas;
-  - corresponde revalidar con repo + `docs/truth` + Linear si `RTLOPS-87` ya queda lista para cierre administrativo tras completar:
-    - auditoria funcional
-    - dataset/prereqs canonicos
-    - reordenamiento UX minimo;
+  - la revalidacion con repo + `docs/truth` + Linear ya deja a `RTLOPS-87` absorbida y cerrada administrativamente;
+  - no corresponde abrir otro bloque de producto en `Backtests` por defecto;
   - si aparece un gap nuevo real, abrir solo un microbloque chico sobre surfaces secundarias y no reabrir backend/prereqs.
 
 ## RTLOPS-89 - preflight canonico de dataset/prerequisitos para Batch/Beast - 2026-04-25
