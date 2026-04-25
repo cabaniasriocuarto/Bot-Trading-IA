@@ -2,6 +2,41 @@
 
 ## 2026-04-25
 
+### RTLOPS-90 - reordenamiento UX Backtests sin refactor masivo
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - reordena la surface principal de `Backtests` por modos reales de trabajo;
+    - deja arriba:
+      - `Quick`
+      - `Backtests / Runs`
+      - `Comparador Profesional`
+      - `Research Batch`
+      - `Beast / Infra`;
+    - baja de jerarquia:
+      - `Research Funnel y Trial Ledger`
+      - `Detalle de Corrida (Strategy Tester)`
+      - `Quick Backtest Legacy (Deprecado)`;
+    - separa `Beast / Infra` del bloque principal de `Research Batch`;
+    - mueve el disparador de `Modo Bestia` al bloque propio de infra;
+    - mantiene la copy en espanol y evita vender legacy/auditoria como flujo principal.
+- Dependencias backend reusadas:
+  - el frontend sigue apoyado en el preflight canonico de `RTLOPS-89`;
+  - no se tocan:
+    - `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`
+    - `rtlab_autotrader/rtlab_core/web/app.py`
+    - contratos de dataset/prereqs ya cerrados.
+- Tests corridos:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no hay refactor masivo;
+  - no hay backend nuevo;
+  - `Research Funnel` y `Strategy Tester` siguen existiendo, pero en rol secundario;
+  - no se reabre `RTLOPS-89`.
+- Siguiente paso exacto:
+  - revalidar con repo + `docs/truth` + Linear si el frente `RTLOPS-87` ya queda listo para cierre administrativo;
+  - si queda un gap nuevo real, abrir solo un microbloque UX chico sobre surfaces secundarias.
+
 ### RTLOPS-89 - preflight canonico de dataset/prerequisitos para Batch/Beast
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`
