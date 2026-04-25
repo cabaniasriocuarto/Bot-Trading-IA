@@ -1,5 +1,43 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-25
+
+### RTLOPS-89 - preflight canonico de dataset/prerequisitos para Batch/Beast
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`
+    - agrega `MassBacktestCoordinator.dataset_preflight(...)` como contrato canonico minimo y auditable;
+    - reutiliza `build_data_provider(...)`, manifiestos reales y `_preflight_dataset_ready(...)` sin duplicar dominio;
+    - canoniza `market_family`, `dataset_status`, `dataset_source_type`, `can_run_batch`, `can_run_beast`, `blocking_reason` y listas `eligible/ineligible`;
+    - mantiene fail-closed el start de Batch/Beast sobre la misma evaluacion;
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega `POST /api/v1/research/dataset-preflight` como surface minima reutilizable por frontend;
+    - evita que `Backtests` tenga que deducir readiness desde heuristicas locales.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - consume el preflight canonico;
+    - reemplaza heuristicas locales de dataset por `dataset_status`, `dataset_source_type`, `can_run_batch`, `can_run_beast` y `blocking_reason`;
+    - muestra bootstrap requerido, simbolos elegibles/no elegibles y bloqueo por `synthetic` de forma explicita;
+    - mantiene la misma surface general sin refactor masivo ni redisenio completo.
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_live_ready.py`
+    - agrega cobertura para:
+      - preflight `ready`
+      - preflight `missing`
+      - preflight `synthetic_blocked`
+      - payload canonico minimo del endpoint.
+- Tests corridos:
+  - `uv run --project rtlab_autotrader python -m py_compile rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "dataset_preflight or research_mass_backtest_start_rejects_missing_dataset or research_beast_start_rejects_missing_dataset or research_beast_endpoints_smoke" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no se abre `RTLOPS-90`;
+  - no se reordena todavia la UX completa de `Backtests`;
+  - no se abre una API transversal nueva;
+  - no se agregan dominios laterales fuera de dataset prereqs.
+- Siguiente paso exacto:
+  - `RTLOPS-90 - Reordenamiento UX Backtests sin refactor masivo`.
+
 ## 2026-04-24
 
 ### RTLOPS-28 - cierre administrativo final sin split

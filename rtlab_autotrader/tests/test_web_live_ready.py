@@ -6472,6 +6472,184 @@ def test_research_mass_backtest_start_rejects_missing_dataset(tmp_path: Path, mo
   assert "no hay dataset real disponible" in str((start.json() or {}).get("detail") or "").lower()
 
 
+def test_research_dataset_preflight_ready_payload(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  _seed_local_backtest_dataset(tmp_path / "user_data", "crypto", "BTCUSDT", source="binance_public")
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": False,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": False,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": False,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+
+  preflight = client.post(
+    "/api/v1/research/dataset-preflight",
+    headers=headers,
+    json={
+      "mode": "batch",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "data_mode": "dataset",
+    },
+  )
+  assert preflight.status_code == 200, preflight.text
+  payload = preflight.json()
+  required_keys = {
+    "mode",
+    "dataset_ready",
+    "dataset_status",
+    "dataset_source_type",
+    "dataset_root",
+    "bootstrap_required",
+    "bootstrap_command",
+    "market_family",
+    "symbol",
+    "symbols",
+    "timeframe",
+    "date_range",
+    "can_run_batch",
+    "can_run_beast",
+    "blocking_reason",
+    "missing_reasons",
+    "eligible_symbols",
+    "ineligible_symbols",
+  }
+  assert required_keys.issubset(payload.keys())
+  assert payload["mode"] == "batch"
+  assert payload["dataset_ready"] is True
+  assert payload["dataset_status"] == "ready"
+  assert payload["dataset_source_type"] == "real"
+  assert str(payload["dataset_root"]).replace("\\", "/").endswith("/user_data/data")
+  assert payload["market_family"] == "usdm"
+  assert payload["symbol"] == "BTCUSDT"
+  assert payload["symbols"] == ["BTCUSDT"]
+  assert payload["timeframe"] == "5m"
+  assert payload["date_range"] == {"start": "2024-01-01", "end": "2024-03-31"}
+  assert payload["bootstrap_required"] is False
+  assert payload["can_run_batch"] is True
+  assert payload["can_run_beast"] is True
+  assert payload["blocking_reason"] == ""
+  assert payload["missing_reasons"] == []
+  assert payload["eligible_symbols"] == ["BTCUSDT"]
+  assert payload["ineligible_symbols"] == []
+
+
+def test_research_dataset_preflight_missing_blocks_cleanly(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": False,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": False,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": False,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+
+  preflight = client.post(
+    "/api/v1/research/dataset-preflight",
+    headers=headers,
+    json={
+      "mode": "batch",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "auto",
+      "data_mode": "dataset",
+    },
+  )
+  assert preflight.status_code == 200, preflight.text
+  payload = preflight.json()
+  assert payload["dataset_ready"] is False
+  assert payload["dataset_status"] == "missing"
+  assert payload["dataset_source_type"] == "missing"
+  assert payload["bootstrap_required"] is True
+  assert payload["can_run_batch"] is False
+  assert payload["can_run_beast"] is False
+  assert "no hay dataset real disponible" in str(payload["blocking_reason"] or "").lower()
+  assert "dataset_not_ready" in (payload["missing_reasons"] or [])
+  assert payload["eligible_symbols"] == []
+  assert payload["ineligible_symbols"] == ["BTCUSDT"]
+
+
+def test_research_dataset_preflight_blocks_synthetic_even_with_real_dataset(tmp_path: Path, monkeypatch) -> None:
+  module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  _seed_local_backtest_dataset(tmp_path / "user_data", "crypto", "BTCUSDT", source="binance_public")
+  monkeypatch.setattr(
+    module.mass_backtest_coordinator,
+    "_beast_policy",
+    lambda cfg=None: {
+      "enabled": True,
+      "requires_postgres": False,
+      "max_trials_per_batch": 5000,
+      "max_concurrent_jobs": 2,
+      "rate_limit_enabled": False,
+      "max_requests_per_minute": 1200,
+      "budget_governor_enabled": False,
+      "daily_job_cap_hobby": 200,
+      "daily_job_cap_pro": 800,
+      "stop_at_budget_pct": 80,
+    },
+  )
+
+  preflight = client.post(
+    "/api/v1/research/dataset-preflight",
+    headers=headers,
+    json={
+      "mode": "beast",
+      "market": "crypto",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "start": "2024-01-01",
+      "end": "2024-03-31",
+      "dataset_source": "synthetic",
+      "data_mode": "dataset",
+    },
+  )
+  assert preflight.status_code == 200, preflight.text
+  payload = preflight.json()
+  assert payload["mode"] == "beast"
+  assert payload["dataset_ready"] is False
+  assert payload["dataset_status"] == "synthetic_blocked"
+  assert payload["dataset_source_type"] == "synthetic"
+  assert payload["bootstrap_required"] is False
+  assert payload["can_run_batch"] is False
+  assert payload["can_run_beast"] is False
+  assert "solo acepta datos reales" in str(payload["blocking_reason"] or "").lower()
+  assert "synthetic_dataset_source_not_allowed" in (payload["missing_reasons"] or [])
+  assert payload["eligible_symbols"] == []
+  assert payload["ineligible_symbols"] == ["BTCUSDT"]
+
+
 def test_research_mass_backtest_start_forwards_bot_id(tmp_path: Path, monkeypatch) -> None:
   module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")

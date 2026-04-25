@@ -2277,8 +2277,67 @@ class MassBacktestCoordinator:
     def _run_id(self) -> str:
         return self.engine.backtest_catalog.next_formatted_id("BX")
 
-    def _preflight_dataset_ready(self, *, cfg: dict[str, Any], historical_runs: list[dict[str, Any]]) -> dict[str, Any]:
-        preview_cfg = copy.deepcopy(cfg)
+    @staticmethod
+    def _preflight_mode_label(mode: str) -> str:
+        return "Modo Bestia" if str(mode or "").strip().lower() == "beast" else "Research Batch"
+
+    @staticmethod
+    def _preflight_missing_dataset_message(*, market: str, symbol: str, timeframe: str, data_mode: str, hints: list[str]) -> str:
+        hint_text = " | ".join([str(x) for x in hints if str(x).strip()]) if hints else "Verificá dataset_source, symbol, timeframe y rango."
+        return f"No hay dataset real disponible para {market}/{symbol}/{timeframe} en modo {data_mode}. {hint_text}"
+
+    @staticmethod
+    def _preflight_market_family(*, market: str, cfg: dict[str, Any], dataset_info: Any) -> str:
+        manifest = dataset_info.manifest if isinstance(getattr(dataset_info, "manifest", None), dict) else {}
+        catalog_metadata = manifest.get("catalog_metadata") if isinstance(manifest.get("catalog_metadata"), dict) else {}
+        candidates = [
+            cfg.get("market_family"),
+            manifest.get("market_family"),
+            catalog_metadata.get("market_family"),
+        ]
+        for candidate in candidates:
+            text = str(candidate or "").strip().lower()
+            if text:
+                return text
+        normalized_market = str(market or "").strip().lower()
+        if normalized_market == "crypto":
+            return "usdm"
+        if normalized_market in {"forex", "equities"}:
+            return normalized_market
+        return "unknown"
+
+    @staticmethod
+    def _preflight_bootstrap_command(*, market: str, market_family: str, symbol: str, start: str, end: str) -> str:
+        start_month = str(start or "")[:7]
+        end_month = str(end or "")[:7]
+        normalized_market = str(market or "").strip().lower()
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return ""
+        if normalized_market == "crypto":
+            effective_family = market_family if market_family in {"usdm", "coinm"} else "usdm"
+            if not start_month or not end_month:
+                return ""
+            return (
+                "python rtlab_autotrader/scripts/bootstrap_binance_futures_public.py "
+                f"--market-family {effective_family} --symbols {normalized_symbol} "
+                f"--start-month {start_month} --end-month {end_month} "
+                "--resample-timeframes 5m 15m 1h 4h 1d"
+            )
+        if normalized_market == "forex":
+            return (
+                "python rtlab_autotrader/scripts/download_forex_dukascopy.py "
+                f"--pairs {normalized_symbol} --start {start} --end {end}"
+            )
+        if normalized_market == "equities":
+            return (
+                "python rtlab_autotrader/scripts/download_equities_alpaca.py "
+                f"--symbols {normalized_symbol} --start {start} --end {end}"
+            )
+        return ""
+
+    def dataset_preflight(self, *, config: dict[str, Any], historical_runs: list[dict[str, Any]], mode: str = "batch") -> dict[str, Any]:
+        preview_cfg = copy.deepcopy(config)
         universe = self.engine.build_universe(config=preview_cfg, historical_runs=historical_runs)
         preview_cfg["resolved_universe"] = universe
         market = str(preview_cfg.get("market") or "crypto")
@@ -2295,25 +2354,117 @@ class MassBacktestCoordinator:
             start=start,
             end=end,
         )
-        if not bool(getattr(dataset_info, "ready", False)):
-            hints = [str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()]
-            hint_text = " | ".join(hints) if hints else "Verificá dataset_source, symbol, timeframe y rango."
-            raise ValueError(
-                f"No hay dataset real disponible para {market}/{symbol}/{timeframe} en modo {data_mode}. {hint_text}"
+        normalized_mode = str(mode or "batch").strip().lower()
+        synthetic_requested = str(preview_cfg.get("dataset_source") or "auto").strip().lower() in {
+            "synthetic",
+            "synthetic_seeded",
+            "synthetic_fallback",
+        }
+        dataset_ready = bool(getattr(dataset_info, "ready", False))
+        warnings = [str(x) for x in (getattr(dataset_info, "warnings", None) or []) if str(x).strip()]
+        hints = [str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()]
+        market_family = self._preflight_market_family(market=market, cfg=preview_cfg, dataset_info=dataset_info)
+        bootstrap_command = self._preflight_bootstrap_command(
+            market=market,
+            market_family=market_family,
+            symbol=symbol,
+            start=start,
+            end=end,
+        )
+        batch_blocking_reason = ""
+        beast_blocking_reason = ""
+        dataset_status = "unknown"
+        dataset_source_type = "unknown"
+        missing_reasons: list[str] = []
+        if synthetic_requested:
+            dataset_ready = False
+            dataset_status = "synthetic_blocked"
+            dataset_source_type = "synthetic"
+            batch_blocking_reason = "Research Batch solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'."
+            beast_blocking_reason = "Modo Bestia solo acepta datos reales. Elegí dataset_source='auto' o 'dataset'."
+            missing_reasons = ["synthetic_dataset_source_not_allowed"]
+        elif data_mode != "dataset":
+            dataset_ready = False
+            dataset_status = "invalid"
+            dataset_source_type = "unknown"
+            batch_blocking_reason = "Research Batch requiere data_mode='dataset' con dataset real reproducible."
+            beast_blocking_reason = "Modo Bestia requiere data_mode='dataset' con dataset real reproducible."
+            missing_reasons = list(dict.fromkeys(["data_mode_not_dataset", *warnings, *hints]))
+        elif dataset_ready:
+            dataset_status = "ready"
+            dataset_source_type = "real"
+        else:
+            dataset_status = "missing"
+            dataset_source_type = "missing"
+            missing_reason = self._preflight_missing_dataset_message(
+                market=market,
+                symbol=symbol,
+                timeframe=timeframe,
+                data_mode=data_mode,
+                hints=hints,
             )
-        updates = {
+            batch_blocking_reason = missing_reason
+            beast_blocking_reason = missing_reason
+            missing_reasons = list(dict.fromkeys(["dataset_not_ready", *warnings, *hints]))
+        beast_policy = self._beast_policy(preview_cfg)
+        if not batch_blocking_reason and not beast_policy.get("enabled"):
+            beast_blocking_reason = "Modo Bestia deshabilitado o sin policy activa."
+        manifest = dataset_info.manifest if isinstance(getattr(dataset_info, "manifest", None), dict) else {}
+        dataset_manifest_path = str(manifest.get("manifest_path") or "")
+        blocking_reason = beast_blocking_reason if normalized_mode == "beast" else batch_blocking_reason
+        dataset_root = str(self.engine.catalog.data_root)
+        resolved_symbol = symbol or None
+        symbols = [resolved_symbol] if resolved_symbol else []
+        eligible_symbols = symbols if dataset_ready else []
+        ineligible_symbols = [] if dataset_ready else symbols
+        preflight = {
+            "mode": "beast" if normalized_mode == "beast" else "batch",
+            "dataset_ready": dataset_ready,
+            "dataset_status": dataset_status,
+            "dataset_source_type": dataset_source_type,
+            "dataset_root": dataset_root,
+            "bootstrap_required": bool(not dataset_ready and dataset_status != "synthetic_blocked" and bootstrap_command),
+            "bootstrap_command": bootstrap_command,
+            "market_family": market_family,
+            "symbol": resolved_symbol,
+            "symbols": symbols,
+            "timeframe": timeframe or None,
+            "date_range": {"start": start, "end": end} if start and end else None,
+            "can_run_batch": bool(dataset_ready),
+            "can_run_beast": bool(dataset_ready and beast_policy.get("enabled")),
+            "blocking_reason": blocking_reason,
+            "missing_reasons": missing_reasons,
+            "eligible_symbols": eligible_symbols,
+            "ineligible_symbols": ineligible_symbols,
+            "batch_blocking_reason": batch_blocking_reason,
+            "beast_blocking_reason": beast_blocking_reason,
+            "dataset_hash": str(getattr(dataset_info, "dataset_hash", "") or ""),
+            "dataset_manifest_path": dataset_manifest_path,
+            "warnings": warnings,
+            "hints": hints,
             "resolved_universe": universe,
             "data_provider": dataset_info.to_dict(),
         }
-        if not str(preview_cfg.get("symbol") or "").strip():
-            updates["symbol"] = symbol
+        return preflight
+
+    def _preflight_dataset_ready(self, *, cfg: dict[str, Any], historical_runs: list[dict[str, Any]], mode: str = "batch") -> dict[str, Any]:
+        preview_cfg = copy.deepcopy(cfg)
+        preflight = self.dataset_preflight(config=preview_cfg, historical_runs=historical_runs, mode=mode)
+        if not bool(preflight.get("dataset_ready")):
+            raise ValueError(str(preflight.get("blocking_reason") or "No hay dataset real disponible para este contexto."))
+        updates = {
+            "resolved_universe": copy.deepcopy(preflight.get("resolved_universe") or []),
+            "data_provider": copy.deepcopy(preflight.get("data_provider") or {}),
+        }
+        if not str(preview_cfg.get("symbol") or "").strip() and str(preflight.get("symbol") or "").strip():
+            updates["symbol"] = str(preflight.get("symbol") or "").strip()
         return updates
 
     def start_async(self, *, config: dict[str, Any], strategies: list[dict[str, Any]], historical_runs: list[dict[str, Any]], backtest_callback: Callable[[dict[str, Any], FoldWindow, dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
         run_id = self._run_id()
         cfg = copy.deepcopy(config)
         cfg["run_id"] = run_id
-        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs))
+        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs, mode="batch"))
         self.engine._write_status(run_id, state="QUEUED", config=cfg, progress={"pct": 0, "total_tasks": 0, "completed_tasks": 0}, logs=["Job encolado."])
         with self._lock:
             self._spawn_job_thread_locked(
@@ -2346,7 +2497,7 @@ class MassBacktestCoordinator:
         est_trials = self._beast_estimated_trial_units(cfg=cfg, strategies=strategies)
         if est_trials > _i(policy.get("max_trials_per_batch"), 5000):
             raise ValueError(f"Batch excede max_trials_per_batch ({est_trials} > {_i(policy.get('max_trials_per_batch'), 5000)}).")
-        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs))
+        cfg.update(self._preflight_dataset_ready(cfg=cfg, historical_runs=historical_runs, mode="beast"))
 
         with self._lock:
             self._beast_roll_day_if_needed_locked()

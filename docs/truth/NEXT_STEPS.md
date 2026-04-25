@@ -1,6 +1,49 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-24
+Fecha: 2026-04-25
+
+## Siguiente paso exacto despues de RTLOPS-89 - 2026-04-25
+- [x] Cerrar el contrato canonico minimo de dataset/prerequisitos para Batch/Beast:
+  - `POST /api/v1/research/dataset-preflight` ya existe como surface minima del backend;
+  - el contrato ya expone:
+    - `dataset_ready`
+    - `dataset_status`
+    - `dataset_source_type`
+    - `market_family`
+    - `symbol` / `symbols`
+    - `timeframe`
+    - `bootstrap_required`
+    - `bootstrap_command`
+    - `can_run_batch`
+    - `can_run_beast`
+    - `blocking_reason`
+    - `eligible_symbols`
+    - `ineligible_symbols`;
+  - `start_async(...)` y `start_beast_async(...)` ya reutilizan la misma verdad canonica.
+- [x] Cerrar el comportamiento fail-closed real del bloque:
+  - dataset faltante -> bloqueo limpio con `dataset_status=missing`;
+  - `dataset_source=synthetic` -> bloqueo limpio con `dataset_status=synthetic_blocked`;
+  - `Backtests` ya consume el preflight canonico y deja de deducir readiness desde heuristicas locales.
+- [x] Revalidacion minima real del bloque:
+  - `uv run --project rtlab_autotrader python -m py_compile rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "dataset_preflight or research_mass_backtest_start_rejects_missing_dataset or research_beast_start_rejects_missing_dataset or research_beast_endpoints_smoke" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- [x] Mantener el bloque chico y profesional:
+  - sin refactor masivo;
+  - sin redisenio total de `Backtests`;
+  - sin abrir `RTLOPS-90` dentro de este bloque;
+  - sin tocar dominios no relacionados.
+- [ ] Siguiente paso exacto recomendado:
+  - abrir `RTLOPS-90 - Reordenamiento UX Backtests sin refactor masivo`;
+  - resolver ahi solo:
+    - reordenamiento y claridad operatoria de `Backtests` sobre el contrato ya canonico de preflight;
+    - limpieza UX minima del bloque `Research Batch / Beast` sin reabrir backend salvo evidencia nueva;
+  - mantener fuera de `RTLOPS-90`:
+    - backend nuevo de dataset prereqs
+    - refactor transversal
+    - API grande nueva
+    - dominios laterales fuera de Backtests UX
 
 ## Siguiente paso exacto despues del cierre administrativo de RTLOPS-28 - 2026-04-24
 - [x] Revalidar repo + `docs/truth` + Linear:

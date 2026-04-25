@@ -766,6 +766,11 @@ class ResearchBeastStartBody(ResearchMassBacktestStartBody):
     tier: Literal["hobby", "pro"] = "hobby"
 
 
+class ResearchDatasetPreflightBody(ResearchMassBacktestStartBody):
+    mode: Literal["batch", "beast"] = "batch"
+    market_family: str | None = None
+
+
 class ResearchBeastStopBody(BaseModel):
     reason: str | None = None
 
@@ -16324,6 +16329,17 @@ def create_app() -> FastAPI:
             payload={"config": cfg, "no_auto_live": True},
         )
         return started
+
+    @app.post("/api/v1/research/dataset-preflight")
+    def research_dataset_preflight(body: ResearchDatasetPreflightBody, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        cfg = body.model_dump()
+        cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
+        cfg["execution_mode"] = "beast" if str(body.mode or "batch").strip().lower() == "beast" else "research"
+        return mass_backtest_coordinator.dataset_preflight(
+            config=cfg,
+            historical_runs=store.load_runs(),
+            mode=body.mode,
+        )
 
     @app.post("/api/v1/batches")
     def create_research_batch(body: BatchCreateBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
