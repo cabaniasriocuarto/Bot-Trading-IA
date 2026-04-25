@@ -52,31 +52,31 @@ type RunForm = {
   validation_mode: "walk-forward" | "purged-cv" | "cpcv";
 };
 
-type DataStatusEntry = {
-  market: string;
-  symbol: string;
-  timeframe: string;
-  source?: string;
-  start?: string;
-  end?: string;
+type ResearchDatasetPreflightResponse = {
+  mode: "batch" | "beast";
+  dataset_ready: boolean;
+  dataset_status: "ready" | "missing" | "synthetic_blocked" | "invalid" | "unknown";
+  dataset_source_type: "real" | "synthetic" | "missing" | "unknown";
+  dataset_root: string;
+  bootstrap_required: boolean;
+  bootstrap_command: string;
+  market_family: string;
+  symbol: string | null;
+  symbols: string[];
+  timeframe: string | null;
+  date_range: { start: string; end: string } | null;
+  can_run_batch: boolean;
+  can_run_beast: boolean;
+  blocking_reason: string;
+  missing_reasons: string[];
+  eligible_symbols: string[];
+  ineligible_symbols: string[];
+  batch_blocking_reason?: string;
+  beast_blocking_reason?: string;
   dataset_hash?: string;
-  processed_path?: string | null;
-  manifest_path?: string;
-};
-
-type DataStatusMissing = {
-  market: string;
-  symbol: string;
-  timeframe: string;
-  hint?: string;
-};
-
-type DataStatusResponse = {
-  data_root: string;
-  available_count: number;
-  available: DataStatusEntry[];
-  missing_count: number;
-  missing: DataStatusMissing[];
+  dataset_manifest_path?: string;
+  warnings?: string[];
+  hints?: string[];
 };
 
 type RunsListFilters = {
@@ -630,9 +630,9 @@ export default function BacktestsPage() {
     use_orderflow_data: true,
   });
   const [focusRunTab, setFocusRunTab] = useState<FocusRunTab>("overview");
-  const [dataStatus, setDataStatus] = useState<DataStatusResponse | null>(null);
-  const [dataStatusLoading, setDataStatusLoading] = useState(false);
-  const [dataStatusError, setDataStatusError] = useState("");
+  const [datasetPreflight, setDatasetPreflight] = useState<ResearchDatasetPreflightResponse | null>(null);
+  const [datasetPreflightLoading, setDatasetPreflightLoading] = useState(false);
+  const [datasetPreflightError, setDatasetPreflightError] = useState("");
   const [researchFunnel, setResearchFunnel] = useState<ResearchFunnelResponse | null>(null);
   const [trialLedger, setTrialLedger] = useState<ResearchTrialLedgerResponse | null>(null);
   const [researchLoading, setResearchLoading] = useState(false);
@@ -654,20 +654,14 @@ export default function BacktestsPage() {
   });
 
   const refresh = useCallback(async () => {
-    setDataStatusLoading(true);
-    setDataStatusError("");
-    const [stg, bt, botsRes, dataStatusRes] = await Promise.all([
+    const [stg, bt, botsRes] = await Promise.all([
       apiGet<Strategy[]>("/api/v1/strategies"),
       apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
-      apiGet<DataStatusResponse>("/api/v1/data/status").catch(() => null),
     ]);
     setStrategies(stg);
     setRuns(bt);
     setBots(Array.isArray(botsRes?.items) ? botsRes.items : []);
-    setDataStatus(dataStatusRes);
-    if (!dataStatusRes) setDataStatusError("No se pudo consultar el catalogo de datasets reales.");
-    setDataStatusLoading(false);
     if (!form.strategy_id && stg[0]) {
       setForm((prev) => ({ ...prev, strategy_id: stg[0].id }));
     }
@@ -676,57 +670,80 @@ export default function BacktestsPage() {
     }
   }, [form.strategy_id, massSelectedStrategies.length]);
 
-  const selectedDatasetEntry = useMemo(() => {
-    const items = dataStatus?.available || [];
-    return (
-      items.find(
-        (row) =>
-          String(row.market || "").toLowerCase() === String(form.market || "").toLowerCase() &&
-          String(row.symbol || "").toUpperCase() === String(form.symbol || "").toUpperCase() &&
-          String(row.timeframe || "").toLowerCase() === String(form.timeframe || "").toLowerCase(),
-      ) || null
-    );
-  }, [dataStatus, form.market, form.symbol, form.timeframe]);
+  const refreshDatasetPreflight = useCallback(async () => {
+    setDatasetPreflightLoading(true);
+    setDatasetPreflightError("");
+    try {
+      const payload = await apiPost<ResearchDatasetPreflightResponse>("/api/v1/research/dataset-preflight", {
+        mode: "batch",
+        bot_id: selectedBotId || undefined,
+        market: form.market,
+        symbol: form.symbol,
+        timeframe: form.timeframe,
+        start: form.start,
+        end: form.end,
+        dataset_source: massForm.dataset_source,
+        data_mode: "dataset",
+      });
+      setDatasetPreflight(payload);
+    } catch (err) {
+      setDatasetPreflight(null);
+      setDatasetPreflightError(uiErrMsg(err, "No se pudo consultar el preflight canónico de dataset/prerequisitos."));
+    } finally {
+      setDatasetPreflightLoading(false);
+    }
+  }, [form.end, form.market, form.start, form.symbol, form.timeframe, massForm.dataset_source, selectedBotId]);
 
-  const datasetFallback1mEntry = useMemo(() => {
-    const items = dataStatus?.available || [];
-    if (selectedDatasetEntry) return null;
-    return (
-      items.find(
-        (row) =>
-          String(row.market || "").toLowerCase() === String(form.market || "").toLowerCase() &&
-          String(row.symbol || "").toUpperCase() === String(form.symbol || "").toUpperCase() &&
-          String(row.timeframe || "").toLowerCase() === "1m",
-      ) || null
-    );
-  }, [dataStatus, form.market, form.symbol, selectedDatasetEntry]);
+  const datasetBadgeVariant = useMemo(() => {
+    if (datasetPreflightLoading) return "neutral";
+    switch (datasetPreflight?.dataset_status) {
+      case "ready":
+        return "success";
+      case "synthetic_blocked":
+      case "missing":
+      case "invalid":
+        return "danger";
+      default:
+        return "neutral";
+    }
+  }, [datasetPreflight?.dataset_status, datasetPreflightLoading]);
 
-  const selectedDatasetMissing = useMemo(() => {
-    const items = dataStatus?.missing || [];
-    return (
-      items.find(
-        (row) =>
-          String(row.market || "").toLowerCase() === String(form.market || "").toLowerCase() &&
-          String(row.symbol || "").toUpperCase() === String(form.symbol || "").toUpperCase() &&
-          String(row.timeframe || "").toLowerCase() === String(form.timeframe || "").toLowerCase(),
-      ) || null
-    );
-  }, [dataStatus, form.market, form.symbol, form.timeframe]);
+  const datasetBadgeLabel = useMemo(() => {
+    if (datasetPreflightLoading) return "cargando";
+    switch (datasetPreflight?.dataset_status) {
+      case "ready":
+        return "listo";
+      case "synthetic_blocked":
+        return "synthetic bloqueado";
+      case "missing":
+        return "faltante";
+      case "invalid":
+        return "inválido";
+      default:
+        return "desconocido";
+    }
+  }, [datasetPreflight?.dataset_status, datasetPreflightLoading]);
 
-  const datasetReadyState = useMemo(() => {
-    if (selectedDatasetEntry) return "exact";
-    if (datasetFallback1mEntry) return "resample_1m";
-    if (dataStatusLoading) return "loading";
-    return "missing";
-  }, [dataStatusLoading, datasetFallback1mEntry, selectedDatasetEntry]);
-
-  const datasetDownloadCommand = useMemo(() => {
-    if (String(form.market || "").toLowerCase() !== "crypto") return "";
-    const startMonth = String(form.start || "").slice(0, 7);
-    const endMonth = String(form.end || "").slice(0, 7);
-    if (!/^\d{4}-\d{2}$/.test(startMonth) || !/^\d{4}-\d{2}$/.test(endMonth)) return "";
-    return `python rtlab_autotrader/scripts/bootstrap_binance_futures_public.py --market-family usdm --symbols ${String(form.symbol || "").toUpperCase()} --start-month ${startMonth} --end-month ${endMonth} --resample-timeframes 5m 15m 1h 4h 1d`;
-  }, [form.end, form.market, form.start, form.symbol]);
+  const buildPreflightBlockingMessage = useCallback(
+    (mode: "batch" | "beast") => {
+      if (!datasetPreflight) {
+        return "No se pudo validar el preflight canonico de dataset/prerequisitos.";
+      }
+      const baseReason =
+        mode === "beast"
+          ? datasetPreflight.beast_blocking_reason || datasetPreflight.blocking_reason
+          : datasetPreflight.batch_blocking_reason || datasetPreflight.blocking_reason;
+      const parts = [baseReason || "El preflight canonico no permite ejecutar este flujo."];
+      if (datasetPreflight.bootstrap_required && datasetPreflight.bootstrap_command) {
+        parts.push(`Comando sugerido: ${datasetPreflight.bootstrap_command}`);
+      }
+      if (datasetPreflight.ineligible_symbols.length) {
+        parts.push(`Simbolos no elegibles: ${datasetPreflight.ineligible_symbols.join(", ")}`);
+      }
+      return parts.join(" ");
+    },
+    [datasetPreflight],
+  );
 
   const refreshCatalogRuns = useCallback(async () => {
     setCatalogLoading(true);
@@ -852,6 +869,10 @@ export default function BacktestsPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    void refreshDatasetPreflight();
+  }, [refreshDatasetPreflight]);
 
   useEffect(() => {
     void refreshCatalogRuns();
@@ -1265,14 +1286,16 @@ export default function BacktestsPage() {
       setMassError("SeleccionÃ¡ al menos una estrategia para research masivo.");
       return;
     }
-    if (dataStatusLoading || datasetReadyState === "loading") {
+    if (datasetPreflightLoading) {
       setMassError("Espera a que termine la validacion de dataset real antes de iniciar el Research Batch.");
       return;
     }
-    if (dataStatus && datasetReadyState === "missing") {
-      const hint = selectedDatasetMissing?.hint ? ` ${selectedDatasetMissing.hint}` : "";
-      const cmd = datasetDownloadCommand ? ` Comando sugerido: ${datasetDownloadCommand}` : "";
-      setMassError(`No hay dataset real disponible para ${form.market}/${form.symbol}/${form.timeframe}.${hint}${cmd}`);
+    if (!datasetPreflight) {
+      setMassError(datasetPreflightError || "No se pudo validar el preflight canonico de dataset/prerequisitos.");
+      return;
+    }
+    if (!datasetPreflight.can_run_batch) {
+      setMassError(buildPreflightBlockingMessage("batch"));
       return;
     }
     setMassRunning(true);
@@ -1320,22 +1343,16 @@ export default function BacktestsPage() {
       setMassError("SeleccionÃ¡ al menos una estrategia para Modo Bestia.");
       return;
     }
-    if (dataStatusLoading || datasetReadyState === "loading") {
+    if (datasetPreflightLoading) {
       setMassError("Espera a que termine la validacion de dataset real antes de iniciar Modo Bestia.");
       return;
     }
-    if (dataStatus && datasetReadyState === "missing") {
-      const hint = selectedDatasetMissing?.hint ? ` ${selectedDatasetMissing.hint}` : "";
-      const cmd = datasetDownloadCommand ? ` Comando sugerido: ${datasetDownloadCommand}` : "";
-      setMassError(`Modo Bestia requiere dataset real para ${form.market}/${form.symbol}/${form.timeframe}.${hint}${cmd}`);
+    if (!datasetPreflight) {
+      setMassError(datasetPreflightError || "No se pudo validar el preflight canonico de dataset/prerequisitos.");
       return;
     }
-    if (beastEnabledState === "missing") {
-      setMassError("Este runtime no encontro config/policies para Beast. Corregi el root del deploy o el empaquetado de policies antes de reintentar.");
-      return;
-    }
-    if (beastEnabledState === "blocked") {
-      setMassError("Modo Bestia esta deshabilitado en beast_mode.yaml (enabled=false).");
+    if (!datasetPreflight.can_run_beast) {
+      setMassError(buildPreflightBlockingMessage("beast"));
       return;
     }
     setBeastBusy(true);
@@ -3891,61 +3908,81 @@ export default function BacktestsPage() {
                   <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
-                        <p className="text-xs uppercase tracking-wide text-slate-400">Dataset real para batch</p>
+                        <p className="text-xs uppercase tracking-wide text-slate-400">Dataset real para Batch / Beast</p>
                         <p className="mt-1 text-xs text-slate-400">
-                          Estado del catalogo para {form.market}/{form.symbol}/{form.timeframe}. Research Batch y Beast no usan sinteticos.
+                          Preflight canonico de dataset/prerequisitos para {form.market}/{form.symbol}/{form.timeframe}. Research Batch y Beast no usan sinteticos.
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge
-                          variant={
-                            datasetReadyState === "exact"
-                              ? "success"
-                              : datasetReadyState === "resample_1m"
-                                ? "warn"
-                                : datasetReadyState === "missing"
-                                  ? "danger"
-                                  : "neutral"
-                          }
+                        <Badge variant={datasetBadgeVariant}>{datasetBadgeLabel}</Badge>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => void refreshDatasetPreflight()}
+                          disabled={datasetPreflightLoading}
                         >
-                          {datasetReadyState === "exact"
-                            ? "dataset exacto listo"
-                            : datasetReadyState === "resample_1m"
-                              ? "listo via 1m + resample"
-                              : datasetReadyState === "missing"
-                                ? "faltante"
-                                : "cargando"}
-                        </Badge>
-                        <Button type="button" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void refresh()} disabled={dataStatusLoading}>
-                          {dataStatusLoading ? "Consultando..." : "Refrescar datasets"}
+                          {datasetPreflightLoading ? "Consultando..." : "Refrescar preflight"}
                         </Button>
                       </div>
                     </div>
-                    {selectedDatasetEntry ? (
-                      <p className="mt-2 text-[11px] text-slate-300">
-                        Fuente: <strong>{selectedDatasetEntry.source || "dataset"}</strong>
-                        {" "}· hash: <strong>{shortHash(selectedDatasetEntry.dataset_hash, 12)}</strong>
-                        {" "}· rango: <strong>{selectedDatasetEntry.start || "-"} {"->"} {selectedDatasetEntry.end || "-"}</strong>
-                      </p>
-                    ) : datasetFallback1mEntry ? (
-                      <p className="mt-2 text-[11px] text-amber-200">
-                        No hay dataset {form.timeframe} exacto, pero existe 1m reproducible para {form.symbol}. El backend puede reusar 1m y resamplear en runtime.
-                      </p>
+                    {datasetPreflight ? (
+                      <div className="mt-2 space-y-1 text-[11px]">
+                        <p className="text-slate-300">
+                          Source type: <strong>{datasetPreflight.dataset_source_type}</strong>
+                          {" "}· market family: <strong>{datasetPreflight.market_family || "-"}</strong>
+                          {" "}· symbols: <strong>{datasetPreflight.symbols.join(", ") || "-"}</strong>
+                          {" "}· timeframe: <strong>{datasetPreflight.timeframe || "-"}</strong>
+                        </p>
+                        {datasetPreflight.date_range ? (
+                          <p className="text-slate-400">
+                            Rango: <strong>{datasetPreflight.date_range.start || "-"}</strong>
+                            {" -> "}
+                            <strong>{datasetPreflight.date_range.end || "-"}</strong>
+                          </p>
+                        ) : null}
+                        <p className="text-slate-400">
+                          Research Batch:{" "}
+                          {datasetPreflight.can_run_batch ? "listo" : datasetPreflight.batch_blocking_reason || "bloqueado"}
+                        </p>
+                        <p className="text-slate-400">
+                          Modo Bestia:{" "}
+                          {datasetPreflight.can_run_beast ? "listo" : datasetPreflight.beast_blocking_reason || "bloqueado"}
+                        </p>
+                        {datasetPreflight.dataset_hash ? (
+                          <p className="text-slate-400">
+                            Hash dataset: <strong>{shortHash(datasetPreflight.dataset_hash, 12)}</strong>
+                          </p>
+                        ) : null}
+                        {datasetPreflight.blocking_reason ? (
+                          <p className="text-rose-300">{datasetPreflight.blocking_reason}</p>
+                        ) : null}
+                        {datasetPreflight.ineligible_symbols.length ? (
+                          <p className="text-amber-200">
+                            Simbolos no elegibles: <strong>{datasetPreflight.ineligible_symbols.join(", ")}</strong>
+                          </p>
+                        ) : null}
+                        {datasetPreflight.eligible_symbols.length ? (
+                          <p className="text-emerald-200">
+                            Simbolos elegibles: <strong>{datasetPreflight.eligible_symbols.join(", ")}</strong>
+                          </p>
+                        ) : null}
+                      </div>
                     ) : (
-                      <p className="mt-2 text-[11px] text-rose-300">
-                        Falta dataset real reproducible para este contexto. {selectedDatasetMissing?.hint || "Cargá dataset en user_data/data o user_data/datasets antes de correr el batch."}
+                      <p className="mt-2 text-[11px] text-slate-400">
+                        Consultando preflight canonico de dataset/prerequisitos.
                       </p>
                     )}
-                    {dataStatus?.data_root ? (
-                      <p className="mt-1 text-[11px] text-slate-500">Data root runtime: {dataStatus.data_root}</p>
+                    {datasetPreflight?.dataset_root ? (
+                      <p className="mt-1 text-[11px] text-slate-500">Data root runtime: {datasetPreflight.dataset_root}</p>
                     ) : null}
-                    {datasetReadyState === "missing" && datasetDownloadCommand ? (
+                    {datasetPreflight?.bootstrap_required && datasetPreflight.bootstrap_command ? (
                       <div className="mt-2 rounded border border-slate-800 bg-slate-900/70 p-2 text-[11px] text-slate-300">
                         <p className="font-semibold text-slate-100">Comando sugerido</p>
-                        <code className="mt-1 block break-all text-cyan-300">{datasetDownloadCommand}</code>
+                        <code className="mt-1 block break-all text-cyan-300">{datasetPreflight.bootstrap_command}</code>
                       </div>
                     ) : null}
-                    {dataStatusError ? <p className="mt-2 text-[11px] text-amber-300">{dataStatusError}</p> : null}
+                    {datasetPreflightError ? <p className="mt-2 text-[11px] text-amber-300">{datasetPreflightError}</p> : null}
                   </div>
                 </div>
                 <div className="space-y-1">
@@ -3969,18 +4006,20 @@ export default function BacktestsPage() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button disabled={role !== "admin" || massRunning} onClick={startMassBacktests}>
+                <Button disabled={role !== "admin" || massRunning || datasetPreflightLoading} onClick={startMassBacktests}>
                   {massRunning ? "Iniciando..." : "Ejecutar Backtests Masivos"}
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={role !== "admin" || beastBusy || beastEnabledState === "loading" || dataStatusLoading}
+                  disabled={role !== "admin" || beastBusy || datasetPreflightLoading}
                   onClick={startBeastBatch}
                   title={
-                    beastEnabledState === "blocked"
-                      ? "Beast esta deshabilitado en beast_mode.yaml (enabled=false)."
-                      : beastEnabledState === "missing"
-                        ? "Este runtime no encontro config/policies para Beast. Corregi el root del deploy o el empaquetado."
+                    datasetPreflight && !datasetPreflight.can_run_beast
+                      ? buildPreflightBlockingMessage("beast")
+                      : beastEnabledState === "blocked"
+                        ? "Beast esta deshabilitado en beast_mode.yaml (enabled=false)."
+                        : beastEnabledState === "missing"
+                          ? "Este runtime no encontro config/policies para Beast. Corregi el root del deploy o el empaquetado."
                         : "Encola el batch en Modo Bestia (scheduler local fase 1, con budget governor y limites de concurrencia)."
                   }
                 >

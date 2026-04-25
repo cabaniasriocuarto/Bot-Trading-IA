@@ -1,6 +1,77 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-24
+Fecha de actualizacion: 2026-04-25
+
+## RTLOPS-89 - preflight canonico de dataset/prerequisitos para Batch/Beast - 2026-04-25
+
+- Estado real confirmado en esta rama:
+  - el backend ya expone un endpoint canonico y auditable `POST /api/v1/research/dataset-preflight`;
+  - la verdad canonica del preflight vive en `MassBacktestCoordinator.dataset_preflight(...)` dentro de `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`;
+  - ese preflight reutiliza logica real ya existente y no abre una segunda verdad:
+    - `_preflight_dataset_ready(...)`
+    - `build_data_provider(...)`
+    - `DataCatalog` / manifests reales del runtime;
+  - `start_async(...)` y `start_beast_async(...)` siguen fail-closed sobre la misma evaluacion canonica;
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx` ya consume el preflight canonico y deja de deducir readiness desde heuristicas locales de `data/status`.
+- Contrato canonico minimo resultante:
+  - `mode`
+  - `dataset_ready`
+  - `dataset_status`
+  - `dataset_source_type`
+  - `dataset_root`
+  - `bootstrap_required`
+  - `bootstrap_command`
+  - `market_family`
+  - `symbol`
+  - `symbols`
+  - `timeframe`
+  - `date_range`
+  - `can_run_batch`
+  - `can_run_beast`
+  - `blocking_reason`
+  - `missing_reasons`
+  - `eligible_symbols`
+  - `ineligible_symbols`
+- Regla canonica resultante:
+  - si falta dataset real reproducible:
+    - `dataset_ready=false`
+    - `dataset_status=missing`
+    - `bootstrap_required=true` cuando existe comando canonico de carga
+    - `blocking_reason` explicito;
+  - si se intenta `dataset_source=synthetic` en Batch/Beast:
+    - `dataset_ready=false`
+    - `dataset_status=synthetic_blocked`
+    - `dataset_source_type=synthetic`
+    - fail-closed sin dejar al frontend inferir nada;
+  - la elegibilidad minima queda visible y auditable por:
+    - `market_family`
+    - `symbol` / `symbols`
+    - `timeframe`
+    - `dataset_source_type`
+    - `eligible_symbols`
+    - `ineligible_symbols`;
+  - para `crypto`, el preflight canoniza `market_family=usdm` por default cuando manifest/cfg no declaran otro valor.
+- Surface minima real integrada:
+  - `Backtests > Research Batch` ahora muestra de forma honesta:
+    - listo
+    - bloqueado
+    - `synthetic` bloqueado
+    - falta bootstrap
+    - simbolos elegibles / no elegibles;
+  - el boton de refresh del bloque ya consulta el preflight canonico, no `GET /api/v1/data/status` como fuente primaria de decision;
+  - el start de Research Batch y el start de Beast ahora cortan por `can_run_batch` / `can_run_beast` y mensajes canonicos del backend.
+- Validacion real ejecutada:
+  - `uv run --project rtlab_autotrader python -m py_compile rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/tests/test_web_live_ready.py` -> PASS
+  - `uv run --project rtlab_autotrader --extra dev python -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "dataset_preflight or research_mass_backtest_start_rejects_missing_dataset or research_beast_start_rejects_missing_dataset or research_beast_endpoints_smoke" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limite honesto del bloque:
+  - no abre `RTLOPS-90`;
+  - no redisenia toda la pantalla de `Backtests`;
+  - no abre una API grande nueva;
+  - no toca dominios fuera de Batch/Beast dataset prereqs.
+- Siguiente bloque exacto recomendado:
+  - `RTLOPS-90 - Reordenamiento UX Backtests sin refactor masivo`.
 
 ## RTLOPS-28 - cierre administrativo final sobre alcance ya absorbido - 2026-04-24
 
