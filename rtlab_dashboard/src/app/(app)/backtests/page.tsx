@@ -30,6 +30,7 @@ import type {
   BeastModeStatusResponse,
   BeastModeJobsResponse,
   BotInstance,
+  InstrumentUniverseSummaryResponse,
   ResearchFunnelResponse,
   ResearchTrialLedgerItem,
   ResearchTrialLedgerResponse,
@@ -61,8 +62,15 @@ type ResearchDatasetPreflightResponse = {
   bootstrap_required: boolean;
   bootstrap_command: string;
   market_family: string;
+  entity_type?: "bot" | "strategy";
+  entity_id?: string | null;
+  scope_source?: string;
+  universe_name?: string | null;
+  quote_asset?: string | null;
   symbol: string | null;
   symbols: string[];
+  symbols_requested?: string[];
+  symbols_effective?: string[];
   timeframe: string | null;
   date_range: { start: string; end: string } | null;
   can_run_batch: boolean;
@@ -75,9 +83,31 @@ type ResearchDatasetPreflightResponse = {
   beast_blocking_reason?: string;
   dataset_hash?: string;
   dataset_manifest_path?: string;
+  dataset_hashes?: string[];
+  dataset_manifest_paths?: string[];
+  bootstrap_commands_by_symbol?: Record<string, string>;
   warnings?: string[];
   hints?: string[];
+  research_scope?: {
+    contract_version: string;
+    entity_type: "bot" | "strategy";
+    entity_id?: string | null;
+    scope_source: string;
+    strategy_ids: string[];
+    market: string;
+    market_family?: string | null;
+    quote_asset?: string | null;
+    universe_name?: string | null;
+    max_symbols_allowed: number;
+    symbols_requested: string[];
+    symbols_effective: string[];
+    eligible_symbols: string[];
+    ineligible_symbols: string[];
+    blocking_reasons: string[];
+  };
 };
+
+type ResearchEntityType = "bot" | "strategy";
 
 type RunsListFilters = {
   q: string;
@@ -258,6 +288,18 @@ function compactDate(value: string | null | undefined): string {
   const v = String(value || "");
   if (!v) return "-";
   return v.replace("T", " ").slice(0, 16);
+}
+
+function normalizeResearchSymbols(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const raw of values) {
+    const symbol = String(raw || "").trim().replace("/", "").replace("-", "").toUpperCase();
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+    items.push(symbol);
+  }
+  return items;
 }
 
 function utcDateLabel(value: string | null | undefined): string {
@@ -592,7 +634,12 @@ export default function BacktestsPage() {
   const [massError, setMassError] = useState("");
   const [massMessage, setMassMessage] = useState("");
   const [bots, setBots] = useState<BotInstance[]>([]);
+  const [instrumentUniverses, setInstrumentUniverses] = useState<InstrumentUniverseSummaryResponse["items"]>([]);
   const [selectedBotId, setSelectedBotId] = useState("");
+  const [researchEntityType, setResearchEntityType] = useState<ResearchEntityType>("bot");
+  const [selectedResearchUniverseName, setSelectedResearchUniverseName] = useState("");
+  const [selectedResearchSymbols, setSelectedResearchSymbols] = useState<string[]>([]);
+  const [researchSymbolQuery, setResearchSymbolQuery] = useState("");
   const [massShortlistBusy, setMassShortlistBusy] = useState(false);
   const [massSelectedStrategies, setMassSelectedStrategies] = useState<string[]>([]);
   const [massRunId, setMassRunId] = useState("");
@@ -637,6 +684,7 @@ export default function BacktestsPage() {
   const [trialLedger, setTrialLedger] = useState<ResearchTrialLedgerResponse | null>(null);
   const [researchLoading, setResearchLoading] = useState(false);
   const [researchError, setResearchError] = useState("");
+  const researchStrategyEntityId = massSelectedStrategies.length === 1 ? massSelectedStrategies[0] : undefined;
 
   const [form, setForm] = useState<RunForm>({
     strategy_id: "",
@@ -654,14 +702,16 @@ export default function BacktestsPage() {
   });
 
   const refresh = useCallback(async () => {
-    const [stg, bt, botsRes] = await Promise.all([
+    const [stg, bt, botsRes, universesRes] = await Promise.all([
       apiGet<Strategy[]>("/api/v1/strategies"),
       apiGet<BacktestRun[]>("/api/v1/backtests/runs"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
+      apiGet<InstrumentUniverseSummaryResponse>("/api/v1/instruments/universes").catch(() => ({ items: [] })),
     ]);
     setStrategies(stg);
     setRuns(bt);
     setBots(Array.isArray(botsRes?.items) ? botsRes.items : []);
+    setInstrumentUniverses(Array.isArray(universesRes?.items) ? universesRes.items : []);
     if (!form.strategy_id && stg[0]) {
       setForm((prev) => ({ ...prev, strategy_id: stg[0].id }));
     }
@@ -670,21 +720,50 @@ export default function BacktestsPage() {
     }
   }, [form.strategy_id, massSelectedStrategies.length]);
 
-  const refreshDatasetPreflight = useCallback(async () => {
-    setDatasetPreflightLoading(true);
-    setDatasetPreflightError("");
-    try {
-      const payload = await apiPost<ResearchDatasetPreflightResponse>("/api/v1/research/dataset-preflight", {
-        mode: "batch",
-        bot_id: selectedBotId || undefined,
+  const buildResearchScopePayload = useCallback(
+    (mode: "batch" | "beast") => {
+      const normalizedSymbols = normalizeResearchSymbols(selectedResearchSymbols);
+      const normalizedStrategies = Array.from(new Set(massSelectedStrategies.map((row) => String(row || "").trim()).filter(Boolean)));
+      return {
+        mode,
+        entity_type: researchEntityType,
+        entity_id: researchEntityType === "bot" ? selectedBotId || undefined : researchStrategyEntityId,
+        bot_id: researchEntityType === "bot" ? selectedBotId || undefined : undefined,
+        strategy_ids: normalizedStrategies,
         market: form.market,
-        symbol: form.symbol,
+        symbol: normalizedSymbols[0] || undefined,
+        symbols: normalizedSymbols,
+        universe_name: researchEntityType === "strategy" && form.market === "crypto" ? selectedResearchUniverseName || undefined : undefined,
         timeframe: form.timeframe,
         start: form.start,
         end: form.end,
         dataset_source: massForm.dataset_source,
-        data_mode: "dataset",
-      });
+        data_mode: "dataset" as const,
+      };
+    },
+    [
+      form.end,
+      form.market,
+      form.start,
+      form.timeframe,
+      massForm.dataset_source,
+      massSelectedStrategies,
+      researchEntityType,
+      researchStrategyEntityId,
+      selectedBotId,
+      selectedResearchSymbols,
+      selectedResearchUniverseName,
+    ],
+  );
+
+  const refreshDatasetPreflight = useCallback(async () => {
+    setDatasetPreflightLoading(true);
+    setDatasetPreflightError("");
+    try {
+      const payload = await apiPost<ResearchDatasetPreflightResponse>(
+        "/api/v1/research/dataset-preflight",
+        buildResearchScopePayload("batch"),
+      );
       setDatasetPreflight(payload);
     } catch (err) {
       setDatasetPreflight(null);
@@ -692,7 +771,7 @@ export default function BacktestsPage() {
     } finally {
       setDatasetPreflightLoading(false);
     }
-  }, [form.end, form.market, form.start, form.symbol, form.timeframe, massForm.dataset_source, selectedBotId]);
+  }, [buildResearchScopePayload]);
 
   const datasetBadgeVariant = useMemo(() => {
     if (datasetPreflightLoading) return "neutral";
@@ -980,6 +1059,35 @@ export default function BacktestsPage() {
     () => bots.find((row) => row.id === selectedBotId) || null,
     [bots, selectedBotId],
   );
+  const selectedResearchUniverse = useMemo(
+    () => instrumentUniverses.find((row) => row.name === selectedResearchUniverseName) || null,
+    [instrumentUniverses, selectedResearchUniverseName],
+  );
+  const researchBotScopeSymbols = useMemo(
+    () => normalizeResearchSymbols((selectedMassBot?.universe || []) as string[]),
+    [selectedMassBot],
+  );
+  const researchCandidateSymbols = useMemo(() => {
+    if (researchEntityType === "bot") {
+      return researchBotScopeSymbols;
+    }
+    if (form.market === "crypto") {
+      return normalizeResearchSymbols((selectedResearchUniverse?.symbols || []) as string[]);
+    }
+    return normalizeResearchSymbols(MARKET_OPTIONS[form.market] || []);
+  }, [form.market, researchBotScopeSymbols, researchEntityType, selectedResearchUniverse]);
+  const researchVisibleSymbols = useMemo(() => {
+    const query = researchSymbolQuery.trim().toUpperCase();
+    if (!query) return researchCandidateSymbols;
+    return researchCandidateSymbols.filter((symbol) => symbol.includes(query));
+  }, [researchCandidateSymbols, researchSymbolQuery]);
+  const researchMaxSymbolsAllowed = useMemo(() => {
+    const backendMax = datasetPreflight?.research_scope?.max_symbols_allowed;
+    if (typeof backendMax === "number" && backendMax > 0) return backendMax;
+    const botMax = selectedMassBot?.max_live_symbols;
+    if (typeof botMax === "number" && botMax > 0) return botMax;
+    return null;
+  }, [datasetPreflight?.research_scope?.max_symbols_allowed, selectedMassBot?.max_live_symbols]);
   const selectedMassBotLifecycleSummary = useMemo(
     () => summarizeLifecycleOperational(selectedMassBot?.lifecycle_operational),
     [selectedMassBot],
@@ -1017,6 +1125,37 @@ export default function BacktestsPage() {
     if (preferred) setSelectedBotId(preferred.id);
   }, [bots, selectedBotId]);
 
+  useEffect(() => {
+    if (form.market !== "crypto") {
+      if (selectedResearchUniverseName) setSelectedResearchUniverseName("");
+      return;
+    }
+    if (!selectedResearchUniverseName) return;
+    if (!instrumentUniverses.some((row) => row.name === selectedResearchUniverseName)) {
+      setSelectedResearchUniverseName("");
+    }
+  }, [form.market, instrumentUniverses, selectedResearchUniverseName]);
+
+  useEffect(() => {
+    if (researchEntityType !== "bot") return;
+    setSelectedResearchSymbols((prev) => {
+      const filtered = prev.filter((symbol) => researchBotScopeSymbols.includes(symbol));
+      if (filtered.length) return filtered;
+      return researchBotScopeSymbols;
+    });
+  }, [researchBotScopeSymbols, researchEntityType]);
+
+  useEffect(() => {
+    if (researchEntityType !== "strategy") return;
+    setSelectedResearchSymbols((prev) => {
+      const filtered = prev.filter((symbol) => researchCandidateSymbols.includes(symbol));
+      if (filtered.length) return filtered;
+      if (!researchCandidateSymbols.length) return [];
+      const preferred = normalizeResearchSymbols([form.symbol]).find((symbol) => researchCandidateSymbols.includes(symbol));
+      return preferred ? [preferred] : [researchCandidateSymbols[0]];
+    });
+  }, [form.symbol, researchCandidateSymbols, researchEntityType]);
+
   const applyBotPoolToMass = useCallback(() => {
     if (!selectedMassBot) {
       setMassError("Elegi un bot para cargar su pool al research.");
@@ -1027,13 +1166,54 @@ export default function BacktestsPage() {
       setMassError("El bot elegido no tiene estrategias validas en su pool.");
       return;
     }
+    setResearchEntityType("bot");
     setMassSelectedStrategies(poolIds);
-    const firstUniverseSymbol = (selectedMassBot.universe || []).find((row) => String(row || "").trim());
-    if (firstUniverseSymbol) {
-      setForm((prev) => ({ ...prev, symbol: String(firstUniverseSymbol).replace("/", "").replace("-", "").toUpperCase() }));
+    const botScope = normalizeResearchSymbols((selectedMassBot.universe || []) as string[]);
+    if (botScope.length) {
+      setSelectedResearchSymbols(botScope);
+      setForm((prev) => ({ ...prev, symbol: botScope[0] }));
     }
     setMassMessage(`Pool del bot ${getVisibleBotIdentity(selectedMassBot)} cargado: ${poolIds.length} estrategias.`);
   }, [selectedMassBot, strategies]);
+
+  const toggleResearchSymbol = useCallback(
+    (symbol: string) => {
+      const normalized = normalizeResearchSymbols([symbol])[0];
+      if (!normalized) return;
+      let blocked = false;
+      setSelectedResearchSymbols((prev) => {
+        if (prev.includes(normalized)) {
+          return prev.filter((item) => item !== normalized);
+        }
+        if (typeof researchMaxSymbolsAllowed === "number" && researchMaxSymbolsAllowed > 0 && prev.length >= researchMaxSymbolsAllowed) {
+          blocked = true;
+          return prev;
+        }
+        return [...prev, normalized];
+      });
+      if (blocked) {
+        setMassError(`El scope de research no puede superar ${researchMaxSymbolsAllowed} símbolos.`);
+      }
+    },
+    [researchMaxSymbolsAllowed],
+  );
+
+  const useFullResearchScope = useCallback(() => {
+    if (!researchCandidateSymbols.length) {
+      setSelectedResearchSymbols([]);
+      return;
+    }
+    setSelectedResearchSymbols(researchCandidateSymbols);
+    if (
+      typeof researchMaxSymbolsAllowed === "number" &&
+      researchMaxSymbolsAllowed > 0 &&
+      researchCandidateSymbols.length > researchMaxSymbolsAllowed
+    ) {
+      setMassError(
+        `El scope visible tiene ${researchCandidateSymbols.length} símbolos y supera el máximo permitido hoy (${researchMaxSymbolsAllowed}). El backend lo va a bloquear hasta que reduzcas la selección.`,
+      );
+    }
+  }, [researchCandidateSymbols, researchMaxSymbolsAllowed]);
 
   const beastEnabledState = useMemo(() => {
     if (beastStatus == null) return "loading";
@@ -1303,15 +1483,7 @@ export default function BacktestsPage() {
     setMassMessage("");
     try {
       const res = await apiPost<{ ok: boolean; run_id: string; state: string }>("/api/v1/research/mass-backtest/start", {
-        strategy_ids: massSelectedStrategies,
-        bot_id: selectedBotId || undefined,
-        market: form.market,
-        symbol: form.symbol,
-        timeframe: form.timeframe,
-        start: form.start,
-        end: form.end,
-        data_mode: "dataset",
-        dataset_source: massForm.dataset_source,
+        ...buildResearchScopePayload("batch"),
         validation_mode: form.validation_mode,
         max_variants_per_strategy: Number(massForm.max_variants_per_strategy),
         max_folds: Number(massForm.max_folds),
@@ -1362,15 +1534,7 @@ export default function BacktestsPage() {
       const res = await apiPost<{ ok: boolean; run_id: string; state: string; mode?: string; queue_position?: number; estimated_trial_units?: number }>(
         "/api/v1/research/beast/start",
         {
-          strategy_ids: massSelectedStrategies,
-          bot_id: selectedBotId || undefined,
-          market: form.market,
-          symbol: form.symbol,
-          timeframe: form.timeframe,
-          start: form.start,
-          end: form.end,
-          data_mode: "dataset",
-          dataset_source: massForm.dataset_source,
+          ...buildResearchScopePayload("beast"),
           validation_mode: form.validation_mode,
           max_variants_per_strategy: Number(massForm.max_variants_per_strategy),
           max_folds: Number(massForm.max_folds),
@@ -3513,40 +3677,214 @@ export default function BacktestsPage() {
 
           <div className="grid gap-3 xl:grid-cols-4">
             <div className="space-y-1 xl:col-span-2">
-              <label className="text-xs uppercase tracking-wide text-slate-400">Bot / pool aplicado</label>
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                  <Select value={selectedBotId} onChange={(e) => setSelectedBotId(e.target.value)} disabled={!bots.length}>
-                    <option value="">Elegí un bot del registry</option>
-                    {bots.map((bot) => (
-                      <option key={`mass-bot-${bot.id}`} value={bot.id}>
-                        {`${getBotDisplayName(bot)} | ${getCanonicalBotId(bot)} | ${bot.mode.toUpperCase()} | ${bot.status}`}
-                      </option>
-                    ))}
-                  </Select>
+              <label className="text-xs uppercase tracking-wide text-slate-400">Entidad + Trading Universe Scope</label>
+              <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
-                    variant="outline"
-                    disabled={role !== "admin" || !selectedMassBot}
-                    onClick={applyBotPoolToMass}
-                    title="Carga al batch el pool del bot seleccionado para medir cómo rendiría con histórico reproducible."
+                    variant={researchEntityType === "bot" ? "default" : "outline"}
+                    className="h-8 px-3"
+                    onClick={() => setResearchEntityType("bot")}
                   >
-                    Usar pool del bot
+                    Correr Bot
                   </Button>
+                  <Button
+                    type="button"
+                    variant={researchEntityType === "strategy" ? "default" : "outline"}
+                    className="h-8 px-3"
+                    onClick={() => setResearchEntityType("strategy")}
+                  >
+                    Correr Estrategias
+                  </Button>
+                  <Badge variant="neutral">Scope research auditable</Badge>
+                  {researchMaxSymbolsAllowed ? <Badge variant="warn">máximo visible: {researchMaxSymbolsAllowed}</Badge> : null}
                 </div>
-                {selectedMassBot ? (
-                  <div className="mt-2 space-y-1 text-xs text-slate-300">
-                    <p>
-                      <strong>{getVisibleBotIdentity(selectedMassBot)}</strong> usa modo <strong>{selectedMassBot.mode.toUpperCase()}</strong> y engine{" "}
-                      <strong>{selectedMassBot.engine}</strong>.
+
+                <p className="text-xs text-slate-400">
+                  Batch y Beast ya no deberían adivinar símbolos: esta surface envía <code>entity_type</code>, <code>entity_id</code>, <code>symbols</code> y
+                  <code> universe_name</code> al mismo contrato canónico que usa el preflight backend.
+                </p>
+
+                {researchEntityType === "bot" ? (
+                  <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                      <Select
+                        value={selectedBotId}
+                        onChange={(e) => {
+                          setResearchEntityType("bot");
+                          setSelectedBotId(e.target.value);
+                        }}
+                        disabled={!bots.length}
+                      >
+                        <option value="">Elegí un bot del registry</option>
+                        {bots.map((bot) => (
+                          <option key={`mass-bot-${bot.id}`} value={bot.id}>
+                            {`${getBotDisplayName(bot)} | ${getCanonicalBotId(bot)} | ${bot.mode.toUpperCase()} | ${bot.status}`}
+                          </option>
+                        ))}
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={role !== "admin" || !selectedMassBot}
+                        onClick={applyBotPoolToMass}
+                        title="Carga al batch el pool del bot seleccionado y su scope actual para medirlo con histórico reproducible."
+                      >
+                        Usar pool del bot
+                      </Button>
+                    </div>
+                    {selectedMassBot ? (
+                      <div className="space-y-1 text-xs text-slate-300">
+                        <p>
+                          <strong>{getVisibleBotIdentity(selectedMassBot)}</strong> usa modo <strong>{selectedMassBot.mode.toUpperCase()}</strong> y engine{" "}
+                          <strong>{selectedMassBot.engine}</strong>.
+                        </p>
+                        <p>
+                          Pool: <strong>{selectedMassBot.pool_strategy_ids.length}</strong> estrategias · scope:{" "}
+                          <strong>{researchBotScopeSymbols.length}</strong> símbolos · trades acumulados:{" "}
+                          <strong>{selectedMassBot.metrics?.trade_count ?? 0}</strong>
+                        </p>
+                        <p className="text-slate-400">
+                          En modo Bot, research hereda el scope persistido del registry y sólo permite subsets auditables de ese universo.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400">
+                        Elegí un bot si querés reproducir su pool actual y su scope multi-símbolo real en research.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-[11px] uppercase tracking-wide text-slate-500">Entidad research</label>
+                        <div className="rounded border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                          Estrategias portables · seleccionadas: <strong>{massSelectedStrategies.length}</strong>
+                        </div>
+                      </div>
+                      {form.market === "crypto" ? (
+                        <div className="space-y-1">
+                          <label className="text-[11px] uppercase tracking-wide text-slate-500">Universe crypto</label>
+                          <Select value={selectedResearchUniverseName} onChange={(e) => setSelectedResearchUniverseName(e.target.value)}>
+                            <option value="">Elegí universe para research portable</option>
+                            {instrumentUniverses.map((item) => (
+                              <option key={`research-universe-${item.name}`} value={item.name}>
+                                {`${item.name} | ${item.family} | ${item.size} símbolos`}
+                              </option>
+                            ))}
+                          </Select>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <label className="text-[11px] uppercase tracking-wide text-slate-500">Scope por mercado</label>
+                          <div className="rounded border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                            {form.market.toUpperCase()} usa catálogo visible del mercado actual.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      En modo Estrategia, el scope es portable para research. No persiste verdad operativa del bot y no abre todavía Shadow/Testnet/Live.
                     </p>
-                    <p>
-                      Pool: <strong>{selectedMassBot.pool_strategy_ids.length}</strong> estrategias · trades acumulados:{" "}
-                      <strong>{selectedMassBot.metrics?.trade_count ?? 0}</strong> · runs:{" "}
-                      <strong>{selectedMassBot.metrics?.run_count ?? 0}</strong>
+                  </div>
+                )}
+
+                <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-cyan-300">Trading Universe Scope</p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        {researchEntityType === "bot"
+                          ? "Subset auditable del scope real del bot seleccionado."
+                          : "Subset portable para research sobre el universo/manual scope permitido."}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="neutral">Seleccionados: {selectedResearchSymbols.length}</Badge>
+                      <Button type="button" variant="outline" className="h-7 px-2 text-[11px]" onClick={useFullResearchScope}>
+                        {researchEntityType === "bot" ? "Usar scope completo" : "Usar universo completo"}
+                      </Button>
+                      <Button type="button" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setSelectedResearchSymbols([])}>
+                        Limpiar
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+                    <div className="space-y-1">
+                      <label className="text-[11px] uppercase tracking-wide text-slate-500">Buscar símbolo</label>
+                      <Input
+                        value={researchSymbolQuery}
+                        onChange={(e) => setResearchSymbolQuery(e.target.value)}
+                        placeholder="BTC, ETH, AAPL..."
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] uppercase tracking-wide text-slate-500">Scope actual</label>
+                      <div className="rounded border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                        {researchEntityType === "bot"
+                          ? selectedMassBot?.universe_name || "scope del bot"
+                          : selectedResearchUniverseName || `${form.market} manual`}
+                        {datasetPreflight?.quote_asset ? ` · quote ${datasetPreflight.quote_asset}` : ""}
+                      </div>
+                    </div>
+                  </div>
+
+                  {selectedResearchSymbols.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {selectedResearchSymbols.map((symbol) => (
+                        <button
+                          key={`research-selected-${symbol}`}
+                          type="button"
+                          onClick={() => toggleResearchSymbol(symbol)}
+                          className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-3 py-1 text-xs text-cyan-100"
+                        >
+                          {symbol} ×
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500">Todavía no hay símbolos seleccionados para research.</p>
+                  )}
+
+                  {researchVisibleSymbols.length ? (
+                    <div className="max-h-48 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
+                      <div className="flex flex-wrap gap-2">
+                        {researchVisibleSymbols.map((symbol) => {
+                          const active = selectedResearchSymbols.includes(symbol);
+                          return (
+                            <button
+                              key={`research-candidate-${symbol}`}
+                              type="button"
+                              onClick={() => toggleResearchSymbol(symbol)}
+                              className={`rounded border px-2 py-1 text-xs ${
+                                active
+                                  ? "border-cyan-500/50 bg-cyan-500/10 text-cyan-100"
+                                  : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                              }`}
+                            >
+                              {symbol}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500">
+                      {researchEntityType === "bot"
+                        ? "El bot elegido no expone símbolos configurables todavía."
+                        : form.market === "crypto"
+                        ? "Elegí un universe crypto para habilitar selección multi-símbolo portable."
+                        : "No hay símbolos visibles para el mercado seleccionado."}
                     </p>
+                  )}
+                </div>
+
+                {researchEntityType === "bot" && selectedMassBot ? (
+                  <div className="space-y-1 text-xs text-slate-300">
                     <p className="text-slate-400">
-                      Backtest masivo evalúa ese pool con histórico. Shadow/mock mide experiencia en vivo sin órdenes. Son fuentes distintas y ambas alimentan aprendizaje.
+                      Backtest masivo evalúa el pool/scope del bot con histórico reproducible. Shadow/mock mide experiencia en vivo sin órdenes y queda fuera de este bloque.
                     </p>
                     {selectedMassBotLifecycleSummary ? (
                       <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
@@ -3554,7 +3892,7 @@ export default function BacktestsPage() {
                           <div>
                             <p className="text-[10px] uppercase tracking-wide text-cyan-300">Lifecycle operativo del bot</p>
                             <p className="mt-1 text-[10px] text-slate-500">
-                              Tercer consumidor minimo de <code>lifecycle_operational</code> sobre <code>rtlops81/v1</code>. Solo lectura para auditar el subset actual antes de correr batch.
+                              Solo lectura para auditar el subset operativo actual antes de correr research sobre ese mismo bot.
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -3599,16 +3937,12 @@ export default function BacktestsPage() {
                                   {item.runtimeSymbolId ? ` · ${item.runtimeSymbolId}` : ""}
                                   {item.progressionAllowed ? " · progresa" : ""}
                                 </p>
-                                {item.issues.length ? (
-                                  <p className="mt-1 text-amber-200">{item.issues.join(" · ")}</p>
-                                ) : null}
+                                {item.issues.length ? <p className="mt-1 text-amber-200">{item.issues.join(" · ")}</p> : null}
                               </div>
                             ))}
                           </div>
                         ) : (
-                          <p className="mt-2 text-[10px] text-slate-500">
-                            Sin universo auditable en lifecycle_operational para este bot.
-                          </p>
+                          <p className="mt-2 text-[10px] text-slate-500">Sin universo auditable en lifecycle_operational para este bot.</p>
                         )}
                         {selectedMassBotLifecycleSummary.errors.length ? (
                           <div className="mt-2 rounded border border-amber-900/70 bg-amber-500/10 p-2 text-[10px] text-amber-200">
@@ -3617,9 +3951,6 @@ export default function BacktestsPage() {
                             ))}
                           </div>
                         ) : null}
-                        <p className="mt-2 text-[10px] text-slate-500">
-                          Esta surface no modifica overrides ni reemplaza `Execution`: solo anticipa qué subset operativo llega hoy a Backtests para el bot seleccionado.
-                        </p>
                       </div>
                     ) : (
                       <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-[10px] text-slate-500">
@@ -3627,11 +3958,7 @@ export default function BacktestsPage() {
                       </div>
                     )}
                   </div>
-                ) : (
-                  <p className="mt-2 text-xs text-slate-400">
-                    Elegí un bot si querés reproducir su pool actual en research batch y ver cómo rendiría por estrategia, activo y régimen.
-                  </p>
-                )}
+                ) : null}
               </div>
             </div>
             <div className="space-y-1 xl:col-span-2">
@@ -3865,7 +4192,15 @@ export default function BacktestsPage() {
           <div className="grid gap-4 xl:grid-cols-3">
             <div className="space-y-3 xl:col-span-2">
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                <p className="text-xs uppercase tracking-wide text-slate-400">Pool de estrategias (research)</p>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Estrategias a correr</p>
+                  <Badge variant="neutral">{massSelectedStrategies.length} seleccionadas</Badge>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {researchEntityType === "bot"
+                    ? "En modo Bot, el backend valida que este subset pertenezca al pool real del bot."
+                    : "En modo Estrategia, esta selección define el set portable que participa del research."}
+                </p>
                 <div className="mt-2 grid gap-2 md:grid-cols-2">
                   {strategies.map((st) => (
                     <label key={`mass-st-${st.id}`} className="flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950/40 px-2 py-1 text-xs">
@@ -3920,7 +4255,7 @@ export default function BacktestsPage() {
                       <div>
                         <p className="text-xs uppercase tracking-wide text-slate-400">Dataset real para Batch / Beast</p>
                         <p className="mt-1 text-xs text-slate-400">
-                          Preflight canonico de dataset/prerequisitos para {form.market}/{form.symbol}/{form.timeframe}. Research Batch y Beast no usan sinteticos.
+                          Preflight canónico de dataset/prerequisitos sobre el scope de research actual. Batch y Beast no usan sintéticos.
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -3939,10 +4274,19 @@ export default function BacktestsPage() {
                     {datasetPreflight ? (
                       <div className="mt-2 space-y-1 text-[11px]">
                         <p className="text-slate-300">
-                          Source type: <strong>{datasetPreflight.dataset_source_type}</strong>
+                          Entidad: <strong>{datasetPreflight.entity_type || "-"}</strong>
+                          {" · "}scope source: <strong>{datasetPreflight.scope_source || "-"}</strong>
+                          {" · "}source type: <strong>{datasetPreflight.dataset_source_type}</strong>
                           {" · "}market family: <strong>{datasetPreflight.market_family || "-"}</strong>
-                          {" · "}symbols: <strong>{datasetPreflight.symbols.join(", ") || "-"}</strong>
+                          {" · "}quote: <strong>{datasetPreflight.quote_asset || "-"}</strong>
+                        </p>
+                        <p className="text-slate-300">
+                          Universe: <strong>{datasetPreflight.universe_name || "-"}</strong>
                           {" · "}timeframe: <strong>{datasetPreflight.timeframe || "-"}</strong>
+                          {" · "}request: <strong>{(datasetPreflight.symbols_requested || []).join(", ") || "-"}</strong>
+                        </p>
+                        <p className="text-slate-300">
+                          Scope efectivo: <strong>{(datasetPreflight.symbols_effective || datasetPreflight.symbols || []).join(", ") || "-"}</strong>
                         </p>
                         {datasetPreflight.date_range ? (
                           <p className="text-slate-400">
@@ -3952,30 +4296,44 @@ export default function BacktestsPage() {
                           </p>
                         ) : null}
                         <p className="text-slate-400">
-                          Research Batch:{" "}
-                          {datasetPreflight.can_run_batch ? "listo" : datasetPreflight.batch_blocking_reason || "bloqueado"}
+                          Research Batch: {datasetPreflight.can_run_batch ? "listo" : datasetPreflight.batch_blocking_reason || "bloqueado"}
                         </p>
                         <p className="text-slate-400">
-                          Modo Bestia:{" "}
-                          {datasetPreflight.can_run_beast ? "listo" : datasetPreflight.beast_blocking_reason || "bloqueado"}
+                          Modo Bestia: {datasetPreflight.can_run_beast ? "listo" : datasetPreflight.beast_blocking_reason || "bloqueado"}
                         </p>
-                        {datasetPreflight.dataset_hash ? (
+                        {datasetPreflight.dataset_hashes?.length ? (
+                          <p className="text-slate-400">
+                            Hashes dataset: <strong>{datasetPreflight.dataset_hashes.map((item) => shortHash(item, 12)).join(", ")}</strong>
+                          </p>
+                        ) : datasetPreflight.dataset_hash ? (
                           <p className="text-slate-400">
                             Hash dataset: <strong>{shortHash(datasetPreflight.dataset_hash, 12)}</strong>
                           </p>
                         ) : null}
-                        {datasetPreflight.blocking_reason ? (
-                          <p className="text-rose-300">{datasetPreflight.blocking_reason}</p>
+                        {datasetPreflight.eligible_symbols.length ? (
+                          <p className="text-emerald-200">
+                            Símbolos elegibles: <strong>{datasetPreflight.eligible_symbols.join(", ")}</strong>
+                          </p>
                         ) : null}
                         {datasetPreflight.ineligible_symbols.length ? (
                           <p className="text-amber-200">
-                            Simbolos no elegibles: <strong>{datasetPreflight.ineligible_symbols.join(", ")}</strong>
+                            Símbolos no elegibles: <strong>{datasetPreflight.ineligible_symbols.join(", ")}</strong>
                           </p>
                         ) : null}
-                        {datasetPreflight.eligible_symbols.length ? (
-                          <p className="text-emerald-200">
-                            Simbolos elegibles: <strong>{datasetPreflight.eligible_symbols.join(", ")}</strong>
+                        {datasetPreflight.research_scope?.blocking_reasons?.length ? (
+                          <p className="text-rose-300">
+                            Bloqueos scope: <strong>{datasetPreflight.research_scope.blocking_reasons.join(" · ")}</strong>
                           </p>
+                        ) : null}
+                        {datasetPreflight.blocking_reason ? <p className="text-rose-300">{datasetPreflight.blocking_reason}</p> : null}
+                        {datasetPreflight.missing_reasons.length ? (
+                          <p className="text-slate-500">Missing reasons: {datasetPreflight.missing_reasons.join(", ")}</p>
+                        ) : null}
+                        {datasetPreflight.warnings?.length ? (
+                          <p className="text-amber-300">Warnings: {datasetPreflight.warnings.join(" · ")}</p>
+                        ) : null}
+                        {datasetPreflight.hints?.length ? (
+                          <p className="text-slate-500">Hints: {datasetPreflight.hints.join(" · ")}</p>
                         ) : null}
                       </div>
                     ) : (
@@ -3990,6 +4348,19 @@ export default function BacktestsPage() {
                       <div className="mt-2 rounded border border-slate-800 bg-slate-900/70 p-2 text-[11px] text-slate-300">
                         <p className="font-semibold text-slate-100">Comando sugerido</p>
                         <code className="mt-1 block break-all text-cyan-300">{datasetPreflight.bootstrap_command}</code>
+                        {datasetPreflight.bootstrap_commands_by_symbol &&
+                        Object.keys(datasetPreflight.bootstrap_commands_by_symbol).filter((symbol) => datasetPreflight.bootstrap_commands_by_symbol?.[symbol]).length > 1 ? (
+                          <div className="mt-2 space-y-1">
+                            {Object.entries(datasetPreflight.bootstrap_commands_by_symbol)
+                              .filter(([, command]) => String(command || "").trim())
+                              .map(([symbol, command]) => (
+                                <div key={`bootstrap-${symbol}`}>
+                                  <p className="text-slate-400">{symbol}</p>
+                                  <code className="block break-all text-cyan-300">{command}</code>
+                                </div>
+                              ))}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                     {datasetPreflightError ? <p className="mt-2 text-[11px] text-amber-300">{datasetPreflightError}</p> : null}

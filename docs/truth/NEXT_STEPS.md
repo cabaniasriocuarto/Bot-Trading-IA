@@ -2,38 +2,50 @@
 
 Fecha: 2026-04-25
 
-## Siguiente paso exacto despues del preflight de arquitectura multi-simbolo - 2026-04-25
-- [x] Revalidar repo + `docs/truth` + Linear antes de programar:
-  - el `Bot Registry` ya persiste el scope operativo multi-simbolo del bot;
-  - `Execution` ya consume ese scope de forma bot-centrica;
-  - `Research Batch` y `Beast` siguen entrando por `symbol` puntual;
-  - no existe hoy una entidad CRUD global de `symbol set`.
-- [x] Cerrar la decision canonica de arquitectura:
-  - separar:
-    - `Entidad`
-      - `Bot`
-      - `Estrategia`
-    - `Trading Universe Scope`
-    - `Modo`;
-  - no abrir primero un `symbol set registry` global;
-  - persistir el scope operativo dentro del `Bot`;
-  - permitir que research reutilice ese scope o use uno manual sin volver a hacer a `Strategy` duena del universe.
-- [x] Alinear Linear con el nuevo frente:
-  - `RTLOPS-91` issue madre;
-  - `RTLOPS-92` contrato y reglas por modo;
-  - `RTLOPS-93` implementacion research `Batch/Beast`;
-  - `RTLOPS-94` reuso operativo `Shadow/Paper/Testnet/Live`.
+## Siguiente paso exacto despues de RTLOPS-93 - 2026-04-25
+- [x] Cerrar backend-first el carrier canonico de research:
+  - `entity_type`
+  - `entity_id`
+  - `scope_source`
+  - `strategy_ids`
+  - `universe_name`
+  - `symbols_requested`
+  - `symbols_effective`
+  - `eligible_symbols`
+  - `ineligible_symbols`
+  - `blocking_reasons`.
+- [x] Dejar `Research Batch` y `Beast` sobre la misma verdad:
+  - ambos usan el mismo `Trading Universe Scope`;
+  - ambos usan el mismo preflight canonico;
+  - ambos soportan multi-simbolo real y auditable.
+- [x] Cerrar la surface minima de research sin abrir operacion:
+  - selector explicito `Bot` vs `Estrategia`;
+  - multi-select con busqueda, chips, contador y lista seleccionada;
+  - elegibles / no elegibles / bloqueos visibles desde el payload backend;
+  - `Quick` sigue single-symbol.
+- [x] Revalidacion minima real del bloque:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "research_mass_backtest_start_rejects_missing_dataset or research_dataset_preflight_ready_payload or research_dataset_preflight_missing_blocks_cleanly or research_dataset_preflight_blocks_synthetic_even_with_real_dataset or research_dataset_preflight_bot_scope_multi_symbol_payload or research_dataset_preflight_strategy_scope_blocks_symbols_outside_universe or research_mass_backtest_start_forwards_bot_id or research_beast_endpoints_smoke or research_beast_start_rejects_missing_dataset or research_beast_start_accepts_orderflow_toggle" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL por resolucion existente de `.next/types/**/*.ts` en esta worktree, aun con archivos generados.
+- [x] Mantener el bloque chico y profesional:
+  - sin abrir `RTLOPS-94`
+  - sin `Shadow / Testnet / Live`
+  - sin CRUD global de `symbol set`
+  - sin refactor transversal
+  - sin reabrir `RTLOPS-89`.
 - [ ] Siguiente paso exacto recomendado:
-  - abrir implementacion de `RTLOPS-93`;
+  - abrir `RTLOPS-94`;
   - resolver ahi solo:
-    - selector explicito `Bot` vs `Estrategia` en research;
-    - `Trading Universe Scope` multi-simbolo reusable para `Batch/Beast`;
-    - preflight canonico sobre todo el scope;
-  - mantener fuera de `RTLOPS-93`:
-    - live console
-    - nueva entidad CRUD global de `symbol set`
+    - reutilizar el `Trading Universe Scope` del bot en `Shadow / Paper / Testnet / Live`
+    - mantener separada la UX de research de la operacion/deploy
+    - no abrir una surface paralela que vuelva a decidir simbolos fuera del bot;
+  - mantener fuera de `RTLOPS-94`:
+    - nueva UX grande de `Backtests`
+    - CRUD global de universos si no aparece evidencia nueva
     - refactor transversal de `Strategies` / `Execution`
-    - cambios live pesados.
+    - live console.
 
 ## Siguiente paso exacto despues de RTLOPS-90 - 2026-04-25
 - [x] Reordenar la surface principal de `Backtests` sin refactor masivo:

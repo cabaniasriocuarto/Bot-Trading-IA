@@ -2,6 +2,55 @@
 
 ## 2026-04-25
 
+### RTLOPS-93 - selector reusable Bot vs Estrategia + Trading Universe Scope auditable en Batch/Beast
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - extiende research con carrier canonico:
+      - `entity_type`
+      - `entity_id`
+      - `universe_name`
+      - `symbols[]`;
+    - agrega resolucion backend-first de `Trading Universe Scope` para research;
+    - valida:
+      - scope del bot
+      - pertenencia al pool del bot
+      - `universe_name` portable en crypto
+      - limite de simbolos
+      - simbolos elegibles / no elegibles;
+    - integra ese contrato al preflight, start de `Research Batch` y start de `Beast`;
+  - `rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py`
+    - ejecuta research multi-simbolo real por `variantes x folds x simbolos`;
+    - agrega fold summaries agregados sin perder trazabilidad por simbolo;
+    - extiende `dataset_preflight` con scope research, `dataset_hashes`, manifests y bootstrap por simbolo;
+  - `rtlab_autotrader/tests/test_web_live_ready.py`
+    - cubre:
+      - `entity_type=bot`
+      - `entity_type=strategy`
+      - payload multi-simbolo research
+      - bloqueo por simbolos fuera del universe portable;
+  - `rtlab_autotrader/tests/test_mass_backtest_engine.py`
+    - sigue validando la ejecucion del motor con el slice actualizado.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
+    - agrega selector explicito `Correr Bot` / `Correr Estrategias`;
+    - agrega `Trading Universe Scope` reusable para `Research Batch` y `Beast`;
+    - expone busqueda, chips, contador y seleccion multi-simbolo visible;
+    - usa el mismo carrier backend del preflight y de los starts de batch/beast;
+    - muestra entidad, scope source, universe, quote, request/effective, elegibles, no elegibles y bloqueos del preflight.
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py rtlab_autotrader/rtlab_core/src/research/mass_backtest_engine.py` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_web_live_ready.py -k "research_mass_backtest_start_rejects_missing_dataset or research_dataset_preflight_ready_payload or research_dataset_preflight_missing_blocks_cleanly or research_dataset_preflight_blocks_synthetic_even_with_real_dataset or research_dataset_preflight_bot_scope_multi_symbol_payload or research_dataset_preflight_strategy_scope_blocks_symbols_outside_universe or research_mass_backtest_start_forwards_bot_id or research_beast_endpoints_smoke or research_beast_start_rejects_missing_dataset or research_beast_start_accepts_orderflow_toggle" -q` -> PASS
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m pytest rtlab_autotrader/tests/test_mass_backtest_engine.py -q` -> PASS
+  - `npm.cmd run build` -> PASS
+  - `npm.cmd run typecheck` -> FAIL por resolucion existente de `.next/types/**/*.ts` en esta worktree; no abre error de tipos del slice dentro de `next build`.
+- Limites honestos:
+  - no abre `RTLOPS-94`;
+  - no toca `Shadow / Testnet / Live`;
+  - no abre CRUD global de universos;
+  - no vuelve multi-simbolo a `Quick`.
+- Siguiente paso exacto:
+  - abrir `RTLOPS-94` para reusar el `Trading Universe Scope` del bot en operacion/deploy sin mezclar research con live.
+
 ### Preflight de arquitectura multi-simbolo - entidad, scope y modos
 - Decision real asentada en repo + docs/truth + Linear:
   - el programa ya tiene una base canonica multi-simbolo por bot en el `Bot Registry`;

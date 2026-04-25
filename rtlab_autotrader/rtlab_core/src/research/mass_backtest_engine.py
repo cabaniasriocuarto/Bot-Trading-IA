@@ -779,6 +779,121 @@ class MassBacktestEngine:
             "microstructure": micro_row,
         }
 
+    def _aggregate_fold_summaries(self, *, rows: list[dict[str, Any]], fold: FoldWindow) -> dict[str, Any]:
+        if not rows:
+            return {
+                "fold": fold.fold_index,
+                "train_start": fold.train_start,
+                "train_end": fold.train_end,
+                "test_start": fold.test_start,
+                "test_end": fold.test_end,
+                "regime_label": "range",
+                "sharpe_oos": 0.0,
+                "sortino_oos": 0.0,
+                "calmar_oos": 0.0,
+                "max_dd_oos_pct": 0.0,
+                "expectancy_net_usd": 0.0,
+                "trade_count": 0,
+                "trade_count_by_symbol": {},
+                "min_trades_per_symbol": 0,
+                "gross_pnl": 0.0,
+                "net_pnl": 0.0,
+                "costs_total": 0.0,
+                "costs_ratio": 0.0,
+                "winrate": 0.0,
+                "profit_factor": 0.0,
+                "dataset_hash": "",
+                "provenance": {},
+                "run_id": "",
+                "evaluation_mode": "engine_raw",
+                "microstructure": {},
+            }
+
+        symbol_counts: dict[str, int] = {}
+        dataset_hashes: set[str] = set()
+        run_ids: list[str] = []
+        total_trade_count = 0
+        gross_total = 0.0
+        net_total = 0.0
+        costs_total = 0.0
+
+        def _weighted_avg(key: str) -> float:
+            pairs = [(_f(row.get(key)), max(1, _i(row.get("trade_count"), 0))) for row in rows]
+            total_weight = sum(weight for _, weight in pairs)
+            if total_weight <= 0:
+                return round(_avg([value for value, _ in pairs]), 6)
+            return round(sum(value * weight for value, weight in pairs) / total_weight, 6)
+
+        for row in rows:
+            total_trade_count += _i(row.get("trade_count"), 0)
+            gross_total += _f(row.get("gross_pnl"))
+            net_total += _f(row.get("net_pnl"))
+            costs_total += _f(row.get("costs_total"))
+            for symbol, count in ((row.get("trade_count_by_symbol") or {}) if isinstance(row.get("trade_count_by_symbol"), dict) else {}).items():
+                symbol_n = str(symbol or "").strip().upper()
+                if not symbol_n:
+                    continue
+                symbol_counts[symbol_n] = symbol_counts.get(symbol_n, 0) + max(0, _i(count, 0))
+            dataset_hash = str(row.get("dataset_hash") or "").strip()
+            if dataset_hash:
+                dataset_hashes.add(dataset_hash)
+            for dataset_hash in (
+                ((row.get("provenance") or {}).get("dataset_hashes") or [])
+                if isinstance(row.get("provenance"), dict) and isinstance((row.get("provenance") or {}).get("dataset_hashes"), list)
+                else []
+            ):
+                if str(dataset_hash).strip():
+                    dataset_hashes.add(str(dataset_hash).strip())
+            run_id = str(row.get("run_id") or "").strip()
+            if run_id:
+                run_ids.append(run_id)
+
+        costs_ratio = 0.0
+        if abs(gross_total) > 0:
+            costs_ratio = round(costs_total / gross_total, 6)
+        else:
+            costs_ratio = round(_avg([_f(row.get("costs_ratio")) for row in rows]), 6)
+
+        provenance_flags = [
+            bool((row.get("provenance") or {}).get("strict_strategy_id"))
+            for row in rows
+            if isinstance(row.get("provenance"), dict) and "strict_strategy_id" in (row.get("provenance") or {})
+        ]
+        provenance = {
+            "dataset_hashes": sorted(dataset_hashes),
+            "run_ids": run_ids,
+        }
+        if provenance_flags:
+            provenance["strict_strategy_id"] = bool(provenance_flags) and all(provenance_flags)
+
+        return {
+            "fold": fold.fold_index,
+            "train_start": fold.train_start,
+            "train_end": fold.train_end,
+            "test_start": fold.test_start,
+            "test_end": fold.test_end,
+            "regime_label": str(rows[0].get("regime_label") or "range"),
+            "sharpe_oos": _weighted_avg("sharpe_oos"),
+            "sortino_oos": _weighted_avg("sortino_oos"),
+            "calmar_oos": _weighted_avg("calmar_oos"),
+            "max_dd_oos_pct": _weighted_avg("max_dd_oos_pct"),
+            "expectancy_net_usd": _weighted_avg("expectancy_net_usd"),
+            "trade_count": int(total_trade_count),
+            "trade_count_by_symbol": symbol_counts,
+            "min_trades_per_symbol": min(symbol_counts.values()) if symbol_counts else 0,
+            "gross_pnl": round(gross_total, 6),
+            "net_pnl": round(net_total, 6),
+            "costs_total": round(costs_total, 6),
+            "costs_ratio": costs_ratio,
+            "winrate": _weighted_avg("winrate"),
+            "profit_factor": _weighted_avg("profit_factor"),
+            "dataset_hash": next(iter(dataset_hashes)) if len(dataset_hashes) == 1 else "",
+            "provenance": provenance,
+            "run_id": run_ids[0] if len(run_ids) == 1 else "",
+            "evaluation_mode": str(rows[0].get("evaluation_mode") or "engine_raw"),
+            "microstructure": rows[0].get("microstructure") if isinstance(rows[0].get("microstructure"), dict) else {},
+        }
+
     def _extract_trade_count_by_symbol(self, *, run: dict[str, Any], fallback_trade_count: int) -> dict[str, int]:
         out: dict[str, int] = {}
         trades = run.get("trades") if isinstance(run.get("trades"), list) else []
@@ -1756,9 +1871,18 @@ class MassBacktestEngine:
             max_variants_per_strategy=_i(cfg.get("max_variants_per_strategy"), 8),
             selected_strategy_ids=[str(x) for x in (cfg.get("strategy_ids") or [])],
         )
-        total_tasks = max(1, len(variants) * len(folds))
+        universe_symbols = [str(x).strip().upper() for x in (cfg.get("resolved_universe") or cfg.get("universe") or []) if str(x).strip()]
+        if not universe_symbols:
+            universe_symbols = [str(cfg.get("symbol") or "BTCUSDT").strip().upper()]
+        total_tasks = max(1, len(variants) * len(folds) * len(universe_symbols))
         self._upsert_batch_catalog(batch_id=run_id, state="running", cfg=cfg, summary={"variants_total": len(variants), "run_count_done": 0, "run_count_failed": 0})
-        self._write_status(run_id, state="RUNNING", config=cfg, progress={"total_tasks": total_tasks, "completed_tasks": 0, "pct": 0}, logs=[f"Iniciando {len(variants)} variantes x {len(folds)} folds"])
+        self._write_status(
+            run_id,
+            state="RUNNING",
+            config=cfg,
+            progress={"total_tasks": total_tasks, "completed_tasks": 0, "pct": 0},
+            logs=[f"Iniciando {len(variants)} variantes x {len(folds)} folds x {len(universe_symbols)} simbolos"],
+        )
         ranked_input: list[dict[str, Any]] = []
         completed = 0
         surrogate_meta = cfg.get("resolved_surrogate_adjustments") if isinstance(cfg.get("resolved_surrogate_adjustments"), dict) else {}
@@ -1768,23 +1892,33 @@ class MassBacktestEngine:
         for idx, variant in enumerate(variants, 1):
             fold_rows: list[dict[str, Any]] = []
             for fold in folds:
-                costs_cfg = self.realistic_cost_model(cfg.get("costs") if isinstance(cfg.get("costs"), dict) else {})
-                base_run = backtest_callback(variant, fold, costs_cfg)
-                if enable_surrogate_adjustments:
-                    run = self._adjust_run(base_run, variant=variant, fold=fold)
-                else:
-                    run = copy.deepcopy(base_run)
-                    run["evaluation_mode"] = "engine_raw"
-                fold_rows.append(self._fold_summary(run, fold, micro=self._micro_fold_snapshot(micro_debug=micro_debug, fold=fold)))
-                completed += 1
-                if completed == 1 or completed % 5 == 0 or completed == total_tasks:
-                    self._write_status(
-                        run_id,
-                        state="RUNNING",
-                        config=cfg,
-                        progress={"total_tasks": total_tasks, "completed_tasks": completed, "pct": round(completed * 100 / total_tasks, 2), "current_variant": idx},
-                        logs=[f"Procesado {completed}/{total_tasks} folds ({variant['variant_id']})"],
+                fold_symbol_rows: list[dict[str, Any]] = []
+                for research_symbol in universe_symbols:
+                    costs_cfg = self.realistic_cost_model(cfg.get("costs") if isinstance(cfg.get("costs"), dict) else {})
+                    symbol_variant = dict(variant, research_symbol=research_symbol)
+                    base_run = backtest_callback(symbol_variant, fold, costs_cfg)
+                    if enable_surrogate_adjustments:
+                        run = self._adjust_run(base_run, variant=symbol_variant, fold=fold)
+                    else:
+                        run = copy.deepcopy(base_run)
+                        run["evaluation_mode"] = "engine_raw"
+                    fold_symbol_rows.append(
+                        self._fold_summary(
+                            run,
+                            fold,
+                            micro=self._micro_fold_snapshot(micro_debug=micro_debug, fold=fold),
+                        )
                     )
+                    completed += 1
+                    if completed == 1 or completed % 5 == 0 or completed == total_tasks:
+                        self._write_status(
+                            run_id,
+                            state="RUNNING",
+                            config=cfg,
+                            progress={"total_tasks": total_tasks, "completed_tasks": completed, "pct": round(completed * 100 / total_tasks, 2), "current_variant": idx},
+                            logs=[f"Procesado {completed}/{total_tasks} symbol-folds ({variant['variant_id']})"],
+                        )
+                fold_rows.append(self._aggregate_fold_summaries(rows=fold_symbol_rows, fold=fold))
             strict_flags = [
                 bool((fold.get("provenance") or {}).get("strict_strategy_id"))
                 for fold in fold_rows
@@ -1810,7 +1944,23 @@ class MassBacktestEngine:
                 "stability": robust.get("stability", 0.0),
                 "consistency_folds": robust.get("consistency_folds", 0.0),
                 "jitter_pass_rate": robust.get("jitter_pass_rate", 0.0),
-                "dataset_hashes": sorted({str(x.get("dataset_hash") or "") for x in fold_rows if str(x.get("dataset_hash") or "")}),
+                "dataset_hashes": sorted(
+                    {
+                        str(x.get("dataset_hash") or "")
+                        for x in fold_rows
+                        if str(x.get("dataset_hash") or "")
+                    }
+                    | {
+                        str(dataset_hash)
+                        for x in fold_rows
+                        for dataset_hash in (
+                            ((x.get("provenance") or {}).get("dataset_hashes") or [])
+                            if isinstance(x.get("provenance"), dict) and isinstance((x.get("provenance") or {}).get("dataset_hashes"), list)
+                            else []
+                        )
+                        if str(dataset_hash)
+                    }
+                ),
                 "vpin_cdf_oos": round(
                     _avg(
                         [
@@ -2190,7 +2340,10 @@ class MassBacktestCoordinator:
         strategy_count = max(1, len([s for s in strategies if isinstance(s, dict)]))
         variants = max(1, _i(cfg.get("max_variants_per_strategy"), 1))
         folds = max(1, _i(cfg.get("max_folds"), 1))
-        return max(1, strategy_count * variants * folds)
+        symbol_count = len([str(x) for x in (cfg.get("resolved_universe") or cfg.get("universe") or cfg.get("symbols_effective") or []) if str(x).strip()])
+        if symbol_count <= 0:
+            symbol_count = 1
+        return max(1, strategy_count * variants * folds * symbol_count)
 
     def _spawn_job_thread_locked(
         self,
@@ -2338,39 +2491,129 @@ class MassBacktestCoordinator:
 
     def dataset_preflight(self, *, config: dict[str, Any], historical_runs: list[dict[str, Any]], mode: str = "batch") -> dict[str, Any]:
         preview_cfg = copy.deepcopy(config)
+        research_scope = preview_cfg.get("research_scope") if isinstance(preview_cfg.get("research_scope"), dict) else {}
         universe = self.engine.build_universe(config=preview_cfg, historical_runs=historical_runs)
         preview_cfg["resolved_universe"] = universe
         market = str(preview_cfg.get("market") or "crypto")
-        symbol = str(preview_cfg.get("symbol") or (universe[0] if universe else "BTCUSDT")).upper()
         timeframe = str(preview_cfg.get("timeframe") or "5m")
         start = str(preview_cfg.get("start") or "2024-01-01")
         end = str(preview_cfg.get("end") or "2024-12-31")
         data_mode = str(preview_cfg.get("data_mode") or "dataset").lower()
         provider = build_data_provider(mode=data_mode, user_data_dir=self.engine.user_data_dir, catalog=self.engine.catalog)
-        dataset_info = provider.resolve(
-            market=market,
-            symbol=symbol,
-            timeframe=timeframe,
-            start=start,
-            end=end,
-        )
         normalized_mode = str(mode or "batch").strip().lower()
         synthetic_requested = str(preview_cfg.get("dataset_source") or "auto").strip().lower() in {
             "synthetic",
             "synthetic_seeded",
             "synthetic_fallback",
         }
-        dataset_ready = bool(getattr(dataset_info, "ready", False))
-        warnings = [str(x) for x in (getattr(dataset_info, "warnings", None) or []) if str(x).strip()]
-        hints = [str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()]
-        market_family = self._preflight_market_family(market=market, cfg=preview_cfg, dataset_info=dataset_info)
-        bootstrap_command = self._preflight_bootstrap_command(
-            market=market,
-            market_family=market_family,
-            symbol=symbol,
-            start=start,
-            end=end,
-        )
+        requested_symbols = [
+            str(item).strip().upper()
+            for item in (
+                research_scope.get("symbols_requested")
+                if isinstance(research_scope.get("symbols_requested"), list)
+                else preview_cfg.get("symbols_requested")
+                if isinstance(preview_cfg.get("symbols_requested"), list)
+                else preview_cfg.get("symbols")
+                if isinstance(preview_cfg.get("symbols"), list)
+                else [preview_cfg.get("symbol")]
+            )
+            if str(item).strip()
+        ]
+        scope_blocking_reasons = [
+            str(item)
+            for item in (
+                research_scope.get("blocking_reasons")
+                if isinstance(research_scope.get("blocking_reasons"), list)
+                else preview_cfg.get("scope_blocking_reasons")
+                if isinstance(preview_cfg.get("scope_blocking_reasons"), list)
+                else []
+            )
+            if str(item).strip()
+        ]
+        scope_ineligible_symbols = [
+            str(item).strip().upper()
+            for item in (
+                research_scope.get("ineligible_symbols")
+                if isinstance(research_scope.get("ineligible_symbols"), list)
+                else preview_cfg.get("scope_ineligible_symbols")
+                if isinstance(preview_cfg.get("scope_ineligible_symbols"), list)
+                else []
+            )
+            if str(item).strip()
+        ]
+        data_providers_by_symbol: dict[str, Any] = {}
+        bootstrap_commands_by_symbol: dict[str, str] = {}
+        warnings: list[str] = []
+        hints: list[str] = []
+        eligible_symbols: list[str] = []
+        dataset_missing_symbols: list[str] = []
+        dataset_hashes: list[str] = []
+        dataset_manifest_paths: list[str] = []
+        first_dataset_info = None
+        first_market_family = str(research_scope.get("market_family") or preview_cfg.get("market_family") or "").strip().lower()
+        first_dataset_status = "missing"
+        first_dataset_source_type = "missing"
+        missing_dataset_messages: list[str] = []
+
+        for resolved_symbol in universe:
+            symbol = str(resolved_symbol or "").strip().upper()
+            if not symbol:
+                continue
+            dataset_info = provider.resolve(
+                market=market,
+                symbol=symbol,
+                timeframe=timeframe,
+                start=start,
+                end=end,
+            )
+            if first_dataset_info is None:
+                first_dataset_info = dataset_info
+            data_providers_by_symbol[symbol] = dataset_info.to_dict()
+            warnings.extend([str(x) for x in (getattr(dataset_info, "warnings", None) or []) if str(x).strip()])
+            hints.extend([str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()])
+            symbol_market_family = self._preflight_market_family(market=market, cfg=preview_cfg, dataset_info=dataset_info)
+            if symbol_market_family and not first_market_family:
+                first_market_family = symbol_market_family
+            if bool(getattr(dataset_info, "ready", False)):
+                eligible_symbols.append(symbol)
+                dataset_hash = str(getattr(dataset_info, "dataset_hash", "") or "")
+                if dataset_hash:
+                    dataset_hashes.append(dataset_hash)
+                manifest = dataset_info.manifest if isinstance(getattr(dataset_info, "manifest", None), dict) else {}
+                manifest_path = str(manifest.get("manifest_path") or "")
+                if manifest_path:
+                    dataset_manifest_paths.append(manifest_path)
+                first_dataset_status = "ready"
+                first_dataset_source_type = "real"
+            else:
+                dataset_missing_symbols.append(symbol)
+                missing_dataset_messages.append(
+                    self._preflight_missing_dataset_message(
+                        market=market,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        data_mode=data_mode,
+                        hints=[str(x) for x in (getattr(dataset_info, "hints", None) or []) if str(x).strip()],
+                    )
+                )
+                bootstrap_command = self._preflight_bootstrap_command(
+                    market=market,
+                    market_family=symbol_market_family or first_market_family,
+                    symbol=symbol,
+                    start=start,
+                    end=end,
+                )
+                if bootstrap_command:
+                    bootstrap_commands_by_symbol[symbol] = bootstrap_command
+
+        warnings = list(dict.fromkeys(warnings))
+        hints = list(dict.fromkeys(hints))
+        dataset_hashes = list(dict.fromkeys(dataset_hashes))
+        dataset_manifest_paths = list(dict.fromkeys(dataset_manifest_paths))
+        effective_symbols = [str(item).strip().upper() for item in universe if str(item).strip()]
+        first_symbol = effective_symbols[0] if effective_symbols else None
+        market_family = first_market_family or None
+        quote_asset = str(research_scope.get("quote_asset") or preview_cfg.get("quote_asset") or "").strip().upper() or None
         batch_blocking_reason = ""
         beast_blocking_reason = ""
         dataset_status = "unknown"
@@ -2390,44 +2633,76 @@ class MassBacktestCoordinator:
             batch_blocking_reason = "Research Batch requiere data_mode='dataset' con dataset real reproducible."
             beast_blocking_reason = "Modo Bestia requiere data_mode='dataset' con dataset real reproducible."
             missing_reasons = list(dict.fromkeys(["data_mode_not_dataset", *warnings, *hints]))
-        elif dataset_ready:
+        elif scope_blocking_reasons or not effective_symbols:
+            dataset_ready = False
+            dataset_status = "invalid"
+            dataset_source_type = first_dataset_source_type if eligible_symbols else "unknown"
+            batch_blocking_reason = " | ".join(scope_blocking_reasons or ["El Trading Universe Scope de research quedó vacío."])
+            beast_blocking_reason = batch_blocking_reason
+            missing_reasons = ["research_scope_invalid"]
+        elif len(eligible_symbols) == len(effective_symbols):
+            dataset_ready = True
             dataset_status = "ready"
             dataset_source_type = "real"
         else:
             dataset_status = "missing"
             dataset_source_type = "missing"
-            missing_reason = self._preflight_missing_dataset_message(
-                market=market,
-                symbol=symbol,
-                timeframe=timeframe,
-                data_mode=data_mode,
-                hints=hints,
-            )
-            batch_blocking_reason = missing_reason
-            beast_blocking_reason = missing_reason
+            dataset_ready = False
+            blocking_text = " | ".join([str(item) for item in missing_dataset_messages if str(item).strip()][:3])
+            batch_blocking_reason = blocking_text or "No hay dataset real disponible para el scope solicitado."
+            beast_blocking_reason = batch_blocking_reason
             missing_reasons = list(dict.fromkeys(["dataset_not_ready", *warnings, *hints]))
         beast_policy = self._beast_policy(preview_cfg)
         if not batch_blocking_reason and not beast_policy.get("enabled"):
             beast_blocking_reason = "Modo Bestia deshabilitado o sin policy activa."
-        manifest = dataset_info.manifest if isinstance(getattr(dataset_info, "manifest", None), dict) else {}
-        dataset_manifest_path = str(manifest.get("manifest_path") or "")
         blocking_reason = beast_blocking_reason if normalized_mode == "beast" else batch_blocking_reason
         dataset_root = str(self.engine.catalog.data_root)
-        resolved_symbol = symbol or None
-        symbols = [resolved_symbol] if resolved_symbol else []
-        eligible_symbols = symbols if dataset_ready else []
-        ineligible_symbols = [] if dataset_ready else symbols
+        dataset_manifest_path = dataset_manifest_paths[0] if dataset_manifest_paths else ""
+        dataset_hash = dataset_hashes[0] if dataset_hashes else ""
+        ineligible_symbols = list(dict.fromkeys([*scope_ineligible_symbols, *dataset_missing_symbols]))
+        if synthetic_requested or data_mode != "dataset":
+            ineligible_symbols = list(dict.fromkeys([*scope_ineligible_symbols, *effective_symbols, *requested_symbols]))
+            eligible_symbols = []
+        symbols = list(effective_symbols)
+        research_scope_payload = copy.deepcopy(research_scope) if isinstance(research_scope, dict) else {}
+        research_scope_payload.update(
+            {
+                "contract_version": str(research_scope_payload.get("contract_version") or preview_cfg.get("research_scope", {}).get("contract_version") or ""),
+                "entity_type": str(research_scope_payload.get("entity_type") or preview_cfg.get("entity_type") or "").strip().lower() or None,
+                "entity_id": str(research_scope_payload.get("entity_id") or preview_cfg.get("entity_id") or "").strip() or None,
+                "scope_source": str(research_scope_payload.get("scope_source") or preview_cfg.get("scope_source") or "").strip() or None,
+                "strategy_ids": [str(x) for x in (research_scope_payload.get("strategy_ids") or preview_cfg.get("strategy_ids") or []) if str(x).strip()],
+                "market": str(research_scope_payload.get("market") or preview_cfg.get("market") or market),
+                "market_family": market_family,
+                "quote_asset": quote_asset,
+                "universe_name": str(research_scope_payload.get("universe_name") or preview_cfg.get("universe_name") or "").strip() or None,
+                "max_symbols_allowed": int(research_scope_payload.get("max_symbols_allowed") or preview_cfg.get("max_symbols_allowed") or 0 or 12),
+                "symbols_requested": requested_symbols,
+                "symbols_effective": symbols,
+                "eligible_symbols": eligible_symbols,
+                "ineligible_symbols": ineligible_symbols,
+                "blocking_reasons": scope_blocking_reasons,
+            }
+        )
         preflight = {
             "mode": "beast" if normalized_mode == "beast" else "batch",
+            "entity_type": research_scope_payload.get("entity_type"),
+            "entity_id": research_scope_payload.get("entity_id"),
+            "scope_source": research_scope_payload.get("scope_source"),
+            "universe_name": research_scope_payload.get("universe_name"),
             "dataset_ready": dataset_ready,
             "dataset_status": dataset_status,
             "dataset_source_type": dataset_source_type,
             "dataset_root": dataset_root,
-            "bootstrap_required": bool(not dataset_ready and dataset_status != "synthetic_blocked" and bootstrap_command),
-            "bootstrap_command": bootstrap_command,
+            "bootstrap_required": bool(not dataset_ready and dataset_status != "synthetic_blocked" and bootstrap_commands_by_symbol),
+            "bootstrap_command": next(iter(bootstrap_commands_by_symbol.values()), ""),
+            "bootstrap_commands_by_symbol": bootstrap_commands_by_symbol,
             "market_family": market_family,
-            "symbol": resolved_symbol,
+            "quote_asset": quote_asset,
+            "symbol": first_symbol,
             "symbols": symbols,
+            "symbols_requested": requested_symbols,
+            "symbols_effective": symbols,
             "timeframe": timeframe or None,
             "date_range": {"start": start, "end": end} if start and end else None,
             "can_run_batch": bool(dataset_ready),
@@ -2438,12 +2713,16 @@ class MassBacktestCoordinator:
             "ineligible_symbols": ineligible_symbols,
             "batch_blocking_reason": batch_blocking_reason,
             "beast_blocking_reason": beast_blocking_reason,
-            "dataset_hash": str(getattr(dataset_info, "dataset_hash", "") or ""),
+            "dataset_hash": dataset_hash,
+            "dataset_hashes": dataset_hashes,
             "dataset_manifest_path": dataset_manifest_path,
+            "dataset_manifest_paths": dataset_manifest_paths,
             "warnings": warnings,
             "hints": hints,
             "resolved_universe": universe,
-            "data_provider": dataset_info.to_dict(),
+            "data_provider": data_providers_by_symbol.get(first_symbol or "", {}),
+            "data_providers_by_symbol": data_providers_by_symbol,
+            "research_scope": research_scope_payload,
         }
         return preflight
 
@@ -2455,6 +2734,11 @@ class MassBacktestCoordinator:
         updates = {
             "resolved_universe": copy.deepcopy(preflight.get("resolved_universe") or []),
             "data_provider": copy.deepcopy(preflight.get("data_provider") or {}),
+            "research_scope": copy.deepcopy(preflight.get("research_scope") or {}),
+            "symbols_requested": copy.deepcopy(preflight.get("symbols_requested") or []),
+            "symbols_effective": copy.deepcopy(preflight.get("symbols_effective") or []),
+            "scope_eligible_symbols": copy.deepcopy(preflight.get("eligible_symbols") or []),
+            "scope_ineligible_symbols": copy.deepcopy(preflight.get("ineligible_symbols") or []),
         }
         if not str(preview_cfg.get("symbol") or "").strip() and str(preflight.get("symbol") or "").strip():
             updates["symbol"] = str(preflight.get("symbol") or "").strip()
