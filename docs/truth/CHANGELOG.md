@@ -2,6 +2,36 @@
 
 ## 2026-04-25
 
+### Preflight de arquitectura multi-simbolo - entidad, scope y modos
+- Decision real asentada en repo + docs/truth + Linear:
+  - el programa ya tiene una base canonica multi-simbolo por bot en el `Bot Registry`;
+  - `Backtests` sigue usando `symbol` puntual para `Research Batch/Beast`;
+  - no existe hoy una entidad CRUD separada de `symbol set` reusable.
+- Decision canonica resultante:
+  - separar:
+    - `Entidad`
+      - `Bot`
+      - `Estrategia`
+    - `Trading Universe Scope`
+    - `Modo`;
+  - no abrir primero un `symbol set registry` global;
+  - si abrir un contrato canonico reusable de `Trading Universe Scope`:
+    - persistido en `Bot` para operacion;
+    - reusable en research como scope heredado o manual.
+- Reglas cerradas para el siguiente frente:
+  - `Quick` sigue single-symbol;
+  - `Research Batch` y `Beast` deben compartir el mismo scope multi-simbolo y el mismo preflight;
+  - `Shadow / Paper / Testnet / Live` deben reutilizar el scope persistido del bot;
+  - cap inicial de hasta `12` simbolos, una sola `market_family`, una sola `quote_asset` y sin pruning silencioso en v1.
+- Linear alineada:
+  - `RTLOPS-91`
+  - `RTLOPS-92`
+  - `RTLOPS-93`
+  - `RTLOPS-94`
+- Siguiente paso exacto:
+  - programar `RTLOPS-93` como primer bloque de implementacion;
+  - dejar `RTLOPS-94` para el reuso operativo posterior.
+
 ### RTLOPS-90 - reordenamiento UX Backtests sin refactor masivo
 - Cambio real aplicado en frontend:
   - `rtlab_dashboard/src/app/(app)/backtests/page.tsx`
