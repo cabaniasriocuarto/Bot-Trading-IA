@@ -737,7 +737,11 @@ class ResearchChangePointsBody(BaseModel):
 
 class ResearchMassBacktestStartBody(BaseModel):
     strategy_ids: list[str] | None = None
+    entity_type: Literal["bot", "strategy"] = "strategy"
+    entity_id: str | None = None
     bot_id: str | None = None
+    universe_name: str | None = None
+    symbols: list[str] | None = None
     market: Literal["crypto", "forex", "equities"] = "crypto"
     symbol: str = "BTCUSDT"
     timeframe: Literal["5m", "10m", "15m"] = "5m"
@@ -887,6 +891,9 @@ BOT_DEFAULT_CAPITAL_BASE_USD = 10000.0
 BOT_DEFAULT_RISK_PROFILE = "medium"
 BOT_MAX_LIVE_SYMBOLS = 12
 BOT_MAX_POOL_STRATEGIES = 15
+RESEARCH_SCOPE_CONTRACT_VERSION = "rtlops93/v1"
+RESEARCH_SCOPE_ALLOWED_ENTITY_TYPES = ("bot", "strategy")
+RESEARCH_SCOPE_MAX_SYMBOLS = BOT_MAX_LIVE_SYMBOLS
 BOT_MULTI_SYMBOL_CONTRACT_VERSION = "rtlops72/v1"
 BOT_MULTI_SYMBOL_STORAGE_FIELDS = ("universe_name", "universe", "max_live_symbols")
 BOT_MULTI_SYMBOL_MAX_CONFIGURED_SYMBOLS = BOT_MAX_LIVE_SYMBOLS
@@ -12724,7 +12731,7 @@ def _learning_eval_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 def _mass_backtest_eval_fold(variant: dict[str, Any], fold: Any, costs: dict[str, Any], base_cfg: dict[str, Any]) -> dict[str, Any]:
     strategy_id = str(variant.get("strategy_id") or DEFAULT_STRATEGY_ID)
     market = str(base_cfg.get("market") or "crypto")
-    symbol = str(base_cfg.get("symbol") or "BTCUSDT")
+    symbol = str(variant.get("research_symbol") or base_cfg.get("symbol") or "BTCUSDT")
     timeframe = str(base_cfg.get("timeframe") or "5m")
     data_source = str(base_cfg.get("dataset_source") or "auto").lower()
     execution_mode = str(base_cfg.get("execution_mode") or "research").strip().lower()
@@ -16285,9 +16292,192 @@ def create_app() -> FastAPI:
                 "error": str(exc),
             }
 
+    def _normalize_research_symbols(value: Any) -> list[str]:
+        raw_values = value if isinstance(value, list) else [value]
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_values:
+            normalized = normalize_symbol(str(raw or ""))
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            out.append(normalized)
+        return out
+
+    def _normalize_research_strategy_ids(value: Any) -> list[str]:
+        raw_values = value if isinstance(value, list) else [value]
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_values:
+            normalized = str(raw or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            out.append(normalized)
+        return out
+
+    def _research_universe_index() -> dict[str, dict[str, Any]]:
+        payload = store.instrument_universes.summary()
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        return {
+            str(row.get("name") or "").strip(): row
+            for row in items
+            if isinstance(row, dict) and str(row.get("name") or "").strip()
+        }
+
+    def _research_quote_asset(universe_item: dict[str, Any] | None) -> str | None:
+        filters = universe_item.get("filters_applied") if isinstance(universe_item, dict) and isinstance(universe_item.get("filters_applied"), dict) else {}
+        quote_assets = [str(item).strip().upper() for item in (filters.get("quote_assets") or []) if str(item).strip()]
+        unique = sorted({item for item in quote_assets if item})
+        return unique[0] if len(unique) == 1 else None
+
+    def _resolve_research_scope(cfg: dict[str, Any]) -> dict[str, Any]:
+        market = normalize_market(str(cfg.get("market") or "crypto"))
+        requested_symbols = _normalize_research_symbols(cfg.get("symbols"))
+        if not requested_symbols and str(cfg.get("symbol") or "").strip():
+            requested_symbols = _normalize_research_symbols([cfg.get("symbol")])
+
+        strategy_rows = store.list_strategies()
+        strategy_index = {
+            str(row.get("id") or "").strip(): row
+            for row in strategy_rows
+            if isinstance(row, dict) and str(row.get("id") or "").strip()
+        }
+        strategy_ids = _normalize_research_strategy_ids(cfg.get("strategy_ids"))
+        missing_strategy_ids = [sid for sid in strategy_ids if sid not in strategy_index]
+
+        bot_hint = str(cfg.get("bot_id") or "").strip()
+        entity_type = str(cfg.get("entity_type") or ("bot" if bot_hint else "strategy")).strip().lower()
+        if entity_type not in RESEARCH_SCOPE_ALLOWED_ENTITY_TYPES:
+            entity_type = "bot" if bot_hint else "strategy"
+        entity_id = str(cfg.get("entity_id") or "").strip() or None
+
+        universe_index = _research_universe_index()
+        blocking_reasons: list[str] = []
+        ineligible_symbols: list[str] = []
+        symbols_effective: list[str] = []
+        universe_name = str(cfg.get("universe_name") or "").strip() or None
+        market_family = str(cfg.get("market_family") or "").strip().lower() or None
+        quote_asset: str | None = None
+        scope_source = "manual_scope"
+
+        if entity_type == "bot":
+            bot_id = entity_id or bot_hint
+            entity_id = bot_id or None
+            if not bot_id:
+                blocking_reasons.append("entity_type=bot requiere entity_id o bot_id.")
+            else:
+                bot = store.bot_or_404(bot_id)
+                multi_symbol = store.bot_multi_symbol_or_404(bot_id)
+                bot_symbols = _normalize_research_symbols(multi_symbol.get("symbols"))
+                requested_symbols = requested_symbols or list(bot_symbols)
+                universe_name = str(multi_symbol.get("universe_name") or "").strip() or None
+                market_family = str(multi_symbol.get("universe_family") or "").strip().lower() or market_family
+                quote_asset = _research_quote_asset(universe_index.get(universe_name or ""))
+                if not bot_symbols:
+                    blocking_reasons.append("El bot elegido no tiene scope multi-símbolo configurable.")
+                ineligible_symbols = [symbol for symbol in requested_symbols if symbol not in bot_symbols]
+                symbols_effective = [symbol for symbol in requested_symbols if symbol in bot_symbols]
+                if not symbols_effective:
+                    blocking_reasons.append("El scope efectivo del bot quedó vacío para research.")
+                if ineligible_symbols:
+                    blocking_reasons.append("Símbolos fuera del scope del bot: " + ", ".join(ineligible_symbols))
+                pool_strategy_ids = _normalize_research_strategy_ids(bot.get("pool_strategy_ids") or [])
+                if not strategy_ids:
+                    strategy_ids = list(pool_strategy_ids)
+                if not strategy_ids:
+                    blocking_reasons.append("El bot elegido no tiene estrategias en su pool de research.")
+                invalid_pool_ids = [sid for sid in strategy_ids if sid not in pool_strategy_ids]
+                if invalid_pool_ids:
+                    blocking_reasons.append("strategy_ids fuera del pool del bot: " + ", ".join(invalid_pool_ids))
+                scope_source = "bot_scope"
+        else:
+            if missing_strategy_ids:
+                blocking_reasons.append("strategy_ids inexistentes para research: " + ", ".join(missing_strategy_ids))
+            if market == "crypto":
+                universe_item = universe_index.get(universe_name or "")
+                if universe_name and not universe_item:
+                    blocking_reasons.append(f"universe_name desconocido para research: {universe_name}")
+                if not requested_symbols:
+                    blocking_reasons.append("entity_type=strategy requiere symbols explícitos para research.")
+                if universe_name:
+                    allowed_symbols = _normalize_research_symbols((universe_item or {}).get("symbols"))
+                    market_family = str((universe_item or {}).get("family") or market_family or "").strip().lower() or None
+                    quote_asset = _research_quote_asset(universe_item)
+                    ineligible_symbols = [symbol for symbol in requested_symbols if symbol not in allowed_symbols]
+                    symbols_effective = [symbol for symbol in requested_symbols if symbol in allowed_symbols]
+                elif len(requested_symbols) <= 1:
+                    symbols_effective = list(requested_symbols)
+                    ineligible_symbols = []
+                else:
+                    blocking_reasons.append("entity_type=strategy en crypto requiere universe_name para multi-símbolo portable.")
+                    symbols_effective = list(requested_symbols)
+                    ineligible_symbols = []
+            else:
+                allowed_symbols = _normalize_research_symbols(MARKET_UNIVERSES.get(market, []))
+                if not requested_symbols:
+                    blocking_reasons.append("entity_type=strategy requiere symbols explícitos para research.")
+                ineligible_symbols = [symbol for symbol in requested_symbols if symbol not in allowed_symbols]
+                symbols_effective = [symbol for symbol in requested_symbols if symbol in allowed_symbols]
+            if not symbols_effective:
+                blocking_reasons.append("El scope efectivo manual quedó vacío para research.")
+            if ineligible_symbols:
+                blocking_reasons.append("Símbolos fuera del scope manual permitido: " + ", ".join(ineligible_symbols))
+            if entity_id and strategy_ids and entity_id not in strategy_ids:
+                blocking_reasons.append("entity_id de strategy debe pertenecer a strategy_ids.")
+            if not entity_id and len(strategy_ids) == 1:
+                entity_id = strategy_ids[0]
+
+        if requested_symbols and len(requested_symbols) > RESEARCH_SCOPE_MAX_SYMBOLS:
+            blocking_reasons.append(
+                f"Research scope no puede superar {RESEARCH_SCOPE_MAX_SYMBOLS} símbolos solicitados."
+            )
+
+        return {
+            "contract_version": RESEARCH_SCOPE_CONTRACT_VERSION,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "scope_source": scope_source,
+            "strategy_ids": strategy_ids,
+            "market": market,
+            "market_family": market_family,
+            "quote_asset": quote_asset,
+            "universe_name": universe_name,
+            "max_symbols_allowed": int(RESEARCH_SCOPE_MAX_SYMBOLS),
+            "symbols_requested": requested_symbols,
+            "symbols_effective": symbols_effective,
+            "eligible_symbols": list(symbols_effective),
+            "ineligible_symbols": ineligible_symbols,
+            "blocking_reasons": blocking_reasons,
+        }
+
+    def _apply_research_scope(cfg: dict[str, Any]) -> dict[str, Any]:
+        resolved = _resolve_research_scope(cfg)
+        applied = copy.deepcopy(cfg)
+        applied["entity_type"] = resolved["entity_type"]
+        applied["entity_id"] = resolved["entity_id"]
+        applied["strategy_ids"] = list(resolved["strategy_ids"])
+        applied["scope_source"] = resolved["scope_source"]
+        applied["universe_name"] = resolved["universe_name"]
+        applied["market_family"] = resolved["market_family"]
+        applied["quote_asset"] = resolved["quote_asset"]
+        applied["symbols_requested"] = list(resolved["symbols_requested"])
+        applied["symbols_effective"] = list(resolved["symbols_effective"])
+        applied["scope_eligible_symbols"] = list(resolved["eligible_symbols"])
+        applied["scope_ineligible_symbols"] = list(resolved["ineligible_symbols"])
+        applied["scope_blocking_reasons"] = list(resolved["blocking_reasons"])
+        applied["universe"] = list(resolved["symbols_effective"])
+        applied["research_scope"] = resolved
+        if resolved["entity_type"] == "bot":
+            applied["bot_id"] = str(resolved["entity_id"] or "").strip() or None
+        if resolved["symbols_effective"]:
+            applied["symbol"] = str(resolved["symbols_effective"][0])
+        return applied
+
     @app.post("/api/v1/research/mass-backtest/start")
     def research_mass_backtest_start(body: ResearchMassBacktestStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg = _apply_research_scope(cfg)
         cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
         cfg["execution_mode"] = str(cfg.get("execution_mode") or "research")
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
@@ -16333,6 +16523,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/research/dataset-preflight")
     def research_dataset_preflight(body: ResearchDatasetPreflightBody, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg = _apply_research_scope(cfg)
         cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
         cfg["execution_mode"] = "beast" if str(body.mode or "batch").strip().lower() == "beast" else "research"
         return mass_backtest_coordinator.dataset_preflight(
@@ -16512,6 +16703,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/research/beast/start")
     def research_beast_start(body: ResearchBeastStartBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
         cfg = body.model_dump()
+        cfg = _apply_research_scope(cfg)
         cfg["bot_id"] = str(cfg.get("bot_id") or "").strip() or None
         cfg["execution_mode"] = "beast"
         if str(cfg.get("dataset_source") or "").lower() in {"synthetic", "synthetic_seeded", "synthetic_fallback"}:
