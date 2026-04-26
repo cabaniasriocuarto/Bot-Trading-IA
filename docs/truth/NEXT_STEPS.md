@@ -1,6 +1,32 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-25
+Fecha: 2026-04-26
+
+## Siguiente paso exacto despues de RTLOPS-96 - 2026-04-26
+- [x] Fijar un carrier canónico read-only para operación:
+  - `GET /api/v1/bots/{bot_id}/scope-eligibility`
+  - ownership explícito del bot sobre el scope operativo
+  - `eligible_symbols` / `ineligible_symbols` / `blocking_reasons`
+  - sin selector manual paralelo en `Execution`.
+- [x] Dejar surface mínima visible en `Execution`:
+  - ownership
+  - scope efectivo
+  - subset elegible / inelegible
+  - bloqueos por símbolo.
+- [x] Mantener separado research vs operación:
+  - research puede seguir en `manual` o `bot_inherited` según contexto;
+  - operación queda cerrada sobre scope del bot/runtime resuelto.
+- [ ] Siguiente paso exacto recomendado:
+  - retomar `RTLOPS-94` ya apoyándose en `rtlops96/v1`;
+  - resolver ahí solo:
+    - reutilización operativa del scope canónico en `Shadow / Paper / Testnet / Live`
+    - surface operacional más completa si hace falta
+    - reglas visibles de ownership sin duplicar selectors;
+  - mantener fuera de ese bloque:
+    - refactor masivo de `Execution`
+    - scorecard/risk
+    - live console nueva
+    - rewrite de `strategy truth/evidence`.
 
 ## Siguiente paso exacto despues de RTLOPS-93 - 2026-04-25
 - [x] Cerrar backend-first el carrier canonico de research:

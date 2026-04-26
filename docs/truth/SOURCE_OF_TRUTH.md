@@ -1,6 +1,53 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-25
+Fecha de actualizacion: 2026-04-26
+
+## RTLOPS-96 - fundación canónica runtime / universe scope / eligibility en Execution - 2026-04-26
+
+- Estado real confirmado en esta rama:
+  - `RTLOPS-92` ya no queda solo como decisión documental: el repo expone un contrato operativo nuevo `rtlops96/v1` en `GET /api/v1/bots/{bot_id}/scope-eligibility`;
+  - el carrier nuevo no introduce selector manual nuevo en `Execution`;
+  - la fuente canónica del scope operativo sigue siendo el bot:
+    - `persisted_scope_owner=bot_registry`
+    - `scope_source=bot_runtime_scope`
+    - `strategy_role=consumer_only`;
+  - research sigue pudiendo consumir:
+    - `manual`
+    - `bot_inherited`;
+  - operación queda explícitamente cerrada sobre:
+    - `shadow`
+    - `paper`
+    - `testnet`
+    - `live`;
+  - `Execution` agrega una surface mínima read-only de `Runtime scope / eligibility` para mostrar:
+    - ownership
+    - universe efectivo
+    - market family
+    - quote asset
+    - símbolos configurados
+    - elegibles / inelegibles
+    - bloqueos por símbolo;
+  - no se agrega ningún PATCH nuevo ni selector paralelo escondido en operación.
+- Regla canónica resultante:
+  - el bot persiste el scope operativo;
+  - research puede heredar ese scope o trabajar manual según contexto ya cerrado por `RTLOPS-93`;
+  - operación no vuelve a decidir símbolos por fuera del bot;
+  - la elegibilidad operativa visible se deriva de:
+    - `multi_symbol`
+    - `strategy_eligibility`
+    - `runtime`
+    - `lifecycle_operational`.
+- Límite honesto del bloque:
+  - no cierra toda `RTLOPS-94`;
+  - no rehace `Execution`;
+  - no abre console live nueva;
+  - no mezcla `risk`, `portfolio` o `strategy truth/evidence`.
+- Siguiente paso exacto recomendado:
+  - seguir con `RTLOPS-94` ya apoyándose en este carrier canónico;
+  - mantener fuera del siguiente bloque:
+    - selector manual operativo paralelo
+    - rewrite transversal de `Execution`
+    - scorecard/risk.
 
 ## RTLOPS-93 - selector reusable Bot vs Estrategia + Trading Universe Scope auditable en Batch/Beast - 2026-04-25
 

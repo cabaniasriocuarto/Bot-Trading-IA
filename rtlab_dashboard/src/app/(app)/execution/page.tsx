@@ -27,6 +27,7 @@ import type {
   BotLifecycleOperationalModel,
   BotLifecycleOperationalResponse,
   BotPolicyStateResponse,
+  BotScopeEligibilityResponse,
   BotStatusResponse,
   ExchangeDiagnoseResponse,
   ExecutionStats,
@@ -107,6 +108,7 @@ export default function ExecutionPage() {
   const [selectedBotPolicyState, setSelectedBotPolicyState] = useState<BotPolicyStateResponse | null>(null);
   const [selectedBotDecisionLog, setSelectedBotDecisionLog] = useState<BotDecisionLogResponse | null>(null);
   const [selectedBotLifecycleOperational, setSelectedBotLifecycleOperational] = useState<BotLifecycleOperationalResponse | null>(null);
+  const [selectedBotScopeEligibility, setSelectedBotScopeEligibility] = useState<BotScopeEligibilityResponse | null>(null);
   const [selectedBotDomainLoading, setSelectedBotDomainLoading] = useState(false);
   const [selectedBotDomainError, setSelectedBotDomainError] = useState("");
   const [selectedBotDomainNotice, setSelectedBotDomainNotice] = useState("");
@@ -405,6 +407,7 @@ export default function ExecutionPage() {
     [botInstances, selectedExecutionBotId],
   );
   const selectedBotOperational = selectedBotLifecycleOperational?.lifecycle_operational || null;
+  const selectedBotScope = selectedBotScopeEligibility?.scope_eligibility || null;
 
   const statusVariant = botStatus
     ? botStatus.bot_status === "RUNNING"
@@ -699,6 +702,7 @@ export default function ExecutionPage() {
       setSelectedBotPolicyState(null);
       setSelectedBotDecisionLog(null);
       setSelectedBotLifecycleOperational(null);
+      setSelectedBotScopeEligibility(null);
       setSelectedBotDomainError("");
       setSelectedBotDomainNotice("");
       setSelectedBotDomainLoading(false);
@@ -750,15 +754,20 @@ export default function ExecutionPage() {
         const lifecycleOperational = await apiGet<BotLifecycleOperationalResponse>(
           `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/lifecycle-operational`,
         );
+        const scopeEligibility = await apiGet<BotScopeEligibilityResponse>(
+          `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/scope-eligibility`,
+        );
         if (cancelled) return;
         setSelectedBotPolicyState(policyState);
         setSelectedBotDecisionLog(decisionLog);
         setSelectedBotLifecycleOperational(lifecycleOperational);
+        setSelectedBotScopeEligibility(scopeEligibility);
       } catch (err) {
         if (cancelled) return;
         setSelectedBotPolicyState(null);
         setSelectedBotDecisionLog(null);
         setSelectedBotLifecycleOperational(null);
+        setSelectedBotScopeEligibility(null);
         setSelectedBotDomainError(err instanceof Error ? err.message : "No se pudieron cargar los dominios del bot seleccionado.");
       } finally {
         if (!cancelled) setSelectedBotDomainLoading(false);
@@ -1026,7 +1035,7 @@ export default function ExecutionPage() {
                       ? ` · shadow ${selectedExecutionBot.metrics.experience_by_source.shadow?.episode_count ?? 0} / backtest ${selectedExecutionBot.metrics.experience_by_source.backtest?.episode_count ?? 0}`
                       : ""}
                   </p>
-                  <div className="mt-3 grid gap-3 xl:grid-cols-3">
+                  <div className="mt-3 grid gap-3 xl:grid-cols-2">
                     <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
@@ -1063,6 +1072,111 @@ export default function ExecutionPage() {
                         </div>
                       ) : (
                         <p className="mt-3 text-xs text-slate-400">Sin policy state detallado para este bot.</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Runtime scope / eligibility</p>
+                          <p className="text-[11px] text-slate-400">
+                            Slice canónico de ownership operativo: el bot persiste el scope y Ejecución solo consume el subset resuelto, sin selector manual paralelo.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge
+                            variant={
+                              selectedBotScope?.status === "error"
+                                ? "danger"
+                                : selectedBotScope?.status === "warning"
+                                  ? "warn"
+                                  : "success"
+                            }
+                          >
+                            {selectedBotScope?.status || "sin datos"}
+                          </Badge>
+                          <Badge variant={selectedBotScope?.ownership.operation_manual_selector_allowed ? "danger" : "success"}>
+                            {selectedBotScope?.ownership.operation_manual_selector_allowed ? "selector paralelo" : "sin selector manual"}
+                          </Badge>
+                        </div>
+                      </div>
+                      {selectedBotDomainLoading && !selectedBotScope ? (
+                        <p className="mt-3 text-xs text-slate-400">Cargando scope canónico...</p>
+                      ) : selectedBotScope ? (
+                        <div className="mt-3 space-y-3 text-xs text-slate-300">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="rounded border border-slate-800 p-2">Owner: <strong>{selectedBotScope.ownership.persisted_scope_owner}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Source: <strong>{selectedBotScope.scope_source}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Configured: <strong>{selectedBotScope.configured_symbols_count}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Eligible: <strong>{selectedBotScope.eligible_symbols.length}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Ineligible: <strong>{selectedBotScope.ineligible_symbols.length}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Cap activo: <strong>{selectedBotScope.max_active_symbols ?? "-"}</strong></div>
+                          </div>
+
+                          <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">Ownership y contexto</p>
+                            <p className="mt-1 text-slate-200">
+                              Research: {selectedBotScope.ownership.research_scope_modes.join(" · ") || "sin modos"} · Operación: {selectedBotScope.ownership.operation_scope_modes.join(" · ") || "sin modos"}
+                            </p>
+                            <p className="mt-1 text-slate-400">
+                              Strategy role: <strong>{selectedBotScope.ownership.strategy_role}</strong> · Entity: <strong>{selectedBotScope.ownership.entity_kind}</strong>
+                            </p>
+                          </div>
+
+                          <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-500">Scope efectivo</p>
+                            <p className="mt-1 text-slate-200">
+                              Universe: <strong>{selectedBotScope.universe_name || "-"}</strong> · Family: <strong>{selectedBotScope.market_family || "-"}</strong> · Quote: <strong>{selectedBotScope.quote_asset || "-"}</strong>
+                            </p>
+                            <p className="mt-1 text-slate-400">
+                              Configured: {selectedBotScope.symbols_configured.length ? selectedBotScope.symbols_configured.join(", ") : "none"}
+                            </p>
+                            <p className="mt-1 text-emerald-200">
+                              Eligible: {selectedBotScope.eligible_symbols.length ? selectedBotScope.eligible_symbols.join(", ") : "none"}
+                            </p>
+                            <p className="mt-1 text-amber-200">
+                              Ineligible: {selectedBotScope.ineligible_symbols.length ? selectedBotScope.ineligible_symbols.join(", ") : "none"}
+                            </p>
+                          </div>
+
+                          {selectedBotScope.blocking_reasons.length ? (
+                            <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-amber-100">
+                              {selectedBotScope.blocking_reasons.join(" · ")}
+                            </div>
+                          ) : null}
+
+                          <div className="space-y-2">
+                            {selectedBotScope.items.length ? (
+                              selectedBotScope.items.map((item) => (
+                                <div key={`scope-eligibility-${item.symbol}`} className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                      <p className="font-semibold text-slate-100">{item.symbol}</p>
+                                      <p className="mt-1 text-[11px] text-slate-400">
+                                        strategy: {item.selected_strategy_id || "-"} · lifecycle: {item.lifecycle_state} · op: {item.operational_status}
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge variant={item.scope_status === "eligible" ? "success" : "warn"}>{item.scope_status}</Badge>
+                                      <Badge variant={item.progression_allowed ? "success" : "warn"}>
+                                        {item.progression_allowed ? "progresa" : "bloqueado"}
+                                      </Badge>
+                                    </div>
+                                  </div>
+                                  {item.blocking_reasons.length ? (
+                                    <p className="mt-2 text-[11px] text-amber-200">{item.blocking_reasons.join(" · ")}</p>
+                                  ) : (
+                                    <p className="mt-2 text-[11px] text-emerald-200">Sin bloqueos canónicos para este símbolo.</p>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-xs text-slate-400">Sin items canónicos de scope/eligibility para este bot.</p>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-xs text-slate-400">Sin scope canónico detallado para este bot.</p>
                       )}
                     </div>
 
