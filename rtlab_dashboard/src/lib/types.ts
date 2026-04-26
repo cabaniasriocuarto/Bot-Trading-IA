@@ -272,6 +272,70 @@ export interface BotMultiSymbolResponse {
   multi_symbol: BotMultiSymbolModel;
 }
 
+export interface BotScopeEligibilityOwnership {
+  entity_kind: "bot" | string;
+  entity_id: string;
+  persisted_scope_owner: "bot_registry" | string;
+  strategy_role: "consumer_only" | string;
+  research_scope_modes: string[];
+  operation_scope_modes: string[];
+  operation_manual_selector_allowed: boolean;
+}
+
+export interface BotScopeEligibilityItem {
+  symbol: string;
+  scope_status: "eligible" | "ineligible" | string;
+  selected_strategy_id?: string | null;
+  eligible_strategy_ids: string[];
+  operational_status: "active" | "paused" | string;
+  lifecycle_state: "progressing" | "blocked" | "rejected" | "inactive" | string;
+  progression_allowed: boolean;
+  decision_action?: "trade" | "flat" | string | null;
+  decision_side?: "BUY" | "SELL" | string | null;
+  reason_codes: string[];
+  blocking_reasons: string[];
+  status: "valid" | "warning" | "error" | string;
+}
+
+export interface BotScopeEligibilityModel {
+  contract_version: string;
+  bot_id: string;
+  domain_type: BotRegistryDomainType;
+  registry_status: BotRegistryStatus;
+  policy_state: BotPolicyState;
+  ownership: BotScopeEligibilityOwnership;
+  scope_source: "bot_runtime_scope" | string;
+  universe_name: string;
+  market_family?: InstrumentUniverseFamily | null;
+  quote_asset?: string | null;
+  symbols_configured: string[];
+  configured_symbols_count: number;
+  max_active_symbols?: number | null;
+  eligible_symbols: string[];
+  ineligible_symbols: string[];
+  blocking_reasons: string[];
+  items: BotScopeEligibilityItem[];
+  reason_codes: string[];
+  status: "valid" | "warning" | "error" | string;
+  errors: string[];
+  storage_fields: string[];
+  api: {
+    detail_path: string;
+    scope_eligibility_path: string;
+    multi_symbol_path: string;
+    strategy_eligibility_path: string;
+    runtime_path: string;
+    lifecycle_operational_path: string;
+  };
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface BotScopeEligibilityResponse {
+  bot_id: string;
+  scope_eligibility: BotScopeEligibilityModel;
+}
+
 export interface BotStrategyEligibilityIssue {
   reason_code: string;
   message: string;

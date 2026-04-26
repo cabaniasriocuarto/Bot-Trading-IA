@@ -542,6 +542,7 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert payload["api"]["list_path"] == "/api/v1/bots"
   assert payload["api"]["patch_path"] == "/api/v1/bots/{bot_id}"
   assert payload["api"]["multi_symbol_path"] == "/api/v1/bots/{bot_id}/multi-symbol"
+  assert payload["api"]["scope_eligibility_path"] == "/api/v1/bots/{bot_id}/scope-eligibility"
   assert payload["api"]["symbol_strategy_eligibility_path"] == "/api/v1/bots/{bot_id}/symbol-strategy-eligibility"
   assert payload["api"]["symbol_strategy_selection_path"] == "/api/v1/bots/{bot_id}/strategy-selection"
   assert payload["api"]["signal_consolidation_path"] == "/api/v1/bots/{bot_id}/signal-consolidation"
@@ -580,6 +581,14 @@ def test_bot_registry_contract_surface_is_canonical(tmp_path: Path, monkeypatch)
   assert int(payload["multi_symbol"]["limits"]["configured_symbols_max"]) == 12
   assert int(payload["multi_symbol"]["limits"]["max_active_symbols_max"]) == 12
   assert "symbols" in payload["multi_symbol"]["fields"]
+  assert payload["scope_eligibility"]["contract_version"] == "rtlops96/v1"
+  assert payload["scope_eligibility"]["storage_fields"] == []
+  assert payload["scope_eligibility"]["ownership"]["persisted_scope_owner"] == "bot_registry"
+  assert payload["scope_eligibility"]["ownership"]["operation_manual_selector_allowed"] is False
+  assert "shadow" in payload["scope_eligibility"]["ownership"]["operation_scope_modes"]
+  assert "bot_inherited" in payload["scope_eligibility"]["ownership"]["research_scope_modes"]
+  assert "eligible_symbols" in payload["scope_eligibility"]["fields"]
+  assert "blocking_reasons" in payload["scope_eligibility"]["fields"]
   assert payload["strategy_eligibility"]["contract_version"] == "rtlops73/v1"
   assert payload["strategy_eligibility"]["storage_fields"] == ["strategy_eligibility_by_symbol"]
   assert "strategy_not_in_pool" in payload["strategy_eligibility"]["reason_codes"]
@@ -1194,6 +1203,102 @@ def test_bot_runtime_surface_is_canonical_and_traceable(tmp_path: Path, monkeypa
   detail_bot = detail_res.json()["bot"]
   assert detail_bot["runtime"]["contract_version"] == "rtlops77/v1"
   assert detail_bot["runtime"]["items"][0]["runtime_symbol_id"].startswith(f"{bot_id}:")
+
+
+def test_bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Scope Eligibility Canonico",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["ETHUSDT", "BTCUSDT"],
+      "max_live_symbols": 1,
+      "max_positions": 2,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        "BTCUSDT": [pool_ids[0]],
+        "ETHUSDT": [pool_ids[1]],
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        "BTCUSDT": pool_ids[0],
+        "ETHUSDT": pool_ids[1],
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["mean_reversion", "range"]
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  scope_res = client.get(f"/api/v1/bots/{bot_id}/scope-eligibility", headers=headers)
+  assert scope_res.status_code == 200, scope_res.text
+  scope = scope_res.json()["scope_eligibility"]
+  assert scope["contract_version"] == "rtlops96/v1"
+  assert scope["scope_source"] == "bot_runtime_scope"
+  assert scope["ownership"] == {
+    "entity_kind": "bot",
+    "entity_id": bot_id,
+    "persisted_scope_owner": "bot_registry",
+    "strategy_role": "consumer_only",
+    "research_scope_modes": ["manual", "bot_inherited"],
+    "operation_scope_modes": ["shadow", "paper", "testnet", "live"],
+    "operation_manual_selector_allowed": False,
+  }
+  assert scope["universe_name"] == "core_spot_usdt"
+  assert scope["market_family"] == "spot"
+  assert scope["quote_asset"] == "USDT"
+  assert scope["symbols_configured"] == ["ETHUSDT", "BTCUSDT"]
+  assert scope["configured_symbols_count"] == 2
+  assert scope["max_active_symbols"] == 1
+  assert scope["eligible_symbols"] == ["ETHUSDT"]
+  assert scope["ineligible_symbols"] == ["BTCUSDT"]
+  assert scope["status"] == "warning"
+  assert "trade_decisions_exceed_live_cap" in scope["reason_codes"]
+  assert scope["api"]["scope_eligibility_path"] == f"/api/v1/bots/{bot_id}/scope-eligibility"
+  items = {str(item["symbol"]): item for item in scope["items"]}
+  assert items["ETHUSDT"]["scope_status"] == "eligible"
+  assert items["ETHUSDT"]["progression_allowed"] is True
+  assert items["ETHUSDT"]["blocking_reasons"] == []
+  assert items["BTCUSDT"]["scope_status"] == "ineligible"
+  assert items["BTCUSDT"]["progression_allowed"] is False
+  assert items["BTCUSDT"]["selected_strategy_id"] == pool_ids[0]
+  assert "trade_decisions_exceed_live_cap" in items["BTCUSDT"]["reason_codes"]
+  assert items["BTCUSDT"]["blocking_reasons"]
 
 
 def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_unresolved(tmp_path: Path, monkeypatch) -> None:

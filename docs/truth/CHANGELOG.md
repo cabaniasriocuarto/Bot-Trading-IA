@@ -1,5 +1,45 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-26
+
+### RTLOPS-96 - fundación canónica runtime / universe scope / eligibility en Execution
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega el contrato `rtlops96/v1` en `GET /api/v1/bots/{bot_id}/scope-eligibility`;
+    - agrega un carrier read-only que compone:
+      - `multi_symbol`
+      - `strategy_eligibility`
+      - `runtime`
+      - `lifecycle_operational`;
+    - deja explícito:
+      - `persisted_scope_owner=bot_registry`
+      - `scope_source=bot_runtime_scope`
+      - `strategy_role=consumer_only`
+      - `operation_manual_selector_allowed=false`;
+    - expone:
+      - `market_family`
+      - `quote_asset`
+      - `symbols_configured`
+      - `eligible_symbols`
+      - `ineligible_symbols`
+      - `blocking_reasons`
+      - items por símbolo con `lifecycle_state` y `operational_status`.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - suma una card mínima `Runtime scope / eligibility`;
+    - muestra ownership, scope efectivo, subset elegible/inelegible y bloqueos sin abrir selector manual paralelo.
+  - `rtlab_dashboard/src/lib/types.ts`
+    - agrega el contrato tipado `BotScopeEligibility*`.
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre el nuevo carrier canónico y su presencia en el contract surface del bot registry.
+- Límite honesto:
+  - no cierra toda `RTLOPS-94`;
+  - no agrega UX operativa final completa;
+  - no toca scorecard/risk ni `strategy truth/evidence`.
+- Siguiente paso exacto:
+  - continuar `RTLOPS-94` sobre este carrier canónico, sin volver a abrir selectors paralelos.
+
 ## 2026-04-25
 
 ### RTLOPS-93 - selector reusable Bot vs Estrategia + Trading Universe Scope auditable en Batch/Beast

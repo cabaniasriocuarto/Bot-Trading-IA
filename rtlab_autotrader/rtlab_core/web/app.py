@@ -965,6 +965,13 @@ BOT_LIFECYCLE_OPERATIONAL_REASON_CODES = (
     "symbol_operational_paused",
     *BOT_LIFECYCLE_MIN_REASON_CODES,
 )
+BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION = "rtlops96/v1"
+BOT_SCOPE_ELIGIBILITY_STORAGE_FIELDS: tuple[str, ...] = ()
+BOT_SCOPE_ELIGIBILITY_REASON_CODES = (
+    *BOT_STRATEGY_ELIGIBILITY_REASON_CODES,
+    *BOT_RUNTIME_REASON_CODES,
+    *BOT_LIFECYCLE_OPERATIONAL_REASON_CODES,
+)
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -1010,6 +1017,7 @@ BOT_REGISTRY_API_SURFACE = {
     "detail_path": "/api/v1/bots/{bot_id}",
     "patch_path": "/api/v1/bots/{bot_id}",
     "multi_symbol_path": "/api/v1/bots/{bot_id}/multi-symbol",
+    "scope_eligibility_path": "/api/v1/bots/{bot_id}/scope-eligibility",
     "symbol_strategy_eligibility_path": "/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
     "symbol_strategy_selection_path": "/api/v1/bots/{bot_id}/strategy-selection",
     "signal_consolidation_path": "/api/v1/bots/{bot_id}/signal-consolidation",
@@ -5985,6 +5993,230 @@ def risk_hooks(context):
         bot = self.bot_or_404(bot_id)
         return self._bot_runtime_payload(bot)
 
+    def _bot_scope_eligibility_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        policy_state: dict[str, Any],
+        multi_symbol: dict[str, Any],
+        strategy_eligibility: dict[str, Any],
+        runtime: dict[str, Any],
+        lifecycle_operational: dict[str, Any],
+    ) -> dict[str, Any]:
+        bot_id = str(payload.get("id") or "").strip()
+        resolved_policy_state = dict(policy_state or {})
+        resolved_multi_symbol = dict(multi_symbol or {})
+        resolved_strategy_eligibility = dict(strategy_eligibility or {})
+        resolved_runtime = dict(runtime or {})
+        resolved_lifecycle_operational = dict(lifecycle_operational or {})
+        universe_name = str(resolved_multi_symbol.get("universe_name") or "").strip()
+        universe_family = str(resolved_multi_symbol.get("universe_family") or "").strip().lower() or None
+        universe_summary = self.instrument_universes.summary()
+        universe_index = {
+            str(row.get("name") or "").strip(): dict(row)
+            for row in (universe_summary.get("items") or [])
+            if isinstance(row, dict) and str(row.get("name") or "").strip()
+        }
+        universe_item = universe_index.get(universe_name or "")
+        filters_applied = (
+            universe_item.get("filters_applied")
+            if isinstance(universe_item, dict) and isinstance(universe_item.get("filters_applied"), dict)
+            else {}
+        )
+        quote_assets = [str(item).strip().upper() for item in (filters_applied.get("quote_assets") or []) if str(item).strip()]
+        unique_quote_assets = sorted({item for item in quote_assets if item})
+        quote_asset = unique_quote_assets[0] if len(unique_quote_assets) == 1 else None
+        symbols_configured = [
+            str(item).strip().upper()
+            for item in (resolved_multi_symbol.get("symbols") or [])
+            if str(item).strip()
+        ]
+        progressing_symbol_set = {
+            str(item).strip().upper()
+            for item in (resolved_lifecycle_operational.get("progressing_symbols") or [])
+            if str(item).strip()
+        }
+        eligible_symbols = [symbol for symbol in symbols_configured if symbol in progressing_symbol_set]
+        eligible_symbol_set = set(eligible_symbols)
+        selected_strategy_by_symbol = {
+            str(symbol).strip().upper(): str(strategy_id).strip()
+            for symbol, strategy_id in (resolved_runtime.get("selected_strategy_by_symbol") or {}).items()
+            if str(symbol).strip() and str(strategy_id).strip()
+        }
+        eligibility_items = {
+            str(item.get("symbol") or "").strip().upper(): dict(item)
+            for item in (resolved_strategy_eligibility.get("items") or [])
+            if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+        }
+        runtime_items = {
+            str(item.get("symbol") or "").strip().upper(): dict(item)
+            for item in (resolved_runtime.get("items") or [])
+            if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+        }
+        lifecycle_items = {
+            str(item.get("symbol") or "").strip().upper(): dict(item)
+            for item in (resolved_lifecycle_operational.get("items") or [])
+            if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+        }
+        blocking_reasons: list[str] = []
+        reason_codes: set[str] = set()
+        items: list[dict[str, Any]] = []
+
+        for source_payload in (
+            resolved_multi_symbol,
+            resolved_strategy_eligibility,
+            resolved_runtime,
+            resolved_lifecycle_operational,
+        ):
+            for code in (source_payload.get("reason_codes") or []):
+                normalized = str(code or "").strip()
+                if normalized:
+                    reason_codes.add(normalized)
+            for message in (source_payload.get("errors") or []):
+                normalized = str(message or "").strip()
+                if normalized:
+                    blocking_reasons.append(normalized)
+
+        for symbol in symbols_configured:
+            eligibility_item = eligibility_items.get(symbol) or {}
+            runtime_item = runtime_items.get(symbol) or {}
+            lifecycle_item = lifecycle_items.get(symbol) or {}
+            symbol_reason_codes: set[str] = set()
+            symbol_blocking_reasons: list[str] = []
+            for issue in (
+                list(eligibility_item.get("errors") or [])
+                + list(runtime_item.get("errors") or [])
+                + list(lifecycle_item.get("errors") or [])
+            ):
+                if not isinstance(issue, dict):
+                    continue
+                reason_code = str(issue.get("reason_code") or "").strip()
+                message = str(issue.get("message") or "").strip()
+                if reason_code:
+                    symbol_reason_codes.add(reason_code)
+                    reason_codes.add(reason_code)
+                if message:
+                    symbol_blocking_reasons.append(message)
+                    blocking_reasons.append(message)
+
+            if symbol not in eligible_symbol_set and not symbol_blocking_reasons:
+                symbol_blocking_reasons.append(
+                    f"{symbol} no integra el subset operativo efectivo del bot para {str(resolved_policy_state.get('mode') or '').upper() or 'RUNTIME'}."
+                )
+
+            items.append(
+                {
+                    "symbol": symbol,
+                    "scope_status": "eligible" if symbol in eligible_symbol_set else "ineligible",
+                    "selected_strategy_id": selected_strategy_by_symbol.get(symbol),
+                    "eligible_strategy_ids": [
+                        str(item).strip()
+                        for item in (eligibility_item.get("eligible_strategy_ids") or [])
+                        if str(item).strip()
+                    ],
+                    "operational_status": str(lifecycle_item.get("operational_status") or "active").strip() or "active",
+                    "lifecycle_state": str(lifecycle_item.get("lifecycle_state") or "inactive").strip() or "inactive",
+                    "progression_allowed": bool(lifecycle_item.get("progression_allowed", False)),
+                    "decision_action": str(runtime_item.get("decision_action") or "").strip() or None,
+                    "decision_side": str(runtime_item.get("decision_side") or "").strip() or None,
+                    "reason_codes": sorted(symbol_reason_codes),
+                    "blocking_reasons": list(dict.fromkeys(symbol_blocking_reasons)),
+                    "status": (
+                        "valid"
+                        if symbol in eligible_symbol_set and not symbol_blocking_reasons
+                        else "warning"
+                    ),
+                }
+            )
+
+        ineligible_symbols = [symbol for symbol in symbols_configured if symbol not in eligible_symbol_set]
+        status = (
+            "error"
+            if str(resolved_multi_symbol.get("status") or "error") == "error"
+            or str(resolved_strategy_eligibility.get("status") or "error") == "error"
+            or str(resolved_runtime.get("status") or "error") == "error"
+            or str(resolved_lifecycle_operational.get("status") or "error") == "error"
+            else "warning"
+            if ineligible_symbols or blocking_reasons
+            else "valid"
+        )
+        return {
+            "contract_version": BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION,
+            "bot_id": bot_id,
+            "domain_type": self._normalize_bot_domain_type(str(payload.get("domain_type") or "spot")),
+            "registry_status": self._normalize_bot_registry_status(str(payload.get("registry_status") or "active")),
+            "policy_state": resolved_policy_state,
+            "ownership": {
+                "entity_kind": "bot",
+                "entity_id": bot_id,
+                "persisted_scope_owner": "bot_registry",
+                "strategy_role": "consumer_only",
+                "research_scope_modes": ["manual", "bot_inherited"],
+                "operation_scope_modes": ["shadow", "paper", "testnet", "live"],
+                "operation_manual_selector_allowed": False,
+            },
+            "scope_source": "bot_runtime_scope",
+            "universe_name": universe_name,
+            "market_family": universe_family,
+            "quote_asset": quote_asset,
+            "symbols_configured": symbols_configured,
+            "configured_symbols_count": len(symbols_configured),
+            "max_active_symbols": self._normalize_bot_max_live_symbols(resolved_multi_symbol.get("max_active_symbols")),
+            "eligible_symbols": eligible_symbols,
+            "ineligible_symbols": ineligible_symbols,
+            "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
+            "items": items,
+            "reason_codes": sorted(reason_codes),
+            "status": status,
+            "errors": list(dict.fromkeys(blocking_reasons)),
+            "storage_fields": list(BOT_SCOPE_ELIGIBILITY_STORAGE_FIELDS),
+            "api": {
+                "detail_path": f"/api/v1/bots/{bot_id}",
+                "scope_eligibility_path": f"/api/v1/bots/{bot_id}/scope-eligibility",
+                "multi_symbol_path": f"/api/v1/bots/{bot_id}/multi-symbol",
+                "strategy_eligibility_path": f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+                "runtime_path": f"/api/v1/bots/{bot_id}/runtime",
+                "lifecycle_operational_path": f"/api/v1/bots/{bot_id}/lifecycle-operational",
+            },
+            "updated_at": str(payload.get("updated_at") or ""),
+            "archived_at": str(payload.get("archived_at") or "").strip() or None,
+        }
+
+    def bot_scope_eligibility_or_404(self, bot_id: str) -> dict[str, Any]:
+        bot = self.bot_or_404(bot_id)
+        pool_payload = self._bot_strategy_pool_payload(bot)
+        policy_state = self._bot_policy_state_payload(bot, pool_payload=pool_payload)
+        multi_symbol = self._bot_multi_symbol_payload(bot)
+        strategy_eligibility = self._bot_strategy_eligibility_payload(bot)
+        strategy_selection = self._bot_strategy_selection_payload(bot)
+        signal_consolidation = self._bot_signal_consolidation_payload(bot)
+        runtime = self._bot_runtime_payload(
+            bot,
+            pool_payload=pool_payload,
+            policy_state=policy_state,
+            selection=strategy_selection,
+            signal_consolidation=signal_consolidation,
+        )
+        lifecycle = self._bot_lifecycle_payload(
+            bot,
+            policy_state=policy_state,
+            runtime=runtime,
+        )
+        lifecycle_operational = self._bot_lifecycle_operational_payload(
+            bot,
+            policy_state=policy_state,
+            runtime=runtime,
+            lifecycle=lifecycle,
+        )
+        return self._bot_scope_eligibility_payload(
+            bot,
+            policy_state=policy_state,
+            multi_symbol=multi_symbol,
+            strategy_eligibility=strategy_eligibility,
+            runtime=runtime,
+            lifecycle_operational=lifecycle_operational,
+        )
+
     def _bot_lifecycle_operational_payload(
         self,
         payload: dict[str, Any],
@@ -6603,6 +6835,36 @@ def risk_hooks(context):
                     "configured_symbols_count",
                     "max_configured_symbols",
                     "max_active_symbols",
+                    "status",
+                    "errors",
+                ],
+            },
+            "scope_eligibility": {
+                "contract_version": BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION,
+                "storage_fields": list(BOT_SCOPE_ELIGIBILITY_STORAGE_FIELDS),
+                "reason_codes": list(BOT_SCOPE_ELIGIBILITY_REASON_CODES),
+                "ownership": {
+                    "persisted_scope_owner": "bot_registry",
+                    "strategy_role": "consumer_only",
+                    "operation_manual_selector_allowed": False,
+                    "research_scope_modes": ["manual", "bot_inherited"],
+                    "operation_scope_modes": ["shadow", "paper", "testnet", "live"],
+                },
+                "fields": [
+                    "bot_id",
+                    "policy_state",
+                    "ownership",
+                    "scope_source",
+                    "entity_kind",
+                    "universe_name",
+                    "market_family",
+                    "quote_asset",
+                    "symbols_configured",
+                    "eligible_symbols",
+                    "ineligible_symbols",
+                    "blocking_reasons",
+                    "items",
+                    "api",
                     "status",
                     "errors",
                 ],
@@ -15555,6 +15817,13 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/bots/{bot_id}/multi-symbol")
     def bot_multi_symbol(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return {"bot_id": bot_id, "multi_symbol": store.bot_multi_symbol_or_404(bot_id)}
+
+    @app.get("/api/v1/bots/{bot_id}/scope-eligibility")
+    def bot_scope_eligibility(bot_id: str, _: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "scope_eligibility": store.bot_scope_eligibility_or_404(bot_id),
+        }
 
     @app.patch("/api/v1/bots/{bot_id}/multi-symbol")
     def patch_bot_multi_symbol(bot_id: str, body: BotMultiSymbolPatchBody, user: dict[str, str] = Depends(require_admin)) -> dict[str, Any]:
