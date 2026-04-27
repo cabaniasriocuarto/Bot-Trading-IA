@@ -22,7 +22,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 from urllib.parse import urlencode, urlparse
 
 import requests
@@ -972,6 +972,8 @@ BOT_SCOPE_ELIGIBILITY_REASON_CODES = (
     *BOT_RUNTIME_REASON_CODES,
     *BOT_LIFECYCLE_OPERATIONAL_REASON_CODES,
 )
+BOT_OPERATION_SCOPE_MODES = ("shadow", "paper", "testnet", "live")
+BOT_OPERATION_SCOPE_MAX_ACTIVE_SYMBOLS = 12
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -6165,6 +6167,7 @@ def risk_hooks(context):
             "eligible_symbols": eligible_symbols,
             "ineligible_symbols": ineligible_symbols,
             "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
+            "is_blocking": status != "valid",
             "items": items,
             "reason_codes": sorted(reason_codes),
             "status": status,
@@ -6216,6 +6219,122 @@ def risk_hooks(context):
             runtime=runtime,
             lifecycle_operational=lifecycle_operational,
         )
+
+    def bot_operation_scope_gate(
+        self,
+        bot_id: str | None,
+        *,
+        mode: str | None = None,
+        requested_symbols: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        normalized_bot_id = str(bot_id or "").strip()
+        normalized_mode = str(mode or "").strip().lower() or "paper"
+        requested = [
+            normalize_symbol(str(symbol))
+            for symbol in (requested_symbols or [])
+            if str(symbol or "").strip()
+        ]
+        reasons: list[str] = []
+        reason_codes: set[str] = set()
+        if not normalized_bot_id:
+            reasons.append("operation_scope_requires_bot_id")
+            reason_codes.add("operation_scope_requires_bot_id")
+            return {
+                "contract_version": BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION,
+                "mode": normalized_mode,
+                "bot_id": None,
+                "scope_source": "bot_runtime_scope",
+                "entity_kind": "bot",
+                "eligible_symbols": [],
+                "ineligible_symbols": [],
+                "blocking_reasons": reasons,
+                "reason_codes": sorted(reason_codes),
+                "is_blocking": True,
+                "status": "blocked",
+            }
+
+        scope = self.bot_scope_eligibility_or_404(normalized_bot_id)
+        ownership = scope.get("ownership") if isinstance(scope.get("ownership"), dict) else {}
+        configured_symbols = [
+            normalize_symbol(str(symbol))
+            for symbol in (scope.get("symbols_configured") or [])
+            if str(symbol or "").strip()
+        ]
+        eligible_symbols = [
+            normalize_symbol(str(symbol))
+            for symbol in (scope.get("eligible_symbols") or [])
+            if str(symbol or "").strip()
+        ]
+        ineligible_symbols = [
+            normalize_symbol(str(symbol))
+            for symbol in (scope.get("ineligible_symbols") or [])
+            if str(symbol or "").strip()
+        ]
+        max_active_symbols = self._normalize_bot_max_live_symbols(scope.get("max_active_symbols"))
+        if str(scope.get("contract_version") or "") != BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION:
+            reasons.append("operation_scope_contract_unavailable")
+            reason_codes.add("operation_scope_contract_unavailable")
+        if str(ownership.get("entity_kind") or "") != "bot":
+            reasons.append("operation_scope_owner_must_be_bot")
+            reason_codes.add("operation_scope_owner_must_be_bot")
+        if bool(ownership.get("operation_manual_selector_allowed")):
+            reasons.append("operation_manual_selector_not_allowed")
+            reason_codes.add("operation_manual_selector_not_allowed")
+        if not configured_symbols:
+            reasons.append("operation_scope_empty")
+            reason_codes.add("operation_scope_empty")
+        if max_active_symbols > BOT_OPERATION_SCOPE_MAX_ACTIVE_SYMBOLS:
+            reasons.append("operation_scope_cap_exceeds_rtlops92_limit")
+            reason_codes.add("operation_scope_cap_exceeds_rtlops92_limit")
+        if configured_symbols and len(configured_symbols) > max_active_symbols:
+            reasons.append("operation_scope_exceeds_max_active_symbols")
+            reason_codes.add("operation_scope_exceeds_max_active_symbols")
+        if not str(scope.get("market_family") or "").strip():
+            reasons.append("operation_scope_market_family_unresolved")
+            reason_codes.add("operation_scope_market_family_unresolved")
+        if not str(scope.get("quote_asset") or "").strip():
+            reasons.append("operation_scope_quote_asset_unresolved")
+            reason_codes.add("operation_scope_quote_asset_unresolved")
+        if not eligible_symbols:
+            reasons.append("operation_scope_has_no_eligible_symbols")
+            reason_codes.add("operation_scope_has_no_eligible_symbols")
+        if ineligible_symbols:
+            reasons.append("operation_scope_contains_ineligible_symbols")
+            reason_codes.add("operation_scope_contains_ineligible_symbols")
+        eligible_set = set(eligible_symbols)
+        for symbol in requested:
+            if symbol not in eligible_set:
+                reasons.append(f"manual_symbol_not_in_bot_scope:{symbol}")
+                reason_codes.add("manual_symbol_not_in_bot_scope")
+        for reason in scope.get("blocking_reasons") or []:
+            text = str(reason or "").strip()
+            if text:
+                reasons.append(text)
+        for reason_code in scope.get("reason_codes") or []:
+            text = str(reason_code or "").strip()
+            if text:
+                reason_codes.add(text)
+
+        return {
+            "contract_version": BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION,
+            "mode": normalized_mode,
+            "bot_id": normalized_bot_id,
+            "scope_source": str(scope.get("scope_source") or "bot_runtime_scope"),
+            "entity_kind": str(ownership.get("entity_kind") or "bot"),
+            "universe_name": scope.get("universe_name"),
+            "market_family": scope.get("market_family"),
+            "quote_asset": scope.get("quote_asset"),
+            "max_active_symbols": max_active_symbols,
+            "symbols": configured_symbols,
+            "eligible_symbols": eligible_symbols,
+            "ineligible_symbols": ineligible_symbols,
+            "requested_symbols": requested,
+            "blocking_reasons": list(dict.fromkeys(reasons)),
+            "reason_codes": sorted(reason_codes),
+            "manual_selector_allowed": False,
+            "is_blocking": bool(reasons),
+            "status": "blocked" if reasons else "ready",
+        }
 
     def _bot_lifecycle_operational_payload(
         self,
@@ -14838,12 +14957,74 @@ def create_app() -> FastAPI:
     def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.instrument_registry.capabilities_summary()
 
+    def _operation_scope_mode_from_payload(payload: dict[str, Any]) -> str:
+        raw_mode = str(payload.get("mode") or payload.get("environment") or "").strip().lower()
+        if raw_mode in BOT_OPERATION_SCOPE_MODES:
+            return raw_mode
+        if raw_mode == "sandbox":
+            return "paper"
+        return raw_mode
+
+    def _operation_scope_requested_symbols(payload: dict[str, Any]) -> list[str]:
+        requested: list[str] = []
+        symbol = str(payload.get("symbol") or "").strip()
+        if symbol:
+            requested.append(symbol)
+        for raw in payload.get("symbols") or []:
+            text = str(raw or "").strip()
+            if text:
+                requested.append(text)
+        return list(dict.fromkeys(normalize_symbol(symbol) for symbol in requested))
+
+    def _operation_scope_request_or_400(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        request_payload = dict(payload)
+        mode = _operation_scope_mode_from_payload(request_payload)
+        if mode not in BOT_OPERATION_SCOPE_MODES:
+            return request_payload, None
+        state = store.load_bot_state()
+        bot_id = str(request_payload.get("bot_id") or state.get("active_bot_id") or "").strip()
+        gate = store.bot_operation_scope_gate(
+            bot_id,
+            mode=mode,
+            requested_symbols=_operation_scope_requested_symbols(request_payload),
+        )
+        if bool(gate.get("is_blocking")):
+            reasons = [
+                str(reason)
+                for reason in (gate.get("blocking_reasons") or [])
+                if str(reason).strip()
+            ]
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "operation_scope_blocked",
+                    "mode": mode,
+                    "bot_id": bot_id or None,
+                    "blocking_reasons": reasons,
+                },
+            )
+        eligible_symbols = [
+            str(symbol).strip()
+            for symbol in (gate.get("eligible_symbols") or [])
+            if str(symbol).strip()
+        ]
+        if not str(request_payload.get("symbol") or "").strip() and len(eligible_symbols) == 1:
+            request_payload["symbol"] = eligible_symbols[0]
+        request_payload["bot_id"] = bot_id
+        request_payload["operation_scope"] = gate
+        request_payload["scope_source"] = "bot_runtime_scope"
+        return request_payload, gate
+
     @app.post("/api/v1/execution/preflight")
     def execution_preflight(
         body: ExecutionPreflightBody,
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
-        return store.execution_reality.preflight(body.model_dump())
+        request_payload, operation_scope = _operation_scope_request_or_400(body.model_dump())
+        response = store.execution_reality.preflight(request_payload)
+        if operation_scope is not None:
+            response["operation_scope"] = operation_scope
+        return response
 
     @app.get("/api/v1/execution/filter-rules")
     def execution_filter_rules(
@@ -14867,7 +15048,11 @@ def create_app() -> FastAPI:
         _: dict[str, str] = Depends(current_user),
     ) -> dict[str, Any]:
         try:
-            return store.execution_reality.create_order(body.model_dump())
+            request_payload, operation_scope = _operation_scope_request_or_400(body.model_dump())
+            response = store.execution_reality.create_order(request_payload)
+            if operation_scope is not None:
+                response["operation_scope"] = operation_scope
+            return response
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -19247,6 +19432,20 @@ def create_app() -> FastAPI:
     def _do_bot_start(bot_id: str | None = None) -> dict[str, Any]:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
+        operation_mode = str(state.get("mode") or "").strip().lower()
+        if operation_mode in BOT_OPERATION_SCOPE_MODES:
+            active_scope_bot_id = str(bot_id or state.get("active_bot_id") or "").strip()
+            gate = store.bot_operation_scope_gate(active_scope_bot_id, mode=operation_mode)
+            if bool(gate.get("is_blocking")):
+                reasons = "; ".join(
+                    str(reason)
+                    for reason in (gate.get("blocking_reasons") or [])
+                    if str(reason).strip()
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{operation_mode.upper()} blocked by bot trading universe scope: {reasons}",
+                )
         if str(state.get("mode") or "").strip().lower() == "live":
             preflight_gate = _live_preflight_gate("live")
             if not bool(preflight_gate.get("ok")):

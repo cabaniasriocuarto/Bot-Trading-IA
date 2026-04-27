@@ -2,6 +2,34 @@
 
 Fecha: 2026-04-26
 
+## RTLOPS-94 - cierre operativo de scope heredado en Shadow/Paper/Testnet/Live - 2026-04-26
+- [x] Cerrar regla operativa:
+  - `Shadow`, `Paper`, `Testnet` y `Live` heredan `Trading Universe Scope` del bot;
+  - operacion no abre selector manual paralelo;
+  - simbolos manuales fuera del scope del bot bloquean fail-closed.
+- [x] Cerrar backend-first:
+  - `POST /api/v1/execution/preflight` usa `operation_scope`;
+  - `POST /api/v1/execution/orders` usa `operation_scope`;
+  - `POST /api/v1/bot/start` valida scope heredado antes de correr;
+  - `blocking_reasons` quedan auditables.
+- [x] Cerrar surface minima:
+  - `Execution` muestra `Scope operativo heredado del bot`;
+  - muestra owner, source, entity, universe, family, quote, cap, elegibles, inelegibles y bloqueos;
+  - no agrega controles paralelos de simbolos.
+- [x] Revalidacion real del bloque:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/execution/page.tsx" "src/lib/types.ts"` -> PASS
+  - `npm.cmd run build` -> PASS
+- [ ] Siguiente paso recomendado:
+  - no abrir otro bloque de scope operativo salvo review de PR;
+  - siguiente frente de producto sugerido: reescritura limpia de `Strategy detail / truth / evidence`;
+  - mantener fuera:
+    - scorecard/risk/portfolio
+    - live console nueva
+    - refactor masivo de `Execution`.
+
 ## Siguiente paso exacto despues de RTLOPS-96 - 2026-04-26
 - [x] Fijar un carrier canónico read-only para operación:
   - `GET /api/v1/bots/{bot_id}/scope-eligibility`

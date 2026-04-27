@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from test_web_live_ready import _auth_headers, _build_app, _catalog_item, _login, _seed_bot_registry_catalog
 
 
@@ -82,6 +84,59 @@ def _seed_large_spot_universe(module) -> list[str]:
     policy_hash="test-policy-hash",
   )
   return symbols
+
+
+def _create_scope_ready_bot(module, client, headers: dict[str, str], monkeypatch, *, universe: list[str] | None = None, max_live_symbols: int = 1) -> tuple[str, list[str]]:
+  _seed_bot_registry_catalog(module)
+  pool_ids = _eligible_pool_ids(client, headers)[: max(1, len(universe or ["BTCUSDT"]))]
+  assert pool_ids
+  symbols = universe or ["BTCUSDT"]
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Scope Operativo RTLOPS-94",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": symbols,
+      "max_live_symbols": max_live_symbols,
+      "max_positions": max(1, max_live_symbols),
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={
+      "strategy_eligibility_by_symbol": {
+        symbol: [pool_ids[min(index, len(pool_ids) - 1)]]
+        for index, symbol in enumerate(symbols)
+      },
+    },
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={
+      "strategy_selection_by_symbol": {
+        symbol: pool_ids[min(index, len(pool_ids) - 1)]
+        for index, symbol in enumerate(symbols)
+      },
+    },
+  )
+  assert selection_res.status_code == 200, selection_res.text
+  strategy_rows = [dict(row) for row in module.store.list_strategies()]
+  pool_set = set(pool_ids)
+  for row in strategy_rows:
+    if str(row.get("id") or "") in pool_set:
+      row["enabled_for_trading"] = True
+      row["params"] = {}
+      row["tags"] = ["trend", "breakout"]
+  monkeypatch.setattr(module.store, "list_strategies", lambda: strategy_rows)
+  return bot_id, pool_ids
 
 
 def test_bot_registry_identity_crud_and_filters(tmp_path: Path, monkeypatch) -> None:
@@ -1299,6 +1354,83 @@ def test_bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_s
   assert items["BTCUSDT"]["selected_strategy_id"] == pool_ids[0]
   assert "trade_decisions_exceed_live_cap" in items["BTCUSDT"]["reason_codes"]
   assert items["BTCUSDT"]["blocking_reasons"]
+
+
+@pytest.mark.parametrize("mode,environment", [("shadow", "paper"), ("paper", "paper"), ("testnet", "testnet"), ("live", "live")])
+def test_rtlops94_operation_modes_inherit_bot_scope(tmp_path: Path, monkeypatch, mode: str, environment: str) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+
+  gate = _module.store.bot_operation_scope_gate(bot_id, mode=mode, requested_symbols=["BTCUSDT"])
+  assert gate["status"] == "ready"
+  assert gate["scope_source"] == "bot_runtime_scope"
+  assert gate["entity_kind"] == "bot"
+  assert gate["eligible_symbols"] == ["BTCUSDT"]
+  assert gate["ineligible_symbols"] == []
+  assert gate["manual_selector_allowed"] is False
+
+  payload = {
+    "family": "spot",
+    "environment": environment,
+    "mode": mode,
+    "bot_id": bot_id,
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "order_type": "LIMIT",
+    "quantity": 0.01,
+    "price": 50000.0,
+    "market_snapshot": {"best_bid": 49990.0, "best_ask": 50010.0, "last": 50000.0, "mark": 50000.0},
+  }
+  preflight_res = client.post("/api/v1/execution/preflight", headers=headers, json=payload)
+  assert preflight_res.status_code == 200, preflight_res.text
+  operation_scope = preflight_res.json()["operation_scope"]
+  assert operation_scope["mode"] == mode
+  assert operation_scope["bot_id"] == bot_id
+  assert operation_scope["eligible_symbols"] == ["BTCUSDT"]
+  assert operation_scope["is_blocking"] is False
+
+
+def test_rtlops94_operation_preflight_rejects_parallel_manual_symbol(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+
+  payload = {
+    "family": "spot",
+    "environment": "paper",
+    "mode": "paper",
+    "bot_id": bot_id,
+    "symbol": "ETHUSDT",
+    "side": "BUY",
+    "order_type": "LIMIT",
+    "quantity": 0.01,
+    "price": 3000.0,
+    "market_snapshot": {"best_bid": 2990.0, "best_ask": 3010.0, "last": 3000.0, "mark": 3000.0},
+  }
+  res = client.post("/api/v1/execution/preflight", headers=headers, json=payload)
+  assert res.status_code == 400
+  detail = res.json()["detail"]
+  assert detail["code"] == "operation_scope_blocked"
+  assert "manual_symbol_not_in_bot_scope:ETHUSDT" in detail["blocking_reasons"]
+
+
+def test_rtlops94_operation_scope_blocks_empty_or_over_cap_scope(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["ETHUSDT", "BTCUSDT"], max_live_symbols=1)
+
+  over_cap_gate = _module.store.bot_operation_scope_gate(bot_id, mode="paper", requested_symbols=["ETHUSDT"])
+  assert over_cap_gate["is_blocking"] is True
+  assert "operation_scope_exceeds_max_active_symbols" in over_cap_gate["blocking_reasons"]
+  assert "operation_scope_contains_ineligible_symbols" in over_cap_gate["blocking_reasons"]
+
+  missing_bot_gate = _module.store.bot_operation_scope_gate(None, mode="paper")
+  assert missing_bot_gate["is_blocking"] is True
+  assert "operation_scope_requires_bot_id" in missing_bot_gate["blocking_reasons"]
 
 
 def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_unresolved(tmp_path: Path, monkeypatch) -> None:

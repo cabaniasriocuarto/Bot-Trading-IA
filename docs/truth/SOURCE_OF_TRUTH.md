@@ -2,6 +2,40 @@
 
 Fecha de actualizacion: 2026-04-26
 
+## RTLOPS-94 - Shadow/Paper/Testnet/Live heredan Trading Universe Scope del bot - 2026-04-26
+
+- Estado real confirmado en esta rama:
+  - `RTLOPS-94` usa la fundacion `rtlops96/v1` ya mergeada para resolver el scope operativo del bot;
+  - `Shadow`, `Paper`, `Testnet` y `Live` consumen `scope_source=bot_runtime_scope`;
+  - `POST /api/v1/execution/preflight`, `POST /api/v1/execution/orders` y `POST /api/v1/bot/start` aplican un gate de scope operativo antes de operar;
+  - `Execution` muestra el `Scope operativo heredado del bot` como surface read-only;
+  - no se agrega selector manual paralelo en operacion.
+- Regla canónica resultante:
+  - el bot define y persiste el `Trading Universe Scope`;
+  - research mantiene su logica separada (`manual` o `bot_inherited` segun contexto);
+  - operacion solo puede usar simbolos dentro del subset elegible heredado del bot;
+  - un simbolo manual distinto al scope del bot no se convierte en fuente paralela y bloquea fail-closed.
+- Fail-closed operativo:
+  - bloquea si falta `bot_id`;
+  - bloquea si el contrato `rtlops96/v1` no puede resolverse;
+  - bloquea si el scope esta vacio;
+  - bloquea si `symbols[]` supera `max_active_symbols`;
+  - bloquea si `max_active_symbols` excede el cap inicial de `12`;
+  - bloquea si falta `market_family` o `quote_asset`;
+  - bloquea si hay simbolos inelegibles;
+  - expone `blocking_reasons` auditables.
+- Validacion real del bloque:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS;
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope" -q` -> PASS;
+  - `npm.cmd run typecheck` -> PASS;
+  - `npm.cmd run lint -- "src/app/(app)/execution/page.tsx" "src/lib/types.ts"` -> PASS;
+  - `npm.cmd run build` -> PASS.
+- Limite honesto del bloque:
+  - no abre una live console nueva;
+  - no rehace `Execution` completa;
+  - no mezcla `risk`, `scorecard`, `portfolio` ni `strategy truth/evidence`;
+  - no cambia research fuera de reafirmar su separacion conceptual.
+
 ## RTLOPS-96 - fundación canónica runtime / universe scope / eligibility en Execution - 2026-04-26
 
 - Estado real confirmado en esta rama:
