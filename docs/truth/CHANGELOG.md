@@ -10,14 +10,17 @@
     - bloquea fail-closed si el runtime del bot no esta listo;
     - expone trazabilidad del intent con `source=bot_runtime_net_decision`, `net_decision_key`, `decision_log_scope` y conteos de intents candidatos/suprimidos;
     - evita volver a una estrategia primaria paralela cuando hay bot activo.
+    - corrige el review blocker de PR #46: un start sin `bot_id` limpia `active_bot_id` stale y queda en strategy-only/principal strategy mode.
 - Cambio real aplicado en tests:
   - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
     - cubre que dos estrategias elegibles para un mismo simbolo no generan intents duplicados;
     - cubre que el intent usa la estrategia seleccionada por simbolo y su `net_decision_key`;
     - cubre fail-closed cuando `runtime.guardrails.execution_ready=false`.
+    - cubre start con bot, stop y start sin bot para verificar que no se conserva contexto bot stale.
 - Tests corridos:
   - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
   - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops68'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "rtlops68_runtime_order_intent_uses_net_decision_by_symbol_without_strategy_duplication or rtlops68_runtime_order_intent_fails_closed_when_bot_runtime_is_not_ready or bot_runtime_surface_is_canonical_and_traceable or bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope or rtlops94_operation_preflight_rejects_invalid_mode_even_with_valid_environment or rtlops94_operation_scope_blocks_unresolved_max_active_symbols_without_typeerror" -q` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops68'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "rtlops68 or rtlops94" -q` -> PASS, 11 tests
   - `npm.cmd run typecheck` -> PASS
 - Limite honesto:
   - no cierra todo `RTLOPS-68`;

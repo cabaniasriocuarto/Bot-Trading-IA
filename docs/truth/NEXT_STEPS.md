@@ -14,9 +14,13 @@ Fecha: 2026-04-28
 - [x] Fail-closed minimo:
   - si el runtime del bot no esta listo, no se vuelve a la estrategia primaria legacy;
   - se devuelve bloqueo con `blocking_reasons`.
+- [x] Cierre de review blocker PR #46:
+  - start sin `bot_id` limpia `active_bot_id` previo;
+  - el submit posterior no usa `bot_runtime_net_decision` ni `net_decision_key` stale;
+  - queda en strategy-only/principal strategy mode.
 - [x] Revalidacion real del slice:
   - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
-  - pytest focalizado `RTLOPS-68/94` en `test_web_bot_registry_identity.py` -> PASS, 12 tests
+  - pytest focalizado `RTLOPS-68/94` en `test_web_bot_registry_identity.py` -> PASS, 11 tests
   - `npm.cmd run typecheck` -> PASS
 - [ ] Siguiente slice recomendado dentro de `RTLOPS-68`:
   - auditar si se necesita endpoint/read model explicito de `order_intents_by_symbol`;

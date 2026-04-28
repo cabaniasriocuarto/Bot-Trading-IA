@@ -1357,6 +1357,37 @@ def test_rtlops68_runtime_order_intent_fails_closed_when_bot_runtime_is_not_read
   assert "signal_consolidation_invalid" in submit_result["blocking_reasons"]
 
 
+def test_rtlops68_start_without_bot_id_clears_stale_active_bot_context(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+
+  bot_start_res = client.post("/api/v1/bot/start", headers=headers, json={"bot_id": bot_id})
+  assert bot_start_res.status_code == 200, bot_start_res.text
+  assert bot_start_res.json()["bot_id"] == bot_id
+  assert _module.store.load_bot_state()["active_bot_id"] == bot_id
+
+  stop_res = client.post("/api/v1/bot/stop", headers=headers)
+  assert stop_res.status_code == 200, stop_res.text
+
+  strategy_only_start_res = client.post("/api/v1/bot/start", headers=headers)
+  assert strategy_only_start_res.status_code == 200, strategy_only_start_res.text
+  assert strategy_only_start_res.json()["bot_id"] is None
+
+  state = _module.store.load_bot_state()
+  assert "active_bot_id" not in state
+
+  intent = _module.runtime_bridge._runtime_order_intent_from_bot_net_decision(
+    state=state,
+    mode="paper",
+  )
+  assert intent.get("source") != "bot_runtime_net_decision"
+  assert intent.get("bot_id") in (None, "")
+  assert not intent.get("net_decision_key")
+  assert intent.get("strategy_id")
+
+
 def test_bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)

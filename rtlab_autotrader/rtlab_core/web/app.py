@@ -19596,8 +19596,11 @@ def create_app() -> FastAPI:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
         operation_mode = str(state.get("mode") or "").strip().lower()
-        if operation_mode in BOT_OPERATION_SCOPE_MODES:
-            active_scope_bot_id = str(bot_id or state.get("active_bot_id") or "").strip()
+        requested_bot_id = str(bot_id or "").strip()
+        if not requested_bot_id:
+            state.pop("active_bot_id", None)
+        if operation_mode in BOT_OPERATION_SCOPE_MODES and requested_bot_id:
+            active_scope_bot_id = requested_bot_id
             gate = store.bot_operation_scope_gate(active_scope_bot_id, mode=operation_mode)
             if bool(gate.get("is_blocking")):
                 reasons = "; ".join(
@@ -19624,7 +19627,7 @@ def create_app() -> FastAPI:
                 )
         # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
         strategy_name: str | None = None
-        active_bot_id = str(bot_id or "").strip() or None
+        active_bot_id = requested_bot_id or None
         if active_bot_id:
             bots = store.load_bots()
             bot_row = next((b for b in bots if str(b.get("id") or "") == active_bot_id), None)
