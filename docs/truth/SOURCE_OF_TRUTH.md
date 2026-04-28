@@ -2,6 +2,29 @@
 
 Fecha de actualizacion: 2026-04-28
 
+## RTLOPS-68 Slice 1 - decision neta por simbolo como intent operativo - 2026-04-28
+
+- Estado real confirmado en esta rama:
+  - `runtime.net_decision_by_symbol` ya no queda solo como surface informativa para bots;
+  - cuando hay `active_bot_id`, el submit operativo deriva el intent desde el runtime canonico del bot y su `net_decision_by_symbol`;
+  - la fuente del intent queda marcada como `source=bot_runtime_net_decision`;
+  - el intent incluye `net_decision_key`, `decision_log_scope`, `selected_strategy_id`, `candidate_intents_count` y `suppressed_intents_count`;
+  - si el runtime del bot no esta listo, el submit bloquea fail-closed con `blocking_reasons` en vez de volver a una estrategia primaria paralela.
+- Regla canonica resultante:
+  - un bot multi-symbol produce una decision neta por simbolo;
+  - una operacion con bot activo no debe multiplicar ordenes por cada estrategia candidata del pool;
+  - la estrategia seleccionada por simbolo es la que alimenta el intent operativo;
+  - el camino legacy de estrategia primaria queda solo como fallback cuando no existe contexto de bot activo.
+- Limite honesto del slice:
+  - no cierra todo `RTLOPS-68`;
+  - no abre live console;
+  - no implementa ejecucion multi-order nueva;
+  - no toca Binance adapters, Railway, Vercel, risk, scorecard, portfolio ni `strategy truth/evidence`.
+- Validacion real del slice:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS;
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops68'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "rtlops68_runtime_order_intent_uses_net_decision_by_symbol_without_strategy_duplication or rtlops68_runtime_order_intent_fails_closed_when_bot_runtime_is_not_ready or bot_runtime_surface_is_canonical_and_traceable or bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope or rtlops94_operation_preflight_rejects_invalid_mode_even_with_valid_environment or rtlops94_operation_scope_blocks_unresolved_max_active_symbols_without_typeerror" -q` -> PASS;
+  - `npm.cmd run typecheck` -> PASS.
+
 ## RTLOPS-94 - Shadow/Paper/Testnet/Live heredan Trading Universe Scope del bot - 2026-04-26
 
 - Estado real confirmado en esta rama:
