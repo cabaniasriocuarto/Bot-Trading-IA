@@ -1,6 +1,6 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-26
+Fecha de actualizacion: 2026-04-28
 
 ## RTLOPS-94 - Shadow/Paper/Testnet/Live heredan Trading Universe Scope del bot - 2026-04-26
 
@@ -17,8 +17,10 @@ Fecha de actualizacion: 2026-04-26
   - un simbolo manual distinto al scope del bot no se convierte en fuente paralela y bloquea fail-closed.
 - Fail-closed operativo:
   - bloquea si falta `bot_id`;
+  - bloquea si `payload.mode` fue enviado pero no pertenece a `shadow/paper/testnet/live`;
   - bloquea si el contrato `rtlops96/v1` no puede resolverse;
   - bloquea si el scope esta vacio;
+  - bloquea si `max_active_symbols` no puede resolverse a entero positivo;
   - bloquea si `symbols[]` supera `max_active_symbols`;
   - bloquea si `max_active_symbols` excede el cap inicial de `12`;
   - bloquea si falta `market_family` o `quote_asset`;
@@ -26,7 +28,7 @@ Fecha de actualizacion: 2026-04-26
   - expone `blocking_reasons` auditables.
 - Validacion real del bloque:
   - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS;
-  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope" -q` -> PASS;
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope or rtlops94_operation_preflight_rejects_invalid_mode_even_with_valid_environment or rtlops94_operation_scope_blocks_unresolved_max_active_symbols_without_typeerror" -q` -> PASS;
   - `npm.cmd run typecheck` -> PASS;
   - `npm.cmd run lint -- "src/app/(app)/execution/page.tsx" "src/lib/types.ts"` -> PASS;
   - `npm.cmd run build` -> PASS.

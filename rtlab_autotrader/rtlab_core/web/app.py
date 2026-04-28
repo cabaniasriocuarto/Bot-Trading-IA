@@ -6283,12 +6283,16 @@ def risk_hooks(context):
         if not configured_symbols:
             reasons.append("operation_scope_empty")
             reason_codes.add("operation_scope_empty")
-        if max_active_symbols > BOT_OPERATION_SCOPE_MAX_ACTIVE_SYMBOLS:
-            reasons.append("operation_scope_cap_exceeds_rtlops92_limit")
-            reason_codes.add("operation_scope_cap_exceeds_rtlops92_limit")
-        if configured_symbols and len(configured_symbols) > max_active_symbols:
-            reasons.append("operation_scope_exceeds_max_active_symbols")
-            reason_codes.add("operation_scope_exceeds_max_active_symbols")
+        if max_active_symbols is None:
+            reasons.append("max_active_symbols_unresolved")
+            reason_codes.add("max_active_symbols_unresolved")
+        else:
+            if max_active_symbols > BOT_OPERATION_SCOPE_MAX_ACTIVE_SYMBOLS:
+                reasons.append("operation_scope_cap_exceeds_rtlops92_limit")
+                reason_codes.add("operation_scope_cap_exceeds_rtlops92_limit")
+            if configured_symbols and len(configured_symbols) > max_active_symbols:
+                reasons.append("operation_scope_exceeds_max_active_symbols")
+                reason_codes.add("operation_scope_exceeds_max_active_symbols")
         if not str(scope.get("market_family") or "").strip():
             reasons.append("operation_scope_market_family_unresolved")
             reason_codes.add("operation_scope_market_family_unresolved")
@@ -14957,13 +14961,16 @@ def create_app() -> FastAPI:
     def account_capabilities_summary(_: dict[str, str] = Depends(current_user)) -> dict[str, Any]:
         return store.instrument_registry.capabilities_summary()
 
-    def _operation_scope_mode_from_payload(payload: dict[str, Any]) -> str:
-        raw_mode = str(payload.get("mode") or payload.get("environment") or "").strip().lower()
-        if raw_mode in BOT_OPERATION_SCOPE_MODES:
-            return raw_mode
-        if raw_mode == "sandbox":
-            return "paper"
-        return raw_mode
+    def _operation_scope_mode_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+        explicit_mode = str(payload.get("mode") or "").strip().lower()
+        if explicit_mode:
+            if explicit_mode in BOT_OPERATION_SCOPE_MODES:
+                return explicit_mode, None
+            return None, f"invalid_operation_mode:{explicit_mode}"
+        fallback_environment = str(payload.get("environment") or "").strip().lower()
+        if fallback_environment in BOT_OPERATION_SCOPE_MODES:
+            return fallback_environment, None
+        return None, None
 
     def _operation_scope_requested_symbols(payload: dict[str, Any]) -> list[str]:
         requested: list[str] = []
@@ -14978,11 +14985,21 @@ def create_app() -> FastAPI:
 
     def _operation_scope_request_or_400(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
         request_payload = dict(payload)
-        mode = _operation_scope_mode_from_payload(request_payload)
-        if mode not in BOT_OPERATION_SCOPE_MODES:
-            return request_payload, None
         state = store.load_bot_state()
         bot_id = str(request_payload.get("bot_id") or state.get("active_bot_id") or "").strip()
+        mode, mode_error = _operation_scope_mode_from_payload(request_payload)
+        if mode_error:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "operation_scope_blocked",
+                    "mode": str(request_payload.get("mode") or "").strip() or None,
+                    "bot_id": bot_id or None,
+                    "blocking_reasons": [mode_error],
+                },
+            )
+        if mode not in BOT_OPERATION_SCOPE_MODES:
+            return request_payload, None
         gate = store.bot_operation_scope_gate(
             bot_id,
             mode=mode,

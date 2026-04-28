@@ -1433,6 +1433,71 @@ def test_rtlops94_operation_scope_blocks_empty_or_over_cap_scope(tmp_path: Path,
   assert "operation_scope_requires_bot_id" in missing_bot_gate["blocking_reasons"]
 
 
+def test_rtlops94_operation_preflight_rejects_invalid_mode_even_with_valid_environment(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+
+  payload = {
+    "family": "spot",
+    "environment": "live",
+    "mode": "banana",
+    "bot_id": bot_id,
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "order_type": "LIMIT",
+    "quantity": 0.01,
+    "price": 50000.0,
+    "market_snapshot": {"best_bid": 49990.0, "best_ask": 50010.0, "last": 50000.0, "mark": 50000.0},
+  }
+  res = client.post("/api/v1/execution/preflight", headers=headers, json=payload)
+  assert res.status_code == 400
+  detail = res.json()["detail"]
+  assert detail["code"] == "operation_scope_blocked"
+  assert detail["mode"] == "banana"
+  assert "invalid_operation_mode:banana" in detail["blocking_reasons"]
+
+
+def test_rtlops94_operation_scope_blocks_unresolved_max_active_symbols_without_typeerror(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+
+  original_scope = _module.store.bot_scope_eligibility_or_404(bot_id)
+
+  def _scope_with_unresolved_cap(target_bot_id: str) -> dict:
+    scope = dict(original_scope)
+    scope["bot_id"] = target_bot_id
+    scope["max_active_symbols"] = None
+    return scope
+
+  monkeypatch.setattr(_module.store, "bot_scope_eligibility_or_404", _scope_with_unresolved_cap)
+
+  gate = _module.store.bot_operation_scope_gate(bot_id, mode="paper", requested_symbols=["BTCUSDT"])
+  assert gate["is_blocking"] is True
+  assert "max_active_symbols_unresolved" in gate["blocking_reasons"]
+
+  payload = {
+    "family": "spot",
+    "environment": "paper",
+    "mode": "paper",
+    "bot_id": bot_id,
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "order_type": "LIMIT",
+    "quantity": 0.01,
+    "price": 50000.0,
+    "market_snapshot": {"best_bid": 49990.0, "best_ask": 50010.0, "last": 50000.0, "mark": 50000.0},
+  }
+  res = client.post("/api/v1/execution/preflight", headers=headers, json=payload)
+  assert res.status_code == 400
+  detail = res.json()["detail"]
+  assert detail["code"] == "operation_scope_blocked"
+  assert "max_active_symbols_unresolved" in detail["blocking_reasons"]
+
+
 def test_bot_signal_consolidation_fails_closed_when_selected_strategy_signal_is_unresolved(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)

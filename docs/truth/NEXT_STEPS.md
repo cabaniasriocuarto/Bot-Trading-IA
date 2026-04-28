@@ -1,6 +1,25 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-26
+Fecha: 2026-04-28
+
+## RTLOPS-94 - cierre de review blockers tecnicos de PR #45 - 2026-04-28
+- [x] Endurecer gate de modo operativo:
+  - si `payload.mode` viene enviado, se valida explicitamente;
+  - si es invalido, bloquea fail-closed con `invalid_operation_mode:<valor>`;
+  - `environment` solo se usa como fallback cuando `mode` no fue enviado.
+- [x] Endurecer gate de cap operativo:
+  - `max_active_symbols` se valida antes de comparaciones numericas;
+  - `None` o valor no resoluble bloquea con `max_active_symbols_unresolved`;
+  - no devuelve `TypeError` ni `500`.
+- [x] Revalidacion real del microbloque:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope or rtlops94_operation_preflight_rejects_invalid_mode_even_with_valid_environment or rtlops94_operation_scope_blocks_unresolved_max_active_symbols_without_typeerror" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+- [ ] Siguiente paso exacto:
+  - push del microfix a PR #45;
+  - responder y resolver los 2 review threads;
+  - esperar checks;
+  - mergear solo si la policy ya queda satisfecha.
 
 ## RTLOPS-94 - cierre operativo de scope heredado en Shadow/Paper/Testnet/Live - 2026-04-26
 - [x] Cerrar regla operativa:

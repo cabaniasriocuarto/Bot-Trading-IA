@@ -1,5 +1,28 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-28
+
+### RTLOPS-94 - close review blockers on operation scope gate
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - valida `payload.mode` de forma explicita cuando viene enviado;
+    - deja de usar `environment` como fallback si `mode` fue enviado pero es invalido;
+    - responde fail-closed con `invalid_operation_mode:<valor>` en vez de bypassear `bot_operation_scope_gate(...)`;
+    - valida `max_active_symbols` antes de comparaciones numericas;
+    - si `max_active_symbols` no se resuelve a entero positivo, bloquea con `max_active_symbols_unresolved` en vez de devolver `TypeError`/500.
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - agrega cobertura para `payload.mode` invalido con `environment` valido;
+    - agrega cobertura para `max_active_symbols=None` sin `TypeError` y con bloqueo auditable.
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope or rtlops94_operation_preflight_rejects_invalid_mode_even_with_valid_environment or rtlops94_operation_scope_blocks_unresolved_max_active_symbols_without_typeerror" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+- Limite honesto:
+  - no amplía RTLOPS-94;
+  - no toca frontend ni otros dominios;
+  - solo cierra los 2 review blockers tecnicos de PR #45.
+
 ## 2026-04-26
 
 ### RTLOPS-94 - operation modes inherit bot Trading Universe Scope
