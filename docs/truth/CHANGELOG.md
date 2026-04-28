@@ -1,6 +1,61 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-28
+
+### RTLOPS-94 - close review blockers on operation scope gate
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - valida `payload.mode` de forma explicita cuando viene enviado;
+    - deja de usar `environment` como fallback si `mode` fue enviado pero es invalido;
+    - responde fail-closed con `invalid_operation_mode:<valor>` en vez de bypassear `bot_operation_scope_gate(...)`;
+    - valida `max_active_symbols` antes de comparaciones numericas;
+    - si `max_active_symbols` no se resuelve a entero positivo, bloquea con `max_active_symbols_unresolved` en vez de devolver `TypeError`/500.
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - agrega cobertura para `payload.mode` invalido con `environment` valido;
+    - agrega cobertura para `max_active_symbols=None` sin `TypeError` y con bloqueo auditable.
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope or rtlops94_operation_preflight_rejects_invalid_mode_even_with_valid_environment or rtlops94_operation_scope_blocks_unresolved_max_active_symbols_without_typeerror" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+- Limite honesto:
+  - no amplía RTLOPS-94;
+  - no toca frontend ni otros dominios;
+  - solo cierra los 2 review blockers tecnicos de PR #45.
+
 ## 2026-04-26
+
+### RTLOPS-94 - operation modes inherit bot Trading Universe Scope
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega `bot_operation_scope_gate(...)` sobre el contrato `rtlops96/v1`;
+    - `POST /api/v1/execution/preflight` y `POST /api/v1/execution/orders` enriquecen la request con `operation_scope` y bloquean si el scope heredado del bot no es operable;
+    - `POST /api/v1/bot/start` valida el scope del bot para `shadow`, `paper`, `testnet` y `live`;
+    - bloquea fail-closed por `bot_id` faltante, scope vacio, cap excedido, `market_family`/`quote_asset` no resueltos y simbolos inelegibles;
+    - rechaza simbolos manuales fuera del subset elegible del bot en vez de tratarlos como selector paralelo.
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - renombra la surface a `Scope operativo heredado del bot`;
+    - explicita que Shadow/Paper/Testnet/Live consumen el scope persistido por el bot;
+    - muestra estado bloqueante/no bloqueante sin agregar controles de seleccion paralelos.
+  - `rtlab_dashboard/src/lib/types.ts`
+    - agrega `is_blocking` al tipo de scope eligibility.
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - valida que `shadow`, `paper`, `testnet` y `live` heredan el scope del bot;
+    - valida rechazo de simbolo manual fuera del scope;
+    - valida bloqueo por bot ausente, over-cap e inelegibles.
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops94'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope or rtlops94_operation_modes_inherit_bot_scope or rtlops94_operation_preflight_rejects_parallel_manual_symbol or rtlops94_operation_scope_blocks_empty_or_over_cap_scope" -q` -> PASS
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/execution/page.tsx" "src/lib/types.ts"` -> PASS
+  - `npm.cmd run build` -> PASS
+- Limites honestos:
+  - no abre live console nueva;
+  - no toca scorecard/risk/portfolio;
+  - no rehace `strategy truth/evidence`;
+  - no reabre research ni `RTLOPS-95`.
 
 ### RTLOPS-96 - fundación canónica runtime / universe scope / eligibility en Execution
 - Cambio real aplicado en backend:

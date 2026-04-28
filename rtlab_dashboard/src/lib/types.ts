@@ -314,6 +314,7 @@ export interface BotScopeEligibilityModel {
   eligible_symbols: string[];
   ineligible_symbols: string[];
   blocking_reasons: string[];
+  is_blocking?: boolean;
   items: BotScopeEligibilityItem[];
   reason_codes: string[];
   status: "valid" | "warning" | "error" | string;

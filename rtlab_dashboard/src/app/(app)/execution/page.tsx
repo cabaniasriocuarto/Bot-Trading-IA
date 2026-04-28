@@ -1078,9 +1078,9 @@ export default function ExecutionPage() {
                     <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Runtime scope / eligibility</p>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Scope operativo heredado del bot</p>
                           <p className="text-[11px] text-slate-400">
-                            Slice canónico de ownership operativo: el bot persiste el scope y Ejecución solo consume el subset resuelto, sin selector manual paralelo.
+                            Shadow, Paper, Testnet y Live consumen el Trading Universe Scope persistido por el bot. Cambialo desde el registry/configuracion del bot, no desde un selector paralelo en operacion.
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -1098,6 +1098,9 @@ export default function ExecutionPage() {
                           <Badge variant={selectedBotScope?.ownership.operation_manual_selector_allowed ? "danger" : "success"}>
                             {selectedBotScope?.ownership.operation_manual_selector_allowed ? "selector paralelo" : "sin selector manual"}
                           </Badge>
+                          <Badge variant={selectedBotScope?.is_blocking ? "danger" : "success"}>
+                            {selectedBotScope?.is_blocking ? "bloqueante" : "listo para operar"}
+                          </Badge>
                         </div>
                       </div>
                       {selectedBotDomainLoading && !selectedBotScope ? (
@@ -1107,6 +1110,7 @@ export default function ExecutionPage() {
                           <div className="grid gap-2 sm:grid-cols-2">
                             <div className="rounded border border-slate-800 p-2">Owner: <strong>{selectedBotScope.ownership.persisted_scope_owner}</strong></div>
                             <div className="rounded border border-slate-800 p-2">Source: <strong>{selectedBotScope.scope_source}</strong></div>
+                            <div className="rounded border border-slate-800 p-2">Entity: <strong>{selectedBotScope.ownership.entity_kind}</strong></div>
                             <div className="rounded border border-slate-800 p-2">Configured: <strong>{selectedBotScope.configured_symbols_count}</strong></div>
                             <div className="rounded border border-slate-800 p-2">Eligible: <strong>{selectedBotScope.eligible_symbols.length}</strong></div>
                             <div className="rounded border border-slate-800 p-2">Ineligible: <strong>{selectedBotScope.ineligible_symbols.length}</strong></div>
