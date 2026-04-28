@@ -2,6 +2,36 @@
 
 Fecha: 2026-04-28
 
+## RTLOPS-68 Slice 1 - decision neta por simbolo como intent operativo - 2026-04-28
+- [x] Conectar runtime bot-first con intent operativo:
+  - cuando existe `active_bot_id`, el submit deriva el intent desde `runtime.net_decision_by_symbol`;
+  - se aplica `bot_operation_scope_gate(...)` antes de producir intent;
+  - la fuente queda explicitada como `bot_runtime_net_decision`.
+- [x] Cerrar anti-duplicacion minima:
+  - dos estrategias elegibles para el mismo simbolo no generan dos intents;
+  - el intent usa `selected_strategy_id` del simbolo;
+  - se conserva `net_decision_key` y `decision_log_scope` para auditoria.
+- [x] Fail-closed minimo:
+  - si el runtime del bot no esta listo, no se vuelve a la estrategia primaria legacy;
+  - se devuelve bloqueo con `blocking_reasons`.
+- [x] Cierre de review blocker PR #46:
+  - start sin `bot_id` limpia `active_bot_id` previo;
+  - el submit posterior no usa `bot_runtime_net_decision` ni `net_decision_key` stale;
+  - queda en strategy-only/principal strategy mode.
+- [x] Revalidacion real del slice:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - pytest focalizado `RTLOPS-68/94` en `test_web_bot_registry_identity.py` -> PASS, 11 tests
+  - `npm.cmd run typecheck` -> PASS
+- [ ] Siguiente slice recomendado dentro de `RTLOPS-68`:
+  - auditar si se necesita endpoint/read model explicito de `order_intents_by_symbol`;
+  - decidir si Paper debe ejecutar varios simbolos por ciclo o seguir submit single-intent seguro;
+  - mantener fuera:
+    - live console (`RTLOPS-69`)
+    - lifecycle completo (`RTLRESE-25`)
+    - Railway/Vercel
+    - risk/scorecard/portfolio
+    - Strategy Truth/Evidence.
+
 ## RTLOPS-94 - cierre de review blockers tecnicos de PR #45 - 2026-04-28
 - [x] Endurecer gate de modo operativo:
   - si `payload.mode` viene enviado, se valida explicitamente;

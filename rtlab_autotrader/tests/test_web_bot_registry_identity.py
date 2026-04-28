@@ -1260,6 +1260,134 @@ def test_bot_runtime_surface_is_canonical_and_traceable(tmp_path: Path, monkeypa
   assert detail_bot["runtime"]["items"][0]["runtime_symbol_id"].startswith(f"{bot_id}:")
 
 
+def test_rtlops68_runtime_order_intent_uses_net_decision_by_symbol_without_strategy_duplication(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Net Symbol Intent",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT"],
+      "max_live_symbols": 1,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={"strategy_eligibility_by_symbol": {"BTCUSDT": pool_ids}},
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={"strategy_selection_by_symbol": {"BTCUSDT": pool_ids[0]}},
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") == pool_ids[0]:
+      row["enabled_for_trading"] = True
+      row["params"] = {"runtime_side": "BUY"}
+      row["tags"] = []
+    elif str(row.get("id") or "") == pool_ids[1]:
+      row["enabled_for_trading"] = True
+      row["params"] = {"runtime_side": "SELL"}
+      row["tags"] = []
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  intent = _module.runtime_bridge._runtime_order_intent_from_bot_net_decision(
+    state={"active_bot_id": bot_id},
+    mode="paper",
+  )
+  assert intent["source"] == "bot_runtime_net_decision"
+  assert intent["action"] == "trade"
+  assert intent["symbol"] == "BTCUSDT"
+  assert intent["side"] == "BUY"
+  assert intent["strategy_id"] == pool_ids[0]
+  assert intent["selected_strategy_id"] == pool_ids[0]
+  assert intent["net_decision_key"] == f"{bot_id}:BTCUSDT:net_decision"
+  assert intent["decision_log_scope"] == {"bot_id": bot_id, "symbol": "BTCUSDT"}
+  assert intent["candidate_intents_count"] == 1
+  assert intent["suppressed_intents_count"] == 0
+  assert len(intent["net_decision_intents"]) == 1
+
+
+def test_rtlops68_runtime_order_intent_fails_closed_when_bot_runtime_is_not_ready(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+  runtime = _module.store.bot_runtime_or_404(bot_id)
+  runtime["status"] = "error"
+  runtime["reason_codes"] = ["signal_consolidation_invalid"]
+  runtime["guardrails"] = {
+    **dict(runtime.get("guardrails") or {}),
+    "execution_ready": False,
+    "reason_codes": ["runtime_execution_not_ready"],
+  }
+  monkeypatch.setattr(_module.store, "bot_runtime_or_404", lambda target_bot_id: runtime)
+
+  intent = _module.runtime_bridge._runtime_order_intent_from_bot_net_decision(
+    state={"active_bot_id": bot_id},
+    mode="paper",
+  )
+  assert intent["source"] == "bot_runtime_net_decision"
+  assert intent["action"] == "blocked"
+  assert intent["reason"] == "bot_runtime_execution_not_ready"
+  assert "signal_consolidation_invalid" in intent["blocking_reasons"]
+
+  submit_result = _module.runtime_bridge._maybe_submit_paper_runtime_order(state={"active_bot_id": bot_id})
+  assert submit_result["submitted"] is False
+  assert submit_result["intent_source"] == "bot_runtime_net_decision"
+  assert submit_result["reason"] == "bot_runtime_execution_not_ready"
+  assert "signal_consolidation_invalid" in submit_result["blocking_reasons"]
+
+
+def test_rtlops68_start_without_bot_id_clears_stale_active_bot_context(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+
+  bot_start_res = client.post("/api/v1/bot/start", headers=headers, json={"bot_id": bot_id})
+  assert bot_start_res.status_code == 200, bot_start_res.text
+  assert bot_start_res.json()["bot_id"] == bot_id
+  assert _module.store.load_bot_state()["active_bot_id"] == bot_id
+
+  stop_res = client.post("/api/v1/bot/stop", headers=headers)
+  assert stop_res.status_code == 200, stop_res.text
+
+  strategy_only_start_res = client.post("/api/v1/bot/start", headers=headers)
+  assert strategy_only_start_res.status_code == 200, strategy_only_start_res.text
+  assert strategy_only_start_res.json()["bot_id"] is None
+
+  state = _module.store.load_bot_state()
+  assert "active_bot_id" not in state
+
+  intent = _module.runtime_bridge._runtime_order_intent_from_bot_net_decision(
+    state=state,
+    mode="paper",
+  )
+  assert intent.get("source") != "bot_runtime_net_decision"
+  assert intent.get("bot_id") in (None, "")
+  assert not intent.get("net_decision_key")
+  assert intent.get("strategy_id")
+
+
 def test_bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)

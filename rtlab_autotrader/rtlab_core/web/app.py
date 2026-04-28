@@ -11538,6 +11538,164 @@ class RuntimeBridge:
             "notional_usd": notional,
         }
 
+    @staticmethod
+    def _net_symbol_intent_blocked_result(*, reason: str, payload: dict[str, Any]) -> dict[str, Any]:
+        reasons = [
+            str(item)
+            for item in (payload.get("blocking_reasons") or payload.get("reason_codes") or [])
+            if str(item).strip()
+        ]
+        return {
+            "action": "blocked",
+            "reason": reason,
+            "strategy_id": "",
+            "symbol": "",
+            "side": "",
+            "notional_usd": float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD),
+            "source": "bot_runtime_net_decision",
+            "bot_id": str(payload.get("bot_id") or "").strip(),
+            "blocking_reasons": list(dict.fromkeys(reasons or [reason])),
+            "net_decision_intents": [],
+            "candidate_intents_count": 0,
+            "suppressed_intents_count": 0,
+        }
+
+    def _runtime_order_intent_from_bot_net_decision(
+        self,
+        *,
+        state: dict[str, Any],
+        mode: str,
+    ) -> dict[str, Any]:
+        mode_n = str(mode or "").strip().lower()
+        bot_id = str((state or {}).get("active_bot_id") or (state or {}).get("bot_id") or "").strip()
+        if not bot_id:
+            return self._runtime_order_intent(mode=mode_n)
+
+        try:
+            operation_scope = store.bot_operation_scope_gate(bot_id, mode=mode_n)
+        except Exception as exc:
+            return self._net_symbol_intent_blocked_result(
+                reason="operation_scope_unavailable",
+                payload={
+                    "bot_id": bot_id,
+                    "blocking_reasons": [f"operation_scope_unavailable:{type(exc).__name__}"],
+                },
+            )
+        if bool(operation_scope.get("is_blocking")):
+            return self._net_symbol_intent_blocked_result(
+                reason="operation_scope_blocked",
+                payload={**operation_scope, "bot_id": bot_id},
+            )
+
+        try:
+            runtime = store.bot_runtime_or_404(bot_id)
+        except Exception as exc:
+            return self._net_symbol_intent_blocked_result(
+                reason="bot_runtime_unavailable",
+                payload={
+                    "bot_id": bot_id,
+                    "blocking_reasons": [f"bot_runtime_unavailable:{type(exc).__name__}"],
+                },
+            )
+
+        guardrails = runtime.get("guardrails") if isinstance(runtime.get("guardrails"), dict) else {}
+        if str(runtime.get("status") or "error") == "error" or not bool(guardrails.get("execution_ready", False)):
+            blocking_reasons = [
+                str(item)
+                for item in (
+                    list(runtime.get("reason_codes") or [])
+                    + list(guardrails.get("reason_codes") or [])
+                    + list(runtime.get("errors") or [])
+                    + list(guardrails.get("errors") or [])
+                )
+                if str(item).strip()
+            ]
+            return self._net_symbol_intent_blocked_result(
+                reason="bot_runtime_execution_not_ready",
+                payload={"bot_id": bot_id, "blocking_reasons": blocking_reasons},
+            )
+
+        allowed_symbols = [
+            RuntimeBridge._sanitize_exchange_symbol(symbol)
+            for symbol in (guardrails.get("allowed_trade_symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(symbol)
+        ]
+        net_decisions = runtime.get("net_decision_by_symbol") if isinstance(runtime.get("net_decision_by_symbol"), dict) else {}
+        runtime_items = {
+            RuntimeBridge._sanitize_exchange_symbol(item.get("symbol")): dict(item)
+            for item in (runtime.get("items") or [])
+            if isinstance(item, dict) and RuntimeBridge._sanitize_exchange_symbol(item.get("symbol"))
+        }
+        intents: list[dict[str, Any]] = []
+        blocking_reasons: list[str] = []
+        notional = max(5.0, float(RUNTIME_REMOTE_ORDER_NOTIONAL_USD))
+
+        for symbol in allowed_symbols:
+            decision = net_decisions.get(symbol) if isinstance(net_decisions.get(symbol), dict) else {}
+            action = str(decision.get("action") or "").strip().lower()
+            if action != "trade":
+                continue
+            side = str(decision.get("side") or "").strip().upper()
+            if side not in {"BUY", "SELL"}:
+                blocking_reasons.append(f"net_decision_side_missing:{symbol}")
+                continue
+            item = runtime_items.get(symbol, {})
+            strategy_id = (
+                str(decision.get("selected_strategy_id") or "").strip()
+                or str(item.get("selected_strategy_id") or "").strip()
+            )
+            if not strategy_id:
+                blocking_reasons.append(f"net_decision_strategy_missing:{symbol}")
+                continue
+            intents.append(
+                {
+                    "action": "trade",
+                    "reason": str(decision.get("reason") or "bot_runtime_net_decision").strip(),
+                    "criterion": str(decision.get("criterion") or "").strip(),
+                    "strategy_id": strategy_id,
+                    "selected_strategy_id": strategy_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "notional_usd": notional,
+                    "source": "bot_runtime_net_decision",
+                    "bot_id": bot_id,
+                    "net_decision_key": str(item.get("net_decision_key") or f"{bot_id}:{symbol}:net_decision"),
+                    "decision_log_scope": dict(item.get("decision_log_scope") or {"bot_id": bot_id, "symbol": symbol}),
+                    "agreement_status": str(decision.get("agreement_status") or item.get("agreement_status") or "").strip(),
+                    "input_count": int(decision.get("input_count") or item.get("input_count") or 0),
+                }
+            )
+
+        if blocking_reasons:
+            return self._net_symbol_intent_blocked_result(
+                reason="bot_runtime_net_decision_blocked",
+                payload={"bot_id": bot_id, "blocking_reasons": blocking_reasons},
+            )
+        if not intents:
+            return {
+                "action": "flat",
+                "reason": "bot_runtime_no_trade_decisions",
+                "strategy_id": "",
+                "symbol": "",
+                "side": "",
+                "notional_usd": notional,
+                "source": "bot_runtime_net_decision",
+                "bot_id": bot_id,
+                "blocking_reasons": [],
+                "net_decision_intents": [],
+                "candidate_intents_count": 0,
+                "suppressed_intents_count": 0,
+            }
+
+        first_intent = intents[0]
+        return {
+            **first_intent,
+            "blocking_reasons": [],
+            "net_decision_intents": intents,
+            "candidate_intents_count": len(intents),
+            "suppressed_intents_count": max(0, len(intents) - 1),
+        }
+
     def _paper_runtime_quote_snapshot(self, *, family: str, symbol: str) -> dict[str, Any]:
         quote_snapshot = store.execution_reality._quote_snapshot(family, "paper", symbol)  # type: ignore[attr-defined]
         runtime_summary = store.execution_reality.market_streams_summary()
@@ -11588,7 +11746,7 @@ class RuntimeBridge:
         return quote_snapshot if isinstance(quote_snapshot, dict) else {}
 
     def _maybe_submit_paper_runtime_order(self, *, state: dict[str, Any]) -> dict[str, Any]:
-        intent = self._runtime_order_intent(mode="paper")
+        intent = self._runtime_order_intent_from_bot_net_decision(state=state, mode="paper")
         signal_strategy_id = str(intent.get("strategy_id") or "")
         signal_symbol = RuntimeBridge._sanitize_exchange_symbol(intent.get("symbol") or "")
         signal_side = str(intent.get("side") or "").strip().upper()
@@ -11601,7 +11759,19 @@ class RuntimeBridge:
             "signal_strategy_id": signal_strategy_id,
             "signal_symbol": signal_symbol,
             "signal_side": signal_side,
+            "intent_source": str(intent.get("source") or "strategy_primary"),
+            "bot_id": str(intent.get("bot_id") or state.get("active_bot_id") or "").strip() or None,
+            "net_decision_key": str(intent.get("net_decision_key") or "").strip() or None,
+            "candidate_intents_count": int(intent.get("candidate_intents_count") or 0),
+            "suppressed_intents_count": int(intent.get("suppressed_intents_count") or 0),
         }
+
+        if signal_action == "blocked":
+            return {
+                **base_result,
+                "reason": signal_reason or "bot_runtime_net_decision_blocked",
+                "blocking_reasons": list(intent.get("blocking_reasons") or []),
+            }
 
         if signal_action != "trade":
             return {**base_result, "reason": "strategy_signal_flat"}
@@ -11687,6 +11857,8 @@ class RuntimeBridge:
                 "order_type": "MARKET",
                 "quantity": quantity,
                 "market_snapshot": copy.deepcopy(quote_snapshot),
+                "net_decision_key": str(intent.get("net_decision_key") or "").strip() or None,
+                "decision_log_scope": dict(intent.get("decision_log_scope") or {}),
             }
         )
         execution_order_id = str(created.get("execution_order_id") or "").strip()
@@ -11819,55 +11991,59 @@ class RuntimeBridge:
         if not bool(RUNTIME_REMOTE_ORDERS_ENABLED):
             return {"submitted": False, "reason": "remote_orders_disabled"}
 
-        intent = self._runtime_order_intent(mode=mode_n)
+        intent = self._runtime_order_intent_from_bot_net_decision(state=state, mode=mode_n)
         signal_strategy_id = str(intent.get("strategy_id") or "")
         signal_symbol = RuntimeBridge._sanitize_exchange_symbol(intent.get("symbol") or "")
         signal_side = str(intent.get("side") or "").strip().upper()
         signal_action = str(intent.get("action") or "flat").strip().lower()
         signal_reason = str(intent.get("reason") or "").strip()
+        signal_base = {
+            "signal_action": signal_action,
+            "signal_reason": signal_reason,
+            "signal_strategy_id": signal_strategy_id,
+            "signal_symbol": signal_symbol,
+            "signal_side": signal_side,
+            "intent_source": str(intent.get("source") or "strategy_primary"),
+            "bot_id": str(intent.get("bot_id") or state.get("active_bot_id") or "").strip() or None,
+            "net_decision_key": str(intent.get("net_decision_key") or "").strip() or None,
+            "candidate_intents_count": int(intent.get("candidate_intents_count") or 0),
+            "suppressed_intents_count": int(intent.get("suppressed_intents_count") or 0),
+        }
+
+        if signal_action == "blocked":
+            return {
+                "submitted": False,
+                "reason": signal_reason or "bot_runtime_net_decision_blocked",
+                "blocking_reasons": list(intent.get("blocking_reasons") or []),
+                **signal_base,
+            }
 
         if mode_n == "live" and not bool(LIVE_TRADING_ENABLED):
             return {
                 "submitted": False,
                 "reason": "live_trading_disabled",
                 "error": "LIVE_TRADING_ENABLED=false",
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
 
         if signal_action != "trade":
             return {
                 "submitted": False,
                 "reason": "strategy_signal_flat",
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
 
         if not bool((self._last_risk or {}).get("allow_new_positions", True)):
             return {
                 "submitted": False,
                 "reason": "risk_blocked",
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
         if not bool(state.get("runtime_reconciliation_ok", False)):
             return {
                 "submitted": False,
                 "reason": "reconciliation_not_ok",
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
 
         last_submit_at_raw = str(state.get("runtime_last_remote_submit_at") or "").strip()
@@ -11882,11 +12058,7 @@ class RuntimeBridge:
                     return {
                         "submitted": False,
                         "reason": "submit_cooldown_active",
-                        "signal_action": signal_action,
-                        "signal_reason": signal_reason,
-                        "signal_strategy_id": signal_strategy_id,
-                        "signal_symbol": signal_symbol,
-                        "signal_side": signal_side,
+                        **signal_base,
                     }
             except Exception:
                 pass
@@ -11906,22 +12078,14 @@ class RuntimeBridge:
                 "submitted": False,
                 "reason": "account_positions_fetch_failed",
                 "error": account_reason or "account_positions_fetch_failed",
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
         if account_ok and account_rows:
             self._remote_positions = account_rows
             return {
                 "submitted": False,
                 "reason": "account_positions_open",
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
 
         exchange_orders, _source, source_ok, source_reason = self._fetch_exchange_open_orders(mode=mode_n)
@@ -11931,11 +12095,7 @@ class RuntimeBridge:
                 "submitted": False,
                 "reason": "open_orders_fetch_failed",
                 "error": source_reason,
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
         self._sync_oms_with_exchange_open_orders(exchange_orders)
         if exchange_orders:
@@ -11943,11 +12103,7 @@ class RuntimeBridge:
                 "submitted": False,
                 "reason": "open_orders_present",
                 "open_orders": len(exchange_orders),
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
         local_open_orders = self._oms.open_orders()
         if local_open_orders:
@@ -11955,11 +12111,7 @@ class RuntimeBridge:
                 "submitted": False,
                 "reason": "local_open_orders_present",
                 "open_orders": len(local_open_orders),
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
-                "signal_symbol": signal_symbol,
-                "signal_side": signal_side,
+                **signal_base,
             }
 
         symbol = signal_symbol or RuntimeBridge._sanitize_exchange_symbol(
@@ -11979,9 +12131,7 @@ class RuntimeBridge:
                 "submitted": False,
                 "reason": "idempotent_skip",
                 "client_order_id": client_order_id,
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
+                **signal_base,
                 "signal_symbol": symbol,
                 "signal_side": side,
             }
@@ -12000,9 +12150,7 @@ class RuntimeBridge:
                 "reason": "submit_failed",
                 "error": str(payload.get("error") or ""),
                 "client_order_id": client_order_id,
-                "signal_action": signal_action,
-                "signal_reason": signal_reason,
-                "signal_strategy_id": signal_strategy_id,
+                **signal_base,
                 "signal_symbol": symbol,
                 "signal_side": side,
             }
@@ -12033,9 +12181,7 @@ class RuntimeBridge:
             "side": side,
             "qty": float(payload.get("orig_qty") or qty),
             "idempotent_duplicate": bool(payload.get("idempotent_duplicate", False)),
-            "signal_action": signal_action,
-            "signal_reason": signal_reason,
-            "signal_strategy_id": signal_strategy_id,
+            **signal_base,
             "signal_symbol": symbol,
             "signal_side": side,
         }
@@ -19450,8 +19596,11 @@ def create_app() -> FastAPI:
         state = store.load_bot_state()
         state["runtime_engine"] = _runtime_engine_from_state(state)
         operation_mode = str(state.get("mode") or "").strip().lower()
-        if operation_mode in BOT_OPERATION_SCOPE_MODES:
-            active_scope_bot_id = str(bot_id or state.get("active_bot_id") or "").strip()
+        requested_bot_id = str(bot_id or "").strip()
+        if not requested_bot_id:
+            state.pop("active_bot_id", None)
+        if operation_mode in BOT_OPERATION_SCOPE_MODES and requested_bot_id:
+            active_scope_bot_id = requested_bot_id
             gate = store.bot_operation_scope_gate(active_scope_bot_id, mode=operation_mode)
             if bool(gate.get("is_blocking")):
                 reasons = "; ".join(
@@ -19478,7 +19627,7 @@ def create_app() -> FastAPI:
                 )
         # Resolve strategy: prefer bot pool if bot_id provided, fallback to principal.
         strategy_name: str | None = None
-        active_bot_id = str(bot_id or "").strip() or None
+        active_bot_id = requested_bot_id or None
         if active_bot_id:
             bots = store.load_bots()
             bot_row = next((b for b in bots if str(b.get("id") or "") == active_bot_id), None)
