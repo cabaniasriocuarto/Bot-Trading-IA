@@ -26,6 +26,8 @@ import type {
   BotInstance,
   BotLifecycleOperationalModel,
   BotLifecycleOperationalResponse,
+  BotOrderIntentBySymbolItem,
+  BotOrderIntentsBySymbolResponse,
   BotPolicyStateResponse,
   BotScopeEligibilityResponse,
   BotStatusResponse,
@@ -109,6 +111,8 @@ export default function ExecutionPage() {
   const [selectedBotDecisionLog, setSelectedBotDecisionLog] = useState<BotDecisionLogResponse | null>(null);
   const [selectedBotLifecycleOperational, setSelectedBotLifecycleOperational] = useState<BotLifecycleOperationalResponse | null>(null);
   const [selectedBotScopeEligibility, setSelectedBotScopeEligibility] = useState<BotScopeEligibilityResponse | null>(null);
+  const [selectedBotOrderIntents, setSelectedBotOrderIntents] = useState<BotOrderIntentsBySymbolResponse | null>(null);
+  const [selectedBotOrderIntentsError, setSelectedBotOrderIntentsError] = useState("");
   const [selectedBotDomainLoading, setSelectedBotDomainLoading] = useState(false);
   const [selectedBotDomainError, setSelectedBotDomainError] = useState("");
   const [selectedBotDomainNotice, setSelectedBotDomainNotice] = useState("");
@@ -408,6 +412,13 @@ export default function ExecutionPage() {
   );
   const selectedBotOperational = selectedBotLifecycleOperational?.lifecycle_operational || null;
   const selectedBotScope = selectedBotScopeEligibility?.scope_eligibility || null;
+  const selectedBotOrderIntentModel = selectedBotOrderIntents?.order_intents_by_symbol || null;
+  const selectedBotOrderIntentItems = useMemo(() => {
+    if (!selectedBotOrderIntentModel) return [];
+    const explicitItems = selectedBotOrderIntentModel.items;
+    if (Array.isArray(explicitItems) && explicitItems.length) return explicitItems;
+    return Object.values(selectedBotOrderIntentModel.order_intents_by_symbol || {});
+  }, [selectedBotOrderIntentModel]);
 
   const statusVariant = botStatus
     ? botStatus.bot_status === "RUNNING"
@@ -703,6 +714,8 @@ export default function ExecutionPage() {
       setSelectedBotDecisionLog(null);
       setSelectedBotLifecycleOperational(null);
       setSelectedBotScopeEligibility(null);
+      setSelectedBotOrderIntents(null);
+      setSelectedBotOrderIntentsError("");
       setSelectedBotDomainError("");
       setSelectedBotDomainNotice("");
       setSelectedBotDomainLoading(false);
@@ -757,17 +770,33 @@ export default function ExecutionPage() {
         const scopeEligibility = await apiGet<BotScopeEligibilityResponse>(
           `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/scope-eligibility`,
         );
+        let orderIntents: BotOrderIntentsBySymbolResponse | null = null;
+        let orderIntentsError = "";
+        try {
+          orderIntents = await apiGet<BotOrderIntentsBySymbolResponse>(
+            `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/order-intents-by-symbol?mode=${encodeURIComponent(runtimeModeKey)}`,
+          );
+        } catch (orderIntentErr) {
+          orderIntentsError =
+            orderIntentErr instanceof Error
+              ? orderIntentErr.message
+              : "No se pudo cargar la consola live read-only del bot seleccionado.";
+        }
         if (cancelled) return;
         setSelectedBotPolicyState(policyState);
         setSelectedBotDecisionLog(decisionLog);
         setSelectedBotLifecycleOperational(lifecycleOperational);
         setSelectedBotScopeEligibility(scopeEligibility);
+        setSelectedBotOrderIntents(orderIntents);
+        setSelectedBotOrderIntentsError(orderIntentsError);
       } catch (err) {
         if (cancelled) return;
         setSelectedBotPolicyState(null);
         setSelectedBotDecisionLog(null);
         setSelectedBotLifecycleOperational(null);
         setSelectedBotScopeEligibility(null);
+        setSelectedBotOrderIntents(null);
+        setSelectedBotOrderIntentsError("");
         setSelectedBotDomainError(err instanceof Error ? err.message : "No se pudieron cargar los dominios del bot seleccionado.");
       } finally {
         if (!cancelled) setSelectedBotDomainLoading(false);
@@ -778,7 +807,7 @@ export default function ExecutionPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedExecutionBotId, botInstances]);
+  }, [selectedExecutionBotId, botInstances, runtimeModeKey]);
 
   return (
     <div className="space-y-4">
@@ -1181,6 +1210,207 @@ export default function ExecutionPage() {
                         </div>
                       ) : (
                         <p className="mt-3 text-xs text-slate-400">Sin scope canónico detallado para este bot.</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-lg border border-cyan-500/20 bg-cyan-950/10 p-3 xl:col-span-2">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200">
+                            Consola Live del Bot — solo lectura
+                          </p>
+                          <p className="mt-1 text-[11px] text-slate-400">
+                            Observabilidad por símbolo desde <code>rtlops97/v1</code>. No crea órdenes, no activa live actions y no agrega selector paralelo de símbolos.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant="info">read-only</Badge>
+                          <Badge variant="success">no crea órdenes</Badge>
+                          <Badge variant="warn">live actions fuera de alcance</Badge>
+                        </div>
+                      </div>
+
+                      {selectedBotDomainLoading && !selectedBotOrderIntentModel ? (
+                        <p className="mt-3 text-xs text-slate-400">Cargando consola live read-only...</p>
+                      ) : selectedBotOrderIntentsError ? (
+                        <div className="mt-3 rounded border border-amber-500/20 bg-amber-500/5 p-2 text-xs text-amber-100">
+                          <p className="font-semibold">Consola read-only no disponible para este bot/modo.</p>
+                          <p className="mt-1">{selectedBotOrderIntentsError}</p>
+                          <p className="mt-1 text-amber-200/80">
+                            Policy, scope, lifecycle y decision log se mantienen visibles; no se usan mocks ni fixtures.
+                          </p>
+                        </div>
+                      ) : selectedBotOrderIntentModel ? (
+                        <div className="mt-3 space-y-3 text-xs text-slate-300">
+                          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                            <div className="rounded border border-slate-800 p-2">
+                              Bot: <strong>{selectedBotOrderIntentModel.bot_id}</strong>
+                            </div>
+                            <div className="rounded border border-slate-800 p-2">
+                              Mode: <strong>{selectedBotOrderIntentModel.operation_mode.toUpperCase()}</strong>
+                            </div>
+                            <div className="rounded border border-slate-800 p-2">
+                              Contract: <strong>{selectedBotOrderIntentModel.contract_version}</strong>
+                            </div>
+                            <div className="rounded border border-slate-800 p-2">
+                              Evaluated:{" "}
+                              <strong>
+                                {selectedBotOrderIntentModel.evaluated_at
+                                  ? new Date(selectedBotOrderIntentModel.evaluated_at).toLocaleString()
+                                  : "—"}
+                              </strong>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 lg:grid-cols-3">
+                            <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                              <p className="text-[10px] uppercase tracking-wide text-slate-500">Scope heredado</p>
+                              <p className="mt-1 text-slate-200">
+                                Source: <strong>{selectedBotOrderIntentModel.scope_source || selectedBotScope?.scope_source || "—"}</strong>
+                              </p>
+                              <p className="mt-1 text-slate-400">
+                                Símbolos:{" "}
+                                {selectedBotOrderIntentModel.symbols.length
+                                  ? selectedBotOrderIntentModel.symbols.join(", ")
+                                  : selectedBotScope?.eligible_symbols.join(", ") || "—"}
+                              </p>
+                            </div>
+
+                            <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                              <p className="text-[10px] uppercase tracking-wide text-slate-500">Paper execution policy</p>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                <Badge
+                                  variant={
+                                    selectedBotOrderIntentModel.paper_execution_policy?.multi_symbol_per_cycle_enabled
+                                      ? "warn"
+                                      : "success"
+                                  }
+                                >
+                                  {paperPolicyText(selectedBotOrderIntentModel.paper_execution_policy?.multi_symbol_per_cycle_enabled)}
+                                </Badge>
+                                <Badge variant="neutral">
+                                  max symbols {selectedBotOrderIntentModel.paper_execution_policy?.max_symbols_per_cycle ?? "—"}
+                                </Badge>
+                                <Badge variant="neutral">
+                                  max intents {selectedBotOrderIntentModel.paper_execution_policy?.max_intents_per_cycle ?? "—"}
+                                </Badge>
+                              </div>
+                              <p className="mt-2 text-slate-400">
+                                Multi-symbol visible como observabilidad; ejecución multi-order no habilitada en este slice.
+                              </p>
+                            </div>
+
+                            <div className="rounded border border-slate-800 bg-slate-900/40 p-2">
+                              <p className="text-[10px] uppercase tracking-wide text-slate-500">Estado agregado</p>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                <Badge variant={liveConsoleStatusVariant(selectedBotOrderIntentModel.status)}>
+                                  {selectedBotOrderIntentModel.status}
+                                </Badge>
+                                <Badge variant="success">
+                                  actionable {selectedBotOrderIntentModel.actionable_symbols?.length ?? 0}
+                                </Badge>
+                                <Badge variant="warn">
+                                  blocked {selectedBotOrderIntentModel.blocked_symbols?.length ?? 0}
+                                </Badge>
+                                <Badge variant="neutral">
+                                  no_action {selectedBotOrderIntentModel.no_action_symbols?.length ?? 0}
+                                </Badge>
+                              </div>
+                            </div>
+                          </div>
+
+                          {joinReasons(
+                            selectedBotOrderIntentModel.blocking_reasons,
+                            selectedBotOrderIntentModel.paper_execution_policy?.blocking_reasons,
+                          ).length ? (
+                            <div className="rounded border border-amber-500/20 bg-amber-500/5 p-2 text-amber-100">
+                              <p className="text-[10px] uppercase tracking-wide text-amber-200">Razones de bloqueo</p>
+                              <p className="mt-1">
+                                {joinReasons(
+                                  selectedBotOrderIntentModel.blocking_reasons,
+                                  selectedBotOrderIntentModel.paper_execution_policy?.blocking_reasons,
+                                ).join(" · ")}
+                              </p>
+                            </div>
+                          ) : null}
+
+                          <div className="overflow-x-auto rounded border border-slate-800">
+                            <Table>
+                              <THead>
+                                <TR>
+                                  <TH>Símbolo</TH>
+                                  <TH>Status</TH>
+                                  <TH>Estrategia seleccionada</TH>
+                                  <TH>Intent</TH>
+                                  <TH>Decision scope</TH>
+                                  <TH>Razones</TH>
+                                </TR>
+                              </THead>
+                              <TBody>
+                                {selectedBotOrderIntentItems.length ? (
+                                  selectedBotOrderIntentItems.map((item: BotOrderIntentBySymbolItem) => {
+                                    const reasons = joinReasons(
+                                      item.blocking_reasons,
+                                      item.reason_codes,
+                                      item.paper_execution_blocking_reasons,
+                                      item.paper_policy_blocking_reasons,
+                                    );
+                                    return (
+                                      <TR key={`live-console-${item.symbol}`}>
+                                        <TD>
+                                          <div className="font-semibold text-slate-100">{item.symbol}</div>
+                                          <div className="mt-1 text-[11px] text-slate-500">
+                                            {item.evaluated_at ? new Date(item.evaluated_at).toLocaleString() : "—"}
+                                          </div>
+                                        </TD>
+                                        <TD>
+                                          <div className="flex flex-wrap gap-2">
+                                            <Badge variant={liveConsoleStatusVariant(item.status)}>{item.status}</Badge>
+                                            {item.paper_execution_status ? (
+                                              <Badge variant={liveConsoleStatusVariant(item.paper_execution_status)}>
+                                                {item.paper_execution_status}
+                                              </Badge>
+                                            ) : null}
+                                          </div>
+                                        </TD>
+                                        <TD>
+                                          <div>{item.selected_strategy_id || "—"}</div>
+                                          <div className="mt-1 text-[11px] text-slate-500">source: {item.source || "—"}</div>
+                                        </TD>
+                                        <TD>
+                                          <div>{formatMaybe(item.action)}</div>
+                                          <div className="mt-1 text-[11px] text-slate-500">
+                                            side: {formatMaybe(item.side)} · net: {formatMaybe(item.net_decision_key)}
+                                          </div>
+                                        </TD>
+                                        <TD className="max-w-[260px] break-all text-[11px] text-slate-400">
+                                          {formatMaybe(item.decision_log_scope)}
+                                        </TD>
+                                        <TD className="max-w-[260px]">
+                                          {reasons.length ? (
+                                            <span className="text-amber-200">{reasons.join(" · ")}</span>
+                                          ) : (
+                                            <span className="text-emerald-200">Sin bloqueos reportados.</span>
+                                          )}
+                                        </TD>
+                                      </TR>
+                                    );
+                                  })
+                                ) : (
+                                  <TR>
+                                    <TD colSpan={6} className="text-slate-400">
+                                      Sin intents por símbolo para el bot/modo actual.
+                                    </TD>
+                                  </TR>
+                                )}
+                              </TBody>
+                            </Table>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-xs text-slate-400">
+                          Sin contrato <code>rtlops97/v1</code> disponible para este bot. La consola no usa mocks ni fixtures.
+                        </p>
                       )}
                     </div>
 
@@ -1944,6 +2174,33 @@ function logReferencesBot(row: LogEvent, botId: string) {
   if (String(payload.related_bot_id || "") === botId) return true;
   if (String(payload.relatedBotId || "") === botId) return true;
   return Array.isArray(payload.related_ids) && payload.related_ids.some((relatedId) => String(relatedId) === botId);
+}
+
+function liveConsoleStatusVariant(status?: string | null) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "actionable" || normalized === "execution_actionable" || normalized === "ready" || normalized === "valid") return "success";
+  if (normalized === "blocked" || normalized === "error") return "danger";
+  if (normalized === "hold" || normalized === "warning" || normalized === "observability_only") return "warn";
+  return "neutral";
+}
+
+function formatMaybe(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "—";
+  }
+}
+
+function joinReasons(...groups: Array<string[] | undefined>): string[] {
+  return groups.flatMap((group) => (Array.isArray(group) ? group.filter(Boolean) : []));
+}
+
+function paperPolicyText(enabled?: boolean) {
+  return enabled ? "multi-symbol habilitado" : "single-intent seguro";
 }
 
 function statusLabel(status: BotStatusResponse["bot_status"] | string): string {
