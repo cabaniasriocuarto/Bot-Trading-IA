@@ -1520,6 +1520,16 @@ def test_rtlops97_order_intents_read_model_blocks_missing_runtime_without_500(tm
   assert "runtime_execution_not_ready" in payload["order_intents_by_symbol"]["BTCUSDT"]["blocking_reasons"]
 
 
+def test_rtlops97_order_intents_read_model_preserves_missing_bot_404(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/bots/BOT-DOES-NOT-EXIST/order-intents-by-symbol?mode=paper", headers=headers)
+  assert res.status_code == 404
+  assert res.json()["detail"] == "BotInstance not found"
+
+
 def test_bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)

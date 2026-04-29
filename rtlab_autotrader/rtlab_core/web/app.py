@@ -6009,6 +6009,8 @@ def risk_hooks(context):
         reason_codes: set[str] = set()
         try:
             gate = self.bot_operation_scope_gate(normalized_bot_id, mode=normalized_mode)
+        except HTTPException:
+            raise
         except Exception as exc:
             gate = {
                 "bot_id": normalized_bot_id,
@@ -6033,6 +6035,8 @@ def risk_hooks(context):
 
         try:
             runtime = self.bot_runtime_or_404(normalized_bot_id)
+        except HTTPException:
+            raise
         except Exception as exc:
             runtime = None
             blocking_reasons.append(f"bot_runtime_unavailable:{type(exc).__name__}")

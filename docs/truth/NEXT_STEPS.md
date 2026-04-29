@@ -15,9 +15,10 @@ Fecha: 2026-04-28
   - scope operativo heredado del bot requerido;
   - runtime/guardrails requeridos;
   - symbols fuera de scope, runtime faltante o estrategia/side faltantes devuelven `blocking_reasons`.
+  - `bot_id` inexistente conserva `404` y no se mezcla con estado bloqueado de un bot existente.
 - [x] Validacion real:
   - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
-  - pytest focalizado `RTLOPS-97/68/94` en `test_web_bot_registry_identity.py` -> PASS, 15 tests
+  - pytest focalizado `RTLOPS-97/68/94` en `test_web_bot_registry_identity.py` -> PASS, 16 tests
 - [ ] RTLOPS-68 sigue parcial:
   - falta decidir/implementar ejecucion Paper multi-symbol por ciclo si se habilita en un slice posterior;
   - falta cualquier surface visual futura de `RTLOPS-69`;
