@@ -9,7 +9,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit --incremental false",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:smoke:live-console": "playwright test tests/playwright/live-console-readonly.spec.ts --project=chromium"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -26,6 +27,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
