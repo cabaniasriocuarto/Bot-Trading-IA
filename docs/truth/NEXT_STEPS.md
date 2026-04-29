@@ -2,6 +2,23 @@
 
 Fecha: 2026-04-29
 
+## RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright - 2026-04-29
+- [x] Deuda `npm audit` del dashboard resuelta:
+  - baseline inicial: 9 vulnerabilities, 3 moderate y 6 high;
+  - baseline final: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
+- [x] Fix aplicado sin `--force`:
+  - `next` / `eslint-config-next` actualizados a `16.2.4`;
+  - transitivas de tooling actualizadas por `npm audit fix` normal;
+  - override acotado `postcss=8.5.12` para cubrir el `postcss` anidado bajo `next`.
+- [x] Validacion real:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
+  - `npm.cmd run build` -> PASS
+- [ ] Pendiente no bloqueante:
+  - warnings Recharts por dimensiones en headless/build siguen clasificados como no fatales;
+  - `RTLOPS-69` sigue parcial y no debe abrir acciones live sin bloque separado.
+
 ## RTLOPS-100 / RTLOPS-69 Slice 2 - Playwright smoke visual de consola read-only - 2026-04-29
 - [x] Smoke visual minimo:
   - carga `Execution` con una fixture de red acotada al runner Playwright;

@@ -2,6 +2,27 @@
 
 ## 2026-04-29
 
+### RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright
+- Cambio real aplicado en dependencias frontend:
+  - `rtlab_dashboard/package.json`
+    - actualiza `next` de `16.1.6` a `16.2.4`;
+    - actualiza `eslint-config-next` de `16.1.6` a `16.2.4`;
+    - agrega override acotado `postcss=8.5.12`.
+  - `rtlab_dashboard/package-lock.json`
+    - actualiza transitivas seguras via `npm audit fix` sin `--force`, incluyendo `vite`, `rollup`, `picomatch`, `minimatch`, `brace-expansion`, `flatted` y `ajv`.
+- Resultado de seguridad:
+  - antes: `npm.cmd audit --audit-level=moderate` -> FAIL, 9 vulnerabilities, 3 moderate y 6 high;
+  - despues: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
+- Tests corridos:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
+  - `npm.cmd run build` -> PASS
+- Limite honesto:
+  - no se uso `npm audit fix --force`;
+  - no se toco backend, UI funcional, Playwright smoke, Railway/Vercel, preserve ni PRs historicas;
+  - quedan warnings Recharts no fatales en headless/build.
+
 ### RTLOPS-100 / RTLOPS-69 Slice 2 - Playwright smoke visual de consola read-only
 - Cambio real aplicado en QA/frontend:
   - `rtlab_dashboard/package.json`

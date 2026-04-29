@@ -2,6 +2,30 @@
 
 Fecha de actualizacion: 2026-04-29
 
+## RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright - 2026-04-29
+
+- Estado real confirmado en esta rama:
+  - se corrige la deuda `npm audit` detectada despues de `RTLOPS-100`;
+  - baseline inicial: `npm.cmd audit --audit-level=moderate` -> FAIL con 9 vulnerabilities, 3 moderate y 6 high;
+  - baseline final: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
+- Cambios de dependencias frontend:
+  - `next` pasa de `16.1.6` a `16.2.4`;
+  - `eslint-config-next` pasa de `16.1.6` a `16.2.4`;
+  - `npm audit fix` sin `--force` actualiza transitivas de tooling como `vite`, `rollup`, `picomatch`, `minimatch`, `brace-expansion`, `flatted` y `ajv`;
+  - se agrega override acotado `postcss=8.5.12` para evitar el `postcss<8.5.10` anidado bajo `next`.
+- Regla de seguridad:
+  - no se uso `npm audit fix --force`;
+  - no se toco backend, UI funcional, Playwright smoke, Railway/Vercel config, preserve ni ramas historicas.
+- Validacion real del slice:
+  - `npm.cmd audit --audit-level=moderate` -> PASS;
+  - `npm.cmd run typecheck` -> PASS despues de limpiar `.next` regenerable por tipos viejos de Next;
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS;
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test;
+  - `npm.cmd run build` -> PASS.
+- Limite honesto:
+  - el smoke/build siguen emitiendo warnings no fatales de Recharts por dimensiones en entorno headless;
+  - `RTLOPS-69` y `RTLOPS-68` siguen parciales.
+
 ## RTLOPS-100 / RTLOPS-69 Slice 2 - smoke visual Playwright de consola read-only - 2026-04-29
 
 - Estado real confirmado en esta rama:
