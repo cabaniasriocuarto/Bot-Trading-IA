@@ -7,6 +7,9 @@ Fecha: 2026-04-28
   - se integra en `Execution`;
   - consume `GET /api/v1/bots/{bot_id}/order-intents-by-symbol?mode=...`;
   - muestra contrato `rtlops97/v1`, scope heredado, policy Paper, status agregado e intents por simbolo.
+- [x] Falla aislada del read model:
+  - si `order-intents-by-symbol` falla, se muestra error propio en la consola;
+  - no se limpian policy, scope, lifecycle ni decision log ya cargados para el bot seleccionado.
 - [x] Observabilidad por simbolo:
   - muestra `selected_strategy_id`, `source`, `action`, `side`, `net_decision_key`, `decision_log_scope`, `blocking_reasons` y `paper_execution_status`;
   - deja visible que Paper sigue `single_intent_safe`;

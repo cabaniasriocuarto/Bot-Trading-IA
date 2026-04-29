@@ -9,6 +9,9 @@ Fecha de actualizacion: 2026-04-28
   - consume `GET /api/v1/bots/{bot_id}/order-intents-by-symbol?mode=...`;
   - muestra el contrato `rtlops97/v1`, bot, modo operativo, scope heredado, status agregado, policy Paper e intents por simbolo;
   - expone `selected_strategy_id`, `source`, `action`, `side`, `net_decision_key`, `decision_log_scope`, `blocking_reasons` y `paper_execution_status` por simbolo.
+- Resiliencia de UI:
+  - si falla solo el endpoint `order-intents-by-symbol`, la consola read-only muestra error propio;
+  - policy, scope, lifecycle y decision log del bot seleccionado no se limpian por un fallo aislado del nuevo read model.
 - Regla de producto:
   - la consola es observabilidad read-only;
   - no crea ordenes, no cancela ordenes, no modifica lifecycle y no activa live actions;

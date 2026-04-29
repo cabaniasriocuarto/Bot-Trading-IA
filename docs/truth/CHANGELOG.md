@@ -12,6 +12,7 @@
     - agrega "Consola Live del Bot - solo lectura" dentro de Execution;
     - muestra bot, modo, scope heredado, contrato, policy Paper, status agregado e intents por simbolo;
     - expone `selected_strategy_id`, `source`, `action`, `side`, `net_decision_key`, `decision_log_scope`, `blocking_reasons` y `paper_execution_status`.
+    - aisla el fallo del endpoint nuevo para no limpiar policy, scope, lifecycle ni decision log si solo falla el read model `order_intents_by_symbol`.
 - Regla de seguridad:
   - la surface es read-only;
   - no crea ordenes, no cancela ordenes, no activa live actions, no modifica lifecycle y no agrega selector paralelo de simbolos;

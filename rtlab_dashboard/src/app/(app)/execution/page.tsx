@@ -112,6 +112,7 @@ export default function ExecutionPage() {
   const [selectedBotLifecycleOperational, setSelectedBotLifecycleOperational] = useState<BotLifecycleOperationalResponse | null>(null);
   const [selectedBotScopeEligibility, setSelectedBotScopeEligibility] = useState<BotScopeEligibilityResponse | null>(null);
   const [selectedBotOrderIntents, setSelectedBotOrderIntents] = useState<BotOrderIntentsBySymbolResponse | null>(null);
+  const [selectedBotOrderIntentsError, setSelectedBotOrderIntentsError] = useState("");
   const [selectedBotDomainLoading, setSelectedBotDomainLoading] = useState(false);
   const [selectedBotDomainError, setSelectedBotDomainError] = useState("");
   const [selectedBotDomainNotice, setSelectedBotDomainNotice] = useState("");
@@ -714,6 +715,7 @@ export default function ExecutionPage() {
       setSelectedBotLifecycleOperational(null);
       setSelectedBotScopeEligibility(null);
       setSelectedBotOrderIntents(null);
+      setSelectedBotOrderIntentsError("");
       setSelectedBotDomainError("");
       setSelectedBotDomainNotice("");
       setSelectedBotDomainLoading(false);
@@ -768,15 +770,25 @@ export default function ExecutionPage() {
         const scopeEligibility = await apiGet<BotScopeEligibilityResponse>(
           `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/scope-eligibility`,
         );
-        const orderIntents = await apiGet<BotOrderIntentsBySymbolResponse>(
-          `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/order-intents-by-symbol?mode=${encodeURIComponent(runtimeModeKey)}`,
-        );
+        let orderIntents: BotOrderIntentsBySymbolResponse | null = null;
+        let orderIntentsError = "";
+        try {
+          orderIntents = await apiGet<BotOrderIntentsBySymbolResponse>(
+            `/api/v1/bots/${encodeURIComponent(selectedExecutionBotId)}/order-intents-by-symbol?mode=${encodeURIComponent(runtimeModeKey)}`,
+          );
+        } catch (orderIntentErr) {
+          orderIntentsError =
+            orderIntentErr instanceof Error
+              ? orderIntentErr.message
+              : "No se pudo cargar la consola live read-only del bot seleccionado.";
+        }
         if (cancelled) return;
         setSelectedBotPolicyState(policyState);
         setSelectedBotDecisionLog(decisionLog);
         setSelectedBotLifecycleOperational(lifecycleOperational);
         setSelectedBotScopeEligibility(scopeEligibility);
         setSelectedBotOrderIntents(orderIntents);
+        setSelectedBotOrderIntentsError(orderIntentsError);
       } catch (err) {
         if (cancelled) return;
         setSelectedBotPolicyState(null);
@@ -784,6 +796,7 @@ export default function ExecutionPage() {
         setSelectedBotLifecycleOperational(null);
         setSelectedBotScopeEligibility(null);
         setSelectedBotOrderIntents(null);
+        setSelectedBotOrderIntentsError("");
         setSelectedBotDomainError(err instanceof Error ? err.message : "No se pudieron cargar los dominios del bot seleccionado.");
       } finally {
         if (!cancelled) setSelectedBotDomainLoading(false);
@@ -1219,6 +1232,14 @@ export default function ExecutionPage() {
 
                       {selectedBotDomainLoading && !selectedBotOrderIntentModel ? (
                         <p className="mt-3 text-xs text-slate-400">Cargando consola live read-only...</p>
+                      ) : selectedBotOrderIntentsError ? (
+                        <div className="mt-3 rounded border border-amber-500/20 bg-amber-500/5 p-2 text-xs text-amber-100">
+                          <p className="font-semibold">Consola read-only no disponible para este bot/modo.</p>
+                          <p className="mt-1">{selectedBotOrderIntentsError}</p>
+                          <p className="mt-1 text-amber-200/80">
+                            Policy, scope, lifecycle y decision log se mantienen visibles; no se usan mocks ni fixtures.
+                          </p>
+                        </div>
                       ) : selectedBotOrderIntentModel ? (
                         <div className="mt-3 space-y-3 text-xs text-slate-300">
                           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
