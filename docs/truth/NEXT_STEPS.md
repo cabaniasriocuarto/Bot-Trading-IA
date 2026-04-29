@@ -2,6 +2,27 @@
 
 Fecha: 2026-04-28
 
+## RTLOPS-97 / RTLOPS-68 Slice 2 - read model order_intents_by_symbol - 2026-04-28
+- [x] Agregar read model backend read-only:
+  - `GET /api/v1/bots/{bot_id}/order-intents-by-symbol`;
+  - contrato `rtlops97/v1`;
+  - un intent neto por simbolo, agrupado por bot, modo operativo y simbolo.
+- [x] Mantener Paper en modo seguro:
+  - `single_intent_safe`;
+  - `multi_symbol_per_cycle_enabled=false`;
+  - sin ejecucion multi-order nueva.
+- [x] Mantener fail-closed:
+  - scope operativo heredado del bot requerido;
+  - runtime/guardrails requeridos;
+  - symbols fuera de scope, runtime faltante o estrategia/side faltantes devuelven `blocking_reasons`.
+- [x] Validacion real:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - pytest focalizado `RTLOPS-97/68/94` en `test_web_bot_registry_identity.py` -> PASS, 15 tests
+- [ ] RTLOPS-68 sigue parcial:
+  - falta decidir/implementar ejecucion Paper multi-symbol por ciclo si se habilita en un slice posterior;
+  - falta cualquier surface visual futura de `RTLOPS-69`;
+  - `RTLRESE-25` lifecycle completo sigue fuera de alcance.
+
 ## RTLOPS-68 Slice 1 - decision neta por simbolo como intent operativo - 2026-04-28
 - [x] Conectar runtime bot-first con intent operativo:
   - cuando existe `active_bot_id`, el submit deriva el intent desde `runtime.net_decision_by_symbol`;
@@ -22,9 +43,9 @@ Fecha: 2026-04-28
   - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
   - pytest focalizado `RTLOPS-68/94` en `test_web_bot_registry_identity.py` -> PASS, 11 tests
   - `npm.cmd run typecheck` -> PASS
-- [ ] Siguiente slice recomendado dentro de `RTLOPS-68`:
-  - auditar si se necesita endpoint/read model explicito de `order_intents_by_symbol`;
-  - decidir si Paper debe ejecutar varios simbolos por ciclo o seguir submit single-intent seguro;
+- [x] Siguiente slice recomendado dentro de `RTLOPS-68`:
+  - endpoint/read model explicito de `order_intents_by_symbol` implementado en `RTLOPS-97`;
+  - Paper queda como submit single-intent seguro;
   - mantener fuera:
     - live console (`RTLOPS-69`)
     - lifecycle completo (`RTLRESE-25`)
