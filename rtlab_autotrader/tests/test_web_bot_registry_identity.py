@@ -1388,6 +1388,148 @@ def test_rtlops68_start_without_bot_id_clears_stale_active_bot_context(tmp_path:
   assert intent.get("strategy_id")
 
 
+def test_rtlops97_order_intents_read_model_returns_one_intent_per_symbol(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, pool_ids = _create_scope_ready_bot(
+    _module,
+    client,
+    headers,
+    monkeypatch,
+    universe=["BTCUSDT", "ETHUSDT"],
+    max_live_symbols=2,
+  )
+
+  res = client.get(f"/api/v1/bots/{bot_id}/order-intents-by-symbol?mode=paper", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()["order_intents_by_symbol"]
+  assert payload["contract_version"] == "rtlops97/v1"
+  assert payload["bot_id"] == bot_id
+  assert payload["operation_mode"] == "paper"
+  assert payload["paper_execution_policy"] == {
+    "mode": "single_intent_safe",
+    "multi_symbol_per_cycle_enabled": False,
+    "reason": "Paper conserva un submit single-intent seguro; este endpoint es read-only/observability.",
+  }
+  assert payload["status"] == "ready"
+  assert payload["symbols"] == ["BTCUSDT", "ETHUSDT"]
+  assert payload["actionable_symbols"] == ["BTCUSDT", "ETHUSDT"]
+  assert sorted(payload["order_intents_by_symbol"]) == ["BTCUSDT", "ETHUSDT"]
+  btc = payload["order_intents_by_symbol"]["BTCUSDT"]
+  eth = payload["order_intents_by_symbol"]["ETHUSDT"]
+  assert btc["status"] == "actionable"
+  assert btc["source"] == "bot_runtime_net_decision"
+  assert btc["selected_strategy_id"] == pool_ids[0]
+  assert btc["net_decision_key"] == f"{bot_id}:BTCUSDT:net_decision"
+  assert btc["decision_log_scope"] == {"bot_id": bot_id, "symbol": "BTCUSDT"}
+  assert eth["selected_strategy_id"] == pool_ids[1]
+
+
+def test_rtlops97_order_intents_read_model_does_not_duplicate_strategies_for_same_symbol(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  _seed_bot_registry_catalog(_module)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  pool_ids = _eligible_pool_ids(client, headers)[:2]
+  assert len(pool_ids) == 2
+
+  create_res = client.post(
+    "/api/v1/bots",
+    headers=headers,
+    json={
+      "display_name": "Bot Read Model Dedup",
+      "domain_type": "spot",
+      "universe_name": "core_spot_usdt",
+      "universe": ["BTCUSDT"],
+      "max_live_symbols": 1,
+      "pool_strategy_ids": pool_ids,
+    },
+  )
+  assert create_res.status_code == 200, create_res.text
+  bot_id = str(create_res.json()["bot"]["id"])
+  eligibility_res = client.patch(
+    f"/api/v1/bots/{bot_id}/symbol-strategy-eligibility",
+    headers=headers,
+    json={"strategy_eligibility_by_symbol": {"BTCUSDT": pool_ids}},
+  )
+  assert eligibility_res.status_code == 200, eligibility_res.text
+  selection_res = client.patch(
+    f"/api/v1/bots/{bot_id}/strategy-selection",
+    headers=headers,
+    json={"strategy_selection_by_symbol": {"BTCUSDT": pool_ids[0]}},
+  )
+  assert selection_res.status_code == 200, selection_res.text
+
+  strategy_rows = [dict(row) for row in _module.store.list_strategies()]
+  for row in strategy_rows:
+    if str(row.get("id") or "") in set(pool_ids):
+      row["enabled_for_trading"] = True
+      row["params"] = {"runtime_side": "BUY"}
+      row["tags"] = []
+  monkeypatch.setattr(_module.store, "list_strategies", lambda: strategy_rows)
+
+  res = client.get(f"/api/v1/bots/{bot_id}/order-intents-by-symbol?mode=paper", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()["order_intents_by_symbol"]
+  assert list(payload["order_intents_by_symbol"]) == ["BTCUSDT"]
+  intent = payload["order_intents_by_symbol"]["BTCUSDT"]
+  assert intent["status"] == "actionable"
+  assert intent["selected_strategy_id"] == pool_ids[0]
+  assert intent["input_count"] == 2
+  assert len(payload["items"]) == 1
+
+
+def test_rtlops97_order_intents_read_model_blocks_symbols_outside_operational_scope(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(
+    _module,
+    client,
+    headers,
+    monkeypatch,
+    universe=["ETHUSDT", "BTCUSDT"],
+    max_live_symbols=1,
+  )
+
+  res = client.get(f"/api/v1/bots/{bot_id}/order-intents-by-symbol?mode=paper", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()["order_intents_by_symbol"]
+  assert payload["status"] == "blocked"
+  assert "operation_scope_contains_ineligible_symbols" in payload["blocking_reasons"]
+  assert "BTCUSDT" in payload["blocked_symbols"]
+  assert "symbol_not_eligible:BTCUSDT" in payload["order_intents_by_symbol"]["BTCUSDT"]["blocking_reasons"]
+
+
+def test_rtlops97_order_intents_read_model_blocks_missing_runtime_without_500(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(_module, client, headers, monkeypatch, universe=["BTCUSDT"], max_live_symbols=1)
+
+  def _missing_runtime(_target_bot_id: str) -> dict:
+    raise RuntimeError("runtime unavailable in test")
+
+  monkeypatch.setattr(_module.store, "bot_runtime_or_404", _missing_runtime)
+  res = client.get(f"/api/v1/bots/{bot_id}/order-intents-by-symbol?mode=paper", headers=headers)
+  assert res.status_code == 200, res.text
+  payload = res.json()["order_intents_by_symbol"]
+  assert payload["status"] == "blocked"
+  assert "bot_runtime_unavailable" in payload["reason_codes"]
+  assert "runtime_execution_not_ready" in payload["order_intents_by_symbol"]["BTCUSDT"]["blocking_reasons"]
+
+
+def test_rtlops97_order_intents_read_model_preserves_missing_bot_404(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+
+  res = client.get("/api/v1/bots/BOT-DOES-NOT-EXIST/order-intents-by-symbol?mode=paper", headers=headers)
+  assert res.status_code == 404
+  assert res.json()["detail"] == "BotInstance not found"
+
+
 def test_bot_scope_eligibility_surface_is_canonical_and_operation_inherits_bot_scope(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   _seed_bot_registry_catalog(_module)

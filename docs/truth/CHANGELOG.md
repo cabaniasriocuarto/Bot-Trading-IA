@@ -2,6 +2,29 @@
 
 ## 2026-04-28
 
+### RTLOPS-97 / RTLOPS-68 Slice 2 - order_intents_by_symbol read model
+- Cambio real aplicado en backend:
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - agrega contrato read-only `rtlops97/v1`;
+    - agrega `GET /api/v1/bots/{bot_id}/order-intents-by-symbol`;
+    - deriva `order_intents_by_symbol` desde runtime, scope operativo heredado del bot y guardrails existentes;
+    - mantiene Paper como `single_intent_safe` y no activa ejecucion multi-symbol por ciclo;
+    - preserva `404` para `bot_id` inexistente en el endpoint read-only.
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre un intent neto por simbolo;
+    - cubre que dos estrategias sobre el mismo simbolo no duplican intents;
+    - cubre bloqueo por simbolo fuera del scope operativo;
+    - cubre runtime faltante sin `500`;
+    - cubre que `bot_id` inexistente conserva `404`.
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops97'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "rtlops97 or rtlops68 or rtlops94" -q` -> PASS, 16 tests
+- Limite honesto:
+  - no cierra todo `RTLOPS-68`;
+  - no abre `RTLOPS-69`;
+  - no toca frontend, live console, Railway/Vercel, risk/scorecard/portfolio ni `Strategy Truth/Evidence`.
+
 ### RTLOPS-68 Slice 1 - net symbol decision intent foundation
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/web/app.py`

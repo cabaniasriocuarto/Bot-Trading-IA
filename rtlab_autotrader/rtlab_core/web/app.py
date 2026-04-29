@@ -972,6 +972,7 @@ BOT_SCOPE_ELIGIBILITY_REASON_CODES = (
     *BOT_RUNTIME_REASON_CODES,
     *BOT_LIFECYCLE_OPERATIONAL_REASON_CODES,
 )
+BOT_ORDER_INTENTS_BY_SYMBOL_CONTRACT_VERSION = "rtlops97/v1"
 BOT_OPERATION_SCOPE_MODES = ("shadow", "paper", "testnet", "live")
 BOT_OPERATION_SCOPE_MAX_ACTIVE_SYMBOLS = 12
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
@@ -5994,6 +5995,206 @@ def risk_hooks(context):
     def bot_runtime_or_404(self, bot_id: str) -> dict[str, Any]:
         bot = self.bot_or_404(bot_id)
         return self._bot_runtime_payload(bot)
+
+    def bot_order_intents_by_symbol_or_404(self, bot_id: str, *, mode: str = "paper") -> dict[str, Any]:
+        normalized_bot_id = str(bot_id or "").strip()
+        normalized_mode = str(mode or "paper").strip().lower() or "paper"
+        if normalized_mode not in BOT_OPERATION_SCOPE_MODES:
+            normalized_mode = "paper"
+
+        evaluated_at = utc_now().isoformat()
+        gate: dict[str, Any]
+        runtime: dict[str, Any] | None = None
+        blocking_reasons: list[str] = []
+        reason_codes: set[str] = set()
+        try:
+            gate = self.bot_operation_scope_gate(normalized_bot_id, mode=normalized_mode)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            gate = {
+                "bot_id": normalized_bot_id,
+                "mode": normalized_mode,
+                "symbols": [],
+                "eligible_symbols": [],
+                "ineligible_symbols": [],
+                "blocking_reasons": [f"operation_scope_unavailable:{type(exc).__name__}"],
+                "reason_codes": ["operation_scope_unavailable"],
+                "is_blocking": True,
+                "status": "blocked",
+            }
+
+        for reason in (gate.get("blocking_reasons") or []):
+            text = str(reason or "").strip()
+            if text:
+                blocking_reasons.append(text)
+        for code in (gate.get("reason_codes") or []):
+            text = str(code or "").strip()
+            if text:
+                reason_codes.add(text)
+
+        try:
+            runtime = self.bot_runtime_or_404(normalized_bot_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            runtime = None
+            blocking_reasons.append(f"bot_runtime_unavailable:{type(exc).__name__}")
+            reason_codes.add("bot_runtime_unavailable")
+
+        guardrails = runtime.get("guardrails") if isinstance(runtime, dict) and isinstance(runtime.get("guardrails"), dict) else {}
+        if runtime is not None:
+            if str(runtime.get("status") or "error") == "error":
+                reason_codes.add("bot_runtime_status_error")
+            if not bool(guardrails.get("execution_ready", False)):
+                reason_codes.add("runtime_execution_not_ready")
+            for code in list(runtime.get("reason_codes") or []) + list(guardrails.get("reason_codes") or []):
+                text = str(code or "").strip()
+                if text:
+                    reason_codes.add(text)
+            for reason in list(runtime.get("errors") or []) + list(guardrails.get("errors") or []):
+                text = str(reason or "").strip()
+                if text:
+                    blocking_reasons.append(text)
+
+        gate_symbols = [
+            RuntimeBridge._sanitize_exchange_symbol(symbol)
+            for symbol in (gate.get("symbols") or gate.get("eligible_symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(symbol)
+        ]
+        runtime_symbols = [
+            RuntimeBridge._sanitize_exchange_symbol(symbol)
+            for symbol in ((runtime or {}).get("symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(symbol)
+        ]
+        symbols = list(dict.fromkeys(gate_symbols + runtime_symbols))
+        eligible_symbols = {
+            RuntimeBridge._sanitize_exchange_symbol(symbol)
+            for symbol in (gate.get("eligible_symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(symbol)
+        }
+        ineligible_symbols = {
+            RuntimeBridge._sanitize_exchange_symbol(symbol)
+            for symbol in (gate.get("ineligible_symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(symbol)
+        }
+        allowed_trade_symbols = {
+            RuntimeBridge._sanitize_exchange_symbol(symbol)
+            for symbol in (guardrails.get("allowed_trade_symbols") or [])
+            if RuntimeBridge._sanitize_exchange_symbol(symbol)
+        }
+        net_decisions = (runtime or {}).get("net_decision_by_symbol") if isinstance((runtime or {}).get("net_decision_by_symbol"), dict) else {}
+        runtime_items = {
+            RuntimeBridge._sanitize_exchange_symbol(item.get("symbol")): dict(item)
+            for item in ((runtime or {}).get("items") or [])
+            if isinstance(item, dict) and RuntimeBridge._sanitize_exchange_symbol(item.get("symbol"))
+        }
+        order_intents_by_symbol: dict[str, dict[str, Any]] = {}
+        items: list[dict[str, Any]] = []
+        actionable_symbols: list[str] = []
+        blocked_symbols: list[str] = []
+        no_action_symbols: list[str] = []
+        scope_blocking = bool(gate.get("is_blocking"))
+        runtime_ready = runtime is not None and str(runtime.get("status") or "error") != "error" and bool(guardrails.get("execution_ready", False))
+
+        if runtime is None and not symbols:
+            symbols = list(gate_symbols)
+
+        for symbol in symbols:
+            decision = net_decisions.get(symbol) if isinstance(net_decisions.get(symbol), dict) else {}
+            runtime_item = runtime_items.get(symbol, {})
+            symbol_reasons: list[str] = []
+            if scope_blocking:
+                symbol_reasons.extend(str(reason) for reason in (gate.get("blocking_reasons") or []) if str(reason).strip())
+            if symbol in ineligible_symbols or (eligible_symbols and symbol not in eligible_symbols):
+                symbol_reasons.append(f"symbol_not_eligible:{symbol}")
+            if not runtime_ready:
+                symbol_reasons.append("runtime_execution_not_ready")
+            if str(runtime_item.get("status") or "valid") == "error":
+                for issue in runtime_item.get("errors") or []:
+                    if isinstance(issue, dict):
+                        code = str(issue.get("reason_code") or "").strip()
+                        message = str(issue.get("message") or "").strip()
+                        symbol_reasons.append(code or message or "runtime_symbol_error")
+                    elif str(issue).strip():
+                        symbol_reasons.append(str(issue).strip())
+
+            action = str(decision.get("action") or runtime_item.get("decision_action") or "").strip().lower()
+            side = str(decision.get("side") or runtime_item.get("decision_side") or "").strip().upper()
+            selected_strategy_id = (
+                str(decision.get("selected_strategy_id") or "").strip()
+                or str(runtime_item.get("selected_strategy_id") or "").strip()
+            )
+            status = "blocked" if symbol_reasons else "no_action"
+            if not symbol_reasons and action == "trade":
+                if side not in {"BUY", "SELL"}:
+                    symbol_reasons.append(f"net_decision_side_missing:{symbol}")
+                if not selected_strategy_id:
+                    symbol_reasons.append(f"net_decision_strategy_missing:{symbol}")
+                if symbol not in allowed_trade_symbols:
+                    symbol_reasons.append(f"symbol_not_in_allowed_trade_symbols:{symbol}")
+                status = "blocked" if symbol_reasons else "actionable"
+            elif not symbol_reasons and action in {"flat", "hold", "none", ""}:
+                status = "hold" if action in {"flat", "hold"} else "no_action"
+
+            if status == "actionable":
+                actionable_symbols.append(symbol)
+            elif status == "blocked":
+                blocked_symbols.append(symbol)
+            else:
+                no_action_symbols.append(symbol)
+
+            intent = {
+                "bot_id": normalized_bot_id,
+                "operation_mode": normalized_mode,
+                "symbol": symbol,
+                "status": status,
+                "action": action or None,
+                "side": side if side in {"BUY", "SELL"} else None,
+                "source": "bot_runtime_net_decision",
+                "selected_strategy_id": selected_strategy_id or None,
+                "net_decision_key": str(runtime_item.get("net_decision_key") or f"{normalized_bot_id}:{symbol}:net_decision"),
+                "decision_log_scope": dict(runtime_item.get("decision_log_scope") or {"bot_id": normalized_bot_id, "symbol": symbol}),
+                "decision_reason": str(decision.get("reason") or runtime_item.get("decision_reason") or "").strip() or None,
+                "decision_criterion": str(decision.get("criterion") or runtime_item.get("decision_criterion") or "").strip() or None,
+                "agreement_status": str(decision.get("agreement_status") or runtime_item.get("agreement_status") or "").strip() or None,
+                "input_count": int(decision.get("input_count") or runtime_item.get("input_count") or 0),
+                "blocking_reasons": list(dict.fromkeys(reason for reason in symbol_reasons if reason)),
+                "evaluated_at": evaluated_at,
+            }
+            order_intents_by_symbol[symbol] = intent
+            items.append(intent)
+
+        if not symbols:
+            blocking_reasons.append("order_intents_symbols_unavailable")
+            reason_codes.add("order_intents_symbols_unavailable")
+
+        return {
+            "contract_version": BOT_ORDER_INTENTS_BY_SYMBOL_CONTRACT_VERSION,
+            "bot_id": normalized_bot_id,
+            "operation_mode": normalized_mode,
+            "scope_source": "bot_runtime_scope",
+            "source_contracts": {
+                "runtime": BOT_RUNTIME_CONTRACT_VERSION,
+                "scope_eligibility": BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION,
+            },
+            "paper_execution_policy": {
+                "mode": "single_intent_safe",
+                "multi_symbol_per_cycle_enabled": False,
+                "reason": "Paper conserva un submit single-intent seguro; este endpoint es read-only/observability.",
+            },
+            "symbols": symbols,
+            "actionable_symbols": actionable_symbols,
+            "blocked_symbols": blocked_symbols,
+            "no_action_symbols": no_action_symbols,
+            "order_intents_by_symbol": order_intents_by_symbol,
+            "items": items,
+            "blocking_reasons": list(dict.fromkeys(reason for reason in blocking_reasons if reason)),
+            "reason_codes": sorted(reason_codes),
+            "status": "blocked" if blocked_symbols or blocking_reasons else "ready",
+            "created_at": str((runtime or {}).get("updated_at") or "") or None,
+            "evaluated_at": evaluated_at,
+        }
 
     def _bot_scope_eligibility_payload(
         self,
@@ -16248,6 +16449,17 @@ def create_app() -> FastAPI:
         return {
             "bot_id": bot_id,
             "runtime": store.bot_runtime_or_404(bot_id),
+        }
+
+    @app.get("/api/v1/bots/{bot_id}/order-intents-by-symbol")
+    def bot_order_intents_by_symbol(
+        bot_id: str,
+        mode: str = Query(default="paper"),
+        _: dict[str, str] = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {
+            "bot_id": bot_id,
+            "order_intents_by_symbol": store.bot_order_intents_by_symbol_or_404(bot_id, mode=mode),
         }
 
     @app.get("/api/v1/bots/{bot_id}/lifecycle")

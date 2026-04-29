@@ -2,6 +2,31 @@
 
 Fecha de actualizacion: 2026-04-28
 
+## RTLOPS-97 / RTLOPS-68 Slice 2 - read model order_intents_by_symbol - 2026-04-28
+
+- Estado real confirmado en esta rama:
+  - se agrega el contrato read-only `rtlops97/v1` para consultar `order_intents_by_symbol`;
+  - endpoint nuevo: `GET /api/v1/bots/{bot_id}/order-intents-by-symbol?mode=paper|shadow|testnet|live`;
+  - el read model deriva de `runtime.net_decision_by_symbol`, `runtime.items` y `bot_operation_scope_gate(...)`;
+  - el contrato no persiste intents nuevos, no crea ordenes y no activa ejecucion multi-order;
+  - cada simbolo tiene como maximo un intent neto auditable con `selected_strategy_id`, `net_decision_key`, `decision_log_scope`, `source=bot_runtime_net_decision`, `status` y `blocking_reasons`.
+- Decision Paper:
+  - Paper conserva `single_intent_safe`;
+  - `multi_symbol_per_cycle_enabled=false`;
+  - `order_intents_by_symbol` queda como read model/observabilidad, no como activacion de multi-order por ciclo.
+- Fail-closed:
+  - bloquea si el scope operativo heredado del bot no sostiene el simbolo;
+  - bloquea si falta runtime o `runtime.guardrails.execution_ready=false`;
+  - bloquea si falta estrategia seleccionada, side valido o simbolo permitido por guardrails.
+  - conserva `404` para `bot_id` inexistente en vez de convertirlo en payload `200 blocked`.
+- Limite honesto:
+  - no cierra todo `RTLOPS-68`;
+  - no abre `RTLOPS-69`;
+  - no implementa live console, lifecycle completo, ejecucion multi-order live, risk/scorecard/portfolio ni `Strategy Truth/Evidence`.
+- Validacion real del slice:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS;
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops97'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "rtlops97 or rtlops68 or rtlops94" -q` -> PASS, 16 tests.
+
 ## RTLOPS-68 Slice 1 - decision neta por simbolo como intent operativo - 2026-04-28
 
 - Estado real confirmado en esta rama:
