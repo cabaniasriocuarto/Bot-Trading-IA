@@ -24,6 +24,15 @@ runtime_controls:
     logging:
       security_internal_header_alert_throttle_sec: 60
 
+  paper_execution:
+    policy_version: "rtlops68-slice3/v1"
+    mode: "single_intent_safe"
+    multi_symbol_per_cycle_enabled: false
+    max_symbols_per_cycle: 1
+    max_intents_per_cycle: 1
+    read_model_allows_multi_symbol_observability: true
+    blocking_reason_on_excess: "paper_multi_symbol_execution_disabled"
+
   drift:
     default_algorithm: "adwin"
     min_points: 20

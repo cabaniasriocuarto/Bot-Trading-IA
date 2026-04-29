@@ -2,6 +2,27 @@
 
 Fecha de actualizacion: 2026-04-28
 
+## RTLOPS-98 / RTLOPS-68 Slice 3 - policy Paper multi-symbol - 2026-04-28
+
+- Estado real confirmado en esta rama:
+  - Paper queda formalizado con policy explicita `rtlops68-slice3/v1`;
+  - la policy vive en `config/policies/runtime_controls.yaml` bajo `runtime_controls.paper_execution`;
+  - `multi_symbol_per_cycle_enabled=false`;
+  - `max_symbols_per_cycle=1` y `max_intents_per_cycle=1`;
+  - `order_intents_by_symbol` puede observar multiples simbolos, pero eso no habilita ejecucion multi-order por ciclo.
+- Decision Paper:
+  - se mantiene `single_intent_safe`;
+  - si hay multiples intents accionables, solo el primer intent queda `execution_actionable`;
+  - los demas quedan como `observability_only` con `paper_multi_symbol_execution_disabled` y caps excedidos auditables.
+- Limite honesto:
+  - no cierra todo `RTLOPS-68`;
+  - no abre `RTLOPS-69`;
+  - no activa Paper multi-symbol por ciclo;
+  - no implementa multi-order live, live console, lifecycle completo, Railway/Vercel, risk/scorecard/portfolio ni `Strategy Truth/Evidence`.
+- Validacion real del slice:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS;
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops68-slice3'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "rtlops97 or rtlops68 or rtlops94" -q` -> PASS, 17 tests.
+
 ## RTLOPS-97 / RTLOPS-68 Slice 2 - read model order_intents_by_symbol - 2026-04-28
 
 - Estado real confirmado en esta rama:

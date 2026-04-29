@@ -2,6 +2,28 @@
 
 Fecha: 2026-04-28
 
+## RTLOPS-98 / RTLOPS-68 Slice 3 - policy Paper multi-symbol - 2026-04-28
+- [x] Decision Paper tomada:
+  - mantener `single_intent_safe`;
+  - `multi_symbol_per_cycle_enabled=false`;
+  - no activar Paper multi-symbol por ciclo en este slice.
+- [x] Policy efectiva:
+  - `policy_version=rtlops68-slice3/v1`;
+  - `max_symbols_per_cycle=1`;
+  - `max_intents_per_cycle=1`;
+  - `read_model_allows_multi_symbol_observability=true`;
+  - excedentes marcados con `paper_multi_symbol_execution_disabled`.
+- [x] Separacion segura:
+  - `order_intents_by_symbol` puede mostrar multiples simbolos para observabilidad;
+  - Paper submit sigue tomando un solo intent ejecutable;
+  - no se crean ordenes multiples ni se activa live.
+- [x] Validacion real:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - pytest focalizado `RTLOPS-97/68/94` en `test_web_bot_registry_identity.py` -> PASS, 17 tests
+- [ ] RTLOPS-68 sigue parcial:
+  - falta decidir si algun slice futuro habilita Paper multi-symbol por ciclo con caps mas amplios;
+  - `RTLOPS-69` y `RTLRESE-25` siguen fuera de alcance.
+
 ## RTLOPS-97 / RTLOPS-68 Slice 2 - read model order_intents_by_symbol - 2026-04-28
 - [x] Agregar read model backend read-only:
   - `GET /api/v1/bots/{bot_id}/order-intents-by-symbol`;
