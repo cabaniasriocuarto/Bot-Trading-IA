@@ -2,6 +2,32 @@
 
 ## 2026-04-29
 
+### RTLOPS-100 / RTLOPS-69 Slice 2 - Playwright smoke visual de consola read-only
+- Cambio real aplicado en QA/frontend:
+  - `rtlab_dashboard/package.json`
+    - agrega `@playwright/test`;
+    - agrega script `test:smoke:live-console`.
+  - `rtlab_dashboard/playwright.config.ts`
+    - define runner Playwright minimo para la dashboard local;
+    - usa auth local y entorno read-only sin backend real.
+  - `rtlab_dashboard/tests/playwright/live-console-readonly.spec.ts`
+    - agrega smoke visual de `Execution`;
+    - valida que se renderiza "Consola Live del Bot - solo lectura";
+    - valida `read-only`, "No crea ordenes", policy Paper `single-intent seguro`, observabilidad multi-symbol, tabla por simbolo y razones de bloqueo;
+    - valida que dentro de la consola no existan botones operativos ni combobox/selector paralelo.
+- Regla de seguridad:
+  - el smoke no agrega funcionalidad;
+  - no crea ordenes, no cancela ordenes, no activa live actions y no toca backend;
+  - usa fixtures de red acotadas dentro de Playwright para estabilizar la surface read-only.
+- Tests corridos:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
+- Limite honesto:
+  - no cierra todo `RTLOPS-69`;
+  - no cierra todo `RTLOPS-68`;
+  - no agrega drill-down, event feed, acciones live, backend nuevo, Railway/Vercel, preserve ni PRs historicas.
+
 ### RTLOPS-99 / RTLOPS-69 Slice 1 - Live Console read-only por simbolo
 - Cambio real aplicado en frontend:
   - `rtlab_dashboard/src/lib/types.ts`

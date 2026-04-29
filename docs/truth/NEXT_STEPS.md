@@ -1,6 +1,25 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-28
+Fecha: 2026-04-29
+
+## RTLOPS-100 / RTLOPS-69 Slice 2 - Playwright smoke visual de consola read-only - 2026-04-29
+- [x] Smoke visual minimo:
+  - carga `Execution` con una fixture de red acotada al runner Playwright;
+  - verifica "Consola Live del Bot - solo lectura";
+  - verifica read-only/no crea ordenes;
+  - verifica policy Paper `single-intent seguro`;
+  - verifica observabilidad multi-symbol, tabla por simbolo y razones de bloqueo.
+- [x] Restricciones de seguridad:
+  - verifica ausencia de botones operativos dentro de la consola;
+  - verifica ausencia de combobox/selector paralelo dentro de la consola;
+  - no toca backend ni agrega acciones live.
+- [x] Validacion real:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
+- [ ] `RTLOPS-69` sigue parcial:
+  - posible siguiente slice: drill-down read-only de decision log por simbolo;
+  - no abrir acciones live ni lifecycle completo sin bloque separado.
 
 ## RTLOPS-99 / RTLOPS-69 Slice 1 - Live Console read-only por simbolo - 2026-04-29
 - [x] Primera surface UI read-only:

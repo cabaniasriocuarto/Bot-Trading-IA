@@ -1,6 +1,30 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-28
+Fecha de actualizacion: 2026-04-29
+
+## RTLOPS-100 / RTLOPS-69 Slice 2 - smoke visual Playwright de consola read-only - 2026-04-29
+
+- Estado real confirmado en esta rama:
+  - se agrega un smoke Playwright minimo para `Execution`;
+  - el smoke verifica que la "Consola Live del Bot - solo lectura" renderiza la surface esencial de `RTLOPS-99`;
+  - valida titulo, estado read-only/no crea ordenes, policy Paper `single-intent seguro`, observabilidad multi-symbol, tabla por simbolo y razones de bloqueo;
+  - valida que dentro de esa consola no haya botones operativos ni combobox/selector paralelo.
+- Contratos usados por el smoke:
+  - `rtlops97/v1` como contrato de `order_intents_by_symbol`;
+  - `rtlops96/v1` como scope heredado del bot;
+  - `rtlops68-slice3/v1` como policy Paper.
+- Regla de producto:
+  - este slice es QA/observabilidad, no producto nuevo;
+  - no crea ordenes, no cancela ordenes, no activa live actions, no agrega drill-down/event feed y no toca backend;
+  - las fixtures de red viven solo dentro de Playwright para estabilizar el smoke read-only.
+- Limite honesto:
+  - no cierra todo `RTLOPS-69`;
+  - no cierra todo `RTLOPS-68`;
+  - no toca Railway/Vercel config, preserve, ramas historicas, PRs viejas, risk/scorecard/portfolio ni `Strategy Truth/Evidence`.
+- Validacion real del slice:
+  - `npm.cmd run typecheck` -> PASS;
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS;
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test.
 
 ## RTLOPS-99 / RTLOPS-69 Slice 1 - Live Console read-only por simbolo - 2026-04-29
 
