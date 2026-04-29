@@ -2,6 +2,31 @@
 
 Fecha: 2026-04-28
 
+## RTLOPS-99 / RTLOPS-69 Slice 1 - Live Console read-only por simbolo - 2026-04-29
+- [x] Primera surface UI read-only:
+  - se integra en `Execution`;
+  - consume `GET /api/v1/bots/{bot_id}/order-intents-by-symbol?mode=...`;
+  - muestra contrato `rtlops97/v1`, scope heredado, policy Paper, status agregado e intents por simbolo.
+- [x] Observabilidad por simbolo:
+  - muestra `selected_strategy_id`, `source`, `action`, `side`, `net_decision_key`, `decision_log_scope`, `blocking_reasons` y `paper_execution_status`;
+  - deja visible que Paper sigue `single_intent_safe`;
+  - deja visible que multi-symbol es observabilidad, no ejecucion multi-order.
+- [x] Restricciones respetadas:
+  - no crea ordenes;
+  - no cancela ordenes;
+  - no activa live actions;
+  - no agrega selector paralelo;
+  - no modifica lifecycle ni policy.
+- [x] Validacion real:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/execution/page.tsx" "src/lib/types.ts"` -> PASS
+- [ ] `RTLOPS-69` sigue parcial:
+  - faltan slices futuros para drill-down visual/event feed/ventanas reales si se deciden;
+  - no abrir lifecycle completo ni live actions sin bloque separado.
+- [ ] `RTLOPS-68` sigue parcial:
+  - no se habilito Paper multi-symbol por ciclo ni multi-order live;
+  - conservar `RTLOPS-68` como In Progress hasta cerrar su alcance total.
+
 ## RTLOPS-98 / RTLOPS-68 Slice 3 - policy Paper multi-symbol - 2026-04-28
 - [x] Decision Paper tomada:
   - mantener `single_intent_safe`;

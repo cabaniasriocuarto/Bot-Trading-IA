@@ -1,5 +1,29 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-29
+
+### RTLOPS-99 / RTLOPS-69 Slice 1 - Live Console read-only por simbolo
+- Cambio real aplicado en frontend:
+  - `rtlab_dashboard/src/lib/types.ts`
+    - agrega tipos para el contrato read-only `rtlops97/v1`;
+    - tipa `paper_execution_policy`, `order_intents_by_symbol`, intents por simbolo y razones de bloqueo.
+  - `rtlab_dashboard/src/app/(app)/execution/page.tsx`
+    - consume `GET /api/v1/bots/{bot_id}/order-intents-by-symbol?mode=...`;
+    - agrega "Consola Live del Bot - solo lectura" dentro de Execution;
+    - muestra bot, modo, scope heredado, contrato, policy Paper, status agregado e intents por simbolo;
+    - expone `selected_strategy_id`, `source`, `action`, `side`, `net_decision_key`, `decision_log_scope`, `blocking_reasons` y `paper_execution_status`.
+- Regla de seguridad:
+  - la surface es read-only;
+  - no crea ordenes, no cancela ordenes, no activa live actions, no modifica lifecycle y no agrega selector paralelo de simbolos;
+  - multi-symbol queda visible como observabilidad, no como ejecucion multi-order.
+- Tests corridos:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- "src/app/(app)/execution/page.tsx" "src/lib/types.ts"` -> PASS
+- Limite honesto:
+  - no cierra todo `RTLOPS-69`;
+  - no cierra todo `RTLOPS-68`;
+  - no toca backend, Railway/Vercel, risk/scorecard/portfolio ni `Strategy Truth/Evidence`.
+
 ## 2026-04-28
 
 ### RTLOPS-98 / RTLOPS-68 Slice 3 - Paper multi-symbol policy

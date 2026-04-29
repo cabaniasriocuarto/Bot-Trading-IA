@@ -709,6 +709,65 @@ export interface BotLifecycleOperationalResponse {
   lifecycle_operational: BotLifecycleOperationalModel;
 }
 
+export interface BotPaperExecutionPolicy {
+  policy_version?: string;
+  mode?: string;
+  multi_symbol_per_cycle_enabled?: boolean;
+  max_symbols_per_cycle?: number;
+  max_intents_per_cycle?: number;
+  read_model_allows_multi_symbol_observability?: boolean;
+  blocking_reason_on_excess?: string;
+  source?: string;
+  reason?: string;
+  effective_actionable_symbols?: string[];
+  observability_only_symbols?: string[];
+  blocking_reasons?: string[];
+}
+
+export interface BotOrderIntentBySymbolItem {
+  symbol: string;
+  status: "actionable" | "blocked" | "hold" | "no_action" | string;
+  source?: string | null;
+  action?: "trade" | "flat" | "blocked" | string | null;
+  side?: "BUY" | "SELL" | string | null;
+  selected_strategy_id?: string | null;
+  net_decision_key?: string | null;
+  decision_log_scope?: Record<string, unknown> | null;
+  blocking_reasons?: string[];
+  reason_codes?: string[];
+  evaluated_at?: string | null;
+  paper_execution_status?: "execution_actionable" | "observability_only" | string | null;
+  paper_execution_blocking_reasons?: string[];
+  paper_observability_only_symbols?: string[];
+  paper_policy_blocking_reasons?: string[];
+  candidate_intents_count?: number;
+  suppressed_intents_count?: number;
+}
+
+export interface BotOrderIntentsBySymbolModel {
+  contract_version: string;
+  bot_id: string;
+  operation_mode: BotPolicyMode | string;
+  scope_source?: string;
+  source_contracts?: Record<string, string>;
+  paper_execution_policy?: BotPaperExecutionPolicy | null;
+  symbols: string[];
+  actionable_symbols?: string[];
+  blocked_symbols?: string[];
+  no_action_symbols?: string[];
+  order_intents_by_symbol: Record<string, BotOrderIntentBySymbolItem>;
+  items?: BotOrderIntentBySymbolItem[];
+  blocking_reasons: string[];
+  reason_codes: string[];
+  status: "valid" | "warning" | "error" | string;
+  evaluated_at?: string | null;
+  created_at?: string | null;
+}
+
+export interface BotOrderIntentsBySymbolResponse {
+  order_intents_by_symbol: BotOrderIntentsBySymbolModel;
+}
+
 export interface BotInstance {
   id: string;
   bot_id?: string;

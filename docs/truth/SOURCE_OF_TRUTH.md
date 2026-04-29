@@ -2,6 +2,30 @@
 
 Fecha de actualizacion: 2026-04-28
 
+## RTLOPS-99 / RTLOPS-69 Slice 1 - Live Console read-only por simbolo - 2026-04-29
+
+- Estado real confirmado en esta rama:
+  - `Execution` agrega una primera surface "Consola Live del Bot - solo lectura";
+  - consume `GET /api/v1/bots/{bot_id}/order-intents-by-symbol?mode=...`;
+  - muestra el contrato `rtlops97/v1`, bot, modo operativo, scope heredado, status agregado, policy Paper e intents por simbolo;
+  - expone `selected_strategy_id`, `source`, `action`, `side`, `net_decision_key`, `decision_log_scope`, `blocking_reasons` y `paper_execution_status` por simbolo.
+- Regla de producto:
+  - la consola es observabilidad read-only;
+  - no crea ordenes, no cancela ordenes, no modifica lifecycle y no activa live actions;
+  - no agrega selector paralelo de simbolos ni edita scope, estrategias o policy Paper.
+- Relacion con slices previos:
+  - reutiliza RTLOPS-94 para scope heredado del bot;
+  - reutiliza RTLOPS-68 Slice 1 para decision neta por simbolo;
+  - reutiliza RTLOPS-97 para el read model `order_intents_by_symbol`;
+  - reutiliza RTLOPS-98 para mostrar `single_intent_safe` y `multi_symbol_per_cycle_enabled=false`.
+- Limite honesto:
+  - no cierra todo `RTLOPS-69`;
+  - no cierra todo `RTLOPS-68`;
+  - no implementa live console con acciones, lifecycle completo, ejecucion multi-order, Railway/Vercel, risk/scorecard/portfolio ni `Strategy Truth/Evidence`.
+- Validacion real del slice:
+  - `npm.cmd run typecheck` -> PASS;
+  - `npm.cmd run lint -- "src/app/(app)/execution/page.tsx" "src/lib/types.ts"` -> PASS.
+
 ## RTLOPS-98 / RTLOPS-68 Slice 3 - policy Paper multi-symbol - 2026-04-28
 
 - Estado real confirmado en esta rama:
