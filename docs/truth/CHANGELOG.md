@@ -2,6 +2,29 @@
 
 ## 2026-04-28
 
+### RTLOPS-98 / RTLOPS-68 Slice 3 - Paper multi-symbol policy
+- Cambio real aplicado en policy/backend:
+  - `config/policies/runtime_controls.yaml`
+    - agrega `runtime_controls.paper_execution`;
+    - formaliza `policy_version=rtlops68-slice3/v1`;
+    - mantiene `mode=single_intent_safe`, `multi_symbol_per_cycle_enabled=false`, `max_symbols_per_cycle=1` y `max_intents_per_cycle=1`.
+  - `rtlab_autotrader/rtlab_core/web/app.py`
+    - expone la policy efectiva en `paper_execution_policy` dentro del contrato `rtlops97/v1`;
+    - marca intents Paper excedentes como `observability_only` en vez de ejecutables;
+    - conserva submit Paper single-intent y no activa multi-order por ciclo.
+- Cambio real aplicado en tests:
+  - `rtlab_autotrader/tests/test_web_bot_registry_identity.py`
+    - cubre que el read model puede observar multiples simbolos sin habilitar multi-order;
+    - cubre que Paper solo conserva un intent ejecutable por ciclo;
+    - cubre `paper_multi_symbol_execution_disabled` como reason auditable para excedentes.
+- Tests corridos:
+  - `rtlab_autotrader\.venv\Scripts\python.exe -m py_compile rtlab_autotrader/rtlab_core/web/app.py` -> PASS
+  - `$env:UV_PROJECT_ENVIRONMENT='.uv-rtlops68-slice3'; $env:UV_LINK_MODE='copy'; uv run --project rtlab_autotrader --with pytest pytest rtlab_autotrader/tests/test_web_bot_registry_identity.py -k "rtlops97 or rtlops68 or rtlops94" -q` -> PASS, 17 tests
+- Limite honesto:
+  - no cierra todo `RTLOPS-68`;
+  - no abre `RTLOPS-69`;
+  - no toca frontend, live console, Railway/Vercel, risk/scorecard/portfolio ni `Strategy Truth/Evidence`.
+
 ### RTLOPS-97 / RTLOPS-68 Slice 2 - order_intents_by_symbol read model
 - Cambio real aplicado en backend:
   - `rtlab_autotrader/rtlab_core/web/app.py`

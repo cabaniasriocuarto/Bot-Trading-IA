@@ -1326,6 +1326,46 @@ def test_rtlops68_runtime_order_intent_uses_net_decision_by_symbol_without_strat
   assert len(intent["net_decision_intents"]) == 1
 
 
+def test_rtlops68_paper_policy_keeps_multi_symbol_runtime_single_intent_safe(tmp_path: Path, monkeypatch) -> None:
+  _module, client = _build_app(tmp_path, monkeypatch)
+  admin_token = _login(client, "Wadmin", "moroco123")
+  headers = _auth_headers(admin_token)
+  bot_id, _pool_ids = _create_scope_ready_bot(
+    _module,
+    client,
+    headers,
+    monkeypatch,
+    universe=["BTCUSDT", "ETHUSDT"],
+    max_live_symbols=2,
+  )
+
+  intent = _module.runtime_bridge._runtime_order_intent_from_bot_net_decision(
+    state={"active_bot_id": bot_id},
+    mode="paper",
+  )
+
+  assert intent["source"] == "bot_runtime_net_decision"
+  assert intent["action"] == "trade"
+  assert intent["symbol"] == "BTCUSDT"
+  assert intent["candidate_intents_count"] == 2
+  assert intent["suppressed_intents_count"] == 1
+  assert len(intent["net_decision_intents"]) == 2
+  assert intent["paper_execution_policy"]["policy_version"] == "rtlops68-slice3/v1"
+  assert intent["paper_execution_policy"]["mode"] == "single_intent_safe"
+  assert intent["paper_execution_policy"]["multi_symbol_per_cycle_enabled"] is False
+  assert intent["paper_execution_policy"]["max_intents_per_cycle"] == 1
+  assert intent["paper_execution_status"] == "execution_actionable"
+  assert intent["paper_observability_only_symbols"] == ["ETHUSDT"]
+  assert "paper_multi_symbol_execution_disabled" in intent["paper_policy_blocking_reasons"]
+
+  submit_result = _module.runtime_bridge._maybe_submit_paper_runtime_order(state={"active_bot_id": bot_id})
+  assert submit_result["candidate_intents_count"] == 2
+  assert submit_result["suppressed_intents_count"] == 1
+  assert submit_result["signal_symbol"] == "BTCUSDT"
+  assert submit_result["paper_execution_policy"]["max_intents_per_cycle"] == 1
+  assert submit_result["paper_observability_only_symbols"] == ["ETHUSDT"]
+
+
 def test_rtlops68_runtime_order_intent_fails_closed_when_bot_runtime_is_not_ready(tmp_path: Path, monkeypatch) -> None:
   _module, client = _build_app(tmp_path, monkeypatch)
   admin_token = _login(client, "Wadmin", "moroco123")
@@ -1407,11 +1447,16 @@ def test_rtlops97_order_intents_read_model_returns_one_intent_per_symbol(tmp_pat
   assert payload["contract_version"] == "rtlops97/v1"
   assert payload["bot_id"] == bot_id
   assert payload["operation_mode"] == "paper"
-  assert payload["paper_execution_policy"] == {
-    "mode": "single_intent_safe",
-    "multi_symbol_per_cycle_enabled": False,
-    "reason": "Paper conserva un submit single-intent seguro; este endpoint es read-only/observability.",
-  }
+  paper_policy = payload["paper_execution_policy"]
+  assert paper_policy["policy_version"] == "rtlops68-slice3/v1"
+  assert paper_policy["mode"] == "single_intent_safe"
+  assert paper_policy["multi_symbol_per_cycle_enabled"] is False
+  assert paper_policy["max_symbols_per_cycle"] == 1
+  assert paper_policy["max_intents_per_cycle"] == 1
+  assert paper_policy["read_model_allows_multi_symbol_observability"] is True
+  assert paper_policy["effective_actionable_symbols"] == ["BTCUSDT"]
+  assert paper_policy["observability_only_symbols"] == ["ETHUSDT"]
+  assert "paper_multi_symbol_execution_disabled" in paper_policy["blocking_reasons"]
   assert payload["status"] == "ready"
   assert payload["symbols"] == ["BTCUSDT", "ETHUSDT"]
   assert payload["actionable_symbols"] == ["BTCUSDT", "ETHUSDT"]
@@ -1423,7 +1468,11 @@ def test_rtlops97_order_intents_read_model_returns_one_intent_per_symbol(tmp_pat
   assert btc["selected_strategy_id"] == pool_ids[0]
   assert btc["net_decision_key"] == f"{bot_id}:BTCUSDT:net_decision"
   assert btc["decision_log_scope"] == {"bot_id": bot_id, "symbol": "BTCUSDT"}
+  assert btc["paper_execution_status"] == "execution_actionable"
+  assert btc["paper_execution_blocking_reasons"] == []
   assert eth["selected_strategy_id"] == pool_ids[1]
+  assert eth["paper_execution_status"] == "observability_only"
+  assert "paper_multi_symbol_execution_disabled" in eth["paper_execution_blocking_reasons"]
 
 
 def test_rtlops97_order_intents_read_model_does_not_duplicate_strategies_for_same_symbol(tmp_path: Path, monkeypatch) -> None:

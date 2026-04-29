@@ -975,6 +975,16 @@ BOT_SCOPE_ELIGIBILITY_REASON_CODES = (
 BOT_ORDER_INTENTS_BY_SYMBOL_CONTRACT_VERSION = "rtlops97/v1"
 BOT_OPERATION_SCOPE_MODES = ("shadow", "paper", "testnet", "live")
 BOT_OPERATION_SCOPE_MAX_ACTIVE_SYMBOLS = 12
+PAPER_EXECUTION_POLICY_DEFAULT: dict[str, Any] = {
+    "policy_version": "rtlops68-slice3/v1",
+    "mode": "single_intent_safe",
+    "multi_symbol_per_cycle_enabled": False,
+    "max_symbols_per_cycle": 1,
+    "max_intents_per_cycle": 1,
+    "read_model_allows_multi_symbol_observability": True,
+    "blocking_reason_on_excess": "paper_multi_symbol_execution_disabled",
+    "source": "default_fail_closed",
+}
 BOT_RISK_PROFILE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "conservative": {
         "risk_profile": "conservative",
@@ -5996,6 +6006,57 @@ def risk_hooks(context):
         bot = self.bot_or_404(bot_id)
         return self._bot_runtime_payload(bot)
 
+    def paper_execution_policy(self) -> dict[str, Any]:
+        policy = dict(PAPER_EXECUTION_POLICY_DEFAULT)
+        try:
+            bundle = load_runtime_controls_bundle(repo_root=MONOREPO_ROOT, explicit_root=DEFAULT_CONFIG_POLICIES_ROOT)
+            runtime_controls = bundle.get("runtime_controls") if isinstance(bundle.get("runtime_controls"), dict) else {}
+            configured = (
+                runtime_controls.get("paper_execution")
+                if isinstance(runtime_controls.get("paper_execution"), dict)
+                else {}
+            )
+            if configured:
+                policy.update(configured)
+                policy["source"] = "config/policies/runtime_controls.yaml:runtime_controls.paper_execution"
+        except Exception as exc:
+            policy["source"] = "default_fail_closed"
+            policy["load_error"] = type(exc).__name__
+
+        enabled = bool(policy.get("multi_symbol_per_cycle_enabled", False))
+        try:
+            max_symbols = int(policy.get("max_symbols_per_cycle") or 1)
+        except Exception:
+            max_symbols = 1
+        try:
+            max_intents = int(policy.get("max_intents_per_cycle") or 1)
+        except Exception:
+            max_intents = 1
+        max_symbols = max(1, max_symbols)
+        max_intents = max(1, max_intents)
+        if not enabled:
+            max_symbols = 1
+            max_intents = 1
+
+        return {
+            "policy_version": str(policy.get("policy_version") or PAPER_EXECUTION_POLICY_DEFAULT["policy_version"]),
+            "mode": str(policy.get("mode") or "single_intent_safe"),
+            "multi_symbol_per_cycle_enabled": enabled,
+            "max_symbols_per_cycle": max_symbols,
+            "max_intents_per_cycle": max_intents,
+            "read_model_allows_multi_symbol_observability": bool(
+                policy.get("read_model_allows_multi_symbol_observability", True)
+            ),
+            "blocking_reason_on_excess": str(
+                policy.get("blocking_reason_on_excess") or "paper_multi_symbol_execution_disabled"
+            ),
+            "source": str(policy.get("source") or "default_fail_closed"),
+            "reason": (
+                "Paper conserva un submit single-intent seguro; "
+                "order_intents_by_symbol puede observar multiples simbolos sin activar multi-order."
+            ),
+        }
+
     def bot_order_intents_by_symbol_or_404(self, bot_id: str, *, mode: str = "paper") -> dict[str, Any]:
         normalized_bot_id = str(bot_id or "").strip()
         normalized_mode = str(mode or "paper").strip().lower() or "paper"
@@ -6096,6 +6157,7 @@ def risk_hooks(context):
         no_action_symbols: list[str] = []
         scope_blocking = bool(gate.get("is_blocking"))
         runtime_ready = runtime is not None and str(runtime.get("status") or "error") != "error" and bool(guardrails.get("execution_ready", False))
+        paper_policy = self.paper_execution_policy()
 
         if runtime is None and not symbols:
             symbols = list(gate_symbols)
@@ -6165,6 +6227,35 @@ def risk_hooks(context):
             order_intents_by_symbol[symbol] = intent
             items.append(intent)
 
+        paper_effective_actionable_symbols: list[str] = []
+        paper_observability_only_symbols: list[str] = []
+        paper_policy_blocking_reasons: list[str] = []
+        if normalized_mode == "paper":
+            max_intents_per_cycle = int(paper_policy.get("max_intents_per_cycle") or 1)
+            max_symbols_per_cycle = int(paper_policy.get("max_symbols_per_cycle") or 1)
+            allowed_count = max(1, min(max_intents_per_cycle, max_symbols_per_cycle))
+            paper_effective_actionable_symbols = actionable_symbols[:allowed_count]
+            paper_observability_only_symbols = actionable_symbols[allowed_count:]
+            if paper_observability_only_symbols and not bool(paper_policy.get("multi_symbol_per_cycle_enabled")):
+                reason = str(paper_policy.get("blocking_reason_on_excess") or "paper_multi_symbol_execution_disabled")
+                paper_policy_blocking_reasons = [
+                    reason,
+                    f"max_intents_per_cycle_exceeded:{max_intents_per_cycle}",
+                    f"max_symbols_per_cycle_exceeded:{max_symbols_per_cycle}",
+                ]
+                reason_codes.add(reason)
+            effective_set = set(paper_effective_actionable_symbols)
+            for symbol in actionable_symbols:
+                intent = order_intents_by_symbol.get(symbol)
+                if not isinstance(intent, dict):
+                    continue
+                if symbol in effective_set:
+                    intent["paper_execution_status"] = "execution_actionable"
+                    intent["paper_execution_blocking_reasons"] = []
+                else:
+                    intent["paper_execution_status"] = "observability_only"
+                    intent["paper_execution_blocking_reasons"] = list(paper_policy_blocking_reasons)
+
         if not symbols:
             blocking_reasons.append("order_intents_symbols_unavailable")
             reason_codes.add("order_intents_symbols_unavailable")
@@ -6179,9 +6270,10 @@ def risk_hooks(context):
                 "scope_eligibility": BOT_SCOPE_ELIGIBILITY_CONTRACT_VERSION,
             },
             "paper_execution_policy": {
-                "mode": "single_intent_safe",
-                "multi_symbol_per_cycle_enabled": False,
-                "reason": "Paper conserva un submit single-intent seguro; este endpoint es read-only/observability.",
+                **paper_policy,
+                "effective_actionable_symbols": paper_effective_actionable_symbols,
+                "observability_only_symbols": paper_observability_only_symbols,
+                "blocking_reasons": list(paper_policy_blocking_reasons),
             },
             "symbols": symbols,
             "actionable_symbols": actionable_symbols,
@@ -11888,6 +11980,26 @@ class RuntimeBridge:
                 "suppressed_intents_count": 0,
             }
 
+        paper_policy: dict[str, Any] = {}
+        paper_observability_only_symbols: list[str] = []
+        paper_policy_blocking_reasons: list[str] = []
+        if mode_n == "paper":
+            paper_policy = store.paper_execution_policy()
+            max_intents_per_cycle = int(paper_policy.get("max_intents_per_cycle") or 1)
+            max_symbols_per_cycle = int(paper_policy.get("max_symbols_per_cycle") or 1)
+            allowed_count = max(1, min(max_intents_per_cycle, max_symbols_per_cycle))
+            paper_observability_only_symbols = [
+                str(intent.get("symbol") or "").strip()
+                for intent in intents[allowed_count:]
+                if str(intent.get("symbol") or "").strip()
+            ]
+            if paper_observability_only_symbols and not bool(paper_policy.get("multi_symbol_per_cycle_enabled")):
+                paper_policy_blocking_reasons = [
+                    str(paper_policy.get("blocking_reason_on_excess") or "paper_multi_symbol_execution_disabled"),
+                    f"max_intents_per_cycle_exceeded:{max_intents_per_cycle}",
+                    f"max_symbols_per_cycle_exceeded:{max_symbols_per_cycle}",
+                ]
+
         first_intent = intents[0]
         return {
             **first_intent,
@@ -11895,6 +12007,11 @@ class RuntimeBridge:
             "net_decision_intents": intents,
             "candidate_intents_count": len(intents),
             "suppressed_intents_count": max(0, len(intents) - 1),
+            "paper_execution_policy": paper_policy or None,
+            "paper_execution_status": "execution_actionable" if mode_n == "paper" else None,
+            "paper_execution_blocking_reasons": [],
+            "paper_observability_only_symbols": paper_observability_only_symbols,
+            "paper_policy_blocking_reasons": paper_policy_blocking_reasons,
         }
 
     def _paper_runtime_quote_snapshot(self, *, family: str, symbol: str) -> dict[str, Any]:
@@ -11965,6 +12082,10 @@ class RuntimeBridge:
             "net_decision_key": str(intent.get("net_decision_key") or "").strip() or None,
             "candidate_intents_count": int(intent.get("candidate_intents_count") or 0),
             "suppressed_intents_count": int(intent.get("suppressed_intents_count") or 0),
+            "paper_execution_policy": intent.get("paper_execution_policy"),
+            "paper_execution_status": intent.get("paper_execution_status"),
+            "paper_observability_only_symbols": list(intent.get("paper_observability_only_symbols") or []),
+            "paper_policy_blocking_reasons": list(intent.get("paper_policy_blocking_reasons") or []),
         }
 
         if signal_action == "blocked":
