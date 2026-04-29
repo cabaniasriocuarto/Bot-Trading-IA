@@ -5,8 +5,8 @@
 ### RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright
 - Cambio real aplicado en dependencias frontend:
   - `rtlab_dashboard/package.json`
-    - actualiza `next` de `16.1.6` a `16.2.4`;
-    - actualiza `eslint-config-next` de `16.1.6` a `16.2.4`;
+    - actualiza `next` de `16.1.6` a `16.2.3`;
+    - actualiza `eslint-config-next` de `16.1.6` a `16.2.3`;
     - agrega override acotado `postcss=8.5.12`.
   - `rtlab_dashboard/package-lock.json`
     - actualiza transitivas seguras via `npm audit fix` sin `--force`, incluyendo `vite`, `rollup`, `picomatch`, `minimatch`, `brace-expansion`, `flatted` y `ajv`.
@@ -19,6 +19,9 @@
   - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
   - `npm.cmd run build` -> PASS
 - Limite honesto:
+  - `next@16.2.4` quedo descartado porque los previews Vercel llegaban a build completo pero fallaban en finalizacion/output con `ENOENT` sobre `.next/routes-manifest-deterministic.json`;
+  - `next@16.1.6` quedo descartado porque reintroduce una vulnerabilidad `high` directa en `next`;
+  - `next@16.2.3` queda validado localmente y pendiente de confirmacion en previews Vercel;
   - no se uso `npm audit fix --force`;
   - no se toco backend, UI funcional, Playwright smoke, Railway/Vercel, preserve ni PRs historicas;
   - quedan warnings Recharts no fatales en headless/build.

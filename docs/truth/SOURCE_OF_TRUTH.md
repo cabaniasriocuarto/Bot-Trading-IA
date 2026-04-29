@@ -9,8 +9,8 @@ Fecha de actualizacion: 2026-04-29
   - baseline inicial: `npm.cmd audit --audit-level=moderate` -> FAIL con 9 vulnerabilities, 3 moderate y 6 high;
   - baseline final: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
 - Cambios de dependencias frontend:
-  - `next` pasa de `16.1.6` a `16.2.4`;
-  - `eslint-config-next` pasa de `16.1.6` a `16.2.4`;
+  - `next` pasa de `16.1.6` a `16.2.3`;
+  - `eslint-config-next` pasa de `16.1.6` a `16.2.3`;
   - `npm audit fix` sin `--force` actualiza transitivas de tooling como `vite`, `rollup`, `picomatch`, `minimatch`, `brace-expansion`, `flatted` y `ajv`;
   - se agrega override acotado `postcss=8.5.12` para evitar el `postcss<8.5.10` anidado bajo `next`.
 - Regla de seguridad:
@@ -23,6 +23,9 @@ Fecha de actualizacion: 2026-04-29
   - `npm.cmd run test:smoke:live-console` -> PASS, 1 test;
   - `npm.cmd run build` -> PASS.
 - Limite honesto:
+  - `next@16.2.4` fue descartado para este PR porque los previews Vercel fallaban en finalizacion/output con `ENOENT` sobre `.next/routes-manifest-deterministic.json`;
+  - `next@16.1.6` fue descartado porque reintroduce una vulnerabilidad `high` directa en `next`;
+  - `next@16.2.3` queda como version intermedia localmente validada; falta validar previews Vercel despues del push;
   - el smoke/build siguen emitiendo warnings no fatales de Recharts por dimensiones en entorno headless;
   - `RTLOPS-69` y `RTLOPS-68` siguen parciales.
 

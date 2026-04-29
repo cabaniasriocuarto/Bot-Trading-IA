@@ -7,7 +7,7 @@ Fecha: 2026-04-29
   - baseline inicial: 9 vulnerabilities, 3 moderate y 6 high;
   - baseline final: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
 - [x] Fix aplicado sin `--force`:
-  - `next` / `eslint-config-next` actualizados a `16.2.4`;
+  - `next` / `eslint-config-next` actualizados a `16.2.3`;
   - transitivas de tooling actualizadas por `npm audit fix` normal;
   - override acotado `postcss=8.5.12` para cubrir el `postcss` anidado bajo `next`.
 - [x] Validacion real:
@@ -16,6 +16,7 @@ Fecha: 2026-04-29
   - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
   - `npm.cmd run build` -> PASS
 - [ ] Pendiente no bloqueante:
+  - validar previews Vercel de PR #51 con `next@16.2.3`; no mergear hasta que esten verdes;
   - warnings Recharts por dimensiones en headless/build siguen clasificados como no fatales;
   - `RTLOPS-69` sigue parcial y no debe abrir acciones live sin bloque separado.
 
