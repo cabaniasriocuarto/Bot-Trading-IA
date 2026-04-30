@@ -2,6 +2,24 @@
 
 Fecha: 2026-04-30
 
+## RTLOPS-101 - prebuilt preview deploy PASS - 2026-04-30
+- [x] Ejecutar `RTLOPS-101 Prebuilt Preview Deploy` contra `feature/rtlops-101-dashboard-npm-audit-fix`.
+- [x] Confirmar PASS de:
+  - `npm ci`;
+  - `npm audit --audit-level=moderate`;
+  - `npm run build`;
+  - `vercel build`;
+  - `vercel deploy --prebuilt --archive=tgz --target=preview`.
+- [x] Preview generado:
+  - `https://bot-trading-8ev1013f3-ranquel-tech-lab.vercel.app`.
+- [x] Clasificacion tecnica:
+  - PR #51 puede deployarse correctamente por prebuilt preview;
+  - el fallo queda aislado al Git Integration automatico de Vercel/finalization.
+- [ ] Decision pendiente:
+  - mantener PR #51 abierta hasta definir si se mergea con bypass controlado, si se espera respuesta de Vercel Support o si se adopta un flujo prebuilt para este caso;
+  - no mergear PR #54 como fix;
+  - considerar cerrar PR #55 como reemplazada por PR #56/workflow en main.
+
 ## RTLOPS-101 - instalar workflow prebuilt preview en main - 2026-04-30
 - [x] Crear PR administrativa contra `main`.
 - [x] Instalar workflow manual `.github/workflows/rtlops101-prebuilt-preview-deploy.yml`.
