@@ -2,6 +2,25 @@
 
 Fecha de actualizacion: 2026-04-30
 
+## RTLOPS-101 - prebuilt preview deploy experimental - 2026-04-30
+
+- Estado real:
+  - se abre una PR experimental separada sobre `feature/rtlops-101-dashboard-npm-audit-fix`;
+  - agrega un workflow manual `RTLOPS-101 Prebuilt Preview Deploy`;
+  - el objetivo es probar si `vercel deploy --prebuilt --target=preview` evita el fallo de finalizacion de Vercel Git Integration.
+- Contexto tecnico:
+  - PR #51 mantiene `npm audit`, `npm run build` y `vercel build` en PASS;
+  - Vercel Git Integration falla despues de `Build Completed in /vercel/output`;
+  - PR #54 probo `outputDirectory=".next"` y fallo igual en los 4 proyectos Vercel;
+  - la hipotesis vigente es que el problema esta en el flujo automatico de Git Integration, no en el output generado por `vercel build`.
+- Regla de seguridad:
+  - el workflow es manual-only (`workflow_dispatch`);
+  - deploya solo preview prebuilt, nunca production;
+  - no ejecuta `vercel promote`, no usa `--prod` y no cambia settings Vercel.
+- Limite honesto:
+  - no cambia dependencias, Next, PostCSS, backend, UI funcional, `.vercelignore`, `.env`, Railway, RTLOPS-69 ni RTLOPS-68;
+  - no resuelve por si solo RTLOPS-101 hasta ejecutar el workflow y clasificar el resultado.
+
 ## RTLOPS-101 - workflow diagnostico manual Vercel build Linux - 2026-04-30
 
 - Ajuste diagnostico v2:

@@ -2,6 +2,18 @@
 
 Fecha: 2026-04-30
 
+## RTLOPS-101 - prebuilt preview deploy experimental - 2026-04-30
+- [x] Crear PR experimental separada sobre `feature/rtlops-101-dashboard-npm-audit-fix`.
+- [x] Agregar workflow manual `.github/workflows/rtlops101-prebuilt-preview-deploy.yml`.
+- [x] Mantener intactos PR #51, dependencias, backend, UI funcional, `.vercelignore`, Vercel settings, Railway, RTLOPS-69 y RTLOPS-68.
+- [ ] Ejecutar manualmente el workflow:
+  - `Actions -> RTLOPS-101 Prebuilt Preview Deploy`;
+  - `target_ref=feature/rtlops-101-dashboard-npm-audit-fix`.
+- [ ] Clasificar resultado:
+  - si `vercel deploy --prebuilt --target=preview` pasa, el problema queda aislado al Git Integration automatico;
+  - si falla con el mismo ENOENT, escalar evidencia a Vercel Support;
+  - si falla por permisos/secrets, corregir solo el workflow/secrets en bloque separado.
+
 ## RTLOPS-101 - diagnostico Linux de Vercel build - 2026-04-30
 - [x] Primer run Linux del workflow:
   - `npm ci` -> PASS;

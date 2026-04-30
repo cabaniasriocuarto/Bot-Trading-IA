@@ -2,6 +2,19 @@
 
 ## 2026-04-30
 
+### RTLOPS-101 - prebuilt preview deploy experimental
+- Se agrega workflow manual experimental:
+  - `.github/workflows/rtlops101-prebuilt-preview-deploy.yml`;
+  - checkout configurable por `target_ref`;
+  - Node 22;
+  - `npm ci`, `npm audit --audit-level=moderate` y `npm run build` dentro de `rtlab_dashboard`;
+  - `vercel pull`, `vercel build` y `vercel deploy --prebuilt --archive=tgz --target=preview` desde la raiz del repo.
+- Objetivo:
+  - validar si deployar el `.vercel/output` generado en GitHub Actions evita el fallo de finalizacion de Vercel Git Integration.
+- Limite honesto:
+  - no toca producto, dependencias, Next, PostCSS, backend, UI funcional, `.vercelignore`, Vercel settings ni Railway;
+  - no usa `--prod`, no promueve aliases y no cierra RTLOPS-101.
+
 ### RTLOPS-101 - workflow diagnostico manual Vercel build Linux
 - Ajuste v2 del workflow:
   - el primer diagnostico Linux confirmo Next build PASS y ausencia de `.next/routes-manifest-deterministic.json`;
