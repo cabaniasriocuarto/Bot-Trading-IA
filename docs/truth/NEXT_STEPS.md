@@ -1,6 +1,26 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-29
+Fecha: 2026-04-30
+
+## RTLOPS-101 - diagnostico Linux de Vercel build - 2026-04-30
+- [x] Preparar workflow diagnostico administrativo:
+  - `.github/workflows/diagnose-vercel-build-rtlops101.yml`;
+  - solo `workflow_dispatch`;
+  - `target_ref` default: `feature/rtlops-101-dashboard-npm-audit-fix`;
+  - `run_vercel_build=true` por defecto.
+- [x] Mantener separacion de alcance:
+  - no toca producto;
+  - no modifica PR #51;
+  - no cambia dependencias, backend, UI funcional, Vercel config ni Railway;
+  - no ejecuta deploy ni prebuilt deploy.
+- [ ] Proximo paso exacto:
+  - mergear la PR administrativa a `main`;
+  - ejecutar `Actions -> RTLOPS-101 Diagnose Vercel Build`;
+  - usar `target_ref=feature/rtlops-101-dashboard-npm-audit-fix`;
+  - clasificar el resultado: npm/build Linux falla, falta deterministic manifest, `vercel build` reproduce ENOENT, `vercel build` pasa y genera output, faltan secrets o workflow mal configurado.
+- [ ] RTLOPS-101 sigue parcial/In Progress:
+  - el workflow no resuelve todavia el ERROR remoto de Vercel;
+  - `RTLOPS-69` y `RTLOPS-68` no cambian.
 
 ## RTLOPS-100 / RTLOPS-69 Slice 2 - Playwright smoke visual de consola read-only - 2026-04-29
 - [x] Smoke visual minimo:
