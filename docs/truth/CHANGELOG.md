@@ -2,6 +2,25 @@
 
 ## 2026-04-30
 
+### RTLOPS-101 - PR #51 refresh seguro + prebuilt PASS
+- Se resolvio el freno tecnico por rama local divergida:
+  - merge local accidental preservado en backup local no pusheado;
+  - rama limpia creada desde `origin/feature/rtlops-101-dashboard-npm-audit-fix`;
+  - `origin/main` integrado sin conflictos;
+  - PR #51 actualizada a `0498db52e54d59381ab14187724407976c42bc49`.
+- Validacion local:
+  - `npm ci` -> PASS, 0 vulnerabilities;
+  - `npm audit --audit-level=moderate` -> PASS, 0 vulnerabilities;
+  - `npm run build` -> PASS.
+- Validacion workflow:
+  - `RTLOPS-101 Prebuilt Preview Deploy` run `25149961717` -> `success`;
+  - preview generado: `https://bot-trading-f34mynb26-ranquel-tech-lab.vercel.app`;
+  - `vercel inspect` reporto deployment `dpl_8oR67BHgi2jZ2LpV6Dxh6ExPLPRK` en estado `Ready`.
+- Limite honesto:
+  - los checks automaticos Vercel Git Integration de PR #51 siguen fallando;
+  - no se mergeo PR #51 ni se uso bypass;
+  - no se tocaron dependencias, codigo de producto, Vercel settings ni production deploy.
+
 ### RTLOPS-101 - prebuilt preview deploy PASS
 - Resultado operativo:
   - workflow manual `RTLOPS-101 Prebuilt Preview Deploy` run #1 -> `success`;

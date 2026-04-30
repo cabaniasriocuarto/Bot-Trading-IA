@@ -2,6 +2,29 @@
 
 Fecha: 2026-04-30
 
+## RTLOPS-101 - PR #51 refreshed + prebuilt PASS - 2026-04-30
+- [x] Resolver freno tecnico por rama local divergida:
+  - backup local creado para `7291d74`;
+  - rama limpia creada desde `origin/feature/rtlops-101-dashboard-npm-audit-fix`;
+  - `origin/main` integrado sin conflictos;
+  - push no destructivo a PR #51.
+- [x] Validar localmente:
+  - `npm ci` -> PASS;
+  - `npm audit --audit-level=moderate` -> PASS;
+  - `npm run build` -> PASS.
+- [x] Ejecutar workflow oficial temporal:
+  - `RTLOPS-101 Prebuilt Preview Deploy` run `25149961717` -> PASS;
+  - preview generado: `https://bot-trading-f34mynb26-ranquel-tech-lab.vercel.app`.
+- [ ] Decision pendiente para PR #51:
+  - A) esperar Vercel/Community;
+  - B) seguir QA en rama con prebuilt preview;
+  - C) merge controlado documentado;
+  - D) mantener prebuilt como preview temporal oficial.
+- [ ] No mergear PR #51 sin decision explicita:
+  - Vercel Git Integration automatico sigue FAIL externo;
+  - RTLOPS-101 sigue In Progress;
+  - RTLOPS-69 y RTLOPS-68 no cambian.
+
 ## RTLOPS-101 - prebuilt preview deploy PASS - 2026-04-30
 - [x] Ejecutar `RTLOPS-101 Prebuilt Preview Deploy` contra `feature/rtlops-101-dashboard-npm-audit-fix`.
 - [x] Confirmar PASS de:
