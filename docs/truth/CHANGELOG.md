@@ -2,6 +2,23 @@
 
 ## 2026-04-30
 
+### RTLOPS-101 - instalacion workflow prebuilt preview en main
+- Se agrega PR administrativa contra `main` para instalar:
+  - `.github/workflows/rtlops101-prebuilt-preview-deploy.yml`.
+- Motivo:
+  - `workflow_dispatch` debe existir en la rama default para poder ejecutarse manualmente de forma confiable;
+  - PR #55 preparo el workflow sobre la rama de PR #51, pero no alcanza para uso operativo desde Actions.
+- Alcance:
+  - workflow manual-only;
+  - checkout configurable por `target_ref`;
+  - Node 22;
+  - `npm ci`, `npm audit --audit-level=moderate`, `npm run build`;
+  - `vercel pull`, `vercel build` y `vercel deploy --prebuilt --archive=tgz --target=preview`;
+  - artifact con logs/listados de diagnostico.
+- Limite honesto:
+  - no toca producto, dependencias, Next, PostCSS, backend, UI funcional, `.vercelignore`, Vercel settings ni Railway;
+  - no usa `--prod`, no promueve aliases y no cierra RTLOPS-101.
+
 ### RTLOPS-101 - workflow diagnostico manual Vercel build Linux
 - Ajuste v2 del workflow:
   - el primer diagnostico Linux confirmo Next build PASS y ausencia de `.next/routes-manifest-deterministic.json`;

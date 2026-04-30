@@ -2,6 +2,19 @@
 
 Fecha: 2026-04-30
 
+## RTLOPS-101 - instalar workflow prebuilt preview en main - 2026-04-30
+- [x] Crear PR administrativa contra `main`.
+- [x] Instalar workflow manual `.github/workflows/rtlops101-prebuilt-preview-deploy.yml`.
+- [x] Mantener intactos PR #51, PR #54, PR #55, dependencias, backend, UI funcional, `.vercelignore`, Vercel settings, Railway, RTLOPS-69 y RTLOPS-68.
+- [ ] Despues de mergear la PR administrativa, ejecutar:
+  - `Actions -> RTLOPS-101 Prebuilt Preview Deploy`;
+  - `target_ref=feature/rtlops-101-dashboard-npm-audit-fix`;
+  - `run_prebuilt_deploy=true`.
+- [ ] Clasificar:
+  - si el prebuilt preview deploy pasa, el fallo queda aislado al Git Integration automatico;
+  - si falla con el mismo ENOENT, escalar evidencia a Vercel Support;
+  - si falla por secrets/permisos, corregir solo el workflow/secrets en bloque separado.
+
 ## RTLOPS-101 - diagnostico Linux de Vercel build - 2026-04-30
 - [x] Primer run Linux del workflow:
   - `npm ci` -> PASS;
