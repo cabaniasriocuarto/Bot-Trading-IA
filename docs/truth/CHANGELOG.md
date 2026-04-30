@@ -3,6 +3,11 @@
 ## 2026-04-30
 
 ### RTLOPS-101 - workflow diagnostico manual Vercel build Linux
+- Ajuste v2 del workflow:
+  - el primer diagnostico Linux confirmo Next build PASS y ausencia de `.next/routes-manifest-deterministic.json`;
+  - con secrets Vercel presentes, `vercel build` fallo antes de la finalizacion real con `Error: spawn sh ENOENT` durante `npm install`;
+  - se cambia `vercel pull` y `vercel build` para correr desde la raiz del repo, dejando que Vercel aplique la Root Directory remota `rtlab_dashboard`;
+  - se agrega preflight de shell/PATH y version de Vercel CLI sin imprimir secrets.
 - Cambio administrativo aplicado:
   - se agrega `.github/workflows/diagnose-vercel-build-rtlops101.yml`;
   - el workflow corre solo por `workflow_dispatch`;
