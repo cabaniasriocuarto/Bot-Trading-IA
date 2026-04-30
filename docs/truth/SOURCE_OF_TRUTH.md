@@ -2,6 +2,47 @@
 
 Fecha de actualizacion: 2026-04-30
 
+## RTLOPS-101 - prebuilt preview deploy PASS - 2026-04-30
+
+- Resultado confirmado:
+  - workflow manual `RTLOPS-101 Prebuilt Preview Deploy` run #1 termino en `success`;
+  - `target_ref=feature/rtlops-101-dashboard-npm-audit-fix`;
+  - commit diagnosticado: `a2ff740279a8a78f3001c879d9dab64b66a17dfa`;
+  - preview generado: `https://bot-trading-8ev1013f3-ranquel-tech-lab.vercel.app`.
+- Validacion del workflow:
+  - `npm ci` -> PASS;
+  - `npm audit --audit-level=moderate` -> PASS;
+  - `npm run build` -> PASS;
+  - `vercel build` -> PASS;
+  - `vercel deploy --prebuilt --archive=tgz --target=preview` -> PASS.
+- Conclusion tecnica:
+  - el codigo de PR #51 puede desplegarse correctamente como preview cuando se usa el Build Output API generado por GitHub Actions;
+  - el fallo restante queda aislado al Vercel Git Integration automatico/finalization;
+  - Git Integration sigue fallando con `ENOENT` sobre `/vercel/path0/.next/routes-manifest-deterministic.json`.
+- Estado:
+  - PR #51 sigue abierta/no mergeada hasta decision final;
+  - PR #54 no debe mergearse como fix;
+  - PR #55 queda reemplazada operativamente por el workflow instalado en main via PR #56;
+  - RTLOPS-101 sigue In Progress hasta decidir camino de merge/cierre.
+
+## RTLOPS-101 - instalacion workflow prebuilt preview en main - 2026-04-30
+
+- Estado real:
+  - se abre PR administrativa contra `main` para instalar `.github/workflows/rtlops101-prebuilt-preview-deploy.yml`;
+  - el workflow debe existir en la rama default para que `workflow_dispatch` pueda ejecutarse de forma confiable;
+  - permite apuntar `target_ref=feature/rtlops-101-dashboard-npm-audit-fix` sin tocar PR #51.
+- Objetivo:
+  - probar si `vercel deploy --prebuilt --target=preview` evita el fallo de finalizacion de Vercel Git Integration;
+  - aislar si el problema esta en el flujo automatico Git Integration o tambien en el deploy del Build Output API generado por Actions.
+- Reglas:
+  - workflow manual-only (`workflow_dispatch`);
+  - usa Node 22;
+  - corre `npm ci`, `npm audit --audit-level=moderate`, `npm run build`, `vercel pull`, `vercel build` y opcionalmente `vercel deploy --prebuilt --archive=tgz --target=preview`;
+  - no usa `--prod`, no promueve aliases y no cambia settings Vercel.
+- Limite honesto:
+  - esto no toca producto, dependencias, backend, UI funcional, `.vercelignore`, `.env`, Railway, RTLOPS-69 ni RTLOPS-68;
+  - RTLOPS-101 sigue In Progress hasta ejecutar el workflow y clasificar el resultado.
+
 ## RTLOPS-101 - workflow diagnostico manual Vercel build Linux - 2026-04-30
 
 - Ajuste diagnostico v2:

@@ -2,6 +2,40 @@
 
 ## 2026-04-30
 
+### RTLOPS-101 - prebuilt preview deploy PASS
+- Resultado operativo:
+  - workflow manual `RTLOPS-101 Prebuilt Preview Deploy` run #1 -> `success`;
+  - `target_ref=feature/rtlops-101-dashboard-npm-audit-fix`;
+  - commit diagnosticado `a2ff740279a8a78f3001c879d9dab64b66a17dfa`;
+  - preview generado: `https://bot-trading-8ev1013f3-ranquel-tech-lab.vercel.app`.
+- Validacion:
+  - `npm ci`, `npm audit --audit-level=moderate`, `npm run build`, `vercel build` y `vercel deploy --prebuilt --archive=tgz --target=preview` pasaron.
+- Conclusion:
+  - PR #51 despliega correctamente por prebuilt preview deploy;
+  - el bloqueo queda aislado al Vercel Git Integration automatico/finalization, que sigue fallando con `ENOENT` sobre `/vercel/path0/.next/routes-manifest-deterministic.json`.
+- Limites:
+  - no implica deploy de production;
+  - PR #51 sigue abierta/no mergeada;
+  - PR #54 no debe mergearse como fix;
+  - PR #55 queda reemplazada por el workflow instalado en main via PR #56.
+
+### RTLOPS-101 - instalacion workflow prebuilt preview en main
+- Se agrega PR administrativa contra `main` para instalar:
+  - `.github/workflows/rtlops101-prebuilt-preview-deploy.yml`.
+- Motivo:
+  - `workflow_dispatch` debe existir en la rama default para poder ejecutarse manualmente de forma confiable;
+  - PR #55 preparo el workflow sobre la rama de PR #51, pero no alcanza para uso operativo desde Actions.
+- Alcance:
+  - workflow manual-only;
+  - checkout configurable por `target_ref`;
+  - Node 22;
+  - `npm ci`, `npm audit --audit-level=moderate`, `npm run build`;
+  - `vercel pull`, `vercel build` y `vercel deploy --prebuilt --archive=tgz --target=preview`;
+  - artifact con logs/listados de diagnostico.
+- Limite honesto:
+  - no toca producto, dependencias, Next, PostCSS, backend, UI funcional, `.vercelignore`, Vercel settings ni Railway;
+  - no usa `--prod`, no promueve aliases y no cierra RTLOPS-101.
+
 ### RTLOPS-101 - workflow diagnostico manual Vercel build Linux
 - Ajuste v2 del workflow:
   - el primer diagnostico Linux confirmo Next build PASS y ausencia de `.next/routes-manifest-deterministic.json`;
