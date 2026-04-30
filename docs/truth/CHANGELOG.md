@@ -1,5 +1,29 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-04-30
+
+### RTLOPS-101 - workflow diagnostico manual Vercel build Linux
+- Ajuste v2 del workflow:
+  - el primer diagnostico Linux confirmo Next build PASS y ausencia de `.next/routes-manifest-deterministic.json`;
+  - con secrets Vercel presentes, `vercel build` fallo antes de la finalizacion real con `Error: spawn sh ENOENT` durante `npm install`;
+  - se cambia `vercel pull` y `vercel build` para correr desde la raiz del repo, dejando que Vercel aplique la Root Directory remota `rtlab_dashboard`;
+  - se agrega preflight de shell/PATH y version de Vercel CLI sin imprimir secrets.
+- Cambio administrativo aplicado:
+  - se agrega `.github/workflows/diagnose-vercel-build-rtlops101.yml`;
+  - el workflow corre solo por `workflow_dispatch`;
+  - acepta `target_ref` para diagnosticar `feature/rtlops-101-dashboard-npm-audit-fix` sin modificar PR #51;
+  - usa `ubuntu-latest` y Node 22 para evitar el bloqueo local Windows por symlinks.
+- Diagnostico cubierto:
+  - `npm ci`;
+  - `npm audit --audit-level=moderate`;
+  - `npm run build`;
+  - inspeccion de `.next/routes-manifest.json`, `.next/routes-manifest-deterministic.json` y `.next/required-server-files.json`;
+  - `npx vercel@latest build` solo si `run_vercel_build=true` y existen secrets Vercel.
+- Limite honesto:
+  - no toca producto, backend, UI funcional, dependencias, Vercel config ni Railway;
+  - no ejecuta deploy ni prebuilt deploy;
+  - no resuelve todavia el ERROR de Vercel: deja el diagnostico Linux listo para ejecutar despues del merge administrativo.
+
 ## 2026-04-29
 
 ### RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright

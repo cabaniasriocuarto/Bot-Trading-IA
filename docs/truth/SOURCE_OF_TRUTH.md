@@ -1,6 +1,34 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-29
+Fecha de actualizacion: 2026-04-30
+
+## RTLOPS-101 - workflow diagnostico manual Vercel build Linux - 2026-04-30
+
+- Ajuste diagnostico v2:
+  - el primer run Linux confirmo `npm ci`, `npm audit --audit-level=moderate` y `npm run build` en PASS;
+  - confirmo `.next/routes-manifest.json` y `.next/required-server-files.json`;
+  - confirmo que `.next/routes-manifest-deterministic.json` falta en el output Next puro;
+  - con secrets Vercel presentes, `vercel build` fallo prematuramente con `Error: spawn sh ENOENT` durante `npm install`;
+  - este ajuste mueve `vercel pull` y `vercel build` a la raiz del repo para respetar la Root Directory remota `rtlab_dashboard`;
+  - agrega preflight explicito de shell/PATH y conserva artifacts reducidos de diagnostico.
+- Estado real de este bloque administrativo:
+  - se agrega `.github/workflows/diagnose-vercel-build-rtlops101.yml`;
+  - el workflow es manual-only (`workflow_dispatch`) y debe existir en la rama default para poder ejecutarse de forma confiable desde GitHub Actions;
+  - permite diagnosticar `RTLOPS-101` apuntando `target_ref=feature/rtlops-101-dashboard-npm-audit-fix` en `ubuntu-latest`;
+  - ejecuta `npm ci`, `npm audit --audit-level=moderate`, `npm run build` e inspecciona manifests `.next`;
+  - si existen `VERCEL_TOKEN`, `VERCEL_ORG_ID` y `VERCEL_PROJECT_ID`, puede correr `npx vercel@latest build` sin desplegar.
+- Regla de seguridad:
+  - no toca producto, backend, UI funcional, dependencias, `next.config`, Vercel settings, Railway, preserve, ramas historicas ni PRs viejas;
+  - no ejecuta `vercel deploy` ni `vercel deploy --prebuilt`;
+  - no sube `.env`, `.vercel` ni secretos como artefactos.
+- Limite honesto:
+  - no resuelve todavia el ERROR remoto de Vercel;
+  - `RTLOPS-101` sigue parcial/In Progress hasta ejecutar el workflow y clasificar el resultado;
+  - `RTLOPS-69` y `RTLOPS-68` no cambian.
+- Proximo paso exacto:
+  - mergear esta PR administrativa;
+  - ejecutar `Actions -> RTLOPS-101 Diagnose Vercel Build` con `target_ref=feature/rtlops-101-dashboard-npm-audit-fix` y `run_vercel_build=true`;
+  - clasificar si falla npm/build Linux, falta el manifest deterministic, `vercel build` reproduce ENOENT, genera output correcto o faltan secrets.
 
 ## RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright - 2026-04-29
 

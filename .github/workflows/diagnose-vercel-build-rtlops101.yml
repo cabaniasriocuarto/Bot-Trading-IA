@@ -1,0 +1,244 @@
+name: RTLOPS-101 Diagnose Vercel Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: "Git ref to diagnose"
+        required: true
+        default: "feature/rtlops-101-dashboard-npm-audit-fix"
+        type: string
+      run_vercel_build:
+        description: "Run Vercel build when Vercel secrets are available"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose RTLOPS-101 Vercel build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: rtlab_dashboard
+
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: rtlab_dashboard/package-lock.json
+
+      - name: Show runtime context
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics/rtlops101
+          {
+            echo "target_ref=${{ inputs.target_ref }}"
+            echo "pwd=$(pwd)"
+            echo "node=$(node -v)"
+            echo "npm=$(npm -v)"
+            echo "git_head=$(git rev-parse HEAD)"
+            ls -la
+          } | tee diagnostics/rtlops101/runtime-context.log
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dashboard dependencies
+        run: npm audit --audit-level=moderate
+
+      - name: Build dashboard
+        run: npm run build
+
+      - name: Inspect Next output
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics/rtlops101
+          {
+            echo "## .next top-level files"
+            if [[ -d .next ]]; then
+              find .next -maxdepth 2 -type f | sort | sed -n '1,200p'
+            else
+              echo "MISSING: .next"
+            fi
+            echo
+            echo "## Required manifests"
+            for file in \
+              ".next/routes-manifest.json" \
+              ".next/routes-manifest-deterministic.json" \
+              ".next/required-server-files.json"
+            do
+              if [[ -f "$file" ]]; then
+                echo "FOUND: $file"
+              else
+                echo "MISSING: $file"
+              fi
+            done
+          } | tee diagnostics/rtlops101/next-output-inspection.log
+
+      - name: Check Vercel secrets availability
+        id: vercel_secrets
+        if: ${{ inputs.run_vercel_build }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_ORG_ID:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Vercel secrets available"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED vercel build: missing Vercel secrets"
+          fi
+
+      - name: Skip Vercel build when disabled
+        if: ${{ !inputs.run_vercel_build }}
+        run: |
+          echo "SKIPPED vercel build: run_vercel_build=false"
+
+      - name: Vercel CLI shell preflight from repo root
+        if: ${{ inputs.run_vercel_build && steps.vercel_secrets.outputs.available == 'true' }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p rtlab_dashboard/diagnostics/rtlops101
+          {
+            echo "RUNNING_VERCEL_FROM_REPO_ROOT=true"
+            echo "VERCEL_PROJECT_ROOT_EXPECTED=rtlab_dashboard"
+            echo "pwd=$(pwd)"
+            echo "PATH=$PATH"
+            echo "command_sh=$(command -v sh || true)"
+            echo "bin_sh=$(ls -l /bin/sh || true)"
+            echo "command_npm=$(command -v npm || true)"
+            echo "command_npx=$(command -v npx || true)"
+            echo "node=$(node -v)"
+            echo "npm=$(npm -v)"
+          } | tee rtlab_dashboard/diagnostics/rtlops101/vercel-root-preflight.log
+          if command -v sh >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && command -v npx >/dev/null 2>&1; then
+            echo "SHELL_PREFLIGHT_OK=true" | tee -a rtlab_dashboard/diagnostics/rtlops101/vercel-root-preflight.log
+          else
+            echo "SHELL_PREFLIGHT_OK=false" | tee -a rtlab_dashboard/diagnostics/rtlops101/vercel-root-preflight.log
+          fi
+
+      - name: Install Vercel CLI
+        if: ${{ inputs.run_vercel_build && steps.vercel_secrets.outputs.available == 'true' }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          npm install --global vercel@latest
+          vercel --version | tee rtlab_dashboard/diagnostics/rtlops101/vercel-version.log
+
+      - name: Pull Vercel preview environment
+        if: ${{ inputs.run_vercel_build && steps.vercel_secrets.outputs.available == 'true' }}
+        working-directory: .
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=preview --token="$VERCEL_TOKEN" 2>&1 | tee rtlab_dashboard/diagnostics/rtlops101/vercel-pull.log
+
+      - name: Run Vercel build
+        if: ${{ inputs.run_vercel_build && steps.vercel_secrets.outputs.available == 'true' }}
+        working-directory: .
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          vercel build --yes --token="$VERCEL_TOKEN" 2>&1 | tee rtlab_dashboard/diagnostics/rtlops101/vercel-build.log
+
+      - name: Inspect Vercel output
+        if: ${{ always() && inputs.run_vercel_build && steps.vercel_secrets.outputs.available == 'true' }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          mkdir -p rtlab_dashboard/diagnostics/rtlops101
+          {
+            echo "## repo root .vercel/output summary"
+            for path in \
+              ".vercel/output/config.json" \
+              ".vercel/output/functions" \
+              ".vercel/output/static"
+            do
+              if [[ -e "$path" ]]; then
+                echo "FOUND: $path"
+              else
+                echo "MISSING: $path"
+              fi
+            done
+            echo
+            echo "## .vercel/output top-level"
+            if [[ -d .vercel/output ]]; then
+              find .vercel/output -maxdepth 2 -print | sort | sed -n '1,200p'
+              echo
+              echo "## .vercel/output manifests"
+              find .vercel/output -iname "*manifest*" | sort | sed -n '1,200p'
+            else
+              echo "MISSING: .vercel/output"
+            fi
+            echo
+            echo "## rtlab_dashboard/.vercel/output summary"
+            for path in \
+              "rtlab_dashboard/.vercel/output/config.json" \
+              "rtlab_dashboard/.vercel/output/functions" \
+              "rtlab_dashboard/.vercel/output/static"
+            do
+              if [[ -e "$path" ]]; then
+                echo "FOUND: $path"
+              else
+                echo "MISSING: $path"
+              fi
+            done
+            echo
+            echo "## rtlab_dashboard/.vercel/output top-level"
+            if [[ -d rtlab_dashboard/.vercel/output ]]; then
+              find rtlab_dashboard/.vercel/output -maxdepth 2 -print | sort | sed -n '1,200p'
+              echo
+              echo "## rtlab_dashboard/.vercel/output manifests"
+              find rtlab_dashboard/.vercel/output -iname "*manifest*" | sort | sed -n '1,200p'
+            else
+              echo "MISSING: rtlab_dashboard/.vercel/output"
+            fi
+            echo
+            echo "## repo root .next"
+            if [[ -d .next ]]; then
+              find .next -maxdepth 2 -type f | sort | sed -n '1,200p'
+            else
+              echo "MISSING: .next"
+            fi
+            echo
+            echo "## rtlab_dashboard/.next"
+            if [[ -d rtlab_dashboard/.next ]]; then
+              find rtlab_dashboard/.next -maxdepth 2 -type f | sort | sed -n '1,200p'
+            else
+              echo "MISSING: rtlab_dashboard/.next"
+            fi
+          } | tee rtlab_dashboard/diagnostics/rtlops101/vercel-output-inspection.log
+
+      - name: Upload diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtlops101-vercel-build-diagnostics
+          path: rtlab_dashboard/diagnostics/rtlops101/
+          if-no-files-found: warn

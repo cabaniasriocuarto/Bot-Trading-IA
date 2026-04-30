@@ -1,6 +1,38 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-29
+Fecha: 2026-04-30
+
+## RTLOPS-101 - diagnostico Linux de Vercel build - 2026-04-30
+- [x] Primer run Linux del workflow:
+  - `npm ci` -> PASS;
+  - `npm audit --audit-level=moderate` -> PASS;
+  - `npm run build` -> PASS;
+  - `.next/routes-manifest.json` -> FOUND;
+  - `.next/routes-manifest-deterministic.json` -> MISSING;
+  - `.next/required-server-files.json` -> FOUND;
+  - `vercel build` con secrets presentes fallo prematuramente con `Error: spawn sh ENOENT`.
+- [x] Ajuste v2 del workflow diagnostico:
+  - Vercel CLI corre desde la raiz del repo;
+  - conserva `npm ci/audit/build` dentro de `rtlab_dashboard`;
+  - agrega preflight de shell/PATH y artifacts de logs/listados.
+- [x] Preparar workflow diagnostico administrativo:
+  - `.github/workflows/diagnose-vercel-build-rtlops101.yml`;
+  - solo `workflow_dispatch`;
+  - `target_ref` default: `feature/rtlops-101-dashboard-npm-audit-fix`;
+  - `run_vercel_build=true` por defecto.
+- [x] Mantener separacion de alcance:
+  - no toca producto;
+  - no modifica PR #51;
+  - no cambia dependencias, backend, UI funcional, Vercel config ni Railway;
+  - no ejecuta deploy ni prebuilt deploy.
+- [ ] Proximo paso exacto:
+  - mergear la PR administrativa v2 a `main`;
+  - ejecutar `Actions -> RTLOPS-101 Diagnose Vercel Build`;
+  - usar `target_ref=feature/rtlops-101-dashboard-npm-audit-fix`;
+  - clasificar el resultado: npm/build Linux falla, falta deterministic manifest, `vercel build` reproduce ENOENT, `vercel build` pasa y genera output, faltan secrets o workflow mal configurado.
+- [ ] RTLOPS-101 sigue parcial/In Progress:
+  - el workflow no resuelve todavia el ERROR remoto de Vercel;
+  - `RTLOPS-69` y `RTLOPS-68` no cambian.
 
 ## RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright - 2026-04-29
 - [x] Deuda `npm audit` del dashboard resuelta:
