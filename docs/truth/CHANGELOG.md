@@ -2,6 +2,17 @@
 
 ## 2026-04-30
 
+### RTLOPS-101 - PR experimental outputDirectory workaround
+- Se agrega una PR experimental separada para probar el workaround sugerido por Vercel AI:
+  - archivo nuevo: `rtlab_dashboard/vercel.json`;
+  - contenido: `outputDirectory=".next"`.
+- Objetivo:
+  - validar si Vercel Git Integration deja de buscar `.next` en `/vercel/path0/.next` y respeta el Root Directory `rtlab_dashboard`.
+- Limite honesto:
+  - no es fix confirmado;
+  - no toca PR #51 directamente;
+  - no cambia dependencias, Next, PostCSS, backend, UI funcional, `.vercelignore`, Vercel settings ni Railway.
+
 ### RTLOPS-101 - workflow diagnostico manual Vercel build Linux
 - Ajuste v2 del workflow:
   - el primer diagnostico Linux confirmo Next build PASS y ausencia de `.next/routes-manifest-deterministic.json`;

@@ -2,6 +2,26 @@
 
 Fecha de actualizacion: 2026-04-30
 
+## RTLOPS-101 - PR experimental outputDirectory workaround - 2026-04-30
+
+- Estado real:
+  - se abre una PR experimental separada sobre `feature/rtlops-101-dashboard-npm-audit-fix`;
+  - el objetivo es probar el workaround sugerido por Vercel AI para el bloqueo post-build de PR #51;
+  - se agrega solo `rtlab_dashboard/vercel.json` con `outputDirectory=".next"`.
+- Contexto tecnico:
+  - PR #51 mantiene `npm audit`, `npm run build` y `vercel build` en PASS;
+  - Vercel Git deployment sigue fallando despues de `Build Completed in /vercel/output`;
+  - el error remoto busca `/vercel/path0/.next/routes-manifest-deterministic.json`;
+  - la hipotesis vigente es que Git Integration esta resolviendo `.next` en la raiz del repo y no bajo Root Directory `rtlab_dashboard`.
+- Limite honesto:
+  - esto no es una correccion confirmada;
+  - no cambia dependencias, Next, PostCSS, backend, UI funcional, `.vercelignore`, Vercel settings ni Railway;
+  - no cierra RTLOPS-101 ni PR #51.
+- Proximo paso:
+  - observar los Vercel checks de la PR experimental;
+  - si quedan verdes, evaluar si el workaround debe incorporarse al flujo de PR #51;
+  - si fallan igual, continuar con soporte Vercel o siguiente aislamiento controlado.
+
 ## RTLOPS-101 - workflow diagnostico manual Vercel build Linux - 2026-04-30
 
 - Ajuste diagnostico v2:

@@ -2,6 +2,15 @@
 
 Fecha: 2026-04-30
 
+## RTLOPS-101 - PR experimental outputDirectory workaround - 2026-04-30
+- [x] Preparar PR experimental separada sobre `feature/rtlops-101-dashboard-npm-audit-fix`.
+- [x] Agregar solo `rtlab_dashboard/vercel.json` con `outputDirectory=".next"`.
+- [x] Mantener intactos PR #51, dependencias, backend, UI funcional, `.vercelignore`, Vercel settings y Railway.
+- [ ] Observar Vercel checks de la PR experimental:
+  - si pasan, evaluar incorporar el workaround al cierre de RTLOPS-101;
+  - si fallan con el mismo ENOENT, volver al paquete de soporte Vercel o siguiente aislamiento controlado.
+- [ ] RTLOPS-101 sigue In Progress hasta resolver o clasificar definitivamente el bloqueo post-build.
+
 ## RTLOPS-101 - diagnostico Linux de Vercel build - 2026-04-30
 - [x] Primer run Linux del workflow:
   - `npm ci` -> PASS;
