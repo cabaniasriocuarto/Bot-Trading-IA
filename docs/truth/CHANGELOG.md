@@ -21,6 +21,17 @@
   - no se mergeo PR #51 ni se uso bypass;
   - no se tocaron dependencias, codigo de producto, Vercel settings ni production deploy.
 
+### RTLOPS-102 - QA/UI mojibake cleanup dashboard
+- Se corrigen textos visibles con mojibake en dashboard:
+  - labels de versión, régimen, pérdida, página y último;
+  - empty states y ayudas de aprendizaje;
+  - separadores, comillas e iconos visibles.
+- Alcance acotado:
+  - solo copy/labels/documentacion;
+  - no toca PR #51, Vercel, Railway, backend, Next/PostCSS ni package files.
+- Validacion:
+  - `npx next typegen`, `npm run typecheck`, lint focalizado de archivos tocados y `npm run build` pasan.
+
 ### RTLOPS-101 - prebuilt preview deploy PASS
 - Resultado operativo:
   - workflow manual `RTLOPS-101 Prebuilt Preview Deploy` run #1 -> `success`;

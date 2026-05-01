@@ -25,6 +25,22 @@ Fecha: 2026-04-30
   - RTLOPS-101 sigue In Progress;
   - RTLOPS-69 y RTLOPS-68 no cambian.
 
+## RTLOPS-102 - QA/UI mojibake cleanup dashboard - 2026-04-30
+- [x] Crear issue `RTLOPS-102` bajo RTLOPS-69.
+- [x] Crear rama `feature/qa-ui-encoding-mojibake-cleanup` desde `origin/main`.
+- [x] Corregir mojibake visible en `Settings`, `Strategies` y docs/truth.
+- [x] Validar:
+  - `npx next typegen`;
+  - `npm run typecheck`;
+  - `npx eslint "src/app/(app)/settings/page.tsx" "src/app/(app)/strategies/page.tsx"`;
+  - `npm run build`.
+- [x] Abrir y mergear PR #58 contra `main`.
+- [ ] Mantener separado de RTLOPS-101/PR #51:
+  - no tocar Vercel;
+  - no tocar Railway;
+  - no cambiar Next/PostCSS;
+  - no abrir RTLOPS-69 Slice 3.
+
 ## RTLOPS-101 - prebuilt preview deploy PASS - 2026-04-30
 - [x] Ejecutar `RTLOPS-101 Prebuilt Preview Deploy` contra `feature/rtlops-101-dashboard-npm-audit-fix`.
 - [x] Confirmar PASS de:

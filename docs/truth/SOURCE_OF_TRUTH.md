@@ -23,6 +23,23 @@ Fecha de actualizacion: 2026-04-30
   - PR #51 sigue abierta/no mergeada;
   - RTLOPS-101 sigue In Progress hasta decision explicita de merge/cierre.
 
+## RTLOPS-102 - QA/UI mojibake cleanup dashboard - 2026-04-30
+
+- Estado real:
+  - se crea `RTLOPS-102` para corregir mojibake visible en el dashboard;
+  - se corrigen textos/copy afectados en `Settings` y `Strategies`;
+  - se corrigen ocurrencias historicas en docs/truth.
+- Alcance:
+  - solo copy/labels visibles y texto documental;
+  - no cambia comportamiento funcional;
+  - no toca backend, Vercel, Railway, Next/PostCSS ni package files;
+  - no toca PR #51 ni abre RTLOPS-69 Slice 3.
+- Validacion local:
+  - `npx next typegen` PASS tras limpiar `.next`;
+  - `npm run typecheck` PASS;
+  - `npx eslint "src/app/(app)/settings/page.tsx" "src/app/(app)/strategies/page.tsx"` PASS;
+  - `npm run build` PASS.
+
 ## RTLOPS-101 - prebuilt preview deploy PASS - 2026-04-30
 
 - Resultado confirmado:
@@ -4116,8 +4133,8 @@ El proyecto tiene:
 - Parser de errores de Backtests endurecido para evitar `[object Object]` en UI y mostrar `detail/message/cause` real
 - `Research Batch` con shortlist persistente por `BX`:
   - guardado de variantes/runs en `best_runs_cache`
-  - restauraciÃ³n de shortlist al reabrir batch
-  - sincronizaciÃ³n opcional con Comparador de Runs
+  - restauración de shortlist al reabrir batch
+  - sincronización opcional con Comparador de Runs
 - Backtests / Runs D2 (Comparison Table Pro) ahora renderiza por ventana visible (virtualizacion + overscan + espaciadores).
 - Strategies compactado para escalar con 50+ filas (menos altura por fila y acciones principales mas compactas).
 - `Detalle de Corrida` con estructura tipo Strategy Tester por pestanas
