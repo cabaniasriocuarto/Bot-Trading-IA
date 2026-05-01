@@ -1366,7 +1366,7 @@ export default function StrategiesPage() {
     <div className="grid gap-4 xl:grid-cols-[1.7fr_1fr]">
       <Card>
         <CardTitle>Registro de Estrategias</CardTitle>
-        <CardDescription>Knowledge Pack + importadas. TildÃ¡ Trading / Aprendizaje / Principal y revisÃ¡ KPIs por perÃ­odo y rÃ©gimen.</CardDescription>
+        <CardDescription>Knowledge Pack + importadas. Tildá Trading / Aprendizaje / Principal y revisá KPIs por período y régimen.</CardDescription>
         <CardContent className="space-y-4">
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
             <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Importar Estrategia (ZIP o YAML)</p>
@@ -1420,7 +1420,7 @@ export default function StrategiesPage() {
               <Input
                 value={strategySearch}
                 onChange={(e) => setStrategySearch(e.target.value)}
-                placeholder="ID, nombre, versiÃ³n, tag o nota"
+                placeholder="ID, nombre, versión, tag o nota"
               />
             </div>
             <div>
@@ -1469,7 +1469,7 @@ export default function StrategiesPage() {
                 <Button variant="outline" className="h-7 px-2 text-[11px]" disabled={strategySafePage <= 1} onClick={() => setStrategyPage((p) => Math.max(1, p - 1))}>
                   Anterior
                 </Button>
-                <span className="text-slate-300">PÃ¡g. {strategySafePage}/{strategyTotalPages}</span>
+                <span className="text-slate-300">Pág. {strategySafePage}/{strategyTotalPages}</span>
                 <Button variant="outline" className="h-7 px-2 text-[11px]" disabled={strategySafePage >= strategyTotalPages} onClick={() => setStrategyPage((p) => Math.min(strategyTotalPages, p + 1))}>
                   Siguiente
                 </Button>
@@ -1549,14 +1549,14 @@ export default function StrategiesPage() {
                   </TH>
                   <TH>Nombre</TH>
                   <TH>ID</TH>
-                  <TH>VersiÃ³n</TH>
+                  <TH>Versión</TH>
                   <TH>Origen</TH>
                   <TH>Estado</TH>
-                  <TH>âœ… Trading</TH>
-                  <TH>ðŸ§  Aprendizaje</TH>
-                  <TH>â­ Principal</TH>
+                  <TH>✓ Trading</TH>
+                  <TH>🧠 Aprendizaje</TH>
+                  <TH>⭐ Principal</TH>
                   <TH>Primaria por modo</TH>
-                  <TH>Ãšltimo backtest</TH>
+                  <TH>Último backtest</TH>
                   <TH>Winrate / Trades</TH>
                   <TH>Expectancy</TH>
                   <TH>Notas</TH>
@@ -1648,7 +1648,7 @@ export default function StrategiesPage() {
                           Seleccionar
                         </Button>
                         <Button size="sm" variant="outline" className="hidden h-6 px-2 text-[11px]" onClick={() => pick(row)}>
-                          RÃ©gimen
+                          Régimen
                         </Button>
                         <Button size="sm" variant="secondary" className="hidden" disabled={role !== "admin"} onClick={() => runAction(row.id, row.enabled ? "disable" : "enable")}>
                           {row.enabled ? "Deshabilitar" : "Habilitar"}
@@ -1669,7 +1669,7 @@ export default function StrategiesPage() {
                           Archivar
                         </Button>
                         <details className="rounded border border-slate-700 bg-slate-950/70 px-2 py-0.5 text-[11px] text-slate-200">
-                          <summary className="cursor-pointer select-none leading-6">MÃ¡s</summary>
+                          <summary className="cursor-pointer select-none leading-6">Más</summary>
                           <div className="mt-2 grid min-w-[170px] gap-1">
                             <Button size="sm" variant="outline" className="h-7 justify-start px-2 text-[11px]" disabled={role !== "admin"} onClick={() => runAction(row.id, row.enabled ? "disable" : "enable")}>
                               {row.enabled ? "Deshabilitar" : "Habilitar"}
@@ -1702,7 +1702,7 @@ export default function StrategiesPage() {
                 {!strategyRowsPage.length ? (
                   <TR>
                     <TD colSpan={15} className="py-4 text-center text-xs text-slate-400">
-                      No hay estrategias para estos filtros. AjustÃ¡ bÃºsqueda/estado/origen.
+                      No hay estrategias para estos filtros. Ajustá búsqueda/estado/origen.
                     </TD>
                   </TR>
                 ) : null}
@@ -1789,7 +1789,7 @@ export default function StrategiesPage() {
                 <Table>
                   <THead>
                     <TR>
-                      <TH>RÃ©gimen</TH>
+                      <TH>Régimen</TH>
                       <TH>Trades</TH>
                       <TH>Winrate</TH>
                       <TH>Expectancy</TH>
@@ -1816,7 +1816,7 @@ export default function StrategiesPage() {
                 </Table>
               </div>
               <p className="text-[11px] text-slate-400">
-                Fuente de rÃ©gimen: {selectedRegimeKpis.regime_rule_source || "heurÃ­stico"}.
+                Fuente de régimen: {selectedRegimeKpis.regime_rule_source || "heurístico"}.
               </p>
             </div>
           ) : null}
@@ -1824,9 +1824,9 @@ export default function StrategiesPage() {
       </Card>
 
       <Card>
-        <CardTitle>AutoBot / Aprendizaje (OpciÃ³n B)</CardTitle>
+        <CardTitle>AutoBot / Aprendizaje (Opción B)</CardTitle>
         <CardDescription>
-          Pool de estrategias para aprendizaje, mÃ©tricas agregadas y sugerencias del bot (requieren aprobaciÃ³n humana).
+          Pool de estrategias para aprendizaje, métricas agregadas y sugerencias del bot (requieren aprobación humana).
         </CardDescription>
         <CardContent className="space-y-4">
           <div className="grid gap-3 md:grid-cols-2">
@@ -1834,7 +1834,7 @@ export default function StrategiesPage() {
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Bot principal (pool actual)</p>
                 <Badge variant={learningStatus?.enabled ? "success" : "warn"}>
-                  {learningStatus?.enabled ? `ON Â· ${String(learningStatus?.mode || "OFF").toUpperCase()}` : "OFF"}
+                  {learningStatus?.enabled ? `ON · ${String(learningStatus?.mode || "OFF").toUpperCase()}` : "OFF"}
                 </Badge>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
@@ -1865,8 +1865,8 @@ export default function StrategiesPage() {
                 </Button>
               </div>
               <p className="mt-2 text-[11px] text-slate-400">
-                Selector: {learningStatus?.selector_algo || "-"} Â· RÃ©gimen actual: {learningStatus?.regime || "-"}.
-                {" "}Las propuestas no aplican LIVE automÃ¡ticamente (OpciÃ³n B).
+                Selector: {learningStatus?.selector_algo || "-"} · Régimen actual: {learningStatus?.regime || "-"}.
+                {" "}Las propuestas no aplican LIVE automáticamente (Opción B).
               </p>
               {learningStatus?.warnings?.length ? (
                 <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-200">
@@ -1903,16 +1903,16 @@ export default function StrategiesPage() {
                             {row.enabled_for_trading ?? row.enabled ? <Badge variant="success">Trading</Badge> : null}
                           </div>
                         </div>
-                        <p className="mt-1 text-[11px] text-slate-400">{row.id} Â· v{row.version}</p>
+                        <p className="mt-1 text-[11px] text-slate-400">{row.id} · v{row.version}</p>
                         <p className="mt-1 text-[11px] text-slate-300">
-                          Trades: <strong>{kpi?.trade_count ?? 0}</strong> Â· WinRate: <strong>{fmtPct(kpi?.winrate ?? 0)}</strong> Â· Sharpe: <strong>{fmtNum(kpi?.sharpe ?? 0)}</strong>
+                          Trades: <strong>{kpi?.trade_count ?? 0}</strong> · WinRate: <strong>{fmtPct(kpi?.winrate ?? 0)}</strong> · Sharpe: <strong>{fmtNum(kpi?.sharpe ?? 0)}</strong>
                         </p>
                       </div>
                     );
                   })
                 ) : (
                   <div className="rounded border border-slate-800 bg-slate-950/50 p-2 text-xs text-slate-400">
-                    No hay estrategias seleccionadas todavÃ­a. MarcÃ¡ Trading / Aprendizaje / Principal en la tabla de la izquierda.
+                    No hay estrategias seleccionadas todavía. Marcá Trading / Aprendizaje / Principal en la tabla de la izquierda.
                   </div>
                 )}
               </div>
@@ -1936,10 +1936,10 @@ export default function StrategiesPage() {
                         <div>
                           <p className="font-semibold text-slate-100">
                             {topStrategy?.name || rec.active_strategy_id || "Sin estrategia"}{" "}
-                            <span className="text-slate-400">Â· {rec.mode || "-"}</span>
+                            <span className="text-slate-400">· {rec.mode || "-"}</span>
                           </p>
                           <p className="text-[11px] text-slate-400">
-                            {rec.id} Â· {rec.recommendation_source || "runtime"} Â· {rec.created_at ? new Date(rec.created_at).toLocaleString() : "sin fecha"}
+                            {rec.id} · {rec.recommendation_source || "runtime"} · {rec.created_at ? new Date(rec.created_at).toLocaleString() : "sin fecha"}
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
@@ -1990,7 +1990,7 @@ export default function StrategiesPage() {
                 })
               ) : (
                 <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-400">
-                  TodavÃ­a no hay sugerencias del bot. ActivÃ¡ Aprendizaje en Settings y usÃ¡ â€œRecomendar ahoraâ€ para generar propuestas.
+                  Todavía no hay sugerencias del bot. Activá Aprendizaje en Settings y usá “Recomendar ahora” para generar propuestas.
                 </div>
               )}
             </div>
