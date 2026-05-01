@@ -1,5 +1,33 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-05-01
+
+### RTLOPS-103 - QA/UI layout de charts del dashboard
+- Se corrigen warnings Recharts de build/prerender agregando `initialDimension` en `ResponsiveContainer`.
+- Pantallas alcanzadas:
+  - `Execution`;
+  - `Portfolio`;
+  - `Risk`;
+  - `Backtests`.
+- Resultado:
+  - `npm run build` pasa sin warnings `width(-1)` / `height(-1)`.
+- Limites:
+  - no toca datos, contratos API, backend, Vercel, Railway, Next/PostCSS, package files ni PR #51;
+  - lint focalizado sigue exponiendo errores preexistentes no relacionados en `backtests` y `portfolio`.
+
+### RTLOPS-101 - parking tecnico controlado
+- Se deja registrado que PR #51 no se abandona:
+  - sigue tecnicamente validada por audit/build/typecheck/prebuilt preview;
+  - Vercel Git Integration automatico sigue bloqueado por finalizacion externa;
+  - el prebuilt preview queda como evidencia temporal, no como cierre de RTLOPS-101.
+- Triggers de retomada:
+  - Vercel Git Integration pasa;
+  - Vercel/Community responde;
+  - PR #51 bloquea otro bloque;
+  - antes de release/canary/staging serio/produccion;
+  - despues de 5 PRs mergeadas o 7 dias;
+  - si reaparece la vulnerabilidad en `npm audit`.
+
 ## 2026-04-30
 
 ### RTLOPS-102 - QA/UI mojibake cleanup dashboard

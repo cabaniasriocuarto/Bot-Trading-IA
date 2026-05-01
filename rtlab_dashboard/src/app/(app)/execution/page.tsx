@@ -2047,7 +2047,13 @@ export default function ExecutionPage() {
           <CardTitle>Snapshot de Calidad de Ejecucion</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
+              <ResponsiveContainer
+                width="100%"
+                height="100%"
+                minWidth={0}
+                minHeight={280}
+                initialDimension={{ width: 960, height: 280 }}
+              >
                 <BarChart data={qualityBars}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="metric" tick={{ fill: "#94a3b8", fontSize: 10 }} interval={0} />
@@ -2067,7 +2073,13 @@ export default function ExecutionPage() {
           <CardTitle>Traza de Latencia y Spread</CardTitle>
           <CardContent>
             <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
+              <ResponsiveContainer
+                width="100%"
+                height="100%"
+                minWidth={0}
+                minHeight={280}
+                initialDimension={{ width: 960, height: 280 }}
+              >
                 <LineChart data={latencySeries}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: "Tiempo / muestra", position: "insideBottom", offset: -5, fill: "#94a3b8", fontSize: 11 }} />
