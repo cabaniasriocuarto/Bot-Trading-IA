@@ -902,11 +902,11 @@ export default function SettingsPage() {
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-300">
             <p className="font-semibold text-slate-200">Perfil de riesgo: {learning.risk_profile?.risk_profile || "medium"}</p>
             <p>
-              PAPER: {learning.risk_profile?.paper?.risk_per_trade_pct ?? 0.5}% por trade | max pÃ©rdida diaria{" "}
+              PAPER: {learning.risk_profile?.paper?.risk_per_trade_pct ?? 0.5}% por trade | max pérdida diaria{" "}
               {learning.risk_profile?.paper?.max_daily_loss_pct ?? 3}% | max DD {learning.risk_profile?.paper?.max_drawdown_pct ?? 15}%
             </p>
             <p>
-              LIVE inicial: {learning.risk_profile?.live_initial?.risk_per_trade_pct ?? 0.25}% por trade | max pÃ©rdida diaria{" "}
+              LIVE inicial: {learning.risk_profile?.live_initial?.risk_per_trade_pct ?? 0.25}% por trade | max pérdida diaria{" "}
               {learning.risk_profile?.live_initial?.max_daily_loss_pct ?? 2}% | max DD {learning.risk_profile?.live_initial?.max_drawdown_pct ?? 10}% |
               max posiciones {learning.risk_profile?.max_positions ?? 10} | penaliza corr &gt;{" "}
               {learning.risk_profile?.correlation_penalty_threshold ?? 0.75}
