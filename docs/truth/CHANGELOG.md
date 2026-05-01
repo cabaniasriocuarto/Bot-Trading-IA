@@ -2,6 +2,20 @@
 
 ## 2026-05-01
 
+### RTLOPS-104 - QA/UI lint Backtests y Portfolio
+- Se limpian errores ESLint preexistentes acotados:
+  - `react/no-unescaped-entities` en `Backtests`;
+  - `react-hooks/purity` por `Date.now()` durante render en `Portfolio`.
+- Se preserva comportamiento funcional:
+  - el cooldown de cierre total sigue siendo client-side;
+  - no se cambian endpoints, contratos ni datos.
+- Validacion:
+  - lint focalizado Backtests/Portfolio PASS;
+  - `npm run typecheck` PASS;
+  - `npm run build` PASS.
+- Limite honesto:
+  - `npm run lint` repo-wide sigue fallando por `alerts/page.tsx`, fuera de alcance y pendiente como deuda separada.
+
 ### RTLOPS-103 - QA/UI layout de charts del dashboard
 - Se corrigen warnings Recharts de build/prerender agregando `initialDimension` en `ResponsiveContainer`.
 - Pantallas alcanzadas:

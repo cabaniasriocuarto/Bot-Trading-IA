@@ -19,6 +19,7 @@ export default function PortfolioPage() {
   const [portfolio, setPortfolio] = useState<PortfolioSnapshot | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [cooldownUntil, setCooldownUntil] = useState<number>(0);
+  const [cooldownNow, setCooldownNow] = useState<number>(0);
 
   const refresh = async () => {
     const [pos, pf, tr] = await Promise.all([
@@ -32,8 +33,17 @@ export default function PortfolioPage() {
   };
 
   useEffect(() => {
+    // Portfolio snapshot is loaded from the API after the client session is ready.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (!cooldownUntil) return;
+
+    const timer = window.setInterval(() => setCooldownNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
 
   const corr = useMemo(() => {
     const symbols = [...new Set([...positions.map((x) => x.symbol), "BTC/USDT", "ETH/USDT", "SOL/USDT"])];
@@ -48,7 +58,7 @@ export default function PortfolioPage() {
     );
   }, [positions]);
 
-  const onCooldown = Date.now() < cooldownUntil;
+  const onCooldown = cooldownUntil > 0 && cooldownNow < cooldownUntil;
 
   return (
     <div className="space-y-4">
