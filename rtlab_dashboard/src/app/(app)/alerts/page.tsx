@@ -81,6 +81,8 @@ export default function AlertsLogsPage() {
   }, [buildQuery]);
 
   useEffect(() => {
+    // Alerts/logs are hydrated from the API once the client filters are ready.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, [refresh]);
 

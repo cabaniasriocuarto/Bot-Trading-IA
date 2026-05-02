@@ -1,6 +1,22 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-05-01
+Fecha de actualizacion: 2026-05-02
+
+## RTLOPS-105 - QA/UI lint Alerts - 2026-05-02
+
+- Estado real:
+  - se crea `RTLOPS-105` para limpiar el error ESLint restante en `Alerts`;
+  - se documenta y acota la carga inicial client-side de alertas/logs para cumplir `react-hooks/set-state-in-effect`;
+  - `npm run lint` repo-wide queda en PASS.
+- Alcance:
+  - solo `rtlab_dashboard/src/app/(app)/alerts/page.tsx`;
+  - no cambia comportamiento funcional, contratos API, backend, Vercel, Railway, Next/PostCSS, package files ni workflows;
+  - no toca PR #51 ni abre RTLOPS-69 Slice 3.
+- Validacion:
+  - lint focalizado de `Alerts` -> PASS;
+  - `npm run lint` -> PASS;
+  - `npm run typecheck` -> PASS;
+  - `npm run build` -> PASS.
 
 ## RTLOPS-104 - QA/UI lint Backtests y Portfolio - 2026-05-01
 

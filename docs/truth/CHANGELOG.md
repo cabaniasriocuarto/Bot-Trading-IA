@@ -1,5 +1,20 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-05-02
+
+### RTLOPS-105 - QA/UI lint Alerts
+- Se limpia el error ESLint restante en `Alerts`.
+- Cambio aplicado:
+  - se documenta y acota el fetch inicial client-side de alertas/logs con una supresion puntual de `react-hooks/set-state-in-effect`;
+  - no se cambia el comportamiento funcional ni los contratos API.
+- Validacion:
+  - lint focalizado `Alerts` PASS;
+  - `npm run lint` PASS;
+  - `npm run typecheck` PASS;
+  - `npm run build` PASS.
+- Limites:
+  - no toca PR #51, Vercel, Railway, backend, Next/PostCSS, package files, workflows ni RTLOPS-69 Slice 3.
+
 ## 2026-05-01
 
 ### RTLOPS-104 - QA/UI lint Backtests y Portfolio
