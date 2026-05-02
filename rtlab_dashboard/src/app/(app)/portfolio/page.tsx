@@ -41,7 +41,15 @@ export default function PortfolioPage() {
   useEffect(() => {
     if (!cooldownUntil) return;
 
-    const timer = window.setInterval(() => setCooldownNow(Date.now()), 1000);
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      if (now >= cooldownUntil) {
+        setCooldownUntil(0);
+        setCooldownNow(0);
+        return;
+      }
+      setCooldownNow(now);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [cooldownUntil]);
 
@@ -74,7 +82,9 @@ export default function PortfolioPage() {
               const ok2 = window.confirm("Segunda confirmacion: ejecutar cierre total ahora?");
               if (!ok2) return;
               await apiPost("/api/v1/control/close-all");
-              setCooldownUntil(Date.now() + 10_000);
+              const now = Date.now();
+              setCooldownNow(now);
+              setCooldownUntil(now + 10_000);
               await refresh();
             }}
           >
