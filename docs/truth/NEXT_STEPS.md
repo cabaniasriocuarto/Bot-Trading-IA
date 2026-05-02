@@ -1,6 +1,64 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-04-30
+Fecha: 2026-05-02
+
+## RTLOPS-105 - QA/UI lint Alerts - 2026-05-02
+- [x] Crear issue `RTLOPS-105` bajo RTLOPS-69.
+- [x] Crear rama `feature/qa-ui-lint-alerts` desde `origin/main`.
+- [x] Corregir error ESLint restante en `Alerts`.
+- [x] Validar:
+  - `npx eslint "src/app/(app)/alerts/page.tsx"`;
+  - `npm run lint`;
+  - `npm run typecheck`;
+  - `npm run build`.
+- [ ] Abrir PR contra `main`.
+- [ ] Mantener separado de RTLOPS-101/PR #51, Vercel, Railway, backend, package files y RTLOPS-69 Slice 3.
+
+## RTLOPS-104 - QA/UI lint Backtests y Portfolio - 2026-05-01
+- [x] Crear issue `RTLOPS-104` bajo RTLOPS-69.
+- [x] Crear rama `feature/qa-ui-lint-backtests-portfolio` desde `origin/main`.
+- [x] Corregir errores ESLint en:
+  - `Backtests`;
+  - `Portfolio`.
+- [x] Validar:
+  - lint focalizado Backtests/Portfolio;
+  - `npm run typecheck`;
+  - `npm run build`.
+- [x] Registrar deuda separada:
+  - `npm run lint` repo-wide sigue fallando por `alerts/page.tsx`.
+- [ ] Abrir PR contra `main`.
+- [ ] Mantener separado de RTLOPS-101/PR #51, Vercel, Railway, backend, package files y RTLOPS-69 Slice 3.
+
+## RTLOPS-103 - QA/UI layout charts dashboard - 2026-05-01
+- [x] Crear issue `RTLOPS-103` bajo RTLOPS-69.
+- [x] Crear rama `feature/qa-ui-dashboard-layout-charts` desde `origin/main`.
+- [x] Corregir warnings Recharts `width(-1)` / `height(-1)` con dimensiones iniciales explicitas.
+- [x] Validar:
+  - `npm run typecheck`;
+  - `npm run build`.
+- [x] Ejecutar lint focalizado sobre archivos tocados:
+  - falla por errores preexistentes no relacionados en `backtests` y `portfolio`;
+  - no se corrigen en este bloque para no mezclar dominios.
+- [ ] Abrir PR contra `main`.
+- [ ] No mezclar con RTLOPS-101/PR #51:
+  - no refrescar ni mergear PR #51;
+  - no tocar Vercel settings;
+  - no cambiar Next/PostCSS ni package files.
+
+## RTLOPS-101 - parking tecnico controlado - 2026-05-01
+- [x] Mantener PR #51 abierta y sin tocar en este bloque.
+- [x] Registrar triggers de retomada:
+  - Vercel Git Integration empieza a pasar;
+  - Vercel/Community responde con solucion concreta;
+  - PR #51 bloquea otro bloque real de producto;
+  - antes de cualquier release/canary/staging serio/produccion;
+  - despues de 5 PRs mergeadas a `main` o 7 dias corridos;
+  - si `npm audit` vuelve a mostrar la vulnerabilidad corregida por PR #51.
+- [ ] Proxima decision de release:
+  - esperar Vercel/Community;
+  - seguir QA sobre prebuilt preview;
+  - merge controlado documentado;
+  - mantener prebuilt como preview temporal oficial.
 
 ## RTLOPS-101 - PR #51 refreshed + prebuilt PASS - 2026-04-30
 - [x] Resolver freno tecnico por rama local divergida:

@@ -1,6 +1,72 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-04-30
+Fecha de actualizacion: 2026-05-02
+
+## RTLOPS-105 - QA/UI lint Alerts - 2026-05-02
+
+- Estado real:
+  - se crea `RTLOPS-105` para limpiar el error ESLint restante en `Alerts`;
+  - se documenta y acota la carga inicial client-side de alertas/logs para cumplir `react-hooks/set-state-in-effect`;
+  - `npm run lint` repo-wide queda en PASS.
+- Alcance:
+  - solo `rtlab_dashboard/src/app/(app)/alerts/page.tsx`;
+  - no cambia comportamiento funcional, contratos API, backend, Vercel, Railway, Next/PostCSS, package files ni workflows;
+  - no toca PR #51 ni abre RTLOPS-69 Slice 3.
+- Validacion:
+  - lint focalizado de `Alerts` -> PASS;
+  - `npm run lint` -> PASS;
+  - `npm run typecheck` -> PASS;
+  - `npm run build` -> PASS.
+
+## RTLOPS-104 - QA/UI lint Backtests y Portfolio - 2026-05-01
+
+- Estado real:
+  - se crea `RTLOPS-104` para limpiar errores ESLint preexistentes en `Backtests` y `Portfolio`;
+  - se corrige el copy JSX con comillas sin escapar en `Backtests`;
+  - se evita llamar `Date.now()` durante render en `Portfolio` y se mantiene el cooldown con reloj de cliente acotado.
+- Alcance:
+  - solo frontend en `rtlab_dashboard`;
+  - solo `backtests/page.tsx` y `portfolio/page.tsx`;
+  - no cambia contratos API, backend, Vercel, Railway, Next/PostCSS, package files ni workflows;
+  - no toca PR #51 ni abre RTLOPS-69 Slice 3.
+- Validacion:
+  - lint focalizado de `Backtests` y `Portfolio` -> PASS;
+  - `npm run typecheck` -> PASS;
+  - `npm run build` -> PASS;
+  - `npm run lint` repo-wide sigue fallando por `alerts/page.tsx`, deuda fuera de alcance de este bloque.
+
+## RTLOPS-103 - QA/UI layout de charts del dashboard - 2026-05-01
+
+- Estado real:
+  - se crea `RTLOPS-103` para corregir warnings visibles de Recharts/layout durante el build del dashboard;
+  - se agregan dimensiones iniciales explicitas a `ResponsiveContainer` en charts de `Execution`, `Portfolio`, `Risk` y `Backtests`;
+  - el build deja de emitir los warnings `width(-1)` / `height(-1)` de Recharts.
+- Alcance:
+  - solo layout/SSR sizing de charts;
+  - no cambia contratos API, datos, comportamiento funcional ni logica de trading;
+  - no toca PR #51, Vercel settings, Railway, backend, Next/PostCSS, package files ni workflows de deploy.
+- Validacion:
+  - `npm run typecheck` -> PASS;
+  - `npm run build` -> PASS sin warnings Recharts;
+  - lint focalizado disponible, pero falla por errores preexistentes no relacionados en `backtests` y `portfolio`.
+
+## RTLOPS-101 - parking tecnico controlado - 2026-05-01
+
+- Estado real:
+  - PR #51 sigue `OPEN / MERGEABLE / UNSTABLE`;
+  - head conocido validado: `81109fce0f4c5885553e761cc0489d0f03ee53f4`;
+  - `npm ci`, `npm audit --audit-level=moderate`, `npm run build`, `npm run typecheck` y prebuilt preview deploy pasaron;
+  - Vercel Git Integration automatico sigue fallando por un issue externo de finalizacion/path sobre `routes-manifest-deterministic.json`.
+- Evidencia temporal:
+  - prebuilt preview READY: `https://bot-trading-avvj2m1wc-ranquel-tech-lab.vercel.app`;
+  - deployment ID: `dpl_H5FvyppBfXAbZSCQgdgro5PwH8n1`.
+- Triggers obligatorios para retomar RTLOPS-101:
+  - Vercel Git Integration empieza a pasar;
+  - Vercel/Community responde con una solucion concreta;
+  - PR #51 bloquea otro bloque real de producto;
+  - antes de cualquier release/canary/staging serio/produccion;
+  - despues de 5 PRs mergeadas a `main` o 7 dias corridos, lo que ocurra primero;
+  - si `npm audit` vuelve a mostrar la vulnerabilidad que PR #51 corregia.
 
 ## RTLOPS-101 - PR #51 refreshed con main + prebuilt PASS - 2026-04-30
 

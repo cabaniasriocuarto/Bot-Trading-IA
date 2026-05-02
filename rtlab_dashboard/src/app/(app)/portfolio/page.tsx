@@ -19,6 +19,7 @@ export default function PortfolioPage() {
   const [portfolio, setPortfolio] = useState<PortfolioSnapshot | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [cooldownUntil, setCooldownUntil] = useState<number>(0);
+  const [cooldownNow, setCooldownNow] = useState<number>(0);
 
   const refresh = async () => {
     const [pos, pf, tr] = await Promise.all([
@@ -32,8 +33,25 @@ export default function PortfolioPage() {
   };
 
   useEffect(() => {
+    // Portfolio snapshot is loaded from the API after the client session is ready.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (!cooldownUntil) return;
+
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      if (now >= cooldownUntil) {
+        setCooldownUntil(0);
+        setCooldownNow(0);
+        return;
+      }
+      setCooldownNow(now);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
 
   const corr = useMemo(() => {
     const symbols = [...new Set([...positions.map((x) => x.symbol), "BTC/USDT", "ETH/USDT", "SOL/USDT"])];
@@ -48,7 +66,7 @@ export default function PortfolioPage() {
     );
   }, [positions]);
 
-  const onCooldown = Date.now() < cooldownUntil;
+  const onCooldown = cooldownUntil > 0 && cooldownNow < cooldownUntil;
 
   return (
     <div className="space-y-4">
@@ -64,7 +82,9 @@ export default function PortfolioPage() {
               const ok2 = window.confirm("Segunda confirmacion: ejecutar cierre total ahora?");
               if (!ok2) return;
               await apiPost("/api/v1/control/close-all");
-              setCooldownUntil(Date.now() + 10_000);
+              const now = Date.now();
+              setCooldownNow(now);
+              setCooldownUntil(now + 10_000);
               await refresh();
             }}
           >
@@ -90,7 +110,13 @@ export default function PortfolioPage() {
           <CardContent>
             {(portfolio?.exposure_by_symbol || []).length ? (
               <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
+                <ResponsiveContainer
+                  width="100%"
+                  height="100%"
+                  minWidth={0}
+                  minHeight={280}
+                  initialDimension={{ width: 960, height: 280 }}
+                >
                   <BarChart data={portfolio?.exposure_by_symbol || []}>
                     <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                     <XAxis dataKey="symbol" tick={{ fill: "#94a3b8", fontSize: 11 }} />

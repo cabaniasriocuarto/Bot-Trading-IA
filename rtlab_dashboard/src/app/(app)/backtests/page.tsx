@@ -3497,7 +3497,13 @@ export default function BacktestsPage() {
                       <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Equity (si hay detalle legacy)</p>
                       {deepCompareEquityOverlay.length ? (
                         <div className="h-56">
-                          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={224}>
+                          <ResponsiveContainer
+                            width="100%"
+                            height="100%"
+                            minWidth={0}
+                            minHeight={224}
+                            initialDimension={{ width: 960, height: 224 }}
+                          >
                             <LineChart data={deepCompareEquityOverlay}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                               <XAxis dataKey="index" stroke="#94a3b8" />
@@ -3525,7 +3531,13 @@ export default function BacktestsPage() {
                       <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Drawdown (si hay detalle legacy)</p>
                       {deepCompareDdOverlay.length ? (
                         <div className="h-56">
-                          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={224}>
+                          <ResponsiveContainer
+                            width="100%"
+                            height="100%"
+                            minWidth={0}
+                            minHeight={224}
+                            initialDimension={{ width: 960, height: 224 }}
+                          >
                             <LineChart data={deepCompareDdOverlay}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                               <XAxis dataKey="index" stroke="#94a3b8" />
@@ -5033,7 +5045,7 @@ export default function BacktestsPage() {
                 </div>
               ) : (
                 <p className="text-xs text-slate-400">
-                  Todavia no hay jobs Beast. Usa "Ejecutar en Modo Bestia" para encolar batches grandes (si la policy lo permite).
+                  Todavia no hay jobs Beast. Usa &quot;Ejecutar en Modo Bestia&quot; para encolar batches grandes (si la policy lo permite).
                 </p>
               )}
             </div>
@@ -5146,7 +5158,13 @@ export default function BacktestsPage() {
                   <CardDescription>Performance acumulada de la corrida seleccionada.</CardDescription>
                   <CardContent>
                     <div className="h-64 w-full">
-                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={250}>
+                      <ResponsiveContainer
+                        width="100%"
+                        height="100%"
+                        minWidth={0}
+                        minHeight={250}
+                        initialDimension={{ width: 960, height: 250 }}
+                      >
                         <LineChart data={focusRunChartData}>
                           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                           <XAxis
@@ -5170,7 +5188,13 @@ export default function BacktestsPage() {
                   <CardDescription>Perfil de riesgo de la corrida seleccionada.</CardDescription>
                   <CardContent>
                     <div className="h-64 w-full">
-                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={250}>
+                      <ResponsiveContainer
+                        width="100%"
+                        height="100%"
+                        minWidth={0}
+                        minHeight={250}
+                        initialDimension={{ width: 960, height: 250 }}
+                      >
                         <LineChart data={focusRunChartData}>
                           <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                           <XAxis
@@ -5405,7 +5429,13 @@ export default function BacktestsPage() {
           <CardDescription>Superposicion de corridas seleccionadas (2 a 5).</CardDescription>
           <CardContent>
             <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
+              <ResponsiveContainer
+                width="100%"
+                height="100%"
+                minWidth={0}
+                minHeight={280}
+                initialDimension={{ width: 960, height: 280 }}
+              >
                 <LineChart data={overlayData}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis
@@ -5432,7 +5462,13 @@ export default function BacktestsPage() {
           <CardDescription>Comparacion del perfil de riesgo entre corridas.</CardDescription>
           <CardContent>
             <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={280}>
+              <ResponsiveContainer
+                width="100%"
+                height="100%"
+                minWidth={0}
+                minHeight={280}
+                initialDimension={{ width: 960, height: 280 }}
+              >
                 <LineChart data={overlayDDData}>
                   <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
                   <XAxis

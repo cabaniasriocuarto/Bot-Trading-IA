@@ -1,5 +1,62 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-05-02
+
+### RTLOPS-105 - QA/UI lint Alerts
+- Se limpia el error ESLint restante en `Alerts`.
+- Cambio aplicado:
+  - se documenta y acota el fetch inicial client-side de alertas/logs con una supresion puntual de `react-hooks/set-state-in-effect`;
+  - no se cambia el comportamiento funcional ni los contratos API.
+- Validacion:
+  - lint focalizado `Alerts` PASS;
+  - `npm run lint` PASS;
+  - `npm run typecheck` PASS;
+  - `npm run build` PASS.
+- Limites:
+  - no toca PR #51, Vercel, Railway, backend, Next/PostCSS, package files, workflows ni RTLOPS-69 Slice 3.
+
+## 2026-05-01
+
+### RTLOPS-104 - QA/UI lint Backtests y Portfolio
+- Se limpian errores ESLint preexistentes acotados:
+  - `react/no-unescaped-entities` en `Backtests`;
+  - `react-hooks/purity` por `Date.now()` durante render en `Portfolio`.
+- Se preserva comportamiento funcional:
+  - el cooldown de cierre total sigue siendo client-side;
+  - no se cambian endpoints, contratos ni datos.
+- Validacion:
+  - lint focalizado Backtests/Portfolio PASS;
+  - `npm run typecheck` PASS;
+  - `npm run build` PASS.
+- Limite honesto:
+  - `npm run lint` repo-wide sigue fallando por `alerts/page.tsx`, fuera de alcance y pendiente como deuda separada.
+
+### RTLOPS-103 - QA/UI layout de charts del dashboard
+- Se corrigen warnings Recharts de build/prerender agregando `initialDimension` en `ResponsiveContainer`.
+- Pantallas alcanzadas:
+  - `Execution`;
+  - `Portfolio`;
+  - `Risk`;
+  - `Backtests`.
+- Resultado:
+  - `npm run build` pasa sin warnings `width(-1)` / `height(-1)`.
+- Limites:
+  - no toca datos, contratos API, backend, Vercel, Railway, Next/PostCSS, package files ni PR #51;
+  - lint focalizado sigue exponiendo errores preexistentes no relacionados en `backtests` y `portfolio`.
+
+### RTLOPS-101 - parking tecnico controlado
+- Se deja registrado que PR #51 no se abandona:
+  - sigue tecnicamente validada por audit/build/typecheck/prebuilt preview;
+  - Vercel Git Integration automatico sigue bloqueado por finalizacion externa;
+  - el prebuilt preview queda como evidencia temporal, no como cierre de RTLOPS-101.
+- Triggers de retomada:
+  - Vercel Git Integration pasa;
+  - Vercel/Community responde;
+  - PR #51 bloquea otro bloque;
+  - antes de release/canary/staging serio/produccion;
+  - despues de 5 PRs mergeadas o 7 dias;
+  - si reaparece la vulnerabilidad en `npm audit`.
+
 ## 2026-04-30
 
 ### RTLOPS-101 - PR #51 refresh seguro + prebuilt PASS
