@@ -5045,7 +5045,7 @@ export default function BacktestsPage() {
                 </div>
               ) : (
                 <p className="text-xs text-slate-400">
-                  Todavia no hay jobs Beast. Usa "Ejecutar en Modo Bestia" para encolar batches grandes (si la policy lo permite).
+                  Todavia no hay jobs Beast. Usa &quot;Ejecutar en Modo Bestia&quot; para encolar batches grandes (si la policy lo permite).
                 </p>
               )}
             </div>

@@ -2,6 +2,23 @@
 
 Fecha de actualizacion: 2026-05-01
 
+## RTLOPS-104 - QA/UI lint Backtests y Portfolio - 2026-05-01
+
+- Estado real:
+  - se crea `RTLOPS-104` para limpiar errores ESLint preexistentes en `Backtests` y `Portfolio`;
+  - se corrige el copy JSX con comillas sin escapar en `Backtests`;
+  - se evita llamar `Date.now()` durante render en `Portfolio` y se mantiene el cooldown con reloj de cliente acotado.
+- Alcance:
+  - solo frontend en `rtlab_dashboard`;
+  - solo `backtests/page.tsx` y `portfolio/page.tsx`;
+  - no cambia contratos API, backend, Vercel, Railway, Next/PostCSS, package files ni workflows;
+  - no toca PR #51 ni abre RTLOPS-69 Slice 3.
+- Validacion:
+  - lint focalizado de `Backtests` y `Portfolio` -> PASS;
+  - `npm run typecheck` -> PASS;
+  - `npm run build` -> PASS;
+  - `npm run lint` repo-wide sigue fallando por `alerts/page.tsx`, deuda fuera de alcance de este bloque.
+
 ## RTLOPS-103 - QA/UI layout de charts del dashboard - 2026-05-01
 
 - Estado real:

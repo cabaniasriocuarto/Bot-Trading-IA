@@ -2,6 +2,21 @@
 
 Fecha: 2026-05-01
 
+## RTLOPS-104 - QA/UI lint Backtests y Portfolio - 2026-05-01
+- [x] Crear issue `RTLOPS-104` bajo RTLOPS-69.
+- [x] Crear rama `feature/qa-ui-lint-backtests-portfolio` desde `origin/main`.
+- [x] Corregir errores ESLint en:
+  - `Backtests`;
+  - `Portfolio`.
+- [x] Validar:
+  - lint focalizado Backtests/Portfolio;
+  - `npm run typecheck`;
+  - `npm run build`.
+- [x] Registrar deuda separada:
+  - `npm run lint` repo-wide sigue fallando por `alerts/page.tsx`.
+- [ ] Abrir PR contra `main`.
+- [ ] Mantener separado de RTLOPS-101/PR #51, Vercel, Railway, backend, package files y RTLOPS-69 Slice 3.
+
 ## RTLOPS-103 - QA/UI layout charts dashboard - 2026-05-01
 - [x] Crear issue `RTLOPS-103` bajo RTLOPS-69.
 - [x] Crear rama `feature/qa-ui-dashboard-layout-charts` desde `origin/main`.
