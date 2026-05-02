@@ -1,6 +1,18 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-05-01
+Fecha: 2026-05-02
+
+## RTLOPS-105 - QA/UI lint Alerts - 2026-05-02
+- [x] Crear issue `RTLOPS-105` bajo RTLOPS-69.
+- [x] Crear rama `feature/qa-ui-lint-alerts` desde `origin/main`.
+- [x] Corregir error ESLint restante en `Alerts`.
+- [x] Validar:
+  - `npx eslint "src/app/(app)/alerts/page.tsx"`;
+  - `npm run lint`;
+  - `npm run typecheck`;
+  - `npm run build`.
+- [ ] Abrir PR contra `main`.
+- [ ] Mantener separado de RTLOPS-101/PR #51, Vercel, Railway, backend, package files y RTLOPS-69 Slice 3.
 
 ## RTLOPS-104 - QA/UI lint Backtests y Portfolio - 2026-05-01
 - [x] Crear issue `RTLOPS-104` bajo RTLOPS-69.
