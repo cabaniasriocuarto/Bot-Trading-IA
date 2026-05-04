@@ -2,6 +2,22 @@
 
 ## 2026-05-04
 
+### RTLOPS-109A - workflow QA protegido con Vercel Automation Bypass
+- Se agrega workflow administrativo manual `RTLOPS-109A Protected Preview QA`.
+- Motivo:
+  - `RTLOPS-108` no pudo auditar pantallas internas porque el preview READY esta protegido por Vercel Deployment Protection / SSO;
+  - el secret `VERCEL_AUTOMATION_BYPASS_SECRET` existe en GitHub Actions y debe consumirse sin exponer valor.
+- El workflow:
+  - corre solo por `workflow_dispatch`;
+  - acepta `preview_url`, `deployment_id`, `run_http_probe` y `run_playwright`;
+  - valida presencia del secret sin imprimirlo;
+  - usa headers `x-vercel-protection-bypass` y `x-vercel-set-bypass-cookie`;
+  - reporta status codes y detecta si sigue apareciendo Vercel SSO;
+  - ejecuta Playwright read-only solo si el probe confirma que la app carga.
+- Limites:
+  - no deploya, no usa Vercel CLI, no modifica settings y no toca producto;
+  - `RTLOPS-106` sigue abierto.
+
 ### RTLOPS-107 - Prebuilt Preview Deploy oficial temporal
 - Se agrega workflow administrativo manual `RTLOPS-107 Prebuilt Preview Deploy`.
 - Motivo:

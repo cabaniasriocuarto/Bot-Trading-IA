@@ -2,6 +2,28 @@
 
 Fecha: 2026-05-04
 
+## RTLOPS-109A - workflow manual QA protegido con Vercel Automation Bypass - 2026-05-04
+- [x] Crear issue `RTLOPS-110` bajo `RTLOPS-109`.
+- [x] Crear rama `feature/rtlops-109a-protected-preview-qa` desde `origin/main`.
+- [x] Agregar workflow manual-only `.github/workflows/rtlops109a-protected-preview-qa.yml`.
+- [x] Consumir `VERCEL_AUTOMATION_BYPASS_SECRET` solo como secret de GitHub Actions, sin imprimir valor.
+- [x] Agregar probe HTTP read-only con:
+  - `x-vercel-protection-bypass`;
+  - `x-vercel-set-bypass-cookie`.
+- [x] Agregar navegacion Playwright read-only condicionada a que la app cargue.
+- [ ] Abrir PR administrativa contra `main`.
+- [ ] Despues de mergear, ejecutar:
+  - `Actions -> RTLOPS-109A Protected Preview QA`;
+  - `preview_url=https://bot-trading-dx9ujndv1-ranquel-tech-lab.vercel.app`;
+  - `run_http_probe=true`;
+  - `run_playwright=true`.
+- [ ] Clasificar resultado:
+  - app carga y se puede auditar;
+  - sigue 401/SSO;
+  - access inconcluso;
+  - hallazgos reales de dashboard.
+- [ ] Mantener `RTLOPS-106` abierto.
+
 ## RTLOPS-107 - Prebuilt Preview Deploy oficial temporal - 2026-05-04
 - [x] Crear issue `RTLOPS-107` bajo `RTLOPS-106`.
 - [x] Crear rama `feature/rtlops-107-prebuilt-preview-workflow` desde `origin/main`.
