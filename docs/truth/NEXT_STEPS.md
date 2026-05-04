@@ -1,6 +1,32 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-05-02
+Fecha: 2026-05-04
+
+## RTLOPS-107 - Prebuilt Preview Deploy oficial temporal - 2026-05-04
+- [x] Crear issue `RTLOPS-107` bajo `RTLOPS-106`.
+- [x] Crear rama `feature/rtlops-107-prebuilt-preview-workflow` desde `origin/main`.
+- [x] Agregar workflow manual-only `.github/workflows/rtlops107-prebuilt-preview-deploy.yml`.
+- [x] Mantener preview-only:
+  - input `vercel_target` solo acepta `preview`;
+  - no se usa `--prod`;
+  - no se usa `vercel promote`.
+- [x] Validar antes del prebuilt deploy:
+  - `npm ci`;
+  - `npm audit --audit-level=moderate`;
+  - `npm run lint`;
+  - `npm run typecheck`;
+  - `npm run build`;
+  - `npm run test:smoke:live-console`.
+- [ ] Abrir PR contra `main`.
+- [ ] Despues de mergear, ejecutar manualmente:
+  - `Actions -> RTLOPS-107 Prebuilt Preview Deploy`;
+  - `target_ref=main` o branch/SHA a validar;
+  - `run_prebuilt_deploy=true`;
+  - `vercel_target=preview`.
+- [ ] Mantener `RTLOPS-106` abierto:
+  - el workflow es workaround temporal;
+  - no corrige Vercel Git Integration;
+  - no tocar settings productivos sin respuesta/decision explicita.
 
 ## RTLOPS-105 - QA/UI lint Alerts - 2026-05-02
 - [x] Crear issue `RTLOPS-105` bajo RTLOPS-69.

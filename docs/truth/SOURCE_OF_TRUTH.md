@@ -1,6 +1,22 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-05-02
+Fecha de actualizacion: 2026-05-04
+
+## RTLOPS-107 - Prebuilt Preview Deploy oficial temporal - 2026-05-04
+
+- Estado real:
+  - se crea `RTLOPS-107` para formalizar un workflow administrativo de preview prebuilt mientras `RTLOPS-106` sigue abierto;
+  - `RTLOPS-106` reproduce el fallo de Vercel Git Integration en proyectos actuales y sandbox con `routes-manifest-deterministic.json`;
+  - el workaround temporal aceptado es `vercel build` + `vercel deploy --prebuilt --archive=tgz --target=preview`.
+- Alcance:
+  - workflow manual-only `RTLOPS-107 Prebuilt Preview Deploy`;
+  - acepta `target_ref` configurable y solo permite `vercel_target=preview`;
+  - valida `npm ci`, `npm audit --audit-level=moderate`, `npm run lint`, `npm run typecheck`, `npm run build` y `npm run test:smoke:live-console` antes del prebuilt deploy;
+  - publica URL/Deployment ID/estado en logs y artifact diagnostico.
+- Limites:
+  - es workaround operativo temporal, no fix definitivo de Vercel Git Integration;
+  - no toca codigo de producto, backend, Vercel settings productivos, Railway, produccion, branch protection, Next/PostCSS, package files ni RTLOPS-69 Slice 3;
+  - `RTLOPS-106` sigue abierto esperando respuesta Vercel/Community.
 
 ## RTLOPS-105 - QA/UI lint Alerts - 2026-05-02
 
