@@ -82,6 +82,13 @@ jobs:
           fi
           echo "FOUND secret: VERCEL_AUTOMATION_BYPASS_SECRET"
 
+      - name: Validate authenticated QA inputs
+        if: ${{ inputs.run_authenticated_qa && !inputs.run_http_probe }}
+        shell: bash
+        run: |
+          echo "::error::run_authenticated_qa=true requires run_http_probe=true because authenticated QA depends on HTTP probe access_status=app."
+          exit 1
+
       - name: Verify viewer QA secrets
         if: ${{ inputs.run_authenticated_qa }}
         shell: bash
