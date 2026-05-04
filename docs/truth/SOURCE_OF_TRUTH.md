@@ -2,6 +2,21 @@
 
 Fecha de actualizacion: 2026-05-04
 
+## RTLOPS-109A - QA protegido de preview con Vercel Automation Bypass - 2026-05-04
+
+- Estado real:
+  - se crea `RTLOPS-110` para instalar un workflow administrativo manual-only de QA read-only contra previews protegidos;
+  - `RTLOPS-108` quedo bloqueado porque el preview READY de `RTLOPS-107` responde `401` por Vercel Deployment Protection / SSO;
+  - `VERCEL_AUTOMATION_BYPASS_SECRET` existe como secret de GitHub Actions y solo puede consumirse dentro de un workflow.
+- Alcance:
+  - workflow `RTLOPS-109A Protected Preview QA`;
+  - usa headers oficiales `x-vercel-protection-bypass` y `x-vercel-set-bypass-cookie`;
+  - ejecuta probe HTTP read-only y, si la app carga, navegacion Playwright read-only de pantallas principales;
+  - sube artifact con resultados sin imprimir secretos.
+- Limites:
+  - no toca codigo de producto, backend, Vercel settings, Railway, produccion, package files, Next/PostCSS, branch protection ni RTLOPS-69 Slice 3;
+  - no cierra `RTLOPS-106`, que sigue abierto por la deuda externa de Vercel Git Integration.
+
 ## RTLOPS-107 - Prebuilt Preview Deploy oficial temporal - 2026-05-04
 
 - Estado real:

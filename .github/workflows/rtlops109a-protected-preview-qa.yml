@@ -1,0 +1,333 @@
+name: RTLOPS-109A Protected Preview QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview_url:
+        description: "Protected Vercel preview URL to inspect read-only"
+        required: true
+        default: "https://bot-trading-dx9ujndv1-ranquel-tech-lab.vercel.app"
+        type: string
+      deployment_id:
+        description: "Optional Vercel deployment ID for traceability"
+        required: false
+        default: "dpl_CQC5fTLEcd8965NpoE7xi9Y5ABRM"
+        type: string
+      run_http_probe:
+        description: "Run read-only HTTP probe with Vercel protection bypass headers"
+        required: true
+        default: true
+        type: boolean
+      run_playwright:
+        description: "Run read-only Playwright navigation after HTTP access is unblocked"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  protected-preview-qa:
+    name: Protected preview read-only QA
+    runs-on: ubuntu-latest
+    env:
+      PREVIEW_URL: ${{ inputs.preview_url }}
+      DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+      BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      REPORT_DIR: rtlab_dashboard/diagnostics/rtlops109a-protected-preview-qa
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: rtlab_dashboard/package-lock.json
+
+      - name: Prepare QA context
+        shell: bash
+        run: |
+          mkdir -p "${REPORT_DIR}"
+          {
+            echo "workflow=RTLOPS-109A Protected Preview QA"
+            echo "preview_url=${PREVIEW_URL}"
+            echo "deployment_id=${DEPLOYMENT_ID}"
+            echo "run_http_probe=${{ inputs.run_http_probe }}"
+            echo "run_playwright=${{ inputs.run_playwright }}"
+            echo "commit_sha=$(git rev-parse HEAD)"
+            echo "node=$(node -v)"
+            echo "npm=$(npm -v)"
+          } | tee "${REPORT_DIR}/runtime-context.log"
+
+      - name: Verify automation bypass secret
+        shell: bash
+        run: |
+          if [ -z "${BYPASS_SECRET}" ]; then
+            echo "::error::Missing required secret: VERCEL_AUTOMATION_BYPASS_SECRET"
+            exit 1
+          fi
+          echo "FOUND secret: VERCEL_AUTOMATION_BYPASS_SECRET"
+
+      - name: HTTP probe protected preview
+        id: http_probe
+        if: ${{ inputs.run_http_probe }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const baseUrl = process.env.PREVIEW_URL;
+          const reportDir = process.env.REPORT_DIR;
+          const bypassSecret = process.env.BYPASS_SECRET;
+          const paths = [
+            "/",
+            "/login",
+            "/strategies",
+            "/portfolio",
+            "/backtests",
+            "/execution",
+            "/alerts",
+            "/settings",
+            "/risk",
+            "/trades",
+            "/api/v1/health",
+          ];
+
+          const headers = {
+            "user-agent": "RTLOPS-109A-protected-preview-qa",
+            "x-vercel-protection-bypass": bypassSecret,
+            "x-vercel-set-bypass-cookie": "true",
+          };
+
+          function classifyBody(body) {
+            const lower = body.toLowerCase();
+            return {
+              vercelSso:
+                lower.includes("vercel.com/sso-api") ||
+                lower.includes("log in to vercel") ||
+                lower.includes("continue with github") ||
+                lower.includes("_vercel_sso_nonce"),
+              appLike:
+                lower.includes("__next") ||
+                lower.includes("rtlab") ||
+                lower.includes("strategy console") ||
+                lower.includes("bot trading") ||
+                lower.includes("iniciar sesion") ||
+                lower.includes("iniciar sesión"),
+            };
+          }
+
+          async function probe(targetPath) {
+            const url = new URL(targetPath, baseUrl).toString();
+            const response = await fetch(url, {
+              headers,
+              redirect: "manual",
+            });
+            const body = await response.text();
+            const bodyClass = classifyBody(body);
+            return {
+              path: targetPath,
+              status: response.status,
+              redirected: response.status >= 300 && response.status < 400,
+              location: response.headers.get("location") || "",
+              contentType: response.headers.get("content-type") || "",
+              hasSetCookie: Boolean(response.headers.get("set-cookie")),
+              vercelSso: bodyClass.vercelSso,
+              appLike: bodyClass.appLike,
+              bodySample: body.replace(/\s+/g, " ").slice(0, 180),
+            };
+          }
+
+          (async () => {
+            const results = [];
+            for (const targetPath of paths) {
+              try {
+                results.push(await probe(targetPath));
+              } catch (error) {
+                results.push({
+                  path: targetPath,
+                  status: "ERROR",
+                  error: String(error && error.message ? error.message : error),
+                });
+              }
+            }
+
+            const root = results.find((item) => item.path === "/");
+            const login = results.find((item) => item.path === "/login");
+            const blockedBySso = results.some((item) => item.vercelSso) || [root, login].some((item) => item && item.status === 401);
+            const appLoaded = [root, login].some((item) => item && item.appLike && !item.vercelSso && item.status !== 401);
+            const accessStatus = blockedBySso ? "blocked" : appLoaded ? "app" : "inconclusive";
+
+            fs.mkdirSync(reportDir, { recursive: true });
+            fs.writeFileSync(path.join(reportDir, "http-probe.json"), JSON.stringify({ accessStatus, results }, null, 2));
+
+            console.log("RTLOPS-109A HTTP probe summary");
+            for (const result of results) {
+              console.log(`${result.path}\tstatus=${result.status}\tvercel_sso=${Boolean(result.vercelSso)}\tapp_like=${Boolean(result.appLike)}`);
+            }
+            console.log(`access_status=${accessStatus}`);
+
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `access_status=${accessStatus}\n`);
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Mark HTTP probe skipped
+        id: http_probe_skipped
+        if: ${{ !inputs.run_http_probe }}
+        shell: bash
+        run: |
+          echo "access_status=skipped" >> "${GITHUB_OUTPUT}"
+          echo "HTTP probe skipped by input." | tee "${REPORT_DIR}/http-probe-skipped.log"
+
+      - name: Install dashboard dependencies for Playwright
+        if: ${{ inputs.run_playwright && steps.http_probe.outputs.access_status == 'app' }}
+        working-directory: rtlab_dashboard
+        run: npm ci
+
+      - name: Install Playwright browser
+        if: ${{ inputs.run_playwright && steps.http_probe.outputs.access_status == 'app' }}
+        working-directory: rtlab_dashboard
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright read-only protected preview QA
+        if: ${{ inputs.run_playwright && steps.http_probe.outputs.access_status == 'app' }}
+        working-directory: rtlab_dashboard
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { chromium } = require("@playwright/test");
+
+          const baseUrl = process.env.PREVIEW_URL;
+          const reportDir = path.join("diagnostics", "rtlops109a-protected-preview-qa");
+          const headers = {
+            "x-vercel-protection-bypass": process.env.BYPASS_SECRET,
+            "x-vercel-set-bypass-cookie": "true",
+          };
+          const paths = [
+            "/",
+            "/login",
+            "/strategies",
+            "/portfolio",
+            "/backtests",
+            "/execution",
+            "/alerts",
+            "/settings",
+            "/risk",
+            "/trades",
+          ];
+
+          function isVercelSso(text) {
+            const lower = text.toLowerCase();
+            return lower.includes("log in to vercel") || lower.includes("vercel.com/sso-api") || lower.includes("continue with github");
+          }
+
+          (async () => {
+            fs.mkdirSync(reportDir, { recursive: true });
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage({
+              viewport: { width: 1440, height: 1000 },
+              extraHTTPHeaders: headers,
+            });
+            const consoleMessages = [];
+            const failedRequests = [];
+            const apiResponses = [];
+
+            page.on("console", (message) => {
+              if (["error", "warning"].includes(message.type())) {
+                consoleMessages.push({
+                  type: message.type(),
+                  text: message.text().slice(0, 240),
+                });
+              }
+            });
+            page.on("requestfailed", (request) => {
+              failedRequests.push({
+                url: request.url(),
+                failure: request.failure()?.errorText || "",
+              });
+            });
+            page.on("response", (response) => {
+              const url = response.url();
+              if (url.includes("/api/") || response.status() >= 400) {
+                apiResponses.push({
+                  url,
+                  status: response.status(),
+                  contentType: response.headers()["content-type"] || "",
+                });
+              }
+            });
+
+            const results = [];
+            for (const targetPath of paths) {
+              const response = await page.goto(new URL(targetPath, baseUrl).toString(), {
+                waitUntil: "domcontentloaded",
+                timeout: 45_000,
+              });
+              await page.waitForTimeout(750);
+              const body = await page.locator("body").innerText({ timeout: 3_000 }).catch(() => "");
+              const title = await page.title().catch(() => "");
+              const h1 = await page.locator("h1").first().textContent({ timeout: 1_000 }).catch(() => "");
+              results.push({
+                path: targetPath,
+                status: response ? response.status() : "NO_RESPONSE",
+                title,
+                h1: h1 || "",
+                vercelSso: isVercelSso(body),
+                bodySample: body.replace(/\s+/g, " ").slice(0, 260),
+              });
+            }
+
+            await browser.close();
+            const report = { results, consoleMessages, failedRequests, apiResponses };
+            fs.writeFileSync(path.join(reportDir, "playwright-readonly.json"), JSON.stringify(report, null, 2));
+
+            console.log("RTLOPS-109A Playwright read-only summary");
+            for (const result of results) {
+              console.log(`${result.path}\tstatus=${result.status}\tvercel_sso=${result.vercelSso}\th1=${result.h1}`);
+            }
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Print QA summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## RTLOPS-109A Protected Preview QA Summary"
+            echo "preview_url=${PREVIEW_URL}"
+            echo "deployment_id=${DEPLOYMENT_ID}"
+            echo "commit_sha=$(git rev-parse HEAD)"
+            echo "http_access_status=${{ steps.http_probe.outputs.access_status }}"
+            echo "run_http_probe=${{ inputs.run_http_probe }}"
+            echo "run_playwright=${{ inputs.run_playwright }}"
+          } | tee "${REPORT_DIR}/summary.log"
+
+      - name: Upload protected preview QA artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtlops109a-protected-preview-qa
+          path: rtlab_dashboard/diagnostics/rtlops109a-protected-preview-qa/
+          if-no-files-found: warn
+
+      - name: Fail if access is still blocked
+        if: ${{ inputs.run_http_probe && steps.http_probe.outputs.access_status != 'app' }}
+        shell: bash
+        run: |
+          echo "::error::Protected preview did not load the app. access_status=${{ steps.http_probe.outputs.access_status }}"
+          exit 1
