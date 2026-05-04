@@ -68,6 +68,27 @@ Fecha de actualizacion: 2026-05-02
   - despues de 5 PRs mergeadas a `main` o 7 dias corridos, lo que ocurra primero;
   - si `npm audit` vuelve a mostrar la vulnerabilidad que PR #51 corregia.
 
+## RTLOPS-101 - PR #51 refreshed con main + prebuilt PASS - 2026-04-30
+
+- Resultado confirmado:
+  - se preservo el merge local accidental en una rama backup local no pusheada;
+  - se creo una rama limpia desde `origin/feature/rtlops-101-dashboard-npm-audit-fix`;
+  - se integro `origin/main` sin conflictos;
+  - PR #51 quedo actualizada en `0498db52e54d59381ab14187724407976c42bc49`.
+- Validacion local:
+  - `npm ci` -> PASS, `found 0 vulnerabilities`;
+  - `npm audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`;
+  - `npm run build` -> PASS con warnings Recharts ya conocidos/no fatales.
+- Validacion prebuilt:
+  - workflow manual `RTLOPS-101 Prebuilt Preview Deploy` run `25149961717` -> `success`;
+  - preview generado: `https://bot-trading-f34mynb26-ranquel-tech-lab.vercel.app`;
+  - deployment id inspeccionado: `dpl_8oR67BHgi2jZ2LpV6Dxh6ExPLPRK`;
+  - estado Vercel prebuilt: `Ready`.
+- Estado:
+  - Vercel Git Integration automatico de PR #51 sigue fallando en los 4 proyectos y queda clasificado como problema externo/finalization;
+  - PR #51 sigue abierta/no mergeada;
+  - RTLOPS-101 sigue In Progress hasta decision explicita de merge/cierre.
+
 ## RTLOPS-102 - QA/UI mojibake cleanup dashboard - 2026-04-30
 
 - Estado real:
@@ -153,6 +174,33 @@ Fecha de actualizacion: 2026-05-02
   - mergear esta PR administrativa;
   - ejecutar `Actions -> RTLOPS-101 Diagnose Vercel Build` con `target_ref=feature/rtlops-101-dashboard-npm-audit-fix` y `run_vercel_build=true`;
   - clasificar si falla npm/build Linux, falta el manifest deterministic, `vercel build` reproduce ENOENT, genera output correcto o faltan secrets.
+
+## RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright - 2026-04-29
+
+- Estado real confirmado en esta rama:
+  - se corrige la deuda `npm audit` detectada despues de `RTLOPS-100`;
+  - baseline inicial: `npm.cmd audit --audit-level=moderate` -> FAIL con 9 vulnerabilities, 3 moderate y 6 high;
+  - baseline final: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
+- Cambios de dependencias frontend:
+  - `next` pasa de `16.1.6` a `16.2.3`;
+  - `eslint-config-next` pasa de `16.1.6` a `16.2.3`;
+  - `npm audit fix` sin `--force` actualiza transitivas de tooling como `vite`, `rollup`, `picomatch`, `minimatch`, `brace-expansion`, `flatted` y `ajv`;
+  - se agrega override acotado `postcss=8.5.12` para evitar el `postcss<8.5.10` anidado bajo `next`.
+- Regla de seguridad:
+  - no se uso `npm audit fix --force`;
+  - no se toco backend, UI funcional, Playwright smoke, Railway/Vercel config, preserve ni ramas historicas.
+- Validacion real del slice:
+  - `npm.cmd audit --audit-level=moderate` -> PASS;
+  - `npm.cmd run typecheck` -> PASS despues de limpiar `.next` regenerable por tipos viejos de Next;
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS;
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test;
+  - `npm.cmd run build` -> PASS.
+- Limite honesto:
+  - `next@16.2.4` fue descartado para este PR porque los previews Vercel fallaban en finalizacion/output con `ENOENT` sobre `.next/routes-manifest-deterministic.json`;
+  - `next@16.1.6` fue descartado porque reintroduce una vulnerabilidad `high` directa en `next`;
+  - `next@16.2.3` queda como version intermedia localmente validada; falta validar previews Vercel despues del push;
+  - el smoke/build siguen emitiendo warnings no fatales de Recharts por dimensiones en entorno headless;
+  - `RTLOPS-69` y `RTLOPS-68` siguen parciales.
 
 ## RTLOPS-100 / RTLOPS-69 Slice 2 - smoke visual Playwright de consola read-only - 2026-04-29
 

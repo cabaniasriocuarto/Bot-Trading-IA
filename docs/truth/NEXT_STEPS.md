@@ -60,6 +60,29 @@ Fecha: 2026-05-02
   - merge controlado documentado;
   - mantener prebuilt como preview temporal oficial.
 
+## RTLOPS-101 - PR #51 refreshed + prebuilt PASS - 2026-04-30
+- [x] Resolver freno tecnico por rama local divergida:
+  - backup local creado para `7291d74`;
+  - rama limpia creada desde `origin/feature/rtlops-101-dashboard-npm-audit-fix`;
+  - `origin/main` integrado sin conflictos;
+  - push no destructivo a PR #51.
+- [x] Validar localmente:
+  - `npm ci` -> PASS;
+  - `npm audit --audit-level=moderate` -> PASS;
+  - `npm run build` -> PASS.
+- [x] Ejecutar workflow oficial temporal:
+  - `RTLOPS-101 Prebuilt Preview Deploy` run `25149961717` -> PASS;
+  - preview generado: `https://bot-trading-f34mynb26-ranquel-tech-lab.vercel.app`.
+- [ ] Decision pendiente para PR #51:
+  - A) esperar Vercel/Community;
+  - B) seguir QA en rama con prebuilt preview;
+  - C) merge controlado documentado;
+  - D) mantener prebuilt como preview temporal oficial.
+- [ ] No mergear PR #51 sin decision explicita:
+  - Vercel Git Integration automatico sigue FAIL externo;
+  - RTLOPS-101 sigue In Progress;
+  - RTLOPS-69 y RTLOPS-68 no cambian.
+
 ## RTLOPS-102 - QA/UI mojibake cleanup dashboard - 2026-04-30
 - [x] Crear issue `RTLOPS-102` bajo RTLOPS-69.
 - [x] Crear rama `feature/qa-ui-encoding-mojibake-cleanup` desde `origin/main`.
@@ -69,7 +92,7 @@ Fecha: 2026-05-02
   - `npm run typecheck`;
   - `npx eslint "src/app/(app)/settings/page.tsx" "src/app/(app)/strategies/page.tsx"`;
   - `npm run build`.
-- [ ] Abrir PR contra `main`.
+- [x] Abrir y mergear PR #58 contra `main`.
 - [ ] Mantener separado de RTLOPS-101/PR #51:
   - no tocar Vercel;
   - no tocar Railway;
@@ -138,6 +161,24 @@ Fecha: 2026-05-02
 - [ ] RTLOPS-101 sigue parcial/In Progress:
   - el workflow no resuelve todavia el ERROR remoto de Vercel;
   - `RTLOPS-69` y `RTLOPS-68` no cambian.
+
+## RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright - 2026-04-29
+- [x] Deuda `npm audit` del dashboard resuelta:
+  - baseline inicial: 9 vulnerabilities, 3 moderate y 6 high;
+  - baseline final: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
+- [x] Fix aplicado sin `--force`:
+  - `next` / `eslint-config-next` actualizados a `16.2.3`;
+  - transitivas de tooling actualizadas por `npm audit fix` normal;
+  - override acotado `postcss=8.5.12` para cubrir el `postcss` anidado bajo `next`.
+- [x] Validacion real:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
+  - `npm.cmd run build` -> PASS
+- [ ] Pendiente no bloqueante:
+  - validar previews Vercel de PR #51 con `next@16.2.3`; no mergear hasta que esten verdes;
+  - warnings Recharts por dimensiones en headless/build siguen clasificados como no fatales;
+  - `RTLOPS-69` sigue parcial y no debe abrir acciones live sin bloque separado.
 
 ## RTLOPS-100 / RTLOPS-69 Slice 2 - Playwright smoke visual de consola read-only - 2026-04-29
 - [x] Smoke visual minimo:

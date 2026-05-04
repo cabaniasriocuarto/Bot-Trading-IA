@@ -59,6 +59,25 @@
 
 ## 2026-04-30
 
+### RTLOPS-101 - PR #51 refresh seguro + prebuilt PASS
+- Se resolvio el freno tecnico por rama local divergida:
+  - merge local accidental preservado en backup local no pusheado;
+  - rama limpia creada desde `origin/feature/rtlops-101-dashboard-npm-audit-fix`;
+  - `origin/main` integrado sin conflictos;
+  - PR #51 actualizada a `0498db52e54d59381ab14187724407976c42bc49`.
+- Validacion local:
+  - `npm ci` -> PASS, 0 vulnerabilities;
+  - `npm audit --audit-level=moderate` -> PASS, 0 vulnerabilities;
+  - `npm run build` -> PASS.
+- Validacion workflow:
+  - `RTLOPS-101 Prebuilt Preview Deploy` run `25149961717` -> `success`;
+  - preview generado: `https://bot-trading-f34mynb26-ranquel-tech-lab.vercel.app`;
+  - `vercel inspect` reporto deployment `dpl_8oR67BHgi2jZ2LpV6Dxh6ExPLPRK` en estado `Ready`.
+- Limite honesto:
+  - los checks automaticos Vercel Git Integration de PR #51 siguen fallando;
+  - no se mergeo PR #51 ni se uso bypass;
+  - no se tocaron dependencias, codigo de producto, Vercel settings ni production deploy.
+
 ### RTLOPS-102 - QA/UI mojibake cleanup dashboard
 - Se corrigen textos visibles con mojibake en dashboard:
   - labels de versión, régimen, pérdida, página y último;
@@ -127,6 +146,30 @@
   - no resuelve todavia el ERROR de Vercel: deja el diagnostico Linux listo para ejecutar despues del merge administrativo.
 
 ## 2026-04-29
+
+### RTLOPS-101 / RTLOPS-69 QA - npm audit dashboard post Playwright
+- Cambio real aplicado en dependencias frontend:
+  - `rtlab_dashboard/package.json`
+    - actualiza `next` de `16.1.6` a `16.2.3`;
+    - actualiza `eslint-config-next` de `16.1.6` a `16.2.3`;
+    - agrega override acotado `postcss=8.5.12`.
+  - `rtlab_dashboard/package-lock.json`
+    - actualiza transitivas seguras via `npm audit fix` sin `--force`, incluyendo `vite`, `rollup`, `picomatch`, `minimatch`, `brace-expansion`, `flatted` y `ajv`.
+- Resultado de seguridad:
+  - antes: `npm.cmd audit --audit-level=moderate` -> FAIL, 9 vulnerabilities, 3 moderate y 6 high;
+  - despues: `npm.cmd audit --audit-level=moderate` -> PASS, `found 0 vulnerabilities`.
+- Tests corridos:
+  - `npm.cmd run typecheck` -> PASS
+  - `npm.cmd run lint -- playwright.config.ts tests/playwright/live-console-readonly.spec.ts` -> PASS
+  - `npm.cmd run test:smoke:live-console` -> PASS, 1 test
+  - `npm.cmd run build` -> PASS
+- Limite honesto:
+  - `next@16.2.4` quedo descartado porque los previews Vercel llegaban a build completo pero fallaban en finalizacion/output con `ENOENT` sobre `.next/routes-manifest-deterministic.json`;
+  - `next@16.1.6` quedo descartado porque reintroduce una vulnerabilidad `high` directa en `next`;
+  - `next@16.2.3` queda validado localmente y pendiente de confirmacion en previews Vercel;
+  - no se uso `npm audit fix --force`;
+  - no se toco backend, UI funcional, Playwright smoke, Railway/Vercel, preserve ni PRs historicas;
+  - quedan warnings Recharts no fatales en headless/build.
 
 ### RTLOPS-100 / RTLOPS-69 Slice 2 - Playwright smoke visual de consola read-only
 - Cambio real aplicado en QA/frontend:
