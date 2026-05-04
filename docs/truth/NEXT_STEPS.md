@@ -2,6 +2,31 @@
 
 Fecha: 2026-05-04
 
+## RTLOPS-111 - ajustar redirect/cookie del QA protegido - 2026-05-04
+- [x] Crear issue `RTLOPS-111` bajo `RTLOPS-110`.
+- [x] Crear rama `feature/rtlops-111-protected-preview-qa-cookie-redirect` desde `origin/main`.
+- [x] Confirmar run previo `25301512052`:
+  - secret encontrado sin imprimir valor;
+  - rutas en `307`;
+  - `Set-Cookie=true`;
+  - `vercel_sso=false`;
+  - Playwright omitido por `access_status=inconclusive`.
+- [x] Ajustar probe HTTP para seguir redirect/cookie sin imprimir secretos.
+- [x] Mantener Playwright read-only condicionado a `access_status=app`.
+- [ ] Abrir PR administrativa contra `main`.
+- [ ] Despues de mergear, ejecutar:
+  - `Actions -> RTLOPS-109A Protected Preview QA`;
+  - `preview_url=https://bot-trading-dx9ujndv1-ranquel-tech-lab.vercel.app`;
+  - `deployment_id=dpl_CQC5fTLEcd8965NpoE7xi9Y5ABRM`;
+  - `run_http_probe=true`;
+  - `run_playwright=true`.
+- [ ] Clasificar resultado:
+  - app carga y Playwright corre;
+  - sigue inconcluso;
+  - queda bloqueado;
+  - aparecen hallazgos reales de dashboard.
+- [ ] Mantener `RTLOPS-106` abierto.
+
 ## RTLOPS-109A - workflow manual QA protegido con Vercel Automation Bypass - 2026-05-04
 - [x] Crear issue `RTLOPS-110` bajo `RTLOPS-109`.
 - [x] Crear rama `feature/rtlops-109a-protected-preview-qa` desde `origin/main`.
@@ -11,16 +36,16 @@ Fecha: 2026-05-04
   - `x-vercel-protection-bypass`;
   - `x-vercel-set-bypass-cookie`.
 - [x] Agregar navegacion Playwright read-only condicionada a que la app cargue.
-- [ ] Abrir PR administrativa contra `main`.
-- [ ] Despues de mergear, ejecutar:
+- [x] Abrir PR administrativa contra `main`.
+- [x] Despues de mergear, ejecutar:
   - `Actions -> RTLOPS-109A Protected Preview QA`;
   - `preview_url=https://bot-trading-dx9ujndv1-ranquel-tech-lab.vercel.app`;
   - `run_http_probe=true`;
   - `run_playwright=true`.
-- [ ] Clasificar resultado:
+- [x] Clasificar resultado:
   - app carga y se puede auditar;
   - sigue 401/SSO;
-  - access inconcluso;
+  - access inconcluso por `307` + `Set-Cookie` sin seguimiento de redirect/cookie;
   - hallazgos reales de dashboard.
 - [ ] Mantener `RTLOPS-106` abierto.
 

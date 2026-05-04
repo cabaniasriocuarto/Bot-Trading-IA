@@ -2,6 +2,21 @@
 
 Fecha de actualizacion: 2026-05-04
 
+## RTLOPS-111 - Redirect/cookie en QA protegido de preview - 2026-05-04
+
+- Estado real:
+  - se crea `RTLOPS-111` como follow-up de `RTLOPS-110`;
+  - el run `RTLOPS-109A Protected Preview QA` `25301512052` encontro el secret de bypass sin exponerlo;
+  - todas las rutas devolvieron `307` con `Set-Cookie=true`, `vercel_sso=false` y `access_status=inconclusive`.
+- Ajuste:
+  - el probe HTTP administrativo ahora mantiene un cookie jar en memoria;
+  - captura `Set-Cookie` sin imprimir valores;
+  - sigue redirects de Vercel Protection Bypass hasta obtener la respuesta final;
+  - clasifica `app` solo si obtiene HTML/app sin SSO.
+- Limites:
+  - no toca producto, backend, package files, Next/PostCSS, Vercel settings, Railway, produccion, branch protection, secrets ni RTLOPS-69 Slice 3;
+  - `RTLOPS-106` sigue abierto por la deuda externa de Vercel Git Integration.
+
 ## RTLOPS-109A - QA protegido de preview con Vercel Automation Bypass - 2026-05-04
 
 - Estado real:
