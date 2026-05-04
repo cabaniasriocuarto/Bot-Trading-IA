@@ -1,5 +1,23 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-05-04
+
+### RTLOPS-107 - Prebuilt Preview Deploy oficial temporal
+- Se agrega workflow administrativo manual `RTLOPS-107 Prebuilt Preview Deploy`.
+- Motivo:
+  - `RTLOPS-106` mantiene Vercel Git Integration bloqueado por finalization/path externo;
+  - el flujo prebuilt ya probo que el programa puede generar previews READY sin tocar produccion.
+- El workflow:
+  - corre solo por `workflow_dispatch`;
+  - acepta `target_ref`;
+  - solo permite `vercel_target=preview`;
+  - ejecuta `npm ci`, `npm audit`, lint, typecheck, build y smoke antes de `vercel build`;
+  - despliega con `vercel deploy --prebuilt --archive=tgz --target=preview`;
+  - registra URL, deployment ID y estado.
+- Limites:
+  - no toca producto, backend, Vercel settings, Railway, branch protection, Next/PostCSS ni package files;
+  - no reemplaza la investigacion de `RTLOPS-106`.
+
 ## 2026-05-02
 
 ### RTLOPS-105 - QA/UI lint Alerts

@@ -1,0 +1,236 @@
+name: RTLOPS-107 Prebuilt Preview Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: "Branch, tag, or SHA to deploy as a prebuilt Vercel preview"
+        required: true
+        default: "main"
+        type: string
+      run_prebuilt_deploy:
+        description: "Run vercel deploy --prebuilt as a preview deployment"
+        required: true
+        default: true
+        type: boolean
+      vercel_target:
+        description: "Vercel target environment. RTLOPS-107 allows preview only."
+        required: true
+        default: "preview"
+        type: choice
+        options:
+          - preview
+
+permissions:
+  contents: read
+
+jobs:
+  prebuilt-preview:
+    name: Validate and deploy prebuilt preview
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      DIAGNOSTIC_DIR: rtlab_dashboard/diagnostics/rtlops107-prebuilt
+
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: rtlab_dashboard/package-lock.json
+
+      - name: Prepare runtime context
+        shell: bash
+        run: |
+          mkdir -p "${DIAGNOSTIC_DIR}"
+          {
+            echo "workflow=RTLOPS-107 Prebuilt Preview Deploy"
+            echo "target_ref=${{ inputs.target_ref }}"
+            echo "vercel_target=${{ inputs.vercel_target }}"
+            echo "run_prebuilt_deploy=${{ inputs.run_prebuilt_deploy }}"
+            echo "git_sha=$(git rev-parse HEAD)"
+            echo "node=$(node -v)"
+            echo "npm=$(npm -v)"
+            echo "pwd=$(pwd)"
+          } | tee "${DIAGNOSTIC_DIR}/runtime-context.log"
+
+      - name: Enforce preview-only target
+        shell: bash
+        run: |
+          if [ "${{ inputs.vercel_target }}" != "preview" ]; then
+            echo "::error::RTLOPS-107 supports preview deployments only."
+            exit 1
+          fi
+
+      - name: Verify Vercel secrets
+        shell: bash
+        run: |
+          missing=0
+          for secret_name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [ -z "${!secret_name}" ]; then
+              echo "::error::Missing required secret: ${secret_name}"
+              missing=1
+            else
+              echo "FOUND secret: ${secret_name}"
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Install dashboard dependencies
+        working-directory: rtlab_dashboard
+        run: npm ci
+
+      - name: Audit dashboard dependencies
+        working-directory: rtlab_dashboard
+        run: npm audit --audit-level=moderate
+
+      - name: Lint dashboard
+        working-directory: rtlab_dashboard
+        run: npm run lint
+
+      - name: Typecheck dashboard
+        working-directory: rtlab_dashboard
+        run: npm run typecheck
+
+      - name: Build dashboard with Next
+        working-directory: rtlab_dashboard
+        run: npm run build
+
+      - name: Install Playwright browser for smoke
+        working-directory: rtlab_dashboard
+        run: npx playwright install --with-deps chromium
+
+      - name: Run live console smoke
+        working-directory: rtlab_dashboard
+        run: npm run test:smoke:live-console
+
+      - name: Inspect Next output
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "${DIAGNOSTIC_DIR}"
+          {
+            echo "## .next manifest checks"
+            for file in \
+              "rtlab_dashboard/.next/routes-manifest.json" \
+              "rtlab_dashboard/.next/routes-manifest-deterministic.json" \
+              "rtlab_dashboard/.next/required-server-files.json"; do
+              if [ -e "${file}" ]; then
+                echo "FOUND: ${file}"
+              else
+                echo "MISSING: ${file}"
+              fi
+            done
+            echo
+            echo "## .next top-level files"
+            find rtlab_dashboard/.next -maxdepth 2 -type f | sort | sed -n '1,240p' || true
+          } | tee "${DIAGNOSTIC_DIR}/next-output.log"
+
+      - name: Install Vercel CLI
+        shell: bash
+        run: |
+          npm install --global vercel@latest
+          vercel --version | tee "${DIAGNOSTIC_DIR}/vercel-version.log"
+
+      - name: Pull Vercel preview environment
+        shell: bash
+        run: |
+          vercel pull --yes --environment=preview --token="${VERCEL_TOKEN}" 2>&1 | tee "${DIAGNOSTIC_DIR}/vercel-pull.log"
+
+      - name: Build Vercel output from repo root
+        shell: bash
+        run: |
+          vercel build --yes --token="${VERCEL_TOKEN}" 2>&1 | tee "${DIAGNOSTIC_DIR}/vercel-build.log"
+
+      - name: Inspect Vercel output before deploy
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "${DIAGNOSTIC_DIR}"
+          {
+            echo "## .vercel/output checks"
+            for path in \
+              ".vercel/output/config.json" \
+              ".vercel/output/functions" \
+              ".vercel/output/static"; do
+              if [ -e "${path}" ]; then
+                echo "FOUND: ${path}"
+              else
+                echo "MISSING: ${path}"
+              fi
+            done
+            echo
+            echo "## .vercel/output listing"
+            find .vercel/output -maxdepth 4 -print | sort | sed -n '1,260p' || true
+          } | tee "${DIAGNOSTIC_DIR}/vercel-output.log"
+
+      - name: Deploy prebuilt preview
+        id: prebuilt_deploy
+        if: ${{ inputs.run_prebuilt_deploy }}
+        shell: bash
+        run: |
+          set -o pipefail
+          vercel deploy --prebuilt --archive=tgz --target=preview --token="${VERCEL_TOKEN}" 2>&1 | tee "${DIAGNOSTIC_DIR}/vercel-prebuilt-deploy.log"
+          deployment_url="$(grep -Eo 'https://[^[:space:]]+\.vercel\.app[^[:space:]]*' "${DIAGNOSTIC_DIR}/vercel-prebuilt-deploy.log" | tail -n 1 || true)"
+          if [ -z "${deployment_url}" ]; then
+            deployment_url="$(grep -Eo 'https://[^[:space:]]+' "${DIAGNOSTIC_DIR}/vercel-prebuilt-deploy.log" | tail -n 1 || true)"
+          fi
+          echo "deployment_url=${deployment_url}" | tee "${DIAGNOSTIC_DIR}/deployment-url.log"
+          echo "deployment_url=${deployment_url}" >> "${GITHUB_OUTPUT}"
+          if [ -z "${deployment_url}" ]; then
+            echo "::error::Prebuilt deploy finished without a parsed deployment URL"
+            exit 1
+          fi
+
+      - name: Record skipped prebuilt deploy
+        if: ${{ !inputs.run_prebuilt_deploy }}
+        shell: bash
+        run: |
+          echo "SKIPPED prebuilt deploy: run_prebuilt_deploy=false" | tee "${DIAGNOSTIC_DIR}/vercel-prebuilt-deploy.log"
+
+      - name: Inspect prebuilt deployment
+        id: inspect_prebuilt
+        if: always() && steps.prebuilt_deploy.outputs.deployment_url != ''
+        shell: bash
+        run: |
+          vercel inspect "${{ steps.prebuilt_deploy.outputs.deployment_url }}" --token="${VERCEL_TOKEN}" 2>&1 | tee "${DIAGNOSTIC_DIR}/vercel-inspect.log"
+          deployment_id="$(grep -E '^[[:space:]]*id[[:space:]]+' "${DIAGNOSTIC_DIR}/vercel-inspect.log" | awk '{print $2}' | head -n 1 || true)"
+          deployment_state="$(grep -E '^[[:space:]]*status[[:space:]]+' "${DIAGNOSTIC_DIR}/vercel-inspect.log" | awk '{$1=\"\"; sub(/^ /,\"\"); print}' | head -n 1 || true)"
+          echo "deployment_id=${deployment_id}" | tee "${DIAGNOSTIC_DIR}/deployment-id.log"
+          echo "deployment_state=${deployment_state}" | tee "${DIAGNOSTIC_DIR}/deployment-state.log"
+          echo "deployment_id=${deployment_id}" >> "${GITHUB_OUTPUT}"
+          echo "deployment_state=${deployment_state}" >> "${GITHUB_OUTPUT}"
+
+      - name: Print RTLOPS-107 summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## RTLOPS-107 Prebuilt Preview Summary"
+            echo "target_ref=${{ inputs.target_ref }}"
+            echo "commit_sha=$(git rev-parse HEAD)"
+            echo "vercel_target=${{ inputs.vercel_target }}"
+            echo "run_prebuilt_deploy=${{ inputs.run_prebuilt_deploy }}"
+            echo "deployment_url=${{ steps.prebuilt_deploy.outputs.deployment_url }}"
+            echo "deployment_id=${{ steps.inspect_prebuilt.outputs.deployment_id }}"
+            echo "deployment_state=${{ steps.inspect_prebuilt.outputs.deployment_state }}"
+          } | tee "${DIAGNOSTIC_DIR}/summary.log"
+
+      - name: Upload prebuilt diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtlops107-prebuilt-preview-diagnostics
+          path: rtlab_dashboard/diagnostics/rtlops107-prebuilt/
+          if-no-files-found: warn
