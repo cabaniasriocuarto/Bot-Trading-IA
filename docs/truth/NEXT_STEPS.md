@@ -2,6 +2,31 @@
 
 Fecha: 2026-05-04
 
+## RTLOPS-112 - QA autenticado read-only del preview protegido - 2026-05-04
+- [x] Confirmar que la app usa credenciales por env vars, no tabla de usuarios.
+- [x] Confirmar que QA debe usar rol `viewer`.
+- [x] Confirmar secrets de GitHub Actions:
+  - `VERCEL_AUTOMATION_BYPASS_SECRET`;
+  - `RTLAB_TEST_USER_EMAIL`;
+  - `RTLAB_TEST_USER_PASSWORD`.
+- [x] Crear rama `feature/rtlops-112-authenticated-readonly-qa` desde `origin/main`.
+- [x] Agregar modo manual `run_authenticated_qa` al workflow `RTLOPS-109A Protected Preview QA`.
+- [x] Agregar script QA autenticado read-only sin imprimir credenciales.
+- [ ] Abrir PR administrativa contra `main`.
+- [ ] Despues de mergear, ejecutar:
+  - `Actions -> RTLOPS-109A Protected Preview QA`;
+  - `preview_url=https://bot-trading-dx9ujndv1-ranquel-tech-lab.vercel.app`;
+  - `deployment_id=dpl_CQC5fTLEcd8965NpoE7xi9Y5ABRM`;
+  - `run_http_probe=true`;
+  - `run_playwright=true`;
+  - `run_authenticated_qa=true`.
+- [ ] Clasificar resultado autenticado:
+  - login viewer OK;
+  - APIs 200/403/401 esperadas por rol;
+  - guardrails Portfolio/Execution;
+  - bugs P0/P1/P2 si aparecen.
+- [ ] Mantener `RTLOPS-106` abierto.
+
 ## RTLOPS-111 - ajustar redirect/cookie del QA protegido - 2026-05-04
 - [x] Crear issue `RTLOPS-111` bajo `RTLOPS-110`.
 - [x] Crear rama `feature/rtlops-111-protected-preview-qa-cookie-redirect` desde `origin/main`.
