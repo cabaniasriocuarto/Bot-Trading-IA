@@ -2,6 +2,21 @@
 
 ## 2026-05-04
 
+### RTLOPS-111 - redirect/cookie en workflow QA protegido
+- Se ajusta el workflow administrativo `RTLOPS-109A Protected Preview QA`.
+- Motivo:
+  - el run `25301512052` consumio `VERCEL_AUTOMATION_BYPASS_SECRET` correctamente;
+  - Vercel ya no devolvio 401/SSO, pero todas las rutas quedaron en `307` con `Set-Cookie=true`;
+  - el probe anterior usaba redirect manual y no completaba el ciclo cookie/redirect.
+- Cambio:
+  - se agrega cookie jar en memoria dentro del probe HTTP;
+  - se capturan cookies sin imprimir valores;
+  - se siguen redirects antes de clasificar `app`, `blocked` o `inconclusive`;
+  - Playwright sigue condicionado a que el probe confirme app real.
+- Limites:
+  - no toca producto, backend, package files, Next/PostCSS, Vercel settings, Railway, produccion ni branch protection;
+  - `RTLOPS-106` sigue abierto.
+
 ### RTLOPS-109A - workflow QA protegido con Vercel Automation Bypass
 - Se agrega workflow administrativo manual `RTLOPS-109A Protected Preview QA`.
 - Motivo:

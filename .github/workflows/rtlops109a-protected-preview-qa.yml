@@ -84,6 +84,7 @@ jobs:
           const path = require("node:path");
 
           const baseUrl = process.env.PREVIEW_URL;
+          const allowedOrigin = new URL(baseUrl).origin;
           const reportDir = process.env.REPORT_DIR;
           const bypassSecret = process.env.BYPASS_SECRET;
           const paths = [
@@ -105,6 +106,72 @@ jobs:
             "x-vercel-protection-bypass": bypassSecret,
             "x-vercel-set-bypass-cookie": "true",
           };
+          const maxRedirects = 5;
+          const cookieJar = new Map();
+
+          function readSetCookies(response) {
+            if (typeof response.headers.getSetCookie === "function") {
+              return response.headers.getSetCookie();
+            }
+            const singleHeader = response.headers.get("set-cookie");
+            return singleHeader ? [singleHeader] : [];
+          }
+
+          function storeCookies(response) {
+            const setCookies = readSetCookies(response);
+            for (const cookie of setCookies) {
+              const pair = cookie.split(";", 1)[0];
+              const separatorIndex = pair.indexOf("=");
+              if (separatorIndex > 0) {
+                cookieJar.set(pair.slice(0, separatorIndex), pair.slice(separatorIndex + 1));
+              }
+            }
+            return setCookies.length;
+          }
+
+          function cookieHeader() {
+            return Array.from(cookieJar.entries())
+              .map(([name, value]) => `${name}=${value}`)
+              .join("; ");
+          }
+
+          function sanitizedCookieNames() {
+            return Array.from(cookieJar.keys()).sort();
+          }
+
+          function requestHeaders() {
+            const cookie = cookieHeader();
+            return cookie
+              ? {
+                  ...headers,
+                  cookie,
+                }
+              : headers;
+          }
+
+          function resolveSameOriginRedirect(currentUrl, location) {
+            try {
+              const nextUrl = new URL(location, currentUrl);
+              if (nextUrl.origin !== allowedOrigin) {
+                return {
+                  sameOrigin: false,
+                  locationOrigin: nextUrl.origin,
+                };
+              }
+              return {
+                sameOrigin: true,
+                nextUrl: nextUrl.toString(),
+                locationOrigin: nextUrl.origin,
+                locationPath: `${nextUrl.pathname}${nextUrl.search}`,
+              };
+            } catch {
+              return {
+                sameOrigin: false,
+                invalidLocation: true,
+                locationOrigin: "INVALID_LOCATION",
+              };
+            }
+          }
 
           function classifyBody(body) {
             const lower = body.toLowerCase();
@@ -124,23 +191,80 @@ jobs:
             };
           }
 
+          async function fetchWithBypassRedirects(targetPath) {
+            let currentUrl = new URL(targetPath, baseUrl).toString();
+            const attempts = [];
+
+            for (let index = 0; index <= maxRedirects; index += 1) {
+              const response = await fetch(currentUrl, {
+                headers: requestHeaders(),
+                redirect: "manual",
+              });
+              const setCookieCount = storeCookies(response);
+              const location = response.headers.get("location") || "";
+              const redirectTarget =
+                response.status >= 300 && response.status < 400 && location
+                  ? resolveSameOriginRedirect(currentUrl, location)
+                  : null;
+              attempts.push({
+                status: response.status,
+                redirected: response.status >= 300 && response.status < 400,
+                locationOrigin: redirectTarget ? redirectTarget.locationOrigin : "",
+                locationPath: redirectTarget && redirectTarget.sameOrigin ? redirectTarget.locationPath : "",
+                invalidLocation: Boolean(redirectTarget && redirectTarget.invalidLocation),
+                sameOriginRedirect: Boolean(redirectTarget && redirectTarget.sameOrigin),
+                contentType: response.headers.get("content-type") || "",
+                hasSetCookie: setCookieCount > 0,
+                cookieNames: sanitizedCookieNames(),
+              });
+
+              if (response.status < 300 || response.status >= 400 || !location) {
+                const body = await response.text();
+                return { response, body, attempts };
+              }
+
+              if (!redirectTarget || !redirectTarget.sameOrigin) {
+                return {
+                  response,
+                  body: "",
+                  attempts,
+                  unsafeCrossOriginRedirect: true,
+                };
+              }
+
+              currentUrl = redirectTarget.nextUrl;
+            }
+
+            const lastAttempt = attempts.at(-1);
+            return {
+              response: {
+                status: lastAttempt ? lastAttempt.status : "REDIRECT_LIMIT",
+                headers: new Headers(),
+              },
+              body: "",
+              attempts,
+              redirectLimitReached: true,
+            };
+          }
+
           async function probe(targetPath) {
-            const url = new URL(targetPath, baseUrl).toString();
-            const response = await fetch(url, {
-              headers,
-              redirect: "manual",
-            });
-            const body = await response.text();
+            const { response, body, attempts, redirectLimitReached, unsafeCrossOriginRedirect } = await fetchWithBypassRedirects(targetPath);
             const bodyClass = classifyBody(body);
+            const contentType = response.headers.get("content-type") || "";
+            const finalStatus = response.status;
+            const htmlLike = contentType.includes("text/html") || body.trim().startsWith("<!DOCTYPE html") || body.trim().startsWith("<html");
             return {
               path: targetPath,
-              status: response.status,
-              redirected: response.status >= 300 && response.status < 400,
-              location: response.headers.get("location") || "",
-              contentType: response.headers.get("content-type") || "",
-              hasSetCookie: Boolean(response.headers.get("set-cookie")),
+              status: finalStatus,
+              redirected: attempts.some((attempt) => attempt.redirected),
+              redirectLimitReached: Boolean(redirectLimitReached),
+              unsafeCrossOriginRedirect: Boolean(unsafeCrossOriginRedirect),
+              contentType,
+              hasSetCookie: attempts.some((attempt) => attempt.hasSetCookie),
+              cookieNames: sanitizedCookieNames(),
               vercelSso: bodyClass.vercelSso,
-              appLike: bodyClass.appLike,
+              appLike: bodyClass.appLike || (finalStatus === 200 && htmlLike && !bodyClass.vercelSso),
+              attempts,
               bodySample: body.replace(/\s+/g, " ").slice(0, 180),
             };
           }
@@ -161,9 +285,10 @@ jobs:
 
             const root = results.find((item) => item.path === "/");
             const login = results.find((item) => item.path === "/login");
+            const unsafeRedirect = results.some((item) => item.unsafeCrossOriginRedirect);
             const blockedBySso = results.some((item) => item.vercelSso) || [root, login].some((item) => item && item.status === 401);
-            const appLoaded = [root, login].some((item) => item && item.appLike && !item.vercelSso && item.status !== 401);
-            const accessStatus = blockedBySso ? "blocked" : appLoaded ? "app" : "inconclusive";
+            const appLoaded = [root, login, ...results].some((item) => item && item.appLike && !item.vercelSso && item.status !== 401);
+            const accessStatus = unsafeRedirect ? "unsafe_redirect" : blockedBySso ? "blocked" : appLoaded ? "app" : "inconclusive";
 
             fs.mkdirSync(reportDir, { recursive: true });
             fs.writeFileSync(path.join(reportDir, "http-probe.json"), JSON.stringify({ accessStatus, results }, null, 2));
