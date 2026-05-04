@@ -2,6 +2,22 @@
 
 Fecha de actualizacion: 2026-05-04
 
+## RTLOPS-112 - QA autenticado read-only del preview protegido - 2026-05-04
+
+- Estado real:
+  - `RTLOPS-108B` confirmo que el preview protegido carga app real con Vercel Automation Bypass;
+  - `RTLOPS-112` retoma el QA autenticado con usuario `viewer` del entorno preview/staging;
+  - los secrets esperados viven en GitHub Actions: `VERCEL_AUTOMATION_BYPASS_SECRET`, `RTLAB_TEST_USER_EMAIL`, `RTLAB_TEST_USER_PASSWORD`.
+- Alcance:
+  - se extiende solo el workflow administrativo `RTLOPS-109A Protected Preview QA`;
+  - se agrega un modo manual `run_authenticated_qa` para login viewer read-only;
+  - el reporte autenticado valida sesion viewer, rutas UI, APIs read-only y guardrails visibles en Portfolio/Execution;
+  - no guarda `storageState` en repo y no imprime credenciales ni cookies.
+- Limites:
+  - no ejecuta ordenes, no modifica datos y no hace clicks finales en acciones sensibles;
+  - no toca producto, backend, package files, Next/PostCSS, Vercel settings, Railway, produccion, branch protection ni RTLOPS-69 Slice 3;
+  - `RTLOPS-106` sigue abierto por la deuda externa de Vercel Git Integration.
+
 ## RTLOPS-111 - Redirect/cookie en QA protegido de preview - 2026-05-04
 
 - Estado real:

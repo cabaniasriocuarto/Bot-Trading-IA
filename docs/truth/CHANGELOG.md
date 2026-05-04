@@ -2,6 +2,20 @@
 
 ## 2026-05-04
 
+### RTLOPS-112 - QA autenticado read-only del dashboard protegido
+- Se prepara una extension administrativa del workflow `RTLOPS-109A Protected Preview QA`.
+- Motivo:
+  - `RTLOPS-108B` cargo la app real sin sesion;
+  - faltaba validar estados autenticados con rol `viewer`, APIs esperadas y guardrails de Portfolio/Execution.
+- Cambio:
+  - nuevo input manual `run_authenticated_qa`;
+  - validacion de secrets `RTLAB_TEST_USER_EMAIL` y `RTLAB_TEST_USER_PASSWORD` sin imprimir valores;
+  - script QA read-only que hace login viewer, valida `/api/auth/me`, recorre pantallas principales y registra estados de APIs/botones sensibles sin ejecutar acciones.
+- Limites:
+  - no toca producto/backend/package files/settings;
+  - no guarda credenciales ni `storageState` en repo;
+  - no ejecuta ordenes, no muta datos y no cierra `RTLOPS-106`.
+
 ### RTLOPS-111 - redirect/cookie en workflow QA protegido
 - Se ajusta el workflow administrativo `RTLOPS-109A Protected Preview QA`.
 - Motivo:
