@@ -183,42 +183,64 @@ function statusVariant(status: string): "success" | "warn" | "danger" | "info" |
   return "neutral";
 }
 
-function componentRows(breakdown: ReportingCostsBreakdown | null) {
+function hasRealizedEvidence(trades: ReportingTradesResponse | null, field: keyof ReportingTrade): boolean {
+  return Boolean(trades?.items?.some((row) => row[field] != null));
+}
+
+function realizedValue(
+  breakdownValue: number | undefined,
+  trades: ReportingTradesResponse | null,
+  field: keyof ReportingTrade,
+): number | "sin evidencia" | undefined {
+  const hasEvidence = hasRealizedEvidence(trades, field);
+  if (!hasEvidence && num(breakdownValue) === 0) return "sin evidencia";
+  return breakdownValue;
+}
+
+function realizedStatus(
+  breakdownValue: number | undefined,
+  trades: ReportingTradesResponse | null,
+  field: keyof ReportingTrade,
+): "PENDIENTE" | "DISPONIBLE" {
+  return hasRealizedEvidence(trades, field) || num(breakdownValue) !== 0 ? "DISPONIBLE" : "PENDIENTE";
+}
+
+function componentRows(breakdown: ReportingCostsBreakdown | null, trades: ReportingTradesResponse | null) {
   return [
     {
       component: "Fees / commission",
       estimated: breakdown?.exchange_fee_estimated,
-      realized: breakdown?.exchange_fee_realized,
+      realized: realizedValue(breakdown?.exchange_fee_realized, trades, "exchange_fee_realized"),
       source: "trade_cost_ledger",
-      status: breakdown?.exchange_fee_realized == null ? "PENDIENTE" : "DISPONIBLE",
+      status: realizedStatus(breakdown?.exchange_fee_realized, trades, "exchange_fee_realized"),
     },
     {
       component: "Spread",
       estimated: breakdown?.spread_estimated,
-      realized: breakdown?.spread_realized,
+      realized: realizedValue(breakdown?.spread_realized, trades, "spread_realized"),
       source: "reporting bridge",
-      status: breakdown?.spread_realized == null ? "PENDIENTE" : "DISPONIBLE",
+      status: realizedStatus(breakdown?.spread_realized, trades, "spread_realized"),
     },
     {
       component: "Slippage",
       estimated: breakdown?.slippage_estimated,
-      realized: breakdown?.slippage_realized,
+      realized: realizedValue(breakdown?.slippage_realized, trades, "slippage_realized"),
       source: "reporting bridge",
-      status: breakdown?.slippage_realized == null ? "PENDIENTE" : "DISPONIBLE",
+      status: realizedStatus(breakdown?.slippage_realized, trades, "slippage_realized"),
     },
     {
       component: "Funding",
       estimated: "no expuesto",
-      realized: breakdown?.funding_realized,
+      realized: realizedValue(breakdown?.funding_realized, trades, "funding_realized"),
       source: "futures/reporting",
-      status: breakdown?.funding_realized == null ? "PENDIENTE" : "DISPONIBLE",
+      status: realizedStatus(breakdown?.funding_realized, trades, "funding_realized"),
     },
     {
       component: "Borrow interest",
       estimated: "no expuesto",
-      realized: breakdown?.borrow_interest_realized,
+      realized: realizedValue(breakdown?.borrow_interest_realized, trades, "borrow_interest_realized"),
       source: "margin/reporting",
-      status: breakdown?.borrow_interest_realized == null ? "PENDIENTE" : "DISPONIBLE",
+      status: realizedStatus(breakdown?.borrow_interest_realized, trades, "borrow_interest_realized"),
     },
     {
       component: "Tax commission",
@@ -274,7 +296,7 @@ export default function ReportingPage() {
 
   const allTime = state.summary?.all_time;
   const breakdown = state.breakdown;
-  const components = useMemo(() => componentRows(breakdown), [breakdown]);
+  const components = useMemo(() => componentRows(breakdown, state.trades), [breakdown, state.trades]);
   const recentDaily = state.daily?.items?.slice(-5).reverse() ?? [];
   const recentMonthly = state.monthly?.items?.slice(-4).reverse() ?? [];
 
