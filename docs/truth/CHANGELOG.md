@@ -2,6 +2,19 @@
 
 ## 2026-05-05
 
+### RTLOPS-122 - Execution paper/testnet guardrails clarity
+- Se mejora la claridad operativa de `Execution` sin tocar infraestructura ni activar LIVE.
+- Cambio:
+  - nueva banda `Postura operativa segura`;
+  - metricas visibles `LIVE real` y `Readiness LIVE`;
+  - explicacion visible del motivo por el que acciones peligrosas estan disabled;
+  - lista de pendientes para habilitar LIVE en el futuro;
+  - `Cerrar posiciones` y `Kill switch` quedan disabled cuando LIVE real no esta activo/listo.
+- Limites:
+  - no se agregan endpoints ni ordenes;
+  - no se toca backend, Vercel/Railway settings, variables/secrets, DB, package files ni branch protection;
+  - `RTLOPS-106` sigue abierto.
+
 ### RTLOPS-121 - GitHub Actions Node24 readiness
 - Se auditaron workflows criticos ante la deprecacion de Node.js 20 en acciones oficiales de GitHub Actions.
 - Evidencia:
