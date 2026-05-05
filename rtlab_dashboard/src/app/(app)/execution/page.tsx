@@ -383,31 +383,38 @@ export default function ExecutionPage() {
   const runtimeModeLower = String(modeDraft || settings?.mode || "PAPER").toLowerCase();
   const runtimeModeKey: "paper" | "testnet" | "live" =
     runtimeModeLower === "live" ? "live" : runtimeModeLower === "testnet" ? "testnet" : "paper";
+  const actualRuntimeModeLower = String(health?.exchange.mode || settings?.mode || modeDraft || "PAPER").toLowerCase();
+  const actualRuntimeModeKey: "paper" | "testnet" | "live" =
+    actualRuntimeModeLower === "live" ? "live" : actualRuntimeModeLower === "testnet" ? "testnet" : "paper";
   const runtimeReadyForLive = Boolean(health?.runtime_ready_for_live);
-  const liveRealActive = runtimeModeKey === "live" && runtimeReadyForLive;
-  const liveSafetyBadge = liveRealActive ? "LIVE real listo" : runtimeModeKey === "testnet" ? "TESTNET / no-live" : "PAPER / no-live";
+  const liveRealActive = actualRuntimeModeKey === "live" && runtimeReadyForLive;
+  const liveSafetyBadge = liveRealActive
+    ? "LIVE real listo"
+    : actualRuntimeModeKey === "live"
+      ? "LIVE / no-listo"
+      : actualRuntimeModeKey === "testnet"
+        ? "TESTNET / no-live"
+        : "PAPER / no-live";
   const liveSafetyDetail = liveRealActive
     ? "El runtime declara readiness para LIVE. Mantener approve humano, gates y canary antes de cualquier operacion real."
-    : runtimeModeKey === "live"
+    : actualRuntimeModeKey === "live"
       ? "LIVE esta seleccionado, pero runtime_ready_for_live=false: las acciones live peligrosas quedan bloqueadas fail-closed."
-      : `Modo ${modeLabel(runtimeModeKey).toUpperCase()}: entorno seguro para diagnostico/read-only; no habilita ordenes reales.`;
+      : `Modo ${modeLabel(actualRuntimeModeKey).toUpperCase()}: entorno seguro para diagnostico/read-only; no habilita ordenes reales.`;
   const liveMissingSteps = [
     !runtimeReadyForLive ? "runtime_ready_for_live=true" : "",
     ...liveBlockingItems.map((row) => row.label),
     rollout?.live_stable_100_requires_approve ? "" : "approve humano obligatorio",
   ].filter(Boolean);
   const runtimeControlDisabled = role !== "admin" || !!actionLoading || (runtimeModeKey === "live" && !canTradeLiveNow);
-  const dangerousLiveControlsDisabled = role !== "admin" || !!actionLoading || onCooldown || !liveRealActive || !canTradeLiveNow;
+  const dangerousLiveControlsDisabled = role !== "admin" || !!actionLoading || onCooldown || !liveRealActive;
   const dangerousLiveControlsReason =
     role !== "admin"
       ? "Rol viewer: controles operativos en solo lectura."
       : !liveRealActive
         ? "LIVE real apagado o runtime_ready_for_live=false: accion peligrosa bloqueada."
-        : !canTradeLiveNow
-          ? `Checklist LIVE incompleto: ${liveBlockingItems.map((row) => row.label).join(", ") || "faltan validaciones"}.`
-          : onCooldown
-            ? "Cooldown critico activo para evitar acciones repetidas."
-            : "Disponible solo con LIVE real listo, gates OK y approve humano.";
+        : onCooldown
+          ? "Cooldown critico activo para evitar acciones repetidas."
+          : "Disponible solo si el backend reporta LIVE real listo; requiere doble confirmacion y auditoria.";
 
   const botRowsFiltered = useMemo(() => {
     return botInstances.filter((row) => {
