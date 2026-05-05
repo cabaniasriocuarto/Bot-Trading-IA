@@ -10,7 +10,7 @@ Fecha: 2026-05-05
 - [x] Mostrar `LIVE-ready`, `LIVE habilitado`, `Submit real` y `Readiness LIVE`.
 - [x] Mantener acciones sensibles bloqueadas por gates/preflight/permisos/aprobacion.
 - [x] Correr validaciones frontend.
-- [ ] Abrir PR contra `main`.
+- [x] Abrir PR contra `main`.
 - [ ] Ejecutar QA protegido/autenticado despues del merge si corresponde.
 - [ ] Mantener `RTLOPS-106` abierto.
 
