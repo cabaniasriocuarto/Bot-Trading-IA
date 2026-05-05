@@ -12,6 +12,7 @@ artifacts/
 # Python cache (NO subir)
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Bibliografia local cruda (NO subir PDFs)
 docs/reference/biblio_raw/*
@@ -25,6 +26,7 @@ rtlab_autotrader/user_data/*.sqlite3-wal
 rtlab_autotrader/user_data/*.sqlite3-shm
 
 # Estado runtime generado (NO subir — se regenera en arranque)
+rtlab_autotrader/.tmp/
 rtlab_autotrader/user_data/learning/bots.json
 rtlab_autotrader/user_data/strategy_packs/results/
 
