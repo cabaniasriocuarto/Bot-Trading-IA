@@ -387,34 +387,33 @@ export default function ExecutionPage() {
   const actualRuntimeModeKey: "paper" | "testnet" | "live" =
     actualRuntimeModeLower === "live" ? "live" : actualRuntimeModeLower === "testnet" ? "testnet" : "paper";
   const runtimeReadyForLive = Boolean(health?.runtime_ready_for_live);
-  const liveRealActive = actualRuntimeModeKey === "live" && runtimeReadyForLive;
-  const liveSafetyBadge = liveRealActive
-    ? "LIVE real listo"
-    : actualRuntimeModeKey === "live"
-      ? "LIVE / no-listo"
-      : actualRuntimeModeKey === "testnet"
-        ? "TESTNET / no-live"
-        : "PAPER / no-live";
-  const liveSafetyDetail = liveRealActive
-    ? "El runtime declara readiness para LIVE. Mantener approve humano, gates y canary antes de cualquier operacion real."
-    : actualRuntimeModeKey === "live"
-      ? "LIVE esta seleccionado, pero runtime_ready_for_live=false: las acciones live peligrosas quedan bloqueadas fail-closed."
-      : `Modo ${modeLabel(actualRuntimeModeKey).toUpperCase()}: entorno seguro para diagnostico/read-only; no habilita ordenes reales.`;
+  const liveEnabledByRuntime = actualRuntimeModeKey === "live";
+  const liveExecutionSubmitEnabled = liveEnabledByRuntime && runtimeReadyForLive;
+  const liveSafetyBadge = liveExecutionSubmitEnabled
+    ? "LIVE-ready + submit habilitable"
+    : liveEnabledByRuntime
+      ? "LIVE seleccionado + submit bloqueado"
+      : "LIVE-ready + submit bloqueado";
+  const liveSafetyDetail = liveExecutionSubmitEnabled
+    ? "La arquitectura LIVE esta preparada y el runtime declara readiness. El submit real sigue sujeto a approve humano, gates, preflight, canary y auditoria."
+    : liveEnabledByRuntime
+      ? "LIVE esta seleccionado, pero el submit real permanece bloqueado fail-closed hasta completar readiness, gates, preflight y aprobacion."
+      : `Arquitectura LIVE prevista; modo actual ${modeLabel(actualRuntimeModeKey).toUpperCase()} mantiene el submit real bloqueado por contrato.`;
   const liveMissingSteps = [
     !runtimeReadyForLive ? "runtime_ready_for_live=true" : "",
     ...liveBlockingItems.map((row) => row.label),
     rollout?.live_stable_100_requires_approve ? "" : "approve humano obligatorio",
   ].filter(Boolean);
   const runtimeControlDisabled = role !== "admin" || !!actionLoading || (runtimeModeKey === "live" && !canTradeLiveNow);
-  const dangerousLiveControlsDisabled = role !== "admin" || !!actionLoading || onCooldown || !liveRealActive;
+  const dangerousLiveControlsDisabled = role !== "admin" || !!actionLoading || onCooldown || !liveExecutionSubmitEnabled;
   const dangerousLiveControlsReason =
     role !== "admin"
       ? "Rol viewer: controles operativos en solo lectura."
-      : !liveRealActive
-        ? "LIVE real apagado o runtime_ready_for_live=false: accion peligrosa bloqueada."
+      : !liveExecutionSubmitEnabled
+        ? "Submit real bloqueado por contrato: faltan readiness, gates, preflight o aprobacion."
         : onCooldown
           ? "Cooldown critico activo para evitar acciones repetidas."
-          : "Disponible solo si el backend reporta LIVE real listo; requiere doble confirmacion y auditoria.";
+          : "Disponible solo si el backend reporta LIVE listo; requiere doble confirmacion, aprobacion y auditoria.";
 
   const botRowsFiltered = useMemo(() => {
     return botInstances.filter((row) => {
@@ -868,7 +867,9 @@ export default function ExecutionPage() {
           <CardContent className="space-y-4">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               <Metric title="Modo runtime" value={health ? modeLabel(health.exchange.mode) : settings ? modeLabel(settings.mode) : "--"} compact />
-              <Metric title="LIVE real" value={liveRealActive ? "activo" : "apagado"} compact />
+              <Metric title="LIVE-ready" value="previsto" compact />
+              <Metric title="LIVE habilitado" value={liveEnabledByRuntime ? "si" : "pendiente"} compact />
+              <Metric title="Submit real" value={liveExecutionSubmitEnabled ? "habilitable" : "bloqueado"} compact />
               <Metric title="Readiness LIVE" value={runtimeReadyForLive ? "true" : "false"} compact />
               <Metric title="Exchange activo" value={selectedExchange.toUpperCase()} compact />
               <Metric title="WS/SSE backend" value={health ? (health.ws.connected ? "conectado" : "desconectado") : "--"} compact />
@@ -923,16 +924,19 @@ export default function ExecutionPage() {
 
             <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm text-sky-100">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={liveRealActive ? "success" : "info"}>{liveSafetyBadge}</Badge>
-                <span className="font-semibold">Postura operativa segura</span>
+                <Badge variant={liveExecutionSubmitEnabled ? "success" : "info"}>{liveSafetyBadge}</Badge>
+                <span className="font-semibold">Contrato LIVE-ready con submit real bloqueado</span>
               </div>
               <p className="mt-2 text-xs text-sky-100/90">{liveSafetyDetail}</p>
               <p className="mt-2 text-xs text-sky-100/80">
-                Acciones peligrosas: {dangerousLiveControlsDisabled ? "disabled" : "habilitadas con confirmacion"}.
-                {dangerousLiveControlsDisabled ? ` Motivo: ${dangerousLiveControlsReason}` : " Requieren doble confirmacion y auditoria."}
+                La ruta de activacion real existe conceptualmente: adaptadores de exchange, preflight, gates de riesgo, kill switch, canary, rollback, aprobacion y audit logs. Este panel no envia ordenes reales mientras el contrato de habilitacion no este completo.
+              </p>
+              <p className="mt-2 text-xs text-sky-100/80">
+                Acciones peligrosas: {dangerousLiveControlsDisabled ? "bloqueadas por gates/preflight" : "habilitables con confirmacion"}.
+                {dangerousLiveControlsDisabled ? ` Motivo: ${dangerousLiveControlsReason}` : " Requieren doble confirmacion, aprobacion y auditoria."}
               </p>
               {liveMissingSteps.length ? (
-                <p className="mt-1 text-xs text-sky-100/80">Para habilitar LIVE en el futuro falta: {liveMissingSteps.join(" · ")}.</p>
+                <p className="mt-1 text-xs text-sky-100/80">Para habilitar submit real falta: {liveMissingSteps.join(" · ")}.</p>
               ) : null}
             </div>
 
@@ -1745,10 +1749,10 @@ export default function ExecutionPage() {
             </div>
             {modeDraft === "LIVE" ? (
               <Badge variant={canTradeLiveNow ? "success" : "warn"}>
-                {canTradeLiveNow ? "Live listo para pruebas controladas (con approve)" : "Live bloqueado hasta completar checklist"}
+                {canTradeLiveNow ? "Checklist base LIVE en PASS; submit real aun exige approve/preflight final" : "Submit LIVE bloqueado hasta completar checklist"}
               </Badge>
             ) : (
-              <Badge variant="info">Modo no-LIVE: recomendado para diagnostico y pruebas</Badge>
+              <Badge variant="info">LIVE-ready: submit real bloqueado mientras operas en {modeLabel(modeDraft)}</Badge>
             )}
           </CardContent>
         </Card>

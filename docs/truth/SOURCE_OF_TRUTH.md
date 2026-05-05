@@ -2,6 +2,23 @@
 
 Fecha de actualizacion: 2026-05-05
 
+## RTLOPS-123 - Execution LIVE-ready wording and activation contract - 2026-05-05
+
+- Estado real:
+  - `RTLOPS-122` dejo Execution mas segura, pero el framing podia leerse como si el producto fuera `paper-only` o `no-live`;
+  - la postura correcta del proyecto es arquitectura LIVE-ready desde el minuto cero, con submit real bloqueado por contrato hasta completar gates, preflight, permisos, aprobacion, canary, rollback y auditoria.
+- Cambio funcional chico:
+  - `Execution` cambia el framing a `Contrato LIVE-ready con submit real bloqueado`;
+  - muestra `LIVE-ready`, `LIVE habilitado`, `Submit real` y `Readiness LIVE`;
+  - explica que las rutas/adaptadores/preflight/gates existen como contrato de activacion, pero que no se envian ordenes reales hasta habilitacion controlada;
+  - reemplaza copys centrados en `apagado/no-live` por `submit real bloqueado por gates/preflight`;
+  - mantiene `Cerrar posiciones`, `Kill switch`, `Guardar LIVE` y `Modo LIVE` bloqueados si no pasan readiness/gates/permisos.
+- Limites:
+  - no activa LIVE real;
+  - no envia ordenes reales;
+  - no toca backend, Binance keys, Vercel/Railway settings, variables/secrets, DB, branch protection, package files ni RTLOPS-106;
+  - `RTLOPS-106` sigue abierto como deuda externa de Vercel Git Integration / `routes-manifest-deterministic`.
+
 ## RTLOPS-122 - Execution paper/testnet guardrails clarity - 2026-05-05
 
 - Estado real:

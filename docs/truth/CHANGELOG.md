@@ -2,6 +2,20 @@
 
 ## 2026-05-05
 
+### RTLOPS-123 - Execution LIVE-ready wording and activation contract
+- Se corrige el framing de `Execution` para comunicar arquitectura LIVE-ready, no una app `paper-only`.
+- Cambio:
+  - la banda operativa pasa a `Contrato LIVE-ready con submit real bloqueado`;
+  - metricas visibles: `LIVE-ready`, `LIVE habilitado`, `Submit real`, `Readiness LIVE`;
+  - el texto explica que el submit real esta bloqueado por gates/preflight/permisos/aprobacion/canary/rollback/auditoria;
+  - se reemplazan copys de `apagado/no-live` por bloqueo contractual de submit real;
+  - acciones sensibles siguen disabled cuando readiness/gates no pasan.
+- Limites:
+  - no se activa LIVE real;
+  - no se agregan endpoints ni ordenes;
+  - no se toca backend, Vercel/Railway settings, variables/secrets, DB, package files ni branch protection;
+  - `RTLOPS-106` sigue abierto.
+
 ### RTLOPS-122 - Execution paper/testnet guardrails clarity
 - Se mejora la claridad operativa de `Execution` sin tocar infraestructura ni activar LIVE.
 - Cambio:

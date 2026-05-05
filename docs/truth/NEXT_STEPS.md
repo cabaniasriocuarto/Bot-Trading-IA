@@ -2,6 +2,18 @@
 
 Fecha: 2026-05-05
 
+## RTLOPS-123 - Execution LIVE-ready wording and activation contract - 2026-05-05
+- [x] Crear issue `RTLOPS-123`.
+- [x] Crear rama `feature/rtlops-123-execution-live-ready-wording`.
+- [x] Relevar `Execution` y detectar copys que podian leerse como `paper-only/no-live`.
+- [x] Ajustar framing a arquitectura LIVE-ready con submit real bloqueado.
+- [x] Mostrar `LIVE-ready`, `LIVE habilitado`, `Submit real` y `Readiness LIVE`.
+- [x] Mantener acciones sensibles bloqueadas por gates/preflight/permisos/aprobacion.
+- [x] Correr validaciones frontend.
+- [x] Abrir PR contra `main`.
+- [ ] Ejecutar QA protegido/autenticado despues del merge si corresponde.
+- [ ] Mantener `RTLOPS-106` abierto.
+
 ## RTLOPS-122 - Execution paper/testnet guardrails clarity - 2026-05-05
 - [x] Crear issue funcional chico para Execution guardrails.
 - [x] Crear rama `feature/rtlops-122-execution-paper-testnet-guardrails`.
