@@ -1,5 +1,34 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-05-05
+
+### RTLOPS-118 - cierre administrativo post Railway production fix
+- Se cerro la regresion final posterior a `RTLOPS-117`.
+- Railway production quedo alineado al build context funcional de staging:
+  - antes: `rootDirectory=/rtlab_autotrader`;
+  - despues: repo root equivalente (`rootDirectory=""`/null);
+  - deployment production nuevo: `5a6fb353-cba9-43ab-a8ea-53a8ddb3bbef`;
+  - commit: `764faf646b525e93c44c0d98084d0cf34a1c2156`;
+  - status: `SUCCESS`.
+- Validacion backend production:
+  - `/api/v1/health` -> `200`;
+  - `/openapi.json` contiene `/api/v1/research/dataset-preflight`;
+  - POST directo sin auth a `/api/v1/research/dataset-preflight` -> `401 Unauthorized` esperado, no `404`.
+- Validacion QA protegida/autenticada:
+  - workflow `RTLOPS-109A Protected Preview QA`;
+  - run `25352773864` -> `success`;
+  - `access_status=app`;
+  - login viewer OK;
+  - `/api/auth/me=200`, rol `viewer`;
+  - APIs principales autenticadas `200`;
+  - Portfolio/Execution mantienen botones sensibles disabled;
+  - sin ordenes, sin mutaciones y sin cambios de datos;
+  - `dataset-preflight` ya no registra respuestas `404`.
+- Limites:
+  - no se toco codigo, Dockerfile, Vercel settings, Railway variables/secrets, DB, package files, branch protection ni RTLOPS-69 Slice 3;
+  - `RTLOPS-106` sigue abierto por Vercel Git Integration / `routes-manifest-deterministic`;
+  - `RTLOPS-107` sigue siendo workaround temporal de previews prebuilt.
+
 ## 2026-05-04
 
 ### RTLOPS-112 - QA autenticado read-only del dashboard protegido

@@ -1,6 +1,34 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-05-04
+Fecha de actualizacion: 2026-05-05
+
+## RTLOPS-118 - cierre post Railway production fix - 2026-05-05
+
+- Estado real:
+  - `RTLOPS-117` corrigio el mismatch operativo de Railway production sin tocar codigo ni Dockerfile;
+  - production paso de `rootDirectory=/rtlab_autotrader` a repo root equivalente (`rootDirectory=""`/null);
+  - el deployment production nuevo `5a6fb353-cba9-43ab-a8ea-53a8ddb3bbef` corre el commit `764faf646b525e93c44c0d98084d0cf34a1c2156` con status `SUCCESS`;
+  - production `/api/v1/health` responde `200`;
+  - production `/openapi.json` vuelve a listar `POST /api/v1/research/dataset-preflight`;
+  - POST directo sin auth a `/api/v1/research/dataset-preflight` responde `401 Unauthorized` esperado, no `404`.
+- Regresion final:
+  - workflow `RTLOPS-109A Protected Preview QA` run `25352773864` -> `success`;
+  - `access_status=app`;
+  - login viewer OK;
+  - `/api/auth/me=200`, rol `viewer`;
+  - APIs principales autenticadas respondieron `200`;
+  - Portfolio mantiene `Cerrar todas` visible y disabled;
+  - Execution mantiene `Pausar`, `Reanudar`, `Cerrar posiciones`, `Kill switch`, `Guardar LIVE` y `Modo LIVE` visibles y disabled;
+  - no hubo ordenes, mutaciones ni cambios de datos;
+  - el residual `dataset-preflight` ya no registra respuestas `404` en el QA; solo quedaron aborts de navegacion rapida (`net::ERR_ABORTED`), no clasificados como bug.
+- Causa raiz cerrada:
+  - production estaba stale porque el deploy de commit `764faf6...` fallaba al construir con contexto recortado;
+  - `docker/Dockerfile` espera contexto repo root y hace `COPY rtlab_autotrader/...`;
+  - con `rootDirectory=/rtlab_autotrader`, Docker no podia ver rutas como `/rtlab_autotrader/rtlab_config.yaml.example`.
+- Limites:
+  - no se tocaron codigo de producto, backend source, Dockerfile, package files, Vercel settings, Railway variables/secrets, DB, branch protection ni RTLOPS-69 Slice 3;
+  - `RTLOPS-106` sigue abierto como deuda externa de Vercel Git Integration / `routes-manifest-deterministic`;
+  - `RTLOPS-107` sigue siendo workaround temporal de previews prebuilt, no fix definitivo de Git Integration.
 
 ## RTLOPS-112 - QA autenticado read-only del preview protegido - 2026-05-04
 
