@@ -4755,3 +4755,16 @@ El proyecto tiene:
   - Beast/Backtests ya no esta roto por `policy root`
   - staging ya esta listo para testeo real sobre `BTCUSDT`
   - el siguiente cuello ya no es runtime basico sino cobertura de datasets/estrategias si se quiere ampliar el pool
+- RTLOPS-70 / Cost Stack Reporting UI read-only (2026-05-05):
+  - se agrega la superficie frontend `Costos` / `/reporting` para hacer visible el Cost Stack existente en backend;
+  - consume solo endpoints read-only existentes:
+    - `/api/v1/reporting/performance/summary`;
+    - `/api/v1/reporting/performance/daily`;
+    - `/api/v1/reporting/performance/monthly`;
+    - `/api/v1/reporting/costs/breakdown`;
+    - `/api/v1/reporting/trades`;
+    - `/api/v1/reporting/exports`;
+  - muestra gross/net PnL, costos estimados/realizados, fees, spread, slippage, funding, borrow interest, ledger de trades de reporting y manifiesto de exports;
+  - `taxCommission` y `specialCommission` quedan explicitamente marcados como pendientes/no soportados todavia;
+  - no agrega mutaciones, no consulta Binance privado y no activa LIVE;
+  - RTLOPS-106 sigue abierto como deuda externa Vercel Git Integration / `routes-manifest-deterministic`.

@@ -26,6 +26,7 @@ const navItems = [
   { href: "/strategies", label: "Estrategias", icon: SplitSquareVertical },
   { href: "/backtests", label: "Backtests", icon: LineChart },
   { href: "/trades", label: "Operaciones", icon: CandlestickChart },
+  { href: "/reporting", label: "Costos", icon: LineChart },
   { href: "/portfolio", label: "Portafolio", icon: Wallet },
   { href: "/risk", label: "Riesgo", icon: Shield },
   { href: "/execution", label: "Ejecucion", icon: Activity },

@@ -4111,3 +4111,9 @@
 - Conclusión operativa:
   - Beast/Backtests en staging ya es usable para testeo real sobre `BTCUSDT`
   - no hizo falta fix adicional de backend/producto en este bloque
+- RTLOPS-70: Cost Stack / Reporting UI read-only (2026-05-05):
+  - nueva ruta frontend `/reporting`, enlazada como `Costos` en la navegacion;
+  - consume endpoints reporting existentes y no crea endpoints backend nuevos;
+  - muestra gross/net PnL, costos estimados/realizados, fees, spread, slippage, funding, borrow interest, ledger de trades y exports registrados;
+  - `taxCommission` y `specialCommission` quedan visibles como pendientes/no soportados todavia;
+  - no se activo LIVE real, no se consultaron Binance keys y no se agregaron mutaciones.
