@@ -55,6 +55,7 @@ type RolloutStatusLite = {
 };
 
 type LivePreflightLite = {
+  overall_status?: string;
   status?: string;
   state?: string;
   updated_at?: string;
@@ -63,6 +64,7 @@ type LivePreflightLite = {
   blockers?: string[];
   warnings?: string[];
   latest?: {
+    overall_status?: string;
     status?: string;
     state?: string;
     created_at?: string;
@@ -497,7 +499,11 @@ export default function ExecutionPage() {
           : "Disponible solo si el backend reporta LIVE listo; requiere doble confirmacion, aprobacion y auditoria.";
   const latestLivePreflight = livePreflight?.latest ?? livePreflight;
   const livePreflightStatus = normalizeEvidenceStatus(
-    latestLivePreflight?.status ?? latestLivePreflight?.state ?? livePreflight?.live_enablement_gate?.status,
+    latestLivePreflight?.overall_status ??
+      latestLivePreflight?.status ??
+      latestLivePreflight?.state ??
+      livePreflight?.overall_status ??
+      livePreflight?.live_enablement_gate?.status,
   );
   const livePreflightBlockers = [
     ...asStringArray(latestLivePreflight?.blocking_reasons),
@@ -2517,7 +2523,7 @@ function normalizeEvidenceStatus(value: unknown): string {
 function statusToEvidence(status: string, hasBlockers = false): LiveEvidenceStatus {
   if (hasBlockers) return "blocked";
   if (["PASS", "PASSED", "OK", "READY", "VALID", "HEALTHY", "ENABLED", "SUCCESS"].includes(status)) return "pass";
-  if (["FAIL", "FAILED", "ERROR", "BLOCKED", "TRIPPED", "DISABLED", "UNHEALTHY"].includes(status)) return "blocked";
+  if (["FAIL", "FAILED", "ERROR", "BLOCK", "BLOCKED", "TRIPPED", "DISABLED", "UNHEALTHY"].includes(status)) return "blocked";
   if (["WARN", "WARNING", "DEGRADED", "STALE"].includes(status)) return "warn";
   if (["NA", "N/A", "NOT_APPLICABLE", "NO_APLICA"].includes(status)) return "na";
   return "pending";
