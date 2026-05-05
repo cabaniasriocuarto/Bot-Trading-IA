@@ -868,7 +868,7 @@ export default function ExecutionPage() {
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               <Metric title="Modo runtime" value={health ? modeLabel(health.exchange.mode) : settings ? modeLabel(settings.mode) : "--"} compact />
               <Metric title="LIVE-ready" value="previsto" compact />
-              <Metric title="LIVE habilitado" value={liveExecutionSubmitEnabled ? "si" : "no"} compact />
+              <Metric title="LIVE habilitado" value={liveEnabledByRuntime ? "si" : "pendiente"} compact />
               <Metric title="Submit real" value={liveExecutionSubmitEnabled ? "habilitable" : "bloqueado"} compact />
               <Metric title="Readiness LIVE" value={runtimeReadyForLive ? "true" : "false"} compact />
               <Metric title="Exchange activo" value={selectedExchange.toUpperCase()} compact />
