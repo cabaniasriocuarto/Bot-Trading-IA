@@ -2,6 +2,18 @@
 
 Fecha: 2026-05-05
 
+## RTLOPS-124 - Execution LIVE-readiness evidence panel - 2026-05-05
+- [x] Crear issue `RTLOPS-124`.
+- [x] Crear rama `feature/rtlops-124-execution-live-readiness-evidence`.
+- [x] Relevar `Execution`, tipos/client API y endpoints read-only disponibles.
+- [x] Agregar panel visible de evidencia LIVE-readiness.
+- [x] Usar solo lecturas existentes: health, gates, rollout, exchange diagnose, live-preflight, kill-switch y live-safety.
+- [x] Mantener submit real bloqueado cuando no pasan readiness/gates/preflight/permisos/aprobacion.
+- [x] Correr validaciones frontend.
+- [ ] Abrir PR contra `main`.
+- [ ] Ejecutar QA protegido/autenticado despues del merge si corresponde.
+- [ ] Mantener `RTLOPS-106` abierto.
+
 ## RTLOPS-123 - Execution LIVE-ready wording and activation contract - 2026-05-05
 - [x] Crear issue `RTLOPS-123`.
 - [x] Crear rama `feature/rtlops-123-execution-live-ready-wording`.

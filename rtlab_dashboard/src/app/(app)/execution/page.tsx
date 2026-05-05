@@ -54,6 +54,69 @@ type RolloutStatusLite = {
   routing?: { mode?: string; phase?: string; phase_type?: string; shadow_only?: boolean } | null;
 };
 
+type LivePreflightLite = {
+  overall_status?: string;
+  status?: string;
+  state?: string;
+  updated_at?: string;
+  checked_at?: string;
+  blocking_reasons?: string[];
+  blockers?: string[];
+  warnings?: string[];
+  latest?: {
+    overall_status?: string;
+    status?: string;
+    state?: string;
+    created_at?: string;
+    updated_at?: string;
+    checked_at?: string;
+    blocking_reasons?: string[];
+    blockers?: string[];
+    warnings?: string[];
+  } | null;
+  live_enablement_gate?: {
+    status?: string;
+    reason?: string;
+    updated_at?: string;
+    checked_at?: string;
+    blocking_reasons?: string[];
+    blockers?: string[];
+  } | null;
+};
+
+type KillSwitchStatusLite = {
+  status?: string;
+  state?: string;
+  tripped?: boolean;
+  active?: boolean;
+  killed?: boolean;
+  reason?: string;
+  updated_at?: string;
+  last_trip_at?: string | null;
+};
+
+type LiveSafetySummaryLite = {
+  status?: string;
+  state?: string;
+  overall_status?: string;
+  updated_at?: string;
+  checked_at?: string;
+  blocking_reasons?: string[];
+  blockers?: string[];
+  warnings?: string[];
+};
+
+type LiveEvidenceStatus = "pass" | "fail" | "warn" | "pending" | "blocked" | "na";
+
+type LiveReadinessEvidenceItem = {
+  key: string;
+  label: string;
+  status: LiveEvidenceStatus;
+  detail: string;
+  source: string;
+  lastSeen?: string;
+};
+
 type LogsResponse = {
   items: LogEvent[];
   total: number;
@@ -90,6 +153,9 @@ export default function ExecutionPage() {
   const [gates, setGates] = useState<GatesResponse | null>(null);
   const [rollout, setRollout] = useState<RolloutStatusLite | null>(null);
   const [exchangeDiag, setExchangeDiag] = useState<ExchangeDiagnoseResponse | null>(null);
+  const [livePreflight, setLivePreflight] = useState<LivePreflightLite | null>(null);
+  const [killSwitchStatus, setKillSwitchStatus] = useState<KillSwitchStatusLite | null>(null);
+  const [liveSafetySummary, setLiveSafetySummary] = useState<LiveSafetySummaryLite | null>(null);
   const [exchangeDiagError, setExchangeDiagError] = useState("");
   const [panelLoading, setPanelLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -132,7 +198,18 @@ export default function ExecutionPage() {
   }, []);
 
   const loadTradingPanel = useCallback(async (forceExchange: boolean) => {
-    const [status, currentSettings, healthPayload, gatesPayload, rolloutPayload, botsPayload, strategiesPayload] = await Promise.all([
+    const [
+      status,
+      currentSettings,
+      healthPayload,
+      gatesPayload,
+      rolloutPayload,
+      botsPayload,
+      strategiesPayload,
+      livePreflightPayload,
+      killSwitchPayload,
+      liveSafetyPayload,
+    ] = await Promise.all([
       apiGet<BotStatusResponse>("/api/v1/bot/status"),
       apiGet<SettingsResponse>("/api/v1/settings"),
       apiGet<HealthResponse>("/api/v1/health"),
@@ -140,12 +217,18 @@ export default function ExecutionPage() {
       apiGet<RolloutStatusLite>("/api/v1/rollout/status"),
       apiGet<{ items: BotInstance[] }>("/api/v1/bots?recent_logs=false&recent_logs_per_bot=0").catch(() => ({ items: [] })),
       apiGet<Strategy[]>("/api/v1/strategies").catch(() => [] as Strategy[]),
+      apiGet<LivePreflightLite>("/api/v1/exchange/live-preflight?mode=live").catch(() => null),
+      apiGet<KillSwitchStatusLite>("/api/v1/execution/kill-switch/status").catch(() => null),
+      apiGet<LiveSafetySummaryLite>("/api/v1/execution/live-safety/summary").catch(() => null),
     ]);
     setBotStatus(status);
     setSettings(currentSettings);
     setHealth(healthPayload);
     setGates(gatesPayload);
     setRollout(rolloutPayload);
+    setLivePreflight(livePreflightPayload);
+    setKillSwitchStatus(killSwitchPayload);
+    setLiveSafetySummary(liveSafetyPayload);
     setBotInstances(Array.isArray(botsPayload?.items) ? botsPayload.items : []);
     setModeDraft(currentSettings.mode);
     setStrategies(Array.isArray(strategiesPayload) ? strategiesPayload : []);
@@ -414,6 +497,136 @@ export default function ExecutionPage() {
         : onCooldown
           ? "Cooldown critico activo para evitar acciones repetidas."
           : "Disponible solo si el backend reporta LIVE listo; requiere doble confirmacion, aprobacion y auditoria.";
+  const latestLivePreflight = livePreflight?.latest ?? livePreflight;
+  const livePreflightStatus = normalizeEvidenceStatus(
+    latestLivePreflight?.overall_status ??
+      latestLivePreflight?.status ??
+      latestLivePreflight?.state ??
+      livePreflight?.overall_status ??
+      livePreflight?.live_enablement_gate?.status,
+  );
+  const livePreflightBlockers = [
+    ...asStringArray(latestLivePreflight?.blocking_reasons),
+    ...asStringArray(latestLivePreflight?.blockers),
+    ...asStringArray(livePreflight?.live_enablement_gate?.blocking_reasons),
+    ...asStringArray(livePreflight?.live_enablement_gate?.blockers),
+    livePreflight?.live_enablement_gate?.reason,
+  ].filter(Boolean);
+  const livePreflightLastSeen = latestLivePreflight?.checked_at || latestLivePreflight?.updated_at || livePreflight?.checked_at || livePreflight?.updated_at;
+  const killSwitchState = normalizeEvidenceStatus(killSwitchStatus?.status ?? killSwitchStatus?.state);
+  const killSwitchTripped =
+    Boolean(killSwitchStatus?.tripped || killSwitchStatus?.active || killSwitchStatus?.killed) ||
+    ["ACTIVE", "BLOCKED", "FAIL", "FAILED", "TRIPPED"].includes(killSwitchState);
+  const liveSafetyState = normalizeEvidenceStatus(liveSafetySummary?.overall_status ?? liveSafetySummary?.status ?? liveSafetySummary?.state);
+  const liveSafetyBlockers = [...asStringArray(liveSafetySummary?.blocking_reasons), ...asStringArray(liveSafetySummary?.blockers)].filter(Boolean);
+  const liveSafetyWarnings = asStringArray(liveSafetySummary?.warnings);
+  const liveReadinessEvidence: LiveReadinessEvidenceItem[] = [
+    {
+      key: "architecture",
+      label: "Arquitectura LIVE prevista",
+      status: "pass",
+      detail: "La pantalla comunica adaptadores, gates, preflight, aprobacion, canary, rollback y auditoria como contrato de habilitacion.",
+      source: "RTLOPS-123 / contrato UI",
+    },
+    {
+      key: "submit",
+      label: "Submit real",
+      status: liveExecutionSubmitEnabled ? "pass" : "blocked",
+      detail: liveExecutionSubmitEnabled
+        ? "Backend declara runtime_ready_for_live y LIVE seleccionado; aun requiere confirmacion y auditoria antes de cualquier accion."
+        : dangerousLiveControlsReason,
+      source: "/api/v1/health + rol + contrato UI",
+    },
+    {
+      key: "runtime",
+      label: "Runtime LIVE",
+      status: liveEnabledByRuntime ? (runtimeReadyForLive ? "pass" : "blocked") : "na",
+      detail: liveEnabledByRuntime
+        ? `Modo runtime=${modeLabel(actualRuntimeModeKey)}; readiness=${runtimeReadyForLive ? "true" : "false"}.`
+        : `Modo actual ${modeLabel(actualRuntimeModeKey)}. LIVE sigue preparado pero no seleccionado para submit real.`,
+      source: "/api/v1/health",
+    },
+    {
+      key: "preflight",
+      label: "Preflight LIVE",
+      status: livePreflight ? statusToEvidence(livePreflightStatus, livePreflightBlockers.length > 0) : "pending",
+      detail: livePreflight
+        ? livePreflightBlockers.length
+          ? livePreflightBlockers.join(" · ")
+          : `Estado preflight=${livePreflightStatus || "sin estado explicito"}.`
+        : "Sin evidencia read-only disponible; ejecutar preflight controlado antes de habilitar submit real.",
+      source: "/api/v1/exchange/live-preflight",
+      lastSeen: livePreflightLastSeen,
+    },
+    {
+      key: "exchange",
+      label: "Permisos exchange",
+      status: exchangeDiag?.has_keys || settings?.credentials.exchange_configured ? (exchangeDiag?.ok ? "pass" : "warn") : "blocked",
+      detail:
+        exchangeDiag?.has_keys || settings?.credentials.exchange_configured
+          ? exchangeDiag?.ok
+            ? "Diagnostico de exchange OK para el modo actual; permisos LIVE siguen sujetos a preflight y approve."
+            : exchangeDiag?.last_error || exchangeDiag?.order_reason || exchangeDiag?.connector_reason || "Hay credenciales, pero el diagnostico aun no esta completamente OK."
+          : "No hay evidencia de credenciales exchange configuradas para habilitar submit real.",
+      source: "/api/v1/exchange/diagnose",
+    },
+    {
+      key: "gates",
+      label: "Risk gates",
+      status: gates?.overall_status === "PASS" ? "pass" : gates ? "blocked" : "pending",
+      detail:
+        gates?.overall_status === "PASS"
+          ? "Gates principales en PASS."
+          : gates
+            ? `Overall=${gates.overall_status}; revisar ${gates.gates.filter((row) => row.status !== "PASS").map((row) => row.id).join(", ") || "detalle de gates"}.`
+            : "Sin payload de gates; fail-closed para submit real.",
+      source: "/api/v1/gates",
+    },
+    {
+      key: "kill-switch",
+      label: "Kill switch",
+      status: killSwitchStatus ? (killSwitchTripped ? "blocked" : "pass") : "pending",
+      detail: killSwitchStatus
+        ? killSwitchTripped
+          ? killSwitchStatus.reason || `Estado=${killSwitchStatus.status || killSwitchStatus.state || "activo/tripped"}.`
+          : `Estado=${killSwitchStatus.status || killSwitchStatus.state || "listo"}; no bloquea por emergencia.`
+        : "Sin evidencia read-only de kill switch; mantener submit bloqueado hasta confirmarlo.",
+      source: "/api/v1/execution/kill-switch/status",
+      lastSeen: killSwitchStatus?.updated_at || killSwitchStatus?.last_trip_at || undefined,
+    },
+    {
+      key: "freshness",
+      label: "Freshness mercado/cuenta",
+      status: liveSafetySummary ? statusToEvidence(liveSafetyState, liveSafetyBlockers.length > 0) : "pending",
+      detail: liveSafetySummary
+        ? liveSafetyBlockers.length
+          ? liveSafetyBlockers.join(" · ")
+          : liveSafetyWarnings.length
+            ? liveSafetyWarnings.join(" · ")
+            : `Resumen live-safety=${liveSafetyState || "disponible"}; freshness debe mantenerse antes del submit.`
+        : "Sin resumen live-safety; requiere evidencia de market data y account stream antes de habilitar LIVE.",
+      source: "/api/v1/execution/live-safety/summary",
+      lastSeen: liveSafetySummary?.checked_at || liveSafetySummary?.updated_at,
+    },
+    {
+      key: "approval",
+      label: "Aprobacion + canary",
+      status: rollout?.live_stable_100_requires_approve ? (rollout.pending_live_approval ? "warn" : "pass") : "blocked",
+      detail: rollout?.live_stable_100_requires_approve
+        ? rollout.pending_live_approval
+          ? `Aprobacion pendiente${rollout.pending_live_approval_target ? ` para ${rollout.pending_live_approval_target}` : ""}.`
+          : `Approve humano obligatorio activo; rollout=${rollout.state || "IDLE"}.`
+        : "Falta confirmar approve humano obligatorio antes de permitir submit real.",
+      source: "/api/v1/rollout/status",
+    },
+    {
+      key: "audit",
+      label: "Auditoria y no mutacion",
+      status: "blocked",
+      detail: "Esta vista solo muestra evidencia y mantiene acciones sensibles bloqueadas hasta que submit real tenga aprobacion, preflight vigente y trazabilidad.",
+      source: "UI read-only / contrato operacional",
+    },
+  ];
 
   const botRowsFiltered = useMemo(() => {
     return botInstances.filter((row) => {
@@ -938,6 +1151,28 @@ export default function ExecutionPage() {
               {liveMissingSteps.length ? (
                 <p className="mt-1 text-xs text-sky-100/80">Para habilitar submit real falta: {liveMissingSteps.join(" · ")}.</p>
               ) : null}
+            </div>
+
+            <div className="rounded-lg border border-emerald-500/25 bg-slate-950/70 p-3 text-sm text-slate-100">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={liveExecutionSubmitEnabled ? "success" : "warn"}>
+                      {liveExecutionSubmitEnabled ? "SUBMIT HABILITABLE" : "SUBMIT BLOQUEADO"}
+                    </Badge>
+                    <span className="font-semibold">Evidencia LIVE-readiness</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Lectura fail-closed de preflight, permisos, gates, kill switch, freshness, canary, aprobacion y auditoria. No envia ordenes ni cambia estado.
+                  </p>
+                </div>
+                <Badge variant="info">LIVE-ready != orden real</Badge>
+              </div>
+              <div className="mt-3 grid gap-2 lg:grid-cols-2 xl:grid-cols-3">
+                {liveReadinessEvidence.map((item) => (
+                  <EvidenceRow key={item.key} item={item} />
+                ))}
+              </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -2276,6 +2511,33 @@ function joinReasons(...groups: Array<string[] | undefined>): string[] {
   return groups.flatMap((group) => (Array.isArray(group) ? group.filter(Boolean) : []));
 }
 
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function normalizeEvidenceStatus(value: unknown): string {
+  return String(value || "").trim().toUpperCase();
+}
+
+function statusToEvidence(status: string, hasBlockers = false): LiveEvidenceStatus {
+  if (hasBlockers) return "blocked";
+  if (["PASS", "PASSED", "OK", "READY", "VALID", "HEALTHY", "ENABLED", "SUCCESS"].includes(status)) return "pass";
+  if (["FAIL", "FAILED", "ERROR", "BLOCK", "BLOCKED", "TRIPPED", "DISABLED", "UNHEALTHY"].includes(status)) return "blocked";
+  if (["WARN", "WARNING", "DEGRADED", "STALE"].includes(status)) return "warn";
+  if (["NA", "N/A", "NOT_APPLICABLE", "NO_APLICA"].includes(status)) return "na";
+  return "pending";
+}
+
+function evidenceBadge(status: LiveEvidenceStatus): { variant: "success" | "danger" | "warn" | "neutral" | "info"; label: string } {
+  if (status === "pass") return { variant: "success", label: "PASS" };
+  if (status === "fail") return { variant: "danger", label: "FAIL" };
+  if (status === "blocked") return { variant: "danger", label: "BLOQUEADO" };
+  if (status === "warn") return { variant: "warn", label: "ATENCION" };
+  if (status === "na") return { variant: "neutral", label: "NO APLICA" };
+  return { variant: "neutral", label: "PENDIENTE" };
+}
+
 function paperPolicyText(enabled?: boolean) {
   return enabled ? "multi-symbol habilitado" : "single-intent seguro";
 }
@@ -2309,6 +2571,23 @@ function ChecklistRow({
         <Badge variant={badgeVariant}>{badgeText}</Badge>
       </div>
       <p className="mt-1 text-xs text-slate-400">{help}</p>
+    </div>
+  );
+}
+
+function EvidenceRow({ item }: { item: LiveReadinessEvidenceItem }) {
+  const badge = evidenceBadge(item.status);
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm font-medium text-slate-100">{item.label}</p>
+        <Badge variant={badge.variant}>{badge.label}</Badge>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-slate-300">{item.detail}</p>
+      <p className="mt-2 text-[11px] text-slate-500">
+        Fuente: {item.source}
+        {item.lastSeen ? ` · Ultima evidencia: ${item.lastSeen}` : ""}
+      </p>
     </div>
   );
 }

@@ -2,6 +2,19 @@
 
 ## 2026-05-05
 
+### RTLOPS-124 - Execution LIVE-readiness evidence panel
+- Se agrega un panel visible de evidencia LIVE-readiness en `Execution`.
+- Cambio:
+  - muestra `SUBMIT BLOQUEADO` o `SUBMIT HABILITABLE` como lectura fail-closed;
+  - desglosa arquitectura LIVE prevista, runtime, preflight, permisos exchange, risk gates, kill switch, freshness mercado/cuenta, aprobacion/canary y auditoria;
+  - usa endpoints read-only existentes: `/api/v1/health`, `/api/v1/gates`, `/api/v1/rollout/status`, `/api/v1/exchange/diagnose`, `/api/v1/exchange/live-preflight`, `/api/v1/execution/kill-switch/status` y `/api/v1/execution/live-safety/summary`;
+  - mantiene el copy `LIVE-ready != orden real`.
+- Limites:
+  - no se activa LIVE real;
+  - no se agregan submits ni ordenes;
+  - no se toca backend, Vercel/Railway settings, variables/secrets, DB, package files ni branch protection;
+  - `RTLOPS-106` sigue abierto.
+
 ### RTLOPS-123 - Execution LIVE-ready wording and activation contract
 - Se corrige el framing de `Execution` para comunicar arquitectura LIVE-ready, no una app `paper-only`.
 - Cambio:
