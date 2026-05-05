@@ -46,12 +46,12 @@ jobs:
 
     steps:
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -476,7 +476,7 @@ jobs:
 
       - name: Upload protected preview QA artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rtlops109a-protected-preview-qa
           path: rtlab_dashboard/diagnostics/rtlops109a-protected-preview-qa/

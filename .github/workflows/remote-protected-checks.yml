@@ -1,4 +1,4 @@
-﻿name: Remote Protected Checks (GitHub VM)
+name: Remote Protected Checks (GitHub VM)
 
 on:
   workflow_dispatch:
@@ -47,10 +47,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -154,7 +154,7 @@ jobs:
 
       - name: Upload protected-check artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: protected-checks-${{ github.run_id }}
           path: |

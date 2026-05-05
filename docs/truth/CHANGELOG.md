@@ -2,6 +2,21 @@
 
 ## 2026-05-05
 
+### RTLOPS-121 - GitHub Actions Node24 readiness
+- Se auditaron workflows criticos ante la deprecacion de Node.js 20 en acciones oficiales de GitHub Actions.
+- Evidencia:
+  - el run canary/protected QA `25373591442` reporto warning Node.js 20 para `actions/checkout@v4` y `actions/upload-artifact@v4`;
+  - se revisaron las versiones usadas de `actions/checkout`, `actions/setup-node`, `actions/setup-python` y `actions/upload-artifact`.
+- Cambio administrativo:
+  - `actions/checkout` -> `v6`;
+  - `actions/setup-node` -> `v6`;
+  - `actions/setup-python` -> `v6`;
+  - `actions/upload-artifact` -> `v7`.
+- Limites:
+  - no se cambiaron triggers, inputs de workflows, secrets ni permisos;
+  - no se toco producto, backend, frontend funcional, package files, Vercel/Railway settings, DB ni branch protection;
+  - `RTLOPS-106` sigue abierto por Vercel Git Integration / `routes-manifest-deterministic`.
+
 ### RTLOPS-118 - cierre administrativo post Railway production fix
 - Se cerro la regresion final posterior a `RTLOPS-117`.
 - Railway production quedo alineado al build context funcional de staging:

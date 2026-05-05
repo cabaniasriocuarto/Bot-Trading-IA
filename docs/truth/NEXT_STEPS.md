@@ -2,6 +2,29 @@
 
 Fecha: 2026-05-05
 
+## RTLOPS-121 - GitHub Actions Node24 readiness - 2026-05-05
+- [x] Auditar workflows bajo `.github/workflows/*.yml`.
+- [x] Identificar acciones oficiales con runtime Node.js 20 o candidatas al cambio Node 24:
+  - `actions/checkout`;
+  - `actions/setup-node`;
+  - `actions/setup-python`;
+  - `actions/upload-artifact`.
+- [x] Actualizar versiones oficiales compatibles con Node 24 sin cambiar triggers, inputs, secrets ni logica funcional.
+- [x] Mantener fuera de alcance:
+  - producto/frontend funcional/backend;
+  - package files;
+  - Vercel/Railway settings;
+  - variables/secrets;
+  - DB, branch protection y RTLOPS-69 Slice 3.
+- [ ] Abrir PR administrativa contra `main`.
+- [ ] Esperar Security CI y checks remotos.
+- [ ] Si Vercel Git Integration falla por `RTLOPS-106`, clasificarlo como esperado y no como bug de este bloque.
+- [ ] Ejecutar o reutilizar workflow critico manual solo si hace falta y sin deploy/mutaciones.
+- [ ] Mantener `RTLOPS-106` abierto:
+  - deuda externa Vercel Git Integration / `routes-manifest-deterministic`;
+  - link Community vigente;
+  - `RTLOPS-107` sigue siendo workaround temporal, no fix definitivo.
+
 ## RTLOPS-118 - cierre administrativo y regresion final post Railway production fix - 2026-05-05
 - [x] Confirmar Railway production actual:
   - deployment `5a6fb353-cba9-43ab-a8ea-53a8ddb3bbef`;
