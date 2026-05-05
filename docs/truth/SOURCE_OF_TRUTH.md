@@ -2,6 +2,23 @@
 
 Fecha de actualizacion: 2026-05-05
 
+## RTLOPS-124 - Execution LIVE-readiness evidence panel - 2026-05-05
+
+- Estado real:
+  - `RTLOPS-123` corrigio el framing de `Execution`: el producto es LIVE-ready, no `paper-only`;
+  - faltaba ordenar evidencia visible para explicar por que el submit real queda bloqueado o eventualmente habilitable.
+- Cambio funcional chico:
+  - `Execution` agrega un panel `Evidencia LIVE-readiness`;
+  - muestra estado `PASS`, `FAIL`, `PENDIENTE`, `BLOQUEADO` o `NO APLICA` por cada evidencia;
+  - usa lecturas read-only existentes de `/api/v1/health`, `/api/v1/gates`, `/api/v1/rollout/status`, `/api/v1/exchange/diagnose`, `/api/v1/exchange/live-preflight`, `/api/v1/execution/kill-switch/status` y `/api/v1/execution/live-safety/summary`;
+  - deja claro que `LIVE-ready != orden real` y que el submit real sigue bloqueado hasta readiness, gates, preflight, permisos, kill switch, freshness, canary, aprobacion y auditoria.
+- Limites:
+  - no activa LIVE real;
+  - no envia ordenes reales;
+  - no agrega submit real nuevo ni mutaciones;
+  - no toca backend, Binance keys, Vercel/Railway settings, variables/secrets, DB, branch protection, package files ni RTLOPS-106;
+  - `RTLOPS-106` sigue abierto como deuda externa de Vercel Git Integration / `routes-manifest-deterministic`.
+
 ## RTLOPS-123 - Execution LIVE-ready wording and activation contract - 2026-05-05
 
 - Estado real:
