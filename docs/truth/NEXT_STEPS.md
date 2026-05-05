@@ -1,6 +1,38 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-05-04
+Fecha: 2026-05-05
+
+## RTLOPS-118 - cierre administrativo y regresion final post Railway production fix - 2026-05-05
+- [x] Confirmar Railway production actual:
+  - deployment `5a6fb353-cba9-43ab-a8ea-53a8ddb3bbef`;
+  - commit `764faf646b525e93c44c0d98084d0cf34a1c2156`;
+  - status `SUCCESS`;
+  - rootDirectory repo root equivalente (`""`/null).
+- [x] Confirmar backend production:
+  - `/api/v1/health=200`;
+  - `/openapi.json` contiene `/api/v1/research/dataset-preflight`;
+  - POST directo sin auth a dataset-preflight responde `401`, no `404`.
+- [x] Reusar regresion QA autenticada reciente:
+  - workflow `RTLOPS-109A Protected Preview QA`;
+  - run `25352773864`;
+  - `access_status=app`;
+  - login viewer OK;
+  - `/api/auth/me=200`;
+  - APIs principales `200`;
+  - Portfolio/Execution guardrails disabled;
+  - sin ordenes ni mutaciones.
+- [x] Confirmar que el residual `dataset-preflight` ya no registra respuestas `404`.
+- [x] Cerrar/coherenciar Linear para `RTLOPS-112/113/114/115/116/117/118` segun evidencia.
+- [ ] Mantener `RTLOPS-106` abierto:
+  - deuda externa Vercel Git Integration / `routes-manifest-deterministic`;
+  - link Community vigente;
+  - `RTLOPS-107` sigue siendo workaround temporal, no fix definitivo.
+
+## Siguiente bloque recomendado - 2026-05-05
+- [ ] Hacer cierre/release-readiness chico posterior al frente QA:
+  - verificar que no queden issues `RTLOPS-112` a `RTLOPS-118` en estado inconsistente;
+  - decidir si corresponde abrir bloque de canary/release o volver a backlog funcional;
+  - revisar `RTLOPS-106` cuando responda Vercel, en 7 dias, antes de release/canary/produccion o si falla el workflow prebuilt/protected QA.
 
 ## RTLOPS-112 - QA autenticado read-only del preview protegido - 2026-05-04
 - [x] Confirmar que la app usa credenciales por env vars, no tabla de usuarios.
