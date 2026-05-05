@@ -2449,3 +2449,11 @@ Fecha: 2026-05-05
 ### Siguiente bloque recomendado
 1. Repetir el workflow de Beast E2E para una segunda estrategia real o para otro simbolo del pool, sin abrir cambios de producto si el runtime sigue sano.
 2. Si el objetivo pasa a cobertura de pool, abrir un bloque chico de datos para poblar timeframes/simbolos faltantes en `/app/user_data/data`.
+- Cost Stack / Reporting (2026-05-05):
+  - [x] Agregar superficie read-only `/reporting` para visibilizar el Cost Stack backend existente.
+  - [x] Mostrar gross/net PnL, fees, spread, slippage, funding, borrow interest y ledger reporting sin mutaciones.
+  - [x] Marcar `taxCommission` y `specialCommission` como pendientes/no soportados todavia.
+  - [ ] Definir contrato seguro de descarga/generacion de exports si se quiere habilitar botones XLSX/PDF desde UI.
+  - [ ] Completar RTLOPS-61: snapshots live por familia para fees/spread/slippage/funding/borrow_interest con freshness canonica.
+  - [ ] Completar RTLOPS-62: paridad expected vs realized + integracion reporting/export verificable end-to-end.
+  - [ ] Mantener RTLOPS-106 abierto; RTLOPS-107/prebuilt sigue como workaround temporal con revision periodica.
