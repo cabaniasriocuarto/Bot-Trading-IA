@@ -383,6 +383,31 @@ export default function ExecutionPage() {
   const runtimeModeLower = String(modeDraft || settings?.mode || "PAPER").toLowerCase();
   const runtimeModeKey: "paper" | "testnet" | "live" =
     runtimeModeLower === "live" ? "live" : runtimeModeLower === "testnet" ? "testnet" : "paper";
+  const runtimeReadyForLive = Boolean(health?.runtime_ready_for_live);
+  const liveRealActive = runtimeModeKey === "live" && runtimeReadyForLive;
+  const liveSafetyBadge = liveRealActive ? "LIVE real listo" : runtimeModeKey === "testnet" ? "TESTNET / no-live" : "PAPER / no-live";
+  const liveSafetyDetail = liveRealActive
+    ? "El runtime declara readiness para LIVE. Mantener approve humano, gates y canary antes de cualquier operacion real."
+    : runtimeModeKey === "live"
+      ? "LIVE esta seleccionado, pero runtime_ready_for_live=false: las acciones live peligrosas quedan bloqueadas fail-closed."
+      : `Modo ${modeLabel(runtimeModeKey).toUpperCase()}: entorno seguro para diagnostico/read-only; no habilita ordenes reales.`;
+  const liveMissingSteps = [
+    !runtimeReadyForLive ? "runtime_ready_for_live=true" : "",
+    ...liveBlockingItems.map((row) => row.label),
+    rollout?.live_stable_100_requires_approve ? "" : "approve humano obligatorio",
+  ].filter(Boolean);
+  const runtimeControlDisabled = role !== "admin" || !!actionLoading || (runtimeModeKey === "live" && !canTradeLiveNow);
+  const dangerousLiveControlsDisabled = role !== "admin" || !!actionLoading || onCooldown || !liveRealActive || !canTradeLiveNow;
+  const dangerousLiveControlsReason =
+    role !== "admin"
+      ? "Rol viewer: controles operativos en solo lectura."
+      : !liveRealActive
+        ? "LIVE real apagado o runtime_ready_for_live=false: accion peligrosa bloqueada."
+        : !canTradeLiveNow
+          ? `Checklist LIVE incompleto: ${liveBlockingItems.map((row) => row.label).join(", ") || "faltan validaciones"}.`
+          : onCooldown
+            ? "Cooldown critico activo para evitar acciones repetidas."
+            : "Disponible solo con LIVE real listo, gates OK y approve humano.";
 
   const botRowsFiltered = useMemo(() => {
     return botInstances.filter((row) => {
@@ -836,6 +861,8 @@ export default function ExecutionPage() {
           <CardContent className="space-y-4">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               <Metric title="Modo runtime" value={health ? modeLabel(health.exchange.mode) : settings ? modeLabel(settings.mode) : "--"} compact />
+              <Metric title="LIVE real" value={liveRealActive ? "activo" : "apagado"} compact />
+              <Metric title="Readiness LIVE" value={runtimeReadyForLive ? "true" : "false"} compact />
               <Metric title="Exchange activo" value={selectedExchange.toUpperCase()} compact />
               <Metric title="WS/SSE backend" value={health ? (health.ws.connected ? "conectado" : "desconectado") : "--"} compact />
               <Metric title="Estado bot" value={botStatus ? statusLabel(botStatus.bot_status) : "--"} compact />
@@ -887,11 +914,32 @@ export default function ExecutionPage() {
               </div>
             </div>
 
+            <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm text-sky-100">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={liveRealActive ? "success" : "info"}>{liveSafetyBadge}</Badge>
+                <span className="font-semibold">Postura operativa segura</span>
+              </div>
+              <p className="mt-2 text-xs text-sky-100/90">{liveSafetyDetail}</p>
+              <p className="mt-2 text-xs text-sky-100/80">
+                Acciones peligrosas: {dangerousLiveControlsDisabled ? "disabled" : "habilitadas con confirmacion"}.
+                {dangerousLiveControlsDisabled ? ` Motivo: ${dangerousLiveControlsReason}` : " Requieren doble confirmacion y auditoria."}
+              </p>
+              {liveMissingSteps.length ? (
+                <p className="mt-1 text-xs text-sky-100/80">Para habilitar LIVE en el futuro falta: {liveMissingSteps.join(" · ")}.</p>
+              ) : null}
+            </div>
+
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <ActionButton
                 label={actionLoading === "/api/v1/bot/start" ? "Iniciando..." : "Iniciar"}
-                help={selectedExecutionBot ? `Inicia usando el pool del bot: ${getBotDisplayName(selectedExecutionBot)}` : "Inicia el bot con la estrategia principal del modo actual."}
-                disabled={role !== "admin" || !!actionLoading}
+                help={
+                  runtimeModeKey === "live" && !canTradeLiveNow
+                    ? `Bloqueado para LIVE: ${liveBlockingItems.map((row) => row.label).join(", ") || "faltan validaciones"}.`
+                    : selectedExecutionBot
+                      ? `Inicia usando el pool del bot: ${getBotDisplayName(selectedExecutionBot)}.`
+                      : "Inicia el bot con la estrategia principal del modo actual."
+                }
+                disabled={runtimeControlDisabled}
                 onClick={() => void runControlAction("/api/v1/bot/start", selectedExecutionBotId ? { bot_id: selectedExecutionBotId } : undefined, { successMessage: "Bot iniciado." })}
               />
               <ActionButton
@@ -910,8 +958,14 @@ export default function ExecutionPage() {
               />
               <ActionButton
                 label={actionLoading === "/api/v1/control/resume" ? "Reanudando..." : "Reanudar"}
-                help={selectedExecutionBot ? `Reanuda usando el pool del bot: ${getBotDisplayName(selectedExecutionBot)}` : "Reanuda la operativa usando la estrategia principal del modo actual."}
-                disabled={role !== "admin" || !!actionLoading}
+                help={
+                  runtimeModeKey === "live" && !canTradeLiveNow
+                    ? `Bloqueado para LIVE: ${liveBlockingItems.map((row) => row.label).join(", ") || "faltan validaciones"}.`
+                    : selectedExecutionBot
+                      ? `Reanuda usando el pool del bot: ${getBotDisplayName(selectedExecutionBot)}.`
+                      : "Reanuda la operativa usando la estrategia principal del modo actual."
+                }
+                disabled={runtimeControlDisabled}
                 onClick={() => void runControlAction("/api/v1/control/resume", selectedExecutionBotId ? { bot_id: selectedExecutionBotId } : undefined, { successMessage: "Bot reanudado." })}
               />
               <ActionButton
@@ -930,9 +984,9 @@ export default function ExecutionPage() {
               />
               <ActionButton
                 label="Cerrar posiciones"
-                help="Solicitud de cierre de todas las posiciones (soft action). Revisa logs y confirmacion del exchange."
+                help={`Solicitud de cierre de todas las posiciones. ${dangerousLiveControlsReason}`}
                 variant="outline"
-                disabled={role !== "admin" || !!actionLoading || onCooldown}
+                disabled={dangerousLiveControlsDisabled}
                 onClick={() =>
                   void runControlAction("/api/v1/control/close-all", undefined, {
                     confirm: "Confirmar solicitud de cierre de todas las posiciones?",
@@ -942,9 +996,9 @@ export default function ExecutionPage() {
               />
               <ActionButton
                 label="Kill switch"
-                help="Interruptor de emergencia: detiene trading y activa safe mode. Requiere doble confirmacion."
+                help={`Interruptor de emergencia con doble confirmacion. ${dangerousLiveControlsReason}`}
                 variant="danger"
-                disabled={role !== "admin" || !!actionLoading || onCooldown}
+                disabled={dangerousLiveControlsDisabled}
                 onClick={() => {
                   const ok = window.confirm("Confirmar Kill switch (emergencia). Esto detiene el trading.");
                   if (!ok) return;
@@ -2262,9 +2316,12 @@ function ActionButton({
   variant?: "default" | "secondary" | "outline" | "danger";
 }) {
   return (
-    <Button className="w-full" variant={variant} disabled={disabled} onClick={onClick} title={help}>
-      {label}
-    </Button>
+    <div className="space-y-1">
+      <Button className="w-full" variant={variant} disabled={disabled} onClick={onClick} title={help}>
+        {label}
+      </Button>
+      <p className={disabled ? "text-[11px] leading-snug text-slate-500" : "text-[11px] leading-snug text-slate-400"}>{help}</p>
+    </div>
   );
 }
 

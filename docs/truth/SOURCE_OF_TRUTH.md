@@ -2,6 +2,24 @@
 
 Fecha de actualizacion: 2026-05-05
 
+## RTLOPS-122 - Execution paper/testnet guardrails clarity - 2026-05-05
+
+- Estado real:
+  - despues de `RTLOPS-120` y `RTLOPS-121`, el sistema queda en postura segura `paper/testnet/read-only`;
+  - `Execution` necesitaba explicitar mejor el estado operativo: modo actual, LIVE real apagado, `runtime_ready_for_live=false` y motivos de bloqueo.
+- Cambio funcional chico:
+  - `Execution` agrega una banda de `Postura operativa segura`;
+  - muestra `LIVE real` y `Readiness LIVE` como metricas visibles;
+  - explica por que acciones peligrosas quedan disabled;
+  - lista que falta para habilitar LIVE en el futuro;
+  - `Cerrar posiciones` y `Kill switch` quedan bloqueados cuando LIVE real no esta activo/listo.
+- Limites:
+  - no activa LIVE;
+  - no envia ordenes reales;
+  - no agrega mutaciones peligrosas;
+  - no toca Vercel/Railway settings, variables/secrets, DB, branch protection, package files ni RTLOPS-106;
+  - `RTLOPS-106` sigue abierto como deuda externa de Vercel Git Integration / `routes-manifest-deterministic`.
+
 ## RTLOPS-121 - GitHub Actions Node24 readiness - 2026-05-05
 
 - Estado real:

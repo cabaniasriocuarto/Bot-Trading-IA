@@ -2,6 +2,24 @@
 
 Fecha: 2026-05-05
 
+## RTLOPS-122 - Execution paper/testnet guardrails clarity - 2026-05-05
+- [x] Crear issue funcional chico para Execution guardrails.
+- [x] Crear rama `feature/rtlops-122-execution-paper-testnet-guardrails`.
+- [x] Relevar backend/frontend sin tocar infra:
+  - `/api/v1/health` expone `runtime_ready_for_live`;
+  - `Execution` ya consume `health`, `settings`, `gates`, `rollout`, `bot/status` y controles operativos.
+- [x] Agregar claridad visual:
+  - modo actual;
+  - LIVE real apagado/activo;
+  - readiness LIVE;
+  - motivo de bloqueo de acciones peligrosas;
+  - pendientes para habilitar LIVE.
+- [x] Mantener acciones peligrosas disabled cuando LIVE real no esta listo.
+- [ ] Correr validaciones frontend.
+- [ ] Abrir PR contra `main`.
+- [ ] Si Vercel Git Integration falla por `RTLOPS-106`, clasificarlo como esperado.
+- [ ] Mantener `RTLOPS-106` abierto.
+
 ## RTLOPS-121 - GitHub Actions Node24 readiness - 2026-05-05
 - [x] Auditar workflows bajo `.github/workflows/*.yml`.
 - [x] Identificar acciones oficiales con runtime Node.js 20 o candidatas al cambio Node 24:

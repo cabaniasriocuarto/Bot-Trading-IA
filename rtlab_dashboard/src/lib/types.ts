@@ -18,6 +18,10 @@ export interface HealthResponse {
   ok: boolean;
   time: string;
   version: string;
+  mode?: string;
+  runtime_ready_for_live?: boolean;
+  runtime_telemetry_fail_closed?: boolean;
+  runtime_telemetry_source?: string;
   ws: {
     connected: boolean;
     transport: "sse" | "ws";
