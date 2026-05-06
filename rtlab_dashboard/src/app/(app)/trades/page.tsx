@@ -6,11 +6,24 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "@/components/providers/session-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet, apiPost } from "@/lib/client-api";
+import {
+  commissionCoverageRows,
+  sourceLabel,
+  statusVariant,
+  type ReportingCostsBreakdown,
+  type ReportingTrade,
+  type ReportingTradesResponse,
+} from "@/lib/cost-stack";
 import type { Strategy, Trade } from "@/lib/types";
 import { fmtPct, fmtUsd } from "@/lib/utils";
 
@@ -32,9 +45,18 @@ type TradesSummaryResponse = {
   totals: TradesSummaryBucket;
   by_environment: Array<TradesSummaryBucket & { environment: string }>;
   by_mode: Array<TradesSummaryBucket & { mode: string; environment: string }>;
-  by_strategy: Array<TradesSummaryBucket & { strategy_id: string; strategy_name: string }>;
+  by_strategy: Array<
+    TradesSummaryBucket & { strategy_id: string; strategy_name: string }
+  >;
   by_day: Array<TradesSummaryBucket & { day: string }>;
-  by_strategy_day: Array<TradesSummaryBucket & { strategy_id: string; strategy_name: string; day: string; environment: string }>;
+  by_strategy_day: Array<
+    TradesSummaryBucket & {
+      strategy_id: string;
+      strategy_name: string;
+      day: string;
+      environment: string;
+    }
+  >;
 };
 
 type TradeFilters = {
@@ -50,7 +72,16 @@ type TradeFilters = {
   date_to: string;
 };
 
-type TradeSortKey = "exit_time" | "entry_time" | "strategy_id" | "symbol" | "run_mode" | "pnl_net" | "fees" | "slippage" | "qty";
+type TradeSortKey =
+  | "exit_time"
+  | "entry_time"
+  | "strategy_id"
+  | "symbol"
+  | "run_mode"
+  | "pnl_net"
+  | "fees"
+  | "slippage"
+  | "qty";
 
 const EMPTY_FILTERS: TradeFilters = {
   strategy_id: "",
@@ -65,15 +96,109 @@ const EMPTY_FILTERS: TradeFilters = {
   date_to: "",
 };
 
+type TradeCostStackView = {
+  grossPnl: number | undefined;
+  netPnl: number | undefined;
+  fees: number | undefined;
+  spread: number | undefined;
+  slippage: number | undefined;
+  funding: number | undefined;
+  borrowInterest: number | undefined;
+  source: string;
+  status: string;
+  freshness: string;
+};
+
+function firstNumber(
+  ...values: Array<number | null | undefined>
+): number | undefined {
+  return values.find(
+    (value): value is number =>
+      typeof value === "number" && Number.isFinite(value),
+  );
+}
+
+function findReportingTrade(
+  row: Trade,
+  reportingTrades: ReportingTradesResponse | null,
+): ReportingTrade | undefined {
+  const rowExt = row as Trade & { run_id?: string };
+  const id = String(row.id || "");
+  return reportingTrades?.items?.find((item) => {
+    if (
+      id &&
+      (String(item.trade_ref || "") === id ||
+        String(item.trade_cost_id || "") === id)
+    )
+      return true;
+    return Boolean(
+      rowExt.run_id &&
+      item.run_id === rowExt.run_id &&
+      item.symbol === row.symbol &&
+      item.strategy_id === row.strategy_id,
+    );
+  });
+}
+
+function tradeCostStack(
+  row: Trade,
+  reportingTrades: ReportingTradesResponse | null,
+  breakdown: ReportingCostsBreakdown | null,
+): TradeCostStackView {
+  const reportingRow = findReportingTrade(row, reportingTrades);
+  const hasReportingEvidence = Boolean(reportingRow);
+  return {
+    grossPnl: firstNumber(reportingRow?.gross_pnl, row.pnl),
+    netPnl: firstNumber(reportingRow?.net_pnl, row.pnl_net),
+    fees: firstNumber(
+      reportingRow?.exchange_fee_realized,
+      reportingRow?.exchange_fee_estimated,
+      row.fees,
+    ),
+    spread: firstNumber(
+      reportingRow?.spread_realized,
+      reportingRow?.spread_estimated,
+    ),
+    slippage: firstNumber(
+      reportingRow?.slippage_realized,
+      reportingRow?.slippage_estimated,
+      row.slippage,
+    ),
+    funding: firstNumber(
+      reportingRow?.funding_realized,
+      reportingRow?.funding_estimated,
+    ),
+    borrowInterest: firstNumber(
+      reportingRow?.borrow_interest_realized,
+      reportingRow?.borrow_interest_estimated,
+    ),
+    source: reportingRow ? sourceLabel(reportingRow) : "trades endpoint",
+    status: hasReportingEvidence ? "DISPONIBLE" : "PARCIAL",
+    freshness: breakdown?.freshness_status || "unknown",
+  };
+}
+
+function moneyOrPending(value: number | undefined): string {
+  return value == null ? "pendiente" : fmtUsd(value);
+}
+
 export default function TradesPage() {
   const { role } = useSession();
   const [trades, setTrades] = useState<Trade[]>([]);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
-  const [summaryData, setSummaryData] = useState<TradesSummaryResponse | null>(null);
+  const [summaryData, setSummaryData] = useState<TradesSummaryResponse | null>(
+    null,
+  );
+  const [reportingBreakdown, setReportingBreakdown] =
+    useState<ReportingCostsBreakdown | null>(null);
+  const [reportingTrades, setReportingTrades] =
+    useState<ReportingTradesResponse | null>(null);
   const [busyDelete, setBusyDelete] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
   const [deleteError, setDeleteError] = useState("");
-  const [deletePreviewCount, setDeletePreviewCount] = useState<number | null>(null);
+  const [deletePreviewCount, setDeletePreviewCount] = useState<number | null>(
+    null,
+  );
   const [selectedTradeIds, setSelectedTradeIds] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<"30" | "60" | "100">("30");
@@ -95,25 +220,57 @@ export default function TradesPage() {
     if (filters.date_from) params.set("date_from", filters.date_from);
     if (filters.date_to) params.set("date_to", filters.date_to);
     params.set("limit", "5000");
-    const [tradesRows, stgRows, summaryRows] = await Promise.all([
+    const [
+      tradesRows,
+      stgRows,
+      summaryRows,
+      breakdownRows,
+      reportingTradeRows,
+    ] = await Promise.all([
       apiGet<Trade[]>(`/api/v1/trades?${params.toString()}`),
       apiGet<Strategy[]>("/api/v1/strategies"),
-      apiGet<TradesSummaryResponse>(`/api/v1/trades/summary?${params.toString()}`),
+      apiGet<TradesSummaryResponse>(
+        `/api/v1/trades/summary?${params.toString()}`,
+      ),
+      apiGet<ReportingCostsBreakdown>(
+        "/api/v1/reporting/costs/breakdown",
+      ).catch(() => null),
+      apiGet<ReportingTradesResponse>(
+        "/api/v1/reporting/trades?limit=5000",
+      ).catch(() => null),
     ]);
     setTrades(tradesRows);
     setStrategies(stgRows);
     setSummaryData(summaryRows);
+    setReportingBreakdown(breakdownRows);
+    setReportingTrades(reportingTradeRows);
   }, [filters]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const uniqueSymbols = useMemo(() => [...new Set(trades.map((row) => row.symbol))], [trades]);
-  const uniqueReasons = useMemo(() => [...new Set(trades.map((row) => row.reason_code))], [trades]);
-  const uniqueExits = useMemo(() => [...new Set(trades.map((row) => row.exit_reason))], [trades]);
+  const uniqueSymbols = useMemo(
+    () => [...new Set(trades.map((row) => row.symbol))],
+    [trades],
+  );
+  const uniqueReasons = useMemo(
+    () => [...new Set(trades.map((row) => row.reason_code))],
+    [trades],
+  );
+  const uniqueExits = useMemo(
+    () => [...new Set(trades.map((row) => row.exit_reason))],
+    [trades],
+  );
   const uniqueModes = useMemo(
-    () => [...new Set(trades.map((row) => String((row as Trade & { run_mode?: string }).run_mode || "")))].filter(Boolean),
+    () =>
+      [
+        ...new Set(
+          trades.map((row) =>
+            String((row as Trade & { run_mode?: string }).run_mode || ""),
+          ),
+        ),
+      ].filter(Boolean),
     [trades],
   );
 
@@ -125,9 +282,21 @@ export default function TradesPage() {
     const netPnl = trades.reduce((acc, t) => acc + Number(t.pnl_net || 0), 0);
     const grossPnl = trades.reduce((acc, t) => acc + Number(t.pnl || 0), 0);
     const fees = trades.reduce((acc, t) => acc + Number(t.fees || 0), 0);
-    const slippage = trades.reduce((acc, t) => acc + Number(t.slippage || 0), 0);
+    const slippage = trades.reduce(
+      (acc, t) => acc + Number(t.slippage || 0),
+      0,
+    );
     const holdAvg = total
-      ? trades.reduce((acc, t) => acc + Math.abs(new Date(t.exit_time).getTime() - new Date(t.entry_time).getTime()) / 60_000, 0) / total
+      ? trades.reduce(
+          (acc, t) =>
+            acc +
+            Math.abs(
+              new Date(t.exit_time).getTime() -
+                new Date(t.entry_time).getTime(),
+            ) /
+              60_000,
+          0,
+        ) / total
       : 0;
     return {
       trades: total,
@@ -155,10 +324,17 @@ export default function TradesPage() {
     () => (summaryData?.by_strategy_day || []).slice(0, Number(topRowsSize)),
     [summaryData, topRowsSize],
   );
+  const commissionCoverage = useMemo(
+    () => commissionCoverageRows(reportingBreakdown).slice(0, 3),
+    [reportingBreakdown],
+  );
 
   const sortedTrades = useMemo(() => {
     const rows = [...trades];
-    const getMode = (row: Trade) => String((row as Trade & { run_mode?: string }).run_mode || "backtest").toLowerCase();
+    const getMode = (row: Trade) =>
+      String(
+        (row as Trade & { run_mode?: string }).run_mode || "backtest",
+      ).toLowerCase();
     const dateNum = (raw: string | undefined | null) => {
       const ts = raw ? new Date(raw).getTime() : 0;
       return Number.isFinite(ts) ? ts : 0;
@@ -210,7 +386,8 @@ export default function TradesPage() {
         if (cmp !== 0) return cmp * dir;
         return String(a.id || "").localeCompare(String(b.id || "")) * dir;
       }
-      if (av === bv) return String(a.id || "").localeCompare(String(b.id || "")) * dir;
+      if (av === bv)
+        return String(a.id || "").localeCompare(String(b.id || "")) * dir;
       return (Number(av) - Number(bv)) * dir;
     });
     return rows;
@@ -265,11 +442,20 @@ export default function TradesPage() {
     setDeleteError("");
     setDeleteMessage("");
     try {
-      const res = await apiPost<{ deleted_count: number; dry_run: boolean }>("/api/v1/trades/bulk-delete", deletePayloadFromFilters(true));
+      const res = await apiPost<{ deleted_count: number; dry_run: boolean }>(
+        "/api/v1/trades/bulk-delete",
+        deletePayloadFromFilters(true),
+      );
       setDeletePreviewCount(Number(res?.deleted_count || 0));
-      setDeleteMessage(`Preview: ${Number(res?.deleted_count || 0)} operaciones coinciden con los filtros actuales.`);
+      setDeleteMessage(
+        `Preview: ${Number(res?.deleted_count || 0)} operaciones coinciden con los filtros actuales.`,
+      );
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "No se pudo calcular el preview de borrado.");
+      setDeleteError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo calcular el preview de borrado.",
+      );
     } finally {
       setBusyDelete(false);
     }
@@ -285,29 +471,50 @@ export default function TradesPage() {
         : filters.environment === "prueba"
           ? "entorno prueba (backtest/paper/testnet)"
           : "todos los entornos";
-    const label = filters.mode ? `modo ${filters.mode} en ${envLabel}` : `${envLabel} con los filtros actuales`;
-    const ok = window.confirm(`Vas a borrar ${trades.length} operaciones de ${label}. Esta accion modifica el historial de runs. Continuar?`);
+    const label = filters.mode
+      ? `modo ${filters.mode} en ${envLabel}`
+      : `${envLabel} con los filtros actuales`;
+    const ok = window.confirm(
+      `Vas a borrar ${trades.length} operaciones de ${label}. Esta accion modifica el historial de runs. Continuar?`,
+    );
     if (!ok) return;
     setBusyDelete(true);
     try {
-      const res = await apiPost<{ deleted_count: number }>("/api/v1/trades/bulk-delete", deletePayloadFromFilters(false));
+      const res = await apiPost<{ deleted_count: number }>(
+        "/api/v1/trades/bulk-delete",
+        deletePayloadFromFilters(false),
+      );
       await refresh();
       setDeletePreviewCount(null);
       setSelectedTradeIds([]);
-      setDeleteMessage(`Borradas ${Number(res?.deleted_count || 0)} operaciones filtradas.`);
+      setDeleteMessage(
+        `Borradas ${Number(res?.deleted_count || 0)} operaciones filtradas.`,
+      );
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "No se pudieron borrar las operaciones filtradas.");
+      setDeleteError(
+        err instanceof Error
+          ? err.message
+          : "No se pudieron borrar las operaciones filtradas.",
+      );
     } finally {
       setBusyDelete(false);
     }
   };
 
-  const pageIds = useMemo(() => pageRows.map((row) => String(row.id)), [pageRows]);
-  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedTradeIds.includes(id));
+  const pageIds = useMemo(
+    () => pageRows.map((row) => String(row.id)),
+    [pageRows],
+  );
+  const allPageSelected =
+    pageIds.length > 0 && pageIds.every((id) => selectedTradeIds.includes(id));
   const selectedTradesCount = selectedTradeIds.length;
 
   const toggleSelectTrade = (tradeId: string) => {
-    setSelectedTradeIds((prev) => (prev.includes(tradeId) ? prev.filter((id) => id !== tradeId) : [...prev, tradeId]));
+    setSelectedTradeIds((prev) =>
+      prev.includes(tradeId)
+        ? prev.filter((id) => id !== tradeId)
+        : [...prev, tradeId],
+    );
   };
 
   const toggleSelectPageTrades = () => {
@@ -327,20 +534,31 @@ export default function TradesPage() {
     if (role !== "admin" || !selectedTradeIds.length) return;
     setDeleteError("");
     setDeleteMessage("");
-    const ok = window.confirm(`Vas a borrar ${selectedTradeIds.length} operaciones seleccionadas. Esta accion es irreversible. Continuar?`);
+    const ok = window.confirm(
+      `Vas a borrar ${selectedTradeIds.length} operaciones seleccionadas. Esta accion es irreversible. Continuar?`,
+    );
     if (!ok) return;
     setBusyDelete(true);
     try {
-      const res = await apiPost<{ deleted_count: number }>("/api/v1/trades/bulk-delete", {
-        ids: selectedTradeIds,
-        dry_run: false,
-      });
+      const res = await apiPost<{ deleted_count: number }>(
+        "/api/v1/trades/bulk-delete",
+        {
+          ids: selectedTradeIds,
+          dry_run: false,
+        },
+      );
       await refresh();
       setDeletePreviewCount(null);
       setSelectedTradeIds([]);
-      setDeleteMessage(`Borradas ${Number(res?.deleted_count || 0)} operaciones seleccionadas.`);
+      setDeleteMessage(
+        `Borradas ${Number(res?.deleted_count || 0)} operaciones seleccionadas.`,
+      );
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "No se pudieron borrar las operaciones seleccionadas.");
+      setDeleteError(
+        err instanceof Error
+          ? err.message
+          : "No se pudieron borrar las operaciones seleccionadas.",
+      );
     } finally {
       setBusyDelete(false);
     }
@@ -350,11 +568,21 @@ export default function TradesPage() {
     <div className="space-y-4">
       <Card>
         <CardTitle>Operaciones</CardTitle>
-        <CardDescription>Historial de trades con filtros por estrategia/simbolo/resultado y separacion clara entre real (LIVE) y prueba.</CardDescription>
+        <CardDescription>
+          Historial de trades con filtros por estrategia/simbolo/resultado y
+          separacion clara entre real (LIVE) y prueba.
+        </CardDescription>
         <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Estrategia</label>
-            <Select value={filters.strategy_id} onChange={(e) => setFilters((prev) => ({ ...prev, strategy_id: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Estrategia
+            </label>
+            <Select
+              value={filters.strategy_id}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, strategy_id: e.target.value }))
+              }
+            >
               <option value="">Todas las estrategias</option>
               {strategies.map((row) => (
                 <option key={row.id} value={row.id}>
@@ -364,8 +592,15 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Simbolo</label>
-            <Select value={filters.symbol} onChange={(e) => setFilters((prev) => ({ ...prev, symbol: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Simbolo
+            </label>
+            <Select
+              value={filters.symbol}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, symbol: e.target.value }))
+              }
+            >
               <option value="">Todos los simbolos</option>
               {uniqueSymbols.map((row) => (
                 <option key={row} value={row}>
@@ -375,16 +610,30 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Lado</label>
-            <Select value={filters.side} onChange={(e) => setFilters((prev) => ({ ...prev, side: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Lado
+            </label>
+            <Select
+              value={filters.side}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, side: e.target.value }))
+              }
+            >
               <option value="">Todos los lados</option>
               <option value="long">Long</option>
               <option value="short">Short</option>
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Resultado</label>
-            <Select value={filters.result} onChange={(e) => setFilters((prev) => ({ ...prev, result: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Resultado
+            </label>
+            <Select
+              value={filters.result}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, result: e.target.value }))
+              }
+            >
               <option value="">Todos los resultados</option>
               <option value="win">Ganadora</option>
               <option value="loss">Perdedora</option>
@@ -392,10 +641,25 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Modo</label>
-            <Select value={filters.mode} onChange={(e) => setFilters((prev) => ({ ...prev, mode: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Modo
+            </label>
+            <Select
+              value={filters.mode}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, mode: e.target.value }))
+              }
+            >
               <option value="">Todos los modos</option>
-              {["backtest", "paper", "testnet", "live", ...uniqueModes.filter((m) => !["backtest", "paper", "testnet", "live"].includes(m))]
+              {[
+                "backtest",
+                "paper",
+                "testnet",
+                "live",
+                ...uniqueModes.filter(
+                  (m) => !["backtest", "paper", "testnet", "live"].includes(m),
+                ),
+              ]
                 .filter(Boolean)
                 .map((row) => (
                   <option key={row} value={row}>
@@ -405,16 +669,30 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Entorno</label>
-            <Select value={filters.environment} onChange={(e) => setFilters((prev) => ({ ...prev, environment: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Entorno
+            </label>
+            <Select
+              value={filters.environment}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, environment: e.target.value }))
+              }
+            >
               <option value="">Todos los entornos</option>
               <option value="real">Real (LIVE)</option>
               <option value="prueba">Prueba (Backtest/Paper/Testnet)</option>
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Motivo de entrada</label>
-            <Select value={filters.reason_code} onChange={(e) => setFilters((prev) => ({ ...prev, reason_code: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Motivo de entrada
+            </label>
+            <Select
+              value={filters.reason_code}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, reason_code: e.target.value }))
+              }
+            >
               <option value="">Todos los motivos</option>
               {uniqueReasons.map((row) => (
                 <option key={row} value={row}>
@@ -424,8 +702,15 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Motivo de salida</label>
-            <Select value={filters.exit_reason} onChange={(e) => setFilters((prev) => ({ ...prev, exit_reason: e.target.value }))}>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Motivo de salida
+            </label>
+            <Select
+              value={filters.exit_reason}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, exit_reason: e.target.value }))
+              }
+            >
               <option value="">Todos los motivos</option>
               {uniqueExits.map((row) => (
                 <option key={row} value={row}>
@@ -435,15 +720,33 @@ export default function TradesPage() {
             </Select>
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Desde</label>
-            <Input type="date" value={filters.date_from} onChange={(e) => setFilters((prev) => ({ ...prev, date_from: e.target.value }))} />
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Desde
+            </label>
+            <Input
+              type="date"
+              value={filters.date_from}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, date_from: e.target.value }))
+              }
+            />
           </div>
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Hasta</label>
-            <Input type="date" value={filters.date_to} onChange={(e) => setFilters((prev) => ({ ...prev, date_to: e.target.value }))} />
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Hasta
+            </label>
+            <Input
+              type="date"
+              value={filters.date_to}
+              onChange={(e) =>
+                setFilters((prev) => ({ ...prev, date_to: e.target.value }))
+              }
+            />
           </div>
           <div className="xl:col-span-2">
-            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">Busqueda rapida de simbolo</label>
+            <label className="mb-1 block text-xs uppercase tracking-wide text-slate-400">
+              Busqueda rapida de simbolo
+            </label>
             <Input
               placeholder="Escribi un simbolo y presiona Enter (ej: BTCUSDT)"
               onKeyDown={(event) => {
@@ -463,7 +766,11 @@ export default function TradesPage() {
           <div className="md:col-span-2 xl:col-span-6 grid gap-2 rounded border border-slate-800 bg-slate-950/40 p-2 text-xs text-slate-300 md:grid-cols-3">
             <div className="flex items-center gap-2">
               <span className="text-slate-400">Ordenar por</span>
-              <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as TradeSortKey)} className="h-8 min-w-[150px]">
+              <Select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as TradeSortKey)}
+                className="h-8 min-w-[150px]"
+              >
                 <option value="exit_time">Salida (timestamp)</option>
                 <option value="entry_time">Entrada (timestamp)</option>
                 <option value="pnl_net">PnL neto</option>
@@ -474,33 +781,80 @@ export default function TradesPage() {
                 <option value="slippage">Slippage</option>
                 <option value="qty">Cantidad</option>
               </Select>
-              <Select value={sortDir} onChange={(e) => setSortDir(e.target.value as "asc" | "desc")} className="h-8 min-w-[90px]">
+              <Select
+                value={sortDir}
+                onChange={(e) => setSortDir(e.target.value as "asc" | "desc")}
+                className="h-8 min-w-[90px]"
+              >
                 <option value="desc">Desc</option>
                 <option value="asc">Asc</option>
               </Select>
             </div>
             <div className="flex flex-wrap items-center gap-1">
               <span className="text-slate-400">Atajos entorno</span>
-              <Button size="sm" variant={filters.environment === "" ? "default" : "outline"} className="h-7 px-2 text-[11px]" onClick={() => setFilters((prev) => ({ ...prev, environment: "" }))}>
+              <Button
+                size="sm"
+                variant={filters.environment === "" ? "default" : "outline"}
+                className="h-7 px-2 text-[11px]"
+                onClick={() =>
+                  setFilters((prev) => ({ ...prev, environment: "" }))
+                }
+              >
                 Todos
               </Button>
-              <Button size="sm" variant={filters.environment === "real" ? "default" : "outline"} className="h-7 px-2 text-[11px]" onClick={() => setFilters((prev) => ({ ...prev, environment: "real" }))}>
+              <Button
+                size="sm"
+                variant={filters.environment === "real" ? "default" : "outline"}
+                className="h-7 px-2 text-[11px]"
+                onClick={() =>
+                  setFilters((prev) => ({ ...prev, environment: "real" }))
+                }
+              >
                 Real
               </Button>
-              <Button size="sm" variant={filters.environment === "prueba" ? "default" : "outline"} className="h-7 px-2 text-[11px]" onClick={() => setFilters((prev) => ({ ...prev, environment: "prueba" }))}>
+              <Button
+                size="sm"
+                variant={
+                  filters.environment === "prueba" ? "default" : "outline"
+                }
+                className="h-7 px-2 text-[11px]"
+                onClick={() =>
+                  setFilters((prev) => ({ ...prev, environment: "prueba" }))
+                }
+              >
                 Prueba
               </Button>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <span className="text-slate-400">Seleccionadas: {selectedTradesCount}</span>
-              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={toggleSelectPageTrades} disabled={!pageRows.length}>
+              <span className="text-slate-400">
+                Seleccionadas: {selectedTradesCount}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[11px]"
+                onClick={toggleSelectPageTrades}
+                disabled={!pageRows.length}
+              >
                 {allPageSelected ? "Quitar página" : "Seleccionar página"}
               </Button>
-              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={clearTradeSelection} disabled={!selectedTradesCount}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-[11px]"
+                onClick={clearTradeSelection}
+                disabled={!selectedTradesCount}
+              >
                 Limpiar selección
               </Button>
               {role === "admin" ? (
-                <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={bulkDeleteSelectedTrades} disabled={busyDelete || !selectedTradesCount}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[11px]"
+                  onClick={bulkDeleteSelectedTrades}
+                  disabled={busyDelete || !selectedTradesCount}
+                >
                   {busyDelete ? "Borrando..." : "Borrar seleccionadas"}
                 </Button>
               ) : null}
@@ -512,27 +866,127 @@ export default function TradesPage() {
       <Card>
         <CardTitle>Resumen filtrado (decision rapida)</CardTitle>
         <CardDescription>
-          Totales segun filtros actuales {filters.environment ? `(entorno: ${filters.environment})` : "(todos los entornos)"}.
+          Totales segun filtros actuales{" "}
+          {filters.environment
+            ? `(entorno: ${filters.environment})`
+            : "(todos los entornos)"}
+          .
         </CardDescription>
         <CardContent className="space-y-3">
           <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
-            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">Trades: <strong>{totals.trades}</strong></div>
-            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">WinRate: <strong>{fmtPct(totals.winrate)}</strong></div>
-            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">PnL neto: <strong className={totals.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(totals.net_pnl)}</strong></div>
-            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">Avg trade: <strong>{fmtUsd(totals.avg_trade)}</strong></div>
-            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">Fees + Slippage: <strong>{fmtUsd(totals.fees_total + totals.slippage_total)}</strong></div>
-            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">Holding prom.: <strong>{Math.round(totals.avg_holding_minutes)}m</strong></div>
+            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">
+              Trades: <strong>{totals.trades}</strong>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">
+              WinRate: <strong>{fmtPct(totals.winrate)}</strong>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">
+              PnL neto:{" "}
+              <strong
+                className={
+                  totals.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"
+                }
+              >
+                {fmtUsd(totals.net_pnl)}
+              </strong>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">
+              Avg trade: <strong>{fmtUsd(totals.avg_trade)}</strong>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">
+              Fees + Slippage:{" "}
+              <strong>
+                {fmtUsd(totals.fees_total + totals.slippage_total)}
+              </strong>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-900/60 p-2 text-xs">
+              Holding prom.:{" "}
+              <strong>{Math.round(totals.avg_holding_minutes)}m</strong>
+            </div>
+          </div>
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-3 text-xs text-slate-300">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-cyan-200">
+                  Cost Stack compacto
+                </p>
+                <p className="mt-1 text-slate-400">
+                  Fuente principal: `/api/v1/reporting/costs/breakdown`; esta
+                  tabla no recalcula costos ni inventa ceros.
+                </p>
+              </div>
+              <Link
+                href="/reporting"
+                className="rounded border border-cyan-500/30 px-2 py-1 text-cyan-200 hover:bg-cyan-500/10"
+              >
+                Ver detalle en Costos
+              </Link>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
+                Gross / Net:{" "}
+                <strong>
+                  {fmtUsd(reportingBreakdown?.gross_pnl ?? totals.gross_pnl)} /{" "}
+                  {fmtUsd(reportingBreakdown?.net_pnl ?? totals.net_pnl)}
+                </strong>
+              </div>
+              <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
+                Costos total:{" "}
+                <strong>
+                  {moneyOrPending(
+                    reportingBreakdown?.total_cost_realized ??
+                      reportingBreakdown?.total_cost_estimated,
+                  )}
+                </strong>
+              </div>
+              <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
+                Spread / Funding:{" "}
+                <strong>
+                  {moneyOrPending(
+                    reportingBreakdown?.spread_realized ??
+                      reportingBreakdown?.spread_estimated,
+                  )}{" "}
+                  / {moneyOrPending(reportingBreakdown?.funding_realized)}
+                </strong>
+              </div>
+              <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
+                Freshness:{" "}
+                <strong>
+                  {reportingBreakdown?.freshness_status || "unknown"}
+                </strong>
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {commissionCoverage.map((row) => (
+                <Badge key={row.label} variant={statusVariant(row.status)}>
+                  {row.label}: {row.status}
+                </Badge>
+              ))}
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
-            <span>Wins/Losses/Neutras: {totals.wins}/{totals.losses}/{totals.breakeven}</span>
+            <span>
+              Wins/Losses/Neutras: {totals.wins}/{totals.losses}/
+              {totals.breakeven}
+            </span>
             <span>PnL bruto: {fmtUsd(totals.gross_pnl)}</span>
             <span>Registros cargados: {sortedTrades.length}</span>
             {role === "admin" ? (
               <>
-                <Button variant="outline" className="h-8 px-2" disabled={busyDelete} onClick={previewDeleteFiltered}>
+                <Button
+                  variant="outline"
+                  className="h-8 px-2"
+                  disabled={busyDelete}
+                  onClick={previewDeleteFiltered}
+                >
                   {busyDelete ? "Calculando..." : "Preview borrado filtrado"}
                 </Button>
-                <Button variant="outline" className="h-8 px-2" disabled={!sortedTrades.length || busyDelete} onClick={bulkDeleteFiltered}>
+                <Button
+                  variant="outline"
+                  className="h-8 px-2"
+                  disabled={!sortedTrades.length || busyDelete}
+                  onClick={bulkDeleteFiltered}
+                >
                   {busyDelete ? "Borrando..." : "Borrar operaciones filtradas"}
                 </Button>
               </>
@@ -540,24 +994,45 @@ export default function TradesPage() {
           </div>
           {deletePreviewCount !== null ? (
             <div className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
-              Preview activo: {deletePreviewCount} operaciones coinciden con los filtros actuales.
+              Preview activo: {deletePreviewCount} operaciones coinciden con los
+              filtros actuales.
             </div>
           ) : null}
-          {deleteMessage ? <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200">{deleteMessage}</div> : null}
-          {deleteError ? <div className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">{deleteError}</div> : null}
+          {deleteMessage ? (
+            <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200">
+              {deleteMessage}
+            </div>
+          ) : null}
+          {deleteError ? (
+            <div className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
+              {deleteError}
+            </div>
+          ) : null}
 
           <div className="grid gap-3 lg:grid-cols-3">
             <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Real vs prueba</p>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                Real vs prueba
+              </p>
               <div className="space-y-2 text-xs">
                 {summaryByEnvironment.length ? (
                   summaryByEnvironment.map((row) => (
-                    <div key={row.environment} className="rounded border border-slate-800 px-2 py-1">
+                    <div
+                      key={row.environment}
+                      className="rounded border border-slate-800 px-2 py-1"
+                    >
                       <div className="flex items-center justify-between">
-                        <span className="font-semibold text-slate-200">{row.environment === "real" ? "Real (LIVE)" : "Prueba"}</span>
+                        <span className="font-semibold text-slate-200">
+                          {row.environment === "real"
+                            ? "Real (LIVE)"
+                            : "Prueba"}
+                        </span>
                         <span>{row.trades} trades</span>
                       </div>
-                      <div className="text-slate-400">WinRate {fmtPct(row.winrate)} · PnL {fmtUsd(row.net_pnl)}</div>
+                      <div className="text-slate-400">
+                        WinRate {fmtPct(row.winrate)} · PnL{" "}
+                        {fmtUsd(row.net_pnl)}
+                      </div>
                     </div>
                   ))
                 ) : (
@@ -567,8 +1042,16 @@ export default function TradesPage() {
             </div>
             <div className="rounded border border-slate-800 bg-slate-950/40 p-2 lg:col-span-2">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Top estrategias (filtros actuales)</p>
-                <Select value={topRowsSize} onChange={(e) => setTopRowsSize(e.target.value as "10" | "25" | "50")} className="h-8 min-w-[88px] text-xs">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Top estrategias (filtros actuales)
+                </p>
+                <Select
+                  value={topRowsSize}
+                  onChange={(e) =>
+                    setTopRowsSize(e.target.value as "10" | "25" | "50")
+                  }
+                  className="h-8 min-w-[88px] text-xs"
+                >
                   <option value="10">10</option>
                   <option value="25">25</option>
                   <option value="50">50</option>
@@ -589,16 +1072,34 @@ export default function TradesPage() {
                     {summaryByStrategy.length ? (
                       summaryByStrategy.map((row) => (
                         <TR key={`st-${row.strategy_id}`}>
-                          <TD className="max-w-[220px] truncate" title={`${row.strategy_name} (${row.strategy_id})`}>{row.strategy_name}</TD>
+                          <TD
+                            className="max-w-[220px] truncate"
+                            title={`${row.strategy_name} (${row.strategy_id})`}
+                          >
+                            {row.strategy_name}
+                          </TD>
                           <TD>{row.trades}</TD>
                           <TD>{fmtPct(row.winrate)}</TD>
-                          <TD className={row.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(row.net_pnl)}</TD>
+                          <TD
+                            className={
+                              row.net_pnl >= 0
+                                ? "text-emerald-300"
+                                : "text-rose-300"
+                            }
+                          >
+                            {fmtUsd(row.net_pnl)}
+                          </TD>
                           <TD>
                             <Button
                               size="sm"
                               variant="outline"
                               className="h-7 px-2 text-[11px]"
-                              onClick={() => setFilters((prev) => ({ ...prev, strategy_id: row.strategy_id }))}
+                              onClick={() =>
+                                setFilters((prev) => ({
+                                  ...prev,
+                                  strategy_id: row.strategy_id,
+                                }))
+                              }
                             >
                               Filtrar
                             </Button>
@@ -607,7 +1108,9 @@ export default function TradesPage() {
                       ))
                     ) : (
                       <TR>
-                        <TD colSpan={5} className="text-slate-500">Sin datos.</TD>
+                        <TD colSpan={5} className="text-slate-500">
+                          Sin datos.
+                        </TD>
                       </TR>
                     )}
                   </TBody>
@@ -615,7 +1118,9 @@ export default function TradesPage() {
               </div>
             </div>
             <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Modos (click para filtrar)</p>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                Modos (click para filtrar)
+              </p>
               <div className="space-y-2 text-xs">
                 {summaryByMode.length ? (
                   summaryByMode.map((row) => (
@@ -632,11 +1137,14 @@ export default function TradesPage() {
                       }
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-semibold text-slate-200">{String(row.mode || "-")}</span>
+                        <span className="font-semibold text-slate-200">
+                          {String(row.mode || "-")}
+                        </span>
                         <span>{row.trades} trades</span>
                       </div>
                       <div className="text-slate-400">
-                        {String(row.environment || "-")} · WR {fmtPct(row.winrate)} · PnL {fmtUsd(row.net_pnl)}
+                        {String(row.environment || "-")} · WR{" "}
+                        {fmtPct(row.winrate)} · PnL {fmtUsd(row.net_pnl)}
                       </div>
                     </button>
                   ))
@@ -648,7 +1156,9 @@ export default function TradesPage() {
           </div>
 
           <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Estrategia + dia + entorno</p>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              Estrategia + dia + entorno
+            </p>
             <div className="max-h-52 overflow-auto">
               <Table className="text-xs">
                 <THead>
@@ -664,22 +1174,43 @@ export default function TradesPage() {
                 <TBody>
                   {summaryByStrategyDay.length ? (
                     summaryByStrategyDay.map((row, idx) => (
-                      <TR key={`${row.strategy_id}-${row.day}-${row.environment}-${idx}`}>
+                      <TR
+                        key={`${row.strategy_id}-${row.day}-${row.environment}-${idx}`}
+                      >
                         <TD>{row.day}</TD>
                         <TD>
-                          <Badge variant={row.environment === "real" ? "danger" : "info"}>
+                          <Badge
+                            variant={
+                              row.environment === "real" ? "danger" : "info"
+                            }
+                          >
                             {row.environment === "real" ? "real" : "prueba"}
                           </Badge>
                         </TD>
-                        <TD className="max-w-[220px] truncate" title={`${row.strategy_name} (${row.strategy_id})`}>{row.strategy_name}</TD>
+                        <TD
+                          className="max-w-[220px] truncate"
+                          title={`${row.strategy_name} (${row.strategy_id})`}
+                        >
+                          {row.strategy_name}
+                        </TD>
                         <TD>{row.trades}</TD>
                         <TD>{fmtPct(row.winrate)}</TD>
-                        <TD className={row.net_pnl >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(row.net_pnl)}</TD>
+                        <TD
+                          className={
+                            row.net_pnl >= 0
+                              ? "text-emerald-300"
+                              : "text-rose-300"
+                          }
+                        >
+                          {fmtUsd(row.net_pnl)}
+                        </TD>
                       </TR>
                     ))
                   ) : (
                     <TR>
-                      <TD colSpan={6} className="text-slate-500">Sin datos con estos filtros.</TD>
+                      <TD colSpan={6} className="text-slate-500">
+                        Sin datos con estos filtros.
+                      </TD>
                     </TR>
                   )}
                 </TBody>
@@ -693,25 +1224,52 @@ export default function TradesPage() {
         <CardContent className="overflow-x-auto">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
             <div>
-              Mostrando {pageStart}-{pageEnd} de {sortedTrades.length} operaciones filtradas · seleccionadas: {selectedTradesCount}
+              Mostrando {pageStart}-{pageEnd} de {sortedTrades.length}{" "}
+              operaciones filtradas · seleccionadas: {selectedTradesCount}
             </div>
             <div className="flex items-center gap-2">
               <span>Filas</span>
-              <Select value={pageSize} onChange={(e) => setPageSize(e.target.value as "30" | "60" | "100")} className="h-8 min-w-[84px]">
+              <Select
+                value={pageSize}
+                onChange={(e) =>
+                  setPageSize(e.target.value as "30" | "60" | "100")
+                }
+                className="h-8 min-w-[84px]"
+              >
                 <option value="30">30</option>
                 <option value="60">60</option>
                 <option value="100">100</option>
               </Select>
-              <Button variant="outline" className="h-8 px-2" disabled={safePage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Anterior</Button>
-              <span>Pág. {safePage}/{totalPages}</span>
-              <Button variant="outline" className="h-8 px-2" disabled={safePage >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>Siguiente</Button>
+              <Button
+                variant="outline"
+                className="h-8 px-2"
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Anterior
+              </Button>
+              <span>
+                Pág. {safePage}/{totalPages}
+              </span>
+              <Button
+                variant="outline"
+                className="h-8 px-2"
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Siguiente
+              </Button>
             </div>
           </div>
           <Table>
             <THead>
               <TR>
                 <TH>
-                  <input type="checkbox" checked={allPageSelected} onChange={toggleSelectPageTrades} />
+                  <input
+                    type="checkbox"
+                    checked={allPageSelected}
+                    onChange={toggleSelectPageTrades}
+                  />
                 </TH>
                 <TH>ID</TH>
                 <TH>Timestamp</TH>
@@ -726,6 +1284,7 @@ export default function TradesPage() {
                 <TH>Cantidad</TH>
                 <TH>Fees</TH>
                 <TH>Slippage</TH>
+                <TH>Costos</TH>
                 <TH>Holding</TH>
                 <TH>MFE/MAE</TH>
                 <TH>PnL Neto</TH>
@@ -735,32 +1294,72 @@ export default function TradesPage() {
             </THead>
             <TBody>
               {pageRows.map((row) => {
-                const holdMins = Math.abs(Math.round((new Date(row.exit_time).getTime() - new Date(row.entry_time).getTime()) / 60_000));
-                const rowExt = row as Trade & { run_mode?: string; run_id?: string };
-                const environment = rowExt.run_mode === "live" ? "real" : "prueba";
+                const holdMins = Math.abs(
+                  Math.round(
+                    (new Date(row.exit_time).getTime() -
+                      new Date(row.entry_time).getTime()) /
+                      60_000,
+                  ),
+                );
+                const rowExt = row as Trade & {
+                  run_mode?: string;
+                  run_id?: string;
+                };
+                const environment =
+                  rowExt.run_mode === "live" ? "real" : "prueba";
+                const costStack = tradeCostStack(
+                  row,
+                  reportingTrades,
+                  reportingBreakdown,
+                );
                 return (
                   <TR key={row.id}>
                     <TD>
-                      <input type="checkbox" checked={selectedTradeIds.includes(String(row.id))} onChange={() => toggleSelectTrade(String(row.id))} />
+                      <input
+                        type="checkbox"
+                        checked={selectedTradeIds.includes(String(row.id))}
+                        onChange={() => toggleSelectTrade(String(row.id))}
+                      />
                     </TD>
                     <TD>{row.id}</TD>
-                    <TD className="text-xs">{new Date(row.exit_time).toLocaleString()}</TD>
+                    <TD className="text-xs">
+                      {new Date(row.exit_time).toLocaleString()}
+                    </TD>
                     <TD>
-                      <Badge variant={environment === "real" ? "danger" : "info"}>
+                      <Badge
+                        variant={environment === "real" ? "danger" : "info"}
+                      >
                         {environment}
                       </Badge>
                     </TD>
                     <TD>
-                      <Badge variant={rowExt.run_mode === "live" ? "danger" : rowExt.run_mode === "testnet" ? "warn" : rowExt.run_mode === "paper" ? "info" : "neutral"}>
+                      <Badge
+                        variant={
+                          rowExt.run_mode === "live"
+                            ? "danger"
+                            : rowExt.run_mode === "testnet"
+                              ? "warn"
+                              : rowExt.run_mode === "paper"
+                                ? "info"
+                                : "neutral"
+                        }
+                      >
                         {rowExt.run_mode || "backtest"}
                       </Badge>
                     </TD>
-                    <TD className="text-xs font-mono text-slate-300">{rowExt.run_id || "-"}</TD>
+                    <TD className="text-xs font-mono text-slate-300">
+                      {rowExt.run_id || "-"}
+                    </TD>
                     <TD>
                       <button
                         type="button"
                         className="text-cyan-300 underline-offset-2 hover:underline"
-                        onClick={() => setFilters((prev) => ({ ...prev, strategy_id: String(row.strategy_id || "") }))}
+                        onClick={() =>
+                          setFilters((prev) => ({
+                            ...prev,
+                            strategy_id: String(row.strategy_id || ""),
+                          }))
+                        }
                       >
                         {row.strategy_id}
                       </button>
@@ -768,7 +1367,9 @@ export default function TradesPage() {
                     <TD>{row.symbol}</TD>
                     <TD>{row.side}</TD>
                     <TD>
-                      <Badge variant={row.pnl_net >= 0 ? "success" : "danger"}>{row.pnl_net >= 0 ? "win" : "loss"}</Badge>
+                      <Badge variant={row.pnl_net >= 0 ? "success" : "danger"}>
+                        {row.pnl_net >= 0 ? "win" : "loss"}
+                      </Badge>
                     </TD>
                     <TD>
                       <div className="text-xs">
@@ -779,18 +1380,60 @@ export default function TradesPage() {
                     <TD>{row.qty}</TD>
                     <TD>{fmtUsd(row.fees)}</TD>
                     <TD>{fmtUsd(row.slippage)}</TD>
+                    <TD className="min-w-[220px] text-xs">
+                      <div className="space-y-1 rounded border border-slate-800 bg-slate-950/40 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-slate-200">
+                            Cost Stack
+                          </span>
+                          <Badge variant={statusVariant(costStack.status)}>
+                            {costStack.status}
+                          </Badge>
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-slate-400">
+                          <span>
+                            gross {moneyOrPending(costStack.grossPnl)}
+                          </span>
+                          <span>net {moneyOrPending(costStack.netPnl)}</span>
+                          <span>fees {moneyOrPending(costStack.fees)}</span>
+                          <span>spread {moneyOrPending(costStack.spread)}</span>
+                          <span>
+                            slippage {moneyOrPending(costStack.slippage)}
+                          </span>
+                          <span>
+                            funding {moneyOrPending(costStack.funding)}
+                          </span>
+                          <span>
+                            borrow {moneyOrPending(costStack.borrowInterest)}
+                          </span>
+                          <span>freshness {costStack.freshness}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          source: {costStack.source}
+                        </div>
+                      </div>
+                    </TD>
                     <TD>{holdMins}m</TD>
                     <TD>
                       {row.mfe.toFixed(2)} / {row.mae.toFixed(2)}
                     </TD>
-                    <TD className={row.pnl_net >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(row.pnl_net)}</TD>
+                    <TD
+                      className={
+                        row.pnl_net >= 0 ? "text-emerald-300" : "text-rose-300"
+                      }
+                    >
+                      {fmtUsd(row.pnl_net)}
+                    </TD>
                     <TD>
                       <Badge variant={row.pnl_net >= 0 ? "success" : "warn"}>
                         {row.reason_code} / {row.exit_reason}
                       </Badge>
                     </TD>
                     <TD>
-                      <Link href={`/trades/${row.id}`} className="text-cyan-300 underline">
+                      <Link
+                        href={`/trades/${row.id}`}
+                        className="text-cyan-300 underline"
+                      >
                         Ver detalle
                       </Link>
                     </TD>
@@ -799,15 +1442,25 @@ export default function TradesPage() {
               })}
               {!trades.length ? (
                 <TR>
-                  <TD colSpan={19} className="py-4">
+                  <TD colSpan={20} className="py-4">
                     <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-left">
-                      <p className="text-sm font-semibold text-slate-100">Todavia no hay operaciones para estos filtros</p>
-                      <p className="mt-1 text-xs text-slate-400">Ajusta filtros o ejecuta Paper/Testnet/Backtest para generar trades y analizarlos aca.</p>
+                      <p className="text-sm font-semibold text-slate-100">
+                        Todavia no hay operaciones para estos filtros
+                      </p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Ajusta filtros o ejecuta Paper/Testnet/Backtest para
+                        generar trades y analizarlos aca.
+                      </p>
                       <div className="mt-2 flex flex-wrap gap-2">
                         <Button variant="outline" onClick={resetFilters}>
                           Limpiar filtros
                         </Button>
-                        <Button variant="outline" onClick={() => { window.location.href = "/backtests"; }}>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            window.location.href = "/backtests";
+                          }}
+                        >
                           Ir a Backtests
                         </Button>
                       </div>

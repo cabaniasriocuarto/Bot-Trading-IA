@@ -4142,3 +4142,10 @@
   - `/reporting` deja de tratar tax/special como solo docs: muestra contrato soportado para Spot, valores pendientes sin snapshot autenticado, Futures `not_applicable` y Margin `unsupported`;
   - se agregan tests backend para el parseo Binance y el contrato reporting;
   - no se tocaron Binance keys, LIVE real, ordenes, DB productiva, Vercel/Railway ni RTLOPS-106.
+- RTLOPS-62: Cost Stack compacto en `/trades` y `/portfolio` (2026-05-06):
+  - se extrae contrato compartido frontend `src/lib/cost-stack.ts` para reutilizar tipos/helpers de reporting sin duplicar reglas por pantalla;
+  - `/trades` muestra una columna compacta `Cost Stack` por operacion con gross/net PnL, fees, spread, slippage, funding, borrow interest, source, status y freshness;
+  - `/trades` usa evidencia de `/api/v1/reporting/trades` si puede asociarla y fallback honesto al endpoint de trades para campos ya existentes;
+  - `/portfolio` agrega tarjeta `Costos y PnL neto` alimentada por `/api/v1/reporting/performance/summary` y `/api/v1/reporting/costs/breakdown`;
+  - `/portfolio` muestra commission components disponibles y estados honestos para `standardCommission`, `taxCommission` y `specialCommission`;
+  - no se agregan endpoints backend ni mutaciones; `/reporting` permanece como hub principal.
