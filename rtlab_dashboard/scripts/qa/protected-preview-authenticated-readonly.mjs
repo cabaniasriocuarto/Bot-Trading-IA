@@ -28,6 +28,7 @@ const routes = [
   "/settings",
   "/risk",
   "/trades",
+  "/reporting",
 ];
 
 const apiPaths = [
@@ -45,6 +46,12 @@ const apiPaths = [
   "/api/v1/gates",
   "/api/v1/alerts",
   "/api/v1/logs",
+  "/api/v1/reporting/performance/summary",
+  "/api/v1/reporting/performance/daily",
+  "/api/v1/reporting/performance/monthly",
+  "/api/v1/reporting/costs/breakdown",
+  "/api/v1/reporting/trades?limit=50",
+  "/api/v1/reporting/exports?limit=20",
 ];
 
 function bodySample(text) {
@@ -167,6 +174,7 @@ const routeResults = [];
 const guardrails = {
   portfolio: {},
   execution: {},
+  reporting: {},
 };
 
 if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
@@ -208,6 +216,19 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
           "comprar",
           "vender",
         ]),
+        visibleText: bodySample(body),
+      };
+    }
+
+    if (targetPath === "/reporting") {
+      guardrails.reporting = {
+        hasCostosNav: body.includes("Costos"),
+        hasCostStack: body.includes("Cost Stack"),
+        hasReporting: body.includes("Reporting"),
+        hasTaxCommission: body.includes("taxCommission"),
+        hasSpecialCommission: body.includes("specialCommission"),
+        hasPendingCopy: body.toLowerCase().includes("pendiente"),
+        hasUnsupportedCopy: body.toLowerCase().includes("no soportado"),
         visibleText: bodySample(body),
       };
     }
@@ -254,6 +275,12 @@ for (const item of routeResults) {
 for (const item of apiResults) {
   console.log(`${item.path}\tstatus=${item.status}`);
 }
+if (guardrails.reporting && Object.keys(guardrails.reporting).length > 0) {
+  for (const [name, passed] of Object.entries(guardrails.reporting)) {
+    if (name === "visibleText") continue;
+    console.log(`/reporting\t${name}=${passed}`);
+  }
+}
 
 if (sessionUser?.status !== 200) {
   console.error("Viewer login did not produce an authenticated app session.");
@@ -263,4 +290,26 @@ if (sessionUser?.status !== 200) {
 if (sessionUser.role !== "viewer") {
   console.error("Expected viewer role for RTLOPS-112 authenticated read-only QA.");
   process.exit(1);
+}
+
+const reportingRoute = routeResults.find((item) => item.path === "/reporting");
+if (!reportingRoute || reportingRoute.status !== 200 || reportingRoute.vercelSso) {
+  console.error("Expected /reporting to load for viewer without Vercel SSO.");
+  process.exit(1);
+}
+
+const requiredReportingChecks = [
+  "hasCostosNav",
+  "hasCostStack",
+  "hasReporting",
+  "hasTaxCommission",
+  "hasSpecialCommission",
+  "hasPendingCopy",
+  "hasUnsupportedCopy",
+];
+for (const checkName of requiredReportingChecks) {
+  if (!guardrails.reporting?.[checkName]) {
+    console.error(`/reporting missing expected read-only Cost Stack marker: ${checkName}`);
+    process.exit(1);
+  }
 }

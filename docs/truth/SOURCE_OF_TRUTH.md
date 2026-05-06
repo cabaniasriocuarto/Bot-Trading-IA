@@ -4768,3 +4768,7 @@ El proyecto tiene:
   - `taxCommission` y `specialCommission` quedan explicitamente marcados como pendientes/no soportados todavia;
   - no agrega mutaciones, no consulta Binance privado y no activa LIVE;
   - RTLOPS-106 sigue abierto como deuda externa Vercel Git Integration / `routes-manifest-deterministic`.
+- RTLOPS-70 / cobertura QA protegida de Reporting (2026-05-05):
+  - se extiende `RTLOPS-109A Protected Preview QA` para incluir `/reporting` en el probe HTTP, Playwright read-only y QA autenticado viewer;
+  - el QA autenticado verifica que la navegacion exponga `Costos` y que la pantalla muestre `Cost Stack`, `Reporting`, `taxCommission`, `specialCommission`, `pendiente` y `no soportado`;
+  - la cobertura sigue siendo read-only: no agrega POST/PUT/PATCH/DELETE, no ejecuta ordenes y no toca Binance privado.

@@ -123,6 +123,7 @@ jobs:
             "/settings",
             "/risk",
             "/trades",
+            "/reporting",
             "/api/v1/health",
           ];
 
@@ -376,6 +377,7 @@ jobs:
             "/settings",
             "/risk",
             "/trades",
+            "/reporting",
           ];
 
           function isVercelSso(text) {
@@ -429,12 +431,22 @@ jobs:
               const body = await page.locator("body").innerText({ timeout: 3_000 }).catch(() => "");
               const title = await page.title().catch(() => "");
               const h1 = await page.locator("h1").first().textContent({ timeout: 1_000 }).catch(() => "");
+              const reportingChecks = targetPath === "/reporting" ? {
+                hasCostosNav: body.includes("Costos"),
+                hasCostStack: body.includes("Cost Stack"),
+                hasReporting: body.includes("Reporting"),
+                hasTaxCommission: body.includes("taxCommission"),
+                hasSpecialCommission: body.includes("specialCommission"),
+                hasPendingCopy: body.toLowerCase().includes("pendiente"),
+                hasUnsupportedCopy: body.toLowerCase().includes("no soportado"),
+              } : null;
               results.push({
                 path: targetPath,
                 status: response ? response.status() : "NO_RESPONSE",
                 title,
                 h1: h1 || "",
                 vercelSso: isVercelSso(body),
+                reportingChecks,
                 bodySample: body.replace(/\s+/g, " ").slice(0, 260),
               });
             }
@@ -446,6 +458,19 @@ jobs:
             console.log("RTLOPS-109A Playwright read-only summary");
             for (const result of results) {
               console.log(`${result.path}\tstatus=${result.status}\tvercel_sso=${result.vercelSso}\th1=${result.h1}`);
+            }
+            const reportingResult = results.find((result) => result.path === "/reporting");
+            const reportingChecks = reportingResult && reportingResult.reportingChecks;
+            if (!reportingResult || reportingResult.status !== 200 || reportingResult.vercelSso || !reportingChecks) {
+              console.error("Reporting route did not load as protected preview app.");
+              process.exit(1);
+            }
+            for (const [name, passed] of Object.entries(reportingChecks)) {
+              console.log(`/reporting\t${name}=${passed}`);
+              if (!passed) {
+                console.error(`/reporting missing expected read-only Cost Stack marker: ${name}`);
+                process.exit(1);
+              }
             }
           })().catch((error) => {
             console.error(error);
