@@ -294,6 +294,17 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
     }
 
     if (targetPath === "/execution") {
+      const hasExecutionCostStack = hasAny(body, [
+        /Costos\s+operativos/i,
+        /Cost\s+Stack/i,
+      ]);
+      const hasExecutionReportingLink =
+        (await page.locator('a[href="/reporting"]').count()) > 0;
+      const hasExecutionReadOnlyCopy = /Read-only/i.test(body);
+      const hasExecutionNoLiveGateCopy =
+        /no habilita submit real/i.test(body) ||
+        /no modifica gates/i.test(body) ||
+        /No usar como senal de habilitacion LIVE/i.test(body);
       guardrails.execution = {
         dangerousButtons: await collectButtons(page, [
           "live",
@@ -307,6 +318,15 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
           "comprar",
           "vender",
         ]),
+        hasCostStackOperationalCard: hasExecutionCostStack,
+        hasReportingLink: hasExecutionReportingLink,
+        hasReadOnlyCopy: hasExecutionReadOnlyCopy,
+        hasNoLiveGateCopy: hasExecutionNoLiveGateCopy,
+        hasExecutionCostStackSemantics:
+          hasExecutionCostStack &&
+          hasExecutionReportingLink &&
+          hasExecutionReadOnlyCopy &&
+          hasExecutionNoLiveGateCopy,
         visibleText: bodySample(body),
       };
     }
@@ -393,6 +413,12 @@ if (guardrails.portfolio && Object.keys(guardrails.portfolio).length > 0) {
     console.log(`/portfolio\t${name}=${passed}`);
   }
 }
+if (guardrails.execution && Object.keys(guardrails.execution).length > 0) {
+  for (const [name, passed] of Object.entries(guardrails.execution)) {
+    if (name === "visibleText" || name === "dangerousButtons") continue;
+    console.log(`/execution\t${name}=${passed}`);
+  }
+}
 if (guardrails.reporting && Object.keys(guardrails.reporting).length > 0) {
   for (const [name, passed] of Object.entries(guardrails.reporting)) {
     if (name === "visibleText") continue;
@@ -425,6 +451,16 @@ if (
   portfolioRoute.vercelSso
 ) {
   console.error("Expected /portfolio to load for viewer without Vercel SSO.");
+  process.exit(1);
+}
+
+const executionRoute = routeResults.find((item) => item.path === "/execution");
+if (
+  !executionRoute ||
+  executionRoute.status !== 200 ||
+  executionRoute.vercelSso
+) {
+  console.error("Expected /execution to load for viewer without Vercel SSO.");
   process.exit(1);
 }
 
@@ -470,6 +506,22 @@ for (const checkName of requiredPortfolioChecks) {
   if (!guardrails.portfolio?.[checkName]) {
     console.error(
       `/portfolio missing expected Costos y PnL neto marker: ${checkName}`,
+    );
+    process.exit(1);
+  }
+}
+
+const requiredExecutionChecks = [
+  "hasCostStackOperationalCard",
+  "hasReportingLink",
+  "hasReadOnlyCopy",
+  "hasNoLiveGateCopy",
+  "hasExecutionCostStackSemantics",
+];
+for (const checkName of requiredExecutionChecks) {
+  if (!guardrails.execution?.[checkName]) {
+    console.error(
+      `/execution missing expected operational Cost Stack marker: ${checkName}`,
     );
     process.exit(1);
   }

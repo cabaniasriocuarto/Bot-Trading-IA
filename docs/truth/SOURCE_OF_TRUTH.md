@@ -2,6 +2,28 @@
 
 Fecha de actualizacion: 2026-05-06
 
+## RTLOPS-62 - Cost Stack operativo en Execution - 2026-05-06
+
+- Estado real:
+  - `/reporting` sigue siendo el hub principal contable de Cost Stack;
+  - `/trades` y `/portfolio` ya muestran Cost Stack compacto;
+  - `/execution` necesitaba una lectura operativa, no contable, para decidir si operar sin duplicar reporting.
+- Cambio UI read-only:
+  - `Execution` agrega la tarjeta `Costos operativos / Cost Stack`;
+  - consume lecturas existentes de `/api/v1/reporting/costs/breakdown` y `/api/v1/reporting/performance/summary`;
+  - muestra fees, spread, slippage, costos totales, gross/net PnL, funding, borrow interest, coverage de commission components, source, freshness y status cuando el contrato los expone;
+  - conserva missing data como `pendiente` o `no disponible`, sin interpretar ausencia como cero;
+  - agrega link visible a `/reporting` para detalle completo.
+- Limites:
+  - la tarjeta es informativa y read-only;
+  - no habilita submit real, no modifica gates, no ejecuta ordenes y no agrega readiness formal de Cost Stack;
+  - no toca backend, endpoints nuevos, DB/user_data, Binance privado, secrets, Vercel/Railway settings, preserve/rescue/audit, RTLOPS-106 ni RTLOPS-107.
+- Pendiente futuro:
+  - freshness por componente;
+  - funding/borrow estimated;
+  - `cost_stack_readiness_status` formal;
+  - Cost Stack por bot/simbolo/estrategia si se decide.
+
 ## RTLOPS-62 - QA protegido para Cost Stack compacto en Trades/Portfolio - 2026-05-06
 
 - Estado real:
