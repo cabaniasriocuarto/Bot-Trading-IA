@@ -2,6 +2,25 @@
 
 Fecha de actualizacion: 2026-05-05
 
+## Live operations runbooks clean rescue - 2026-05-06
+
+- Estado real:
+  - `preserve/remote-account-surface-repo-main` contiene cuatro runbooks live potencialmente utiles, pero la rama esta 157 commits behind / 45 ahead, sucia y mezclada con artifacts;
+  - no es fuente de verdad y no debe mergearse ni cherry-pickearse directo.
+- Cambio documental:
+  - se rehacen limpio desde `main` los runbooks:
+    - `docs/runbooks/LIVE_READY_AND_DIAGNOSTICS.md`;
+    - `docs/runbooks/LIVE_CONTAINMENT_AND_ROLLBACK.md`;
+    - `docs/runbooks/LIVE_INCIDENT_RESPONSE.md`;
+    - `docs/runbooks/LIVE_RELEASE_GATE.md`.
+- Linea operativa:
+  - el producto sigue LIVE-ready por arquitectura, pero el submit real permanece bloqueado por gates, preflight, permisos, kill switch, canary, rollback, approval y audit log;
+  - los runbooks no ejecutan ordenes, no activan LIVE real y no modifican datos.
+- Limites:
+  - no se toca codigo, workflows, Vercel/Railway settings, secrets, DB, preserve ni branch protection;
+  - `RTLOPS-106` sigue abierto como deuda externa de Vercel Git Integration / `routes-manifest-deterministic`;
+  - `RTLOPS-107` sigue siendo workaround temporal de previews prebuilt.
+
 ## RTLOPS-124 - Execution LIVE-readiness evidence panel - 2026-05-05
 
 - Estado real:

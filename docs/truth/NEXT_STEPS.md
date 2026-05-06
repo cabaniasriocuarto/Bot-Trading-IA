@@ -2,6 +2,22 @@
 
 Fecha: 2026-05-05
 
+## Live operations runbooks clean rescue - 2026-05-06
+- [x] Auditar runbooks live en `preserve/remote-account-surface-repo-main`.
+- [x] Confirmar que preserve esta sucio/divergido y no debe ser fuente de verdad.
+- [x] Rehacer runbooks limpios desde `main`:
+  - readiness y diagnostico;
+  - containment y rollback;
+  - incident response;
+  - release gate.
+- [x] Mantener bloqueos:
+  - no activar LIVE real;
+  - no ejecutar ordenes;
+  - no tocar workflows, producto, backend, DB, Vercel/Railway ni preserve.
+- [ ] Revisar PR documental.
+- [ ] Si se mergea, dejar preserve pendiente para auditoria separada de `remote_account_surface_report.py`.
+- [ ] Mantener `RTLOPS-106` abierto y `RTLOPS-107` como workaround temporal.
+
 ## RTLOPS-124 - Execution LIVE-readiness evidence panel - 2026-05-05
 - [x] Crear issue `RTLOPS-124`.
 - [x] Crear rama `feature/rtlops-124-execution-live-readiness-evidence`.

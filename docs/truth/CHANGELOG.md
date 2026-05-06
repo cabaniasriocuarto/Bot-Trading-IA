@@ -2,6 +2,21 @@
 
 ## 2026-05-05
 
+### Live operations runbooks clean rescue
+- Se auditan cuatro runbooks live detectados en `preserve/remote-account-surface-repo-main`.
+- Decision:
+  - rescatar valor operativo;
+  - no copiar preserve literal;
+  - no mergear ni cherry-pickear commits completos.
+- Cambio:
+  - se agregan runbooks limpios para readiness/diagnostico, containment/rollback, incident response y release gate;
+  - todos mantienen `LIVE real` bloqueado hasta gates, preflight, permisos, canary, rollback y approval;
+  - todos prohiben ejecutar ordenes o mutaciones desde el runbook.
+- Limites:
+  - no se toca producto, backend, frontend, workflows, Vercel/Railway settings, secrets, DB ni preserve;
+  - `RTLOPS-106` sigue abierto;
+  - `RTLOPS-107` sigue como workaround temporal prebuilt.
+
 ### RTLOPS-124 - Execution LIVE-readiness evidence panel
 - Se agrega un panel visible de evidencia LIVE-readiness en `Execution`.
 - Cambio:
