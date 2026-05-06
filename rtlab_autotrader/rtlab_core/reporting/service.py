@@ -358,6 +358,36 @@ def _binding_commission_components(
     }
 
 
+def _commission_components_from_fee_snapshot(row: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    exchange_fetch = payload.get("exchange_fetch") if isinstance(payload.get("exchange_fetch"), dict) else {}
+    components = exchange_fetch.get("commission_components") if isinstance(exchange_fetch.get("commission_components"), dict) else {}
+    items: list[dict[str, Any]] = []
+    for key, raw_component in components.items():
+        if not isinstance(raw_component, dict):
+            continue
+        component_key = str(raw_component.get("key") or key or "").strip()
+        if component_key not in {name for name, _label in COMMISSION_COMPONENTS}:
+            continue
+        component = copy.deepcopy(raw_component)
+        component.setdefault("key", component_key)
+        component.setdefault("family", "spot")
+        component.setdefault("environment", "snapshot")
+        component.setdefault("symbol", str(row.get("symbol") or component.get("symbol") or "").upper() or None)
+        component.setdefault("fetched_at", row.get("fetched_at"))
+        component.setdefault("observed_at", row.get("fetched_at"))
+        component.setdefault("freshness", "fresh")
+        component.setdefault("status", "supported")
+        component.setdefault("source", "binance_account_commission")
+        component.setdefault("source_endpoint", str(exchange_fetch.get("endpoint") or "GET /api/v3/account/commission"))
+        component.setdefault("provenance", "fee_snapshot_payload")
+        component.setdefault("estimated_vs_realized", "rate_metadata")
+        component["fee_snapshot_id"] = row.get("snapshot_id")
+        component["expires_at"] = row.get("expires_at")
+        items.append(component)
+    return items
+
+
 def _parse_ts(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -1415,6 +1445,52 @@ class ReportingBridgeService:
         age = _utc_now() - latest
         return "stale" if age > timedelta(hours=stale_hours) else "fresh"
 
+    def _fee_snapshot_commission_components(
+        self,
+        *,
+        family: str | None = None,
+        symbol: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if family and str(family).strip().lower() != "spot":
+            return []
+        catalog_path = self.user_data_dir / "backtests" / "catalog.sqlite3"
+        if not catalog_path.exists():
+            return []
+        symbol_n = _canonical_symbol(symbol) if symbol is not None else ""
+        try:
+            with sqlite3.connect(catalog_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT snapshot_id, exchange, market, symbol, source, payload_json, fetched_at, expires_at
+                    FROM fee_snapshots
+                    WHERE exchange = ? AND source = ?
+                    ORDER BY fetched_at DESC, snapshot_id DESC
+                    LIMIT 200
+                    """,
+                    (VENUE_BINANCE, "exchange_api"),
+                ).fetchall()
+        except Exception:
+            return []
+
+        components: list[dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            row_symbol = _canonical_symbol(row.get("symbol"))
+            if symbol_n and row_symbol != symbol_n:
+                continue
+            row["payload"] = _json_loads(row.get("payload_json"), {})
+            for component in _commission_components_from_fee_snapshot(row):
+                fetched_at = _parse_ts(component.get("fetched_at"))
+                expires_at = _parse_ts(component.get("expires_at"))
+                if expires_at is not None and expires_at <= _utc_now():
+                    component["freshness"] = "stale"
+                    component["status"] = "stale"
+                elif fetched_at is not None:
+                    component["freshness"] = self._latest_cost_source_status(family="spot")
+                components.append(component)
+        return components
+
     def _commission_component_evidence(
         self,
         *,
@@ -1424,6 +1500,14 @@ class ReportingBridgeService:
         symbol_n = _canonical_symbol(symbol) if symbol is not None else ""
         items: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
+        for component in self._fee_snapshot_commission_components(family=family, symbol=symbol):
+            component_key = str(component.get("key") or "").strip()
+            component_family = str(component.get("family") or "spot")
+            component_environment = str(component.get("environment") or "snapshot")
+            component_symbol = _canonical_symbol(component.get("symbol")) if component.get("symbol") else ""
+            dedupe_key = (component_family, component_environment, component_key, component_symbol)
+            seen.add(dedupe_key)
+            items.append(component)
         for row in self.db.cost_source_snapshots():
             row_family = str(row.get("family") or "").strip().lower()
             if family and row_family != str(family).strip().lower():

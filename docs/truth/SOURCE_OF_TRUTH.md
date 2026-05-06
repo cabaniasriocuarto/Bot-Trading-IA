@@ -4793,7 +4793,7 @@ El proyecto tiene:
   - la cobertura sigue siendo read-only: no agrega POST/PUT/PATCH/DELETE, no ejecuta ordenes y no toca Binance privado.
 - RTLOPS-61 / taxCommission + specialCommission auditables (2026-05-06):
   - `FeeProvider` preserva componentes `standardCommission`, `taxCommission` y `specialCommission` cuando Binance Spot devuelve `GET /api/v3/account/commission`;
-  - `ReportingBridgeService.costs_breakdown()` expone `commission_components` desde `cost_source_snapshots`, con `value`, `asset`, `source`, `family`, `symbol`, `observed_at/fetched_at`, `freshness`, `status`, `provenance` y `estimated_vs_realized`;
+  - `ReportingBridgeService.costs_breakdown()` expone `commission_components` desde `cost_source_snapshots` y desde `fee_snapshots` locales existentes, con `value`, `asset`, `source`, `family`, `symbol`, `observed_at/fetched_at`, `freshness`, `status`, `provenance` y `estimated_vs_realized`;
   - Spot queda como contrato soportado por metadata oficial; sin snapshot autenticado el valor queda pendiente, no se infiere cero;
   - USD-M/COIN-M Futures quedan con `standard_commission` via maker/taker `commissionRate`, y `taxCommission`/`specialCommission` como `not_applicable`;
   - Margin conserva borrow/interest como fuente separada; `taxCommission`/`specialCommission` quedan `unsupported` hasta contrato oficial confirmado;
