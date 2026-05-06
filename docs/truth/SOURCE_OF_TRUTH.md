@@ -4791,3 +4791,12 @@ El proyecto tiene:
   - se extiende `RTLOPS-109A Protected Preview QA` para incluir `/reporting` en el probe HTTP, Playwright read-only y QA autenticado viewer;
   - el QA autenticado verifica que la navegacion exponga `Costos` y que la pantalla muestre `Cost Stack`, `Reporting`, `taxCommission`, `specialCommission`, `pendiente` y `no soportado`;
   - la cobertura sigue siendo read-only: no agrega POST/PUT/PATCH/DELETE, no ejecuta ordenes y no toca Binance privado.
+- RTLOPS-61 / taxCommission + specialCommission auditables (2026-05-06):
+  - `FeeProvider` preserva componentes `standardCommission`, `taxCommission` y `specialCommission` cuando Binance Spot devuelve `GET /api/v3/account/commission`;
+  - `ReportingBridgeService.costs_breakdown()` expone `commission_components` desde `cost_source_snapshots`, con `value`, `asset`, `source`, `family`, `symbol`, `observed_at/fetched_at`, `freshness`, `status`, `provenance` y `estimated_vs_realized`;
+  - Spot queda como contrato soportado por metadata oficial; sin snapshot autenticado el valor queda pendiente, no se infiere cero;
+  - USD-M/COIN-M Futures quedan con `standard_commission` via maker/taker `commissionRate`, y `taxCommission`/`specialCommission` como `not_applicable`;
+  - Margin conserva borrow/interest como fuente separada; `taxCommission`/`specialCommission` quedan `unsupported` hasta contrato oficial confirmado;
+  - `/reporting` muestra la evidencia cuando existe y mantiene estados honestos `soportado`, `pendiente`, `no soportado` o `no aplica`;
+  - no se usaron Binance keys reales, no se activo LIVE, no hubo ordenes ni mutaciones;
+  - RTLOPS-106 sigue abierto como deuda externa Vercel Git Integration / `routes-manifest-deterministic`.

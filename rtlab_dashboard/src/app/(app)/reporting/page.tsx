@@ -4,7 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardTitle,
+} from "@/components/ui/card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet } from "@/lib/client-api";
 
@@ -22,7 +27,10 @@ type ReportingMetric = {
   freshness_status?: string;
 };
 
-type ReportingSummary = Record<"today" | "week" | "month" | "ytd" | "all_time", ReportingMetric>;
+type ReportingSummary = Record<
+  "today" | "week" | "month" | "ytd" | "all_time",
+  ReportingMetric
+>;
 
 type ReportingSeriesItem = {
   bucket: string;
@@ -58,6 +66,37 @@ type ReportingCostsBreakdown = {
   alert_status?: "ok" | "warn" | "block" | string;
   policy_source?: string;
   freshness_status?: string;
+  commission_components?: ReportingCommissionComponents;
+};
+
+type ReportingCommissionComponent = {
+  key?:
+    | "standard_commission"
+    | "tax_commission"
+    | "special_commission"
+    | string;
+  label?: string;
+  value?: number | null;
+  asset?: string | null;
+  rates?: Record<string, number>;
+  source?: string;
+  source_endpoint?: string;
+  family?: string;
+  environment?: string;
+  symbol?: string | null;
+  observed_at?: string | null;
+  fetched_at?: string | null;
+  freshness?: string;
+  status?: string;
+  provenance?: string;
+  estimated_vs_realized?: string;
+  detail?: string;
+};
+
+type ReportingCommissionComponents = {
+  contract_version?: string;
+  source?: string;
+  items?: ReportingCommissionComponent[];
 };
 
 type ReportingTrade = {
@@ -135,22 +174,16 @@ const emptyState: ReportingState = {
   exports: null,
 };
 
-const coverageRows = [
-  { label: "standardCommission", status: "PARCIAL", detail: "FeeProvider lee standardCommission cuando Binance lo devuelve; UI lo resume como fees." },
-  { label: "taxCommission", status: "PENDIENTE", detail: "No hay contrato backend confirmado; se muestra como no soportado todavia." },
-  { label: "specialCommission", status: "PENDIENTE", detail: "No hay contrato backend confirmado; se muestra como no soportado todavia." },
-  { label: "funding", status: "PARCIAL", detail: "Disponible en reporting/execution cuando aplica a futures o snapshots." },
-  { label: "borrow_interest", status: "PARCIAL", detail: "Disponible para margin cuando execution/reporting lo materializa." },
-  { label: "spread / slippage", status: "DISPONIBLE", detail: "Reporting distingue estimado y realizado si hay datos." },
-  { label: "gross_pnl / net_pnl", status: "DISPONIBLE", detail: "Visible en resumen, breakdown y ledger." },
-] as const;
-
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function fmtUsd(value: unknown): string {
-  return new Intl.NumberFormat("es-AR", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(num(value));
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(num(value));
 }
 
 function fmtPct(value: unknown): string {
@@ -165,25 +198,39 @@ function fmtDate(value: unknown): string {
 }
 
 function sourceLabel(row: ReportingTrade): string {
-  const source = row.cost_source_json ?? row.cost_source ?? row.provenance_json ?? row.provenance;
+  const source =
+    row.cost_source_json ??
+    row.cost_source ??
+    row.provenance_json ??
+    row.provenance;
   if (typeof source === "string") return source.slice(0, 42) || "-";
   if (source && typeof source === "object") {
-    const kind = source.source_kind ?? source.raw_source_type ?? source.reconciliation_status;
+    const kind =
+      source.source_kind ??
+      source.raw_source_type ??
+      source.reconciliation_status;
     return kind ? String(kind) : "reporting_bridge";
   }
   return "reporting_bridge";
 }
 
-function statusVariant(status: string): "success" | "warn" | "danger" | "info" | "neutral" {
+function statusVariant(
+  status: string,
+): "success" | "warn" | "danger" | "info" | "neutral" {
   const normalized = status.toLowerCase();
-  if (["ok", "fresh", "disponible", "pass"].includes(normalized)) return "success";
-  if (["parcial", "stale", "warn", "pendiente"].includes(normalized)) return "warn";
+  if (["ok", "fresh", "disponible", "pass"].includes(normalized))
+    return "success";
+  if (["parcial", "stale", "warn", "pendiente"].includes(normalized))
+    return "warn";
   if (["block", "fail", "error"].includes(normalized)) return "danger";
   if (["unknown", "no aplica"].includes(normalized)) return "info";
   return "neutral";
 }
 
-function hasRealizedEvidence(trades: ReportingTradesResponse | null, field: keyof ReportingTrade): boolean {
+function hasRealizedEvidence(
+  trades: ReportingTradesResponse | null,
+  field: keyof ReportingTrade,
+): boolean {
   return Boolean(trades?.items?.some((row) => row[field] != null));
 }
 
@@ -202,60 +249,214 @@ function realizedStatus(
   trades: ReportingTradesResponse | null,
   field: keyof ReportingTrade,
 ): "PENDIENTE" | "DISPONIBLE" {
-  return hasRealizedEvidence(trades, field) || num(breakdownValue) !== 0 ? "DISPONIBLE" : "PENDIENTE";
+  return hasRealizedEvidence(trades, field) || num(breakdownValue) !== 0
+    ? "DISPONIBLE"
+    : "PENDIENTE";
 }
 
-function componentRows(breakdown: ReportingCostsBreakdown | null, trades: ReportingTradesResponse | null) {
+function commissionItems(
+  breakdown: ReportingCostsBreakdown | null,
+): ReportingCommissionComponent[] {
+  return breakdown?.commission_components?.items ?? [];
+}
+
+function commissionComponent(
+  breakdown: ReportingCostsBreakdown | null,
+  key: "standard_commission" | "tax_commission" | "special_commission",
+): ReportingCommissionComponent | undefined {
+  const items = commissionItems(breakdown).filter((item) => item.key === key);
+  return (
+    items.find(
+      (item) =>
+        item.status === "supported" &&
+        (item.value != null || Object.keys(item.rates ?? {}).length > 0),
+    ) ??
+    items.find((item) => item.family === "spot") ??
+    items[0]
+  );
+}
+
+function commissionStatusLabel(
+  component?: ReportingCommissionComponent,
+): string {
+  const status = String(component?.status ?? "").toLowerCase();
+  const hasRates = Object.keys(component?.rates ?? {}).length > 0;
+  if (status === "supported" && hasRates) return "DISPONIBLE";
+  if (status === "supported") return "SOPORTADO";
+  if (status === "not_applicable") return "NO APLICA";
+  if (status === "unsupported") return "NO SOPORTADO";
+  if (status === "stale") return "PENDIENTE";
+  return "PENDIENTE";
+}
+
+function commissionRatesText(component?: ReportingCommissionComponent): string {
+  const entries = Object.entries(component?.rates ?? {});
+  if (entries.length)
+    return entries.map(([role, value]) => `${role}: ${value}`).join(" / ");
+  if (component?.value != null) return String(component.value);
+  if (component?.status === "supported") return "soportado; valor pendiente";
+  if (component?.status === "not_applicable") return "no aplica";
+  if (component?.status === "unsupported") return "no soportado";
+  return "pendiente";
+}
+
+function commissionCoverageRows(breakdown: ReportingCostsBreakdown | null) {
+  const byKey = (
+    key: "standard_commission" | "tax_commission" | "special_commission",
+    label: string,
+  ) => {
+    const items = commissionItems(breakdown).filter((item) => item.key === key);
+    const selected = commissionComponent(breakdown, key);
+    const families =
+      Array.from(
+        new Set(items.map((item) => item.family).filter(Boolean)),
+      ).join(", ") || "sin familia";
+    const status = commissionStatusLabel(selected);
+    const detail =
+      selected?.detail ?? "Contrato pendiente de snapshot backend.";
+    const pendingSuffix =
+      status === "SOPORTADO"
+        ? " Valor pendiente hasta tener snapshot autenticado; no se inventa cero."
+        : status === "NO SOPORTADO" || status === "NO APLICA"
+          ? " Se mantiene como pendiente/no soportado para familias sin campo oficial."
+          : "";
+    return {
+      label,
+      status,
+      detail: `${detail} Familias: ${families}.${pendingSuffix}`,
+    };
+  };
+
+  return [
+    byKey("standard_commission", "standardCommission"),
+    byKey("tax_commission", "taxCommission"),
+    byKey("special_commission", "specialCommission"),
+    {
+      label: "funding",
+      status: "PARCIAL",
+      detail:
+        "Disponible en reporting/execution cuando aplica a futures o snapshots.",
+    },
+    {
+      label: "borrow_interest",
+      status: "PARCIAL",
+      detail:
+        "Disponible para margin cuando execution/reporting lo materializa.",
+    },
+    {
+      label: "spread / slippage",
+      status: "DISPONIBLE",
+      detail: "Reporting distingue estimado y realizado si hay datos.",
+    },
+    {
+      label: "gross_pnl / net_pnl",
+      status: "DISPONIBLE",
+      detail: "Visible en resumen, breakdown y ledger.",
+    },
+  ];
+}
+
+function commissionBreakdownRow(
+  breakdown: ReportingCostsBreakdown | null,
+  key: "tax_commission" | "special_commission",
+  component: string,
+) {
+  const selected = commissionComponent(breakdown, key);
+  return {
+    component,
+    estimated: commissionRatesText(selected),
+    realized: "metadata de tasa; no fee realizado",
+    source: selected?.source_endpoint || selected?.source || "Binance contract",
+    status: commissionStatusLabel(selected),
+  };
+}
+
+function componentRows(
+  breakdown: ReportingCostsBreakdown | null,
+  trades: ReportingTradesResponse | null,
+) {
   return [
     {
       component: "Fees / commission",
       estimated: breakdown?.exchange_fee_estimated,
-      realized: realizedValue(breakdown?.exchange_fee_realized, trades, "exchange_fee_realized"),
+      realized: realizedValue(
+        breakdown?.exchange_fee_realized,
+        trades,
+        "exchange_fee_realized",
+      ),
       source: "trade_cost_ledger",
-      status: realizedStatus(breakdown?.exchange_fee_realized, trades, "exchange_fee_realized"),
+      status: realizedStatus(
+        breakdown?.exchange_fee_realized,
+        trades,
+        "exchange_fee_realized",
+      ),
     },
     {
       component: "Spread",
       estimated: breakdown?.spread_estimated,
-      realized: realizedValue(breakdown?.spread_realized, trades, "spread_realized"),
+      realized: realizedValue(
+        breakdown?.spread_realized,
+        trades,
+        "spread_realized",
+      ),
       source: "reporting bridge",
-      status: realizedStatus(breakdown?.spread_realized, trades, "spread_realized"),
+      status: realizedStatus(
+        breakdown?.spread_realized,
+        trades,
+        "spread_realized",
+      ),
     },
     {
       component: "Slippage",
       estimated: breakdown?.slippage_estimated,
-      realized: realizedValue(breakdown?.slippage_realized, trades, "slippage_realized"),
+      realized: realizedValue(
+        breakdown?.slippage_realized,
+        trades,
+        "slippage_realized",
+      ),
       source: "reporting bridge",
-      status: realizedStatus(breakdown?.slippage_realized, trades, "slippage_realized"),
+      status: realizedStatus(
+        breakdown?.slippage_realized,
+        trades,
+        "slippage_realized",
+      ),
     },
     {
       component: "Funding",
       estimated: "no expuesto",
-      realized: realizedValue(breakdown?.funding_realized, trades, "funding_realized"),
+      realized: realizedValue(
+        breakdown?.funding_realized,
+        trades,
+        "funding_realized",
+      ),
       source: "futures/reporting",
-      status: realizedStatus(breakdown?.funding_realized, trades, "funding_realized"),
+      status: realizedStatus(
+        breakdown?.funding_realized,
+        trades,
+        "funding_realized",
+      ),
     },
     {
       component: "Borrow interest",
       estimated: "no expuesto",
-      realized: realizedValue(breakdown?.borrow_interest_realized, trades, "borrow_interest_realized"),
+      realized: realizedValue(
+        breakdown?.borrow_interest_realized,
+        trades,
+        "borrow_interest_realized",
+      ),
       source: "margin/reporting",
-      status: realizedStatus(breakdown?.borrow_interest_realized, trades, "borrow_interest_realized"),
+      status: realizedStatus(
+        breakdown?.borrow_interest_realized,
+        trades,
+        "borrow_interest_realized",
+      ),
     },
-    {
-      component: "Tax commission",
-      estimated: "sin contrato",
-      realized: "sin contrato",
-      source: "Binance pendiente",
-      status: "NO SOPORTADO",
-    },
-    {
-      component: "Special commission",
-      estimated: "sin contrato",
-      realized: "sin contrato",
-      source: "Binance pendiente",
-      status: "NO SOPORTADO",
-    },
+    commissionBreakdownRow(breakdown, "tax_commission", "Tax commission"),
+    commissionBreakdownRow(
+      breakdown,
+      "special_commission",
+      "Special commission",
+    ),
   ];
 }
 
@@ -273,18 +474,29 @@ export default function ReportingPage() {
     setLoading(true);
     setError("");
     try {
-      const [summary, daily, monthly, breakdown, trades, exports] = await Promise.all([
-        apiGet<ReportingSummary>("/api/v1/reporting/performance/summary"),
-        apiGet<ReportingSeriesResponse>("/api/v1/reporting/performance/daily"),
-        apiGet<ReportingSeriesResponse>("/api/v1/reporting/performance/monthly"),
-        apiGet<ReportingCostsBreakdown>("/api/v1/reporting/costs/breakdown"),
-        apiGet<ReportingTradesResponse>("/api/v1/reporting/trades?limit=50"),
-        apiGet<ReportingExportsResponse>("/api/v1/reporting/exports?limit=20"),
-      ]);
+      const [summary, daily, monthly, breakdown, trades, exports] =
+        await Promise.all([
+          apiGet<ReportingSummary>("/api/v1/reporting/performance/summary"),
+          apiGet<ReportingSeriesResponse>(
+            "/api/v1/reporting/performance/daily",
+          ),
+          apiGet<ReportingSeriesResponse>(
+            "/api/v1/reporting/performance/monthly",
+          ),
+          apiGet<ReportingCostsBreakdown>("/api/v1/reporting/costs/breakdown"),
+          apiGet<ReportingTradesResponse>("/api/v1/reporting/trades?limit=50"),
+          apiGet<ReportingExportsResponse>(
+            "/api/v1/reporting/exports?limit=20",
+          ),
+        ]);
       setState({ summary, daily, monthly, breakdown, trades, exports });
       setUpdatedAt(new Date().toISOString());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo cargar Cost Stack / Reporting.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo cargar Cost Stack / Reporting.",
+      );
     } finally {
       setLoading(false);
     }
@@ -296,7 +508,14 @@ export default function ReportingPage() {
 
   const allTime = state.summary?.all_time;
   const breakdown = state.breakdown;
-  const components = useMemo(() => componentRows(breakdown, state.trades), [breakdown, state.trades]);
+  const components = useMemo(
+    () => componentRows(breakdown, state.trades),
+    [breakdown, state.trades],
+  );
+  const coverageRows = useMemo(
+    () => commissionCoverageRows(breakdown),
+    [breakdown],
+  );
   const recentDaily = state.daily?.items?.slice(-5).reverse() ?? [];
   const recentMonthly = state.monthly?.items?.slice(-4).reverse() ?? [];
 
@@ -308,43 +527,78 @@ export default function ReportingPage() {
             <div className="flex flex-wrap gap-2">
               <Badge variant="info">Read-only</Badge>
               <Badge variant="neutral">Fuente: /api/v1/reporting/*</Badge>
-              <Badge variant={statusVariant(breakdown?.freshness_status || "unknown")}>
+              <Badge
+                variant={statusVariant(
+                  breakdown?.freshness_status || "unknown",
+                )}
+              >
                 freshness: {breakdown?.freshness_status || "unknown"}
               </Badge>
             </div>
             <div>
-              <p className="text-xs uppercase tracking-[0.3em] text-cyan-200">Cost Stack / Reporting</p>
-              <h1 className="mt-2 text-3xl font-black tracking-tight text-white md:text-4xl">Costos Binance visibles, sin tocar ejecucion</h1>
+              <p className="text-xs uppercase tracking-[0.3em] text-cyan-200">
+                Cost Stack / Reporting
+              </p>
+              <h1 className="mt-2 text-3xl font-black tracking-tight text-white md:text-4xl">
+                Costos Binance visibles, sin tocar ejecucion
+              </h1>
               <p className="mt-3 text-sm leading-6 text-slate-300">
-                Consolida el reporting ya disponible para gross/net PnL, fees, spread, slippage, funding, borrow interest,
-                ledger de trades y manifiesto de exports. Esta pantalla no ejecuta ordenes, no consulta Binance privado y no modifica datos.
+                Consolida el reporting ya disponible para gross/net PnL, fees,
+                spread, slippage, funding, borrow interest, ledger de trades y
+                manifiesto de exports. Esta pantalla no ejecuta ordenes, no
+                consulta Binance privado y no modifica datos.
               </p>
             </div>
           </div>
           <div className="flex flex-col items-end gap-2 text-right text-xs text-slate-300">
-            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void load()}
+              disabled={loading}
+            >
               {loading ? "Actualizando..." : "Actualizar"}
             </Button>
             <span>Ultima lectura: {updatedAt ? fmtDate(updatedAt) : "-"}</span>
             <span>Periodo backend: all_time + daily/monthly</span>
           </div>
         </div>
-        {error ? <p className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</p> : null}
+        {error ? (
+          <p className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
+            {error}
+          </p>
+        ) : null}
       </section>
 
       <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Metric label="Gross PnL" value={fmtUsd(allTime?.gross_pnl)} />
-        <Metric label="Net PnL" value={fmtUsd(allTime?.net_pnl)} accent={num(allTime?.net_pnl) >= 0 ? "good" : "bad"} />
-        <Metric label="Costos estimados" value={fmtUsd(allTime?.total_cost_estimated)} />
-        <Metric label="Costos realizados" value={fmtUsd(allTime?.total_cost_realized)} />
+        <Metric
+          label="Net PnL"
+          value={fmtUsd(allTime?.net_pnl)}
+          accent={num(allTime?.net_pnl) >= 0 ? "good" : "bad"}
+        />
+        <Metric
+          label="Costos estimados"
+          value={fmtUsd(allTime?.total_cost_estimated)}
+        />
+        <Metric
+          label="Costos realizados"
+          value={fmtUsd(allTime?.total_cost_realized)}
+        />
         <Metric label="Trades" value={String(allTime?.trade_count ?? 0)} />
-        <Metric label="% costo / gross" value={fmtPct(breakdown?.total_cost_pct_of_gross_pnl)} />
+        <Metric
+          label="% costo / gross"
+          value={fmtPct(breakdown?.total_cost_pct_of_gross_pnl)}
+        />
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
         <Card>
           <CardTitle>Breakdown de costos</CardTitle>
-          <CardDescription>Estimado vs realizado por componente. Los campos sin contrato aparecen como pendientes, no como cero inventado.</CardDescription>
+          <CardDescription>
+            Estimado vs realizado por componente. Los campos sin contrato
+            aparecen como pendientes, no como cero inventado.
+          </CardDescription>
           <CardContent className="overflow-x-auto">
             <Table>
               <THead>
@@ -359,7 +613,11 @@ export default function ReportingPage() {
               </THead>
               <TBody>
                 {components.map((row) => {
-                  const diff = typeof row.estimated === "number" && typeof row.realized === "number" ? row.realized - row.estimated : null;
+                  const diff =
+                    typeof row.estimated === "number" &&
+                    typeof row.realized === "number"
+                      ? row.realized - row.estimated
+                      : null;
                   return (
                     <TR key={row.component}>
                       <TD className="font-semibold">{row.component}</TD>
@@ -367,7 +625,11 @@ export default function ReportingPage() {
                       <TD>{valueCell(row.realized)}</TD>
                       <TD>{diff == null ? "-" : fmtUsd(diff)}</TD>
                       <TD className="text-slate-400">{row.source}</TD>
-                      <TD><Badge variant={statusVariant(row.status)}>{row.status}</Badge></TD>
+                      <TD>
+                        <Badge variant={statusVariant(row.status)}>
+                          {row.status}
+                        </Badge>
+                      </TD>
                     </TR>
                   );
                 })}
@@ -378,15 +640,26 @@ export default function ReportingPage() {
 
         <Card>
           <CardTitle>Cobertura Binance</CardTitle>
-          <CardDescription>Estado honesto del contrato disponible hoy en main.</CardDescription>
+          <CardDescription>
+            Estado honesto del contrato disponible hoy en main.
+          </CardDescription>
           <CardContent className="space-y-3">
             {coverageRows.map((row) => (
-              <div key={row.label} className="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+              <div
+                key={row.label}
+                className="rounded-xl border border-slate-800 bg-slate-900/50 p-3"
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-slate-100">{row.label}</span>
-                  <Badge variant={statusVariant(row.status)}>{row.status}</Badge>
+                  <span className="font-semibold text-slate-100">
+                    {row.label}
+                  </span>
+                  <Badge variant={statusVariant(row.status)}>
+                    {row.status}
+                  </Badge>
                 </div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">{row.detail}</p>
+                <p className="mt-2 text-xs leading-5 text-slate-400">
+                  {row.detail}
+                </p>
               </div>
             ))}
           </CardContent>
@@ -396,7 +669,9 @@ export default function ReportingPage() {
       <section className="grid gap-5 xl:grid-cols-2">
         <Card>
           <CardTitle>Series recientes</CardTitle>
-          <CardDescription>Lectura read-only de performance diaria y mensual.</CardDescription>
+          <CardDescription>
+            Lectura read-only de performance diaria y mensual.
+          </CardDescription>
           <CardContent className="grid gap-4 md:grid-cols-2">
             <SeriesBlock title="Diario" rows={recentDaily} />
             <SeriesBlock title="Mensual" rows={recentMonthly} />
@@ -405,23 +680,41 @@ export default function ReportingPage() {
 
         <Card>
           <CardTitle>Exports</CardTitle>
-          <CardDescription>Manifiesto disponible por backend. La descarga directa queda pendiente hasta tener contrato seguro de artifact.</CardDescription>
+          <CardDescription>
+            Manifiesto disponible por backend. La descarga directa queda
+            pendiente hasta tener contrato seguro de artifact.
+          </CardDescription>
           <CardContent className="space-y-2">
             {state.exports?.items?.length ? (
               state.exports.items.map((row) => (
-                <div key={row.export_id || row.artifact_path} className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-sm">
+                <div
+                  key={row.export_id || row.artifact_path}
+                  className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-sm"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold">{row.export_id || "export"}</span>
-                    <Badge variant={row.success === false ? "danger" : "success"}>{row.export_type || "archivo"}</Badge>
+                    <span className="font-semibold">
+                      {row.export_id || "export"}
+                    </span>
+                    <Badge
+                      variant={row.success === false ? "danger" : "success"}
+                    >
+                      {row.export_type || "archivo"}
+                    </Badge>
                   </div>
                   <p className="mt-1 text-xs text-slate-400">
-                    {fmtDate(row.generated_at)} · filas {row.row_count ?? 0} · scope {row.report_scope || "-"}
+                    {fmtDate(row.generated_at)} · filas {row.row_count ?? 0} ·
+                    scope {row.report_scope || "-"}
                   </p>
-                  <p className="mt-1 truncate text-xs text-slate-500">{row.artifact_path || "artifact path no expuesto"}</p>
+                  <p className="mt-1 truncate text-xs text-slate-500">
+                    {row.artifact_path || "artifact path no expuesto"}
+                  </p>
                 </div>
               ))
             ) : (
-              <EmptyNote title="Sin exports generados" text="El backend de XLSX/PDF existe, pero todavia no hay manifiestos para listar o descargar desde UI." />
+              <EmptyNote
+                title="Sin exports generados"
+                text="El backend de XLSX/PDF existe, pero todavia no hay manifiestos para listar o descargar desde UI."
+              />
             )}
           </CardContent>
         </Card>
@@ -429,7 +722,10 @@ export default function ReportingPage() {
 
       <Card>
         <CardTitle>Ledger de trades reportados</CardTitle>
-        <CardDescription>Hasta 50 filas desde `/api/v1/reporting/trades`. No usa bulk actions ni mutaciones.</CardDescription>
+        <CardDescription>
+          Hasta 50 filas desde `/api/v1/reporting/trades`. No usa bulk actions
+          ni mutaciones.
+        </CardDescription>
         <CardContent className="overflow-x-auto">
           {state.trades?.items?.length ? (
             <Table>
@@ -451,25 +747,59 @@ export default function ReportingPage() {
               </THead>
               <TBody>
                 {state.trades.items.map((row) => (
-                  <TR key={row.trade_cost_id || row.trade_ref || `${row.symbol}-${row.executed_at}`}>
+                  <TR
+                    key={
+                      row.trade_cost_id ||
+                      row.trade_ref ||
+                      `${row.symbol}-${row.executed_at}`
+                    }
+                  >
                     <TD>{fmtDate(row.executed_at)}</TD>
                     <TD className="font-semibold">{row.symbol || "-"}</TD>
                     <TD>{row.family || "-"}</TD>
                     <TD>{row.strategy_id || row.bot_id || "-"}</TD>
                     <TD>{fmtUsd(row.gross_pnl)}</TD>
-                    <TD className={num(row.net_pnl) >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(row.net_pnl)}</TD>
-                    <TD>{fmtUsd(row.exchange_fee_realized ?? row.exchange_fee_estimated)}</TD>
-                    <TD>{fmtUsd(row.spread_realized ?? row.spread_estimated)}</TD>
-                    <TD>{fmtUsd(row.slippage_realized ?? row.slippage_estimated)}</TD>
-                    <TD>{fmtUsd(row.funding_realized ?? row.funding_estimated)}</TD>
-                    <TD>{fmtUsd(row.borrow_interest_realized ?? row.borrow_interest_estimated)}</TD>
-                    <TD className="max-w-[180px] truncate text-slate-400">{sourceLabel(row)}</TD>
+                    <TD
+                      className={
+                        num(row.net_pnl) >= 0
+                          ? "text-emerald-300"
+                          : "text-rose-300"
+                      }
+                    >
+                      {fmtUsd(row.net_pnl)}
+                    </TD>
+                    <TD>
+                      {fmtUsd(
+                        row.exchange_fee_realized ?? row.exchange_fee_estimated,
+                      )}
+                    </TD>
+                    <TD>
+                      {fmtUsd(row.spread_realized ?? row.spread_estimated)}
+                    </TD>
+                    <TD>
+                      {fmtUsd(row.slippage_realized ?? row.slippage_estimated)}
+                    </TD>
+                    <TD>
+                      {fmtUsd(row.funding_realized ?? row.funding_estimated)}
+                    </TD>
+                    <TD>
+                      {fmtUsd(
+                        row.borrow_interest_realized ??
+                          row.borrow_interest_estimated,
+                      )}
+                    </TD>
+                    <TD className="max-w-[180px] truncate text-slate-400">
+                      {sourceLabel(row)}
+                    </TD>
                   </TR>
                 ))}
               </TBody>
             </Table>
           ) : (
-            <EmptyNote title="Sin ledger de reporting" text="Cuando Paper/Testnet/Live o backtests materialicen filas, se veran aca gross/net PnL y costos por componente." />
+            <EmptyNote
+              title="Sin ledger de reporting"
+              text="Cuando Paper/Testnet/Live o backtests materialicen filas, se veran aca gross/net PnL y costos por componente."
+            />
           )}
         </CardContent>
       </Card>
@@ -477,8 +807,21 @@ export default function ReportingPage() {
   );
 }
 
-function Metric({ label, value, accent }: { label: string; value: string; accent?: "good" | "bad" }) {
-  const tone = accent === "good" ? "text-emerald-300" : accent === "bad" ? "text-rose-300" : "text-white";
+function Metric({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: "good" | "bad";
+}) {
+  const tone =
+    accent === "good"
+      ? "text-emerald-300"
+      : accent === "bad"
+        ? "text-rose-300"
+        : "text-white";
   return (
     <Card className="p-4">
       <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
@@ -487,16 +830,29 @@ function Metric({ label, value, accent }: { label: string; value: string; accent
   );
 }
 
-function SeriesBlock({ title, rows }: { title: string; rows: ReportingSeriesItem[] }) {
+function SeriesBlock({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: ReportingSeriesItem[];
+}) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
       <p className="text-xs uppercase tracking-wide text-slate-400">{title}</p>
       <div className="mt-3 space-y-2">
         {rows.length ? (
           rows.map((row) => (
-            <div key={`${title}-${row.bucket}`} className="flex items-center justify-between gap-3 text-sm">
+            <div
+              key={`${title}-${row.bucket}`}
+              className="flex items-center justify-between gap-3 text-sm"
+            >
               <span className="text-slate-300">{row.bucket}</span>
-              <span className={num(row.net_pnl) >= 0 ? "text-emerald-300" : "text-rose-300"}>
+              <span
+                className={
+                  num(row.net_pnl) >= 0 ? "text-emerald-300" : "text-rose-300"
+                }
+              >
                 {fmtUsd(row.net_pnl)} · {row.trade_count} trades
               </span>
             </div>

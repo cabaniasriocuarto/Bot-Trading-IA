@@ -101,6 +101,48 @@ def _try_float(value: Any, default: float | None = None) -> float | None:
         return default
 
 
+_BINANCE_COMMISSION_COMPONENTS: tuple[tuple[str, str], ...] = (
+    ("standardCommission", "standard_commission"),
+    ("taxCommission", "tax_commission"),
+    ("specialCommission", "special_commission"),
+)
+
+
+def _binance_commission_components(
+    payload: dict[str, Any],
+    *,
+    symbol: str,
+    fetched_at: str,
+) -> dict[str, dict[str, Any]]:
+    components: dict[str, dict[str, Any]] = {}
+    for raw_field, key in _BINANCE_COMMISSION_COMPONENTS:
+        raw_rates = payload.get(raw_field) if isinstance(payload.get(raw_field), dict) else {}
+        rates = {
+            role: rate
+            for role in ("maker", "taker", "buyer", "seller")
+            if (rate := _try_float(raw_rates.get(role), None)) is not None
+        }
+        components[key] = {
+            "key": key,
+            "label": raw_field,
+            "value": rates.get("taker"),
+            "asset": None,
+            "rates": rates,
+            "source": "binance_account_commission",
+            "source_endpoint": "GET /api/v3/account/commission",
+            "family": "spot",
+            "symbol": str(symbol or "").upper(),
+            "observed_at": fetched_at,
+            "fetched_at": fetched_at,
+            "freshness": "fresh",
+            "status": "supported" if rates else "unavailable",
+            "provenance": "official_binance_spot_account_commission",
+            "estimated_vs_realized": "rate_metadata",
+            "raw_field": raw_field,
+        }
+    return components
+
+
 @dataclass(slots=True)
 class FeeProvider:
     catalog: BacktestCatalogDB
@@ -169,7 +211,17 @@ class FeeProvider:
                 maker = _try_float((std or {}).get("maker"), None)
                 taker = _try_float((std or {}).get("taker"), None)
                 if maker is not None and taker is not None:
-                    return maker, taker, {"endpoint": "/api/v3/account/commission", "payload": payload}
+                    fetched_at = _utc_iso()
+                    return maker, taker, {
+                        "endpoint": "/api/v3/account/commission",
+                        "payload": payload,
+                        "commission_component_contract_version": "binance_commission_components_v1",
+                        "commission_components": _binance_commission_components(
+                            payload if isinstance(payload, dict) else {},
+                            symbol=symbol,
+                            fetched_at=fetched_at,
+                        ),
+                    }
         except Exception as exc:
             attempts.append({"endpoint": "/api/v3/account/commission", "error": str(exc)})
 

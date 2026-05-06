@@ -22,9 +22,15 @@ from rtlab_core.src.data.runtime_path import runtime_path
 
 VENUE_BINANCE = "binance"
 FAMILIES: tuple[str, ...] = ("spot", "margin", "usdm_futures", "coinm_futures")
+COMMISSION_COMPONENTS: tuple[tuple[str, str], ...] = (
+    ("standard_commission", "standardCommission"),
+    ("tax_commission", "taxCommission"),
+    ("special_commission", "specialCommission"),
+)
 COST_STACK_FILENAME = "cost_stack.yaml"
 REPORTING_EXPORTS_FILENAME = "reporting_exports.yaml"
 PARSER_VERSION = "cost_reporting_bridge_v1"
+COMMISSION_COMPONENT_CONTRACT_VERSION = "binance_commission_components_v1"
 POLICY_EXPECTED_FILES: tuple[str, ...] = (
     "runtime_controls.yaml",
     "instrument_registry.yaml",
@@ -197,6 +203,159 @@ def _environment_from_mode(value: Any) -> str:
     if mode == "testnet":
         return "testnet"
     return "paper"
+
+
+def _commission_component(
+    *,
+    key: str,
+    label: str,
+    family: str,
+    environment: str,
+    status: str,
+    source: str,
+    source_endpoint: str,
+    fetched_at: str,
+    freshness: str,
+    provenance: str,
+    detail: str,
+    symbol: str | None = None,
+    rates: dict[str, float] | None = None,
+    value: float | None = None,
+    asset: str | None = None,
+    observed_at: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "value": value,
+        "asset": asset,
+        "rates": rates or {},
+        "source": source,
+        "source_endpoint": source_endpoint,
+        "family": family,
+        "environment": environment,
+        "symbol": symbol,
+        "observed_at": observed_at,
+        "fetched_at": fetched_at,
+        "freshness": freshness,
+        "status": status,
+        "provenance": provenance,
+        "estimated_vs_realized": "rate_metadata",
+        "detail": detail,
+    }
+
+
+def _binding_commission_components(
+    *,
+    family: str,
+    environment: str,
+    descriptor: dict[str, Any],
+    fetched_at: str,
+) -> dict[str, dict[str, Any]]:
+    source_endpoint = str(descriptor.get("source_endpoint") or "")
+    estimated_endpoint = str(descriptor.get("estimated_endpoint") or "")
+    if family == "spot":
+        return {
+            key: _commission_component(
+                key=key,
+                label=label,
+                family=family,
+                environment=environment,
+                status="supported",
+                source="binance_account_commission",
+                source_endpoint=source_endpoint,
+                fetched_at=fetched_at,
+                freshness="metadata_only",
+                provenance="official_binance_spot_commission_contract",
+                detail="Spot expone esta tasa por simbolo via GET /api/v3/account/commission; requiere snapshot autenticado para valores.",
+            )
+            for key, label in COMMISSION_COMPONENTS
+        }
+    if family == "margin":
+        return {
+            "standard_commission": _commission_component(
+                key="standard_commission",
+                label="standardCommission",
+                family=family,
+                environment=environment,
+                status="unavailable",
+                source=str(descriptor.get("primary_source") or "binance_account_commission"),
+                source_endpoint=source_endpoint,
+                fetched_at=fetched_at,
+                freshness="metadata_only",
+                provenance="margin_commission_contract_not_normalized",
+                detail="Margin mantiene trade fees/interes como fuentes separadas; standardCommission no esta normalizado en reporting.",
+            ),
+            "tax_commission": _commission_component(
+                key="tax_commission",
+                label="taxCommission",
+                family=family,
+                environment=environment,
+                status="unsupported",
+                source="binance_margin_sources",
+                source_endpoint=source_endpoint,
+                fetched_at=fetched_at,
+                freshness="metadata_only",
+                provenance="no_margin_tax_commission_contract_confirmed",
+                detail="No hay contrato margin confirmado para taxCommission en el puente actual; no se infiere cero.",
+            ),
+            "special_commission": _commission_component(
+                key="special_commission",
+                label="specialCommission",
+                family=family,
+                environment=environment,
+                status="unsupported",
+                source="binance_margin_sources",
+                source_endpoint=source_endpoint,
+                fetched_at=fetched_at,
+                freshness="metadata_only",
+                provenance="no_margin_special_commission_contract_confirmed",
+                detail="No hay contrato margin confirmado para specialCommission en el puente actual; no se infiere cero.",
+            ),
+        }
+    futures_source = str(descriptor.get("commission_rate_source") or descriptor.get("primary_source") or "")
+    futures_endpoint = estimated_endpoint or source_endpoint
+    return {
+        "standard_commission": _commission_component(
+            key="standard_commission",
+            label="standardCommission",
+            family=family,
+            environment=environment,
+            status="supported",
+            source=futures_source,
+            source_endpoint=futures_endpoint,
+            fetched_at=fetched_at,
+            freshness="metadata_only",
+            provenance="official_binance_futures_commission_rate_contract",
+            detail="Futures expone maker/taker commissionRate; se normaliza como standard commission metadata.",
+        ),
+        "tax_commission": _commission_component(
+            key="tax_commission",
+            label="taxCommission",
+            family=family,
+            environment=environment,
+            status="not_applicable",
+            source=futures_source,
+            source_endpoint=futures_endpoint,
+            fetched_at=fetched_at,
+            freshness="metadata_only",
+            provenance="futures_commission_rate_has_no_tax_commission",
+            detail="USD-M/COIN-M futures official commissionRate no expone taxCommission.",
+        ),
+        "special_commission": _commission_component(
+            key="special_commission",
+            label="specialCommission",
+            family=family,
+            environment=environment,
+            status="not_applicable",
+            source=futures_source,
+            source_endpoint=futures_endpoint,
+            fetched_at=fetched_at,
+            freshness="metadata_only",
+            provenance="futures_commission_rate_has_no_special_commission",
+            detail="USD-M/COIN-M futures official commissionRate no expone specialCommission.",
+        ),
+    }
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -853,6 +1012,7 @@ class ReportingBridgeService:
         fetched_at = utc_now_iso()
         policy_source = self.policy_source()
         for family in FAMILIES:
+            family_descriptor = descriptors.get(family) or {}
             envs = environments_cfg.get(family) if isinstance(environments_cfg.get(family), dict) else {}
             for environment, enabled in sorted(envs.items()):
                 if not _bool(enabled):
@@ -861,7 +1021,13 @@ class ReportingBridgeService:
                     "venue": VENUE_BINANCE,
                     "family": family,
                     "environment": str(environment),
-                    "sources": descriptors.get(family) or {},
+                    "sources": family_descriptor,
+                    "commission_components": _binding_commission_components(
+                        family=family,
+                        environment=str(environment),
+                        descriptor=family_descriptor,
+                        fetched_at=fetched_at,
+                    ),
                     "policy_hash": str(policy_source["cost_stack"]["hash"] or ""),
                     "policy_source": policy_source["cost_stack"],
                     "provenance_mode": "official_source_binding",
@@ -874,7 +1040,7 @@ class ReportingBridgeService:
                         "environment": str(environment),
                         "source_kind": "cost_source_binding",
                         "fetched_at": fetched_at,
-                        "source_endpoint": str((descriptors.get(family) or {}).get("source_endpoint") or ""),
+                        "source_endpoint": str(family_descriptor.get("source_endpoint") or ""),
                         "source_hash": _sha256_json(descriptor),
                         "parser_version": PARSER_VERSION,
                         "payload": descriptor,
@@ -1249,6 +1415,56 @@ class ReportingBridgeService:
         age = _utc_now() - latest
         return "stale" if age > timedelta(hours=stale_hours) else "fresh"
 
+    def _commission_component_evidence(
+        self,
+        *,
+        family: str | None = None,
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        symbol_n = _canonical_symbol(symbol) if symbol is not None else ""
+        items: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for row in self.db.cost_source_snapshots():
+            row_family = str(row.get("family") or "").strip().lower()
+            if family and row_family != str(family).strip().lower():
+                continue
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            components = payload.get("commission_components") if isinstance(payload.get("commission_components"), dict) else {}
+            for key, raw_component in components.items():
+                if not isinstance(raw_component, dict):
+                    continue
+                component = copy.deepcopy(raw_component)
+                component_key = str(component.get("key") or key or "").strip()
+                if component_key not in {name for name, _label in COMMISSION_COMPONENTS}:
+                    continue
+                component_symbol = _canonical_symbol(component.get("symbol")) if component.get("symbol") else ""
+                if symbol_n and component_symbol and component_symbol != symbol_n:
+                    continue
+                component_family = str(component.get("family") or row_family or "unknown")
+                component_environment = str(component.get("environment") or row.get("environment") or "")
+                dedupe_key = (component_family, component_environment, component_key, component_symbol)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                component.setdefault("label", dict(COMMISSION_COMPONENTS).get(component_key, component_key))
+                component.setdefault("value", None)
+                component.setdefault("asset", None)
+                component.setdefault("rates", {})
+                component.setdefault("family", component_family)
+                component.setdefault("environment", component_environment)
+                component.setdefault("symbol", component_symbol or None)
+                component.setdefault("fetched_at", row.get("fetched_at"))
+                component.setdefault("observed_at", None)
+                component.setdefault("freshness", self._latest_cost_source_status(family=component_family))
+                component.setdefault("status", "unavailable")
+                component.setdefault("estimated_vs_realized", "rate_metadata")
+                items.append(component)
+        return {
+            "contract_version": COMMISSION_COMPONENT_CONTRACT_VERSION,
+            "source": "cost_source_snapshots",
+            "items": items,
+        }
+
     def performance_summary(
         self,
         *,
@@ -1361,6 +1577,10 @@ class ReportingBridgeService:
         )
         totals["policy_source"] = self.policy_source()
         totals["freshness_status"] = self._latest_cost_source_status(family=filters.get("family"))
+        totals["commission_components"] = self._commission_component_evidence(
+            family=filters.get("family"),
+            symbol=filters.get("symbol"),
+        )
         return totals
 
     def trades(self, *, limit: int = 200, offset: int = 0, **filters: Any) -> dict[str, Any]:
