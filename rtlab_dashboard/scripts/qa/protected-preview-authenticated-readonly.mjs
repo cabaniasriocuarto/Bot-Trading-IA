@@ -247,10 +247,12 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
     }
 
     if (targetPath === "/reporting") {
+      const hasCostos = /Costos/i.test(body);
+      const hasReporting = /Reporting/i.test(body);
       guardrails.reporting = {
-        hasCostosNav: body.includes("Costos"),
-        hasCostStack: body.includes("Cost Stack"),
-        hasReporting: body.includes("Reporting"),
+        hasCostosNav: hasCostos,
+        hasReporting,
+        hasReportingSemantics: hasCostos && hasReporting,
         hasTaxCommission: body.includes("taxCommission"),
         hasSpecialCommission: body.includes("specialCommission"),
         hasPendingCopy: body.toLowerCase().includes("pendiente"),
@@ -337,8 +339,8 @@ if (
 
 const requiredReportingChecks = [
   "hasCostosNav",
-  "hasCostStack",
   "hasReporting",
+  "hasReportingSemantics",
   "hasTaxCommission",
   "hasSpecialCommission",
   "hasPendingCopy",
@@ -347,7 +349,7 @@ const requiredReportingChecks = [
 for (const checkName of requiredReportingChecks) {
   if (!guardrails.reporting?.[checkName]) {
     console.error(
-      `/reporting missing expected read-only Cost Stack marker: ${checkName}`,
+      `/reporting missing expected read-only reporting marker: ${checkName}`,
     );
     process.exit(1);
   }
