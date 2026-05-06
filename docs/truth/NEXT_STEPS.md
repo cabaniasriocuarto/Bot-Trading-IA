@@ -2471,7 +2471,9 @@ Fecha: 2026-05-05
   - [x] Marcar `taxCommission` y `specialCommission` como pendientes/no soportados todavia.
   - [x] Agregar `/reporting` y navegacion `Costos` a la cobertura protegida/autenticada de `RTLOPS-109A`.
   - [x] Agregar contrato auditable para `taxCommission` y `specialCommission` en Spot sin inventar valores cuando no hay snapshot autenticado.
+  - [x] Propagar Cost Stack compacto a `/trades` y `/portfolio` usando la verdad existente de `/reporting`.
   - [ ] Definir contrato seguro de descarga/generacion de exports si se quiere habilitar botones XLSX/PDF desde UI.
   - [ ] Completar RTLOPS-61: snapshots live por familia para fees/spread/slippage/funding/borrow_interest y valores autenticados de tax/special cuando haya autorizacion de keys.
   - [ ] Completar RTLOPS-62: paridad expected vs realized + integracion reporting/export verificable end-to-end.
+  - [ ] Propagar Cost Stack a `/execution` y `/risk` en bloques separados, sin mezclar con este microbloque.
   - [ ] Mantener RTLOPS-106 abierto; RTLOPS-107/prebuilt sigue como workaround temporal con revision periodica.

@@ -2,34 +2,71 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import { useSession } from "@/components/providers/session-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardTitle,
+} from "@/components/ui/card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiGet, apiPost } from "@/lib/client-api";
+import {
+  commissionCoverageRows,
+  statusVariant,
+  type ReportingCostsBreakdown,
+  type ReportingSummary,
+} from "@/lib/cost-stack";
 import type { PortfolioSnapshot, Position, Trade } from "@/lib/types";
 import { fmtPct, fmtUsd } from "@/lib/utils";
+
+function moneyOrPending(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? fmtUsd(value)
+    : "pendiente";
+}
 
 export default function PortfolioPage() {
   const { role } = useSession();
   const [positions, setPositions] = useState<Position[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioSnapshot | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [reportingSummary, setReportingSummary] =
+    useState<ReportingSummary | null>(null);
+  const [reportingBreakdown, setReportingBreakdown] =
+    useState<ReportingCostsBreakdown | null>(null);
   const [cooldownUntil, setCooldownUntil] = useState<number>(0);
   const [cooldownNow, setCooldownNow] = useState<number>(0);
 
   const refresh = async () => {
-    const [pos, pf, tr] = await Promise.all([
+    const [pos, pf, tr, summary, breakdown] = await Promise.all([
       apiGet<Position[]>("/api/v1/positions"),
       apiGet<PortfolioSnapshot>("/api/v1/portfolio"),
       apiGet<Trade[]>("/api/v1/trades"),
+      apiGet<ReportingSummary>("/api/v1/reporting/performance/summary").catch(
+        () => null,
+      ),
+      apiGet<ReportingCostsBreakdown>(
+        "/api/v1/reporting/costs/breakdown",
+      ).catch(() => null),
     ]);
     setPositions(pos);
     setPortfolio(pf);
     setTrades(tr.slice(0, 20));
+    setReportingSummary(summary);
+    setReportingBreakdown(breakdown);
   };
 
   useEffect(() => {
@@ -54,19 +91,34 @@ export default function PortfolioPage() {
   }, [cooldownUntil]);
 
   const corr = useMemo(() => {
-    const symbols = [...new Set([...positions.map((x) => x.symbol), "BTC/USDT", "ETH/USDT", "SOL/USDT"])];
+    const symbols = [
+      ...new Set([
+        ...positions.map((x) => x.symbol),
+        "BTC/USDT",
+        "ETH/USDT",
+        "SOL/USDT",
+      ]),
+    ];
     return symbols.map((a, i) =>
       symbols.map((b, j) => ({
         x: i,
         y: j,
         a,
         b,
-        value: i === j ? 1 : Number((0.2 + Math.sin((i + 1) * (j + 1)) * 0.35).toFixed(2)),
+        value:
+          i === j
+            ? 1
+            : Number((0.2 + Math.sin((i + 1) * (j + 1)) * 0.35).toFixed(2)),
       })),
     );
   }, [positions]);
 
   const onCooldown = cooldownUntil > 0 && cooldownNow < cooldownUntil;
+  const allTimeReporting = reportingSummary?.all_time;
+  const commissionCoverage = useMemo(
+    () => commissionCoverageRows(reportingBreakdown).slice(0, 3),
+    [reportingBreakdown],
+  );
 
   return (
     <div className="space-y-4">
@@ -79,7 +131,9 @@ export default function PortfolioPage() {
             onClick={async () => {
               const ok = window.confirm("Cerrar todas las posiciones?");
               if (!ok) return;
-              const ok2 = window.confirm("Segunda confirmacion: ejecutar cierre total ahora?");
+              const ok2 = window.confirm(
+                "Segunda confirmacion: ejecutar cierre total ahora?",
+              );
               if (!ok2) return;
               await apiPost("/api/v1/control/close-all");
               const now = Date.now();
@@ -91,17 +145,125 @@ export default function PortfolioPage() {
             Cerrar todas
           </Button>
         </CardTitle>
-        <CardDescription>Exposicion en vivo, concentracion del portafolio e historial reciente.</CardDescription>
-        {onCooldown ? <p className="mt-2 text-xs text-amber-300">Cooldown de cierre total activo.</p> : null}
+        <CardDescription>
+          Exposicion en vivo, concentracion del portafolio e historial reciente.
+        </CardDescription>
+        {onCooldown ? (
+          <p className="mt-2 text-xs text-amber-300">
+            Cooldown de cierre total activo.
+          </p>
+        ) : null}
       </Card>
 
       <section className="grid gap-4 xl:grid-cols-3">
         <Card>
           <CardTitle>Resumen de Exposicion</CardTitle>
           <CardContent className="space-y-2">
-            <Metric label="Equity" value={portfolio ? fmtUsd(portfolio.equity) : "--"} />
-            <Metric label="PnL diario" value={portfolio ? fmtUsd(portfolio.pnl_daily) : "--"} />
-            <Metric label="Exposicion total" value={portfolio ? fmtUsd(portfolio.exposure_total) : "--"} />
+            <Metric
+              label="Equity"
+              value={portfolio ? fmtUsd(portfolio.equity) : "--"}
+            />
+            <Metric
+              label="PnL diario"
+              value={portfolio ? fmtUsd(portfolio.pnl_daily) : "--"}
+            />
+            <Metric
+              label="Exposicion total"
+              value={portfolio ? fmtUsd(portfolio.exposure_total) : "--"}
+            />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardTitle className="flex items-center justify-between gap-2">
+            Costos y PnL neto
+            <Link
+              href="/reporting"
+              className="text-xs font-normal text-cyan-300 underline"
+            >
+              Ver Costos
+            </Link>
+          </CardTitle>
+          <CardDescription>
+            Resumen read-only desde `/api/v1/reporting/*`; Portfolio no
+            recalcula ni inventa ceros.
+          </CardDescription>
+          <CardContent className="space-y-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Metric
+                label="Gross PnL"
+                value={moneyOrPending(
+                  reportingBreakdown?.gross_pnl ?? allTimeReporting?.gross_pnl,
+                )}
+              />
+              <Metric
+                label="Net PnL"
+                value={moneyOrPending(
+                  reportingBreakdown?.net_pnl ?? allTimeReporting?.net_pnl,
+                )}
+              />
+              <Metric
+                label="Costos totales"
+                value={moneyOrPending(
+                  reportingBreakdown?.total_cost_realized ??
+                    reportingBreakdown?.total_cost_estimated ??
+                    allTimeReporting?.total_cost_realized,
+                )}
+              />
+              <Metric
+                label="Fees"
+                value={moneyOrPending(
+                  reportingBreakdown?.exchange_fee_realized ??
+                    reportingBreakdown?.exchange_fee_estimated,
+                )}
+              />
+              <Metric
+                label="Spread / Slippage"
+                value={`${moneyOrPending(reportingBreakdown?.spread_realized ?? reportingBreakdown?.spread_estimated)} / ${moneyOrPending(reportingBreakdown?.slippage_realized ?? reportingBreakdown?.slippage_estimated)}`}
+              />
+              <Metric
+                label="Funding / Borrow"
+                value={`${moneyOrPending(reportingBreakdown?.funding_realized)} / ${moneyOrPending(reportingBreakdown?.borrow_interest_realized)}`}
+              />
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <Badge
+                variant={statusVariant(
+                  reportingBreakdown?.freshness_status || "unknown",
+                )}
+              >
+                freshness: {reportingBreakdown?.freshness_status || "unknown"}
+              </Badge>
+              <Badge
+                variant={statusVariant(
+                  reportingBreakdown?.alert_status || "unknown",
+                )}
+              >
+                status: {reportingBreakdown?.alert_status || "unknown"}
+              </Badge>
+              <Badge variant="neutral">
+                source:{" "}
+                {reportingBreakdown?.policy_source || "reporting bridge"}
+              </Badge>
+            </div>
+            <div className="space-y-2">
+              {commissionCoverage.map((row) => (
+                <div
+                  key={row.label}
+                  className="rounded border border-slate-800 bg-slate-950/40 p-2 text-xs"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-200">
+                      {row.label}
+                    </span>
+                    <Badge variant={statusVariant(row.status)}>
+                      {row.status}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-slate-400">{row.detail}</p>
+                </div>
+              ))}
+            </div>
           </CardContent>
         </Card>
 
@@ -119,9 +281,18 @@ export default function PortfolioPage() {
                 >
                   <BarChart data={portfolio?.exposure_by_symbol || []}>
                     <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                    <XAxis dataKey="symbol" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                    <XAxis
+                      dataKey="symbol"
+                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    />
                     <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                    <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "0.75rem" }} />
+                    <Tooltip
+                      contentStyle={{
+                        background: "#0f172a",
+                        border: "1px solid #334155",
+                        borderRadius: "0.75rem",
+                      }}
+                    />
                     <Bar dataKey="exposure" fill="#22d3ee" />
                   </BarChart>
                 </ResponsiveContainer>
@@ -165,7 +336,15 @@ export default function PortfolioPage() {
                   <TD>{row.qty}</TD>
                   <TD>{row.entry_px}</TD>
                   <TD>{row.mark_px}</TD>
-                  <TD className={row.pnl_unrealized >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(row.pnl_unrealized)}</TD>
+                  <TD
+                    className={
+                      row.pnl_unrealized >= 0
+                        ? "text-emerald-300"
+                        : "text-rose-300"
+                    }
+                  >
+                    {fmtUsd(row.pnl_unrealized)}
+                  </TD>
                   <TD>{fmtUsd(row.exposure_usd)}</TD>
                   <TD>{row.strategy_id}</TD>
                 </TR>
@@ -187,7 +366,9 @@ export default function PortfolioPage() {
 
       <Card>
         <CardTitle>Snapshot de Historial</CardTitle>
-        <CardDescription>Ultimas operaciones cerradas como historial de posiciones.</CardDescription>
+        <CardDescription>
+          Ultimas operaciones cerradas como historial de posiciones.
+        </CardDescription>
         <CardContent className="overflow-x-auto">
           <Table>
             <THead>
@@ -207,17 +388,39 @@ export default function PortfolioPage() {
               {trades.map((row) => (
                 <TR key={row.id}>
                   <TD>{row.id}</TD>
-                  <TD className="text-xs">{new Date(row.exit_time).toLocaleString()}</TD>
-                  <TD><Badge>trade_close</Badge></TD>
+                  <TD className="text-xs">
+                    {new Date(row.exit_time).toLocaleString()}
+                  </TD>
+                  <TD>
+                    <Badge>trade_close</Badge>
+                  </TD>
                   <TD>{row.symbol}</TD>
                   <TD>{row.side}</TD>
                   <TD>
                     <Badge>{row.exit_reason}</Badge>
                   </TD>
-                  <TD className={row.pnl_net >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtUsd(row.pnl_net)}</TD>
-                  <TD>{Math.abs(Math.round((new Date(row.exit_time).getTime() - new Date(row.entry_time).getTime()) / 60_000))}m</TD>
+                  <TD
+                    className={
+                      row.pnl_net >= 0 ? "text-emerald-300" : "text-rose-300"
+                    }
+                  >
+                    {fmtUsd(row.pnl_net)}
+                  </TD>
                   <TD>
-                    <Link href={`/trades/${row.id}`} className="text-cyan-300 underline">
+                    {Math.abs(
+                      Math.round(
+                        (new Date(row.exit_time).getTime() -
+                          new Date(row.entry_time).getTime()) /
+                          60_000,
+                      ),
+                    )}
+                    m
+                  </TD>
+                  <TD>
+                    <Link
+                      href={`/trades/${row.id}`}
+                      className="text-cyan-300 underline"
+                    >
                       Ver detalle
                     </Link>
                   </TD>
@@ -240,7 +443,9 @@ export default function PortfolioPage() {
 
       <Card>
         <CardTitle>Matriz de Correlacion (Simple)</CardTitle>
-        <CardDescription>Heatmap aproximado de correlacion del portafolio.</CardDescription>
+        <CardDescription>
+          Heatmap aproximado de correlacion del portafolio.
+        </CardDescription>
         <CardContent className="space-y-2">
           {positions.length ? (
             corr.map((row, idx) => (
@@ -257,7 +462,8 @@ export default function PortfolioPage() {
                       border: "1px solid rgba(51,65,85,0.8)",
                     }}
                   >
-                    {cell.a.split("/")[0]} vs {cell.b.split("/")[0]}: {fmtPct(cell.value, 0)}
+                    {cell.a.split("/")[0]} vs {cell.b.split("/")[0]}:{" "}
+                    {fmtPct(cell.value, 0)}
                   </div>
                 ))}
               </div>
@@ -288,7 +494,13 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function EmptyInlineTableState({ title, hint }: { title: string; hint: string }) {
+function EmptyInlineTableState({
+  title,
+  hint,
+}: {
+  title: string;
+  hint: string;
+}) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-left">
       <p className="text-sm font-semibold text-slate-100">{title}</p>
@@ -297,7 +509,15 @@ function EmptyInlineTableState({ title, hint }: { title: string; hint: string })
   );
 }
 
-function EmptyActionCard({ title, cause, steps }: { title: string; cause: string; steps: string[] }) {
+function EmptyActionCard({
+  title,
+  cause,
+  steps,
+}: {
+  title: string;
+  cause: string;
+  steps: string[];
+}) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
       <p className="text-sm font-semibold text-slate-100">{title}</p>
@@ -310,5 +530,3 @@ function EmptyActionCard({ title, cause, steps }: { title: string; cause: string
     </div>
   );
 }
-
-

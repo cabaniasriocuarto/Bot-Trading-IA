@@ -4800,3 +4800,12 @@ El proyecto tiene:
   - `/reporting` muestra la evidencia cuando existe y mantiene estados honestos `soportado`, `pendiente`, `no soportado` o `no aplica`;
   - no se usaron Binance keys reales, no se activo LIVE, no hubo ordenes ni mutaciones;
   - RTLOPS-106 sigue abierto como deuda externa Vercel Git Integration / `routes-manifest-deterministic`.
+- RTLOPS-62 / Cost Stack compacto en Trades y Portfolio (2026-05-06):
+  - `/reporting` sigue siendo el hub principal y fuente canonica visual del Cost Stack;
+  - `/trades` agrega una vista compacta read-only por fila con gross/net PnL, fees, spread, slippage, funding, borrow interest, source, status y freshness cuando existe evidencia de reporting;
+  - `/trades` mantiene fallback honesto al endpoint de trades para fees/slippage/gross/net y marca el resto como `pendiente` si no hay fila reporting asociada;
+  - `/portfolio` agrega resumen agregado `Costos y PnL neto` desde `/api/v1/reporting/performance/summary` y `/api/v1/reporting/costs/breakdown`;
+  - `/portfolio` muestra gross/net PnL, costos totales, fees, spread/slippage, funding/borrow, freshness/status/source y cobertura `standardCommission`/`taxCommission`/`specialCommission`;
+  - no se crearon endpoints backend, no se consultaron Binance keys, no se activo LIVE y no hubo ordenes ni mutaciones;
+  - quedan pendientes bloques especificos para `/execution` y `/risk`;
+  - RTLOPS-106 sigue abierto como deuda externa Vercel Git Integration / `routes-manifest-deterministic`.
