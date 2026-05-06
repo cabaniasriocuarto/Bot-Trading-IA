@@ -220,6 +220,15 @@ export default function TradesPage() {
     if (filters.date_from) params.set("date_from", filters.date_from);
     if (filters.date_to) params.set("date_to", filters.date_to);
     params.set("limit", "5000");
+    const reportingParams = new URLSearchParams();
+    if (filters.strategy_id)
+      reportingParams.set("strategy_id", filters.strategy_id);
+    if (filters.symbol) reportingParams.set("symbol", filters.symbol);
+    const reportingCostsPath = `/api/v1/reporting/costs/breakdown${
+      reportingParams.size ? `?${reportingParams.toString()}` : ""
+    }`;
+    const reportingTradesParams = new URLSearchParams(reportingParams);
+    reportingTradesParams.set("limit", "1000");
     const [
       tradesRows,
       stgRows,
@@ -232,11 +241,9 @@ export default function TradesPage() {
       apiGet<TradesSummaryResponse>(
         `/api/v1/trades/summary?${params.toString()}`,
       ),
-      apiGet<ReportingCostsBreakdown>(
-        "/api/v1/reporting/costs/breakdown",
-      ).catch(() => null),
+      apiGet<ReportingCostsBreakdown>(reportingCostsPath).catch(() => null),
       apiGet<ReportingTradesResponse>(
-        "/api/v1/reporting/trades?limit=5000",
+        `/api/v1/reporting/trades?${reportingTradesParams.toString()}`,
       ).catch(() => null),
     ]);
     setTrades(tradesRows);
