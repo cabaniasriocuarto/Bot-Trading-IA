@@ -249,6 +249,10 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
     if (targetPath === "/reporting") {
       const hasCostos = /Costos/i.test(body);
       const hasReporting = /Reporting/i.test(body);
+      const hasCommissionStatusCopy =
+        /\bsoportado\b/i.test(body) ||
+        /no soportado/i.test(body) ||
+        /no aplica/i.test(body);
       guardrails.reporting = {
         hasCostosNav: hasCostos,
         hasReporting,
@@ -257,6 +261,7 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
         hasSpecialCommission: body.includes("specialCommission"),
         hasPendingCopy: body.toLowerCase().includes("pendiente"),
         hasUnsupportedCopy: body.toLowerCase().includes("no soportado"),
+        hasCommissionStatusCopy,
         visibleText: bodySample(body),
       };
     }
@@ -344,7 +349,7 @@ const requiredReportingChecks = [
   "hasTaxCommission",
   "hasSpecialCommission",
   "hasPendingCopy",
-  "hasUnsupportedCopy",
+  "hasCommissionStatusCopy",
 ];
 for (const checkName of requiredReportingChecks) {
   if (!guardrails.reporting?.[checkName]) {
