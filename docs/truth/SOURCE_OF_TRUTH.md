@@ -12,7 +12,8 @@ Fecha de actualizacion: 2026-05-06
   - `Execution` agrega la tarjeta `Costos operativos / Cost Stack`;
   - consume lecturas existentes de `/api/v1/reporting/costs/breakdown` y `/api/v1/reporting/performance/summary`;
   - muestra fees, spread, slippage, costos totales, gross/net PnL, funding, borrow interest, coverage de commission components, source, freshness y status cuando el contrato los expone;
-  - conserva missing data como `pendiente` o `no disponible`, sin interpretar ausencia como cero;
+  - conserva missing data y agregados default `0.0` sin evidencia como `pendiente` o `no disponible`;
+  - muestra `$0.00` solo cuando existe evidencia explicita de trades o un valor no-cero confirmado en el contrato;
   - agrega link visible a `/reporting` para detalle completo.
 - Limites:
   - la tarjeta es informativa y read-only;

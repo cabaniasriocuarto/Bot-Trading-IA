@@ -8,7 +8,8 @@ Fecha: 2026-05-06
   - `/api/v1/reporting/costs/breakdown`;
   - `/api/v1/reporting/performance/summary`.
 - [x] Mantener `/reporting` como hub contable principal y usar `/execution` solo como lectura operativa compacta.
-- [x] Mostrar missing data como `pendiente` o `no disponible`, sin inventar ceros.
+- [x] Mostrar missing data y agregados default `0.0` sin evidencia como `pendiente` o `no disponible`, sin inventar ceros.
+- [x] Resolver P2 de PR #81: `$0.00` solo se muestra si hay evidencia explicita de trades o valor no-cero confirmado.
 - [x] Agregar link visible a `/reporting`.
 - [x] Extender QA protegido/autenticado para validar la tarjeta en `/execution`.
 - [ ] Validar en preview protegido post-merge con `RTLOPS-107` + `RTLOPS-109A`.

@@ -7,7 +7,8 @@
 - Cambio:
   - usa endpoints existentes de reporting: `/api/v1/reporting/costs/breakdown` y `/api/v1/reporting/performance/summary`;
   - muestra fees, spread, slippage, costos totales, gross/net PnL, funding, borrow interest, commission components, source, freshness y status cuando estan disponibles;
-  - mantiene missing data como `pendiente` o `no disponible`, sin inventar ceros;
+  - mantiene missing data y agregados default `0.0` sin evidencia como `pendiente` o `no disponible`, sin inventar ceros;
+  - corrige el P2 de PR #81: `/execution` no formatea `$0.00` si el contrato no trae evidencia real para ese costo;
   - agrega link a `/reporting` para el detalle completo;
   - extiende el QA protegido/autenticado para validar la tarjeta en `/execution`.
 - Limites:

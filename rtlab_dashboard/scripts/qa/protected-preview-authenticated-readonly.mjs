@@ -66,6 +66,11 @@ function hasAny(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
 }
 
+function textWindow(text, pattern, maxLength = 2_400) {
+  const match = pattern.exec(text);
+  return match ? text.slice(match.index, match.index + maxLength) : "";
+}
+
 function isVercelSso(text) {
   const lower = String(text || "").toLowerCase();
   return (
@@ -305,6 +310,19 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
         /no habilita submit real/i.test(body) ||
         /no modifica gates/i.test(body) ||
         /No usar como senal de habilitacion LIVE/i.test(body);
+      const executionCostStackText = textWindow(
+        body,
+        /Costos\s+operativos\s*\/\s*Cost\s+Stack/i,
+      );
+      const hasMissingEvidenceCopy = hasAny(executionCostStackText, [
+        /pendiente/i,
+        /no disponible/i,
+        /no aplica/i,
+        /sin dato/i,
+      ]);
+      const hasNoInventedZeroCostStack = !/(?:US\$|\$)\s*0(?:[,.]00)?/.test(
+        executionCostStackText,
+      );
       guardrails.execution = {
         dangerousButtons: await collectButtons(page, [
           "live",
@@ -322,11 +340,15 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
         hasReportingLink: hasExecutionReportingLink,
         hasReadOnlyCopy: hasExecutionReadOnlyCopy,
         hasNoLiveGateCopy: hasExecutionNoLiveGateCopy,
+        hasMissingEvidenceCopy,
+        hasNoInventedZeroCostStack,
         hasExecutionCostStackSemantics:
           hasExecutionCostStack &&
           hasExecutionReportingLink &&
           hasExecutionReadOnlyCopy &&
-          hasExecutionNoLiveGateCopy,
+          hasExecutionNoLiveGateCopy &&
+          hasMissingEvidenceCopy &&
+          hasNoInventedZeroCostStack,
         visibleText: bodySample(body),
       };
     }
@@ -516,6 +538,8 @@ const requiredExecutionChecks = [
   "hasReportingLink",
   "hasReadOnlyCopy",
   "hasNoLiveGateCopy",
+  "hasMissingEvidenceCopy",
+  "hasNoInventedZeroCostStack",
   "hasExecutionCostStackSemantics",
 ];
 for (const checkName of requiredExecutionChecks) {

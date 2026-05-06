@@ -948,6 +948,8 @@ export default function ExecutionPage() {
     : reportingSummary?.all_time
       ? "all_time"
       : "sin ventana";
+  const costStackHasTradeEvidence =
+    hasReportingSummaryTradeEvidence(reportingSummary);
   const costStackCoverage = useMemo(
     () => commissionCoverageRows(reportingBreakdown).slice(0, 5),
     [reportingBreakdown],
@@ -967,6 +969,13 @@ export default function ExecutionPage() {
       .toLowerCase()
       .includes(term),
   );
+  const grossPnlValue =
+    reportingBreakdown?.gross_pnl ?? costStackMetric?.gross_pnl;
+  const netPnlValue = reportingBreakdown?.net_pnl ?? costStackMetric?.net_pnl;
+  const costStackHasPnlEvidence =
+    costStackHasTradeEvidence ||
+    hasNonZeroNumber(grossPnlValue) ||
+    hasNonZeroNumber(netPnlValue);
 
   const runControlAction = async (
     path: ControlActionPath,
@@ -1717,27 +1726,48 @@ export default function ExecutionPage() {
               <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                 <CostStackMiniMetric
                   label="Fees estimadas / realizadas"
-                  value={`${costMoneyOrMissing(reportingBreakdown?.exchange_fee_estimated)} / ${costMoneyOrMissing(reportingBreakdown?.exchange_fee_realized)}`}
+                  value={costMoneyPairOrMissing(
+                    reportingBreakdown?.exchange_fee_estimated,
+                    reportingBreakdown?.exchange_fee_realized,
+                  )}
                 />
                 <CostStackMiniMetric
                   label="Spread estimado / realizado"
-                  value={`${costMoneyOrMissing(reportingBreakdown?.spread_estimated)} / ${costMoneyOrMissing(reportingBreakdown?.spread_realized)}`}
+                  value={costMoneyPairOrMissing(
+                    reportingBreakdown?.spread_estimated,
+                    reportingBreakdown?.spread_realized,
+                  )}
                 />
                 <CostStackMiniMetric
                   label="Slippage estimado / realizado"
-                  value={`${costMoneyOrMissing(reportingBreakdown?.slippage_estimated)} / ${costMoneyOrMissing(reportingBreakdown?.slippage_realized)}`}
+                  value={costMoneyPairOrMissing(
+                    reportingBreakdown?.slippage_estimated,
+                    reportingBreakdown?.slippage_realized,
+                  )}
                 />
                 <CostStackMiniMetric
                   label="Costos totales estimados / realizados"
-                  value={`${costMoneyOrMissing(reportingBreakdown?.total_cost_estimated)} / ${costMoneyOrMissing(reportingBreakdown?.total_cost_realized)}`}
+                  value={costMoneyPairOrMissing(
+                    reportingBreakdown?.total_cost_estimated,
+                    reportingBreakdown?.total_cost_realized,
+                  )}
                 />
                 <CostStackMiniMetric
                   label={`Gross / Net PnL (${costStackMetricWindow})`}
-                  value={`${costMoneyOrMissing(reportingBreakdown?.gross_pnl ?? costStackMetric?.gross_pnl)} / ${costMoneyOrMissing(reportingBreakdown?.net_pnl ?? costStackMetric?.net_pnl)}`}
+                  value={costMoneyPairOrMissing(
+                    grossPnlValue,
+                    netPnlValue,
+                    "pendiente",
+                    costStackHasPnlEvidence,
+                  )}
                 />
                 <CostStackMiniMetric
                   label="Funding / Borrow interest"
-                  value={`${costMoneyOrMissing(reportingBreakdown?.funding_realized, "no disponible")} / ${costMoneyOrMissing(reportingBreakdown?.borrow_interest_realized, "no disponible")}`}
+                  value={costMoneyPairOrMissing(
+                    reportingBreakdown?.funding_realized,
+                    reportingBreakdown?.borrow_interest_realized,
+                    "no disponible",
+                  )}
                 />
                 <CostStackMiniMetric
                   label="Source"
@@ -4287,10 +4317,35 @@ function statusLabel(status: BotStatusResponse["bot_status"] | string): string {
 function costMoneyOrMissing(
   value: number | null | undefined,
   missing = "pendiente",
+  options: { zeroHasEvidence?: boolean } = {},
 ): string {
-  return typeof value === "number" && Number.isFinite(value)
-    ? fmtUsd(value)
-    : missing;
+  if (typeof value !== "number" || !Number.isFinite(value)) return missing;
+  if (value === 0 && !options.zeroHasEvidence) return missing;
+  return fmtUsd(value);
+}
+
+function costMoneyPairOrMissing(
+  left: number | null | undefined,
+  right: number | null | undefined,
+  missing = "pendiente",
+  hasExternalEvidence = false,
+): string {
+  const zeroHasEvidence =
+    hasExternalEvidence || hasNonZeroNumber(left) || hasNonZeroNumber(right);
+  return `${costMoneyOrMissing(left, missing, { zeroHasEvidence })} / ${costMoneyOrMissing(right, missing, { zeroHasEvidence })}`;
+}
+
+function hasNonZeroNumber(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value !== 0;
+}
+
+function hasReportingSummaryTradeEvidence(
+  summary: ReportingSummary | null,
+): boolean {
+  if (!summary) return false;
+  return Object.values(summary).some(
+    (metric) => Number(metric?.trade_count ?? 0) > 0,
+  );
 }
 
 function CostStackMiniMetric({
