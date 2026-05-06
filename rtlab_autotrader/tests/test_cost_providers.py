@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, SpreadModel
+from rtlab_core.backtest import BacktestCatalogDB, CostModelResolver, FeeProvider, SpreadModel
 
 
 def _bounce_df(rows: int = 120) -> pd.DataFrame:
@@ -74,6 +74,47 @@ fees:
     assert abs(float(fs.get("maker_fee") or 0.0) - 0.0011) < 1e-12
     assert abs(float(fs.get("taker_fee") or 0.0) - 0.0022) < 1e-12
     assert str(fs.get("source") or "") == "policy_fallback"
+
+
+def test_fee_provider_preserves_binance_tax_and_special_commission_components(tmp_path: Path, monkeypatch) -> None:
+    db = BacktestCatalogDB(tmp_path / "catalog.sqlite3")
+    monkeypatch.setenv("BINANCE_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_API_SECRET", "test-secret")
+
+    class _Resp:
+        ok = True
+        status_code = 200
+        content = b"{}"
+
+        @staticmethod
+        def json():
+            return {
+                "symbol": "BTCUSDT",
+                "standardCommission": {"maker": "0.00000040", "taker": "0.00000050", "buyer": "0.00000010", "seller": "0.00000010"},
+                "taxCommission": {"maker": "0.00000128", "taker": "0.00000130", "buyer": "0.00000100", "seller": "0.00000100"},
+                "specialCommission": {"maker": "0.04000000", "taker": "0.05000000", "buyer": "0.01000000", "seller": "0.01000000"},
+            }
+
+    class _Session:
+        def get(self, url, headers=None, timeout=0):
+            assert "/api/v3/account/commission" in url
+            return _Resp()
+
+    provider = FeeProvider(catalog=db, policies_root=Path("config/policies"), session=_Session())
+    snapshot = provider.get_or_create_snapshot(exchange="binance", market="crypto", symbol="BTCUSDT")
+
+    payload = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+    fetch = payload.get("exchange_fetch") if isinstance(payload.get("exchange_fetch"), dict) else {}
+    components = fetch.get("commission_components") if isinstance(fetch.get("commission_components"), dict) else {}
+
+    assert snapshot["source"] == "exchange_api"
+    assert abs(float(snapshot["maker_fee"]) - 0.00000040) < 1e-12
+    assert abs(float(snapshot["taker_fee"]) - 0.00000050) < 1e-12
+    assert components["tax_commission"]["label"] == "taxCommission"
+    assert components["tax_commission"]["rates"]["taker"] == 0.00000130
+    assert components["special_commission"]["label"] == "specialCommission"
+    assert components["special_commission"]["rates"]["seller"] == 0.01000000
+    assert components["tax_commission"]["estimated_vs_realized"] == "rate_metadata"
 
 
 def test_cost_model_fetches_bybit_funding_when_perp(tmp_path: Path, monkeypatch) -> None:

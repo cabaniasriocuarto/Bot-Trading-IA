@@ -4136,3 +4136,9 @@
   - `RTLOPS-109A Protected Preview QA` ahora incluye `/reporting` en probe HTTP y Playwright;
   - el QA autenticado viewer valida navegacion `Costos` y marcadores read-only de Cost Stack / Reporting;
   - se mantiene sin mutaciones, sin ordenes, sin Binance privado y sin cambios de infraestructura.
+- RTLOPS-61: soporte auditable de `taxCommission` y `specialCommission` (2026-05-06):
+  - `FeeProvider` parsea y conserva `standardCommission`, `taxCommission` y `specialCommission` cuando existe respuesta Spot de `GET /api/v3/account/commission`;
+  - `ReportingBridgeService` publica `commission_components` en `/api/v1/reporting/costs/breakdown`, incluyendo `fee_snapshots` locales existentes cuando ya contienen tasas autenticadas;
+  - `/reporting` deja de tratar tax/special como solo docs: muestra contrato soportado para Spot, valores pendientes sin snapshot autenticado, Futures `not_applicable` y Margin `unsupported`;
+  - se agregan tests backend para el parseo Binance y el contrato reporting;
+  - no se tocaron Binance keys, LIVE real, ordenes, DB productiva, Vercel/Railway ni RTLOPS-106.
