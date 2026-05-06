@@ -41,7 +41,8 @@ Consultar solo lecturas seguras y ya existentes cuando esten disponibles:
 - `/api/v1/exchange/live-preflight`
 - `/api/v1/execution/kill-switch/status`
 - `/api/v1/execution/live-safety/summary`
-- `/api/v1/execution/canary/status`
+
+El estado de canary/readiness debe leerse desde `/api/v1/rollout/status`; no documentar endpoints canary que no existan en `main`.
 
 No usar este runbook para enviar `POST`, `PUT`, `PATCH` o `DELETE`.
 
