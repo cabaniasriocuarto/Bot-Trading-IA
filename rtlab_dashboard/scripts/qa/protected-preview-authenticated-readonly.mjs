@@ -62,6 +62,10 @@ function bodySample(text) {
     .slice(0, 260);
 }
 
+function hasAny(text, patterns) {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
 function isVercelSso(text) {
   const lower = String(text || "").toLowerCase();
   return (
@@ -192,6 +196,7 @@ try {
 const routeResults = [];
 const guardrails = {
   portfolio: {},
+  trades: {},
   execution: {},
   reporting: {},
 };
@@ -219,11 +224,71 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
     });
 
     if (targetPath === "/portfolio") {
+      const hasCostNetBlock = /Costos\s+y\s+PnL\s+neto/i.test(body);
+      const hasGrossPnl = hasAny(body, [/Gross\s+PnL/i, /PnL\s+bruto/i]);
+      const hasNetPnl = hasAny(body, [/Net\s+PnL/i, /PnL\s+neto/i]);
+      const hasTotalCosts = /Costos\s+totales/i.test(body);
+      const hasHonestCostStatusCopy = hasAny(body, [
+        /pendiente/i,
+        /no disponible/i,
+        /no aplica/i,
+        /no soportado/i,
+        /unknown/i,
+        /disponible/i,
+        /parcial/i,
+      ]);
+      const hasReportingLink =
+        (await page.locator('a[href="/reporting"]').count()) > 0;
       guardrails.portfolio = {
         closeAllButtons: await collectButtons(page, [
           "cerrar todas",
           "close all",
         ]),
+        hasCostNetBlock,
+        hasGrossPnl,
+        hasNetPnl,
+        hasTotalCosts,
+        hasReportingLink,
+        hasHonestCostStatusCopy,
+        hasPortfolioCostSemantics:
+          hasCostNetBlock &&
+          hasGrossPnl &&
+          hasNetPnl &&
+          hasTotalCosts &&
+          hasReportingLink &&
+          hasHonestCostStatusCopy,
+        visibleText: bodySample(body),
+      };
+    }
+
+    if (targetPath === "/trades") {
+      const hasCostStackCompact = hasAny(body, [
+        /Cost\s+Stack\s+compacto/i,
+        /Cost\s+Stack/i,
+      ]);
+      const hasCostos = /Costos/i.test(body);
+      const hasGrossPnl = hasAny(body, [/PnL\s+bruto/i, /gross\s+pnl/i]);
+      const hasNetPnl = hasAny(body, [/PnL\s+neto/i, /net\s+pnl/i]);
+      const hasFees = /\bfees?\b/i.test(body);
+      const hasSlippage = /slippage/i.test(body);
+      const hasReportingLink =
+        (await page.locator('a[href="/reporting"]').count()) > 0;
+      guardrails.trades = {
+        hasCostStackCompact,
+        hasCostos,
+        hasGrossPnl,
+        hasNetPnl,
+        hasFees,
+        hasSlippage,
+        hasReportingLink,
+        hasTradesCostStackSemantics:
+          hasCostStackCompact &&
+          hasCostos &&
+          hasGrossPnl &&
+          hasNetPnl &&
+          hasFees &&
+          hasSlippage &&
+          hasReportingLink,
         visibleText: bodySample(body),
       };
     }
@@ -316,6 +381,18 @@ for (const item of routeResults) {
 for (const item of apiResults) {
   console.log(`${item.path}\tstatus=${item.status}`);
 }
+if (guardrails.trades && Object.keys(guardrails.trades).length > 0) {
+  for (const [name, passed] of Object.entries(guardrails.trades)) {
+    if (name === "visibleText") continue;
+    console.log(`/trades\t${name}=${passed}`);
+  }
+}
+if (guardrails.portfolio && Object.keys(guardrails.portfolio).length > 0) {
+  for (const [name, passed] of Object.entries(guardrails.portfolio)) {
+    if (name === "visibleText" || name === "closeAllButtons") continue;
+    console.log(`/portfolio\t${name}=${passed}`);
+  }
+}
 if (guardrails.reporting && Object.keys(guardrails.reporting).length > 0) {
   for (const [name, passed] of Object.entries(guardrails.reporting)) {
     if (name === "visibleText") continue;
@@ -335,6 +412,22 @@ if (sessionUser.role !== "viewer") {
   process.exit(1);
 }
 
+const tradesRoute = routeResults.find((item) => item.path === "/trades");
+if (!tradesRoute || tradesRoute.status !== 200 || tradesRoute.vercelSso) {
+  console.error("Expected /trades to load for viewer without Vercel SSO.");
+  process.exit(1);
+}
+
+const portfolioRoute = routeResults.find((item) => item.path === "/portfolio");
+if (
+  !portfolioRoute ||
+  portfolioRoute.status !== 200 ||
+  portfolioRoute.vercelSso
+) {
+  console.error("Expected /portfolio to load for viewer without Vercel SSO.");
+  process.exit(1);
+}
+
 const reportingRoute = routeResults.find((item) => item.path === "/reporting");
 if (
   !reportingRoute ||
@@ -343,6 +436,43 @@ if (
 ) {
   console.error("Expected /reporting to load for viewer without Vercel SSO.");
   process.exit(1);
+}
+
+const requiredTradesChecks = [
+  "hasCostStackCompact",
+  "hasCostos",
+  "hasGrossPnl",
+  "hasNetPnl",
+  "hasFees",
+  "hasSlippage",
+  "hasReportingLink",
+  "hasTradesCostStackSemantics",
+];
+for (const checkName of requiredTradesChecks) {
+  if (!guardrails.trades?.[checkName]) {
+    console.error(
+      `/trades missing expected compact Cost Stack marker: ${checkName}`,
+    );
+    process.exit(1);
+  }
+}
+
+const requiredPortfolioChecks = [
+  "hasCostNetBlock",
+  "hasGrossPnl",
+  "hasNetPnl",
+  "hasTotalCosts",
+  "hasReportingLink",
+  "hasHonestCostStatusCopy",
+  "hasPortfolioCostSemantics",
+];
+for (const checkName of requiredPortfolioChecks) {
+  if (!guardrails.portfolio?.[checkName]) {
+    console.error(
+      `/portfolio missing expected Costos y PnL neto marker: ${checkName}`,
+    );
+    process.exit(1);
+  }
 }
 
 const requiredReportingChecks = [

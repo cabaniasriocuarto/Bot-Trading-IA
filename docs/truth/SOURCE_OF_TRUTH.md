@@ -1,6 +1,20 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-05-05
+Fecha de actualizacion: 2026-05-06
+
+## RTLOPS-62 - QA protegido para Cost Stack compacto en Trades/Portfolio - 2026-05-06
+
+- Estado real:
+  - `PR #79` ya mergeo el Cost Stack compacto en `/trades` y el bloque `Costos y PnL neto` en `/portfolio`;
+  - el QA protegido/autenticado ya cargaba `/trades=200` y `/portfolio=200`, pero faltaban aserciones textuales dedicadas para esas superficies.
+- Cambio QA-only:
+  - `RTLOPS-109A Protected Preview QA` valida semantica visible en `/trades`: `Cost Stack`, `Costos`, `PnL bruto`, `PnL neto`, `fees`, `slippage` y link a `/reporting`;
+  - valida semantica visible en `/portfolio`: `Costos y PnL neto`, `Gross PnL`, `Net PnL`, `Costos totales`, link a `/reporting` y estados honestos como `pendiente`, `no disponible`, `no aplica`, `no soportado`, `disponible` o `parcial`;
+  - mantiene las aserciones existentes de `/reporting`, `taxCommission` y `specialCommission`.
+- Limites:
+  - no toca producto funcional, backend, endpoints, DB/user_data, Binance privado, secrets, Vercel/Railway settings, preserve/rescue/audit ni branch protection;
+  - no activa LIVE real, no ejecuta ordenes y no agrega metodos mutantes;
+  - `RTLOPS-106` sigue abierto como deuda externa de Vercel Git Integration / `routes-manifest-deterministic`.
 
 ## Live operations runbooks clean rescue - 2026-05-06
 
