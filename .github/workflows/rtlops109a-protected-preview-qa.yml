@@ -123,6 +123,7 @@ jobs:
             "/settings",
             "/risk",
             "/trades",
+            "/reporting",
             "/api/v1/health",
           ];
 
@@ -376,6 +377,7 @@ jobs:
             "/settings",
             "/risk",
             "/trades",
+            "/reporting",
           ];
 
           function isVercelSso(text) {

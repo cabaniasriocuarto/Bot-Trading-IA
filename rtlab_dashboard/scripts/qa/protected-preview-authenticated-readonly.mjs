@@ -9,7 +9,9 @@ const password = process.env.TEST_PASSWORD;
 const reportDir = path.join("diagnostics", "rtlops109a-protected-preview-qa");
 
 if (!baseUrl || !bypassSecret || !username || !password) {
-  console.error("Missing protected preview URL, bypass secret, or viewer QA credentials.");
+  console.error(
+    "Missing protected preview URL, bypass secret, or viewer QA credentials.",
+  );
   process.exit(1);
 }
 
@@ -28,6 +30,7 @@ const routes = [
   "/settings",
   "/risk",
   "/trades",
+  "/reporting",
 ];
 
 const apiPaths = [
@@ -45,15 +48,27 @@ const apiPaths = [
   "/api/v1/gates",
   "/api/v1/alerts",
   "/api/v1/logs",
+  "/api/v1/reporting/performance/summary",
+  "/api/v1/reporting/performance/daily",
+  "/api/v1/reporting/performance/monthly",
+  "/api/v1/reporting/costs/breakdown",
+  "/api/v1/reporting/trades?limit=50",
+  "/api/v1/reporting/exports?limit=20",
 ];
 
 function bodySample(text) {
-  return String(text || "").replace(/\s+/g, " ").slice(0, 260);
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .slice(0, 260);
 }
 
 function isVercelSso(text) {
   const lower = String(text || "").toLowerCase();
-  return lower.includes("log in to vercel") || lower.includes("vercel.com/sso-api") || lower.includes("continue with github");
+  return (
+    lower.includes("log in to vercel") ||
+    lower.includes("vercel.com/sso-api") ||
+    lower.includes("continue with github")
+  );
 }
 
 async function safeInnerText(locator, timeout = 1_500) {
@@ -69,13 +84,18 @@ async function collectButtons(page, terms) {
       type: node.getAttribute("type") || "",
     })),
   );
-  return buttons.filter((button) => terms.some((term) => button.text.toLowerCase().includes(term)));
+  return buttons.filter((button) =>
+    terms.some((term) => button.text.toLowerCase().includes(term)),
+  );
 }
 
 async function fetchStatus(page, apiPath) {
   return page.evaluate(async (targetPath) => {
     try {
-      const response = await fetch(targetPath, { credentials: "include", cache: "no-store" });
+      const response = await fetch(targetPath, {
+        credentials: "include",
+        cache: "no-store",
+      });
       return {
         path: targetPath,
         status: response.status,
@@ -141,13 +161,19 @@ try {
   await page.locator("input").nth(0).fill(username);
   await page.locator("input").nth(1).fill(password);
   const [loginResponse] = await Promise.all([
-    page.waitForResponse((response) => response.url().includes("/api/auth/login"), { timeout: 20_000 }),
+    page.waitForResponse(
+      (response) => response.url().includes("/api/auth/login"),
+      { timeout: 20_000 },
+    ),
     page.getByRole("button", { name: /ingresar/i }).click(),
   ]);
   loginStatus = loginResponse.status();
   await page.waitForTimeout(1_000);
   sessionUser = await page.evaluate(async () => {
-    const response = await fetch("/api/auth/me", { credentials: "include", cache: "no-store" });
+    const response = await fetch("/api/auth/me", {
+      credentials: "include",
+      cache: "no-store",
+    });
     const payload = await response.json().catch(() => ({}));
     return {
       status: response.status,
@@ -167,6 +193,7 @@ const routeResults = [];
 const guardrails = {
   portfolio: {},
   execution: {},
+  reporting: {},
 };
 
 if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
@@ -177,7 +204,11 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
     });
     await page.waitForTimeout(750);
     const body = await safeInnerText(page.locator("body"), 3_000);
-    const h1 = await page.locator("h1").first().textContent({ timeout: 1_000 }).catch(() => "");
+    const h1 = await page
+      .locator("h1")
+      .first()
+      .textContent({ timeout: 1_000 })
+      .catch(() => "");
     routeResults.push({
       path: targetPath,
       status: response ? response.status() : "NO_RESPONSE",
@@ -189,7 +220,10 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
 
     if (targetPath === "/portfolio") {
       guardrails.portfolio = {
-        closeAllButtons: await collectButtons(page, ["cerrar todas", "close all"]),
+        closeAllButtons: await collectButtons(page, [
+          "cerrar todas",
+          "close all",
+        ]),
         visibleText: bodySample(body),
       };
     }
@@ -208,6 +242,19 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
           "comprar",
           "vender",
         ]),
+        visibleText: bodySample(body),
+      };
+    }
+
+    if (targetPath === "/reporting") {
+      guardrails.reporting = {
+        hasCostosNav: body.includes("Costos"),
+        hasCostStack: body.includes("Cost Stack"),
+        hasReporting: body.includes("Reporting"),
+        hasTaxCommission: body.includes("taxCommission"),
+        hasSpecialCommission: body.includes("specialCommission"),
+        hasPendingCopy: body.toLowerCase().includes("pendiente"),
+        hasUnsupportedCopy: body.toLowerCase().includes("no soportado"),
         visibleText: bodySample(body),
       };
     }
@@ -242,17 +289,28 @@ const report = {
   networkApiResponses,
 };
 
-fs.writeFileSync(path.join(reportDir, "playwright-authenticated-readonly.json"), JSON.stringify(report, null, 2));
+fs.writeFileSync(
+  path.join(reportDir, "playwright-authenticated-readonly.json"),
+  JSON.stringify(report, null, 2),
+);
 
 console.log("RTLOPS-112 viewer-authenticated read-only QA summary");
 console.log(`login_status=${loginStatus}`);
 console.log(`session_status=${sessionUser?.status || "NO_SESSION"}`);
 console.log(`session_role=${sessionUser?.role || ""}`);
 for (const item of routeResults) {
-  console.log(`${item.path}\tstatus=${item.status}\tvercel_sso=${item.vercelSso}`);
+  console.log(
+    `${item.path}\tstatus=${item.status}\tvercel_sso=${item.vercelSso}`,
+  );
 }
 for (const item of apiResults) {
   console.log(`${item.path}\tstatus=${item.status}`);
+}
+if (guardrails.reporting && Object.keys(guardrails.reporting).length > 0) {
+  for (const [name, passed] of Object.entries(guardrails.reporting)) {
+    if (name === "visibleText") continue;
+    console.log(`/reporting\t${name}=${passed}`);
+  }
 }
 
 if (sessionUser?.status !== 200) {
@@ -261,6 +319,36 @@ if (sessionUser?.status !== 200) {
 }
 
 if (sessionUser.role !== "viewer") {
-  console.error("Expected viewer role for RTLOPS-112 authenticated read-only QA.");
+  console.error(
+    "Expected viewer role for RTLOPS-112 authenticated read-only QA.",
+  );
   process.exit(1);
+}
+
+const reportingRoute = routeResults.find((item) => item.path === "/reporting");
+if (
+  !reportingRoute ||
+  reportingRoute.status !== 200 ||
+  reportingRoute.vercelSso
+) {
+  console.error("Expected /reporting to load for viewer without Vercel SSO.");
+  process.exit(1);
+}
+
+const requiredReportingChecks = [
+  "hasCostosNav",
+  "hasCostStack",
+  "hasReporting",
+  "hasTaxCommission",
+  "hasSpecialCommission",
+  "hasPendingCopy",
+  "hasUnsupportedCopy",
+];
+for (const checkName of requiredReportingChecks) {
+  if (!guardrails.reporting?.[checkName]) {
+    console.error(
+      `/reporting missing expected read-only Cost Stack marker: ${checkName}`,
+    );
+    process.exit(1);
+  }
 }

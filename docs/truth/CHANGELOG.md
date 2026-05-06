@@ -4117,3 +4117,7 @@
   - muestra gross/net PnL, costos estimados/realizados, fees, spread, slippage, funding, borrow interest, ledger de trades y exports registrados;
   - `taxCommission` y `specialCommission` quedan visibles como pendientes/no soportados todavia;
   - no se activo LIVE real, no se consultaron Binance keys y no se agregaron mutaciones.
+- RTLOPS-70: cobertura QA protegida de `/reporting` (2026-05-05):
+  - `RTLOPS-109A Protected Preview QA` ahora incluye `/reporting` en probe HTTP y Playwright;
+  - el QA autenticado viewer valida navegacion `Costos` y marcadores read-only de Cost Stack / Reporting;
+  - se mantiene sin mutaciones, sin ordenes, sin Binance privado y sin cambios de infraestructura.
