@@ -250,6 +250,9 @@ if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
       const hasCostos = /Costos/i.test(body);
       const hasReporting = /Reporting/i.test(body);
       const hasCommissionStatusCopy =
+        /pendiente/i.test(body) ||
+        /disponible/i.test(body) ||
+        /parcial/i.test(body) ||
         /\bsoportado\b/i.test(body) ||
         /no soportado/i.test(body) ||
         /no aplica/i.test(body);
