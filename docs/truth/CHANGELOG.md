@@ -4149,3 +4149,7 @@
   - `/portfolio` agrega tarjeta `Costos y PnL neto` alimentada por `/api/v1/reporting/performance/summary` y `/api/v1/reporting/costs/breakdown`;
   - `/portfolio` muestra commission components disponibles y estados honestos para `standardCommission`, `taxCommission` y `specialCommission`;
   - no se agregan endpoints backend ni mutaciones; `/reporting` permanece como hub principal.
+- RTLOPS-62: QA protegido de Cost Stack compacto en `/trades` y `/portfolio` (2026-05-06):
+  - `RTLOPS-109A Protected Preview QA` agrega aserciones semanticas para `/trades`: `Cost Stack`, `Costos`, `PnL bruto`, `PnL neto`, `fees`, `slippage` y link a `/reporting`;
+  - agrega aserciones semanticas para `/portfolio`: `Costos y PnL neto`, `Gross PnL`, `Net PnL`, `Costos totales`, link a `/reporting` y estados honestos de cobertura;
+  - no cambia producto, backend, workflow de deploy, secretos, DB, Vercel/Railway ni RTLOPS-106.
