@@ -14,9 +14,19 @@ on:
         default: "dpl_CQC5fTLEcd8965NpoE7xi9Y5ABRM"
         type: string
       target_ref:
-        description: "Git ref/SHA whose QA script should validate the preview"
+        description: "Trusted fallback ref; only main is accepted unless target_pr_number and expected_head_sha validate a same-repo PR"
         required: true
         default: "main"
+        type: string
+      target_pr_number:
+        description: "Optional same-repo PR number whose head SHA should validate the QA checkout"
+        required: false
+        default: ""
+        type: string
+      expected_head_sha:
+        description: "Expected 40-character head SHA for target_pr_number; fail-closed on mismatch"
+        required: false
+        default: ""
         type: string
       run_http_probe:
         description: "Run read-only HTTP probe with Vercel protection bypass headers"
@@ -36,6 +46,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   protected-preview-qa:
@@ -45,16 +56,78 @@ jobs:
       PREVIEW_URL: ${{ inputs.preview_url }}
       DEPLOYMENT_ID: ${{ inputs.deployment_id }}
       TARGET_REF: ${{ inputs.target_ref }}
-      BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-      TEST_USERNAME: ${{ secrets.RTLAB_TEST_USER_EMAIL }}
-      TEST_PASSWORD: ${{ secrets.RTLAB_TEST_USER_PASSWORD }}
+      TARGET_PR_NUMBER: ${{ inputs.target_pr_number }}
+      EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
       REPORT_DIR: rtlab_dashboard/diagnostics/rtlops109a-protected-preview-qa
 
     steps:
+      - name: Validate target checkout ref
+        id: validate_target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          target_ref="${TARGET_REF:-main}"
+          target_pr_number="${TARGET_PR_NUMBER:-}"
+          expected_head_sha="${EXPECTED_HEAD_SHA:-}"
+          checkout_ref="main"
+
+          if [ -z "${target_pr_number}" ] && [ -z "${expected_head_sha}" ]; then
+            if [ -z "${target_ref}" ] || [ "${target_ref}" = "main" ]; then
+              checkout_ref="main"
+            else
+              echo "::error::target_ref must be main unless target_pr_number and expected_head_sha validate a same-repo PR SHA."
+              exit 1
+            fi
+          else
+            if [ -z "${target_pr_number}" ] || [ -z "${expected_head_sha}" ]; then
+              echo "::error::target_pr_number and expected_head_sha must be provided together."
+              exit 1
+            fi
+            if ! [[ "${target_pr_number}" =~ ^[0-9]+$ ]]; then
+              echo "::error::target_pr_number must be numeric."
+              exit 1
+            fi
+            if ! [[ "${expected_head_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::expected_head_sha must be a full 40-character SHA."
+              exit 1
+            fi
+            if [ -n "${target_ref}" ] && [ "${target_ref}" != "main" ]; then
+              if ! [[ "${target_ref}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                echo "::error::target_ref must be main or a full SHA matching expected_head_sha."
+                exit 1
+              fi
+              if [ "${target_ref,,}" != "${expected_head_sha,,}" ]; then
+                echo "::error::target_ref SHA must match expected_head_sha."
+                exit 1
+              fi
+            fi
+
+            head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${target_pr_number}" --jq '.head.sha')"
+            head_repo="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${target_pr_number}" --jq '.head.repo.full_name')"
+            base_repo="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${target_pr_number}" --jq '.base.repo.full_name')"
+
+            if [ "${head_repo}" != "${GITHUB_REPOSITORY}" ] || [ "${base_repo}" != "${GITHUB_REPOSITORY}" ]; then
+              echo "::error::target PR must belong to the same repository; forks are not allowed for secret-backed QA."
+              exit 1
+            fi
+            if [ "${head_sha,,}" != "${expected_head_sha,,}" ]; then
+              echo "::error::expected_head_sha does not match target PR head SHA."
+              exit 1
+            fi
+
+            checkout_ref="${head_sha}"
+          fi
+
+          echo "checkout_ref=${checkout_ref}" >> "${GITHUB_OUTPUT}"
+          echo "validated_checkout_ref=${checkout_ref}"
+
       - name: Checkout target ref
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.target_ref }}
+          ref: ${{ steps.validate_target.outputs.checkout_ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -72,6 +145,9 @@ jobs:
             echo "preview_url=${PREVIEW_URL}"
             echo "deployment_id=${DEPLOYMENT_ID}"
             echo "target_ref=${TARGET_REF}"
+            echo "target_pr_number=${TARGET_PR_NUMBER}"
+            echo "expected_head_sha=${EXPECTED_HEAD_SHA}"
+            echo "validated_checkout_ref=${{ steps.validate_target.outputs.checkout_ref }}"
             echo "run_http_probe=${{ inputs.run_http_probe }}"
             echo "run_playwright=${{ inputs.run_playwright }}"
             echo "run_authenticated_qa=${{ inputs.run_authenticated_qa }}"
@@ -81,6 +157,8 @@ jobs:
           } | tee "${REPORT_DIR}/runtime-context.log"
 
       - name: Verify automation bypass secret
+        env:
+          BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         shell: bash
         run: |
           if [ -z "${BYPASS_SECRET}" ]; then
@@ -98,6 +176,9 @@ jobs:
 
       - name: Verify viewer QA secrets
         if: ${{ inputs.run_authenticated_qa }}
+        env:
+          TEST_USERNAME: ${{ secrets.RTLAB_TEST_USER_EMAIL }}
+          TEST_PASSWORD: ${{ secrets.RTLAB_TEST_USER_PASSWORD }}
         shell: bash
         run: |
           if [ -z "${TEST_USERNAME}" ] || [ -z "${TEST_PASSWORD}" ]; then
@@ -109,6 +190,8 @@ jobs:
       - name: HTTP probe protected preview
         id: http_probe
         if: ${{ inputs.run_http_probe }}
+        env:
+          BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         shell: bash
         run: |
           node <<'NODE'
@@ -360,6 +443,8 @@ jobs:
       - name: Playwright read-only protected preview QA
         if: ${{ inputs.run_playwright && steps.http_probe.outputs.access_status == 'app' }}
         working-directory: rtlab_dashboard
+        env:
+          BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         shell: bash
         run: |
           node <<'NODE'
@@ -465,6 +550,10 @@ jobs:
       - name: Playwright viewer-authenticated read-only QA
         if: ${{ inputs.run_authenticated_qa && steps.http_probe.outputs.access_status == 'app' }}
         working-directory: rtlab_dashboard
+        env:
+          BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          TEST_USERNAME: ${{ secrets.RTLAB_TEST_USER_EMAIL }}
+          TEST_PASSWORD: ${{ secrets.RTLAB_TEST_USER_PASSWORD }}
         shell: bash
         run: node scripts/qa/protected-preview-authenticated-readonly.mjs
 
@@ -477,6 +566,9 @@ jobs:
             echo "preview_url=${PREVIEW_URL}"
             echo "deployment_id=${DEPLOYMENT_ID}"
             echo "target_ref=${TARGET_REF}"
+            echo "target_pr_number=${TARGET_PR_NUMBER}"
+            echo "expected_head_sha=${EXPECTED_HEAD_SHA}"
+            echo "validated_checkout_ref=${{ steps.validate_target.outputs.checkout_ref }}"
             echo "commit_sha=$(git rev-parse HEAD)"
             echo "http_access_status=${{ steps.http_probe.outputs.access_status }}"
             echo "run_http_probe=${{ inputs.run_http_probe }}"
