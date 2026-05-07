@@ -13,6 +13,11 @@ on:
         required: false
         default: "dpl_CQC5fTLEcd8965NpoE7xi9Y5ABRM"
         type: string
+      target_ref:
+        description: "Git ref/SHA whose QA script should validate the preview"
+        required: true
+        default: "main"
+        type: string
       run_http_probe:
         description: "Run read-only HTTP probe with Vercel protection bypass headers"
         required: true
@@ -39,16 +44,17 @@ jobs:
     env:
       PREVIEW_URL: ${{ inputs.preview_url }}
       DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+      TARGET_REF: ${{ inputs.target_ref }}
       BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       TEST_USERNAME: ${{ secrets.RTLAB_TEST_USER_EMAIL }}
       TEST_PASSWORD: ${{ secrets.RTLAB_TEST_USER_PASSWORD }}
       REPORT_DIR: rtlab_dashboard/diagnostics/rtlops109a-protected-preview-qa
 
     steps:
-      - name: Checkout main
+      - name: Checkout target ref
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ inputs.target_ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -65,6 +71,7 @@ jobs:
             echo "workflow=RTLOPS-109A Protected Preview QA"
             echo "preview_url=${PREVIEW_URL}"
             echo "deployment_id=${DEPLOYMENT_ID}"
+            echo "target_ref=${TARGET_REF}"
             echo "run_http_probe=${{ inputs.run_http_probe }}"
             echo "run_playwright=${{ inputs.run_playwright }}"
             echo "run_authenticated_qa=${{ inputs.run_authenticated_qa }}"
@@ -469,6 +476,7 @@ jobs:
             echo "## RTLOPS-109A Protected Preview QA Summary"
             echo "preview_url=${PREVIEW_URL}"
             echo "deployment_id=${DEPLOYMENT_ID}"
+            echo "target_ref=${TARGET_REF}"
             echo "commit_sha=$(git rev-parse HEAD)"
             echo "http_access_status=${{ steps.http_probe.outputs.access_status }}"
             echo "run_http_probe=${{ inputs.run_http_probe }}"
