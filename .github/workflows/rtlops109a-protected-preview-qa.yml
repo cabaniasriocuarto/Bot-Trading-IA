@@ -28,6 +28,14 @@ on:
         required: false
         default: ""
         type: string
+      qa_scope:
+        description: "Authenticated QA assertion scope; full keeps global coverage, execution validates only /execution + /reporting"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - full
+          - execution
       run_http_probe:
         description: "Run read-only HTTP probe with Vercel protection bypass headers"
         required: true
@@ -58,6 +66,7 @@ jobs:
       TARGET_REF: ${{ inputs.target_ref }}
       TARGET_PR_NUMBER: ${{ inputs.target_pr_number }}
       EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      QA_SCOPE: ${{ inputs.qa_scope }}
       REPORT_DIR: rtlab_dashboard/diagnostics/rtlops109a-protected-preview-qa
 
     steps:
@@ -73,6 +82,11 @@ jobs:
           target_pr_number="${TARGET_PR_NUMBER:-}"
           expected_head_sha="${EXPECTED_HEAD_SHA:-}"
           checkout_ref="main"
+
+          if [ "${QA_SCOPE}" != "full" ] && [ "${QA_SCOPE}" != "execution" ]; then
+            echo "::error::qa_scope must be full or execution."
+            exit 1
+          fi
 
           if [ -z "${target_pr_number}" ] && [ -z "${expected_head_sha}" ]; then
             if [ -z "${target_ref}" ] || [ "${target_ref}" = "main" ]; then
@@ -148,6 +162,7 @@ jobs:
             echo "target_pr_number=${TARGET_PR_NUMBER}"
             echo "expected_head_sha=${EXPECTED_HEAD_SHA}"
             echo "validated_checkout_ref=${{ steps.validate_target.outputs.checkout_ref }}"
+            echo "qa_scope=${QA_SCOPE}"
             echo "run_http_probe=${{ inputs.run_http_probe }}"
             echo "run_playwright=${{ inputs.run_playwright }}"
             echo "run_authenticated_qa=${{ inputs.run_authenticated_qa }}"
@@ -548,7 +563,7 @@ jobs:
           NODE
 
       - name: Playwright viewer-authenticated read-only QA
-        if: ${{ inputs.run_authenticated_qa && steps.http_probe.outputs.access_status == 'app' }}
+        if: ${{ inputs.run_authenticated_qa && steps.http_probe.outputs.access_status == 'app' && inputs.qa_scope == 'full' }}
         working-directory: rtlab_dashboard
         env:
           BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
@@ -556,6 +571,367 @@ jobs:
           TEST_PASSWORD: ${{ secrets.RTLAB_TEST_USER_PASSWORD }}
         shell: bash
         run: node scripts/qa/protected-preview-authenticated-readonly.mjs
+
+      - name: Playwright viewer-authenticated execution-scope QA
+        if: ${{ inputs.run_authenticated_qa && steps.http_probe.outputs.access_status == 'app' && inputs.qa_scope == 'execution' }}
+        working-directory: rtlab_dashboard
+        env:
+          BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          TEST_USERNAME: ${{ secrets.RTLAB_TEST_USER_EMAIL }}
+          TEST_PASSWORD: ${{ secrets.RTLAB_TEST_USER_PASSWORD }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { chromium } = require("@playwright/test");
+
+          const baseUrl = process.env.PREVIEW_URL;
+          const bypassSecret = process.env.BYPASS_SECRET;
+          const username = process.env.TEST_USERNAME;
+          const password = process.env.TEST_PASSWORD;
+          const reportDir = path.join("diagnostics", "rtlops109a-protected-preview-qa");
+
+          if (!baseUrl || !bypassSecret || !username || !password) {
+            console.error("Missing protected preview URL, bypass secret, or viewer QA credentials.");
+            process.exit(1);
+          }
+
+          const headers = {
+            "x-vercel-protection-bypass": bypassSecret,
+            "x-vercel-set-bypass-cookie": "true",
+          };
+
+          function bodySample(text) {
+            return String(text || "").replace(/\s+/g, " ").slice(0, 260);
+          }
+
+          function hasAny(text, patterns) {
+            return patterns.some((pattern) => pattern.test(text));
+          }
+
+          function textWindow(text, pattern, maxLength = 2_400) {
+            const match = pattern.exec(text);
+            return match ? text.slice(match.index, match.index + maxLength) : "";
+          }
+
+          function isVercelSso(text) {
+            const lower = String(text || "").toLowerCase();
+            return (
+              lower.includes("log in to vercel") ||
+              lower.includes("vercel.com/sso-api") ||
+              lower.includes("continue with github")
+            );
+          }
+
+          async function safeInnerText(locator, timeout = 3_000) {
+            return locator.innerText({ timeout }).catch(() => "");
+          }
+
+          async function fetchStatus(page, apiPath) {
+            return page.evaluate(async (targetPath) => {
+              try {
+                const response = await fetch(targetPath, {
+                  credentials: "include",
+                  cache: "no-store",
+                });
+                return {
+                  path: targetPath,
+                  status: response.status,
+                  contentType: response.headers.get("content-type") || "",
+                };
+              } catch (error) {
+                return {
+                  path: targetPath,
+                  status: "FETCH_ERROR",
+                  error: String(error && error.message ? error.message : error),
+                };
+              }
+            }, apiPath);
+          }
+
+          async function collectButtons(page, terms) {
+            const buttons = await page.locator("button").evaluateAll((nodes) =>
+              nodes.map((node) => ({
+                text: (node.textContent || "").replace(/\s+/g, " ").trim(),
+                disabled: Boolean(node.disabled),
+                ariaDisabled: node.getAttribute("aria-disabled") || "",
+                type: node.getAttribute("type") || "",
+              })),
+            );
+            return buttons.filter((button) =>
+              terms.some((term) => button.text.toLowerCase().includes(term)),
+            );
+          }
+
+          function assertCheck(name, passed) {
+            console.log(`/execution\t${name}=${passed}`);
+            if (!passed) {
+              console.error(`/execution missing expected operational Cost Stack marker: ${name}`);
+              process.exitCode = 1;
+            }
+          }
+
+          (async () => {
+            fs.mkdirSync(reportDir, { recursive: true });
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage({
+              viewport: { width: 1440, height: 1000 },
+              extraHTTPHeaders: headers,
+            });
+
+            const consoleMessages = [];
+            const failedRequests = [];
+            const networkApiResponses = [];
+
+            page.on("console", (message) => {
+              if (["error", "warning"].includes(message.type())) {
+                consoleMessages.push({
+                  type: message.type(),
+                  text: message.text().slice(0, 240),
+                });
+              }
+            });
+            page.on("requestfailed", (request) => {
+              failedRequests.push({
+                url: request.url(),
+                failure: request.failure()?.errorText || "",
+              });
+            });
+            page.on("response", (response) => {
+              const url = response.url();
+              if (url.includes("/api/") || response.status() >= 400) {
+                networkApiResponses.push({
+                  url,
+                  status: response.status(),
+                  contentType: response.headers()["content-type"] || "",
+                });
+              }
+            });
+
+            let loginStatus = "NOT_RUN";
+            let sessionUser = null;
+            try {
+              await page.goto(new URL("/login", baseUrl).toString(), {
+                waitUntil: "domcontentloaded",
+                timeout: 45_000,
+              });
+              await page.locator("input").nth(0).fill(username);
+              await page.locator("input").nth(1).fill(password);
+              const [loginResponse] = await Promise.all([
+                page.waitForResponse(
+                  (response) => response.url().includes("/api/auth/login"),
+                  { timeout: 20_000 },
+                ),
+                page.getByRole("button", { name: /ingresar/i }).click(),
+              ]);
+              loginStatus = loginResponse.status();
+              await page.waitForTimeout(1_000);
+              sessionUser = await page.evaluate(async () => {
+                const response = await fetch("/api/auth/me", {
+                  credentials: "include",
+                  cache: "no-store",
+                });
+                const payload = await response.json().catch(() => ({}));
+                return {
+                  status: response.status,
+                  usernamePresent: Boolean(payload && payload.username),
+                  role: payload && typeof payload.role === "string" ? payload.role : "",
+                };
+              });
+            } catch (error) {
+              loginStatus = "ERROR";
+              sessionUser = {
+                status: "ERROR",
+                error: String(error && error.message ? error.message : error).slice(0, 240),
+              };
+            }
+
+            const routeResults = [];
+            const guardrails = { execution: {}, reporting: {} };
+
+            if (sessionUser?.status === 200 && sessionUser?.role === "viewer") {
+              for (const targetPath of ["/execution", "/reporting"]) {
+                const response = await page.goto(new URL(targetPath, baseUrl).toString(), {
+                  waitUntil: "domcontentloaded",
+                  timeout: 45_000,
+                });
+                await page.waitForTimeout(750);
+                const body = await safeInnerText(page.locator("body"), 3_000);
+                routeResults.push({
+                  path: targetPath,
+                  status: response ? response.status() : "NO_RESPONSE",
+                  vercelSso: isVercelSso(body),
+                  bodySample: bodySample(body),
+                });
+
+                if (targetPath === "/execution") {
+                  const executionCostStackText = textWindow(
+                    body,
+                    /Costos\s+operativos\s*\/\s*Cost\s+Stack/i,
+                  );
+                  const hasCostStackOperationalCard = hasAny(body, [
+                    /Costos\s+operativos/i,
+                    /Cost\s+Stack/i,
+                  ]);
+                  const hasReportingLink =
+                    (await page.locator('a[href="/reporting"]').count()) > 0;
+                  const hasReadOnlyCopy = /Read-only/i.test(body);
+                  const hasNoLiveGateCopy =
+                    /no habilita submit real/i.test(body) ||
+                    /no modifica gates/i.test(body) ||
+                    /No usar como senal de habilitacion LIVE/i.test(body);
+                  const hasMissingEvidenceCopy = hasAny(executionCostStackText, [
+                    /pendiente/i,
+                    /no disponible/i,
+                    /no aplica/i,
+                    /sin dato/i,
+                    /unknown/i,
+                    /PENDIENTE/i,
+                    /PARCIAL/i,
+                  ]);
+                  const hasNoInventedZeroCostStack = !/(?:US\$|\$)\s*0(?:[,.]00)?/.test(
+                    executionCostStackText,
+                  );
+                  const dangerousButtons = await collectButtons(page, [
+                    "live",
+                    "kill",
+                    "start",
+                    "stop",
+                    "pausar",
+                    "reanudar",
+                    "cerrar",
+                    "orden",
+                    "comprar",
+                    "vender",
+                  ]);
+                  const hasDangerousButtonsReadOnly = dangerousButtons.every(
+                    (button) => button.disabled || button.ariaDisabled === "true",
+                  );
+                  guardrails.execution = {
+                    dangerousButtons,
+                    hasCostStackOperationalCard,
+                    hasReportingLink,
+                    hasReadOnlyCopy,
+                    hasNoLiveGateCopy,
+                    hasMissingEvidenceCopy,
+                    hasNoInventedZeroCostStack,
+                    hasDangerousButtonsReadOnly,
+                    hasExecutionCostStackSemantics:
+                      hasCostStackOperationalCard &&
+                      hasReportingLink &&
+                      hasReadOnlyCopy &&
+                      hasNoLiveGateCopy &&
+                      hasMissingEvidenceCopy &&
+                      hasNoInventedZeroCostStack &&
+                      hasDangerousButtonsReadOnly,
+                    visibleText: bodySample(body),
+                  };
+                }
+
+                if (targetPath === "/reporting") {
+                  guardrails.reporting = {
+                    hasCostosNav: /Costos/i.test(body),
+                    hasReporting: /Reporting/i.test(body),
+                    hasReportingSemantics: /Costos/i.test(body) && /Reporting/i.test(body),
+                    visibleText: bodySample(body),
+                  };
+                }
+              }
+            }
+
+            const apiPaths = [
+              "/api/auth/me",
+              "/api/v1/reporting/performance/summary",
+              "/api/v1/reporting/costs/breakdown",
+            ];
+            const apiResults =
+              sessionUser?.status === 200 && sessionUser?.role === "viewer"
+                ? await Promise.all(apiPaths.map((apiPath) => fetchStatus(page, apiPath)))
+                : [];
+
+            await browser.close();
+
+            const report = {
+              login: {
+                status: loginStatus,
+                sessionStatus: sessionUser?.status || "NO_SESSION",
+                role: sessionUser?.role || "",
+                usernamePresent: Boolean(sessionUser?.usernamePresent),
+              },
+              routes: routeResults,
+              apiResults,
+              guardrails,
+              consoleMessages,
+              failedRequests,
+              networkApiResponses,
+            };
+            fs.writeFileSync(
+              path.join(reportDir, "playwright-authenticated-execution-scope.json"),
+              JSON.stringify(report, null, 2),
+            );
+
+            console.log("RTLOPS-109A viewer-authenticated execution-scope QA summary");
+            console.log(`login_status=${loginStatus}`);
+            console.log(`session_status=${sessionUser?.status || "NO_SESSION"}`);
+            console.log(`session_role=${sessionUser?.role || ""}`);
+            for (const item of routeResults) {
+              console.log(`${item.path}\tstatus=${item.status}\tvercel_sso=${item.vercelSso}`);
+            }
+            for (const item of apiResults) {
+              console.log(`${item.path}\tstatus=${item.status}`);
+            }
+
+            if (sessionUser?.status !== 200 || sessionUser.role !== "viewer") {
+              console.error("Viewer login did not produce an authenticated viewer app session.");
+              process.exit(1);
+            }
+
+            for (const targetPath of ["/execution", "/reporting"]) {
+              const route = routeResults.find((item) => item.path === targetPath);
+              if (!route || route.status !== 200 || route.vercelSso) {
+                console.error(`Expected ${targetPath} to load for viewer without Vercel SSO.`);
+                process.exit(1);
+              }
+            }
+
+            for (const item of apiResults) {
+              if (item.status !== 200) {
+                console.error(`Expected ${item.path} to return 200.`);
+                process.exit(1);
+              }
+            }
+
+            for (const checkName of [
+              "hasCostStackOperationalCard",
+              "hasReportingLink",
+              "hasReadOnlyCopy",
+              "hasNoLiveGateCopy",
+              "hasMissingEvidenceCopy",
+              "hasNoInventedZeroCostStack",
+              "hasDangerousButtonsReadOnly",
+              "hasExecutionCostStackSemantics",
+            ]) {
+              assertCheck(checkName, guardrails.execution?.[checkName]);
+            }
+
+            for (const [name, passed] of Object.entries(guardrails.reporting)) {
+              if (name === "visibleText") continue;
+              console.log(`/reporting\t${name}=${passed}`);
+              if (!passed) {
+                console.error(`/reporting missing expected read-only reporting marker: ${name}`);
+                process.exitCode = 1;
+              }
+            }
+
+            if (process.exitCode) {
+              process.exit(process.exitCode);
+            }
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
 
       - name: Print QA summary
         if: always()
@@ -571,6 +947,7 @@ jobs:
             echo "validated_checkout_ref=${{ steps.validate_target.outputs.checkout_ref }}"
             echo "commit_sha=$(git rev-parse HEAD)"
             echo "http_access_status=${{ steps.http_probe.outputs.access_status }}"
+            echo "qa_scope=${QA_SCOPE}"
             echo "run_http_probe=${{ inputs.run_http_probe }}"
             echo "run_playwright=${{ inputs.run_playwright }}"
             echo "run_authenticated_qa=${{ inputs.run_authenticated_qa }}"
