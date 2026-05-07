@@ -2,6 +2,19 @@
 
 ## 2026-05-06
 
+### Security - python-multipart 0.0.27
+- Se actualiza `python-multipart` de `0.0.26` a `0.0.27`.
+- Motivo:
+  - `Security CI` detecto `GHSA-pp6c-gr5w-3c5g` / `CVE-2026-42561`;
+  - rango vulnerable reportado por `pip-audit`: `< 0.0.27`;
+  - version corregida reportada: `0.0.27`.
+- Archivos:
+  - `requirements-runtime.txt`;
+  - `rtlab_autotrader/uv.lock`.
+- Limites:
+  - no pertenece a `RTLOPS-62` ni modifica PR #81;
+  - no toca producto, workflows, Vercel/Railway settings, RTLOPS-106 ni RTLOPS-107.
+
 ### RTLOPS-62 - Cost Stack operativo en Execution
 - Se agrega en `/execution` una tarjeta compacta `Costos operativos / Cost Stack`.
 - Cambio:
