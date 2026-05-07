@@ -1,5 +1,24 @@
 # CHANGELOG (Truth Layer)
 
+## 2026-05-07
+
+### RTLOPS-106C - Vercel Project Roles documentados
+- Se documentan roles tentativos de proyectos Vercel para reducir ruido operativo sin tocar settings.
+- Roles:
+  - `bot-trading-ia-csud` (`prj_5XFgfg2uMIUxrbbcoFFTk72CqItl`): produccion canonica tentativa, dominio `bot-trading-ia-csud.vercel.app`, riesgo alto;
+  - `bot-trading-ia-staging-2` (`prj_pmNNbvztswGkQGzDseZNP4OigmsA`): staging tentativo, riesgo medio;
+  - `bot-trading-ia-rtlops106-sandbox` (`prj_8pEjkXN43uPG392YBF2Caw8wpRh5`): sandbox RTLOPS-106, util para reproducir el bug pero ruidoso en checks;
+  - `bot-trading-ia-2` (`prj_3H6TAjdj5Wziuv7dFUElksiha00O`): duplicado/legacy probable, primer candidato a silenciar;
+  - `bot-trading-ia` (`prj_yvCy7mHYjtI1etW2H7bqTOQ8qzjG`): pendiente de validar, legacy posible o produccion original posible.
+- Decisiones:
+  - branch protection requiere solo `security`; los checks Vercel no son required actualmente;
+  - `Railway successful` no confirma frontend Vercel actualizado;
+  - `RTLOPS-107` prebuilt sigue como workaround temporal;
+  - no se debe borrar, desconectar ni silenciar ningun proyecto sin autorizacion explicita.
+- Limites:
+  - docs-only;
+  - no toca producto, `/execution`, Cost Stack, backend, Railway, Vercel settings, domains, aliases, secrets, Git Integration, ignored build steps, branch protection ni deploys.
+
 ## 2026-05-06
 
 ### Security - python-multipart 0.0.27

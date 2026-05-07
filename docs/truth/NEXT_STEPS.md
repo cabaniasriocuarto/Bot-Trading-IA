@@ -1,6 +1,37 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-05-06
+Fecha: 2026-05-07
+
+## RTLOPS-106C - FASE 2 propuesta de limpieza Vercel/checks - 2026-05-07
+- [ ] Mantener `RTLOPS-106` abierto como deuda de Vercel Git Integration / post-build finalization.
+- [ ] Mantener `RTLOPS-107` prebuilt como workaround temporal, no como solucion definitiva.
+- [ ] No tocar todavia:
+  - `bot-trading-ia-csud`;
+  - `bot-trading-ia-staging-2`;
+  - `bot-trading-ia`.
+- [ ] FASE 2A - silenciar `bot-trading-ia-2` como primer duplicado probable, solo con autorizacion explicita:
+  - evaluar `Ignored Build Step`;
+  - evaluar desconectar Git Integration;
+  - evaluar cambiar production branch a una rama no activa;
+  - evaluar mantener el proyecto sin checks automaticos.
+- [ ] FASE 2B - aislar `bot-trading-ia-rtlops106-sandbox`, solo con autorizacion explicita:
+  - evaluar builds manuales solamente;
+  - evaluar `Ignored Build Step` para PR/main normales;
+  - evaluar rama dedicada `sandbox/rtlops-106`;
+  - mantenerlo con nombre claro y sin contaminar checks.
+- [ ] Antes de ejecutar FASE 2:
+  - confirmar proyecto de produccion canonica;
+  - confirmar si `bot-trading-ia-staging-2` queda como staging formal;
+  - confirmar si `bot-trading-ia` es legacy o produccion original;
+  - definir rollback por proyecto.
+- [ ] Prohibido sin autorizacion:
+  - borrar proyectos o deployments;
+  - cambiar domains o aliases;
+  - cambiar secrets;
+  - desconectar Git Integration;
+  - cambiar ignored build steps;
+  - cambiar branch protection;
+  - hacer deploy manual.
 
 ## RTLOPS-62 - Cost Stack operativo en Execution - 2026-05-06
 - [x] Agregar tarjeta read-only `Costos operativos / Cost Stack` en `/execution`.

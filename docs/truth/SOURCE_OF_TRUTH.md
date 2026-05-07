@@ -1,6 +1,46 @@
 ﻿# SOURCE OF TRUTH (Estado Real del Proyecto)
 
-Fecha de actualizacion: 2026-05-06
+Fecha de actualizacion: 2026-05-07
+
+## RTLOPS-106C - Vercel Project Roles - 2026-05-07
+
+- Estado real:
+  - `RTLOPS-106` sigue abierto por Vercel Git Integration / post-build finalization;
+  - `RTLOPS-107` sigue siendo workaround temporal de preview prebuilt, no fix definitivo;
+  - `Railway successful` corresponde backend/Railway y no confirma frontend Vercel actualizado;
+  - branch protection de `main` requiere solo `security`; los checks Vercel actuales no son required, pero generan ruido operativo.
+- Produccion canonica tentativa:
+  - proyecto Vercel: `bot-trading-ia-csud`;
+  - project id: `prj_5XFgfg2uMIUxrbbcoFFTk72CqItl`;
+  - dominio publico: `bot-trading-ia-csud.vercel.app`;
+  - estado: produccion probable, pendiente de fix `RTLOPS-106`;
+  - riesgo de tocarlo: alto.
+- Staging tentativo:
+  - proyecto Vercel: `bot-trading-ia-staging-2`;
+  - project id: `prj_pmNNbvztswGkQGzDseZNP4OigmsA`;
+  - estado: staging probable;
+  - riesgo de tocarlo: medio.
+- Sandbox RTLOPS-106:
+  - proyecto Vercel: `bot-trading-ia-rtlops106-sandbox`;
+  - project id: `prj_8pEjkXN43uPG392YBF2Caw8wpRh5`;
+  - estado: util para reproducir el bug;
+  - problema: hoy mete ruido en checks normales;
+  - accion futura: silenciar o aislar sin borrar.
+- Duplicado/legacy probable:
+  - proyecto Vercel: `bot-trading-ia-2`;
+  - project id: `prj_3H6TAjdj5Wziuv7dFUElksiha00O`;
+  - estado: duplicado probable;
+  - accion futura recomendada: primer candidato a silenciar;
+  - no borrar todavia.
+- Pendiente de validar:
+  - proyecto Vercel: `bot-trading-ia`;
+  - project id: `prj_yvCy7mHYjtI1etW2H7bqTOQ8qzjG`;
+  - estado: legacy posible / produccion original posible;
+  - accion: no tocar hasta validar.
+- Politica operativa:
+  - el ruido Vercel puede confundir el estado real de PRs y merges aunque no sea required actualmente;
+  - no borrar proyectos, deployments, domains, aliases ni desconectar Git Integration sin autorizacion explicita;
+  - no cambiar Vercel settings, ignored build steps, secrets ni branch protection sin bloque separado y rollback claro.
 
 ## RTLOPS-62 - Cost Stack operativo en Execution - 2026-05-06
 
