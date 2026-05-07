@@ -1,6 +1,24 @@
 # NEXT STEPS (Prioridades Reales)
 
-Fecha: 2026-05-05
+Fecha: 2026-05-06
+
+## RTLOPS-62 - Cost Stack operativo en Execution - 2026-05-06
+- [x] Agregar tarjeta read-only `Costos operativos / Cost Stack` en `/execution`.
+- [x] Reutilizar endpoints existentes de reporting:
+  - `/api/v1/reporting/costs/breakdown`;
+  - `/api/v1/reporting/performance/summary`.
+- [x] Mantener `/reporting` como hub contable principal y usar `/execution` solo como lectura operativa compacta.
+- [x] Mostrar missing data y agregados default `0.0` sin evidencia como `pendiente` o `no disponible`, sin inventar ceros.
+- [x] Resolver P2 de PR #81: `$0.00` solo se muestra si hay evidencia explicita de trades o valor no-cero confirmado.
+- [x] Agregar link visible a `/reporting`.
+- [x] Extender QA protegido/autenticado para validar la tarjeta en `/execution`.
+- [ ] Validar en preview protegido post-merge con `RTLOPS-107` + `RTLOPS-109A`.
+- [ ] Mantener fuera de este bloque:
+  - readiness formal de Cost Stack;
+  - freshness por componente;
+  - funding/borrow estimated;
+  - Cost Stack por bot/simbolo/estrategia.
+- [ ] Mantener `RTLOPS-106` abierto y `RTLOPS-107` como workaround temporal.
 
 ## Live operations runbooks clean rescue - 2026-05-06
 - [x] Auditar runbooks live en `preserve/remote-account-surface-repo-main`.

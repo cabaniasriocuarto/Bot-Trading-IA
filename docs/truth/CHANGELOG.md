@@ -15,6 +15,21 @@
   - no pertenece a `RTLOPS-62` ni modifica PR #81;
   - no toca producto, workflows, Vercel/Railway settings, RTLOPS-106 ni RTLOPS-107.
 
+### RTLOPS-62 - Cost Stack operativo en Execution
+- Se agrega en `/execution` una tarjeta compacta `Costos operativos / Cost Stack`.
+- Cambio:
+  - usa endpoints existentes de reporting: `/api/v1/reporting/costs/breakdown` y `/api/v1/reporting/performance/summary`;
+  - muestra fees, spread, slippage, costos totales, gross/net PnL, funding, borrow interest, commission components, source, freshness y status cuando estan disponibles;
+  - mantiene missing data y agregados default `0.0` sin evidencia como `pendiente` o `no disponible`, sin inventar ceros;
+  - corrige el P2 de PR #81: `/execution` no formatea `$0.00` si el contrato no trae evidencia real para ese costo;
+  - agrega link a `/reporting` para el detalle completo;
+  - extiende el QA protegido/autenticado para validar la tarjeta en `/execution`.
+- Limites:
+  - no crea endpoints nuevos;
+  - no duplica el hub contable de `/reporting`;
+  - no habilita submit real, no modifica gates y no ejecuta ordenes;
+  - no toca backend, DB/user_data, Binance privado, secrets, Vercel/Railway settings, preserve/rescue/audit, RTLOPS-106 ni RTLOPS-107.
+
 ## 2026-05-05
 
 ### Live operations runbooks clean rescue
